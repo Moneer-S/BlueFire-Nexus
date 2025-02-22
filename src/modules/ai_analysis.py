@@ -1,5 +1,5 @@
 ### **/src/modules/ai_analysis.py** (New)
-```python
+python
 import tensorflow as tf
 from tensorflow.keras.layers import LSTM, Dense
 
