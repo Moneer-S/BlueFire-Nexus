@@ -118,9 +118,26 @@ export BLUEFIRE_SAFEMODE=1
 **Docker (Recommended)**
 ```bash
 docker build -t bluefire .
-docker run -it --rm --network=bluefire-lab bluefire --test
+docker run -it --rm --network=bluefire-lab bluefire --profile apt29 --ai --exfil dns
 ```
+## Environment Variables
 
+The following environment variables are used by BlueFire-Nexus:
+
+| Variable             | Description                                                         | Default                       |
+|----------------------|---------------------------------------------------------------------|-------------------------------|
+| `BLUEFIRE_KILLSWITCH`| URL for the killswitch endpoint                                     | `http://localhost:8080/kill`  |
+| `BLUEFIRE_SAFEMODE`  | If set to `"1"`, enables safe mode to disable malicious operations    | `0`                           |
+| `ENCRYPT_KEY`        | Encryption key (Fernet) for DNS exfiltration                        | Auto-generated if not set     |
+| `SPLUNK_TOKEN`       | Authentication token for Splunk telemetry                           | *(not set)*                   |
+
+**Example Usage:**
+```bash
+export BLUEFIRE_KILLSWITCH="http://your-killswitch-endpoint"
+export BLUEFIRE_SAFEMODE="1"
+export ENCRYPT_KEY="YOUR-FERNET-KEY"
+export SPLUNK_TOKEN="XXXX-XXXX-XXXX"
+```
 ---
 
 ## 🤝 Contributing
@@ -130,5 +147,5 @@ We welcome ethical security researchers following our:
 - Secure Coding Guidelines  
 - Mandatory PGP-signed commits  
 
-© 2024 BlueFire | [Legal](./legal/LICENSE.txt) | [Ethics](./legal/ethical_guidelines.md)  
+© 2024 BlueFire | [Legal](./LICENSE) | [Ethics](./legal/ethical_guidelines.md)  
 **Warning**: Strictly for authorized testing. Never deploy outside isolated environments.
