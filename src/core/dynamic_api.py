@@ -1,31 +1,39 @@
+# src/core/dynamic_api.py
 import ctypes
+import json
+import os
 from ctypes import wintypes
 
 class StealthAPIResolver:
     _kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
     
-    def __init__(self):
-        self._hashes = {
-            0xA3D82B19: 'VirtualAlloc',
-            0xE553A458: 'CreateRemoteThread',
-            0xF8D548A7: 'WriteProcessMemory'
-        }
+    def __init__(self, hashes_file="api_hashes.json"):
+        # Load API hashes from an external JSON file
+        if os.path.exists(hashes_file):
+            with open(hashes_file, "r") as f:
+                self._hashes = json.load(f)
+        else:
+            self._hashes = {}  # Fallback to empty dictionary
+            print("Warning: API hashes file not found. API resolution may fail.")
     
-    def _hash_name(self, name: str) -> int:
-        return int(hashlib.sha256(name.encode()).hexdigest()[:8], 16)
+    def resolve(self, hash_val: str, argtypes=None, restype=None):
+        """
+        Resolve an API function based on its hash (as a string).
+        """
+        func_name = self._hashes.get(hash_val)
+        if not func_name:
+            raise ValueError(f"API hash {hash_val} not found")
+        func = getattr(self._kernel32, func_name)
+        func.argtypes = argtypes or []
+        func.restype = restype or wintypes.BOOL
+        return func
 
-    def resolve(self, hash_val: int, argtypes=None, restype=None):
-        for name in dir(self._kernel32):
-            if self._hash_name(name) == hash_val:
-                func = getattr(self._kernel32, name)
-                func.argtypes = argtypes or []
-                func.restype = restype or wintypes.BOOL
-                return func
-        raise ValueError(f"API hash 0x{hash_val:X} not found")
-
-# Usage example:
+# Example usage:
 if __name__ == "__main__":
     resolver = StealthAPIResolver()
-    VirtualAlloc = resolver.resolve(0xA3D82B19, 
-        [wintypes.LPVOID, ctypes.c_size_t, wintypes.DWORD, wintypes.DWORD],
-        wintypes.LPVOID)
+    # Example: Resolve an API function using a sample hash "0xA3D82B19" (as a string)
+    try:
+        func = resolver.resolve("0xA3D82B19", argtypes=[wintypes.LPVOID], restype=wintypes.LPVOID)
+        print("API function resolved:", func)
+    except ValueError as e:
+        print(e)

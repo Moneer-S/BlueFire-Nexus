@@ -1,0 +1,33 @@
+# .github/workflows/analysis.yml
+name: Security Analysis
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+      
+      - name: Install dependencies
+        run: |
+          pip install --no-cache-dir -r requirements.txt
+      
+      - name: Static Analysis
+        run: |
+          semgrep --config=p/owasp-top-ten
+          bandit -r src/ -ll
+      
+      - name: Dynamic Analysis (Tests)
+        run: |
+          pytest tests/ --cov=src --cov-report=xml
