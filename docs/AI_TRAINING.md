@@ -31,3 +31,5 @@ python3 -m bluefire.ai train \
   --batch-size 32 \
   --output-model mimic_model.h5
 ```
+## 4. Explanation
+The idea here is that capturing legitimate Zoom traffic (using tools like tcpdump) provides real network behavior data—packet sizes, timings, TLS fingerprints—that can be used to train an LSTM. The trained model then generates traffic patterns that mimic real human activity on Zoom, making any simulated C2 traffic blend in with legitimate network traffic.
