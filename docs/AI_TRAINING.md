@@ -9,7 +9,19 @@ tcpdump -i eth0 -w zoom.pcap port 8801
 python3 -m bluefire.ai preprocess zoom.pcap --output zoom_training.json
 
 ```
+Convert the pcap to JSON:
+```bash
+python3 -m bluefire.ai preprocess zoom.pcap --output zoom_training.json
+```
 ## 2. Model Architecture
+We use an LSTM model with the following specifications:
+
+Input Shape: (60, 256)
+LSTM Layers: 1 layer with 128 units
+Dense Layer: 64 units with ReLU activation
+Dropout: 0.4 rate
+Output Layer: 3 units with Softmax activation
+Example:
 ```python
 from tensorflow.keras import layers
 import tensorflow as tf
@@ -24,6 +36,7 @@ model = tf.keras.Sequential([
 
 ```
 ## 3. Training Execution
+Train the model:
 ```bash
 python3 -m bluefire.ai train \
   --data zoom_training.json \

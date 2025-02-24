@@ -1,21 +1,17 @@
-# Cyber Apocalypse Architecture
+# BlueFire-Nexus Architecture
 
-## System Flow: AI-Driven Attack Lifecycle
+## Threat Model
+We follow STRIDE and LINDDUN frameworks to identify and mitigate threats.
+
+### STRIDE Analysis Diagram
+![STRIDE Diagram](./docs/stride_diagram.png)
+*Note: Create a diagram image (stride_diagram.png) and add it to the docs folder.*
+
+### Module Interactions
 ```mermaid
-sequenceDiagram
-    participant P as Polymorphic Engine
-    participant A as AI Analysis
-    participant C as C2 Orchestrator
-    participant S as Sandbox Check
-    
-    P->>A: Generate mutated payload
-    A->>C: Request traffic profile (Teams/Zoom)
-    C->>S: Verify environment purity
-    S-->>C: Clean/Dirty status
-    C->>P: Deliver obfuscated payload
-    P->>Victim: Execute chameleon code
-    loop Exfil
-        Victim->>A: Get mimicry pattern
-        A-->>Victim: TLS 1.3 with Cat video metadata
-        Victim->>C: Encrypted exfil
-    end
+graph TD
+    A[AI Engine] -->|Generates Behavioral Profiles| B(C2 Orchestrator)
+    B -->|Delivers Obfuscated Payloads| C[Polymorphic Generator]
+    C -->|Executes via| D[Anti-Forensic Loader]
+    D -->|Reports via| E[Covert Channels]
+    E -->|Feeds Data to| A
