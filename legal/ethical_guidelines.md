@@ -1,8 +1,5 @@
-
----
-
 **/legal/ethical_guidelines.md**  
-```markdown
+
 # Ethical Use Policy
 
 ## Core Principles  

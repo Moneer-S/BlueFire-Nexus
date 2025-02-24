@@ -1,0 +1,34 @@
+name: Security Validation
+
+on: [push, pull_request]
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Run Static Analysis
+        run: |
+          bandit -r src/
+          semgrep --config auto
+
+  tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.11"]
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python }}
+          
+      - name: Run Test Suite
+        run: |
+          pip install -r requirements.txt
+          pytest tests/ --cov=src --cov-report=xml

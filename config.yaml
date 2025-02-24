@@ -1,0 +1,19 @@
+# config.yaml
+network:
+  c2_channels:
+    - protocol: dns
+      domain: "test.internal"
+      encryption_key: "{{ env ENCRYPT_KEY }}"
+    
+safeties:
+  auto_wipe: true
+  max_runtime: 14400  # 4 hours
+  allowed_subnets: 
+    - "10.100.0.0/24"
+    
+telemetry:
+  splunk:
+    host: "https://splunk.test.internal"
+    token: "{{ env SPLUNK_TOKEN }}"
+  elastic:
+    hosts: ["https://elastic.test.internal:9200"]

