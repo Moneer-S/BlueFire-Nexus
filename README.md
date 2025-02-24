@@ -10,6 +10,8 @@
 ## 🚀 Next-Level Red Team Operations
 Simulate Advanced Persistent Threats (APTs) with Surgical Precision
 
+### Deployment  
+Run the simulation using our AI-powered attack module:
 ```bash
 # Deploy AI-Powered Attack Simulation
 python3 -m bluefire --scenario apt29 --ai-evasion --report
@@ -29,12 +31,14 @@ engine = PolymorphicEngine()
 payload = engine.generate(
     template="ransomware", 
     entropy_level="max"
-)  # Zero static signatures
+)  # Ensures zero static signatures by adding random junk code and XOR mutations.
+
 ```
 
 ---
 
 ### 🌐 Covert C2 Channels
+Utilizes multiple obfuscation methods to mimic legitimate protocols:
 
 | Protocol       | Obfuscation Method         | Detection Rate* |
 |----------------|----------------------------|-----------------|
@@ -50,7 +54,7 @@ payload = engine.generate(
 
 1. **Clone & Configure**
    ```bash
-   git clone https://github.com/yourorg/bluefire-nexus.git
+   git clone https://github.com/Moneer-S/bluefire-nexus.git
    cd bluefire-nexus && nano config.yaml
    ```
    **Sample Configuration**:
@@ -64,7 +68,7 @@ payload = engine.generate(
    ```
 
 2. **Launch Simulation**
-   ```bash
+   ```python
    # Start APT29 Emulation with AI Evasion
    ./bluefire.sh --profile apt29 --ai --exfil dns
    ```
@@ -126,5 +130,5 @@ We welcome ethical security researchers following our:
 - Secure Coding Guidelines  
 - Mandatory PGP-signed commits  
 
-© 2024 BlueFire Nexus | [Legal](./legal/LICENSE.txt) | [Ethics](./legal/ethical_guidelines.md)  
+© 2024 BlueFire | [Legal](./legal/LICENSE.txt) | [Ethics](./legal/ethical_guidelines.md)  
 **Warning**: Strictly for authorized testing. Never deploy outside isolated environments.
