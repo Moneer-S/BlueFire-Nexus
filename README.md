@@ -1,4 +1,6 @@
-# BlueFire-Nexus
+![BlueFire Nexus Banner](docs/assets/logo_banner.png)
+
+<!-- # BlueFire-Nexus --> <!-- Comment out original title -->
 
 A comprehensive Advanced Persistent Threat (APT) simulation platform designed for security testing, red team operations, and threat hunting within controlled environments.
 
@@ -9,6 +11,8 @@ BlueFire-Nexus provides a framework for simulating various APT techniques and ta
 **Disclaimer:** This tool is intended for **educational and authorized security testing purposes only** in isolated environments. Unauthorized use or deployment against systems without explicit permission is strictly prohibited. Always adhere to the [Ethical Use Policy](legal/ethical_guidelines.md).
 
 ## Features
+
+![BlueFire Nexus Key Features](docs/assets/key_features.png)
 
 BlueFire-Nexus is built around a modular architecture, simulating various stages of an APT lifecycle:
 

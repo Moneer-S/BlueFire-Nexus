@@ -10,300 +10,146 @@ import base64
 import tempfile
 import logging
 import re # For caret obfuscation
-from typing import Dict, Any, List, Tuple
+import stat # For chmod
+import uuid
+from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime
+import shlex
+
+# Import OS-specific handlers
+from .windows_execution import WindowsExecution
+from .linux_execution import LinuxExecution
+from .macos_execution import MacOSExecution
+
+logger = logging.getLogger(__name__)
 
 class Execution:
-    """Handles command and payload execution techniques."""
+    """Handles command and payload execution by dispatching to OS-specific handlers."""
 
     def __init__(self):
-        self.config = {
-            "execution_timeout": 120, # Default timeout for commands
-            "default_shell": "cmd" if platform.system() == "Windows" else "bash"
+        self.os_type = platform.system()
+        self.os_handler = None
+        self.config = { # General config (can be overridden by OS handler config)
+            "execution_timeout": 120,
         }
-        self.logger = logging.getLogger(__name__)
+
+        # Instantiate the appropriate OS handler
+        if self.os_type == "Windows":
+            self.os_handler = WindowsExecution()
+        elif self.os_type == "Linux":
+            self.os_handler = LinuxExecution()
+        elif self.os_type == "Darwin":
+            self.os_handler = MacOSExecution()
+        else:
+            logger.error(f"Unsupported OS for Execution module: {self.os_type}")
+            # Provide a fallback handler?
+            self.os_handler = None # Or a generic handler that fails
+
+        if self.os_handler:
+             logger.info(f"Initialized {self.os_type} Execution handler.")
+             # Update general config with OS handler defaults if needed
+             self.config.update(self.os_handler.config)
+        else:
+             logger.error(f"Could not initialize execution handler for OS: {self.os_type}")
 
     def update_config(self, config: Dict[str, Any]):
-        """Update internal config with loaded configuration."""
-        self.config.update(config.get("execution", {}))
-        self.logger.info("Execution module configuration updated.")
+        """Update general config and delegate to OS handler config."""
+        exec_config = config.get("execution", {})
+        self.config.update(exec_config)
+        if self.os_handler and hasattr(self.os_handler, 'update_config'):
+             self.os_handler.update_config(exec_config) # Pass relevant part
+        logger.info("Execution module configuration updated.")
 
     def execute(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Route execution requests to appropriate handlers."""
-        result = {
-            "status": "success",
-            "timestamp": datetime.now().isoformat(),
-            "results": {}
-        }
+        """Route execution requests (command or payload) to the OS handler."""
+        results = {}
         errors = []
+        overall_status = "failure" # Default if no handler or all fail
 
-        execution_requests = data.get("execute", {}) # e.g., {"command": {"cmd": "whoami", "method": "direct", "obfuscation": "caret"}}
+        if not self.os_handler:
+             return {"status": "failure", "reason": f"Execution handler not available for OS: {self.os_type}"}
 
+        execution_requests = data.get("execute", {})
+
+        # Determine execution type (command or payload) and dispatch
+        exec_type = None
+        details = None
         if "command" in execution_requests:
-            command_config = execution_requests["command"] if isinstance(execution_requests["command"], dict) else {}
-            if not command_config.get("cmd"):
-                 errors.append("Command execution requested but 'cmd' field is missing.")
-            else:
-                try:
-                    result["results"]["command_execution"] = self._handle_command_execution(command_config)
-                except Exception as e:
-                    errors.append(f"Command Execution failed: {e}")
-                    self._log_error(f"Command Execution failed: {e}", exc_info=True)
+            exec_type = "command"
+            details = execution_requests["command"] if isinstance(execution_requests["command"], dict) else {}
+            if not details.get("cmd"):
+                errors.append("Command execution requested but 'cmd' field is missing.")
+                details = None # Prevent execution
+        elif "payload" in execution_requests:
+            exec_type = "payload"
+            details = execution_requests["payload"] if isinstance(execution_requests["payload"], dict) else {}
+            if not details.get("content_b64") or not details.get("method"):
+                errors.append("Payload execution requested but 'content_b64' or 'method' is missing.")
+                details = None # Prevent execution
+
+        if exec_type and details:
+            try:
+                # Delegate to the OS handler's execute method
+                exec_result = self.os_handler.execute(exec_type, details)
+                results[exec_type] = exec_result
+                if exec_result.get("status") != "success":
+                     errors.append(exec_result.get("reason", f"{exec_type.capitalize()} execution failed"))
+            except Exception as e:
+                error_msg = f"Execution dispatch for '{exec_type}' failed: {e}"
+                errors.append(error_msg)
+                self._log_error(error_msg, exc_info=True)
+                results[exec_type] = {"status": "failure", "reason": error_msg}
+        elif not errors: # Only add this error if no other validation error occurred
+             errors.append("No valid 'command' or 'payload' execution request found in 'execute' data.")
+
+        # Determine overall status
+        if results and any(res.get("status") == "success" for res in results.values()):
+            overall_status = "partial_success" if errors else "success"
+        elif errors: # No successes, and errors occurred
+             overall_status = "failure"
+        else: # No results and no errors likely means no valid request
+            overall_status = "failure" 
+            if not errors: errors.append("No operation performed.") # Add error if none existed
+
+        return {
+            "status": overall_status,
+            "timestamp": datetime.now().isoformat(),
+            "results": results,
+            "errors": errors if errors else None
+        }
+
+    # Convenience method for direct command execution (used by other modules)
+    def execute_command(self, command: str, capture_output: bool = True, method: str = "direct") -> Dict[str, Any]:
+        """Provides a simple interface for running a command via the OS handler."""
+        self.logger.debug(f"Executing direct command request: '{command}'")
+        if not self.os_handler:
+            return {"status": "failure", "reason": f"Execution handler not available for OS: {self.os_type}"}
         
-        # Add handlers for payload execution later (e.g., execute_assembly, execute_pe)
-        # ...
-
-        if errors:
-            result["status"] = "partial_success" if result["results"] else "failure"
-            result["errors"] = errors
-            
-        return result
-
-    def _run_command(self, command: str, shell: str, use_shell: bool, capture: bool = True) -> Tuple[int, str, str]:
-        """Helper to run subprocess commands with timeout, shell choice, and error handling."""
-        timeout = self.config.get("execution_timeout", 120)
-        self.logger.info(f"Executing command via {shell} (use_shell={use_shell}): {command}")
-        
-        cmd_list = [shell, "/c", command] if platform.system() == "Windows" and shell == "cmd" and use_shell else \
-                   [shell, "-c", command] if platform.system() != "Windows" and shell == "bash" and use_shell else \
-                   command.split() # Basic split if not using shell - might need shlex for complex commands
-        
-        # If not using shell=True, cmd_list should ideally be prepared more carefully (e.g., using shlex)
-        # For simplicity here, direct commands assume simple space splitting.
-
-        try:
-            # Use shell=True ONLY when explicitly required and understood.
-            # Generally safer to pass a list of args when shell=False.
-            process = subprocess.run(cmd_list if not use_shell else command, 
-                                     capture_output=capture, 
-                                     text=True, 
-                                     check=False, # Don't raise exception on non-zero exit code, handle it manually
-                                     timeout=timeout, 
-                                     encoding='utf-8', 
-                                     errors='ignore',
-                                     shell=use_shell) # Critical parameter
-                                     
-            self.logger.debug(f"Command finished. Return code: {process.returncode}")
-            stdout = process.stdout if process.stdout else ""
-            stderr = process.stderr if process.stderr else ""
-            return process.returncode, stdout, stderr
-        except FileNotFoundError:
-            self.logger.error(f"Shell/Command not found: {cmd_list[0] if not use_shell else 'shell'}")
-            raise FileNotFoundError(f"Required shell/command '{cmd_list[0] if not use_shell else command}' not found.")
-        except subprocess.TimeoutExpired:
-            self.logger.error(f"Command timed out after {timeout}s: {command}")
-            raise TimeoutError(f"Command '{command}' timed out.")
-        except Exception as e:
-            self.logger.error(f"Unexpected error running command '{command}': {e}", exc_info=True)
-            raise # Re-raise unexpected errors
-
-    def _apply_obfuscation(self, command: str, method: str, obfuscation_type: Optional[str]) -> Tuple[str, Optional[str]]:
-        """Applies the specified obfuscation technique to the command."""
-        if not obfuscation_type:
-            return command, None # No obfuscation applied
-
-        obfuscated_command = command
-        applied_obfuscation = None
-        self.logger.info(f"Applying obfuscation type '{obfuscation_type}' for method '{method}'")
-
-        if obfuscation_type == "base64":
-            # Primarily for PowerShell's -EncodedCommand
-            if method == "powershell":
-                try:
-                    # PowerShell expects UTF-16LE encoding for -EncodedCommand
-                    encoded_cmd = base64.b64encode(command.encode('utf-16le')).decode('ascii')
-                    obfuscated_command = encoded_cmd # The encoded string itself is the command data
-                    applied_obfuscation = "base64_encoded_command"
-                except Exception as e:
-                    self.logger.warning(f"Base64 encoding for PowerShell failed: {e}. Using original command.")
-            else:
-                self.logger.warning("Base64 obfuscation requested but method is not PowerShell. Obfuscation may not be effective.")
-                # Could still base64 encode the command and try to decode+execute on the target shell, 
-                # but that requires specific shell syntax (e.g., base64 -d | bash)
-                # For now, just warn and return original for non-powershell methods.
-                pass 
-
-        elif obfuscation_type == "caret":
-            # Primarily for Windows CMD
-            if method == "cmd" or (method == "direct" and platform.system() == "Windows"):
-                 # Add ^ before special CMD characters: &, |, <, >, (, ), @, ^, %
-                 # Be careful not to break existing quoted strings or complex logic
-                 # This is a basic example and might need refinement
-                 special_chars = r"([&|<>\\(\\)\\@\\^%])" 
-                 # Use a simple regex to add carets - might not handle all edge cases perfectly
-                 try:
-                      obfuscated_command = re.sub(special_chars, r"^\\1", command)
-                      # Double check: Don't add caret if already present (avoid ^^)
-                      obfuscated_command = obfuscated_command.replace("^^", "^")
-                      applied_obfuscation = "cmd_caret_escaping"
-                 except Exception as e:
-                      self.logger.warning(f"Caret obfuscation failed: {e}. Using original command.")
-            else:
-                 self.logger.warning("Caret obfuscation requested but method is not cmd/direct(Windows). Obfuscation skipped.")
-
-        elif obfuscation_type == "string_concat":
-            # Simple example for PowerShell or Bash - break command into parts
-            if method in ["powershell", "bash"]:
-                try:
-                    parts = command.split() # Split command and args
-                    obfuscated_parts = []
-                    for part in parts:
-                        if len(part) > 2: # Only obfuscate longer parts
-                            # Simple split and join
-                            split_point = random.randint(1, len(part) - 1)
-                            p1 = part[:split_point]
-                            p2 = part[split_point:]
-                            if method == "powershell":
-                                obfuscated_parts.append(f"('{p1}'+'{p2}')")
-                            elif method == "bash":
-                                obfuscated_parts.append(f"$('{p1}'+'{p2}')") # Less common, might need eval or backticks depending
-                                # Alternative: 'p''a''r''t'
-                                # obfuscated_parts.append("'" + "''".join(list(part)) + "'")
-                        else:
-                            obfuscated_parts.append(part)
-                    obfuscated_command = " ".join(obfuscated_parts)
-                    applied_obfuscation = "string_concatenation"
-                except Exception as e:
-                    self.logger.warning(f"String concatenation obfuscation failed: {e}. Using original command.")
-            else:
-                self.logger.warning("String concatenation obfuscation requested but method is not PowerShell/Bash. Obfuscation skipped.")
-
-        # Add more obfuscation types here (e.g., environment variables, command substitution, etc.)
-
-        else:
-            self.logger.warning(f"Unsupported obfuscation type requested: '{obfuscation_type}'. No obfuscation applied.")
-
-        if applied_obfuscation:
-             self.logger.info(f"Applied obfuscation '{applied_obfuscation}'. Result preview: {obfuscated_command[:100]}...")
-        return obfuscated_command, applied_obfuscation
-
-    def _handle_command_execution(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a shell command with optional obfuscation."""
-        original_command = data.get("cmd")
-        method = data.get("method", "direct") # e.g., direct, powershell, bash
-        obfuscation = data.get("obfuscation") # e.g., base64, caret, string_concat
-        use_system_shell = data.get("use_shell_api", False) # Whether to use shell=True in subprocess
-        capture_output = data.get("capture_output", True)
-        run_in_background = data.get("background", False) # Note: True backgrounding is complex
-
-        if not original_command:
-             raise ValueError("Missing 'cmd' in command execution data.")
-             
-        self.logger.info(f"Handling command execution request: method={method}, obfuscation={obfuscation}, cmd={original_command}")
-        
-        # Apply obfuscation before determining final command/shell
-        command_to_run, applied_obfuscation = self._apply_obfuscation(original_command, method, obfuscation)
-        
-        shell_to_use = self.config.get("default_shell")
-        final_command_arg = command_to_run # This is what gets passed to _run_command
-
-        if method == "powershell":
-            shell_executable = "pwsh" if platform.system() != "Windows" else "powershell.exe"
-            shell_to_use = shell_executable # Set the shell executable
-            if applied_obfuscation == "base64_encoded_command":
-                # command_to_run already holds the base64 string
-                final_command_arg = f"{shell_executable} -EncodedCommand {command_to_run}"
-                use_system_shell = False # Pass as args to executable
-            else:
-                # Wrap non-encoded command for powershell -Command
-                ps_command_escaped = command_to_run.replace('"', '`"') # Basic escaping for embedding
-                final_command_arg = f"{shell_executable} -Command \"{ps_command_escaped}\""
-                use_system_shell = True # Use shell=True to interpret the wrapper
-
-        elif method == "bash":
-            shell_to_use = "bash"
-            # If obfuscation applied, it's already in command_to_run for shell -c
-            final_command_arg = command_to_run 
-            use_system_shell = True # Use shell -c
-            
-        elif method == "cmd":
-             shell_to_use = "cmd"
-             # If obfuscation applied, it's already in command_to_run for cmd /c
-             final_command_arg = command_to_run
-             use_system_shell = True # Use cmd /c
-             
-        elif method == "direct":
-             shell_to_use = None # Let subprocess handle executable path
-             final_command_arg = command_to_run # Already potentially obfuscated (e.g., caret)
-             use_system_shell = False
-             # Note: Caret obfuscation might require use_system_shell=True if using cmd implicitly
-             if applied_obfuscation == "cmd_caret_escaping" and platform.system() == "Windows":
-                  self.logger.debug("Caret obfuscation used with direct method, might require system shell implicitly.")
-                  # Consider setting use_system_shell = True here, but makes 'direct' less direct.
-                  # User should preferably use method='cmd' for caret obfuscation.
-        else:
-            self.logger.warning(f"Unknown execution method '{method}', using direct execution logic.")
-            shell_to_use = None
-            final_command_arg = command_to_run
-            use_system_shell = False
-            
-        details = {
-            "original_command": original_command,
-            "command_executed_arg": final_command_arg, # What was passed to subprocess
-            "obfuscation_requested": obfuscation,
-            "obfuscation_applied": applied_obfuscation,
-            "execution_method": method,
-            "used_system_shell_api": use_system_shell,
-            "shell_invoked": shell_to_use,
-            "captured_output": capture_output
+        command_details = {
+             "cmd": command,
+             "method": method,
+             "capture_output": capture_output
         }
         
-        # Note: True background execution requires more complex handling 
-        # (e.g., Popen without wait, detaching process, managing handles)
-        # This implementation focuses on simple synchronous execution for now.
-        if run_in_background:
-            self.logger.warning("Background execution requested but not fully implemented. Running synchronously.")
-        
         try:
-            # Pass final_command_arg to _run_command
-            returncode, stdout, stderr = self._run_command(final_command_arg, shell_to_use, use_system_shell, capture_output)
-            
-            details["return_code"] = returncode
-            if capture_output:
-                 # Limit output size in report
-                 max_out_len = 2048
-                 details["stdout"] = stdout[:max_out_len] + ('...' if len(stdout) > max_out_len else '')
-                 details["stderr"] = stderr[:max_out_len] + ('...' if len(stderr) > max_out_len else '')
-            else:
-                details["stdout"] = "(Output not captured)"
-                details["stderr"] = "(Output not captured)"
-                
-            execution_status = "success" if returncode == 0 else "failure"
-            
-            # Determine MITRE technique based on method if possible
-            mitre_id = "T1059" # Command and Scripting Interpreter (Default)
-            mitre_name = "Command and Scripting Interpreter"
-            if method == "powershell":
-                mitre_id = "T1059.001"
-                mitre_name = "Command and Scripting Interpreter: PowerShell"
-            elif method == "cmd":
-                mitre_id = "T1059.003"
-                mitre_name = "Command and Scripting Interpreter: Windows Command Shell"
-            elif method == "bash":
-                mitre_id = "T1059.004"
-                mitre_name = "Command and Scripting Interpreter: Unix Shell"
-                
-            result = {
-                "status": execution_status,
-                "technique": f"command_execution_{method}" + (f"_{applied_obfuscation}" if applied_obfuscation else ""),
-                "mitre_technique_id": mitre_id,
-                "mitre_technique_name": mitre_name,
-                "timestamp": datetime.now().isoformat(),
-                "details": details
-            }
-            self.logger.info(f"Command execution finished with status: {execution_status}")
-            return result
-
-        except (FileNotFoundError, TimeoutError, OSError) as specific_error:
-             self.logger.error(f"Command execution failed: {specific_error}")
-             raise # Re-raise specific known errors
+             # Directly call the OS handler's command execution method if possible
+             if hasattr(self.os_handler, '_handle_command_execution'):
+                  # Note: This bypasses the OS handler's main 'execute' dispatch logic,
+                  #       use with care or route through self.execute instead.
+                  return self.os_handler._handle_command_execution(command_details)
+             else:
+                  # Fallback to routing through the main execute method
+                  request_data = {"execute": {"command": command_details}}
+                  result_wrapper = self.execute(request_data)
+                  return result_wrapper.get("results", {}).get("command", {})
         except Exception as e:
-            self.logger.error(f"Error during command execution: {str(e)}", exc_info=True)
-            raise # Re-raise unexpected errors
-            
-    def _log_error(self, message: str, exc_info: bool = False) -> None:
+            error_msg = f"Direct command execution failed: {e}"
+            self._log_error(error_msg, exc_info=True)
+            return {"status": "failure", "reason": error_msg}
+
+    def _log_error(self, message: str, exc_info=False) -> None:
         """Log errors using the initialized logger."""
-        self.logger.error(message, exc_info=exc_info)
+        logger.error(message, exc_info=exc_info)
 
 # Example Usage (for testing)
 if __name__ == '__main__':

