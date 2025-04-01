@@ -1,0 +1,159 @@
+# BlueFire-Nexus Configuration Example
+# This file documents the expected configuration structure for config.yaml
+
+general:
+  name: "BlueFire-Nexus"       # Name of the simulation/instance
+  version: "1.0.0"          # Platform version 
+  mode: "simulation"          # Current operational mode (e.g., simulation, testing)
+  log_level: "INFO"           # Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+                              # Can be overridden by LOG_LEVEL environment variable
+  log_file: "logs/bluefire.log" # Path for the primary log file
+  console_output: true        # Whether to also log to the console
+  
+  # Safety mechanisms to prevent unintended actions
+  safeties:
+    auto_wipe: true             # Enable/disable automatic cleanup/wiping mechanisms
+    max_runtime: 14400          # Maximum execution time in seconds (e.g., 4 hours)
+    allowed_subnets:            # List of CIDR notations for allowed target networks
+      - "10.0.0.0/8"
+      - "192.168.0.0/16"
+    # allowed_domains: ["example.com", "*.internal"] # Optional: Allowed target domains
+    # killswitch_url: "{{ env BLUEFIRE_KILLSWITCH }}" # Optional: URL for emergency stop
+
+modules:
+  # Enable/disable or configure specific modules.
+  # The structure here should match the keys in BlueFireNexus.MODULE_MAP
+  
+  command_control:
+    enabled: true
+    # Configuration for C2 channels (example)
+    c2_channels:
+      - protocol: dns
+        domain: "your.c2.domain"
+        encryption_key: "{{ env ENCRYPT_KEY }}" # Load sensitive key from environment
+      - protocol: http
+        url: "http://your.c2.server/endpoint"
+        user_agent: "Mozilla/5.0 (...)" 
+    # Other C2 specific settings...
+
+  initial_access:
+    enabled: true
+    # Configuration for initial access vectors (phishing, exploit, etc.)
+    # default_vector: "phishing_email"
+    # target_list: "targets.csv"
+    
+  execution:
+    enabled: true
+    # Configuration for payload execution methods
+    # default_method: "powershell_inline"
+
+  persistence:
+    enabled: true
+    # Configuration for persistence mechanisms
+    # default_method: "scheduled_task"
+    # registry_key: "HKCU\Software\MyApp"
+
+  defense_evasion:
+    enabled: true
+    # Configuration for defense evasion techniques
+    # techniques: ["process_hollowing", "dll_sideloading", "argument_spoofing"]
+    # default_technique: "process_hollowing"
+    
+  anti_detection:
+    enabled: true
+    # Configuration related to sandbox detection, AV evasion etc.
+    # check_vm_artifacts: true
+    # memory_evasion_level: "high"
+
+  discovery:
+    enabled: true
+    # Configuration for discovery activities (network scan, host enum)
+    # scan_timeout: 60
+    # default_scan_type: "port_service"
+
+  intelligence: # Maps to APTIntelligence module
+    enabled: true
+    # Configuration for intel gathering or simulation
+    # threat_feed_urls: ["...", "..."]
+    # target_profiles: ["apt29", "fin7"]
+
+  network_obfuscator:
+    enabled: true
+    # Configuration for network traffic obfuscation
+    # default_protocol: "dns_over_https"
+    # padding_size: 128
+
+  resource_development:
+    enabled: true
+    # Configuration for resource development simulation
+    # infrastructure_provider: "aws"
+    # payload_compiler: "gcc"
+
+  reconnaissance:
+    enabled: true
+    # Configuration for reconnaissance activities
+    # osint_sources: ["shodan", "virustotal"]
+    # active_scan_intensity: "low"
+
+  exfiltration:
+    enabled: true
+    # Configuration for data exfiltration
+    # default_method: "dns_tunnel"
+    # max_chunk_size: 1024
+
+telemetry:
+  enabled: true # Master switch for telemetry reporting
+  # Configuration for sending telemetry data to monitoring systems
+  splunk:
+    host: "https://your-splunk-instance:8088"
+    token: "{{ env SPLUNK_TOKEN }}" # Load token from environment variable
+    index: "bluefire"
+    source: "bluefire_nexus"
+  elastic:
+    hosts: ["https://your-elastic-instance:9200"]
+    # api_key: "{{ env ELASTIC_API_KEY }}" 
+    # index_prefix: "bluefire-nexus"
+  # other_monitoring_system:
+    # ... 
+
+# Security Settings
+security:
+  encryption:
+    enabled: true
+    algorithm: "AES-256-GCM"
+    key_rotation: 3600  # seconds
+  stealth:
+    default_level: "high"  # low, medium, high
+    anti_detection: true
+    anti_forensics: true
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 60
+    burst_size: 10
+
+# Monitoring and Logging
+monitoring:
+  enabled: true
+  metrics:
+    - "operations"
+    - "success_rate"
+    - "detection_rate"
+    - "resource_usage"
+  alerts:
+    enabled: true
+    channels:
+      - "email"
+      - "slack"
+    thresholds:
+      detection_rate: 20  # percentage
+      resource_usage: 80  # percentage
+
+# Reporting
+reporting:
+  enabled: true
+  formats:
+    - "json"
+    - "yaml"
+    - "html"
+  schedule: "daily"  # hourly, daily, weekly
+  retention: 30  # days 

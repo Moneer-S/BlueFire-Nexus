@@ -1,43 +1,51 @@
 # Usage Guidelines for BlueFire-Nexus
-## AI-Obfuscated C2 Workflow
 
-1. **Train the Beast**
-```bash
-# Requires NVIDIA GPU with ≥24GB VRAM
-python3 -m src.modules.ai_analysis train \
-  --dataset zoom_captures.pcap \
-  --epochs 666 \
-  --model-out skynet.h5
+This document provides essential guidelines for using the BlueFire-Nexus platform responsibly and effectively.
 
-from src.modules.ai_analysis import TrafficMimic
-from src.operators.c2_protocols import TLSWrapper
-```
-# 2. Deploy Mimicry 
-```python
-mimic = TrafficMimic(model='skynet.h5')
-c2 = TLSWrapper(traffic_profile=mimic.generate_traffic())
-c2.listen()  # Now looks like video conference
-```
-# 3. Validate Detection Evasion
-```bash
-./scripts/test_evasion.sh --duration 3600 --tool crowdstrike
-```
-# Expected output: "Attack remained undetected for 57 minutes"
+## 1. Ethical and Legal Compliance
 
-# 4. Logging the Apocalypse
-```python
-from src.modules import forensic_logger
+**CRITICAL:** Adherence to ethical principles and legal requirements is paramount.
 
-logger = forensic_logger.DoomLogger()
-try:
-    launch_nukes()
-except Exception as e:
-    logger.log(f"Whoopsie: {e}", level='CRITICAL')
-    logger.self_destruct()
-```
-# 5. Expected Log Output
-[2024-13-37 23:59:59] CRITICAL - Whoopsie: Nuclear codes rejected
-[2024-13-37 23:60:00] INFO - Initiating 35-pass Gutmann wipe
+*   **Authorization:** ALWAYS obtain explicit, written permission before conducting any operations against any system or network.
+*   **Environment:** ONLY operate BlueFire-Nexus within designated, isolated laboratory or testing environments.
+*   **Scope:** Strictly adhere to the authorized scope of testing.
+*   **Review:** Familiarize yourself thoroughly with the [Ethical Use Policy](legal/ethical_guidelines.md) before proceeding.
+
+## 2. Installation and Configuration
+
+*   Follow the setup instructions in the main [README.md](README.md#installation).
+*   Pay close attention to the configuration steps outlined in the [README.md](README.md#configuration), especially regarding:
+    *   The primary configuration file (`./config.yaml`).
+    *   Using the example template (`config/config.example.yaml`).
+    *   Setting up environment variables (`.env`) for sensitive data.
+    *   Configuring safety parameters (`general.safeties`) appropriate for your test environment.
+
+## 3. Running Simulations
+
+*   The primary method for running simulations is via the command line as described in the [README.md Usage Section](README.md#usage).
+    ```bash
+    # Example: Run a simulation using a specific profile
+    ./scripts/bluefire.sh --profile <profile_name> 
+    ```
+*   Understand the arguments accepted by `scripts/bluefire.sh` (`--profile`, `--ai`, `--exfil`) and how they relate to the simulation execution controlled by `src/run_scenario.py`.
+*   Refer to specific module documentation (if available) or code comments within `src/core/` for details on how different profiles or arguments trigger specific operations and techniques.
+
+## 4. Advanced Usage (Programmatic)
+
+*   For custom integrations or complex scenarios, the `BlueFireNexus` class can be used programmatically. See the example in the [README.md](README.md#programmatic-usage-advanced).
+*   Carefully examine the required parameters for `execute_operation` based on the target module's implementation in `src/core/`.
+
+## 5. Monitoring and Analysis
+
+*   Monitor the target test environment during simulation runs.
+*   If configured, check telemetry outputs (e.g., Splunk, Elastic) for logged events.
+*   Review application logs (default: `logs/bluefire.log`, path configurable in `config.yaml`) for execution details and potential errors.
+
+## 6. Security
+
+*   Never expose BlueFire-Nexus or its C2 channels outside the isolated test environment.
+*   Keep dependencies updated (`pip install -r requirements.txt --upgrade`).
+*   Treat configuration files and environment variables containing sensitive information securely.
 
 # Usage Guidelines for BlueFire-Nexus
 

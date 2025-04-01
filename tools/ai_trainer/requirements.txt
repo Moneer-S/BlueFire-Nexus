@@ -1,0 +1,7 @@
+# Requirements for the AI training tool
+
+tensorflow>=2.10.0 # Or specify a version compatible with your setup
+click>=8.0 # Already in main requirements, but good to list here
+
+# Add other dependencies specific to AI preprocessing/training if needed
+# e.g., scapy for pcap parsing, numpy, pandas 
