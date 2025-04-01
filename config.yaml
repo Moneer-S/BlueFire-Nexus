@@ -1,19 +1,35 @@
-# config.yaml
-network:
-  c2_channels:
-    - protocol: dns
-      domain: "test.internal"
-      encryption_key: "{{ env ENCRYPT_KEY }}"
-    
-safeties:
-  auto_wipe: true
-  max_runtime: 14400  # 4 hours
-  allowed_subnets: 
-    - "10.100.0.0/24"
-    
-telemetry:
+# config.yaml - Main Configuration for BlueFire-Nexus
+general:
+  name: "BlueFire-Nexus" # Example general setting
+  version: "1.0.0"     # Example general setting
+  mode: "simulation"     # Example general setting (simulation, testing, production)
+  log_level: "INFO"      # Overridden by env var if set
+  safeties:
+    auto_wipe: true
+    max_runtime: 14400  # 4 hours
+    allowed_subnets: 
+      - "10.100.0.0/24"
+      # Add other safety nets like allowed target domains/IPs if needed
+
+modules:
+  # Add configurations for specific modules as needed
+  # Example for command_control, referencing the old network setting
+  command_control: 
+    c2_channels:
+      - protocol: dns
+        domain: "test.internal"
+        encryption_key: "{{ env ENCRYPT_KEY }}" 
+    # Add other module configs here, e.g., defense_evasion, exfiltration...
+
+telemetry: # Kept top-level as it seems distinct from 'general'/'modules'
+  enabled: true # Assuming telemetry is enabled if section exists
   splunk:
     host: "https://splunk.test.internal"
     token: "{{ env SPLUNK_TOKEN }}"
   elastic:
     hosts: ["https://elastic.test.internal:9200"]
+
+# Deprecated top-level keys (moved under general/modules):
+# network: 
+#   c2_channels: ... (moved to modules.command_control)
+# safeties: ... (moved to general.safeties)
