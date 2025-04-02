@@ -200,3 +200,49 @@ This project is licensed under the MIT License - see the `LICENSE` file for deta
 ## Disclaimer
 
 This tool is provided "as is" without warranty of any kind. The authors or contributors are not responsible for any misuse or damage caused by this tool. Use it responsibly and ethically.
+
+## Current Status & Implemented Techniques
+
+This framework is under active development. Key modules and implemented techniques include:
+
+*   **Core:** Basic module loading, configuration handling, logging.
+*   **Execution:** Handles direct command execution (`cmd.exe`, `/bin/sh`) and PowerShell execution.
+*   **Command & Control (C2):**
+    *   HTTP Beaconing (`start_http_beacon`, `stop_http_beacon`): Functional periodic check-ins via GET/POST. Includes basic tasking simulation.
+    *   HTTPS Long Polling (`tunnel_c2`/`tunnel`): Functional near-persistent connection via HTTPS POST for tasking.
+    *   Proxy Support (`configure_proxy`): Functional support for HTTP/HTTPS proxies for C2 communications.
+    *   DNS C2 (`dns_c2`): *Simulation* of sending beacons via DNS A record lookups (requires `dnspython`).
+    *   Placeholders: `custom_protocol_c2`, `fallback_channels`, `dynamic_resolution` (mapped to Not Implemented).
+*   **Exfiltration:**
+    *   Staging (`_stage_and_archive_files`): Functional collection, staging, and optional ZIP archiving.
+    *   SFTP (`exfil_sftp`, `alternative_protocol`): Functional exfiltration using `paramiko` (requires host key in `known_hosts`).
+    *   FTP (`exfil_ftp`, `protocol_exfiltration`): Functional exfiltration using `ftplib`.
+    *   Scheduled Transfer (`scheduled_transfer`): *Simulation* of setting up scheduled exfiltration.
+    *   Placeholders: `data_transfer` (mapped to Not Implemented).
+*   **Persistence:**
+    *   **Windows:**
+        *   Scheduled Task (`scheduled_task`): Functional add/remove via `schtasks.exe`. (T1053.005)
+        *   Registry Run Keys (`registry_run_key`): Functional add/remove via `win32api`. (T1547.001)
+        *   Startup Folder (`startup_folder`): Functional add/remove file via direct write. (T1547.001)
+    *   **Linux:**
+        *   Cron Job (`cron_job`): Functional add/remove via `crontab` and comment marker. (T1053.003)
+        *   Profile Script (`profile_script`): Functional add/remove block to `.bashrc`, `.zshrc` etc. via markers. (T1546.004)
+        *   Systemd Unit (`systemd_unit`): *Placeholder exists, implementation failed.* (T1543.002)
+    *   **macOS:**
+        *   Launch Agent (`launch_agent`): *Handler exists, refinement for add/remove failed.* (T1543.001)
+        *   Launch Daemon (`launch_daemon`): *Handler exists, refinement for add/remove failed.* (T1543.004)
+    *   **General:**
+        *   Boot/Logon Autostart (`boot_logon_autostart_sim`): *Simulation* covering various autostart types. (T1547)
+*   **Defense Evasion:**
+    *   Timestomp (`timestomp`): Functional file MAC time modification. (T1070.006)
+    *   Argument Spoofing (`argument_spoofing`): *Simulation* of launching commands with misleading arguments. (T1564.008)
+    *   Process Hollowing (`process_hollowing` - Windows): *Handler exists, complex simulation/implementation.* (T1055.012)
+    *   Firewall Manipulation (`firewall_manipulation`): *Placeholder exists, implementation failed.* (T1562.004)
+    *   OS-Specific (`hide_file`, etc.): Handlers exist, need review/testing.
+*   **Discovery:** Basic handlers for system info, network config, processes etc. exist, need refinement.
+*   **Initial Access:** Phishing and Exploitation methods exist as *simulations*, returning placeholder data. (T1566, T1190, etc.)
+*   **Lateral Movement:** (Placeholder Module)
+*   **Collection:** (Placeholder Module)
+*   **Impact:** (Placeholder Module)
+
+**Note:** Functional implementations may require specific libraries (`paramiko`, `dnspython`, `pywin32`) or elevated privileges. Simulations log intended actions without performing them. Recent edit attempts on some handler files encountered tool errors, preventing further functional implementation in those specific areas for now.

@@ -19,6 +19,8 @@ import psutil
 import subprocess
 import grp # For Linux/macOS group info
 import pwd # For Linux/macOS user info
+import ctypes # Added for Windows privilege check
+import re # Import re for parsing
 
 try:
     import nmap
@@ -91,7 +93,8 @@ class Discovery:
             "system": {
                 "system_info_handler": self._handle_system_info,
                 "process_info_handler": self._handle_process_info,
-                "service_info_handler": self._handle_service_info
+                "service_info_handler": self._handle_service_info,
+                "network_config_handler": self._handle_network_config
             },
             "network": {
                 "network_scan_handler": self._handle_network_scan,
@@ -190,6 +193,36 @@ class Discovery:
         else:
              self.scanner = None
              self.logger.warning("python-nmap library not found. Network scans will be limited or unavailable.")
+        
+        # Add helper for running commands if needed later
+        self._execution_module = None 
+
+    def set_execution_module(self, execution_module):
+        """Sets the execution module dependency."""
+        self._execution_module = execution_module
+        self.logger.info("Execution module set for Discovery.")
+
+    def _execute_command(self, command: str, timeout: Optional[int] = None) -> Dict[str, Any]:
+        """Helper to execute a shell command using the Execution module."""
+        if not self._execution_module:
+            self.logger.error("Execution module not available for running command.")
+            return {"status": "failure", "error": "Execution module not available"}
+        
+        # Use a simple command execution request structure
+        request = {
+            "execute": {
+                "method": "command",
+                "command": command,
+                "timeout": timeout or self.config.get("discovery_timeout", 60)
+            }
+        }
+        try:
+            result = self._execution_module.execute(request)
+            self.logger.debug(f"Command '{command}' executed via Execution module. Result: {result.get('status')}")
+            return result
+        except Exception as e:
+            self.logger.error(f"Error executing command '{command}' via Execution module: {e}", exc_info=True)
+            return {"status": "failure", "error": str(e)}
 
     def discover(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Perform discovery"""
@@ -233,13 +266,21 @@ class Discovery:
                 errors.append(f"Host Discovery failed: {e}")
                 self._log_error(f"Host Discovery failed: {e}")
 
-        if discovery_requests.get("port_service_scan"):
-            scan_config = discovery_requests["port_service_scan"] if isinstance(discovery_requests["port_service_scan"], dict) else {}
+        if discovery_requests.get("port_scan"):
+            port_config = discovery_requests["port_scan"] if isinstance(discovery_requests["port_scan"], dict) else {}
             try:
-                result["results"]["port_service_scan"] = self._handle_port_service_scan(scan_config)
+                result["results"]["port_scan"] = self._handle_port_service_scan(port_config)
             except Exception as e:
-                errors.append(f"Port/Service Scan failed: {e}")
-                self._log_error(f"Port/Service Scan failed: {e}")
+                errors.append(f"Port Scan failed: {e}")
+                self._log_error(f"Port Scan failed: {e}")
+
+        if discovery_requests.get("service_scan"):
+            service_scan_config = discovery_requests["service_scan"] if isinstance(discovery_requests["service_scan"], dict) else {}
+            try:
+                result["results"]["service_scan"] = self._handle_port_service_scan(service_scan_config)
+            except Exception as e:
+                errors.append(f"Service Scan failed: {e}")
+                self._log_error(f"Service Scan failed: {e}")
 
         if discovery_requests.get("user_info"):
             user_config = discovery_requests["user_info"] if isinstance(discovery_requests["user_info"], dict) else {}
@@ -265,322 +306,293 @@ class Discovery:
                 errors.append(f"Privilege Info Discovery failed: {e}")
                 self._log_error(f"Privilege Info Discovery failed: {e}")
 
+        if discovery_requests.get("network_config"):
+            try:
+                result["results"]["network_config"] = self._handle_network_config({})
+            except Exception as e:
+                errors.append(f"Network Config Discovery failed: {e}")
+                self._log_error(f"Network Config Discovery failed: {e}")
+
         if errors:
-            result["status"] = "partial_success" if result["results"] else "failure"
+            result["status"] = "partial_failure"
             result["errors"] = errors
             
+        self.logger.info(f"Starting discovery run. Requests: {list(discovery_requests.keys())}")
         return result
             
-    def _handle_system_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Gather basic system information using platform and psutil."""
-        self.logger.info("Gathering system information.")
-        details = {}
+    def _handle_system_info(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Gathers basic system information."""
+        self.logger.info("Starting system information discovery.")
+        info = {}
         try:
-            uname = platform.uname()
-            details["system"] = uname.system
-            details["node_name"] = uname.node
-            details["release"] = uname.release
-            details["version"] = uname.version
-            details["machine"] = uname.machine
-            details["processor"] = uname.processor
-            details["hostname"] = platform.node()
-            details["fqdn"] = ""
+            info['platform'] = platform.system()
+            info['platform_release'] = platform.release()
+            info['platform_version'] = platform.version()
+            info['architecture'] = platform.machine()
+            info['hostname'] = platform.node()
+            info['processor'] = platform.processor()
+            # User info
             try:
-                import socket
-                details["fqdn"] = socket.getfqdn()
-            except Exception:
-                self.logger.warning("Could not determine FQDN.")
-
-            boot_time_timestamp = psutil.boot_time()
-            bt = datetime.fromtimestamp(boot_time_timestamp)
-            details["boot_time"] = bt.strftime("%Y-%m-%d %H:%M:%S")
-
-            cpufreq = psutil.cpu_freq()
-            details["cpu"] = {
-                "physical_cores": psutil.cpu_count(logical=False),
-                "total_cores": psutil.cpu_count(logical=True),
-                "max_frequency_mhz": cpufreq.max if cpufreq else "N/A",
-                "min_frequency_mhz": cpufreq.min if cpufreq else "N/A",
-                "current_frequency_mhz": cpufreq.current if cpufreq else "N/A",
-                "usage_percent": psutil.cpu_percent(interval=1)
-            }
-
-            svmem = psutil.virtual_memory()
-            details["memory"] = {
-                "total_gb": round(svmem.total / (1024**3), 2),
-                "available_gb": round(svmem.available / (1024**3), 2),
-                "used_gb": round(svmem.used / (1024**3), 2),
-                "percentage_used": svmem.percent
-            }
-            
-            try:
-                swap = psutil.swap_memory()
-                details["swap_memory"] = {
-                    "total_gb": round(swap.total / (1024**3), 2),
-                    "free_gb": round(swap.free / (1024**3), 2),
-                    "used_gb": round(swap.used / (1024**3), 2),
-                    "percentage_used": swap.percent
-                }
-            except Exception:
-                 details["swap_memory"] = "Not Available"
-
-            details["disks"] = []
-            partitions = psutil.disk_partitions()
-            for partition in partitions:
+                info['user'] = os.getlogin()
+            except OSError: # os.getlogin() might fail in some environments (e.g., no controlling tty)
                  try:
-                      partition_usage = psutil.disk_usage(partition.mountpoint)
-                      details["disks"].append({
-                           "device": partition.device,
-                           "mountpoint": partition.mountpoint,
-                           "fstype": partition.fstype,
-                           "total_gb": round(partition_usage.total / (1024**3), 2),
-                           "used_gb": round(partition_usage.used / (1024**3), 2),
-                           "free_gb": round(partition_usage.free / (1024**3), 2),
-                           "percentage_used": partition_usage.percent
-                      })
-                 except Exception as e:
-                      self.logger.warning(f"Could not get usage for disk {partition.device}: {e}")
-                      details["disks"].append({
-                           "device": partition.device,
-                           "mountpoint": partition.mountpoint,
-                           "fstype": partition.fstype,
-                           "error": f"Could not retrieve usage: {e}"
-                      })
+                    info['user'] = pwd.getpwuid(os.getuid()).pw_name if hasattr(os, 'getuid') else 'N/A'
+                 except Exception:
+                     info['user'] = 'N/A' # Fallback if everything fails
 
-            details["network_interfaces"] = []
-            if_addrs = psutil.net_if_addrs()
-            for interface_name, interface_addresses in if_addrs.items():
-                addrs = []
-                for address in interface_addresses:
-                    addr_info = {"family": str(address.family).split('.')[-1]}
-                    if address.address: addr_info["address"] = address.address
-                    if address.netmask: addr_info["netmask"] = address.netmask
-                    if address.broadcast: addr_info["broadcast"] = address.broadcast
-                    addrs.append(addr_info)
-                details["network_interfaces"].append({"name": interface_name, "addresses": addrs})
+            # Add Python version as potentially useful info
+            info['python_version'] = sys.version
 
-            result = {
-                "status": "success",
-                "technique": "system_info_discovery",
-                "mitre_technique_id": "T1082",
-                "mitre_technique_name": "System Information Discovery",
-                "timestamp": datetime.now().isoformat(),
-                "details": details
-            }
-            self.logger.info("Successfully gathered system information.")
-            return result
+            self.logger.info("System information gathered successfully.")
+            return {"status": "success", "data": info}
         except Exception as e:
-            self.logger.error(f"Error gathering system info: {str(e)}", exc_info=True)
-            raise
+            self.logger.error(f"Error gathering system info: {e}", exc_info=True)
+            return {"status": "failure", "error": str(e), "data": info} # Return partial data if possible
 
-    def _handle_process_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Gather running process information using psutil."""
-        self.logger.info("Gathering process information.")
-        process_list = []
-        attrs = data.get("attrs", self.config.get("process_info_attrs", ['pid', 'name', 'username'])) 
-        required_attrs = {'pid', 'name'}
-        final_attrs = list(required_attrs.union(set(attrs)))
-        
+    def _handle_process_info(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Gathers information about running processes."""
+        self.logger.info("Starting process information discovery.")
+        processes = []
+        # Get attributes to fetch from config, default to a basic set
+        attrs = details.get("attributes", self.config.get("process_info_attrs", ['pid', 'name', 'username']))
+        # Ensure essential attributes are always included if possible
+        if 'pid' not in attrs: attrs.append('pid')
+        if 'name' not in attrs: attrs.append('name')
+
         try:
-            for proc in psutil.process_iter(attrs=final_attrs, ad_value=None):
-                 try:
+            for proc in psutil.process_iter(attrs=attrs, ad_value=None):
+                try:
                     pinfo = proc.info
-                    if 'create_time' in pinfo and pinfo['create_time']:
-                         pinfo['create_time'] = datetime.fromtimestamp(pinfo['create_time']).isoformat()
-                    process_list.append(pinfo)
-                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                      self.logger.debug(f"Skipping inaccessible process {proc.pid if hasattr(proc, 'pid') else 'unknown'}")
-                      pass
-                 except Exception as e:
-                      self.logger.warning(f"Could not get full info for process {proc.pid if hasattr(proc, 'pid') else 'unknown'}: {e}")
-                      try:
-                           minimal_info = {'pid': proc.pid, 'name': proc.name(), 'error': f"Partial info due to: {e}"}
-                           process_list.append(minimal_info)
-                      except Exception:
-                           pass
+                    # Convert create_time from timestamp to ISO format string if present
+                    if 'create_time' in pinfo and pinfo['create_time'] is not None:
+                        pinfo['create_time'] = datetime.fromtimestamp(pinfo['create_time']).isoformat()
+                    processes.append(pinfo)
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    # Ignore processes that have terminated or are inaccessible
+                    continue
+                except Exception as proc_err:
+                    # Log specific process error but continue iteration
+                    self.logger.warning(f"Could not retrieve info for a process (PID likely reused or exited): {proc_err}")
+                    continue # Continue with the next process
 
-            result = {
-                "status": "success",
-                "technique": "process_discovery",
-                "mitre_technique_id": "T1057",
-                "mitre_technique_name": "Process Discovery",
-                "timestamp": datetime.now().isoformat(),
-                "details": {"processes": process_list, "count": len(process_list)}
-            }
-            self.logger.info(f"Successfully gathered information for {len(process_list)} processes.")
-            return result
+            self.logger.info(f"Gathered information for {len(processes)} processes.")
+            return {"status": "success", "data": processes}
         except Exception as e:
-            self.logger.error(f"Error gathering process info: {str(e)}", exc_info=True)
-            raise
+            self.logger.error(f"Error gathering process list: {e}", exc_info=True)
+            # Return partial list if error occurred mid-iteration? Maybe not reliable.
+            return {"status": "failure", "error": str(e), "data": []}
 
-    def _handle_service_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Gather service information (OS-dependent)."""
-        self.logger.info("Gathering service information.")
-        services = []
+    def _handle_service_info(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Gather service information using OS-specific commands."""
+        self.logger.info("Starting service information discovery.")
         os_type = platform.system()
-        
+        services = []
+        status = "failure"
+        error_message = None
+        command_used = ""
+
         try:
             if os_type == "Windows":
-                 try:
-                      for service in psutil.win_service_iter():
-                           try:
-                                service_info = service.as_dict()
-                                services.append(service_info)
-                           except psutil.NoSuchProcess:
-                                self.logger.warning(f"Service '{service.name()}' process not found, skipping.")
-                           except psutil.AccessDenied:
-                                self.logger.warning(f"Access denied for service '{service.name()}', skipping.")
-                           except Exception as e:
-                                self.logger.warning(f"Could not get full info for service '{service.name()}': {e}")
-                                try:
-                                     services.append({"name": service.name(), "error": f"Partial info due to: {e}"})
-                                except Exception: pass
-                 except ImportError:
-                      self.logger.warning("psutil win_service_iter not available on this system. Attempting 'sc query'.")
-                      try:
-                           cmd = ["sc", "query", "state=", "all", "bufsize=", "65535"]
-                           timeout = self.config.get("discovery_timeout", 60)
-                           process = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout, encoding='utf-8', errors='ignore')
-                           
-                           if process.returncode == 0 and process.stdout:
-                                services.append({"raw_output": process.stdout, "parse_status": "Requires parsing"})
-                                current_service = {}
-                                for line in process.stdout.splitlines():
-                                     if line.startswith("SERVICE_NAME:"):
-                                          if current_service:
-                                               services.append(current_service)
-                                          current_service = {"name": line.split(":", 1)[1].strip()}
-                                     elif ":" in line and current_service:
-                                          key, val = line.split(":", 1)
-                                          key_clean = key.strip().lower().replace(" ", "_")
-                                          current_service[key_clean] = val.strip()
-                                if current_service:
-                                     services.append(current_service)
-                                if len(services) > 1 and "raw_output" in services[0]:
-                                     services.pop(0)
-                           else:
-                                self.logger.error(f"'sc query' failed or returned empty. Code: {process.returncode}, Error: {process.stderr}")
-                                raise OSError(f"'sc query' failed: {process.stderr or 'No output'}")
-                      except FileNotFoundError:
-                           self.logger.error("'sc' command not found. Cannot list Windows services.")
-                           raise FileNotFoundError("'sc' command not found.")
-                      except subprocess.TimeoutExpired:
-                           self.logger.error("'sc query' timed out.")
-                           raise TimeoutError("'sc query' timed out.")
-                      except Exception as e:
-                           self.logger.error(f"Failed to list Windows services using 'sc query': {e}", exc_info=True)
-                           raise
-
+                command = ["sc", "query", "type=", "service", "state=", "all", "bufsize=", "65535"]
+                command_used = " ".join(command)
+                # Increase timeout potentialy needed for large service lists
+                timeout = self.config.get("discovery_timeout", 60) * 2 
+                result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=timeout, errors='ignore')
+                
+                if result.returncode == 0:
+                    services = self._parse_sc_query_output(result.stdout)
+                    status = "success"
+                else:
+                    error_message = f"'sc query' failed with code {result.returncode}. Stderr: {result.stderr}"
+                    self.logger.error(error_message)
+            
             elif os_type == "Linux":
-                try:
-                    cmd = ["systemctl", "list-units", "--type=service", "--all", "--no-pager"]
+                # systemd is most common, check if available
+                systemctl_path = "/bin/systemctl" # Or find dynamically?
+                if os.path.exists(systemctl_path):
+                    command = [systemctl_path, "list-units", "--type=service", "--all", "--no-pager"]
+                    command_used = " ".join(command)
                     timeout = self.config.get("discovery_timeout", 60)
-                    process = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
+                    result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=timeout, errors='ignore')
 
-                    if process.returncode == 0 and process.stdout:
-                         lines = process.stdout.strip().splitlines()
-                         if len(lines) > 1:
-                              for line in lines[1:-1]:
-                                   parts = line.strip().split(None, 4)
-                                   if len(parts) >= 4:
-                                        name = parts[0].lstrip('●*').strip()
-                                        load = parts[1]
-                                        active = parts[2]
-                                        sub = parts[3]
-                                        description = parts[4] if len(parts) > 4 else ""
-                                        services.append({
-                                             "name": name,
-                                             "load": load,
-                                             "active": active,
-                                             "sub": sub,
-                                             "description": description,
-                                             "source": "systemctl"
-                                        })
+                    if result.returncode == 0:
+                        services = self._parse_systemctl_output(result.stdout)
+                        status = "success"
                     else:
-                         self.logger.warning(f"'systemctl' command failed or returned no units. Code: {process.returncode}, Error: {process.stderr}")
-                         try:
-                              for service in psutil.service_iter():
-                                   service_info = service.as_dict()
-                                   service_info["source"] = "psutil"
-                                   services.append(service_info)
-                              if not services: raise NotImplementedError
-                         except (AttributeError, NotImplementedError, ImportError):
-                              self.logger.warning("psutil service iteration not available or did not find services. Cannot list Linux services definitively.")
+                        # Check if running as root is needed for --all
+                        if "must be root" in result.stderr.lower():
+                             error_message = f"'systemctl list-units' failed: Requires root privileges for full listing."
+                        else:
+                             error_message = f"'systemctl list-units' failed with code {result.returncode}. Stderr: {result.stderr}"
+                        self.logger.error(error_message)
+                else:
+                     # Fallback or alternative for non-systemd systems (e.g., init.d scripts) - Simple placeholder for now
+                     error_message = "systemctl not found. Service discovery for non-systemd Linux is not fully implemented."
+                     self.logger.warning(error_message)
+                     status = "not_implemented" 
 
-                except FileNotFoundError:
-                    self.logger.error("'systemctl' command not found. Cannot list systemd services.")
-                    try:
-                         for service in psutil.service_iter():
-                              service_info = service.as_dict()
-                              service_info["source"] = "psutil"
-                              services.append(service_info)
-                         if not services: raise NotImplementedError
-                    except (AttributeError, NotImplementedError, ImportError):
-                         self.logger.warning("psutil service iteration not available. Cannot list Linux services.")
-                         raise NotImplementedError("No known method available to list Linux services on this system.")
-                except subprocess.TimeoutExpired:
-                    self.logger.error("'systemctl list-units' timed out.")
-                    raise TimeoutError("'systemctl list-units' timed out.")
-                except Exception as e:
-                    self.logger.error(f"Failed to list Linux services using 'systemctl': {e}", exc_info=True)
-                    try:
-                         for service in psutil.service_iter():
-                              service_info = service.as_dict()
-                              service_info["source"] = "psutil"
-                              services.append(service_info)
-                         if not services: raise NotImplementedError
-                    except (AttributeError, NotImplementedError, ImportError):
-                         self.logger.warning("psutil service iteration not available.")
-                         raise
+            elif os_type == "Darwin": # macOS
+                command = ["/bin/launchctl", "list"]
+                command_used = " ".join(command)
+                timeout = self.config.get("discovery_timeout", 60)
+                result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=timeout, errors='ignore')
 
-            elif os_type == "Darwin":
-                 try:
-                      cmd = ["launchctl", "list"]
-                      timeout = self.config.get("discovery_timeout", 60)
-                      process = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout)
-                      if process.returncode == 0 and process.stdout:
-                           lines = process.stdout.strip().splitlines()
-                           if len(lines) > 1:
-                                for line in lines[1:]:
-                                     parts = line.strip().split(None, 2)
-                                     pid = parts[0] if parts[0] != '-' else None
-                                     status = parts[1] if len(parts) > 1 and parts[1] != '-' else None
-                                     label = parts[2] if len(parts) > 2 else None
-                                     services.append({"pid": pid, "status": status, "label": label, "source": "launchctl"})
-                      else:
-                           self.logger.error(f"'launchctl list' failed or returned empty. Code: {process.returncode}, Error: {process.stderr}")
-                           raise OSError(f"'launchctl list' failed: {process.stderr or 'No output'}")
-                 except FileNotFoundError:
-                      self.logger.error("'launchctl' command not found. Cannot list macOS services.")
-                      raise FileNotFoundError("'launchctl' command not found.")
-                 except subprocess.TimeoutExpired:
-                      self.logger.error("'launchctl list' timed out.")
-                      raise TimeoutError("'launchctl list' timed out.")
-                 except Exception as e:
-                      self.logger.error(f"Failed to list macOS services using 'launchctl': {e}", exc_info=True)
-                      raise
-
+                if result.returncode == 0:
+                    services = self._parse_launchctl_output(result.stdout)
+                    status = "success"
+                else:
+                    error_message = f"'launchctl list' failed with code {result.returncode}. Stderr: {result.stderr}"
+                    self.logger.error(error_message)
+            
             else:
-                raise NotImplementedError(f"Service discovery not implemented for OS type: {os_type}")
+                error_message = f"Unsupported OS for service discovery: {os_type}"
+                self.logger.warning(error_message)
+                status = "not_implemented"
 
-            result = {
-                "status": "success",
-                "technique": "service_discovery",
-                "mitre_technique_id": "T1543.003",
-                "mitre_technique_name": "System Service Discovery",
-                "timestamp": datetime.now().isoformat(),
-                "details": {"services": services, "count": len(services)}
-            }
-            self.logger.info(f"Successfully gathered information for {len(services)} services on {os_type}.")
-            return result
+        except FileNotFoundError as e:
+            error_message = f"Required command not found: {e.filename}. Ensure system utilities are installed and in PATH."
+            self.logger.error(error_message)
+            status = "error_command_not_found"
+        except subprocess.TimeoutExpired:
+            error_message = f"Command '{command_used}' timed out after {timeout} seconds."
+            self.logger.error(error_message)
+            status = "error_timeout"
+            except Exception as e:
+            error_message = f"An unexpected error occurred during service discovery: {e}"
+            self.logger.error(error_message, exc_info=True)
+            status = "error_exception"
 
-        except (NotImplementedError, FileNotFoundError, TimeoutError, OSError) as specific_error:
-             self.logger.error(f"Service discovery failed: {specific_error}")
-             raise
-        except Exception as e:
-            self.logger.error(f"Error gathering service info: {str(e)}", exc_info=True)
-            raise
+        self.logger.info(f"Service discovery finished with status: {status}. Found {len(services)} services.")
+        return {"status": status, "services": services, "count": len(services), "command_used": command_used, "error": error_message}
+
+    def _parse_sc_query_output(self, output: str) -> List[Dict[str, Any]]:
+        """Parse the output of 'sc query type= service state= all'"""
+        services = []
+        # Regex might be more robust, but string splitting is simpler for now
+        current_service = {}
+        for line in output.splitlines():
+            line = line.strip()
+            if line.startswith("SERVICE_NAME:"):
+                if current_service: # Save previous service before starting new one
+                     services.append(current_service)
+                current_service = {"name": line.split(":", 1)[1].strip()}
+            elif line.startswith("DISPLAY_NAME:"):
+                current_service["display_name"] = line.split(":", 1)[1].strip()
+            elif line.startswith("STATE"): # Format: STATE              : 4  RUNNING
+                parts = line.split(":", 1)[1].strip().split()
+                if len(parts) >= 2:
+                     current_service["state_code"] = parts[0]
+                     current_service["state"] = parts[1]
+            elif line.startswith("PID"): # Format: PID                : 1234
+                parts = line.split(":", 1)[1].strip()
+                if parts.isdigit():
+                     current_service["pid"] = int(parts)
+            # Add other fields if needed (e.g., TYPE, WIN32_EXIT_CODE)
         
+        if current_service: # Add the last service found
+            services.append(current_service)
+            
+        return services
+
+    def _parse_systemctl_output(self, output: str) -> List[Dict[str, Any]]:
+        """Parse the output of 'systemctl list-units --type=service --all'"""
+        services = []
+        lines = output.splitlines()
+        # Skip header line and potential footer lines
+        for line in lines[1:]:
+            line = line.strip()
+            if not line or line.startswith("LOAD   ACTIVE SUB") or "loaded units listed" in line:
+                continue
+            # Basic parsing, assumes consistent column width which might break
+            # Example: networkd-dispatcher.service loaded active running Network Manager Script Dispatcher Service
+            parts = line.split(None, 4) 
+            if len(parts) >= 4: # Need at least unit, load, active, sub
+                service = {
+                    "name": parts[0].replace("●", "").strip(), # Remove bullet point if present
+                    "load": parts[1],
+                    "active": parts[2],
+                    "sub_state": parts[3],
+                    "description": parts[4] if len(parts) > 4 else ""
+                }
+                # Determine a simplified overall state
+                if service["active"] == "active":
+                     service["state"] = "running"
+                elif service["active"] == "inactive":
+                     service["state"] = "stopped"
+                elif service["active"] == "failed":
+                     service["state"] = "failed"
+                else:
+                     service["state"] = service["active"] # e.g., activating, deactivating
+                     
+                services.append(service)
+        return services
+        
+    def _parse_launchctl_output(self, output: str) -> List[Dict[str, Any]]:
+        """Parse the output of 'launchctl list'"""
+        services = []
+        lines = output.splitlines()
+        # Skip header line
+        if lines and lines[0].strip().startswith("PID"): # Basic header check
+             lines = lines[1:]
+             
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # Format: PID Status Label
+            parts = line.split(None, 2)
+            if len(parts) == 3:
+                pid_str, status_str, label = parts
+                service = {"name": label, "status_code": status_str}
+                # Try to interpret PID and status
+                if pid_str != "-" and pid_str.isdigit():
+                    service["pid"] = int(pid_str)
+                    service["state"] = "running"
+                else:
+                    service["pid"] = None
+                    # Status code might be an exit code or signal
+                    service["state"] = "stopped" # Simplification
+                services.append(service)
+            # Handle potential lines with only label?
+            elif len(parts) == 1:
+                 services.append({"name": parts[0], "pid": None, "status_code": None, "state": "unknown"})
+                 
+        return services
+
+    def _handle_network_config(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Gathers network interface configuration (IP addresses, MAC, etc.)."""
+        self.logger.info("Starting network configuration discovery.")
+        interfaces = {}
+        try:
+            # Get all network interfaces and their addresses
+            all_interfaces = psutil.net_if_addrs()
+            stats = psutil.net_if_stats() # Get operational status (isup), speed, mtu
+
+            for name, addrs in all_interfaces.items():
+                interfaces[name] = {
+                    "addresses": [],
+                    "stats": stats.get(name, None) # Add stats if available
+                }
+                if interfaces[name]["stats"]: # Convert named tuple to dict for JSON serialization
+                   interfaces[name]["stats"] = interfaces[name]["stats"]._asdict()
+
+                for addr in addrs:
+                    addr_info = {
+                        "family": addr.family.name, # AF_INET (IPv4), AF_INET6 (IPv6), AF_LINK (MAC)
+                        "address": addr.address,
+                        "netmask": addr.netmask,
+                        "broadcast": addr.broadcast,
+                        # ptp is for point-to-point interfaces
+                        "ptp": addr.ptp if hasattr(addr, 'ptp') else None 
+                    }
+                    interfaces[name]["addresses"].append(addr_info)
+            
+            self.logger.info(f"Gathered configuration for {len(interfaces)} network interfaces.")
+            return {"status": "success", "data": interfaces}
+        except Exception as e:
+            self.logger.error(f"Error gathering network configuration: {e}", exc_info=True)
+            return {"status": "failure", "error": str(e), "data": {}} # Return empty data on error
+
     def _handle_host_discovery(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Perform host discovery (e.g., ping scan) using Nmap."""
         if not self.scanner:
@@ -729,275 +741,231 @@ class Discovery:
             self.logger.error(f"Error during port/service scan: {str(e)}", exc_info=True)
             raise
             
-    def _handle_user_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Gather user account information (OS-dependent)."""
-        self.logger.info("Gathering user information.")
-        details = {"users": [], "current_user": {}}
-        os_type = platform.system()
+    def _handle_user_info(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Gathers information about local user accounts."""
+        self.logger.info("Starting user information discovery.")
+        users = []
+        errors = []
+        status = "success"
         
+        # Method 1: psutil.users() (cross-platform)
         try:
-            # Current user always useful
-            try:
-                details["current_user"]["login_name"] = os.getlogin()
-            except OSError:
-                self.logger.warning("Could not get login name via os.getlogin().")
-                details["current_user"]["login_name"] = "Unavailable"
-            
-            if os_type == "Windows":
-                # Get current user details more reliably
-                ret, out, err = self._run_command(["whoami", "/all"])
-                if ret == 0:
-                    details["current_user"]["whoami_all"] = out # Rich info, needs parsing if specific fields wanted
-                else: 
-                    self.logger.warning(f"'whoami /all' failed: {err}")
-                    ret_simple, out_simple, _ = self._run_command(["whoami"])
-                    if ret_simple == 0: details["current_user"]["username"] = out_simple.strip()
-
-                # List all local users
-                ret, out, err = self._run_command(["net", "user"])
-                if ret == 0:
-                    # Basic parsing of `net user` output
-                    lines = out.splitlines()
-                    user_lines = []
-                    in_users_section = False
-                    for line in lines:
-                         if line.startswith("User accounts for"): continue
-                         if line.startswith("-----"): 
-                              in_users_section = True
-                              continue
-                         if line.startswith("The command completed successfully"): 
-                              in_users_section = False
-                              continue
-                         if in_users_section and line.strip():
-                              user_lines.extend(line.split()) # Handles multiple users per line
-                    details["users"] = [{"username": user, "source": "net user"} for user in user_lines]
-                else:
-                    self.logger.warning(f"'net user' command failed: {err}")
-                    details["users_error"] = f"'net user' failed: {err}"
-            
-            elif os_type in ["Linux", "Darwin"]:
-                # Current user via id
-                ret, out, err = self._run_command(["id"])
-                if ret == 0: details["current_user"]["id_output"] = out.strip()
-                else: self.logger.warning(f"'id' command failed: {err}")
-
-                # List all users from passwd
-                try:
-                    pwd_users = pwd.getpwall()
-                    details["users"] = [
-                        {
-                            "username": user.pw_name,
-                            "uid": user.pw_uid,
-                            "gid": user.pw_gid,
-                            "gecos": user.pw_gecos, # Full name / comments
-                            "home_dir": user.pw_dir,
-                            "shell": user.pw_shell,
-                            "source": "pwd.getpwall"
-                        } for user in pwd_users
-                    ]
-                except Exception as e:
-                    self.logger.error(f"Failed to list users using pwd module: {e}", exc_info=True)
-                    details["users_error"] = f"Failed using pwd module: {e}"
-                    # Fallback attempt: parsing /etc/passwd?
-
-            else:
-                raise NotImplementedError(f"User discovery not implemented for OS type: {os_type}")
-
-            result = {
-                "status": "success",
-                "technique": "user_discovery",
-                "mitre_technique_id": "T1087.001", # Account Discovery: Local Account
-                "mitre_technique_name": "Account Discovery: Local Account",
-                "timestamp": datetime.now().isoformat(),
-                "details": details
-            }
-            self.logger.info(f"Successfully gathered user information for {os_type}.")
-            return result
-
-        except (NotImplementedError, FileNotFoundError, TimeoutError, OSError) as specific_error:
-             self.logger.error(f"User discovery failed: {specific_error}")
-             raise
+            psutil_users = psutil.users()
+            for u in psutil_users:
+                users.append(u._asdict()) # Convert named tuple to dict
+            self.logger.info(f"Gathered {len(psutil_users)} user sessions using psutil.")
         except Exception as e:
-            self.logger.error(f"Error gathering user info: {str(e)}", exc_info=True)
-            raise
-
-    def _handle_group_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Gather group information (OS-dependent)."""
-        self.logger.info("Gathering group information.")
-        details = {"groups": [], "current_user_groups": []}
-        os_type = platform.system()
-
-        try:
-            if os_type == "Windows":
-                # Get current user's groups
-                ret, out, err = self._run_command(["whoami", "/groups"])
-                if ret == 0:
-                    details["current_user_groups"] = out.strip() # Needs parsing for specific groups
-                else:
-                    self.logger.warning(f"'whoami /groups' failed: {err}")
-
-                # List local groups
-                ret, out, err = self._run_command(["net", "localgroup"])
-                if ret == 0:
-                    # Basic parsing of `net localgroup` output
-                    lines = out.splitlines()
-                    group_lines = []
-                    in_groups_section = False
-                    for line in lines:
-                         if line.startswith("Aliases for"): continue
-                         if line.startswith("-----"): 
-                              in_groups_section = True
-                              continue
-                         if line.startswith("The command completed successfully"): 
-                              in_groups_section = False
-                              continue
-                         if in_groups_section and line.strip():
-                              # Group names might have spaces
-                              if line.startswith("*"): # Group names start with *
-                                   group_lines.append(line[1:].strip())
-                    details["groups"] = [{"groupname": group, "source": "net localgroup"} for group in group_lines]
-                else:
-                    self.logger.warning(f"'net localgroup' command failed: {err}")
-                    details["groups_error"] = f"'net localgroup' failed: {err}"
+            self.logger.warning(f"psutil.users() failed: {e}", exc_info=True)
+            errors.append(f"psutil.users() failed: {str(e)}")
+            status = "partial"
             
-            elif os_type in ["Linux", "Darwin"]:
-                # Current user's groups via id
-                ret, out, err = self._run_command(["id"])
-                if ret == 0:
-                    # Parse `id` output for groups
-                    id_output = out.strip()
-                    details["current_user_groups"] = id_output # Keep raw for now, parsing is complex
-                    # Example parsing (can be brittle):
+        # Method 2: OS-specific commands via Execution module (if available)
+        command_output = None
+        if platform.system() == "Windows":
+            # Consider 'net user' but parsing is complex. Maybe 'wmic useraccount get name,sid'?
+            # For simplicity, psutil is often sufficient for logged-in users.
+            self.logger.info("Windows user enumeration relies primarily on psutil; 'net user' requires parsing.")
+        elif platform.system() == "Linux":
+            # 'getent passwd' usually gives a comprehensive list
+            cmd_result = self._execute_command("getent passwd")
+            if cmd_result.get("status") == "success":
+                command_output = cmd_result.get("output", "")
+                # Basic parsing - assumes standard /etc/passwd format
+                parsed_users = []
+                for line in command_output.strip().splitlines():
                     try:
-                         groups_part = id_output.split("groups=")[1]
-                         groups_raw = groups_part.split() # Split on space
-                         parsed_groups = []
-                         for g in groups_raw:
-                              gid_str, name_part = g.split("(", 1)
-                              name = name_part.rstrip(')')
-                              parsed_groups.append({"gid": int(gid_str), "name": name})
-                         details["current_user_groups_parsed"] = parsed_groups
+                        parts = line.split(":")
+                        if len(parts) >= 7:
+                            parsed_users.append({
+                                "username": parts[0],
+                                "uid": int(parts[2]),
+                                "gid": int(parts[3]),
+                                "gecos": parts[4],
+                                "home": parts[5],
+                                "shell": parts[6]
+                            })
                     except Exception as parse_err:
-                         self.logger.warning(f"Could not parse groups from 'id' output: {parse_err}")
-                else:
-                    self.logger.warning(f"'id' command failed: {err}")
-
-                # List all groups from grp module
-                try:
-                    all_groups = grp.getgrall()
-                    details["groups"] = [
-                        {
-                            "groupname": group.gr_name,
-                            "gid": group.gr_gid,
-                            "members": group.gr_mem,
-                            "source": "grp.getgrall"
-                        } for group in all_groups
-                    ]
-                except Exception as e:
-                    self.logger.error(f"Failed to list groups using grp module: {e}", exc_info=True)
-                    details["groups_error"] = f"Failed using grp module: {e}"
-                    # Fallback attempt: parsing /etc/group?
+                         self.logger.warning(f"Failed to parse passwd line '{line}': {parse_err}")
+                self.logger.info(f"Parsed {len(parsed_users)} users from 'getent passwd'. Merging with psutil data.")
+                # Simple merge/add strategy (could be improved with better matching)
+                existing_usernames = {u['name'] for u in users}
+                for pu in parsed_users:
+                     if pu['username'] not in existing_usernames:
+                         users.append({"name": pu['username'], "uid": pu['uid'], "gid": pu['gid'], "home": pu['home'], "shell": pu['shell'], "source": "getent_passwd"})
             else:
-                raise NotImplementedError(f"Group discovery not implemented for OS type: {os_type}")
+                err_msg = f"'getent passwd' command failed: {cmd_result.get('error', 'Unknown error')}"
+                self.logger.warning(err_msg)
+                errors.append(err_msg)
+                status = "partial"
+        else: # macOS or other Unix
+            self.logger.info(f"User enumeration for {platform.system()} relies on psutil.")
+            # Could add 'dscl . -list /Users' for macOS if needed
 
-            result = {
-                "status": "success",
-                "technique": "group_discovery",
-                "mitre_technique_id": "T1069.001", # Permission Groups Discovery: Local Groups
-                "mitre_technique_name": "Permission Groups Discovery: Local Groups",
-                "timestamp": datetime.now().isoformat(),
-                "details": details
-            }
-            self.logger.info(f"Successfully gathered group information for {os_type}.")
-            return result
+        return {"status": status, "error": "; ".join(errors) if errors else None, "data": users}
 
-        except (NotImplementedError, FileNotFoundError, TimeoutError, OSError) as specific_error:
-             self.logger.error(f"Group discovery failed: {specific_error}")
-             raise
-        except Exception as e:
-            self.logger.error(f"Error gathering group info: {str(e)}", exc_info=True)
-            raise
+    def _handle_group_info(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Gathers information about local groups."""
+        self.logger.info("Starting group information discovery.")
+        groups = []
+        errors = []
+        status = "success"
 
-    def _handle_privilege_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Gather current user privilege information (OS-dependent)."""
-        self.logger.info("Gathering privilege information for current user.")
-        details = {}
-        os_type = platform.system()
+        if platform.system() == "Windows":
+            # Use 'net localgroup' command
+            cmd_result = self._execute_command("net localgroup")
+            if cmd_result.get("status") == "success":
+                output = cmd_result.get("output", "")
+                # Basic parsing (can be fragile)
+                try:
+                    lines = output.splitlines()
+                    start_index = -1
+                    end_index = -1
+                    for i, line in enumerate(lines):
+                        if line.startswith("---"):
+                            if start_index == -1: start_index = i + 1
+                            else: end_index = i; break
+                    if start_index != -1 and end_index != -1:
+                        for line in lines[start_index:end_index]:
+                            group_name = line.strip().lstrip('*')
+                            if group_name:
+                                groups.append({"name": group_name, "source": "net_localgroup"})
+                    self.logger.info(f"Parsed {len(groups)} groups from 'net localgroup'.")
+                except Exception as parse_err:
+                    err_msg = f"Failed to parse 'net localgroup' output: {parse_err}"
+                    self.logger.error(err_msg, exc_info=True)
+                    errors.append(err_msg)
+                    status = "partial"
+            else:
+                err_msg = f"'net localgroup' command failed: {cmd_result.get('error', 'Unknown error')}"
+                self.logger.warning(err_msg)
+                errors.append(err_msg)
+                status = "partial"
 
+        elif platform.system() == "Linux":
+            # Use 'getent group' command
+            cmd_result = self._execute_command("getent group")
+            if cmd_result.get("status") == "success":
+                output = cmd_result.get("output", "")
+                try:
+                    for line in output.strip().splitlines():
+                        parts = line.split(":")
+                        if len(parts) >= 4:
+                             groups.append({
+                                 "name": parts[0],
+                                 "gid": int(parts[2]),
+                                 "members": parts[3].split(',') if parts[3] else [],
+                                 "source": "getent_group"
+                             })
+                    self.logger.info(f"Parsed {len(groups)} groups from 'getent group'.")
+                except Exception as parse_err:
+                    err_msg = f"Failed to parse 'getent group' output: {parse_err}"
+                    self.logger.error(err_msg, exc_info=True)
+                    errors.append(err_msg)
+                    status = "partial"
+            else:
+                err_msg = f"'getent group' command failed: {cmd_result.get('error', 'Unknown error')}"
+                self.logger.warning(err_msg)
+                errors.append(err_msg)
+                status = "partial"
+        else: # macOS or other Unix
+            # Could use 'dscl . -list /Groups' on macOS
+            self.logger.warning(f"Group discovery not implemented for {platform.system()} using commands.")
+            status = "not_implemented"
+            errors.append(f"Group discovery via command not implemented for {platform.system()}")
+            # Optionally use grp module (may not list all system groups)
+            try:
+                 for g in grp.getgrall():
+                      groups.append({"name": g.gr_name, "gid": g.gr_gid, "members": g.gr_mem, "source": "grp_module"})
+                 self.logger.info(f"Found {len(groups)} groups using grp module as fallback.")
+                 if status == "not_implemented": status = "partial" # If command failed but this worked
+            except Exception as grp_err:
+                 self.logger.warning(f"Failed to list groups using grp module: {grp_err}")
+                 if not groups: # Only add error if we have no groups at all
+                      errors.append(f"grp module failed: {grp_err}")
+
+        return {"status": status, "error": "; ".join(errors) if errors else None, "data": groups}
+
+    def _handle_privilege_info(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Gathers information about the current user's privileges."""
+        self.logger.info("Starting privilege information discovery.")
+        privileges = {"is_admin": None, "details": None}
+        errors = []
+        status = "success"
+        
+        # Get current user
+        current_user = "Unknown"
         try:
-            if os_type == "Windows":
-                ret, out, err = self._run_command(["whoami", "/priv"])
-                if ret == 0:
-                    details["privileges"] = []
-                    # Parse `whoami /priv` output
-                    lines = out.splitlines()
-                    if len(lines) > 2: # Header lines
-                        for line in lines[2:]:
-                            parts = line.split(None, 2) # Split on whitespace, max 2 splits
-                            if len(parts) == 3:
-                                details["privileges"].append({"name": parts[0], "description": parts[1], "state": parts[2]})
-                            elif len(parts) > 0 and parts[0]: # Handle cases with only name maybe?
-                                details["privileges"].append({"name": parts[0], "description": "", "state": ""})
-                else:
-                    self.logger.warning(f"'whoami /priv' command failed: {err}")
-                    details["privileges_error"] = f"'whoami /priv' failed: {err}"
+            current_user = os.getlogin()
+        except OSError:
+             try:
+                 current_user = pwd.getpwuid(os.getuid()).pw_name if hasattr(os, 'getuid') else 'N/A'
+             except Exception:
+                 current_user = 'N/A'
+        privileges["current_user"] = current_user
 
-                # Check for admin privileges (simple check)
-                try:
-                    # Requires pywin32 usually, or ctypes - keep it simple with command
-                    ret_admin, _, err_admin = self._run_command(["net", "session"], check_error=False) # Fails if not admin
-                    details["is_admin"] = (ret_admin == 0)
-                    if ret_admin != 0 and ret_admin != 2: # 0 = success, 2 = access denied (expected for non-admin) 
-                        self.logger.warning(f"'net session' command returned unexpected code {ret_admin}: {err_admin}")
-                except FileNotFoundError:
-                     details["is_admin"] = "Unknown ('net' command not found)"
-                except Exception as admin_e:
-                     self.logger.warning(f"Error checking admin status via 'net session': {admin_e}")
-                     details["is_admin"] = "Unknown (Error during check)"
+        # Platform-specific privilege checks
+        if platform.system() == "Windows":
+            # Check admin status using ctypes
+            try:
+                privileges["is_admin"] = ctypes.windll.shell32.IsUserAnAdmin() != 0
+                self.logger.info(f"Windows admin check (IsUserAnAdmin): {privileges['is_admin']}")
+            except AttributeError:
+                err_msg = "Failed to call IsUserAnAdmin (shell32.dll not found or inaccessible?)"
+                self.logger.warning(err_msg)
+                errors.append(err_msg)
+                status = "partial"
+                privileges["is_admin"] = None # Unknown status
+            except Exception as e:
+                 err_msg = f"Error checking admin status with ctypes: {e}"
+                 self.logger.error(err_msg, exc_info=True)
+                 errors.append(err_msg)
+                 status = "partial"
+                 privileges["is_admin"] = None
 
-            elif os_type in ["Linux", "Darwin"]:
-                # Check UID
-                uid = os.geteuid()
-                details["uid"] = uid
-                details["is_root"] = (uid == 0)
-
-                # Check sudo privileges
-                if not details["is_root"]:
-                    # Use -n to avoid password prompt, -l to list privileges
-                    ret, out, err = self._run_command(["sudo", "-n", "-l"], check_error=False)
-                    if ret == 0: # Sudo access without password, or listing allowed
-                        details["sudo_privileges"] = out.strip()
-                        details["sudo_status"] = "Passwordless or listing allowed"
-                    elif ret == 1 and "password is required" in (err or "").lower():
-                         details["sudo_status"] = "Password required (cannot list without prompt)"
-                    elif ret == 1 and "may not run sudo" in (err or "").lower():
-                         details["sudo_status"] = "Not allowed"
-                    else:
-                         self.logger.warning(f"'sudo -n -l' returned unexpected code {ret}: {err}")
-                         details["sudo_status"] = f"Unknown (Code: {ret}, Error: {err})"
-                else:
-                    details["sudo_status"] = "User is root"
+            # Get detailed privileges using 'whoami /priv'
+            cmd_result = self._execute_command("whoami /priv")
+            if cmd_result.get("status") == "success":
+                privileges["details"] = cmd_result.get("output", "")
+                self.logger.info("Successfully retrieved privilege details using 'whoami /priv'.")
             else:
-                raise NotImplementedError(f"Privilege discovery not implemented for OS type: {os_type}")
+                err_msg = f"'whoami /priv' command failed: {cmd_result.get('error', 'Unknown error')}"
+                self.logger.warning(err_msg)
+                errors.append(err_msg)
+                status = "partial"
 
-            result = {
-                "status": "success",
-                "technique": "privilege_discovery",
-                # No single perfect MITRE ID, relates to T1087, T1069, T1548
-                "mitre_technique_id": "T1087/T1069/T1548", 
-                "mitre_technique_name": "Privilege/Account/Group Discovery", 
-                "timestamp": datetime.now().isoformat(),
-                "details": details
-            }
-            self.logger.info(f"Successfully gathered privilege information for {os_type}.")
-            return result
+        elif hasattr(os, 'geteuid'): # Linux, macOS, other Unix
+            # Check if effective UID is 0 (root)
+            try:
+                 privileges["is_admin"] = (os.geteuid() == 0)
+                 self.logger.info(f"Unix admin check (eUID==0): {privileges['is_admin']}")
+            except Exception as e:
+                 err_msg = f"Error checking eUID: {e}"
+                 self.logger.error(err_msg, exc_info=True)
+                 errors.append(err_msg)
+                 status = "partial"
+                 privileges["is_admin"] = None
+            
+            # Get user/group IDs using 'id'
+            cmd_result = self._execute_command("id")
+            if cmd_result.get("status") == "success":
+                privileges["details"] = cmd_result.get("output", "")
+                self.logger.info("Successfully retrieved user/group details using 'id'.")
+            else:
+                err_msg = f"'id' command failed: {cmd_result.get('error', 'Unknown error')}"
+                self.logger.warning(err_msg)
+                errors.append(err_msg)
+                status = "partial"
+            
+            # Additionally, check sudo privileges if possible (complex to parse reliably)
+            # cmd_result_sudo = self._execute_command("sudo -ln") # Non-interactive list
+            # Add parsing logic if needed
 
-        except (NotImplementedError, FileNotFoundError, TimeoutError, OSError) as specific_error:
-             self.logger.error(f"Privilege discovery failed: {specific_error}")
-             raise
-        except Exception as e:
-            self.logger.error(f"Error gathering privilege info: {str(e)}", exc_info=True)
-            raise
+        else:
+             self.logger.warning("Privilege discovery not fully implemented for this platform.")
+             status = "not_implemented"
+             errors.append("Unsupported platform for privilege check")
+
+        return {"status": status, "error": "; ".join(errors) if errors else None, "data": privileges}
 
     def _run_command(self, cmd: list[str], check_error: bool = False) -> tuple[int, str, str]:
         """Helper to run subprocess commands with timeout and error handling."""

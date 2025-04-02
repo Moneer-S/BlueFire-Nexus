@@ -79,6 +79,13 @@ class Persistence:
 
         # Define supported techniques based on the loaded handler
         self.supported_techniques = list(self.os_handler.handler_map.keys()) if self.os_handler else []
+        # Add general simulation techniques here
+        self.general_sim_techniques = {
+            "boot_logon_autostart_sim": self._handle_boot_logon_autostart_sim
+        }
+        self.supported_techniques.extend(self.general_sim_techniques.keys())
+        self.supported_techniques = sorted(list(set(self.supported_techniques))) # Ensure unique and sorted
+
         logger.info(f"Supported persistence techniques on {self.os_type}: {self.supported_techniques}")
 
     def update_config(self, config: Dict[str, Any]):
@@ -110,19 +117,73 @@ class Persistence:
             logger.error(f"Persistence handler not available for OS: {self.os_type}")
             return {"status": "failure", "technique": technique, "reason": f"Persistence not supported on {self.os_type}"}
 
-        if technique not in self.os_handler.handler_map:
-             logger.warning(f"Technique '{technique}' is not supported by the {self.os_type} handler.")
+        # Check OS-specific handlers first
+        if technique in self.os_handler.handler_map:
+            logger.info(f"Attempting OS-specific persistence via '{technique}' on {self.os_type}")
+            try:
+                result = self.os_handler.establish(technique, details)
+                return result
+            except Exception as e:
+                logger.error(f"OS-specific handler error for '{technique}': {e}", exc_info=True)
+                return {"status": "failure", "technique": technique, "reason": f"Internal OS handler error: {str(e)}"}
+        # Check general simulation handlers
+        elif technique in self.general_sim_techniques:
+            logger.info(f"Attempting general simulation persistence via '{technique}'")
+            try:
+                handler = self.general_sim_techniques[technique]
+                result = handler(details) # Pass details directly
+                return result
+            except Exception as e:
+                 logger.error(f"General simulation handler error for '{technique}': {e}", exc_info=True)
+                 return {"status": "failure", "technique": technique, "reason": f"Internal simulation handler error: {str(e)}"}
+        else:
+             logger.warning(f"Technique '{technique}' is not supported by the {self.os_type} handler or general simulations.")
              return {"status": "failure", "technique": technique, "reason": f"Technique '{technique}' not supported on {self.os_type}"}
 
-        logger.info(f"Attempting to establish persistence via '{technique}' on {self.os_type}")
-        try:
-            # Delegate to the OS-specific handler's establish method or directly call the mapped handler
-            # Using a dedicated establish method in the OS handler class is cleaner
-            result = self.os_handler.establish(technique, details)
-            return result
-        except Exception as e:
-            logger.error(f"Unexpected error during persistence establishment for '{technique}': {e}", exc_info=True)
-            return {"status": "failure", "technique": technique, "reason": f"Internal error: {str(e)}"}
+    def _handle_boot_logon_autostart_sim(self, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Simulates various boot/logon autostart persistence methods."""
+        command = details.get("command")
+        payload_path = details.get("payload_path") # Path to payload if command runs a file
+        method_type = details.get("method_type", "unknown") # e.g., registry, startup_folder, plist, cron_reboot, systemd
+        scope = details.get("scope", "user") # user | system
+        name = details.get("name", "BlueFireAutostart") # Name for registry key, filename, service name etc.
+
+        mitre_id = "T1547"
+        mitre_name = "Boot or Logon Autostart Execution"
+
+        if not command and not payload_path:
+             return {"status": "error", "technique": "boot_logon_autostart_sim", "reason": "Missing 'command' or 'payload_path' detail.", "mitre_id": mitre_id}
+        
+        status = "success"
+        reason = f"Simulation: Logged intent to establish {scope}-level persistence via {method_type}."
+        
+        log_msg = f"Simulating Boot/Logon Autostart Persistence:"
+        log_msg += f"\n  Method Type: {method_type}"
+        log_msg += f"\n  Scope: {scope}"
+        log_msg += f"\n  Name/Identifier: {name}"
+        if command: log_msg += f"\n  Command: {command}"
+        if payload_path: log_msg += f"\n  Payload Path: {payload_path}"
+        logger.info(log_msg)
+        
+        # In a real implementation, this would delegate to OS-specific code
+        # based on method_type (e.g., call _handle_registry_run_key, _handle_startup_folder, etc.)
+
+        return {
+            "status": status,
+            "technique": "boot_logon_autostart_sim",
+            "mitre_technique_id": mitre_id,
+            "mitre_technique_name": mitre_name,
+            "timestamp": datetime.now().isoformat(),
+            "details": {
+                 "method_type": method_type,
+                 "scope": scope,
+                 "name": name,
+                 "command_simulated": command,
+                 "payload_path_simulated": payload_path,
+                 "message": reason
+            },
+            "reason": None # Success is just logging
+        }
 
     def _handle_not_implemented(self, details: Dict[str, Any], technique_name: str) -> Dict[str, Any]:
         """Placeholder for techniques not yet implemented."""

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import json
 from aioquic.asyncio import serve
 from aioquic.quic.configuration import QuicConfiguration
 
@@ -33,13 +34,42 @@ class QUICC2:
                 self.logger.error(f"Error executing command: {e}")
                 break
     
-    async def _execute_command(self, command: str):
+    async def _execute_command(self, command_str: str):
         """
-        Placeholder for actual command parsing and execution logic.
+        Parses and handles commands received over QUIC. (Skeleton)
+        Expects JSON format like: {'action': 'run', 'command': '...'}
         """
-        self.logger.info(f"Received command: {command}")
-        # Add logic to parse and handle commands here.
+        self.logger.info(f"Received potential command string: {command_str}")
+        try:
+            command_data = json.loads(command_str)
+            action = command_data.get("action")
+            
+            if action == "run":
+                command_to_run = command_data.get("command")
+                if command_to_run:
+                    self.logger.info(f"Parsed 'run' action. Command: {command_to_run}")
+                    # --- Placeholder for actual execution logic --- 
+                    # Here you would typically call the Execution module
+                    # e.g., result = self.execution_module.execute({'execute': {'command': {'cmd': command_to_run}}})
+                    # await self.writer.write(json.dumps(result).encode())
+                    self.logger.warning("Command execution logic within QUIC handler is not implemented.")
+                    # Send dummy ack
+                    # await self.writer.write(b'{\"status\": \"received\"}\n')
+                else:
+                    self.logger.warning("Received 'run' action without a 'command' field.")
+            # Add other actions (e.g., 'upload', 'download', 'exit') later
+            else:
+                self.logger.warning(f"Received unknown action: {action}")
+                
+        except json.JSONDecodeError:
+            self.logger.error(f"Received non-JSON command: {command_str}")
+        except Exception as e:
+            self.logger.error(f"Error processing command '{command_str}': {e}", exc_info=True)
     
+    # Reference to execution module needed for actual command running
+    # def set_execution_module(self, execution_module):
+    #     self.execution_module = execution_module
+
     async def start_server(self):
         """
         Starts the QUIC server on localhost:4433. Replace with appropriate

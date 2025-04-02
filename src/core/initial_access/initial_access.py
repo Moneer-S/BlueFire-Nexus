@@ -1,13 +1,22 @@
 from typing import Dict, Any
 from datetime import datetime
 import random
+import logging
+
 
 class InitialAccess:
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+
     def _handle_phishing(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle phishing"""
+        """Handle phishing - Placeholder Simulation."""
+        # WARNING: This method only simulates the metadata of a phishing attempt.
+        # It does NOT send actual emails or perform network actions.
+        self.logger.info("Executing placeholder phishing simulation.")
         try:
             result = {
-                "status": "success",
+                "status": "not_implemented",
+                "reason": "Phishing simulation logic not implemented.",
                 "technique": "phishing",
                 "timestamp": datetime.now().isoformat(),
                 "details": {}
@@ -87,14 +96,18 @@ class InitialAccess:
             
             return result
         except Exception as e:
-            self._log_error(f"Error in phishing: {str(e)}")
+            self._log_error(f"Error in phishing simulation: {str(e)}")
             return {"status": "error", "message": str(e)}
             
     def _handle_exploitation(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle exploitation"""
+        """Handle exploitation - Placeholder Simulation."""
+        # WARNING: This method only simulates the metadata of an exploitation attempt.
+        # It does NOT interact with target systems or execute exploits.
+        self.logger.info("Executing placeholder exploitation simulation.")
         try:
             result = {
-                "status": "success",
+                "status": "not_implemented",
+                "reason": "Exploitation simulation logic not implemented.",
                 "technique": "exploitation",
                 "timestamp": datetime.now().isoformat(),
                 "details": {}
@@ -174,5 +187,8 @@ class InitialAccess:
             
             return result
         except Exception as e:
-            self._log_error(f"Error in exploitation: {str(e)}")
-            return {"status": "error", "message": str(e)} 
+            self._log_error(f"Error in exploitation simulation: {str(e)}")
+            return {"status": "error", "message": str(e)}
+
+    def _log_error(self, message):
+        self.logger.error(message) 
