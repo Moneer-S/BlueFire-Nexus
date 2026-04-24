@@ -1,5 +1,6 @@
-import os
+import base64
 import hashlib
+import os
 import secrets
 from typing import Optional, Tuple
 from cryptography.fernet import Fernet
@@ -15,6 +16,7 @@ class SecurityManager:
     
     def __init__(self):
         self.key = None
+        self.raw_key = None
         self.fernet = None
         self.aesgcm = None
     
@@ -36,13 +38,16 @@ class SecurityManager:
                 salt=salt,
                 iterations=100000,
             )
-            key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+            raw_key = kdf.derive(password.encode())
+            key = base64.urlsafe_b64encode(raw_key)
         else:
-            key = Fernet.generate_key()
+            raw_key = secrets.token_bytes(32)
+            key = base64.urlsafe_b64encode(raw_key)
         
         self.key = key
+        self.raw_key = raw_key
         self.fernet = Fernet(key)
-        self.aesgcm = AESGCM(key)
+        self.aesgcm = AESGCM(raw_key)
         
         return key
     

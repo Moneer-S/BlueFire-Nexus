@@ -18,7 +18,7 @@ import threading
 import socket # For basic DNS lookup simulation
 import math
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 from datetime import datetime
 import requests
 
@@ -675,7 +675,7 @@ if __name__ == '__main__':
         with open(path1, "w") as f: f.write(content1)
         file_paths_created.append(path1)
         
-        content2 = "{"key": "value", "data": [1, 2, 3]}" * 100 # Small JSON
+        content2 = '{"key": "value", "data": [1, 2, 3]}' * 100 # Small JSON
         path2 = os.path.join(test_dir, "config.json")
         with open(path2, "w") as f: f.write(content2)
         file_paths_created.append(path2)

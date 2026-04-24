@@ -1,35 +1,86 @@
-# config.yaml - Main Configuration for BlueFire-Nexus
+# BlueFire-Nexus runtime configuration (safe defaults)
 general:
-  name: "BlueFire-Nexus" # Example general setting
-  version: "1.0.0"     # Example general setting
-  mode: "simulation"     # Example general setting (simulation, testing, production)
-  log_level: "INFO"      # Overridden by env var if set
+  name: "BlueFire-Nexus"
+  version: "2.0.0"
+  mode: "simulation"
+  log_level: "INFO"
+  dry_run: true
   safeties:
-    auto_wipe: true
-    max_runtime: 14400  # 4 hours
-    allowed_subnets: 
-      - "10.100.0.0/24"
-      # Add other safety nets like allowed target domains/IPs if needed
+    auto_wipe: false
+    max_runtime: 3600
+    allowed_subnets:
+      - "10.0.0.0/24"
 
 modules:
-  # Add configurations for specific modules as needed
-  # Example for command_control, referencing the old network setting
-  command_control: 
-    c2_channels:
-      - protocol: dns
-        domain: "test.internal"
-        encryption_key: "{{ env ENCRYPT_KEY }}" 
-    # Add other module configs here, e.g., defense_evasion, exfiltration...
+  ai:
+    enabled: false
+    provider: "template"
+    model: "default"
+    api_base: ""
+  command_control:
+    enabled: false
+  discovery:
+    enabled: true
+  execution:
+    enabled: true
+    allow_real_execution: false
+    timeout_seconds: 10
+  persistence:
+    enabled: true
+  defense_evasion:
+    enabled: true
+  anti_detection:
+    enabled: true
+  exfiltration:
+    enabled: false
+  intelligence:
+    enabled: true
+  network_obfuscator:
+    enabled: true
+  resource_development:
+    enabled: true
+  reconnaissance:
+    enabled: true
 
-telemetry: # Kept top-level as it seems distinct from 'general'/'modules'
-  enabled: true # Assuming telemetry is enabled if section exists
-  splunk:
-    host: "https://splunk.test.internal"
-    token: "{{ env SPLUNK_TOKEN }}"
-  elastic:
-    hosts: ["https://elastic.test.internal:9200"]
+telemetry:
+  enabled: true
+  default_sink: "jsonl"
+  sinks:
+    - type: "jsonl"
+      enabled: true
+    - type: "opensearch"
+      enabled: false
+      endpoint: "{{ env OPENSEARCH_ENDPOINT }}"
+      headers:
+        Authorization: "Bearer {{ env OPENSEARCH_API_KEY }}"
+      timeout_seconds: 10
+      verify_ssl: true
+    - type: "elasticsearch"
+      enabled: false
+      endpoint: "{{ env ELASTICSEARCH_ENDPOINT }}"
+      headers:
+        Authorization: "ApiKey {{ env ELASTICSEARCH_API_KEY }}"
+      timeout_seconds: 10
+      verify_ssl: true
+    - type: "ngsiem"
+      enabled: false
+      endpoint: "{{ env NGSIEM_HEC_ENDPOINT }}"
+      headers:
+        Authorization: "Bearer {{ env NGSIEM_TOKEN }}"
+      timeout_seconds: 10
+      verify_ssl: true
+    - type: "splunk"
+      enabled: false
+      endpoint: "{{ env SPLUNK_HEC_ENDPOINT }}"
+      headers:
+        Authorization: "Splunk {{ env SPLUNK_TOKEN }}"
+      timeout_seconds: 10
+      verify_ssl: true
 
-# Deprecated top-level keys (moved under general/modules):
-# network: 
-#   c2_channels: ... (moved to modules.command_control)
-# safeties: ... (moved to general.safeties)
+copilot:
+  enabled: false
+  rag:
+    knowledge_paths:
+      - "README.md"
+      - "docs/ARCHITECTURE.md"
+      - "docs"

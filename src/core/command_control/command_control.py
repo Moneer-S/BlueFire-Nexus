@@ -9,6 +9,9 @@ import platform
 import uuid # For generating a unique agent ID
 import string
 import json
+from pathlib import Path
+
+from ..models import ModuleResult
 
 class CommandControl:
     """Handles Command and Control operations, including C2 beaconing."""
@@ -22,7 +25,6 @@ class CommandControl:
             "beacon_timeout_seconds": 30, # Timeout for individual HTTP requests
             "max_beacon_attempts": 3, # Max consecutive failures before stopping beacon thread
             "include_task_results_in_beacon": True,
-            "modules": {"command_control": {"include_task_results_in_beacon": True}}
         }
         self.logger = logging.getLogger(__name__)
         self.beacon_threads: Dict[str, threading.Event] = {} # Store stop events for active beacons
@@ -34,7 +36,9 @@ class CommandControl:
 
     def update_config(self, config: Dict[str, Any]):
         """Update internal config with loaded configuration."""
-        self.config.update(config.get("command_control", {}))
+        module_config = config.get("modules", {}).get("command_control", {})
+        if isinstance(module_config, dict):
+            self.config.update(module_config)
         self.logger.info("CommandControl module configuration updated.")
 
     def run_operation(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -356,6 +360,38 @@ class CommandControl:
                   self.logger.debug(f"Queued result for task {task_id}")
         else:
              self.logger.debug(f"Task results configured to not be sent via beacon. Discarding result for task {task_id}.")
+
+    def execute(self, params: Dict[str, Any], ctx: Dict[str, Any]) -> ModuleResult:
+        """Adapter used by the modular Nexus registry."""
+        operation = params.get("operation")
+        details = params.get("details", {})
+        raw_result = self.run_operation({"operation": operation, "details": details})
+
+        output_dir = Path(ctx["output_dir"]) / "command_control"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        artifact = output_dir / "result.json"
+        artifact.write_text(json.dumps(raw_result, indent=2), encoding="utf-8")
+
+        status = "error" if raw_result.get("status") in {"error", "failure"} else "success"
+        return ModuleResult(
+            module="command_control",
+            status=status,
+            attack_techniques=["T1071.001"],
+            telemetry_events=[
+                {
+                    "module": "command_control",
+                    "operation": operation or "unknown",
+                    "status": raw_result.get("status", "unknown"),
+                }
+            ],
+            artifacts=[str(artifact)],
+            details=raw_result,
+            detection_hints={
+                "network_protocol": "http",
+                "process_image": "python",
+                "command_line_contains": ["beacon", "requests"],
+            },
+        )
 
 # Example Usage (for testing)
 if __name__ == '__main__':

@@ -99,7 +99,9 @@ class DefenseEvasion:
 
     def update_config(self, config: Dict[str, Any]):
         """Update internal config with loaded configuration."""
-        self.config.update(config.get("defense_evasion", {}))
+        module_cfg = config.get("modules", {}).get("defense_evasion", {})
+        if isinstance(module_cfg, dict):
+            self.config.update(module_cfg)
         logger.info("DefenseEvasion module configuration updated.")
 
     def run_evasion(self, data: Dict[str, Any]) -> Dict[str, Any]:

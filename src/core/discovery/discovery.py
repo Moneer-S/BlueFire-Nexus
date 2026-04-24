@@ -169,7 +169,7 @@ class Discovery:
         
     def update_config(self, config: Dict[str, Any]):
         """Update internal config with loaded configuration."""
-        discovery_config = config.get("discovery", {})
+        discovery_config = config.get("modules", {}).get("discovery", {})
         # Merge deeply for nested configs like nmap_path
         for key, value in discovery_config.items():
             if isinstance(value, dict) and isinstance(self.config.get(key), dict):

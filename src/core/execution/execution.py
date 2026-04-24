@@ -54,7 +54,7 @@ class Execution:
 
     def update_config(self, config: Dict[str, Any]):
         """Update general config and delegate to OS handler config."""
-        exec_config = config.get("execution", {})
+        exec_config = config.get("modules", {}).get("execution", {})
         self.config.update(exec_config)
         if self.os_handler and hasattr(self.os_handler, 'update_config'):
              self.os_handler.update_config(exec_config) # Pass relevant part
@@ -121,7 +121,7 @@ class Execution:
     # Convenience method for direct command execution (used by other modules)
     def execute_command(self, command: str, capture_output: bool = True, method: str = "direct") -> Dict[str, Any]:
         """Provides a simple interface for running a command via the OS handler."""
-        self.logger.debug(f"Executing direct command request: '{command}'")
+        logger.debug(f"Executing direct command request: '{command}'")
         if not self.os_handler:
             return {"status": "failure", "reason": f"Execution handler not available for OS: {self.os_type}"}
         

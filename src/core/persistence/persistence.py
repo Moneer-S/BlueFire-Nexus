@@ -83,7 +83,10 @@ class Persistence:
 
     def update_config(self, config: Dict[str, Any]):
         """Update internal config with loaded configuration."""
-        # This method is now empty as the configuration is managed by the OS-specific handlers
+        module_cfg = config.get("modules", {}).get("persistence", {})
+        if self.os_handler and hasattr(self.os_handler, "update_config"):
+            self.os_handler.update_config(module_cfg)
+        logger.info("Persistence module configuration updated.")
 
     def establish_persistence(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
