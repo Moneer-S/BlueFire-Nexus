@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict, Mapping
+from typing import Any, Dict, Mapping
 
 from .models import ModuleResult
 from .risk import score_module_result
@@ -175,3 +175,54 @@ def write_markdown_report(
     lines.append("")
     report_path.write_text("\n".join(line for line in lines if line), encoding="utf-8")
     return report_path
+
+
+def build_risk_summary(results: Dict[str, ModuleResult]) -> Dict[str, Any]:
+    """Build a machine-readable risk summary across module results."""
+    modules: list[Dict[str, Any]] = []
+    totals = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    scores: list[int] = []
+    for module_name, result in results.items():
+        risk = score_module_result(result)
+        severity = str(risk.get("severity", "low")).lower()
+        if severity not in totals:
+            severity = "low"
+        totals[severity] += 1
+        score = int(risk.get("score", 0))
+        scores.append(score)
+        modules.append(
+            {
+                "module": module_name,
+                "module_runtime": result.module,
+                "status": result.status,
+                "score": score,
+                "severity": severity,
+                "pack": risk.get("pack", ""),
+                "capability": risk.get("capability", ""),
+                "mode": risk.get("mode", ""),
+                "runtime_warning": bool(risk.get("runtime_warning", False)),
+                "rationale": list(risk.get("rationale", [])),
+            }
+        )
+    average = (sum(scores) / len(scores)) if scores else 0.0
+    return {
+        "risk_summary": {
+            "critical": totals["critical"],
+            "high": totals["high"],
+            "medium": totals["medium"],
+            "low": totals["low"],
+        },
+        "average_score": round(average, 2),
+        "max_score": max(scores) if scores else 0,
+        "min_score": min(scores) if scores else 0,
+        "module_count": len(modules),
+        "modules": modules,
+    }
+
+
+def write_risk_summary(run_dir: Path, results: Dict[str, ModuleResult]) -> Path:
+    """Write a machine-readable risk summary report to disk."""
+    target = run_dir / "risk_summary.json"
+    summary = build_risk_summary(results)
+    target.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return target

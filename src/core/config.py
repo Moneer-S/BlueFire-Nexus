@@ -8,6 +8,8 @@ from typing import Any, Dict
 import yaml
 from dotenv import load_dotenv
 
+from .legacy_controls import summarize_legacy_controls
+
 LOGGER = logging.getLogger(__name__)
 ENV_TEMPLATE_RE = re.compile(r"\{\{\s*env\s+([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
 
@@ -242,40 +244,7 @@ class ConfigManager:
 
     def legacy_activation_summary(self) -> Dict[str, Any]:
         """Return a concise view of global and granular legacy capability activation."""
-        modules_cfg = self.config.get("modules", {})
-        legacy_cfg = modules_cfg.get("legacy", {})
-        summary: Dict[str, Any] = {
-            "enable_all_lab_capabilities": bool(
-                legacy_cfg.get("enable_all_lab_capabilities", False)
-            ),
-            "global_mode": str(
-                legacy_cfg.get("global_mode", legacy_cfg.get("lab_mode", "simulate"))
-            ).lower(),
-            "active_preset": str(legacy_cfg.get("active_preset", "")).lower(),
-            "global_lab_acknowledged": bool(
-                legacy_cfg.get("global_lab_acknowledged", False)
-                or legacy_cfg.get("lab_confirmation", False)
-                or legacy_cfg.get("lab_acknowledged", False)
-            ),
-            "announce_activation": bool(legacy_cfg.get("announce_activation", True)),
-            "packs": {},
-        }
-
-        for pack_name in ("actor_pack", "c2_pack", "stealth_pack"):
-            pack_cfg = legacy_cfg.get(pack_name, {})
-            capability_cfg = pack_cfg.get("capabilities", {})
-            enabled_capabilities = sorted(
-                name
-                for name, settings in capability_cfg.items()
-                if isinstance(settings, dict) and settings.get("enabled", False)
-            )
-            summary["packs"][pack_name] = {
-                "enabled": bool(pack_cfg.get("enabled", False)),
-                "mode": str(pack_cfg.get("mode", "simulate")),
-                "lab_confirmation": bool(pack_cfg.get("lab_confirmation", False)),
-                "enabled_capabilities": enabled_capabilities,
-            }
-        return summary
+        return summarize_legacy_controls(self.config)
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a value from dot-notation key path."""

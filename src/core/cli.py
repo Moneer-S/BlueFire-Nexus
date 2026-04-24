@@ -15,10 +15,13 @@ from .bluefire_nexus import BlueFireNexus
 from .legacy_controls import (
     CAPABILITY_ALIASES,
     capability_aliases,
+    guided_legacy_profile_catalog,
     legacy_preset_catalog,
     legacy_preset_overrides,
     normalize_capability_name,
     normalize_pack_name,
+    recommend_legacy_preset_for_objective,
+    render_manual_preset_name,
     resolve_legacy_preset_name,
 )
 
@@ -131,6 +134,15 @@ def _apply_legacy_overrides(
                 f"modules.legacy.{normalized_pack}.capabilities."
                 f"{normalized_capability}.lab_confirmation",
                 True,
+            )
+    if normalized_pack and not normalized_capability:
+        active_preset = str(
+            nexus.config_manager.get("modules.legacy.active_preset", "")
+        ).strip()
+        if not active_preset:
+            nexus.config_manager.set(
+                "modules.legacy.active_preset",
+                render_manual_preset_name(normalized_pack),
             )
     nexus.config = nexus.config_manager.to_dict()
     nexus._configure_modules()
@@ -290,6 +302,133 @@ def legacy_presets_cmd() -> None:
         description = str(details.get("description", ""))
         table.add_row(preset, aliases, risk, description)
     console.print(table)
+
+
+@app.command("legacy-guided-presets")
+def legacy_guided_presets_cmd() -> None:
+    """List objective-driven recommendations mapped to legacy presets."""
+    table = Table(title="Legacy guided objective recommendations")
+    table.add_column("Objective")
+    table.add_column("Aliases")
+    table.add_column("Recommended preset")
+    table.add_column("Risk")
+    table.add_column("Notes")
+    for objective, details in guided_legacy_profile_catalog().items():
+        aliases = ", ".join(details.get("aliases", [])) or "-"
+        table.add_row(
+            objective,
+            aliases,
+            str(details.get("recommended_preset", "safe-baseline")),
+            str(details.get("risk", "n/a")),
+            str(details.get("notes", "")),
+        )
+    console.print(table)
+
+
+@app.command("legacy-recommend-preset")
+def legacy_recommend_preset_cmd(
+    objective: str = PRESET_ARG,
+    config: Path = CONFIG_OPTION,
+    apply_recommendation: bool = typer.Option(
+        False,
+        "--apply",
+        help="Apply recommended preset to runtime config for this command invocation",
+    ),
+    save: bool = typer.Option(
+        False,
+        "--save",
+        help="Persist recommended preset to config file (implies --apply)",
+    ),
+) -> None:
+    """Recommend (and optionally apply) the best preset for an objective."""
+    try:
+        recommendation = recommend_legacy_preset_for_objective(objective)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="objective") from exc
+
+    canonical_objective = str(recommendation.get("objective"))
+    recommended_preset = str(recommendation.get("recommended_preset"))
+    aliases = ", ".join(recommendation.get("aliases", [])) or "-"
+    console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    f"Objective: {canonical_objective}",
+                    f"Aliases: {aliases}",
+                    f"Recommended preset: {recommended_preset}",
+                    f"Risk: {recommendation.get('risk', 'n/a')}",
+                    f"Notes: {recommendation.get('notes', '')}",
+                ]
+            ),
+            title="Legacy preset recommendation",
+        )
+    )
+
+    if not apply_recommendation and not save:
+        return
+
+    nexus = BlueFireNexus(str(config))
+    if save:
+        apply_recommendation = True
+    for key, value in legacy_preset_overrides(recommended_preset).items():
+        nexus.config_manager.set(key, value)
+    if save:
+        nexus.config_manager.save()
+    nexus.config = nexus.config_manager.to_dict()
+    nexus._configure_modules()
+    action = "Applied and saved" if save else "Applied"
+    console.print(f"[green]{action} recommended preset[/]: {recommended_preset}")
+    _render_legacy_activation(nexus)
+
+
+@app.command("legacy-risk-ladder")
+def legacy_risk_ladder_cmd() -> None:
+    """Show presets ordered by declared risk level."""
+    rank = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+    presets = legacy_preset_catalog()
+    ordered = sorted(
+        presets.items(),
+        key=lambda entry: (
+            rank.get(str(entry[1].get("risk", "low")).lower(), 99),
+            entry[0],
+        ),
+    )
+    table = Table(title="Legacy preset risk ladder")
+    table.add_column("Risk")
+    table.add_column("Preset")
+    table.add_column("Aliases")
+    table.add_column("Description")
+    for preset, details in ordered:
+        aliases = ", ".join(details.get("aliases", [])) or "-"
+        table.add_row(
+            str(details.get("risk", "n/a")),
+            preset,
+            aliases,
+            str(details.get("description", "")),
+        )
+    console.print(table)
+
+
+@app.command("legacy-operator-guide")
+def legacy_operator_guide_cmd() -> None:
+    """Render quick-start workflow from objective to persistent preset."""
+    lines = [
+        "1) List objective mappings:",
+        "   python -m src.core.cli legacy-guided-presets",
+        "",
+        "2) Get recommendation for an objective:",
+        "   python -m src.core.cli legacy-recommend-preset detection",
+        "",
+        "3) Apply recommendation for one run:",
+        "   python -m src.core.cli legacy-recommend-preset detection --apply",
+        "",
+        "4) Persist recommendation to config:",
+        "   python -m src.core.cli legacy-recommend-preset detection --save --config config.yaml",
+        "",
+        "5) Verify resulting controls:",
+        "   python -m src.core.cli legacy-controls --config config.yaml",
+    ]
+    console.print(Panel.fit("\n".join(lines), title="Legacy operator guide"))
 
 
 @app.command("legacy-apply-preset")

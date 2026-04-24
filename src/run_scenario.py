@@ -20,9 +20,12 @@ from src.core.legacy_controls import (
     legacy_preset_overrides,
     normalize_capability_name,
     normalize_pack_name,
+    recommend_legacy_preset_for_objective,
+    render_manual_preset_name,
     resolve_legacy_preset_name,
     summarize_legacy_controls,
 )
+from src.core.scenario import load_scenario
 
 
 def _normalize_legacy_mode(value: str) -> str:
@@ -101,6 +104,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default="",
         help="Granular capability override within --legacy-pack (aliases accepted)",
     )
+    parser.add_argument(
+        "--legacy-guided",
+        action="store_true",
+        help="Auto-apply recommended preset based on scenario objective before other overrides",
+    )
     return parser
 
 
@@ -109,6 +117,26 @@ def _resolve_scenario_path(profile: str, scenario_file: str) -> str:
         return scenario_file
     candidate = Path("scenarios") / f"{profile}.yaml"
     return str(candidate)
+
+
+def _apply_guided_preset_recommendation(
+    nexus: BlueFireNexus,
+    *,
+    scenario_path: str,
+    apply_recommendation: bool,
+) -> Dict[str, str]:
+    """Apply objective-driven preset recommendation and return recommendation details."""
+    scenario = load_scenario(scenario_path)
+    objective = scenario.objective.strip().lower() or "safe-evaluation"
+    recommendation = recommend_legacy_preset_for_objective(objective)
+    if apply_recommendation:
+        recommended_preset = str(recommendation.get("recommended_preset", "safe-baseline"))
+        for key, value in legacy_preset_overrides(recommended_preset).items():
+            nexus.config_manager.set(key, value)
+    return {
+        "objective": str(recommendation.get("objective", objective)),
+        "recommended_preset": str(recommendation.get("recommended_preset", "safe-baseline")),
+    }
 
 
 def _print_summary(result: Dict[str, Any]) -> None:
@@ -120,6 +148,8 @@ def _print_summary(result: Dict[str, Any]) -> None:
     table.add_row("Scenario", str(result.get("scenario")))
     table.add_row("Output", str(result.get("output_dir")))
     table.add_row("Report", str(result.get("report_path")))
+    if result.get("risk_summary_path"):
+        table.add_row("Risk summary", str(result.get("risk_summary_path")))
     steps = result.get("steps", [])
     table.add_row("Steps", str(len(steps)))
     legacy = result.get("legacy_controls")
@@ -186,6 +216,15 @@ def _apply_legacy_overrides(nexus: BlueFireNexus, args: argparse.Namespace) -> N
                 f"modules.legacy.{pack}.capabilities.{capability}.lab_confirmation",
                 True,
             )
+    if pack and not capability:
+        active_preset = str(
+            nexus.config_manager.get("modules.legacy.active_preset", "")
+        ).strip()
+        if not active_preset:
+            nexus.config_manager.set(
+                "modules.legacy.active_preset",
+                render_manual_preset_name(pack),
+            )
     nexus.config = nexus.config_manager.to_dict()
     nexus._configure_modules()
 
@@ -209,6 +248,21 @@ def main() -> None:
             nexus.config = nexus.config_manager.to_dict()
             nexus._configure_modules()
 
+        scenario_path = _resolve_scenario_path(args.profile, args.scenario_file)
+        if args.legacy_guided:
+            guided_recommendation = _apply_guided_preset_recommendation(
+                nexus,
+                scenario_path=scenario_path,
+                apply_recommendation=True,
+            )
+            nexus.config = nexus.config_manager.to_dict()
+            nexus._configure_modules()
+            Console().print(
+                "[cyan]Applied guided preset recommendation[/]: "
+                f"{guided_recommendation['objective']} -> "
+                f"{guided_recommendation['recommended_preset']}"
+            )
+
         _apply_legacy_overrides(nexus, args)
 
         legacy_summary = summarize_legacy_controls(nexus.config)
@@ -221,7 +275,6 @@ def main() -> None:
                 + json.dumps(legacy_summary, indent=2)
             )
 
-        scenario_path = _resolve_scenario_path(args.profile, args.scenario_file)
         result = nexus.run_scenario_file(scenario_path, run_id=args.run_id or None)
 
         _print_summary(result)

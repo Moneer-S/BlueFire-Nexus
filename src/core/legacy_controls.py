@@ -151,6 +151,49 @@ LEGACY_PRESET_PROFILES: Dict[str, Dict[str, Any]] = {
         },
     },
 }
+LEGACY_GUIDED_PROFILE_ALIASES: Dict[str, str] = {
+    "safe": "safe-evaluation",
+    "baseline": "safe-evaluation",
+    "detect": "detection-regression",
+    "detection": "detection-regression",
+    "regression": "detection-regression",
+    "protocol": "protocol-research",
+    "c2": "protocol-research",
+    "stealth": "stealth-research",
+    "full": "full-lab-emulation",
+    "emulate": "full-lab-emulation",
+    "credential": "detection-regression",
+    "credentials": "detection-regression",
+    "att&ck": "detection-regression",
+    "attack": "detection-regression",
+}
+LEGACY_GUIDED_PROFILES: Dict[str, Dict[str, str]] = {
+    "safe-evaluation": {
+        "recommended_preset": "safe-baseline",
+        "risk": "low",
+        "notes": "No legacy packs are enabled; use for baseline validation and CI checks.",
+    },
+    "detection-regression": {
+        "recommended_preset": "full-simulate",
+        "risk": "medium",
+        "notes": "Enables broad ATT&CK coverage in simulate mode for rule regression testing.",
+    },
+    "protocol-research": {
+        "recommended_preset": "c2-simulate",
+        "risk": "high",
+        "notes": "Focuses on protocol/C2 behaviors without emulate-mode execution.",
+    },
+    "stealth-research": {
+        "recommended_preset": "stealth-simulate",
+        "risk": "high",
+        "notes": "Focuses on stealth behaviors while keeping execution in simulate mode.",
+    },
+    "full-lab-emulation": {
+        "recommended_preset": "full-emulate",
+        "risk": "critical",
+        "notes": "Only for isolated lab environments with explicit operator confirmation.",
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -267,6 +310,87 @@ def legacy_preset_catalog() -> Dict[str, Dict[str, Any]]:
             alias for alias, canonical in LEGACY_PRESET_ALIASES.items() if canonical == name
         )
     return payload
+
+
+def resolve_guided_profile_name(objective: str) -> str:
+    """Resolve guided objective aliases to canonical objective keys."""
+    value = str(objective).strip().lower()
+    canonical = LEGACY_GUIDED_PROFILE_ALIASES.get(value, value)
+    if canonical in LEGACY_GUIDED_PROFILES:
+        return canonical
+    if value in LEGACY_GUIDED_PROFILES:
+        return value
+    # Heuristic fallback for free-text objective strings.
+    for alias, candidate in LEGACY_GUIDED_PROFILE_ALIASES.items():
+        if alias in value:
+            return candidate
+    # Conservative default if objective text is unknown.
+    if value:
+        return "safe-evaluation"
+    if canonical not in LEGACY_GUIDED_PROFILES:
+        allowed = ", ".join(sorted(LEGACY_GUIDED_PROFILES))
+        raise ValueError(f"Unknown guided objective '{objective}'. Expected one of: {allowed}")
+    return canonical
+
+
+def guided_legacy_profile_catalog() -> Dict[str, Dict[str, Any]]:
+    """Return guided objective mappings to recommended presets."""
+    payload: Dict[str, Dict[str, Any]] = deepcopy(LEGACY_GUIDED_PROFILES)
+    for objective_key, details in payload.items():
+        details["aliases"] = sorted(
+            alias
+            for alias, canonical in LEGACY_GUIDED_PROFILE_ALIASES.items()
+            if canonical == objective_key
+        )
+        details["description"] = (
+            f"{objective_key} -> {details.get('recommended_preset', 'safe-baseline')}"
+        )
+    return payload
+
+
+def recommend_legacy_preset_for_objective(objective: str) -> Dict[str, Any]:
+    """Return recommended preset metadata for a guided objective."""
+    objective_key = resolve_guided_profile_name(objective)
+    profile = deepcopy(LEGACY_GUIDED_PROFILES[objective_key])
+    profile["objective"] = objective_key
+    aliases = [
+        alias
+        for alias, canonical in LEGACY_GUIDED_PROFILE_ALIASES.items()
+        if canonical == objective_key
+    ]
+    profile["aliases"] = sorted(aliases)
+    return profile
+
+
+def summarize_legacy_risk_posture(summary: Mapping[str, Any]) -> Dict[str, Any]:
+    """Compute a compact risk posture from legacy activation summary."""
+    packs = summary.get("packs", {}) if isinstance(summary, Mapping) else {}
+    emulate_count = 0
+    enabled_count = 0
+    for pack in LEGACY_PACK_KEYS:
+        pack_summary = packs.get(pack, {}) if isinstance(packs, Mapping) else {}
+        capabilities = pack_summary.get("enabled_capabilities") or []
+        if not isinstance(capabilities, list):
+            continue
+        enabled_count += len(capabilities)
+        mode = str(pack_summary.get("mode", "simulate")).lower()
+        if mode == "emulate":
+            emulate_count += len(capabilities)
+
+    if emulate_count > 0:
+        level = "critical"
+    elif enabled_count >= 8:
+        level = "high"
+    elif enabled_count > 0:
+        level = "medium"
+    else:
+        level = "low"
+
+    return {
+        "enabled_capability_count": enabled_count,
+        "emulate_capability_count": emulate_count,
+        "risk_level": level,
+    }
 
 
 def _normalize_mode(value: Any, default: str = "simulate") -> str:
@@ -533,6 +657,12 @@ def summarize_legacy_controls(config: Mapping[str, Any]) -> Dict[str, Any]:
     return summary
 
 
+def render_manual_preset_name(pack_key: str) -> str:
+    """Return a stable synthetic preset label for manual pack overrides."""
+    normalized_pack = normalize_pack_name(pack_key)
+    return f"{normalized_pack}-manual"
+
+
 def build_legacy_summary(config: Mapping[str, Any]) -> Dict[str, Any]:
     return summarize_legacy_controls(config)
 
@@ -550,7 +680,11 @@ def is_domain_allowed(candidate: str, config: Mapping[str, Any]) -> bool:
 
 
 __all__ = [
+    "CAPABILITY_ALIASES",
     "LEGACY_PACK_KEYS",
+    "LEGACY_PACK_CAPABILITIES",
+    "LEGACY_GUIDED_PROFILE_ALIASES",
+    "LEGACY_GUIDED_PROFILES",
     "LEGACY_PRESET_ALIASES",
     "LEGACY_PRESET_PROFILES",
     "LegacyCapabilityDecision",
@@ -559,12 +693,16 @@ __all__ = [
     "capability_mode",
     "capability_aliases",
     "evaluate_legacy_capability",
+    "guided_legacy_profile_catalog",
     "get_legacy_config",
     "is_domain_allowed",
     "legacy_preset_catalog",
     "legacy_preset_overrides",
     "normalize_capability_name",
     "normalize_pack_name",
+    "recommend_legacy_preset_for_objective",
+    "render_manual_preset_name",
+    "resolve_guided_profile_name",
     "resolve_legacy_preset_name",
     "resolve_legacy_settings",
     "supported_legacy_capabilities",

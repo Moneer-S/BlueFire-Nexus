@@ -54,6 +54,9 @@ python -m src.core.cli run-scenario scenarios/insider_exfil_dns.yaml
 python -m src.core.cli plan "Emulate APT29 credential access chain"
 python -m src.core.cli suggest-detections run-20260101010101-abcd1234
 python -m src.core.cli legacy-presets
+python -m src.core.cli legacy-guided-presets
+python -m src.core.cli legacy-recommend-preset detection --apply
+python -m src.core.cli legacy-risk-ladder
 python -m src.core.cli legacy-apply-preset c2-sim --config config.yaml
 python -m src.core.cli run-scenario scenarios/legacy_flagship_blended.yaml --legacy-preset full-simulate
 ```
@@ -110,6 +113,12 @@ Preset profiles are available for quick enablement:
 You can either:
 - apply a preset just for one run (`--legacy-preset` on `run-scenario` / `run-operation`), or
 - persist a preset to config via `legacy-apply-preset` (use `--preview-only` for dry preview).
+- ask for objective-driven recommendations via `legacy-recommend-preset` and
+  inspect all objective mappings with `legacy-guided-presets`.
+
+`python -m src.run_scenario` now also supports:
+- `--legacy-guided` to auto-apply the recommended preset from scenario objective,
+- `--legacy-pack` and `--legacy-capability` for granular one-by-one overrides.
 
 Legacy config aliases are also supported for backward compatibility:
 - `lab_mode` -> `global_mode`

@@ -81,3 +81,25 @@ def test_bluefire_registers_legacy_modules() -> None:
         "legacy_stealth_research",
     }:
         assert module_name in nexus.modules
+
+
+def test_config_manager_legacy_summary_includes_acknowledged_field(tmp_path) -> None:
+    cfg_path = tmp_path / "config.yaml"
+    cfg = ConfigManager(str(cfg_path))
+    cfg.set("modules.legacy.stealth_pack.enabled", True)
+    cfg.set("modules.legacy.stealth_pack.lab_confirmation", True)
+    summary = cfg.legacy_activation_summary()
+    pack = summary["packs"]["stealth_pack"]
+    assert pack["enabled"] is True
+    assert pack["acknowledged"] is True
+
+
+def test_config_manager_legacy_summary_surfaces_pack_mode_and_active_preset(tmp_path) -> None:
+    cfg_path = tmp_path / "config.yaml"
+    cfg = ConfigManager(str(cfg_path))
+    cfg.set("modules.legacy.active_preset", "c2-simulate")
+    cfg.set("modules.legacy.c2_pack.enabled", True)
+    cfg.set("modules.legacy.c2_pack.mode", "simulate")
+    summary = cfg.legacy_activation_summary()
+    assert summary["active_preset"] == "c2-simulate"
+    assert summary["packs"]["c2_pack"]["mode"] == "simulate"

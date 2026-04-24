@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from src.core.models import ModuleResult
-from src.core.reporting import write_markdown_report
+from src.core.reporting import build_risk_summary, write_markdown_report, write_risk_summary
 from src.core.risk import score_module_result
 
 
@@ -69,3 +69,46 @@ def test_module_risk_scoring_for_legacy_warning() -> None:
     risk = score_module_result(result)
     assert risk["score"] >= 80
     assert risk["severity"] in {"high", "critical"}
+
+
+def test_write_risk_summary_creates_machine_readable_artifact(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    results = {
+        "execution:step-1": ModuleResult(
+            status="success",
+            module="execution",
+            message="ok",
+            techniques=["T1059"],
+            artifacts={},
+            detection_hints={},
+            telemetry=[],
+        ),
+        "legacy_protocol_research:step-2": ModuleResult(
+            status="success",
+            module="legacy_protocol_research",
+            message="Legacy protocol prepared.",
+            techniques=["T1071.004"],
+            artifacts={
+                "legacy": {
+                    "pack": "c2_pack",
+                    "capability": "dns_tunneling",
+                    "mode": "simulate",
+                    "payload": {},
+                }
+            },
+            detection_hints={},
+            telemetry=[],
+        ),
+    }
+    summary_path = write_risk_summary(run_dir, results)
+    payload = summary_path.read_text(encoding="utf-8")
+    assert '"risk_summary"' in payload
+    assert '"module_count": 2' in payload
+    assert '"module": "legacy_protocol_research:step-2"' in payload
+    assert '"module_runtime": "legacy_protocol_research"' in payload
+
+    summary = build_risk_summary(results)
+    assert summary["module_count"] == 2
+    assert summary["average_score"] >= 0
+    assert any(item["module"] == "execution:step-1" for item in summary["modules"])

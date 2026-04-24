@@ -15,7 +15,7 @@ from .detections import write_detection_artifacts
 from .legacy_controls import build_legacy_summary
 from .models import ModuleResult, RunContext
 from .modules.registry import build_runtime_modules
-from .reporting import write_json_report, write_markdown_report
+from .reporting import write_json_report, write_markdown_report, write_risk_summary
 from .safety import SafetyGate, SafetyViolation
 from .scenario import load_scenario
 from .telemetry import TelemetryBus
@@ -136,10 +136,12 @@ class BlueFireNexus:
                     detection_summary,
                 )
                 write_json_report(context.output_dir, module_results)
+                risk_summary_path = write_risk_summary(context.output_dir, module_results)
                 copilot_artifacts = copilot.narrate(context.run_id)
             else:
                 detection_paths = {}
                 report_path = None
+                risk_summary_path = None
                 copilot_artifacts = {}
 
             return {
@@ -153,6 +155,7 @@ class BlueFireNexus:
                 "output_dir": str(context.output_dir),
                 "detection_artifacts": detection_paths,
                 "report_path": str(report_path) if report_path else None,
+                "risk_summary_path": str(risk_summary_path) if risk_summary_path else None,
                 "copilot": copilot_artifacts,
                 "legacy_controls": self.legacy_activation_summary(),
                 "timestamp": result.timestamp,
@@ -272,6 +275,7 @@ class BlueFireNexus:
                 detection_summary,
             )
             write_json_report(context.output_dir, module_results)
+            risk_summary_path = write_risk_summary(context.output_dir, module_results)
             copilot_summary = copilot.narrate(context.run_id)
 
             return {
@@ -281,6 +285,7 @@ class BlueFireNexus:
                 "output_dir": str(context.output_dir),
                 "steps": steps_results,
                 "report_path": str(report_path),
+                "risk_summary_path": str(risk_summary_path),
                 "copilot": copilot_summary,
                 "legacy_controls": self.legacy_activation_summary(),
             }
