@@ -36,6 +36,10 @@ behavior” abstractly, the run produces:
 4. a run report that explains whether the capability was executed in
    `simulate` or `emulate` mode.
 
+When run in `emulate`, the adapter now attempts to execute the corresponding
+legacy actor routine and captures runtime outcomes and extracted indicators in
+the same normalized payload used by the detection engine.
+
 ## Safety model
 
 The legacy APT29 research path is:

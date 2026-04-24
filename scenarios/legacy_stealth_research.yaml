@@ -26,6 +26,13 @@ steps:
       capability: anti_sandbox
       target: current_process
       network_touch: false
+  - id: anti-detection-sim
+    name: Simulate anti-detection evasion research
+    module: legacy_stealth_research
+    params:
+      capability: anti_detection_legacy
+      target: current_process
+      network_touch: false
   - id: dynamic-api-sim
     name: Simulate dynamic API resolution research
     module: legacy_stealth_research

@@ -51,6 +51,7 @@ flowchart LR
 - `src/core/modules/registry.py`: module assembly + plugin merge
 - `src/core/modules/impl/legacy_base.py`: shared adapter utilities for legacy packs
 - `src/core/modules/impl/legacy_packs.py`: actor, protocol, and stealth capability-pack adapters
+- `src/core/modules/impl/legacy_runtime.py`: safe execution wrappers for legacy internals in emulate mode
 - `src/core/legacy_controls.py`: master-toggle plus granular-toggle resolution and activation summaries
 - `src/core/telemetry/sinks.py`: JSONL, OpenSearch, Elasticsearch, NGSIEM, Splunk HEC sinks
 - `src/core/telemetry/bus.py`: fan-out bus
@@ -67,4 +68,6 @@ flowchart LR
   - globally through one lab toggle, or
   - one-by-one for granular control.
 - `simulate` mode is the default for legacy packs; `emulate` requires explicit lab confirmation.
+- Emulate-mode runtime failures are surfaced as telemetry + report metadata by default, while keeping
+  the scenario progressing unless safety gates explicitly block execution.
 - Security scanning and dependency auditing are enforced in CI.

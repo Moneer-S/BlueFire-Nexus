@@ -180,6 +180,8 @@ python -m compileall -q src
 ## Case studies
 
 - `docs/case-studies/apt29_credential_access.md`
+- `docs/case-studies/legacy_protocol_pack.md`
+- `docs/case-studies/legacy_stealth_pack.md`
 - `docs/case-studies/healthcare_ransomware.md`
 
 ## Optional local lab

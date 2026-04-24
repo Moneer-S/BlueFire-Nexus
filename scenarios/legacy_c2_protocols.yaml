@@ -31,15 +31,39 @@ steps:
     name: Prepare legacy QUIC C2 workflow
     module: legacy_protocol_research
     params:
-      protocol: quic_c2
+      protocol: websocket_quic
       endpoint: quic://edge.example.lab:4433
       cadence_seconds: 60
+      network_touch: false
+  - id: solana-rpc
+    name: Prepare Solana RPC command-and-control research
+    module: legacy_protocol_research
+    params:
+      protocol: solana_rpc
+      endpoint: https://rpc.example.lab
+      instruction: noop
+      cadence_seconds: 90
+      network_touch: false
+  - id: network-obfuscator
+    name: Prepare network obfuscation helper research
+    module: legacy_protocol_research
+    params:
+      protocol: network_obfuscator_legacy
+      endpoint: edge.example.lab
+      dns:
+        qname: beacon.example.lab
+      protocol_metadata:
+        protocol: https
+        port: 443
       network_touch: false
 expected_detections:
   - Suspicious DNS query patterns and long labels
   - Application-layer HTTPS beaconing with endpoint rotation
   - QUIC transport usage in unusual operational contexts
+  - Solana RPC command metadata in protocol telemetry
+  - Protocol and content obfuscation intent captured for investigation
 blue_team_guidance:
-  - Validate that protocol-specific telemetry preserves transport, endpoint, and cadence details.
-  - Tune detections for DNS, HTTPS, and QUIC patterns independently.
+  - Validate that protocol-specific telemetry preserves transport, endpoint,
+    cadence, and runtime outcome details.
+  - Tune detections for DNS, HTTPS, QUIC, and Solana RPC patterns independently.
   - Use this scenario to test the global legacy master toggle versus protocol-by-protocol enablement.
