@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, Mapping
 
 import typer
 from rich.console import Console
@@ -23,6 +24,7 @@ from .legacy_controls import (
     recommend_legacy_preset_for_objective,
     render_manual_preset_name,
     resolve_legacy_preset_name,
+    summarize_legacy_risk_posture,
 )
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -288,6 +290,66 @@ def legacy_controls_cmd(config: Path = CONFIG_OPTION) -> None:
     _render_legacy_activation(nexus)
 
 
+@app.command("risk-summary")
+def risk_summary_cmd(
+    run_target: str = PRESET_ARG,
+    top: int = typer.Option(10, "--top", min=1, max=100),
+) -> None:
+    """Show risk summary from run id, run dir, or risk_summary.json path."""
+    candidate = Path(run_target)
+    if candidate.exists():
+        summary_path = candidate / "risk_summary.json" if candidate.is_dir() else candidate
+    else:
+        summary_path = Path("output") / run_target / "risk_summary.json"
+    if not summary_path.exists():
+        raise typer.BadParameter(
+            f"Risk summary file not found: {summary_path}",
+            param_hint="run_target",
+        )
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    _render_risk_summary_payload(payload, title=f"Risk summary ({summary_path})", top=top)
+
+
+def _render_risk_summary_payload(payload: Mapping[str, Any], *, title: str, top: int) -> None:
+    risk = payload.get("risk_summary", {})
+    summary_table = Table(title=title)
+    summary_table.add_column("Metric")
+    summary_table.add_column("Value")
+    summary_table.add_row("critical", str(risk.get("critical", 0)))
+    summary_table.add_row("high", str(risk.get("high", 0)))
+    summary_table.add_row("medium", str(risk.get("medium", 0)))
+    summary_table.add_row("low", str(risk.get("low", 0)))
+    summary_table.add_row("average_score", str(payload.get("average_score", 0)))
+    summary_table.add_row("max_score", str(payload.get("max_score", 0)))
+    summary_table.add_row("min_score", str(payload.get("min_score", 0)))
+    summary_table.add_row("module_count", str(payload.get("module_count", 0)))
+    console.print(summary_table)
+
+    modules = payload.get("modules", [])
+    detail_table = Table(title="Top risky modules")
+    detail_table.add_column("Module")
+    detail_table.add_column("Severity")
+    detail_table.add_column("Score")
+    detail_table.add_column("Pack")
+    detail_table.add_column("Capability")
+    detail_table.add_column("Mode")
+    ordered_modules = sorted(
+        modules,
+        key=lambda item: int(item.get("score", 0)),
+        reverse=True,
+    )
+    for item in ordered_modules[:top]:
+        detail_table.add_row(
+            str(item.get("module", "")),
+            str(item.get("severity", "")),
+            str(item.get("score", "")),
+            str(item.get("pack", "")),
+            str(item.get("capability", "")),
+            str(item.get("mode", "")),
+        )
+    console.print(detail_table)
+
+
 @app.command("legacy-presets")
 def legacy_presets_cmd() -> None:
     """List preset profiles for quickly enabling legacy capability packs."""
@@ -409,6 +471,63 @@ def legacy_risk_ladder_cmd() -> None:
     console.print(table)
 
 
+@app.command("legacy-scenario-recommendation")
+def legacy_scenario_recommendation_cmd(
+    scenario: Path = SCENARIO_ARG,
+    apply_recommendation: bool = typer.Option(
+        False,
+        "--apply",
+        help="Apply recommended preset to runtime config for this command invocation",
+    ),
+    save: bool = typer.Option(
+        False,
+        "--save",
+        help="Persist recommended preset to config file (implies --apply)",
+    ),
+    config: Path = CONFIG_OPTION,
+) -> None:
+    """Recommend preset using scenario objective + module composition."""
+    from src.core.scenario import load_scenario
+
+    scenario_data = load_scenario(scenario)
+    recommendation = recommend_legacy_preset_for_objective(
+        scenario_data.objective,
+        modules=[step.module for step in scenario_data.steps],
+    )
+    recommended_preset = str(recommendation.get("recommended_preset", "safe-baseline"))
+    objective = str(recommendation.get("objective", "safe-evaluation"))
+    aliases = ", ".join(recommendation.get("aliases", [])) or "-"
+    console.print(
+        Panel.fit(
+            "\n".join(
+                [
+                    f"Scenario: {scenario_data.name}",
+                    f"Resolved objective: {objective}",
+                    f"Objective aliases: {aliases}",
+                    f"Recommended preset: {recommended_preset}",
+                    f"Risk: {recommendation.get('risk', 'n/a')}",
+                    f"Notes: {recommendation.get('notes', '')}",
+                ]
+            ),
+            title="Legacy scenario recommendation",
+        )
+    )
+    if not apply_recommendation and not save:
+        return
+    nexus = BlueFireNexus(str(config))
+    if save:
+        apply_recommendation = True
+    for key, value in legacy_preset_overrides(recommended_preset).items():
+        nexus.config_manager.set(key, value)
+    if save:
+        nexus.config_manager.save()
+    nexus.config = nexus.config_manager.to_dict()
+    nexus._configure_modules()
+    action = "Applied and saved" if save else "Applied"
+    console.print(f"[green]{action} scenario recommendation[/]: {recommended_preset}")
+    _render_legacy_activation(nexus)
+
+
 @app.command("legacy-operator-guide")
 def legacy_operator_guide_cmd() -> None:
     """Render quick-start workflow from objective to persistent preset."""
@@ -418,6 +537,11 @@ def legacy_operator_guide_cmd() -> None:
         "",
         "2) Get recommendation for an objective:",
         "   python -m src.core.cli legacy-recommend-preset detection",
+        "   or from a scenario file:",
+        (
+            "   python -m src.core.cli legacy-scenario-recommendation "
+            "scenarios/apt29_credential_access.yaml"
+        ),
         "",
         "3) Apply recommendation for one run:",
         "   python -m src.core.cli legacy-recommend-preset detection --apply",
@@ -427,8 +551,64 @@ def legacy_operator_guide_cmd() -> None:
         "",
         "5) Verify resulting controls:",
         "   python -m src.core.cli legacy-controls --config config.yaml",
+        "   python -m src.core.cli legacy-posture --config config.yaml",
+        "",
+        "6) Inspect run risk summary:",
+        "   python -m src.core.cli risk-summary output/<run-id>/risk_summary.json",
     ]
     console.print(Panel.fit("\n".join(lines), title="Legacy operator guide"))
+
+
+@app.command("show-risk-summary")
+def show_risk_summary_cmd(
+    risk_summary_path: str = PRESET_ARG,
+    top: int = typer.Option(10, "--top", min=1, max=100),
+) -> None:
+    """Show a risk summary from a run risk_summary.json file."""
+    path = Path(risk_summary_path)
+    if not path.exists():
+        raise typer.BadParameter(
+            f"Risk summary file not found: {path}",
+            param_hint="risk_summary_path",
+        )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    _render_risk_summary_payload(payload, title=f"Risk summary ({path})", top=top)
+
+
+@app.command("legacy-run-risk")
+def legacy_run_risk_cmd(
+    run_id: str = RUN_ID_ARG,
+    top: int = typer.Option(10, "--top", min=1, max=100),
+) -> None:
+    """Show summarized risk posture for an existing run."""
+    target = Path("output") / run_id / "risk_summary.json"
+    if not target.exists():
+        raise typer.BadParameter(
+            f"Risk summary not found for run '{run_id}'. Expected: {target}",
+            param_hint="run_id",
+        )
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    _render_risk_summary_payload(payload, title=f"Run risk summary ({run_id})", top=top)
+
+
+@app.command("legacy-risk-posture")
+def legacy_risk_posture_cmd(config: Path = CONFIG_OPTION) -> None:
+    """Show current config risk posture based on active legacy controls."""
+    nexus = BlueFireNexus(str(config))
+    summary = nexus.legacy_activation_summary()
+    posture = summarize_legacy_risk_posture(summary)
+    table = Table(title="Legacy activation risk posture")
+    table.add_column("Metric")
+    table.add_column("Value")
+    table.add_row("severity", str(posture.get("risk_level", "low")))
+    table.add_row("enabled_capabilities", str(posture.get("enabled_capability_count", 0)))
+    table.add_row("emulate_capabilities", str(posture.get("emulate_capability_count", 0)))
+    table.add_row("active_preset", str(summary.get("active_preset") or "none"))
+    table.add_row(
+        "master_toggle",
+        str(bool(summary.get("enable_all_lab_capabilities", False))),
+    )
+    console.print(table)
 
 
 @app.command("legacy-apply-preset")

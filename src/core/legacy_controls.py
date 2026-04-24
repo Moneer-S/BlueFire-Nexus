@@ -5,7 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from fnmatch import fnmatch
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Sequence
 from urllib.parse import urlparse
 
 SAFE_DOMAIN_PATTERNS = (
@@ -312,7 +312,95 @@ def legacy_preset_catalog() -> Dict[str, Dict[str, Any]]:
     return payload
 
 
-def resolve_guided_profile_name(objective: str) -> str:
+def _infer_guided_profile_from_text(value: str) -> str | None:
+    if not value:
+        return None
+    safe_markers = {
+        "baseline",
+        "safe",
+        "ci",
+        "sanity",
+        "smoke",
+        "disable",
+        "disabled",
+        "minimal",
+        "none",
+    }
+    words = {token.strip(".,:;()[]{}") for token in value.split()}
+    if words & safe_markers:
+        return "safe-evaluation"
+    if any(
+        keyword in value for keyword in ("emulate", "emulation", "live-fire", "full lab")
+    ):
+        return "full-lab-emulation"
+    if any(
+        keyword in value
+        for keyword in ("protocol", "c2", "dns", "quic", "tls", "solana", "beacon", "tunnel")
+    ):
+        return "protocol-research"
+    if any(
+        keyword in value
+        for keyword in ("stealth", "evasion", "anti-detection", "sandbox", "forensic")
+    ):
+        return "stealth-research"
+    if any(
+        keyword in value
+        for keyword in (
+            "detect",
+            "detection",
+            "regression",
+            "sigma",
+            "yara",
+            "splunk",
+            "coverage",
+            "simulate",
+            "simulation",
+            "attack chain",
+        )
+    ):
+        return "detection-regression"
+    return None
+
+
+def _infer_guided_profile_from_modules(modules: Sequence[str] | None) -> str | None:
+    if not modules:
+        return None
+    normalized = {str(name).strip().lower() for name in modules if str(name).strip()}
+    has_actor = any(
+        name.startswith("legacy_apt") or name == "legacy_actor_profile"
+        for name in normalized
+    )
+    has_protocol = "legacy_protocol_research" in normalized
+    has_stealth = "legacy_stealth_research" in normalized
+    if has_protocol and not has_stealth:
+        return "protocol-research"
+    if has_stealth and not has_protocol:
+        return "stealth-research"
+    if has_protocol and has_stealth:
+        return "detection-regression"
+    if has_actor:
+        return "detection-regression"
+    return None
+
+
+def _infer_guided_profile_from_scenario_name(name: str) -> str | None:
+    value = str(name).strip().lower()
+    if not value:
+        return None
+    if "protocol" in value or "c2" in value:
+        return "protocol-research"
+    if "stealth" in value or "evasion" in value:
+        return "stealth-research"
+    if "legacy" in value:
+        return "detection-regression"
+    return None
+
+
+def resolve_guided_profile_name(
+    objective: str,
+    *,
+    modules: Sequence[str] | None = None,
+) -> str:
     """Resolve guided objective aliases to canonical objective keys."""
     value = str(objective).strip().lower()
     canonical = LEGACY_GUIDED_PROFILE_ALIASES.get(value, value)
@@ -320,17 +408,20 @@ def resolve_guided_profile_name(objective: str) -> str:
         return canonical
     if value in LEGACY_GUIDED_PROFILES:
         return value
-    # Heuristic fallback for free-text objective strings.
-    for alias, candidate in LEGACY_GUIDED_PROFILE_ALIASES.items():
-        if alias in value:
-            return candidate
-    # Conservative default if objective text is unknown.
-    if value:
-        return "safe-evaluation"
-    if canonical not in LEGACY_GUIDED_PROFILES:
-        allowed = ", ".join(sorted(LEGACY_GUIDED_PROFILES))
-        raise ValueError(f"Unknown guided objective '{objective}'. Expected one of: {allowed}")
-    return canonical
+    inferred_from_text = _infer_guided_profile_from_text(value)
+    inferred_from_modules = _infer_guided_profile_from_modules(modules)
+    if inferred_from_text in {"safe-evaluation", "full-lab-emulation"}:
+        return inferred_from_text
+    if (
+        inferred_from_modules in {"protocol-research", "stealth-research"}
+        and inferred_from_text == "detection-regression"
+    ):
+        return inferred_from_modules
+    if inferred_from_text:
+        return inferred_from_text
+    if inferred_from_modules:
+        return inferred_from_modules
+    return "safe-evaluation"
 
 
 def guided_legacy_profile_catalog() -> Dict[str, Dict[str, Any]]:
@@ -348,9 +439,13 @@ def guided_legacy_profile_catalog() -> Dict[str, Dict[str, Any]]:
     return payload
 
 
-def recommend_legacy_preset_for_objective(objective: str) -> Dict[str, Any]:
+def recommend_legacy_preset_for_objective(
+    objective: str,
+    *,
+    modules: Sequence[str] | None = None,
+) -> Dict[str, Any]:
     """Return recommended preset metadata for a guided objective."""
-    objective_key = resolve_guided_profile_name(objective)
+    objective_key = resolve_guided_profile_name(objective, modules=modules)
     profile = deepcopy(LEGACY_GUIDED_PROFILES[objective_key])
     profile["objective"] = objective_key
     aliases = [
@@ -360,6 +455,40 @@ def recommend_legacy_preset_for_objective(objective: str) -> Dict[str, Any]:
     ]
     profile["aliases"] = sorted(aliases)
     return profile
+
+
+def recommend_legacy_preset_for_scenario(
+    objective: str,
+    *,
+    modules: Sequence[str] | None = None,
+    scenario_name: str = "",
+) -> Dict[str, Any]:
+    """Recommend preset using objective plus scenario/module context."""
+    objective_text = str(objective).strip().lower()
+    explicit_objective = objective_text not in {
+        "",
+        "exercise lab-gated legacy protocol adapters with explicit master or granular enablement.",
+        (
+            "exercise lab-gated legacy capability adapters with explicit "
+            "master or granular enablement."
+        ),
+        "exercise legacy capability adapters with explicit master or granular enablement.",
+    }
+    if explicit_objective:
+        return recommend_legacy_preset_for_objective(objective_text, modules=modules)
+
+    scenario_hint = _infer_guided_profile_from_scenario_name(scenario_name)
+    if scenario_hint:
+        profile = deepcopy(LEGACY_GUIDED_PROFILES[scenario_hint])
+        profile["objective"] = scenario_hint
+        profile["aliases"] = sorted(
+            alias
+            for alias, canonical in LEGACY_GUIDED_PROFILE_ALIASES.items()
+            if canonical == scenario_hint
+        )
+        return profile
+
+    return recommend_legacy_preset_for_objective(objective_text, modules=modules)
 
 
 def summarize_legacy_risk_posture(summary: Mapping[str, Any]) -> Dict[str, Any]:
@@ -707,4 +836,5 @@ __all__ = [
     "resolve_legacy_settings",
     "supported_legacy_capabilities",
     "summarize_legacy_controls",
+    "summarize_legacy_risk_posture",
 ]

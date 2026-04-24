@@ -56,7 +56,11 @@ python -m src.core.cli suggest-detections run-20260101010101-abcd1234
 python -m src.core.cli legacy-presets
 python -m src.core.cli legacy-guided-presets
 python -m src.core.cli legacy-recommend-preset detection --apply
+python -m src.core.cli legacy-scenario-recommendation scenarios/legacy_c2_protocols.yaml --apply
 python -m src.core.cli legacy-risk-ladder
+python -m src.core.cli legacy-risk-posture --config config.yaml
+python -m src.core.cli show-risk-summary output/<run-id>/risk_summary.json --top 10
+python -m src.core.cli legacy-operator-guide
 python -m src.core.cli legacy-apply-preset c2-sim --config config.yaml
 python -m src.core.cli run-scenario scenarios/legacy_flagship_blended.yaml --legacy-preset full-simulate
 ```
@@ -115,10 +119,15 @@ You can either:
 - persist a preset to config via `legacy-apply-preset` (use `--preview-only` for dry preview).
 - ask for objective-driven recommendations via `legacy-recommend-preset` and
   inspect all objective mappings with `legacy-guided-presets`.
+- derive recommendations directly from a scenario file via
+  `legacy-scenario-recommendation`.
+- inspect current config risk with `legacy-risk-posture` and run-level risk
+  artifacts with `show-risk-summary`.
 
 `python -m src.run_scenario` now also supports:
 - `--legacy-guided` to auto-apply the recommended preset from scenario objective,
 - `--legacy-pack` and `--legacy-capability` for granular one-by-one overrides.
+- It now writes `risk_summary.json` per run and prints its path in the summary.
 
 Legacy config aliases are also supported for backward compatibility:
 - `lab_mode` -> `global_mode`

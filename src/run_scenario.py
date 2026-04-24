@@ -128,7 +128,10 @@ def _apply_guided_preset_recommendation(
     """Apply objective-driven preset recommendation and return recommendation details."""
     scenario = load_scenario(scenario_path)
     objective = scenario.objective.strip().lower() or "safe-evaluation"
-    recommendation = recommend_legacy_preset_for_objective(objective)
+    recommendation = recommend_legacy_preset_for_objective(
+        objective,
+        modules=[step.module for step in scenario.steps],
+    )
     if apply_recommendation:
         recommended_preset = str(recommendation.get("recommended_preset", "safe-baseline"))
         for key, value in legacy_preset_overrides(recommended_preset).items():

@@ -89,6 +89,43 @@ def test_legacy_recommend_preset_save_persists_to_config(tmp_path: Path) -> None
     assert "Active preset: safe-baseline" in persisted.stdout
 
 
+def test_legacy_scenario_recommendation_and_apply(tmp_path: Path) -> None:
+    runner = CliRunner()
+    cfg_path = tmp_path / "config.yaml"
+    scenario_path = tmp_path / "scenario.yaml"
+    scenario_path.write_text(
+        "\n".join(
+            [
+                "id: proto",
+                "name: Proto Focus",
+                "objective: protocol tuning validation",
+                "attack_coverage: ['T1071.004']",
+                "steps:",
+                "  - id: p1",
+                "    name: protocol",
+                "    module: legacy_protocol_research",
+                "    params:",
+                "      protocol: dns_tunneling",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "legacy-scenario-recommendation",
+            str(scenario_path),
+            "--apply",
+            "--config",
+            str(cfg_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Recommended preset: c2-simulate" in result.stdout
+    assert "Applied scenario recommendation" in result.stdout
+    assert "Active preset: c2-simulate" in result.stdout
+
+
 def test_run_operation_manual_pack_sets_manual_active_preset(tmp_path: Path) -> None:
     runner = CliRunner()
     cfg_path = tmp_path / "config.yaml"
@@ -125,6 +162,75 @@ def test_legacy_recommend_preset_unknown_objective_falls_back_to_safe_profile() 
     assert result.exit_code == 0
     assert "Objective: safe-evaluation" in result.stdout
     assert "Recommended preset: safe-baseline" in result.stdout
+
+
+def test_show_risk_summary_command_outputs_metrics(tmp_path: Path) -> None:
+    runner = CliRunner()
+    risk_path = tmp_path / "risk_summary.json"
+    risk_path.write_text(
+        "\n".join(
+            [
+                "{",
+                '  "risk_summary": {"critical": 1, "high": 0, "medium": 1, "low": 0},',
+                '  "average_score": 71.5,',
+                '  "max_score": 88,',
+                '  "min_score": 55,',
+                '  "module_count": 2,',
+                '  "modules": [',
+                (
+                    '    {"module":"legacy_protocol_research:s1","severity":"critical",'
+                    '"score":88,"pack":"c2_pack","capability":"dns_tunneling","mode":"emulate"},'
+                ),
+                (
+                    '    {"module":"execution:s2","severity":"medium","score":55,'
+                    '"pack":"","capability":"","mode":"simulate"}'
+                ),
+                "  ]",
+                "}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "risk-summary",
+            str(risk_path),
+            "--top",
+            "1",
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Risk summary" in result.stdout
+    assert "dns_tunneling" in result.stdout
+    assert "critical" in result.stdout
+
+
+def test_legacy_risk_posture_command_renders_current_posture(tmp_path: Path) -> None:
+    runner = CliRunner()
+    cfg_path = tmp_path / "config.yaml"
+    seed = runner.invoke(
+        app,
+        [
+            "legacy-apply-preset",
+            "c2-sim",
+            "--config",
+            str(cfg_path),
+        ],
+    )
+    assert seed.exit_code == 0
+    result = runner.invoke(
+        app,
+        [
+            "legacy-risk-posture",
+            "--config",
+            str(cfg_path),
+        ],
+    )
+    assert result.exit_code == 0
+    assert "Legacy activation risk posture" in result.stdout
+    assert "active_preset" in result.stdout
+    assert "c2-simulate" in result.stdout
 
 
 def test_legacy_apply_preset_preview_only_does_not_persist(tmp_path: Path) -> None:
