@@ -1,0 +1,42 @@
+name: Healthcare ransomware tabletop chain
+objective: Simulate a healthcare ransomware precursor path in a lab-safe workflow.
+attack_coverage:
+  - T1566
+  - T1059
+  - T1053
+  - T1041
+fail_fast: false
+steps:
+  - id: step1
+    name: Phishing attachment delivery simulation
+    module: initial_access
+    params:
+      vector: phishing_attachment
+      target: hospital-analyst
+      network_touch: false
+  - id: step2
+    name: Script execution simulation
+    module: execution
+    params:
+      command: powershell -nop -w hidden Write-Output "simulated ransomware prep"
+      network_touch: false
+  - id: step3
+    name: Persistence simulation
+    module: persistence
+    params:
+      technique: scheduled_task
+      network_touch: false
+  - id: step4
+    name: Data staging and exfil simulation
+    module: exfiltration
+    params:
+      method: via_c2
+      network_touch: false
+expected_detections:
+  - process_creation
+  - scheduled_task_creation
+  - suspicious_data_staging
+blue_team_guidance:
+  - Tune process creation detections for encoded PowerShell and hidden windows.
+  - Baseline scheduled task creation and alert on anomalous task names.
+  - Correlate suspicious execution plus staging behavior in a short timeframe.

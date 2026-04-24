@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  bluefire:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: >
+      bash -lc "pip install -r requirements-dev.txt && python -m src.run_scenario --profile apt29_credential_access --output-json"
+
+  opensearch:
+    image: opensearchproject/opensearch:2.15.0
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
