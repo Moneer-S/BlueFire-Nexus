@@ -46,6 +46,7 @@ modules:
     enabled: false
   legacy:
     enable_all_lab_capabilities: false
+    global_mode: simulate
     lab_confirmation: false
     announce_activation: true
     actor_pack:
@@ -76,7 +77,7 @@ modules:
           enabled: false
         solana_rpc:
           enabled: false
-        network_obfuscator:
+        network_obfuscator_legacy:
           enabled: false
     stealth_pack:
       enabled: false
@@ -87,7 +88,7 @@ modules:
           enabled: false
         anti_sandbox:
           enabled: false
-        anti_detection:
+        anti_detection_legacy:
           enabled: false
         dynamic_api:
           enabled: false

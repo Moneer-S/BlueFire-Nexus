@@ -1,0 +1,73 @@
+id: legacy_actor_family_full
+name: Legacy Actor Family Full Coverage
+objective: Exercise all legacy actor family adapters through one ATT&CK-mapped scenario.
+attack_coverage:
+  - T1566
+  - T1059
+  - T1036
+  - T1071
+  - T1589
+fail_fast: false
+steps:
+  - id: summary
+    name: Show effective legacy capability controls
+    module: legacy_capability_summary
+    params: {}
+  - id: actor-profile-apt29
+    name: Load APT29 actor profile
+    module: legacy_actor_profile
+    params:
+      actor: apt29
+      tactics:
+        - credential_access
+        - command_and_control
+  - id: actor-profile-apt28
+    name: Load APT28 actor profile
+    module: legacy_actor_profile
+    params:
+      actor: apt28
+      tactics:
+        - execution
+        - defense_evasion
+  - id: apt29-phishing
+    name: Simulate APT29 phishing campaign
+    module: legacy_apt29_research
+    params:
+      technique: phishing
+      target: analyst@example.lab
+  - id: apt28-execution
+    name: Prepare APT28 execution research
+    module: legacy_apt28_research
+    params:
+      tactic: execution
+      technique: powershell
+      target: lab-user
+  - id: apt32-initial-access
+    name: Prepare APT32 initial access research
+    module: legacy_apt32_research
+    params:
+      tactic: initial_access
+      technique: spear_phishing
+      target: partner-user
+  - id: apt38-defense-evasion
+    name: Prepare APT38 defense evasion research
+    module: legacy_apt38_research
+    params:
+      tactic: defense_evasion
+      technique: traffic_obfuscation
+      target: payments-gateway
+  - id: apt41-c2
+    name: Prepare APT41 C2 research
+    module: legacy_apt41_research
+    params:
+      tactic: command_and_control
+      technique: custom_protocol
+      target: build-pipeline
+expected_detections:
+  - Actor profile and technique telemetry for APT29/APT28/APT32/APT38/APT41
+  - ATT&CK-mapped host and network detection drafts for mixed actor techniques
+  - Report coverage showing actor-pack breadth and mode state
+blue_team_guidance:
+  - Validate each actor adapter maps to expected ATT&CK tags and telemetry fields.
+  - Compare detection drafts across actor families to tune actor-specific analytics.
+  - Keep emulate mode restricted to controlled labs with explicit acknowledgments.

@@ -21,6 +21,16 @@ def test_legacy_flagship_scenario_contains_new_modules() -> None:
     assert "legacy_stealth_research" in modules
 
 
+def test_legacy_actor_family_scenario_covers_all_actor_modules() -> None:
+    scenario = load_scenario(Path("scenarios/legacy_actor_family_full.yaml"))
+    modules = [step.module for step in scenario.steps]
+    assert "legacy_apt29_research" in modules
+    assert "legacy_apt28_research" in modules
+    assert "legacy_apt32_research" in modules
+    assert "legacy_apt38_research" in modules
+    assert "legacy_apt41_research" in modules
+
+
 def test_legacy_protocol_scenario_covers_all_protocol_variants() -> None:
     scenario = load_scenario(Path("scenarios/legacy_c2_protocols.yaml"))
     protocols = {

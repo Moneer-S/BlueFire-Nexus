@@ -68,6 +68,9 @@ flowchart LR
   - globally through one lab toggle, or
   - one-by-one for granular control.
 - `simulate` mode is the default for legacy packs; `emulate` requires explicit lab confirmation.
+- Backward-compatible aliases are supported for legacy configuration keys (e.g.,
+  `lab_mode`/`lab_acknowledged`, `network_obfuscator`, `anti_detection`) so
+  older configs continue to resolve into canonical capability controls.
 - Emulate-mode runtime failures are surfaced as telemetry + report metadata by default, while keeping
   the scenario progressing unless safety gates explicitly block execution.
 - Security scanning and dependency auditing are enforced in CI.

@@ -50,6 +50,8 @@ class ConfigManager:
                 },
                 "legacy": {
                     "enable_all_lab_capabilities": False,
+                    "global_mode": "simulate",
+                    "global_lab_acknowledged": False,
                     "lab_confirmation": False,
                     "announce_activation": True,
                     "actor_pack": {
@@ -163,7 +165,47 @@ class ConfigManager:
 
         merged = self._default_config()
         self._deep_merge(merged, loaded)
+        self._normalize_legacy_config_aliases(merged)
         self.config = self._resolve_env_templates(merged)
+
+    def _normalize_legacy_config_aliases(self, config: Dict[str, Any]) -> None:
+        """Translate old legacy config keys into canonical runtime keys."""
+        modules = config.get("modules", {})
+        if not isinstance(modules, dict):
+            return
+        legacy = modules.get("legacy", {})
+        if not isinstance(legacy, dict):
+            return
+
+        if "lab_mode" in legacy:
+            if (
+                "global_mode" not in legacy
+                or str(legacy.get("global_mode", "simulate")).lower() == "simulate"
+            ):
+                legacy["global_mode"] = legacy.get("lab_mode")
+        if "lab_acknowledged" in legacy:
+            if not legacy.get("global_lab_acknowledged", False):
+                legacy["global_lab_acknowledged"] = bool(legacy.get("lab_acknowledged"))
+            if not legacy.get("lab_confirmation", False):
+                legacy["lab_confirmation"] = bool(legacy.get("lab_acknowledged"))
+
+        for pack_name in ("actor_pack", "c2_pack", "stealth_pack"):
+            pack = legacy.get(pack_name, {})
+            if not isinstance(pack, dict):
+                continue
+            if "lab_confirmation" not in pack and "lab_acknowledged" in pack:
+                pack["lab_confirmation"] = bool(pack.get("lab_acknowledged"))
+
+            capabilities = pack.get("capabilities", {})
+            if not isinstance(capabilities, dict):
+                continue
+            for _capability_name, settings in capabilities.items():
+                if not isinstance(settings, dict):
+                    continue
+                if settings.get("emulate_enabled", False) and "mode" not in settings:
+                    settings["mode"] = "emulate"
+                if "lab_confirmation" not in settings and settings.get("emulate_enabled", False):
+                    settings["lab_confirmation"] = True
 
     def _create_default_config(self) -> None:
         """Write a safe default configuration file."""

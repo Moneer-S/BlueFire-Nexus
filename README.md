@@ -128,6 +128,7 @@ flowchart LR
 - `scenarios/healthcare_ransomware.yaml`
 - `scenarios/insider_exfil_dns.yaml`
 - `scenarios/legacy_actor_apt29.yaml`
+- `scenarios/legacy_actor_family_full.yaml`
 - `scenarios/legacy_c2_protocols.yaml`
 - `scenarios/legacy_stealth_research.yaml`
 - `scenarios/legacy_flagship_blended.yaml`
