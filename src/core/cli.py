@@ -31,6 +31,7 @@ PAYLOAD_OPTION = typer.Option("{}", "--payload", help="JSON payload")  # noqa: B
 GOAL_ARG = typer.Argument(...)  # noqa: B008
 RUN_ID_ARG = typer.Argument(...)  # noqa: B008
 STRATEGY_OPTION = typer.Option("evasion-lite", "--strategy")  # noqa: B008
+PRESET_ARG = typer.Argument(...)  # noqa: B008
 LAB_ALL_OPTION = typer.Option(False, "--enable-all-lab-capabilities")  # noqa: B008
 LAB_CONFIRM_OPTION = typer.Option(False, "--lab-confirmation")  # noqa: B008
 LEGACY_PACK_OPTION = typer.Option("", "--legacy-pack")  # noqa: B008
@@ -289,6 +290,31 @@ def legacy_presets_cmd() -> None:
         description = str(details.get("description", ""))
         table.add_row(preset, aliases, risk, description)
     console.print(table)
+
+
+@app.command("legacy-apply-preset")
+def legacy_apply_preset_cmd(
+    preset: str = PRESET_ARG,
+    config: Path = CONFIG_OPTION,
+    preview_only: bool = typer.Option(False, "--preview-only"),
+) -> None:
+    """Apply a legacy preset profile and optionally persist to config."""
+    try:
+        canonical = resolve_legacy_preset_name(preset)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="preset") from exc
+
+    nexus = BlueFireNexus(str(config))
+    for key, value in legacy_preset_overrides(canonical).items():
+        nexus.config_manager.set(key, value)
+    if not preview_only:
+        nexus.config_manager.save()
+    nexus.config = nexus.config_manager.to_dict()
+    nexus._configure_modules()
+
+    action = "Previewed" if preview_only else "Applied and saved"
+    console.print(f"[green]{action} legacy preset[/]: {canonical} ({config})")
+    _render_legacy_activation(nexus)
 
 
 def main() -> None:

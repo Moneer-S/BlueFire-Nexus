@@ -54,6 +54,7 @@ python -m src.core.cli run-scenario scenarios/insider_exfil_dns.yaml
 python -m src.core.cli plan "Emulate APT29 credential access chain"
 python -m src.core.cli suggest-detections run-20260101010101-abcd1234
 python -m src.core.cli legacy-presets
+python -m src.core.cli legacy-apply-preset c2-sim --config config.yaml
 python -m src.core.cli run-scenario scenarios/legacy_flagship_blended.yaml --legacy-preset full-simulate
 ```
 
@@ -105,6 +106,10 @@ Preset profiles are available for quick enablement:
 - `full-simulate`: enable all packs in simulate mode
 - `full-emulate`: enable all packs in emulate mode with lab confirmation
 - `actor-simulate`, `c2-simulate`, `stealth-simulate`: pack-focused simulation presets
+
+You can either:
+- apply a preset just for one run (`--legacy-preset` on `run-scenario` / `run-operation`), or
+- persist a preset to config via `legacy-apply-preset` (use `--preview-only` for dry preview).
 
 Legacy config aliases are also supported for backward compatibility:
 - `lab_mode` -> `global_mode`
