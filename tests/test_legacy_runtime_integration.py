@@ -99,3 +99,22 @@ def test_cli_overrides_accept_alias_capabilities(tmp_path: Path) -> None:
     assert result["status"] == "success"
     payload = result["artifacts"]["legacy"]["payload"]
     assert payload["protocol"] == "websocket_quic"
+
+
+def test_result_exposes_legacy_controls_summary(tmp_path: Path) -> None:
+    cfg_path = _base_cfg(tmp_path)
+    cfg = ConfigManager(str(cfg_path))
+    cfg.set("modules.legacy.active_preset", "c2-simulate")
+    cfg.set("modules.legacy.c2_pack.capabilities.dns_tunneling.enabled", True)
+    cfg.save()
+
+    nexus = BlueFireNexus(str(cfg_path))
+    result = nexus.execute_operation(
+        "legacy_protocol_research",
+        {"protocol": "dns_tunneling", "endpoint": "exfil.example.lab"},
+    )
+
+    assert result["status"] == "success"
+    legacy_controls = result["legacy_controls"]
+    assert legacy_controls["active_preset"] == "c2-simulate"
+    assert "c2_pack" in legacy_controls["packs"]

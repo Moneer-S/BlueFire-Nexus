@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from typing import Any, Dict, Mapping
@@ -42,6 +43,112 @@ CAPABILITY_ALIASES: Dict[str, Dict[str, str]] = {
     },
     "stealth_pack": {
         "anti_detection": "anti_detection_legacy",
+    },
+}
+LEGACY_PRESET_ALIASES: Dict[str, str] = {
+    "baseline": "safe-baseline",
+    "safe": "safe-baseline",
+    "simulate-all": "full-simulate",
+    "all-simulate": "full-simulate",
+    "all-emulate": "full-emulate",
+    "emulate-all": "full-emulate",
+    "actor-sim": "actor-simulate",
+    "c2-sim": "c2-simulate",
+    "stealth-sim": "stealth-simulate",
+}
+LEGACY_PRESET_PROFILES: Dict[str, Dict[str, Any]] = {
+    "safe-baseline": {
+        "description": "Disable all legacy capability packs.",
+        "risk": "low",
+        "global": {
+            "enable_all_lab_capabilities": False,
+            "global_mode": "simulate",
+            "global_lab_acknowledged": False,
+            "lab_confirmation": False,
+        },
+        "packs": {},
+    },
+    "full-simulate": {
+        "description": "Enable all legacy packs in simulate mode.",
+        "risk": "medium",
+        "global": {
+            "enable_all_lab_capabilities": True,
+            "global_mode": "simulate",
+            "global_lab_acknowledged": False,
+            "lab_confirmation": False,
+        },
+        "packs": {},
+    },
+    "full-emulate": {
+        "description": "Enable all legacy packs in emulate mode with lab confirmation.",
+        "risk": "critical",
+        "global": {
+            "enable_all_lab_capabilities": True,
+            "global_mode": "emulate",
+            "global_lab_acknowledged": True,
+            "lab_confirmation": True,
+        },
+        "packs": {},
+    },
+    "actor-simulate": {
+        "description": "Enable the full actor pack in simulate mode.",
+        "risk": "medium",
+        "global": {
+            "enable_all_lab_capabilities": False,
+            "global_mode": "simulate",
+            "global_lab_acknowledged": False,
+            "lab_confirmation": False,
+        },
+        "packs": {
+            "actor_pack": {
+                "enabled": True,
+                "mode": "simulate",
+                "lab_confirmation": False,
+                "capabilities": "all",
+                "capability_mode": "simulate",
+                "capability_lab_confirmation": False,
+            }
+        },
+    },
+    "c2-simulate": {
+        "description": "Enable the full protocol/C2 pack in simulate mode.",
+        "risk": "high",
+        "global": {
+            "enable_all_lab_capabilities": False,
+            "global_mode": "simulate",
+            "global_lab_acknowledged": False,
+            "lab_confirmation": False,
+        },
+        "packs": {
+            "c2_pack": {
+                "enabled": True,
+                "mode": "simulate",
+                "lab_confirmation": False,
+                "capabilities": "all",
+                "capability_mode": "simulate",
+                "capability_lab_confirmation": False,
+            }
+        },
+    },
+    "stealth-simulate": {
+        "description": "Enable the full stealth pack in simulate mode.",
+        "risk": "high",
+        "global": {
+            "enable_all_lab_capabilities": False,
+            "global_mode": "simulate",
+            "global_lab_acknowledged": False,
+            "lab_confirmation": False,
+        },
+        "packs": {
+            "stealth_pack": {
+                "enabled": True,
+                "mode": "simulate",
+                "lab_confirmation": False,
+                "capabilities": "all",
+                "capability_mode": "simulate",
+                "capability_lab_confirmation": False,
+            }
+        },
     },
 }
 
@@ -140,6 +247,107 @@ def supported_legacy_capabilities() -> Dict[str, Dict[str, Any]]:
             ]
         }
     return payload
+
+
+def resolve_legacy_preset_name(preset_name: str) -> str:
+    """Resolve aliases and return a canonical preset profile name."""
+    value = str(preset_name).strip().lower()
+    canonical = LEGACY_PRESET_ALIASES.get(value, value)
+    if canonical not in LEGACY_PRESET_PROFILES:
+        allowed = ", ".join(sorted(LEGACY_PRESET_PROFILES))
+        raise ValueError(f"Unknown legacy preset '{preset_name}'. Expected one of: {allowed}")
+    return canonical
+
+
+def legacy_preset_catalog() -> Dict[str, Dict[str, Any]]:
+    """Return legacy preset profiles with aliases for CLI rendering."""
+    payload = deepcopy(LEGACY_PRESET_PROFILES)
+    for name in payload:
+        payload[name]["aliases"] = sorted(
+            alias for alias, canonical in LEGACY_PRESET_ALIASES.items() if canonical == name
+        )
+    return payload
+
+
+def _normalize_mode(value: Any, default: str = "simulate") -> str:
+    mode = str(value or default).lower().strip()
+    if mode not in {"simulate", "emulate"}:
+        return default
+    return mode
+
+
+def legacy_preset_overrides(preset_name: str) -> Dict[str, Any]:
+    """Return deterministic dot-path config overrides for a preset profile."""
+    name = resolve_legacy_preset_name(preset_name)
+    profile = LEGACY_PRESET_PROFILES[name]
+    overrides: Dict[str, Any] = {
+        "modules.legacy.active_preset": name,
+        "modules.legacy.enable_all_lab_capabilities": False,
+        "modules.legacy.global_mode": "simulate",
+        "modules.legacy.global_lab_acknowledged": False,
+        "modules.legacy.lab_confirmation": False,
+    }
+    for pack_key in LEGACY_PACK_KEYS:
+        overrides[f"modules.legacy.{pack_key}.enabled"] = False
+        overrides[f"modules.legacy.{pack_key}.mode"] = "simulate"
+        overrides[f"modules.legacy.{pack_key}.lab_confirmation"] = False
+        for capability in LEGACY_PACK_CAPABILITIES.get(pack_key, ()):
+            base = f"modules.legacy.{pack_key}.capabilities.{capability}"
+            overrides[f"{base}.enabled"] = False
+            overrides[f"{base}.mode"] = "simulate"
+            overrides[f"{base}.lab_confirmation"] = False
+
+    for key, value in (profile.get("global", {}) or {}).items():
+        overrides[f"modules.legacy.{key}"] = value
+
+    if bool(overrides.get("modules.legacy.enable_all_lab_capabilities", False)):
+        master_mode = _normalize_mode(overrides.get("modules.legacy.global_mode", "simulate"))
+        master_ack = bool(
+            overrides.get("modules.legacy.global_lab_acknowledged", False)
+            or overrides.get("modules.legacy.lab_confirmation", False)
+        )
+        for pack_key in LEGACY_PACK_KEYS:
+            overrides[f"modules.legacy.{pack_key}.enabled"] = True
+            overrides[f"modules.legacy.{pack_key}.mode"] = master_mode
+            overrides[f"modules.legacy.{pack_key}.lab_confirmation"] = master_ack
+            for capability in LEGACY_PACK_CAPABILITIES.get(pack_key, ()):
+                base = f"modules.legacy.{pack_key}.capabilities.{capability}"
+                overrides[f"{base}.enabled"] = True
+                overrides[f"{base}.mode"] = master_mode
+                overrides[f"{base}.lab_confirmation"] = master_ack
+
+    packs_cfg = profile.get("packs", {}) or {}
+    for pack_key, raw_settings in packs_cfg.items():
+        if not isinstance(raw_settings, Mapping):
+            continue
+        normalized_pack = normalize_pack_name(pack_key)
+        settings = dict(raw_settings)
+        pack_mode = _normalize_mode(settings.get("mode", "simulate"))
+        pack_ack = bool(settings.get("lab_confirmation", False))
+        overrides[f"modules.legacy.{normalized_pack}.enabled"] = bool(settings.get("enabled", True))
+        overrides[f"modules.legacy.{normalized_pack}.mode"] = pack_mode
+        overrides[f"modules.legacy.{normalized_pack}.lab_confirmation"] = pack_ack
+        requested = settings.get("capabilities", "all")
+        if requested == "all":
+            selected = LEGACY_PACK_CAPABILITIES.get(normalized_pack, ())
+        elif isinstance(requested, (list, tuple, set)):
+            selected = tuple(
+                normalize_capability_name(normalized_pack, str(capability))
+                for capability in requested
+            )
+        else:
+            selected = ()
+        capability_mode = _normalize_mode(
+            settings.get("capability_mode", pack_mode),
+            default=pack_mode,
+        )
+        capability_ack = bool(settings.get("capability_lab_confirmation", pack_ack))
+        for capability in selected:
+            base = f"modules.legacy.{normalized_pack}.capabilities.{capability}"
+            overrides[f"{base}.enabled"] = True
+            overrides[f"{base}.mode"] = capability_mode
+            overrides[f"{base}.lab_confirmation"] = capability_ack
+    return overrides
 
 
 def _capability_candidate_keys(pack_key: str, capability: str) -> tuple[str, list[str]]:
@@ -298,6 +506,7 @@ def summarize_legacy_controls(config: Mapping[str, Any]) -> Dict[str, Any]:
         "global_mode": str(
             legacy_cfg.get("global_mode", legacy_cfg.get("lab_mode", "simulate"))
         ).lower(),
+        "active_preset": str(legacy_cfg.get("active_preset", "")).lower(),
         "global_lab_acknowledged": _is_acknowledged(legacy_cfg),
         "announce_activation": bool(legacy_cfg.get("announce_activation", True)),
         "packs": {},
@@ -342,13 +551,22 @@ def is_domain_allowed(candidate: str, config: Mapping[str, Any]) -> bool:
 
 __all__ = [
     "LEGACY_PACK_KEYS",
+    "LEGACY_PRESET_ALIASES",
+    "LEGACY_PRESET_PROFILES",
     "LegacyCapabilityDecision",
     "build_legacy_summary",
     "capability_effective_enabled",
     "capability_mode",
+    "capability_aliases",
     "evaluate_legacy_capability",
     "get_legacy_config",
     "is_domain_allowed",
+    "legacy_preset_catalog",
+    "legacy_preset_overrides",
+    "normalize_capability_name",
+    "normalize_pack_name",
+    "resolve_legacy_preset_name",
     "resolve_legacy_settings",
+    "supported_legacy_capabilities",
     "summarize_legacy_controls",
 ]

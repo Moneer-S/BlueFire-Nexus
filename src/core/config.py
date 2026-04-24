@@ -51,6 +51,7 @@ class ConfigManager:
                 "legacy": {
                     "enable_all_lab_capabilities": False,
                     "global_mode": "simulate",
+                    "active_preset": "",
                     "global_lab_acknowledged": False,
                     "lab_confirmation": False,
                     "announce_activation": True,
@@ -246,6 +247,15 @@ class ConfigManager:
         summary: Dict[str, Any] = {
             "enable_all_lab_capabilities": bool(
                 legacy_cfg.get("enable_all_lab_capabilities", False)
+            ),
+            "global_mode": str(
+                legacy_cfg.get("global_mode", legacy_cfg.get("lab_mode", "simulate"))
+            ).lower(),
+            "active_preset": str(legacy_cfg.get("active_preset", "")).lower(),
+            "global_lab_acknowledged": bool(
+                legacy_cfg.get("global_lab_acknowledged", False)
+                or legacy_cfg.get("lab_confirmation", False)
+                or legacy_cfg.get("lab_acknowledged", False)
             ),
             "announce_activation": bool(legacy_cfg.get("announce_activation", True)),
             "packs": {},

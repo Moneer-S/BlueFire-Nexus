@@ -2,7 +2,11 @@ from pathlib import Path
 
 from src.core.bluefire_nexus import BlueFireNexus
 from src.core.config import ConfigManager
-from src.core.legacy_controls import evaluate_legacy_capability
+from src.core.legacy_controls import (
+    evaluate_legacy_capability,
+    legacy_preset_overrides,
+    resolve_legacy_preset_name,
+)
 
 
 def test_legacy_master_toggle_enables_capabilities(tmp_path: Path) -> None:
@@ -116,3 +120,31 @@ def test_decision_summary_message_reports_emulate_ack_state(tmp_path: Path) -> N
         "apt29",
     )
     assert "emulate blocked until lab confirmation" in decision.summary_message()
+
+
+def test_legacy_preset_alias_resolves_to_canonical_profile() -> None:
+    assert resolve_legacy_preset_name("baseline") == "safe-baseline"
+    assert resolve_legacy_preset_name("all-simulate") == "full-simulate"
+
+
+def test_legacy_preset_full_emulate_enables_all_with_ack() -> None:
+    overrides = legacy_preset_overrides("full-emulate")
+    assert overrides["modules.legacy.enable_all_lab_capabilities"] is True
+    assert overrides["modules.legacy.global_mode"] == "emulate"
+    assert overrides["modules.legacy.global_lab_acknowledged"] is True
+    assert overrides["modules.legacy.lab_confirmation"] is True
+    assert overrides["modules.legacy.actor_pack.capabilities.apt29.enabled"] is True
+    assert overrides["modules.legacy.c2_pack.capabilities.websocket_quic.mode"] == "emulate"
+    assert (
+        overrides["modules.legacy.stealth_pack.capabilities.anti_detection_legacy.lab_confirmation"]
+        is True
+    )
+
+
+def test_legacy_preset_safe_baseline_disables_all_capabilities() -> None:
+    overrides = legacy_preset_overrides("safe-baseline")
+    assert overrides["modules.legacy.enable_all_lab_capabilities"] is False
+    assert overrides["modules.legacy.global_mode"] == "simulate"
+    assert overrides["modules.legacy.actor_pack.enabled"] is False
+    assert overrides["modules.legacy.c2_pack.capabilities.dns_tunneling.enabled"] is False
+    assert overrides["modules.legacy.stealth_pack.capabilities.dynamic_api.enabled"] is False

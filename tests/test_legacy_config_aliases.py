@@ -62,3 +62,13 @@ def test_legacy_summary_lists_aliases_with_canonical_names(tmp_path: Path) -> No
     assert "quic_c2" not in c2_caps
     assert "anti_detection_legacy" in stealth_caps
     assert "anti_detection" not in stealth_caps
+
+
+def test_legacy_summary_surfaces_active_preset(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.yaml"
+    cfg = ConfigManager(str(cfg_path))
+    cfg.set("modules.legacy.active_preset", "full-simulate")
+    cfg.save()
+
+    summary = summarize_legacy_controls(ConfigManager(str(cfg_path)).to_dict())
+    assert summary["active_preset"] == "full-simulate"

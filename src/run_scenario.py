@@ -15,7 +15,13 @@ from rich.table import Table
 
 from src.core.bluefire_nexus import BlueFireNexus
 from src.core.config import config
-from src.core.legacy_controls import summarize_legacy_controls
+from src.core.legacy_controls import (
+    legacy_preset_overrides,
+    normalize_capability_name,
+    normalize_pack_name,
+    resolve_legacy_preset_name,
+    summarize_legacy_controls,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -55,6 +61,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Enable all safety-gated legacy capability packs in simulate mode for this run",
     )
     parser.add_argument(
+        "--legacy-preset",
+        type=str,
+        default="",
+        help=(
+            "Apply a legacy preset profile "
+            "(safe-baseline/full-simulate/full-emulate/actor-simulate/c2-simulate/stealth-simulate)"
+        ),
+    )
+    parser.add_argument(
         "--legacy-ack",
         action="store_true",
         help="Acknowledge lab-only legacy capability execution for this run",
@@ -89,6 +104,7 @@ def _print_summary(result: Dict[str, Any]) -> None:
     table.add_row("Steps", str(len(steps)))
     legacy = result.get("legacy_controls")
     if legacy:
+        table.add_row("Legacy preset", str(legacy.get("active_preset") or "none"))
         table.add_row(
             "Legacy Packs",
             ", ".join(
@@ -103,6 +119,10 @@ def _print_summary(result: Dict[str, Any]) -> None:
 
 def _apply_legacy_overrides(nexus: BlueFireNexus, args: argparse.Namespace) -> None:
     """Apply per-run legacy toggle overrides from CLI arguments."""
+    if getattr(args, "legacy_preset", "").strip():
+        preset_name = resolve_legacy_preset_name(args.legacy_preset)
+        for key, value in legacy_preset_overrides(preset_name).items():
+            nexus.config_manager.set(key, value)
     if args.legacy_all:
         nexus.config_manager.set("modules.legacy.enable_all_lab_capabilities", True)
         nexus.config_manager.set("modules.legacy.global_mode", args.legacy_mode)
@@ -110,8 +130,12 @@ def _apply_legacy_overrides(nexus: BlueFireNexus, args: argparse.Namespace) -> N
         nexus.config_manager.set("modules.legacy.global_lab_acknowledged", True)
         nexus.config_manager.set("modules.legacy.lab_confirmation", True)
 
-    pack = str(getattr(args, "legacy_pack", "") or "").strip()
-    capability = str(getattr(args, "legacy_capability", "") or "").strip()
+    pack = str(getattr(args, "legacy_pack", "") or "").strip().lower()
+    capability = str(getattr(args, "legacy_capability", "") or "").strip().lower()
+    if pack:
+        pack = normalize_pack_name(pack)
+    if pack and capability:
+        capability = normalize_capability_name(pack, capability)
     if pack:
         nexus.config_manager.set(f"modules.legacy.{pack}.enabled", True)
         nexus.config_manager.set(f"modules.legacy.{pack}.mode", args.legacy_mode)

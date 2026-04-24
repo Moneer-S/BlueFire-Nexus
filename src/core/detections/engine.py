@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Dict, List
 
 import yaml
 
 from ..models import ModuleResult
+from ..risk import score_module_result
 from .sigma import build_sigma_rule
 from .spl import render_spl
 from .yara_l import generate_yara_l
@@ -34,6 +36,8 @@ def _merge_legacy_hint(result: ModuleResult) -> Dict[str, Any]:
             "target_process",
             "api_hash",
             "capability",
+            "legacy_subtype",
+            "runtime_warning",
         ):
             value = payload.get(key)
             if value not in (None, "") and key not in hint:
@@ -88,6 +92,9 @@ def write_detection_artifacts(
             continue
 
         hint = _merge_legacy_hint(result)
+        risk = score_module_result(result)
+        hint.setdefault("risk_score", risk["score"])
+        hint.setdefault("risk_severity", risk["severity"])
         technique = (
             hint.get("mitre_technique")
             or hint.get("mitre_technique_id")
@@ -107,7 +114,7 @@ def write_detection_artifacts(
         generated["yara_l"].append(str(yaral_path))
 
         spl_path = spl_dir / f"{stem}.spl"
-        spl_path.write_text(render_spl(result, run_id), encoding="utf-8")
+        spl_path.write_text(render_spl(result, run_id, hint_override=hint), encoding="utf-8")
         generated["spl"].append(str(spl_path))
 
         telemetry_summary_rows.append(
@@ -117,6 +124,10 @@ def write_detection_artifacts(
                 "legacy_pack": hint.get("legacy_pack", ""),
                 "legacy_capability": hint.get("legacy_capability", ""),
                 "legacy_mode": hint.get("legacy_mode", ""),
+                "legacy_subtype": hint.get("legacy_subtype", ""),
+                "risk_score": risk.get("score"),
+                "risk_severity": risk.get("severity"),
+                "risk_rationale": list(risk.get("rationale", [])),
                 "sigma": str(sigma_path),
                 "yara_l": str(yaral_path),
                 "spl": str(spl_path),
@@ -126,7 +137,7 @@ def write_detection_artifacts(
     if telemetry_summary_rows:
         summary_path = detections_dir / f"coverage_{run_id}.json"
         summary_path.write_text(
-            __import__("json").dumps({"detections": telemetry_summary_rows}, indent=2),
+            json.dumps({"detections": telemetry_summary_rows}, indent=2),
             encoding="utf-8",
         )
 

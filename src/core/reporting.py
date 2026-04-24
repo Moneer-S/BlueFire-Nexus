@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, Mapping
 
 from .models import ModuleResult
+from .risk import score_module_result
 
 
 def write_json_report(run_dir: Path, results: Dict[str, ModuleResult]) -> Path:
@@ -69,6 +70,8 @@ def write_markdown_report(
     attack_coverage: set[str] = set()
     detection_total = 0
     runtime_warning_count = 0
+    risk_totals = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    risk_scores: list[int] = []
     for outputs in detections.values():
         detection_total += len(outputs)
 
@@ -81,6 +84,12 @@ def write_markdown_report(
     for result in results.values():
         if result.techniques:
             attack_coverage.update(result.techniques)
+        risk = score_module_result(result)
+        severity = str(risk.get("severity", "low")).lower()
+        if severity not in risk_totals:
+            severity = "low"
+        risk_totals[severity] += 1
+        risk_scores.append(int(risk.get("score", 0)))
         legacy = result.artifacts.get("legacy")
         if not isinstance(legacy, dict):
             continue
@@ -103,6 +112,15 @@ def write_markdown_report(
             f"- ATT&CK techniques covered: {coverage_text}",
             f"- Detection artifacts generated: {detection_total}",
             f"- Runtime warnings observed: {runtime_warning_count}",
+            (
+                "- Risk summary: "
+                f"critical={risk_totals['critical']} high={risk_totals['high']} "
+                f"medium={risk_totals['medium']} low={risk_totals['low']}"
+            ),
+            (
+                f"- Average module risk score: "
+                f"{(sum(risk_scores) / len(risk_scores)) if risk_scores else 0:.1f}"
+            ),
             "",
             "### Pack Usage",
         ]
@@ -123,6 +141,11 @@ def write_markdown_report(
         legacy = result.artifacts.get("legacy")
         safety_line = ""
         warning_line = ""
+        risk = score_module_result(result)
+        risk_line = (
+            f"- Risk score: `{risk.get('score')}` "
+            f"(severity: `{risk.get('severity')}`)"
+        )
         if isinstance(legacy, dict):
             safety_line = (
                 f"- Capability Pack: `{legacy.get('pack')}` / `{legacy.get('capability')}` "
@@ -137,6 +160,7 @@ def write_markdown_report(
                 f"- Status: `{result.status}`",
                 f"- Message: {result.message or 'n/a'}",
                 f"- Techniques: {', '.join(result.techniques) if result.techniques else 'n/a'}",
+                risk_line,
                 safety_line,
                 warning_line,
                 "",

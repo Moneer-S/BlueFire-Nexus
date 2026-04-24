@@ -505,13 +505,35 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
             or self._DEFAULT_ENDPOINTS[capability]
         )
         cadence = int(params.get("cadence_seconds", 30))
+        endpoint_host = _endpoint_host(endpoint) or endpoint
         details = {
             "protocol": capability,
             "transport": transport,
             "endpoint": endpoint,
             "cadence_seconds": cadence,
             "mode": mode,
+            "legacy_subtype": capability,
         }
+        if capability == "dns_tunneling":
+            details.setdefault("dns_record_type", str(params.get("dns_record_type", "TXT")))
+            details.setdefault("chunk_size", int(params.get("chunk_size", 48)))
+            details.setdefault("entropy_signal", str(params.get("entropy_signal", "elevated")))
+        elif capability == "tls_fast_flux":
+            details.setdefault("rotation_count", int(params.get("rotation_count", 1)))
+            details.setdefault("tls_ja3", str(params.get("tls_ja3", "771,4866-4867-4865,23-24,0")))
+        elif capability == "websocket_quic":
+            parsed = urlparse(endpoint) if "://" in endpoint else None
+            port = parsed.port if parsed else None
+            details.setdefault("udp_port", int(port or params.get("udp_port", 4433)))
+            details.setdefault("alpn", str(params.get("alpn", "h3")))
+        elif capability == "solana_rpc":
+            details.setdefault("instruction", str(params.get("instruction", "noop")))
+            details.setdefault("rpc_method", str(params.get("rpc_method", "sendTransaction")))
+        else:
+            details.setdefault(
+                "obfuscation_profile",
+                str(params.get("obfuscation_profile", "multi-hop-jitter")),
+            )
 
         if capability != "network_obfuscator_legacy" and not self._domain_allowed(
             context, endpoint
@@ -550,12 +572,6 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
                 "reason": "simulate mode selected",
             }
 
-        if capability == "dns_tunneling":
-            details.setdefault("dns_record_type", "TXT")
-            details.setdefault("chunk_size", 48)
-        if capability == "tls_fast_flux":
-            details.setdefault("rotation_count", 1)
-
         event = TelemetryEvent(
             event_type="legacy_protocol_research",
             module=self.name,
@@ -567,13 +583,87 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
             "detection": {
                 "selection": {
                     "network.transport": transport,
-                    "network.endpoint|contains": _endpoint_host(endpoint) or endpoint,
+                    "network.endpoint|contains": endpoint_host,
+                    "legacy.capability": capability,
+                    "legacy.mode": mode,
                 },
                 "condition": "selection",
             },
             "mitre_technique": technique,
             "network_url": endpoint,
+            "endpoint": endpoint,
+            "transport": transport,
+            "protocol": capability,
+            "cadence_seconds": cadence,
+            "legacy_subtype": capability,
         }
+        if capability == "dns_tunneling":
+            hints.update(
+                {
+                    "event_type": "DNS_QUERY",
+                    "dns_record_type": details.get("dns_record_type"),
+                    "chunk_size": details.get("chunk_size"),
+                    "entropy_signal": details.get("entropy_signal"),
+                }
+            )
+            hints["detection"]["selection"].update(
+                {
+                    "dns.question.name|contains": endpoint_host,
+                    "dns.record_type": details.get("dns_record_type"),
+                }
+            )
+        elif capability == "tls_fast_flux":
+            hints.update(
+                {
+                    "event_type": "NETWORK_CONNECTION",
+                    "rotation_count": details.get("rotation_count"),
+                    "tls_ja3": details.get("tls_ja3"),
+                }
+            )
+            hints["detection"]["selection"].update(
+                {
+                    "tls.server_name|contains": endpoint_host,
+                }
+            )
+        elif capability == "websocket_quic":
+            hints.update(
+                {
+                    "event_type": "NETWORK_CONNECTION",
+                    "udp_port": details.get("udp_port"),
+                    "alpn": details.get("alpn"),
+                }
+            )
+            hints["detection"]["selection"].update(
+                {
+                    "network.protocol": "quic",
+                    "network.port": details.get("udp_port"),
+                }
+            )
+        elif capability == "solana_rpc":
+            hints.update(
+                {
+                    "event_type": "NETWORK_CONNECTION",
+                    "instruction": details.get("instruction"),
+                    "rpc_method": details.get("rpc_method"),
+                }
+            )
+            hints["detection"]["selection"].update(
+                {
+                    "network.application": "solana_rpc",
+                }
+            )
+        else:
+            hints.update(
+                {
+                    "event_type": "NETWORK_CONNECTION",
+                    "obfuscation_profile": details.get("obfuscation_profile"),
+                }
+            )
+            hints["detection"]["selection"].update(
+                {
+                    "network.path": "obfuscated",
+                }
+            )
         artifacts = _capability_artifacts(context, self.pack_name, capability, mode, details)
         return _legacy_result(
             self.name,
@@ -622,6 +712,7 @@ class LegacyStealthResearchModule(LegacyAdapterBase):
             "target": target,
             "mode": mode,
             "platform_support": self._platform_support(capability),
+            "legacy_subtype": capability,
         }
         if capability == "dynamic_api":
             details["api_hash"] = str(params.get("api_hash", "0xA3D82B19"))
@@ -639,11 +730,61 @@ class LegacyStealthResearchModule(LegacyAdapterBase):
                 "selection": {
                     "legacy.capability": capability,
                     "legacy.mode": mode,
+                    "legacy.subtype": capability,
                 },
                 "condition": "selection",
             },
             "mitre_technique": technique,
+            "capability": capability,
+            "legacy_subtype": capability,
+            "event_type": "PROCESS_LAUNCH",
         }
+        if capability == "dynamic_api":
+            hints.update(
+                {
+                    "api_hash": details.get("api_hash"),
+                    "process_command_line": "LoadLibrary/GetProcAddress dynamic resolution",
+                }
+            )
+            hints["detection"]["selection"].update(
+                {
+                    "process.command_line|contains": "GetProcAddress",
+                }
+            )
+        elif capability == "anti_forensic":
+            hints.update(
+                {
+                    "cleanup_targets": ",".join(details.get("cleanup_targets", [])),
+                }
+            )
+            hints["detection"]["selection"].update(
+                {
+                    "file.operation": "delete",
+                }
+            )
+        elif capability == "anti_detection_legacy":
+            hints.update(
+                {
+                    "target_process": target,
+                    "process_name": target,
+                }
+            )
+            hints["detection"]["selection"].update(
+                {
+                    "process.command_line|contains": "anti-detection",
+                }
+            )
+        else:
+            hints.update(
+                {
+                    "sandbox_signals": ",".join(details.get("signals", [])),
+                }
+            )
+            hints["detection"]["selection"].update(
+                {
+                    "process.environment_check": "sandbox",
+                }
+            )
 
         if mode == "emulate":
             runtime = safe_call(run_stealth_capability, capability, params)

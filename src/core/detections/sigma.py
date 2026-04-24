@@ -57,6 +57,12 @@ def build_sigma_rule(run_id: str, module: str, hint: Dict[str, Any]) -> Dict[str
         "detection",
         {"selection": {"module": module, "run_id": run_id}, "condition": "selection"},
     )
+    risk_severity = str(hint.get("risk_severity", "medium")).lower()
+    if risk_severity not in {"low", "medium", "high", "critical"}:
+        risk_severity = "medium"
+    risk_score = int(hint.get("risk_score", 50))
+    risk_score = max(0, min(100, risk_score))
+    detection_doc = str(detection)
     # Preserve richer legacy metadata as Sigma fields when provided.
     fields = ["CommandLine", "ParentCommandLine", "Image"]
     for optional_field in (
@@ -67,9 +73,12 @@ def build_sigma_rule(run_id: str, module: str, hint: Dict[str, Any]) -> Dict[str
         "legacy.actor",
         "legacy.capability",
         "legacy.mode",
+        "legacy.subtype",
         "process.command_line",
+        "legacy.risk_severity",
+        "legacy.risk_score",
     ):
-        if optional_field in str(detection):
+        if optional_field in detection_doc:
             fields.append(optional_field)
     return {
         "title": title,
@@ -79,6 +88,10 @@ def build_sigma_rule(run_id: str, module: str, hint: Dict[str, Any]) -> Dict[str
         "logsource": hint.get("logsource", {"category": "process_creation", "product": "windows"}),
         "detection": detection,
         "fields": sorted(set(fields)),
-        "tags": [f"attack.{technique.lower()}"],
-        "level": "medium",
+        "tags": [
+            f"attack.{technique.lower()}",
+            f"bluefire.risk.{risk_severity}",
+        ],
+        "level": risk_severity,
+        "x_bluefire_risk": {"score": risk_score, "severity": risk_severity},
     }

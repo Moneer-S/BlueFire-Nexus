@@ -53,6 +53,8 @@ python -m src.run_scenario --scenario-file scenarios/healthcare_ransomware.yaml 
 python -m src.core.cli run-scenario scenarios/insider_exfil_dns.yaml
 python -m src.core.cli plan "Emulate APT29 credential access chain"
 python -m src.core.cli suggest-detections run-20260101010101-abcd1234
+python -m src.core.cli legacy-presets
+python -m src.core.cli run-scenario scenarios/legacy_flagship_blended.yaml --legacy-preset full-simulate
 ```
 
 ### Enable legacy capability packs quickly or granularly
@@ -97,6 +99,12 @@ The runtime prints a legacy activation summary showing:
 CLI aliases are accepted for convenience and normalized internally:
 - C2: `quic_c2`/`quic` -> `websocket_quic`, `network_obfuscator` -> `network_obfuscator_legacy`
 - Stealth: `anti_detection` -> `anti_detection_legacy`
+
+Preset profiles are available for quick enablement:
+- `safe-baseline`: keep all legacy packs disabled (default-safe posture)
+- `full-simulate`: enable all packs in simulate mode
+- `full-emulate`: enable all packs in emulate mode with lab confirmation
+- `actor-simulate`, `c2-simulate`, `stealth-simulate`: pack-focused simulation presets
 
 Legacy config aliases are also supported for backward compatibility:
 - `lab_mode` -> `global_mode`

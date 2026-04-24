@@ -7,6 +7,11 @@ from typing import Any, Dict
 
 def build_yara_l_rule(run_id: str, module: str, hint: Dict[str, Any]) -> str:
     technique_id = hint.get("mitre_technique_id") or hint.get("mitre_technique") or "T0000"
+    risk_score = int(hint.get("risk_score", 50))
+    risk_score = max(0, min(100, risk_score))
+    risk_severity = str(hint.get("risk_severity", "medium")).lower()
+    if risk_severity not in {"low", "medium", "high", "critical"}:
+        risk_severity = "medium"
     process_name = (
         hint.get("process_name")
         or hint.get("process_command_line")
@@ -22,6 +27,8 @@ def build_yara_l_rule(run_id: str, module: str, hint: Dict[str, Any]) -> str:
         f"    technique = \"{technique_id}\"\n"
         f"    run_id = \"{run_id}\"\n"
         "    generated_by = \"BlueFire-Nexus\"\n"
+        f"    risk_score = \"{risk_score}\"\n"
+        f"    risk_severity = \"{risk_severity}\"\n"
         "  events:\n"
         f"    $e.metadata.event_type = \"{event_type}\"\n"
         f"    $e.target.process.file.full_path contains \"{process_name}\"\n"

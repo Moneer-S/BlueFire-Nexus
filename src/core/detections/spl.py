@@ -28,19 +28,37 @@ def _legacy_fields(hints: Mapping[str, Any], artifacts: Mapping[str, Any]) -> di
         "technique",
         "mode",
         "capability",
+        "legacy_subtype",
+        "dns_record_type",
+        "chunk_size",
+        "rotation_count",
+        "udp_port",
+        "rpc_method",
+        "api_hash",
+        "runtime_warning",
     ):
         value = payload.get(key) if isinstance(payload, Mapping) else None
         if value is None:
             value = hints.get(key)
         if value is not None:
             fields[key] = str(value)
+    risk_score = hints.get("risk_score")
+    if risk_score is not None:
+        fields["risk_score"] = str(risk_score)
+    risk_severity = hints.get("risk_severity")
+    if risk_severity is not None:
+        fields["risk_severity"] = str(risk_severity)
     return fields
 
 
-def render_spl(result: ModuleResult, run_id: str) -> str:
+def render_spl(
+    result: ModuleResult,
+    run_id: str,
+    hint_override: Mapping[str, Any] | None = None,
+) -> str:
     technique = result.techniques[0] if result.techniques else "T0000"
     module = result.module
-    hints = result.detection_hints or {}
+    hints = hint_override or result.detection_hints or {}
     fields = _legacy_fields(hints, result.artifacts or {})
     eval_parts = [
         f'run_id="{_quote(run_id)}"',

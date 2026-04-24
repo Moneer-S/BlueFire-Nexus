@@ -154,6 +154,7 @@ class BlueFireNexus:
                 "detection_artifacts": detection_paths,
                 "report_path": str(report_path) if report_path else None,
                 "copilot": copilot_artifacts,
+                "legacy_controls": self.legacy_activation_summary(),
                 "timestamp": result.timestamp,
             }
         except SafetyViolation as exc:
@@ -281,6 +282,7 @@ class BlueFireNexus:
                 "steps": steps_results,
                 "report_path": str(report_path),
                 "copilot": copilot_summary,
+                "legacy_controls": self.legacy_activation_summary(),
             }
         finally:
             telemetry.close()
