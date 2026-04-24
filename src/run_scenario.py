@@ -15,6 +15,7 @@ from rich.table import Table
 
 from src.core.bluefire_nexus import BlueFireNexus
 from src.core.config import config
+from src.core.legacy_controls import summarize_legacy_controls
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -48,6 +49,23 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print full JSON result payload",
     )
+    parser.add_argument(
+        "--legacy-all",
+        action="store_true",
+        help="Enable all safety-gated legacy capability packs in simulate mode for this run",
+    )
+    parser.add_argument(
+        "--legacy-ack",
+        action="store_true",
+        help="Acknowledge lab-only legacy capability execution for this run",
+    )
+    parser.add_argument(
+        "--legacy-mode",
+        type=str,
+        choices=["simulate", "emulate"],
+        default="simulate",
+        help="Override legacy capability mode for this run",
+    )
     return parser
 
 
@@ -69,6 +87,17 @@ def _print_summary(result: Dict[str, Any]) -> None:
     table.add_row("Report", str(result.get("report_path")))
     steps = result.get("steps", [])
     table.add_row("Steps", str(len(steps)))
+    legacy = result.get("legacy_controls")
+    if legacy:
+        table.add_row(
+            "Legacy Packs",
+            ", ".join(
+                f"{pack}={cfg.get('mode')}"
+                for pack, cfg in (legacy.get("packs") or {}).items()
+                if cfg.get("enabled") or cfg.get("enabled_capabilities")
+            )
+            or "disabled",
+        )
     console.print(table)
 
 
@@ -90,6 +119,24 @@ def main() -> None:
             nexus.config_manager.set("copilot.enabled", True)
             nexus.config = nexus.config_manager.to_dict()
             nexus._configure_modules()
+
+        if args.legacy_all:
+            nexus.config_manager.set("modules.legacy.enable_all_lab_capabilities", True)
+            nexus.config_manager.set("modules.legacy.global_mode", args.legacy_mode)
+            if args.legacy_ack:
+                nexus.config_manager.set("modules.legacy.global_lab_acknowledged", True)
+            nexus.config = nexus.config_manager.to_dict()
+            nexus._configure_modules()
+
+        legacy_summary = summarize_legacy_controls(nexus.config)
+        if legacy_summary.get("enable_all_lab_capabilities") or any(
+            pack.get("enabled") or pack.get("enabled_capabilities")
+            for pack in (legacy_summary.get("packs") or {}).values()
+        ):
+            Console().print(
+                "[yellow]Legacy capability activation[/]: "
+                + json.dumps(legacy_summary, indent=2)
+            )
 
         scenario_path = _resolve_scenario_path(args.profile, args.scenario_file)
         result = nexus.run_scenario_file(scenario_path, run_id=args.run_id or None)

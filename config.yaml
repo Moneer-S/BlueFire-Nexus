@@ -41,6 +41,67 @@ modules:
     enabled: true
   reconnaissance:
     enabled: true
+  legacy:
+    enable_all_lab_capabilities: false
+    lab_mode: "simulate"
+    lab_acknowledged: false
+    actor_pack:
+      enabled: true
+      mode: "simulate"
+      lab_acknowledged: false
+      capabilities:
+        apt29:
+          enabled: true
+          emulate_enabled: false
+        apt28:
+          enabled: true
+          emulate_enabled: false
+        apt32:
+          enabled: true
+          emulate_enabled: false
+        apt38:
+          enabled: true
+          emulate_enabled: false
+        apt41:
+          enabled: true
+          emulate_enabled: false
+    c2_pack:
+      enabled: true
+      mode: "simulate"
+      lab_acknowledged: false
+      capabilities:
+        dns_tunneling:
+          enabled: true
+          emulate_enabled: false
+        tls_fast_flux:
+          enabled: true
+          emulate_enabled: false
+        websocket_quic:
+          enabled: true
+          emulate_enabled: false
+        solana_rpc:
+          enabled: true
+          emulate_enabled: false
+        network_obfuscator_legacy:
+          enabled: true
+          emulate_enabled: false
+    stealth_pack:
+      enabled: true
+      mode: "simulate"
+      lab_acknowledged: false
+      capabilities:
+        anti_forensic:
+          enabled: true
+          emulate_enabled: false
+        anti_sandbox:
+          enabled: true
+          emulate_enabled: false
+        anti_detection_legacy:
+          enabled: true
+          emulate_enabled: false
+        dynamic_api:
+          enabled: true
+          emulate_enabled: false
 
 telemetry:
   enabled: true

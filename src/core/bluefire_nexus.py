@@ -12,6 +12,7 @@ from .ai import mutate_technique as ai_mutate_technique
 from .ai.copilot import AICopilot
 from .config import ConfigManager
 from .detections import write_detection_artifacts
+from .legacy_controls import build_legacy_summary
 from .models import ModuleResult, RunContext
 from .modules.registry import build_runtime_modules
 from .reporting import write_json_report, write_markdown_report
@@ -34,7 +35,13 @@ class BlueFireNexus:
     def _configure_modules(self) -> None:
         modules_cfg = self.config.get("modules", {})
         for name, module in self.modules.items():
-            module.update_config(modules_cfg.get(name, {}))
+            module_cfg = dict(modules_cfg.get(name, {}))
+            module_cfg["config_root"] = self.config
+            module.update_config(module_cfg)
+
+    def legacy_activation_summary(self) -> Dict[str, Any]:
+        """Return effective master and granular legacy capability activation state."""
+        return build_legacy_summary(self.config)
 
     def reload_config(self) -> None:
         self.config_manager = ConfigManager(str(self.config_manager.config_path))

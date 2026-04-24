@@ -44,6 +44,53 @@ modules:
     enabled: true
   command_control:
     enabled: false
+  legacy:
+    enable_all_lab_capabilities: false
+    lab_confirmation: false
+    announce_activation: true
+    actor_pack:
+      enabled: false
+      mode: simulate
+      lab_confirmation: false
+      capabilities:
+        apt29:
+          enabled: false
+        apt28:
+          enabled: false
+        apt32:
+          enabled: false
+        apt38:
+          enabled: false
+        apt41:
+          enabled: false
+    c2_pack:
+      enabled: false
+      mode: simulate
+      lab_confirmation: false
+      capabilities:
+        dns_tunneling:
+          enabled: false
+        tls_fast_flux:
+          enabled: false
+        websocket_quic:
+          enabled: false
+        solana_rpc:
+          enabled: false
+        network_obfuscator:
+          enabled: false
+    stealth_pack:
+      enabled: false
+      mode: simulate
+      lab_confirmation: false
+      capabilities:
+        anti_forensic:
+          enabled: false
+        anti_sandbox:
+          enabled: false
+        anti_detection:
+          enabled: false
+        dynamic_api:
+          enabled: false
 
 telemetry:
   enabled: true

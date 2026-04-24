@@ -21,6 +21,68 @@ PAYLOAD_OPTION = typer.Option("{}", "--payload", help="JSON payload")  # noqa: B
 GOAL_ARG = typer.Argument(...)  # noqa: B008
 RUN_ID_ARG = typer.Argument(...)  # noqa: B008
 STRATEGY_OPTION = typer.Option("evasion-lite", "--strategy")  # noqa: B008
+LAB_ALL_OPTION = typer.Option(False, "--enable-all-lab-capabilities")  # noqa: B008
+LAB_CONFIRM_OPTION = typer.Option(False, "--lab-confirmation")  # noqa: B008
+LEGACY_PACK_OPTION = typer.Option("", "--legacy-pack")  # noqa: B008
+LEGACY_CAPABILITY_OPTION = typer.Option("", "--legacy-capability")  # noqa: B008
+LEGACY_MODE_OPTION = typer.Option("simulate", "--legacy-mode")  # noqa: B008
+
+
+def _apply_legacy_overrides(
+    nexus: BlueFireNexus,
+    *,
+    enable_all: bool,
+    lab_confirmation: bool,
+    legacy_pack: str,
+    legacy_capability: str,
+    legacy_mode: str,
+) -> None:
+    if enable_all:
+        nexus.config_manager.set("modules.legacy.enable_all_lab_capabilities", True)
+    if lab_confirmation:
+        nexus.config_manager.set("modules.legacy.lab_confirmation", True)
+        nexus.config_manager.set("modules.legacy.global_lab_acknowledged", True)
+    if legacy_pack:
+        nexus.config_manager.set(f"modules.legacy.{legacy_pack}.enabled", True)
+        nexus.config_manager.set(f"modules.legacy.{legacy_pack}.mode", legacy_mode)
+        if lab_confirmation:
+            nexus.config_manager.set(f"modules.legacy.{legacy_pack}.lab_confirmation", True)
+    if legacy_pack and legacy_capability:
+        nexus.config_manager.set(
+            f"modules.legacy.{legacy_pack}.capabilities.{legacy_capability}.enabled",
+            True,
+        )
+        nexus.config_manager.set(
+            f"modules.legacy.{legacy_pack}.capabilities.{legacy_capability}.mode",
+            legacy_mode,
+        )
+        if lab_confirmation:
+            nexus.config_manager.set(
+                f"modules.legacy.{legacy_pack}.capabilities.{legacy_capability}.lab_confirmation",
+                True,
+            )
+    nexus.config = nexus.config_manager.to_dict()
+    nexus._configure_modules()
+
+
+def _render_legacy_activation(nexus: BlueFireNexus) -> None:
+    summary = nexus.legacy_activation_summary()
+    tree = Tree("[bold yellow]Legacy capability controls[/]")
+    tree.add(
+        f"All lab capabilities: {summary.get('enable_all_lab_capabilities')} | "
+        f"Global mode: {summary.get('global_mode')} | "
+        f"Global confirmation: {summary.get('global_lab_acknowledged')}"
+    )
+    for pack_name, pack_summary in summary.get("packs", {}).items():
+        node = tree.add(
+            f"{pack_name}: enabled={pack_summary.get('enabled')} "
+            f"mode={pack_summary.get('mode')} "
+            f"confirmed={pack_summary.get('acknowledged')}"
+        )
+        enabled_caps = pack_summary.get("enabled_capabilities") or []
+        if enabled_caps:
+            node.add("Capabilities: " + ", ".join(enabled_caps))
+    console.print(tree)
 
 
 def _print_scenario_result(result: dict) -> None:
@@ -40,9 +102,23 @@ def _print_scenario_result(result: dict) -> None:
 def run_scenario_cmd(
     scenario: Path = SCENARIO_ARG,
     config: Path = CONFIG_OPTION,
+    enable_all_lab_capabilities: bool = LAB_ALL_OPTION,
+    lab_confirmation: bool = LAB_CONFIRM_OPTION,
+    legacy_pack: str = LEGACY_PACK_OPTION,
+    legacy_capability: str = LEGACY_CAPABILITY_OPTION,
+    legacy_mode: str = LEGACY_MODE_OPTION,
 ) -> None:
     """Run a YAML scenario and print a run summary."""
     nexus = BlueFireNexus(str(config))
+    _apply_legacy_overrides(
+        nexus,
+        enable_all=enable_all_lab_capabilities,
+        lab_confirmation=lab_confirmation,
+        legacy_pack=legacy_pack,
+        legacy_capability=legacy_capability,
+        legacy_mode=legacy_mode,
+    )
+    _render_legacy_activation(nexus)
     result = nexus.run_scenario_file(str(scenario))
     _print_scenario_result(result)
 
@@ -52,9 +128,23 @@ def run_operation_cmd(
     module: str = MODULE_OPTION,
     payload: str = PAYLOAD_OPTION,
     config: Path = CONFIG_OPTION,
+    enable_all_lab_capabilities: bool = LAB_ALL_OPTION,
+    lab_confirmation: bool = LAB_CONFIRM_OPTION,
+    legacy_pack: str = LEGACY_PACK_OPTION,
+    legacy_capability: str = LEGACY_CAPABILITY_OPTION,
+    legacy_mode: str = LEGACY_MODE_OPTION,
 ) -> None:
     """Run one module operation from inline JSON payload."""
     nexus = BlueFireNexus(str(config))
+    _apply_legacy_overrides(
+        nexus,
+        enable_all=enable_all_lab_capabilities,
+        lab_confirmation=lab_confirmation,
+        legacy_pack=legacy_pack,
+        legacy_capability=legacy_capability,
+        legacy_mode=legacy_mode,
+    )
+    _render_legacy_activation(nexus)
     data = json.loads(payload)
     result = nexus.execute_operation(module, data)
     console.print(Panel.fit(json.dumps(result, indent=2), title="Operation Result"))
@@ -91,6 +181,13 @@ def mutate_technique_cmd(
     data = json.loads(payload)
     mutated = nexus.mutate_technique(module_name=module, base_params=data, strategy=strategy)
     console.print(Panel.fit(json.dumps(mutated, indent=2), title="Technique Mutation"))
+
+
+@app.command("legacy-controls")
+def legacy_controls_cmd(config: Path = CONFIG_OPTION) -> None:
+    """Show current master and granular legacy safety toggles."""
+    nexus = BlueFireNexus(str(config))
+    _render_legacy_activation(nexus)
 
 
 def main() -> None:

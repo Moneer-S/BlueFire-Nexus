@@ -1,6 +1,7 @@
 import os
 import tempfile
 
+from src.core.bluefire_nexus import BlueFireNexus
 from src.core.config import ConfigManager, config
 from src.core.rate_limiter import rate_limiter
 from src.core.security import security
@@ -68,3 +69,15 @@ def test_config_management(tmp_path) -> None:
     reloaded = ConfigManager(str(test_config))
     assert reloaded.get("test.key") == "value"
     assert config.get("general.mode") in {"simulation", "testing", "production"}
+
+
+def test_bluefire_registers_legacy_modules() -> None:
+    nexus = BlueFireNexus()
+    for module_name in {
+        "legacy_capability_summary",
+        "legacy_actor_profile",
+        "legacy_apt29_research",
+        "legacy_protocol_research",
+        "legacy_stealth_research",
+    }:
+        assert module_name in nexus.modules

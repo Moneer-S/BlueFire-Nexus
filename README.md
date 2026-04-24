@@ -55,6 +55,45 @@ python -m src.core.cli plan "Emulate APT29 credential access chain"
 python -m src.core.cli suggest-detections run-20260101010101-abcd1234
 ```
 
+### Enable legacy capability packs quickly or granularly
+BlueFire-Nexus now supports advanced legacy research packs for actor emulation,
+protocol/C2 experiments, and stealth research. These remain disabled by default
+and are communicated up front through config and CLI output.
+
+For a single global lab toggle in `config.yaml`:
+
+```yaml
+modules:
+  legacy:
+    enable_all_lab_capabilities: true
+    lab_confirmation: true
+    global_mode: simulate
+```
+
+For granular per-pack and per-capability control:
+
+```yaml
+modules:
+  legacy:
+    actor_pack:
+      enabled: true
+      mode: simulate
+      capabilities:
+        apt29:
+          enabled: true
+    c2_pack:
+      enabled: false
+      capabilities:
+        dns_tunneling:
+          enabled: true
+```
+
+The runtime prints a legacy activation summary showing:
+- whether the global master toggle is on,
+- which packs/capabilities are enabled,
+- whether activation came from the master or granular controls,
+- whether each capability is in `simulate` or `emulate` mode.
+
 ### Programmatic usage
 ```python
 from src.core.bluefire_nexus import BlueFireNexus
@@ -88,6 +127,22 @@ flowchart LR
 - `scenarios/fin7_initial_access_to_c2.yaml`
 - `scenarios/healthcare_ransomware.yaml`
 - `scenarios/insider_exfil_dns.yaml`
+- `scenarios/legacy_actor_apt29.yaml`
+- `scenarios/legacy_c2_protocols.yaml`
+- `scenarios/legacy_stealth_research.yaml`
+- `scenarios/legacy_flagship_blended.yaml`
+
+## Legacy capability packs
+
+These packs preserve and surface the most advanced research-oriented parts of
+the codebase instead of hiding or deleting them:
+
+- Actor pack: APT29/APT28/APT32/APT38/APT41 research profiles
+- C2/protocol pack: DNS tunneling, TLS fast-flux-style beaconing, QUIC, Solana RPC
+- Stealth pack: anti-forensic, anti-sandbox, anti-detection, dynamic API research
+
+All of these are normalized into the same runtime model used by standard
+modules, so they can produce telemetry, reports, and detection drafts.
 
 ## AI provider strategy
 

@@ -38,6 +38,7 @@ class ConfigManager:
                     "auto_wipe": False,
                     "max_runtime": 3600,
                     "allowed_subnets": ["10.0.0.0/24"],
+                    "allowed_domains": ["*.example.lab", "example.lab", "localhost"],
                 },
             },
             "modules": {
@@ -46,6 +47,52 @@ class ConfigManager:
                     "provider": "template",
                     "model": "default",
                     "api_base": "",
+                },
+                "legacy": {
+                    "enable_all_lab_capabilities": False,
+                    "lab_confirmation": False,
+                    "announce_activation": True,
+                    "actor_pack": {
+                        "enabled": False,
+                        "mode": "simulate",
+                        "lab_confirmation": False,
+                        "capabilities": {
+                            "apt29": {"enabled": False, "lab_confirmation": False},
+                            "apt28": {"enabled": False, "lab_confirmation": False},
+                            "apt32": {"enabled": False, "lab_confirmation": False},
+                            "apt38": {"enabled": False, "lab_confirmation": False},
+                            "apt41": {"enabled": False, "lab_confirmation": False},
+                        },
+                    },
+                    "c2_pack": {
+                        "enabled": False,
+                        "mode": "simulate",
+                        "lab_confirmation": False,
+                        "capabilities": {
+                            "dns_tunneling": {"enabled": False, "lab_confirmation": False},
+                            "tls_fast_flux": {"enabled": False, "lab_confirmation": False},
+                            "websocket_quic": {"enabled": False, "lab_confirmation": False},
+                            "solana_rpc": {"enabled": False, "lab_confirmation": False},
+                            "network_obfuscator_legacy": {
+                                "enabled": False,
+                                "lab_confirmation": False,
+                            },
+                        },
+                    },
+                    "stealth_pack": {
+                        "enabled": False,
+                        "mode": "simulate",
+                        "lab_confirmation": False,
+                        "capabilities": {
+                            "anti_forensic": {"enabled": False, "lab_confirmation": False},
+                            "anti_sandbox": {"enabled": False, "lab_confirmation": False},
+                            "anti_detection_legacy": {
+                                "enabled": False,
+                                "lab_confirmation": False,
+                            },
+                            "dynamic_api": {"enabled": False, "lab_confirmation": False},
+                        },
+                    },
                 },
                 "command_control": {"enabled": False},
                 "discovery": {"enabled": True},
@@ -149,6 +196,34 @@ class ConfigManager:
             if match:
                 return os.getenv(match.group(1), "")
         return value
+
+    def legacy_activation_summary(self) -> Dict[str, Any]:
+        """Return a concise view of global and granular legacy capability activation."""
+        modules_cfg = self.config.get("modules", {})
+        legacy_cfg = modules_cfg.get("legacy", {})
+        summary: Dict[str, Any] = {
+            "enable_all_lab_capabilities": bool(
+                legacy_cfg.get("enable_all_lab_capabilities", False)
+            ),
+            "announce_activation": bool(legacy_cfg.get("announce_activation", True)),
+            "packs": {},
+        }
+
+        for pack_name in ("actor_pack", "c2_pack", "stealth_pack"):
+            pack_cfg = legacy_cfg.get(pack_name, {})
+            capability_cfg = pack_cfg.get("capabilities", {})
+            enabled_capabilities = sorted(
+                name
+                for name, settings in capability_cfg.items()
+                if isinstance(settings, dict) and settings.get("enabled", False)
+            )
+            summary["packs"][pack_name] = {
+                "enabled": bool(pack_cfg.get("enabled", False)),
+                "mode": str(pack_cfg.get("mode", "simulate")),
+                "lab_confirmation": bool(pack_cfg.get("lab_confirmation", False)),
+                "enabled_capabilities": enabled_capabilities,
+            }
+        return summary
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a value from dot-notation key path."""

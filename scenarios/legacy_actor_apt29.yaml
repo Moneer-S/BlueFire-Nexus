@@ -1,0 +1,45 @@
+id: legacy_actor_apt29
+name: Legacy APT29 Research Pack
+objective: Exercise the legacy APT29 actor capability pack through the modern runtime adapter layer.
+attack_coverage:
+  - T1566
+  - T1059
+  - T1036
+  - T1071.004
+fail_fast: false
+steps:
+  - id: legacy-summary
+    name: Show effective legacy capability enablement
+    module: legacy_capability_summary
+    params: {}
+  - id: actor-profile
+    name: Load APT29 actor profile
+    module: legacy_actor_profile
+    params:
+      actor: apt29
+  - id: apt29-phishing
+    name: Simulate APT29 phishing campaign
+    module: legacy_apt29_research
+    params:
+      technique: phishing
+      target: analyst@example.lab
+  - id: apt29-powershell
+    name: Simulate APT29 PowerShell tradecraft
+    module: legacy_apt29_research
+    params:
+      technique: powershell
+      command: powershell -nop -w hidden -enc UwB0AGEAcgB0AC0AUAByAG8AYwBlAHMAcwA=
+  - id: apt29-hollowing
+    name: Simulate APT29 process hollowing research
+    module: legacy_apt29_research
+    params:
+      technique: process_hollowing
+      target_process: svchost.exe
+expected_detections:
+  - Legacy actor enablement summary should identify master vs granular activation
+  - APT29 phishing telemetry should produce ATT&CK-mapped email detections
+  - PowerShell and process hollowing research should produce host-side detection drafts
+blue_team_guidance:
+  - Review the legacy summary artifact to confirm the run was simulate or emulate and whether activation came from the master toggle or capability toggle.
+  - Correlate phishing sender metadata with host process creation to validate detection chaining across the actor pack.
+  - Inspect generated Sigma, YARA-L, and SPL artifacts to tune encoded PowerShell and hollowing analytics.
