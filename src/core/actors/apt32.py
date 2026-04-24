@@ -14,6 +14,10 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 from pathlib import Path
 
+from ..anti_detection import AntiDetectionManager
+from ..intelligence.apt28_intelligence import APT28Intelligence as APT32Intelligence
+from ..network.network_obfuscator import NetworkObfuscator
+
 class APT32:
     """Implements APT32's core capabilities"""
     
@@ -274,7 +278,7 @@ class APT32:
             if technique == "traffic_obfuscation":
                 result = self.network_obfuscator.obfuscate_traffic(result)
             elif technique == "detection_evasion":
-                result = self.anti_detection.evade_detection(result)
+                result["detection_evasion"] = self.anti_detection.evade_detection()
             # Add more evasion techniques as needed
             
         return result

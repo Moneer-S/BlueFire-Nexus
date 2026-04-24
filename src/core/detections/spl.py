@@ -3,16 +3,58 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Mapping
 
 from ..models import ModuleResult
+
+
+def _quote(value: str) -> str:
+    return value.replace('"', '\\"')
+
+
+def _legacy_fields(hints: Mapping[str, Any], artifacts: Mapping[str, Any]) -> dict[str, str]:
+    legacy = artifacts.get("legacy")
+    payload = legacy.get("payload", {}) if isinstance(legacy, Mapping) else {}
+    fields: dict[str, str] = {}
+    for key in (
+        "protocol",
+        "transport",
+        "endpoint",
+        "command",
+        "target_process",
+        "campaign_id",
+        "actor",
+        "tactic",
+        "technique",
+        "mode",
+        "capability",
+    ):
+        value = payload.get(key) if isinstance(payload, Mapping) else None
+        if value is None:
+            value = hints.get(key)
+        if value is not None:
+            fields[key] = str(value)
+    return fields
 
 
 def render_spl(result: ModuleResult, run_id: str) -> str:
     technique = result.techniques[0] if result.techniques else "T0000"
     module = result.module
+    hints = result.detection_hints or {}
+    fields = _legacy_fields(hints, result.artifacts or {})
+    eval_parts = [
+        f'run_id="{_quote(run_id)}"',
+        f'module="{_quote(module)}"',
+        f'technique="{_quote(technique)}"',
+    ]
+    for key, value in fields.items():
+        eval_parts.append(f'{key}="{_quote(value)}"')
+    table_fields = ["run_id", "module", "technique", *fields.keys()]
     return (
-        f'| makeresults | eval run_id="{run_id}", module="{module}", technique="{technique}" '
-        '| where module!="" | table run_id module technique'
+        "| makeresults | eval "
+        + ", ".join(eval_parts)
+        + " | where module!=\"\" | table "
+        + " ".join(table_fields)
     )
 
 

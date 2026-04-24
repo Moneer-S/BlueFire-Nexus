@@ -14,6 +14,10 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 from pathlib import Path
 
+from src.core.anti_detection import AntiDetectionManager
+from src.core.intelligence.apt_intelligence import APTIntelligence
+from src.core.network.network_obfuscator import NetworkObfuscator
+
 class APT41:
     """Implements APT41's core capabilities"""
     
@@ -227,7 +231,7 @@ class APT41:
         # Initialize components
         self.network_obfuscator = NetworkObfuscator()
         self.anti_detection = AntiDetectionManager()
-        self.intelligence = APT41Intelligence()
+        self.intelligence = APTIntelligence(self.name)
         
     def execute_technique(self, tactic: str, technique: str, **kwargs) -> Dict[str, Any]:
         """Execute a specific technique"""
@@ -274,7 +278,7 @@ class APT41:
             if technique == "traffic_obfuscation":
                 result = self.network_obfuscator.obfuscate_traffic(result)
             elif technique == "detection_evasion":
-                result = self.anti_detection.evade_detection(result)
+                result["detection_evasion"] = self.anti_detection.evade_detection()
             # Add more evasion techniques as needed
             
         return result

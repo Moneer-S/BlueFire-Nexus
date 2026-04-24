@@ -87,12 +87,14 @@ class LegacyAdapterBase(BaseModule):
         pack_name: str | None = None,
         capability_name: str | None = None,
     ) -> str:
+        module_mode = self._config.get("mode")
+        module_mode_str = str(module_mode) if module_mode is not None else None
         decision = evaluate_legacy_capability(
             context.get("config", {}),
             pack_name or self.pack_name,
             capability_name or self.capability_name,
             module_enabled=bool(self._config.get("enabled", False)),
-            module_mode=str(self._config.get("mode", self.default_mode)),
+            module_mode=module_mode_str,
             module_acknowledged=bool(
                 self._config.get("lab_confirmation", False)
                 or self._config.get("i_understand_this_is_a_lab", False)
@@ -132,12 +134,14 @@ class LegacyAdapterBase(BaseModule):
         effective_enabled: bool | None = None,
         mode: str | None = None,
     ) -> LegacyCapabilityDecision:
+        module_mode = self._config.get("mode")
+        module_mode_str = str(module_mode) if module_mode is not None else None
         decision = evaluate_legacy_capability(
             context.get("config", {}),
             pack_name or self.pack_name,
             capability_name or self.capability_name,
             module_enabled=bool(self._config.get("enabled", False)),
-            module_mode=mode or str(self._config.get("mode", self.default_mode)),
+            module_mode=mode or module_mode_str,
             module_acknowledged=bool(
                 self._config.get("lab_confirmation", False)
                 or self._config.get("i_understand_this_is_a_lab", False)

@@ -3,14 +3,6 @@ import sys
 import platform
 import psutil
 import ctypes
-import win32api
-import win32con
-import win32security
-import win32process
-import win32event
-import win32service
-import win32serviceutil
-import win32timezone
 import socket
 import struct
 import time
@@ -20,6 +12,35 @@ from ..core.logger import get_logger
 from ..core.security import security
 
 logger = get_logger(__name__)
+
+if platform.system() == "Windows":
+    try:
+        import win32api  # type: ignore
+        import win32con  # type: ignore
+        import win32security  # type: ignore
+        import win32process  # type: ignore
+        import win32event  # type: ignore
+        import win32service  # type: ignore
+        import win32serviceutil  # type: ignore
+        import win32timezone  # type: ignore
+    except Exception:
+        win32api = None  # type: ignore[assignment]
+        win32con = None  # type: ignore[assignment]
+        win32security = None  # type: ignore[assignment]
+        win32process = None  # type: ignore[assignment]
+        win32event = None  # type: ignore[assignment]
+        win32service = None  # type: ignore[assignment]
+        win32serviceutil = None  # type: ignore[assignment]
+        win32timezone = None  # type: ignore[assignment]
+else:
+    win32api = None  # type: ignore[assignment]
+    win32con = None  # type: ignore[assignment]
+    win32security = None  # type: ignore[assignment]
+    win32process = None  # type: ignore[assignment]
+    win32event = None  # type: ignore[assignment]
+    win32service = None  # type: ignore[assignment]
+    win32serviceutil = None  # type: ignore[assignment]
+    win32timezone = None  # type: ignore[assignment]
 
 class AntiDetectionManager:
     """Advanced anti-detection and evasion techniques."""

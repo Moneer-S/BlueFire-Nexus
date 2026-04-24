@@ -13,6 +13,9 @@ import base64
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from pathlib import Path
+from src.core.anti_detection import AntiDetectionManager
+from src.core.intelligence.apt28_intelligence import APT28Intelligence
+from src.core.network.network_obfuscator import NetworkObfuscator
 
 class APT28:
     """Implements APT28's core capabilities"""
@@ -274,7 +277,7 @@ class APT28:
             if technique == "traffic_obfuscation":
                 result = self.network_obfuscator.obfuscate_traffic(result)
             elif technique == "detection_evasion":
-                result = self.anti_detection.evade_detection(result)
+                result["detection_evasion"] = self.anti_detection.evade_detection()
             # Add more evasion techniques as needed
             
         return result

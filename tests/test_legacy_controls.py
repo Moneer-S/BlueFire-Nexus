@@ -60,3 +60,43 @@ def test_legacy_module_runs_with_granular_enablement(tmp_path: Path) -> None:
     assert result["module"] == "legacy_apt29_research"
     assert result["artifacts"]["legacy"]["pack"] == "actor_pack"
     assert result["artifacts"]["legacy"]["mode"] == "simulate"
+
+
+def test_legacy_protocol_alias_resolves_granular_enablement(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.yaml"
+    cfg = ConfigManager(str(cfg_path))
+    cfg.set("modules.legacy.c2_pack.capabilities.websocket_quic.enabled", True)
+    cfg.save()
+
+    nexus = BlueFireNexus(str(cfg_path))
+    result = nexus.execute_operation(
+        "legacy_protocol_research",
+        {
+            "protocol": "quic_c2",
+            "endpoint": "quic://edge.example.lab:4433",
+            "cadence_seconds": 12,
+        },
+    )
+
+    assert result["status"] == "success"
+    assert result["module"] == "legacy_protocol_research"
+    assert result["artifacts"]["legacy"]["capability"] == "websocket_quic"
+    assert result["artifacts"]["legacy"]["payload"]["protocol"] == "websocket_quic"
+
+
+def test_legacy_stealth_alias_uses_anti_detection_capability(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.yaml"
+    cfg = ConfigManager(str(cfg_path))
+    cfg.set("modules.legacy.stealth_pack.capabilities.anti_detection_legacy.enabled", True)
+    cfg.save()
+
+    nexus = BlueFireNexus(str(cfg_path))
+    result = nexus.execute_operation(
+        "legacy_stealth_research",
+        {"capability": "anti_detection", "target": "analysis-node"},
+    )
+
+    assert result["status"] == "success"
+    assert result["module"] == "legacy_stealth_research"
+    assert result["artifacts"]["legacy"]["capability"] == "anti_detection_legacy"
+    assert result["artifacts"]["legacy"]["payload"]["capability"] == "anti_detection_legacy"

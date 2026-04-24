@@ -6,8 +6,15 @@ from typing import Any, Dict
 
 
 def build_yara_l_rule(run_id: str, module: str, hint: Dict[str, Any]) -> str:
-    technique_id = hint.get("mitre_technique_id", "T0000")
-    process_name = hint.get("process_name", module)
+    technique_id = hint.get("mitre_technique_id") or hint.get("mitre_technique") or "T0000"
+    process_name = (
+        hint.get("process_name")
+        or hint.get("process_command_line")
+        or hint.get("network_url")
+        or hint.get("endpoint")
+        or module
+    )
+    event_type = str(hint.get("event_type", "PROCESS_LAUNCH"))
     safe_name = f"{module}_{run_id}".replace("-", "_")
     return (
         f"rule bluefire_{safe_name}_{technique_id.replace('.', '_').replace('-', '_')} {{\n"
@@ -16,7 +23,7 @@ def build_yara_l_rule(run_id: str, module: str, hint: Dict[str, Any]) -> str:
         f"    run_id = \"{run_id}\"\n"
         "    generated_by = \"BlueFire-Nexus\"\n"
         "  events:\n"
-        "    $e.metadata.event_type = \"PROCESS_LAUNCH\"\n"
+        f"    $e.metadata.event_type = \"{event_type}\"\n"
         f"    $e.target.process.file.full_path contains \"{process_name}\"\n"
         "  condition:\n"
         "    $e\n"

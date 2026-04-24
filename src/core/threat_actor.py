@@ -45,6 +45,26 @@ class ThreatActor:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         random_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
         return f"threat_emulation_{timestamp}_{random_suffix}"
+
+    def log_operation(self, operation: str, details: Dict[str, Any]) -> None:
+        """Compatibility logger used by actor subclasses."""
+        self.operation_log.append(
+            {
+                "timestamp": datetime.now().isoformat(),
+                "event": operation,
+                "details": details,
+            }
+        )
+
+    def log_error(self, operation: str, message: str) -> None:
+        """Compatibility error logger used by actor subclasses."""
+        self.operation_log.append(
+            {
+                "timestamp": datetime.now().isoformat(),
+                "event": f"{operation}_error",
+                "error": message,
+            }
+        )
     
     def initialize_operation(self, target_info: Dict[str, Any]) -> bool:
         """
@@ -68,8 +88,11 @@ class ThreatActor:
                 "target_info": target_info
             })
             
-            # Initialize security context
-            security.initialize_security_context()
+            # Initialize security context where supported by the active manager.
+            if hasattr(security, "initialize_security_context"):
+                security.initialize_security_context()
+            else:
+                security.generate_key()
             
             # Set up anti-detection measures
             anti_detection.check_environment()

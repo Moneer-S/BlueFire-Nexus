@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Mapping
+from urllib.parse import urlparse
 
 from ...legacy_controls import (
     build_legacy_summary,
@@ -12,6 +13,20 @@ from ...legacy_controls import (
 from ...models import ModuleResult, TelemetryEvent
 from ..base import BaseModule
 from .legacy_base import LegacyAdapterBase
+from .legacy_runtime import (
+    flatten_indicators,
+    instantiate_apt_actor,
+    normalize_protocol_key,
+    normalize_stealth_key,
+    run_actor_technique,
+    run_dns_tunneling,
+    run_network_obfuscation,
+    run_quic_placeholder,
+    run_solana_rpc,
+    run_stealth_capability,
+    run_tls_fast_flux,
+    safe_call,
+)
 
 
 def _legacy_result(
@@ -53,6 +68,12 @@ def _capability_artifacts(
             "payload": dict(payload or {}),
         }
     }
+
+
+def _endpoint_host(endpoint: str) -> str:
+    if "://" in endpoint:
+        return (urlparse(endpoint).hostname or "").lower()
+    return endpoint.split("/", 1)[0].split(":", 1)[0].lower()
 
 
 class LegacyPackSummaryModule(BaseModule):
@@ -105,6 +126,12 @@ class LegacyActorProfileModule(LegacyAdapterBase):
         )
 
         tactics = list(params.get("tactics", [])) or [profile["focus"]]
+        runtime = safe_call(instantiate_apt_actor, actor_key) if mode == "emulate" else None
+        runtime_class = (
+            runtime.__class__.__name__
+            if runtime is not None and not isinstance(runtime, dict)
+            else "simulated"
+        )
         event = TelemetryEvent(
             event_type="legacy_actor_profile",
             module=self.name,
@@ -113,6 +140,7 @@ class LegacyActorProfileModule(LegacyAdapterBase):
                 "actor": actor_key,
                 "mode": mode,
                 "tactics": tactics,
+                "runtime_class": runtime_class,
             },
         )
         hints = {
@@ -135,6 +163,7 @@ class LegacyActorProfileModule(LegacyAdapterBase):
             {
                 "profile": profile,
                 "tactics": tactics,
+                "runtime_class": runtime_class,
                 "simulate_only": mode == "simulate",
             },
         )
@@ -253,6 +282,32 @@ class LegacyApt29ResearchModule(LegacyAdapterBase):
             }
             techniques = ["T1071.004"]
 
+        if mode == "emulate":
+            runtime = safe_call(
+                run_actor_technique,
+                "apt29",
+                self._resolve_tactic(technique),
+                technique,
+                {**dict(params), "target": target},
+            )
+            details["runtime_outcome"] = runtime
+            indicators = flatten_indicators(runtime)
+            if indicators:
+                details["runtime_indicators"] = indicators
+                hints.setdefault("legacy_indicators", {}).update(indicators)
+            if runtime.get("status") == "failure":
+                details["runtime_warning"] = (
+                    "legacy actor runtime failed for apt29/"
+                    f"{technique}: {runtime.get('error')}"
+                )
+        else:
+            details["runtime_outcome"] = {
+                "status": "simulated",
+                "actor": "apt29",
+                "technique": technique,
+                "reason": "simulate mode selected",
+            }
+
         event = TelemetryEvent(
             event_type="legacy_apt29_research",
             module=self.name,
@@ -280,19 +335,47 @@ class LegacyApt29ResearchModule(LegacyAdapterBase):
             telemetry=[event],
         )
 
+    @staticmethod
+    def _resolve_tactic(technique: str) -> str:
+        if technique == "phishing":
+            return "initial_access"
+        if technique == "powershell":
+            return "execution"
+        if technique == "process_hollowing":
+            return "defense_evasion"
+        return "command_and_control"
+
 
 class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
-    """Adapter for the non-APT29 actor profile classes."""
+    """Adapter for non-APT29 actor profile classes."""
 
     attack_techniques = ("T1589", "T1059", "T1071")
     pack_name = "actor_pack"
     capability_name = "apt28"
     actor_name = "APT28"
 
+    _TACTIC_TO_TECHNIQUE = {
+        "initial_access": "T1566",
+        "execution": "T1059",
+        "defense_evasion": "T1036",
+        "command_and_control": "T1071",
+    }
+
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        mode = self._effective_mode(context, self.pack_name, self.capability_name)
-        self._ensure_allowed(context)
-        tactic = str(params.get("tactic", "execution"))
+        actor_key = self.actor_name.lower()
+        mode = self._effective_mode(context, self.pack_name, actor_key)
+        self._ensure_allowed(
+            context,
+            pack_name=self.pack_name,
+            capability_name=actor_key,
+            effective_enabled=capability_effective_enabled(
+                context.get("config", {}),
+                self.pack_name,
+                actor_key,
+            ),
+            mode=mode,
+        )
+        tactic = str(params.get("tactic", "execution")).lower()
         technique = str(params.get("technique", "powershell"))
         target = str(params.get("target", "lab-user"))
         details = {
@@ -302,6 +385,33 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
             "target": target,
             "mode": mode,
         }
+        mitre = self._TACTIC_TO_TECHNIQUE.get(tactic, "T1589")
+
+        if mode == "emulate":
+            runtime = safe_call(
+                run_actor_technique,
+                actor_key,
+                tactic,
+                technique,
+                {**dict(params), "target": target},
+            )
+            details["runtime_outcome"] = runtime
+            indicators = flatten_indicators(runtime)
+            if indicators:
+                details["runtime_indicators"] = indicators
+            if runtime.get("status") == "failure":
+                details["runtime_warning"] = (
+                    "legacy actor runtime failed for "
+                    f"{actor_key}/{technique}: {runtime.get('error')}"
+                )
+        else:
+            details["runtime_outcome"] = {
+                "status": "simulated",
+                "actor": actor_key,
+                "technique": technique,
+                "reason": "simulate mode selected",
+            }
+
         event = TelemetryEvent(
             event_type="legacy_actor_technique",
             module=self.name,
@@ -318,12 +428,12 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
                 },
                 "condition": "selection",
             },
-            "mitre_technique": "T1589" if tactic == "initial_access" else "T1059",
+            "mitre_technique": mitre,
         }
         artifacts = _capability_artifacts(
             context,
             self.pack_name,
-            self.capability_name,
+            actor_key,
             mode,
             details,
         )
@@ -331,7 +441,7 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
             self.name,
             "success",
             f"{self.actor_name} legacy tactic '{tactic}' / '{technique}' prepared in {mode} mode.",
-            techniques=[hints["mitre_technique"]],
+            techniques=[mitre],
             artifacts=artifacts,
             hints=hints,
             telemetry=[event],
@@ -347,12 +457,21 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
     _SUPPORTED = {
         "dns_tunneling": ("T1071.004", "dns"),
         "tls_fast_flux": ("T1090", "https"),
-        "quic_c2": ("T1572", "quic"),
+        "websocket_quic": ("T1572", "quic"),
         "solana_rpc": ("T1572", "rpc"),
+        "network_obfuscator_legacy": ("T1090", "multi"),
+    }
+
+    _DEFAULT_ENDPOINTS = {
+        "dns_tunneling": "exfil.example.lab",
+        "tls_fast_flux": "https://edge.example.lab",
+        "websocket_quic": "quic://edge.example.lab:4433",
+        "solana_rpc": "https://rpc.example.lab",
+        "network_obfuscator_legacy": "edge.example.lab",
     }
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        capability = str(params.get("protocol", "dns_tunneling")).lower()
+        capability = normalize_protocol_key(str(params.get("protocol", "dns_tunneling")))
         if capability not in self._SUPPORTED:
             capability = "dns_tunneling"
         self.capability_name = capability
@@ -373,12 +492,7 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
         endpoint = str(
             params.get("endpoint")
             or params.get("domain")
-            or {
-                "dns_tunneling": "exfil.example.lab",
-                "tls_fast_flux": "https://edge.example.lab",
-                "quic_c2": "quic://edge.example.lab:4433",
-                "solana_rpc": "https://rpc.example.lab",
-            }[capability]
+            or self._DEFAULT_ENDPOINTS[capability]
         )
         cadence = int(params.get("cadence_seconds", 30))
         details = {
@@ -388,10 +502,50 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
             "cadence_seconds": cadence,
             "mode": mode,
         }
-        if not self._domain_allowed(context, endpoint):
+
+        if capability != "network_obfuscator_legacy" and not self._domain_allowed(
+            context, endpoint
+        ):
             return self.blocked_result(
                 f"legacy protocol endpoint '{endpoint}' is outside allowed legacy lab domains"
             )
+
+        if mode == "emulate":
+            if capability == "dns_tunneling":
+                payload = str(params.get("data", "legacy-dns-payload")).encode()
+                runtime = safe_call(run_dns_tunneling, endpoint, payload)
+            elif capability == "tls_fast_flux":
+                runtime = safe_call(run_tls_fast_flux, endpoint, dict(params))
+            elif capability == "websocket_quic":
+                runtime = safe_call(run_quic_placeholder, endpoint)
+            elif capability == "solana_rpc":
+                instruction = str(params.get("instruction", "noop"))
+                runtime = safe_call(run_solana_rpc, endpoint, instruction)
+            else:
+                runtime = safe_call(run_network_obfuscation, dict(params))
+            details["runtime_outcome"] = runtime
+            details["runtime_outcome"].setdefault("protocol", capability)
+            indicators = flatten_indicators(runtime)
+            if indicators:
+                details["runtime_indicators"] = indicators
+            if runtime.get("status") == "failure":
+                details["runtime_warning"] = (
+                    "legacy protocol runtime failed for "
+                    f"{capability}: {runtime.get('error')}"
+                )
+        else:
+            details["runtime_outcome"] = {
+                "status": "simulated",
+                "protocol": capability,
+                "reason": "simulate mode selected",
+            }
+
+        if capability == "dns_tunneling":
+            details.setdefault("dns_record_type", "TXT")
+            details.setdefault("chunk_size", 48)
+        if capability == "tls_fast_flux":
+            details.setdefault("rotation_count", 1)
+
         event = TelemetryEvent(
             event_type="legacy_protocol_research",
             module=self.name,
@@ -403,7 +557,7 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
             "detection": {
                 "selection": {
                     "network.transport": transport,
-                    "network.endpoint|contains": endpoint.split("://")[-1].split("/")[0],
+                    "network.endpoint|contains": _endpoint_host(endpoint) or endpoint,
                 },
                 "condition": "selection",
             },
@@ -430,13 +584,13 @@ class LegacyStealthResearchModule(LegacyAdapterBase):
 
     _SUPPORTED = {
         "anti_forensic": ("T1070", "cleanup"),
-        "anti_detection": ("T1562", "evasion"),
+        "anti_detection_legacy": ("T1562", "evasion"),
         "anti_sandbox": ("T1497", "environment_check"),
         "dynamic_api": ("T1027", "api_resolution"),
     }
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        capability = str(params.get("capability", "anti_forensic")).lower()
+        capability = normalize_stealth_key(str(params.get("capability", "anti_forensic")))
         if capability not in self._SUPPORTED:
             capability = "anti_forensic"
         self.capability_name = capability
@@ -466,16 +620,11 @@ class LegacyStealthResearchModule(LegacyAdapterBase):
             details["api_hash"] = str(params.get("api_hash", "0xA3D82B19"))
         elif capability == "anti_forensic":
             details["cleanup_targets"] = ["event_logs", "temp_files"]
-        elif capability == "anti_detection":
+        elif capability == "anti_detection_legacy":
             details["checks"] = ["sandbox", "vm", "debugger"]
         else:
             details["signals"] = ["hostname", "mac", "process_list"]
 
-        event = TelemetryEvent(
-            event_type="legacy_stealth_research",
-            module=self.name,
-            details={"run_id": context.get("run_id", "unknown"), **details},
-        )
         hints = {
             "title": f"Legacy stealth research: {capability}",
             "logsource": {"category": "process_creation", "product": "host"},
@@ -488,6 +637,31 @@ class LegacyStealthResearchModule(LegacyAdapterBase):
             },
             "mitre_technique": technique,
         }
+
+        if mode == "emulate":
+            runtime = safe_call(run_stealth_capability, capability, params)
+            details["runtime_outcome"] = runtime
+            if runtime.get("status") == "failure":
+                details["runtime_warning"] = (
+                    "legacy stealth capability "
+                    f"'{capability}' failed: {runtime.get('error')}"
+                )
+            indicators = flatten_indicators(runtime)
+            if indicators:
+                details["runtime_indicators"] = indicators
+                hints.setdefault("legacy_indicators", {}).update(indicators)
+        else:
+            details["runtime_outcome"] = {
+                "status": "simulated",
+                "capability": capability,
+                "reason": "simulate mode selected",
+            }
+
+        event = TelemetryEvent(
+            event_type="legacy_stealth_research",
+            module=self.name,
+            details={"run_id": context.get("run_id", "unknown"), **details},
+        )
         artifacts = _capability_artifacts(context, self.pack_name, capability, mode, details)
         return _legacy_result(
             self.name,
@@ -501,7 +675,7 @@ class LegacyStealthResearchModule(LegacyAdapterBase):
 
     @staticmethod
     def _platform_support(capability: str) -> str:
-        if capability in {"anti_forensic", "anti_detection", "dynamic_api"}:
+        if capability in {"anti_forensic", "anti_detection_legacy", "dynamic_api"}:
             return "windows-preferred"
         return "cross-platform"
 

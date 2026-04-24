@@ -61,19 +61,74 @@ def write_markdown_report(
 ) -> Path:
     """Write a human-readable purple-team report."""
     report_path = run_dir / "report.md"
+    pack_stats = {
+        "actor_pack": {"count": 0, "simulate": 0, "emulate": 0},
+        "c2_pack": {"count": 0, "simulate": 0, "emulate": 0},
+        "stealth_pack": {"count": 0, "simulate": 0, "emulate": 0},
+    }
+    attack_coverage: set[str] = set()
+    detection_total = 0
+    for outputs in detections.values():
+        detection_total += len(outputs)
+
     lines = [
         f"# BlueFire Run Report: {scenario_name}",
         "",
-        "## Module Results",
+        "## Legacy Capability Pack Summary",
         "",
     ]
+    for result in results.values():
+        if result.techniques:
+            attack_coverage.update(result.techniques)
+        legacy = result.artifacts.get("legacy")
+        if not isinstance(legacy, dict):
+            continue
+        pack_name = str(legacy.get("pack", ""))
+        mode = str(legacy.get("mode", "simulate")).lower()
+        if pack_name not in pack_stats:
+            continue
+        pack_stats[pack_name]["count"] += 1
+        if mode == "emulate":
+            pack_stats[pack_name]["emulate"] += 1
+        else:
+            pack_stats[pack_name]["simulate"] += 1
+
+    coverage_text = ", ".join(sorted(attack_coverage)) if attack_coverage else "n/a"
+    lines.extend(
+        [
+            f"- ATT&CK techniques covered: {coverage_text}",
+            f"- Detection artifacts generated: {detection_total}",
+            "",
+            "### Pack Usage",
+        ]
+    )
+    for pack_name, stats in pack_stats.items():
+        lines.append(
+            f"- {pack_name}: total={stats['count']} "
+            f"simulate={stats['simulate']} emulate={stats['emulate']}"
+        )
+    lines.extend(
+        [
+            "",
+            "## Module Results",
+            "",
+        ]
+    )
     for module_name, result in results.items():
+        legacy = result.artifacts.get("legacy")
+        safety_line = ""
+        if isinstance(legacy, dict):
+            safety_line = (
+                f"- Capability Pack: `{legacy.get('pack')}` / `{legacy.get('capability')}` "
+                f"(mode: `{legacy.get('mode')}`)"
+            )
         lines.extend(
             [
                 f"### {module_name}",
                 f"- Status: `{result.status}`",
                 f"- Message: {result.message or 'n/a'}",
                 f"- Techniques: {', '.join(result.techniques) if result.techniques else 'n/a'}",
+                safety_line,
                 "",
             ]
         )
@@ -84,5 +139,5 @@ def write_markdown_report(
         for output_type, output_path in outputs.items():
             lines.append(f"  - {output_type}: `{output_path}`")
     lines.append("")
-    report_path.write_text("\n".join(lines), encoding="utf-8")
+    report_path.write_text("\n".join(line for line in lines if line), encoding="utf-8")
     return report_path
