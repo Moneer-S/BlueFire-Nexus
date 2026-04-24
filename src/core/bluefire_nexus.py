@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
+from .ai import mutate_technique as ai_mutate_technique
 from .ai.copilot import AICopilot
 from .config import ConfigManager
 from .detections import write_detection_artifacts
@@ -287,3 +288,19 @@ class BlueFireNexus:
         run_dir.mkdir(parents=True, exist_ok=True)
         copilot = AICopilot(self.config, run_dir)
         return copilot.suggest_detections(run_id)
+
+    def mutate_technique(
+        self,
+        module_name: str,
+        base_params: Mapping[str, Any],
+        strategy: str = "evasion-lite",
+    ) -> Dict[str, Any]:
+        """Apply AI-assisted technique mutation for lab research workflows."""
+        run_context = self._make_run_context()
+        mutated = ai_mutate_technique(
+            module_name=module_name,
+            base_params=base_params,
+            strategy=strategy,
+            run_id=run_context.run_id,
+        )
+        return mutated

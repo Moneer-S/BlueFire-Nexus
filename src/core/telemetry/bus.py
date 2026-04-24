@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from ..models import TelemetryEvent
 from .sinks import SinkResult, TelemetrySink, build_sinks
+
+LOGGER = logging.getLogger(__name__)
 
 
 class TelemetryBus:
@@ -22,7 +25,15 @@ class TelemetryBus:
         payload = asdict(event)
         results: list[SinkResult] = []
         for sink in self.sinks:
-            results.append(sink.send(payload))
+            sink_result = sink.send(payload)
+            results.append(sink_result)
+            if not sink_result.success:
+                # Fail closed per sink; never crash run due to telemetry delivery.
+                LOGGER.warning(
+                    "Telemetry sink '%s' failed: %s",
+                    sink_result.sink,
+                    sink_result.detail,
+                )
         return results
 
     def emit_many(self, events: Iterable[TelemetryEvent]) -> list[SinkResult]:

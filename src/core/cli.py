@@ -20,6 +20,7 @@ MODULE_OPTION = typer.Option(..., "--module")  # noqa: B008
 PAYLOAD_OPTION = typer.Option("{}", "--payload", help="JSON payload")  # noqa: B008
 GOAL_ARG = typer.Argument(...)  # noqa: B008
 RUN_ID_ARG = typer.Argument(...)  # noqa: B008
+STRATEGY_OPTION = typer.Option("evasion-lite", "--strategy")  # noqa: B008
 
 
 def _print_scenario_result(result: dict) -> None:
@@ -76,6 +77,20 @@ def suggest_detections_cmd(
     nexus = BlueFireNexus(str(config))
     suggestions = nexus.suggest_detections(run_id)
     console.print(Panel.fit(json.dumps(suggestions, indent=2), title="Detection Suggestions"))
+
+
+@app.command("mutate-technique")
+def mutate_technique_cmd(
+    module: str = MODULE_OPTION,
+    payload: str = PAYLOAD_OPTION,
+    strategy: str = STRATEGY_OPTION,
+    config: Path = CONFIG_OPTION,
+) -> None:
+    """Mutate a technique payload for lab-only research experiments."""
+    nexus = BlueFireNexus(str(config))
+    data = json.loads(payload)
+    mutated = nexus.mutate_technique(module_name=module, base_params=data, strategy=strategy)
+    console.print(Panel.fit(json.dumps(mutated, indent=2), title="Technique Mutation"))
 
 
 def main() -> None:

@@ -27,3 +27,6 @@ def test_run_experiment_series_generates_results(tmp_path: Path):
     assert results["runs"] == 2
     assert results["successes"] + results["failures"] == 2
     assert results["output_file"]
+    assert "results" in results
+    assert len(results["results"]) == 2
+    assert "detection_efficacy" in results

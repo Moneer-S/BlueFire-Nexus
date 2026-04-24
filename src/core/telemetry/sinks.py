@@ -105,15 +105,20 @@ def build_sinks(
     sink_configs: Iterable[Dict[str, Any]],
     run_dir: Path,
 ) -> list[TelemetrySink]:
-    sinks: list[TelemetrySink] = []
+    configs_by_type: Dict[str, Dict[str, Any]] = {}
     for sink_cfg in sink_configs:
-        sink_type = (sink_cfg.get("type") or "").lower()
-        if not sink_cfg.get("enabled", False):
+        sink_type = str(sink_cfg.get("type", "")).lower()
+        if sink_type:
+            configs_by_type[sink_type] = dict(sink_cfg)
+
+    # Respect the required sink preference order.
+    remote_priority = ("opensearch", "elasticsearch", "ngsiem", "splunk", "splunk_hec")
+    sinks: list[TelemetrySink] = []
+    for sink_type in remote_priority:
+        sink_cfg = configs_by_type.get(sink_type)
+        if not sink_cfg or not sink_cfg.get("enabled", False):
             continue
-        if sink_type == "jsonl":
-            sinks.append(JSONLSink(run_dir / "telemetry.jsonl"))
-            continue
-        endpoint = sink_cfg.get("endpoint")
+        endpoint = str(sink_cfg.get("endpoint", "")).strip()
         if not endpoint:
             continue
         headers = sink_cfg.get("headers") or {}
@@ -121,12 +126,17 @@ def build_sinks(
         verify_ssl = bool(sink_cfg.get("verify_ssl", True))
         if sink_type == "opensearch":
             sinks.append(OpenSearchSink(endpoint, headers, timeout, verify_ssl))
-        elif sink_type == "elasticsearch":
+            break
+        if sink_type == "elasticsearch":
             sinks.append(ElasticsearchSink(endpoint, headers, timeout, verify_ssl))
-        elif sink_type == "ngsiem":
+            break
+        if sink_type == "ngsiem":
             sinks.append(NGSIEMSink(endpoint, headers, timeout, verify_ssl))
-        elif sink_type == "splunk":
+            break
+        if sink_type in {"splunk", "splunk_hec"}:
             sinks.append(SplunkHECSink(endpoint, headers, timeout, verify_ssl))
-    if not sinks:
-        sinks.append(JSONLSink(run_dir / "telemetry.jsonl"))
+            break
+
+    # JSONL is always available and stays enabled as the default/local sink.
+    sinks.append(JSONLSink(run_dir / "telemetry.jsonl"))
     return sinks
