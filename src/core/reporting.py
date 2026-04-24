@@ -68,6 +68,7 @@ def write_markdown_report(
     }
     attack_coverage: set[str] = set()
     detection_total = 0
+    runtime_warning_count = 0
     for outputs in detections.values():
         detection_total += len(outputs)
 
@@ -85,6 +86,9 @@ def write_markdown_report(
             continue
         pack_name = str(legacy.get("pack", ""))
         mode = str(legacy.get("mode", "simulate")).lower()
+        payload = legacy.get("payload", {})
+        if isinstance(payload, dict) and payload.get("runtime_warning"):
+            runtime_warning_count += 1
         if pack_name not in pack_stats:
             continue
         pack_stats[pack_name]["count"] += 1
@@ -98,6 +102,7 @@ def write_markdown_report(
         [
             f"- ATT&CK techniques covered: {coverage_text}",
             f"- Detection artifacts generated: {detection_total}",
+            f"- Runtime warnings observed: {runtime_warning_count}",
             "",
             "### Pack Usage",
         ]
@@ -117,11 +122,15 @@ def write_markdown_report(
     for module_name, result in results.items():
         legacy = result.artifacts.get("legacy")
         safety_line = ""
+        warning_line = ""
         if isinstance(legacy, dict):
             safety_line = (
                 f"- Capability Pack: `{legacy.get('pack')}` / `{legacy.get('capability')}` "
                 f"(mode: `{legacy.get('mode')}`)"
             )
+            payload = legacy.get("payload", {})
+            if isinstance(payload, dict) and payload.get("runtime_warning"):
+                warning_line = f"- Runtime warning: {payload.get('runtime_warning')}"
         lines.extend(
             [
                 f"### {module_name}",
@@ -129,6 +138,7 @@ def write_markdown_report(
                 f"- Message: {result.message or 'n/a'}",
                 f"- Techniques: {', '.join(result.techniques) if result.techniques else 'n/a'}",
                 safety_line,
+                warning_line,
                 "",
             ]
         )

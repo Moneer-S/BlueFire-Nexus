@@ -94,6 +94,15 @@ The runtime prints a legacy activation summary showing:
 - whether activation came from the master or granular controls,
 - whether each capability is in `simulate` or `emulate` mode.
 
+CLI aliases are accepted for convenience and normalized internally:
+- C2: `quic_c2`/`quic` -> `websocket_quic`, `network_obfuscator` -> `network_obfuscator_legacy`
+- Stealth: `anti_detection` -> `anti_detection_legacy`
+
+Legacy config aliases are also supported for backward compatibility:
+- `lab_mode` -> `global_mode`
+- `lab_acknowledged` -> `global_lab_acknowledged` and `lab_confirmation`
+- `emulate_enabled: true` (capability-level) -> emulate mode with lab confirmation
+
 ### Programmatic usage
 ```python
 from src.core.bluefire_nexus import BlueFireNexus

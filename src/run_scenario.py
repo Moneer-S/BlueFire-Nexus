@@ -101,6 +101,40 @@ def _print_summary(result: Dict[str, Any]) -> None:
     console.print(table)
 
 
+def _apply_legacy_overrides(nexus: BlueFireNexus, args: argparse.Namespace) -> None:
+    """Apply per-run legacy toggle overrides from CLI arguments."""
+    if args.legacy_all:
+        nexus.config_manager.set("modules.legacy.enable_all_lab_capabilities", True)
+        nexus.config_manager.set("modules.legacy.global_mode", args.legacy_mode)
+    if args.legacy_ack:
+        nexus.config_manager.set("modules.legacy.global_lab_acknowledged", True)
+        nexus.config_manager.set("modules.legacy.lab_confirmation", True)
+
+    pack = str(getattr(args, "legacy_pack", "") or "").strip()
+    capability = str(getattr(args, "legacy_capability", "") or "").strip()
+    if pack:
+        nexus.config_manager.set(f"modules.legacy.{pack}.enabled", True)
+        nexus.config_manager.set(f"modules.legacy.{pack}.mode", args.legacy_mode)
+        if args.legacy_ack:
+            nexus.config_manager.set(f"modules.legacy.{pack}.lab_confirmation", True)
+    if pack and capability:
+        nexus.config_manager.set(
+            f"modules.legacy.{pack}.capabilities.{capability}.enabled",
+            True,
+        )
+        nexus.config_manager.set(
+            f"modules.legacy.{pack}.capabilities.{capability}.mode",
+            args.legacy_mode,
+        )
+        if args.legacy_ack:
+            nexus.config_manager.set(
+                f"modules.legacy.{pack}.capabilities.{capability}.lab_confirmation",
+                True,
+            )
+    nexus.config = nexus.config_manager.to_dict()
+    nexus._configure_modules()
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -120,13 +154,7 @@ def main() -> None:
             nexus.config = nexus.config_manager.to_dict()
             nexus._configure_modules()
 
-        if args.legacy_all:
-            nexus.config_manager.set("modules.legacy.enable_all_lab_capabilities", True)
-            nexus.config_manager.set("modules.legacy.global_mode", args.legacy_mode)
-            if args.legacy_ack:
-                nexus.config_manager.set("modules.legacy.global_lab_acknowledged", True)
-            nexus.config = nexus.config_manager.to_dict()
-            nexus._configure_modules()
+        _apply_legacy_overrides(nexus, args)
 
         legacy_summary = summarize_legacy_controls(nexus.config)
         if legacy_summary.get("enable_all_lab_capabilities") or any(

@@ -16,6 +16,22 @@ SAFE_DOMAIN_PATTERNS = (
     "*.test",
 )
 LEGACY_PACK_KEYS = ("actor_pack", "c2_pack", "stealth_pack")
+LEGACY_PACK_CAPABILITIES: Dict[str, tuple[str, ...]] = {
+    "actor_pack": ("apt29", "apt28", "apt32", "apt38", "apt41", "actor_profile"),
+    "c2_pack": (
+        "dns_tunneling",
+        "tls_fast_flux",
+        "websocket_quic",
+        "solana_rpc",
+        "network_obfuscator_legacy",
+    ),
+    "stealth_pack": (
+        "anti_forensic",
+        "anti_sandbox",
+        "anti_detection_legacy",
+        "dynamic_api",
+    ),
+}
 CAPABILITY_ALIASES: Dict[str, Dict[str, str]] = {
     "c2_pack": {
         "dns": "dns_tunneling",
@@ -75,6 +91,55 @@ def _normalize_capability(pack_key: str, capability: str) -> str:
     alias_map = CAPABILITY_ALIASES.get(pack_key, {})
     value = str(capability).lower().strip()
     return alias_map.get(value, value)
+
+
+def normalize_pack_name(pack_key: str) -> str:
+    value = str(pack_key).lower().strip()
+    if value not in LEGACY_PACK_KEYS:
+        raise ValueError(
+            f"Unknown legacy pack '{pack_key}'. Expected one of: {', '.join(LEGACY_PACK_KEYS)}"
+        )
+    return value
+
+
+def normalize_capability_name(pack_key: str, capability: str) -> str:
+    normalized_pack = normalize_pack_name(pack_key)
+    normalized_capability = _normalize_capability(normalized_pack, capability)
+    allowed = LEGACY_PACK_CAPABILITIES.get(normalized_pack, ())
+    if allowed and normalized_capability not in allowed:
+        raise ValueError(
+            f"Unknown legacy capability '{capability}' for {normalized_pack}. "
+            f"Expected one of: {', '.join(allowed)}"
+        )
+    return normalized_capability
+
+
+def capability_aliases(pack_key: str, capability: str) -> tuple[str, ...]:
+    normalized_pack = normalize_pack_name(pack_key)
+    normalized_capability = _normalize_capability(normalized_pack, capability)
+    aliases = tuple(
+        alias
+        for alias, target in CAPABILITY_ALIASES.get(normalized_pack, {}).items()
+        if target == normalized_capability
+    )
+    return aliases
+
+
+def supported_legacy_capabilities() -> Dict[str, Dict[str, Any]]:
+    """Return canonical capabilities and aliases by legacy pack."""
+    payload: Dict[str, Dict[str, Any]] = {}
+    for pack_key in LEGACY_PACK_KEYS:
+        capabilities = LEGACY_PACK_CAPABILITIES.get(pack_key, ())
+        payload[pack_key] = {
+            "capabilities": [
+                {
+                    "name": capability,
+                    "aliases": list(capability_aliases(pack_key, capability)),
+                }
+                for capability in capabilities
+            ]
+        }
+    return payload
 
 
 def _capability_candidate_keys(pack_key: str, capability: str) -> tuple[str, list[str]]:

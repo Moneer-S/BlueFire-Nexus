@@ -11,6 +11,7 @@ from rich.panel import Panel
 from rich.tree import Tree
 
 from .bluefire_nexus import BlueFireNexus
+from .legacy_controls import CAPABILITY_ALIASES
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
@@ -28,6 +29,13 @@ LEGACY_CAPABILITY_OPTION = typer.Option("", "--legacy-capability")  # noqa: B008
 LEGACY_MODE_OPTION = typer.Option("simulate", "--legacy-mode")  # noqa: B008
 
 
+def _canonical_legacy_capability(pack: str, capability: str) -> str:
+    if not capability:
+        return ""
+    alias_map = CAPABILITY_ALIASES.get(pack, {})
+    return alias_map.get(capability.lower().strip(), capability.lower().strip())
+
+
 def _apply_legacy_overrides(
     nexus: BlueFireNexus,
     *,
@@ -37,28 +45,34 @@ def _apply_legacy_overrides(
     legacy_capability: str,
     legacy_mode: str,
 ) -> None:
+    normalized_pack = legacy_pack.strip()
+    normalized_capability = _canonical_legacy_capability(normalized_pack, legacy_capability)
     if enable_all:
         nexus.config_manager.set("modules.legacy.enable_all_lab_capabilities", True)
     if lab_confirmation:
         nexus.config_manager.set("modules.legacy.lab_confirmation", True)
         nexus.config_manager.set("modules.legacy.global_lab_acknowledged", True)
-    if legacy_pack:
-        nexus.config_manager.set(f"modules.legacy.{legacy_pack}.enabled", True)
-        nexus.config_manager.set(f"modules.legacy.{legacy_pack}.mode", legacy_mode)
+    if normalized_pack:
+        nexus.config_manager.set(f"modules.legacy.{normalized_pack}.enabled", True)
+        nexus.config_manager.set(f"modules.legacy.{normalized_pack}.mode", legacy_mode)
         if lab_confirmation:
-            nexus.config_manager.set(f"modules.legacy.{legacy_pack}.lab_confirmation", True)
-    if legacy_pack and legacy_capability:
+            nexus.config_manager.set(
+                f"modules.legacy.{normalized_pack}.lab_confirmation",
+                True,
+            )
+    if normalized_pack and normalized_capability:
         nexus.config_manager.set(
-            f"modules.legacy.{legacy_pack}.capabilities.{legacy_capability}.enabled",
+            f"modules.legacy.{normalized_pack}.capabilities.{normalized_capability}.enabled",
             True,
         )
         nexus.config_manager.set(
-            f"modules.legacy.{legacy_pack}.capabilities.{legacy_capability}.mode",
+            f"modules.legacy.{normalized_pack}.capabilities.{normalized_capability}.mode",
             legacy_mode,
         )
         if lab_confirmation:
             nexus.config_manager.set(
-                f"modules.legacy.{legacy_pack}.capabilities.{legacy_capability}.lab_confirmation",
+                f"modules.legacy.{normalized_pack}.capabilities."
+                f"{normalized_capability}.lab_confirmation",
                 True,
             )
     nexus.config = nexus.config_manager.to_dict()

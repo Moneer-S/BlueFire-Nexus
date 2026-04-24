@@ -100,3 +100,19 @@ def test_legacy_stealth_alias_uses_anti_detection_capability(tmp_path: Path) -> 
     assert result["module"] == "legacy_stealth_research"
     assert result["artifacts"]["legacy"]["capability"] == "anti_detection_legacy"
     assert result["artifacts"]["legacy"]["payload"]["capability"] == "anti_detection_legacy"
+
+
+def test_decision_summary_message_reports_emulate_ack_state(tmp_path: Path) -> None:
+    cfg_path = tmp_path / "config.yaml"
+    cfg = ConfigManager(str(cfg_path))
+    cfg.set("modules.legacy.actor_pack.capabilities.apt29.enabled", True)
+    cfg.set("modules.legacy.actor_pack.capabilities.apt29.mode", "emulate")
+    cfg.save()
+
+    reloaded = ConfigManager(str(cfg_path))
+    decision = evaluate_legacy_capability(
+        reloaded.to_dict(),
+        "actor_pack",
+        "apt29",
+    )
+    assert "emulate blocked until lab confirmation" in decision.summary_message()

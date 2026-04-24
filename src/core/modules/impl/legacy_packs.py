@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from ...legacy_controls import (
     build_legacy_summary,
     capability_effective_enabled,
-    capability_mode,
+    evaluate_legacy_capability,
 )
 from ...models import ModuleResult, TelemetryEvent
 from ..base import BaseModule
@@ -115,8 +115,9 @@ class LegacyActorProfileModule(LegacyAdapterBase):
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         actor_key = str(params.get("actor", "apt29")).lower()
         profile = dict(self._PROFILE_MAP.get(actor_key, self._PROFILE_MAP["apt29"]))
-        enabled = capability_effective_enabled(context.get("config", {}), self.pack_name, actor_key)
-        mode = capability_mode(context.get("config", {}), self.pack_name, actor_key)
+        decision = evaluate_legacy_capability(context.get("config", {}), self.pack_name, actor_key)
+        enabled = decision.enabled
+        mode = decision.mode
         self._ensure_allowed(
             context,
             pack_name=self.pack_name,
@@ -187,8 +188,19 @@ class LegacyApt29ResearchModule(LegacyAdapterBase):
     capability_name = "apt29"
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        mode = self._effective_mode(context, self.pack_name, self.capability_name)
-        self._ensure_allowed(context)
+        decision = evaluate_legacy_capability(
+            context.get("config", {}),
+            self.pack_name,
+            self.capability_name,
+        )
+        mode = decision.mode
+        self._ensure_allowed(
+            context,
+            pack_name=self.pack_name,
+            capability_name=self.capability_name,
+            effective_enabled=decision.enabled,
+            mode=mode,
+        )
         technique = str(params.get("technique", "phishing")).lower()
         target = str(params.get("target", "lab-user"))
 
@@ -363,7 +375,8 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         actor_key = self.actor_name.lower()
-        mode = self._effective_mode(context, self.pack_name, actor_key)
+        decision = evaluate_legacy_capability(context.get("config", {}), self.pack_name, actor_key)
+        mode = decision.mode
         self._ensure_allowed(
             context,
             pack_name=self.pack_name,
@@ -475,16 +488,13 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
         if capability not in self._SUPPORTED:
             capability = "dns_tunneling"
         self.capability_name = capability
-        mode = self._effective_mode(context, self.pack_name, capability)
+        decision = evaluate_legacy_capability(context.get("config", {}), self.pack_name, capability)
+        mode = decision.mode
         self._ensure_allowed(
             context,
             pack_name=self.pack_name,
             capability_name=capability,
-            effective_enabled=capability_effective_enabled(
-                context.get("config", {}),
-                self.pack_name,
-                capability,
-            ),
+            effective_enabled=decision.enabled,
             mode=mode,
         )
 
@@ -594,16 +604,13 @@ class LegacyStealthResearchModule(LegacyAdapterBase):
         if capability not in self._SUPPORTED:
             capability = "anti_forensic"
         self.capability_name = capability
-        mode = self._effective_mode(context, self.pack_name, capability)
+        decision = evaluate_legacy_capability(context.get("config", {}), self.pack_name, capability)
+        mode = decision.mode
         self._ensure_allowed(
             context,
             pack_name=self.pack_name,
             capability_name=capability,
-            effective_enabled=capability_effective_enabled(
-                context.get("config", {}),
-                self.pack_name,
-                capability,
-            ),
+            effective_enabled=decision.enabled,
             mode=mode,
         )
 

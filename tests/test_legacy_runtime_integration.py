@@ -74,3 +74,28 @@ def test_actor_emulate_returns_runtime_indicators(tmp_path: Path) -> None:
     payload = result["artifacts"]["legacy"]["payload"]
     assert "runtime_outcome" in payload
     assert payload["runtime_outcome"]["status"] in {"completed", "success", "failure"}
+
+
+def test_cli_overrides_accept_alias_capabilities(tmp_path: Path) -> None:
+    cfg_path = _base_cfg(tmp_path)
+    cfg = ConfigManager(str(cfg_path))
+    cfg.set("modules.legacy.c2_pack.enabled", True)
+    cfg.save()
+
+    nexus = BlueFireNexus(str(cfg_path))
+    nexus.config_manager.set("modules.legacy.c2_pack.capabilities.quic_c2.enabled", True)
+    nexus.config_manager.set("modules.legacy.c2_pack.capabilities.quic_c2.mode", "simulate")
+    nexus.config = nexus.config_manager.to_dict()
+    nexus._configure_modules()
+
+    result = nexus.execute_operation(
+        "legacy_protocol_research",
+        {
+            "protocol": "quic_c2",
+            "endpoint": "quic://edge.example.lab:4433",
+            "cadence_seconds": 8,
+        },
+    )
+    assert result["status"] == "success"
+    payload = result["artifacts"]["legacy"]["payload"]
+    assert payload["protocol"] == "websocket_quic"
