@@ -7,7 +7,7 @@ import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping
 
 from .bluefire_nexus import BlueFireNexus
 from .scenario import load_scenario
@@ -53,6 +53,32 @@ def _mutate_run_params(base_result: Dict[str, Any], enable_jitter: bool) -> Dict
     }
 
 
+def _merge_step_mutation(
+    steps: list[Dict[str, Any]],
+    mutation_state: Mapping[str, Any],
+) -> list[Dict[str, Any]]:
+    """Apply bounded experiment mutation into scenario step params."""
+    if not steps:
+        return steps
+    mutation = mutation_state.get("mutation")
+    if not isinstance(mutation, Mapping):
+        return steps
+
+    merged: list[Dict[str, Any]] = []
+    for step in steps:
+        step_copy = copy.deepcopy(step)
+        params = step_copy.get("params")
+        if not isinstance(params, dict):
+            params = {}
+        params["experiment_mutation"] = dict(mutation)
+        params["mutation_applied"] = True
+        params["mutation_variant"] = str(mutation.get("variant", "baseline"))
+        params["mutation_intensity"] = str(mutation.get("intensity", "low"))
+        step_copy["params"] = params
+        merged.append(step_copy)
+    return merged
+
+
 def run_experiment(
     nexus: BlueFireNexus,
     scenario_path: str,
@@ -75,7 +101,23 @@ def run_experiment(
 
     for index in range(runs):
         run_id = f"exp-{scenario.id}-{index+1:03d}"
-        result = nexus.run_scenario_file(str(Path(scenario_path)), run_id=run_id)
+        step_overrides: Dict[str, Dict[str, Any]] = {}
+        if mutation_state:
+            mutated_steps = _merge_step_mutation(
+                [step.__dict__ for step in scenario.steps],
+                mutation_state,
+            )
+            for step in mutated_steps:
+                step_id = str(step.get("step_id") or step.get("id") or "")
+                params = step.get("params")
+                if step_id and isinstance(params, dict):
+                    step_overrides[step_id] = params
+
+        result = nexus.run_scenario_file(
+            str(Path(scenario_path)),
+            run_id=run_id,
+            step_param_overrides=step_overrides or None,
+        )
         if mutation_state:
             result.setdefault("experiment_context", {})
             result["experiment_context"]["mutation"] = copy.deepcopy(mutation_state)

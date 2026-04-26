@@ -13,6 +13,37 @@ class MutationResult:
     rationale: str
 
 
+def _apply_strategy_mutation(
+    payload: Dict[str, Any],
+    *,
+    strategy: str,
+    low_noise_jitter_key: str,
+    low_noise_default: int,
+    low_noise_increment: int,
+    protocol_retry_default: int,
+    protocol_retry_increment: int,
+) -> str:
+    """Apply shared mutation strategy behavior and return rationale."""
+    if strategy in {"low_noise", "evasion-lite"}:
+        if "command" in payload and isinstance(payload["command"], str):
+            payload["command"] = payload["command"].replace("echo ", "printf ")
+        payload[low_noise_jitter_key] = (
+            int(payload.get(low_noise_jitter_key, low_noise_default)) + low_noise_increment
+        )
+        return "Applied low-noise command and timing mutation."
+    if strategy in {"protocol_shift", "protocol-shift"}:
+        if "protocol" in payload:
+            protocol = str(payload["protocol"]).lower()
+            mapping = {"http": "dns", "dns": "https", "https": "http"}
+            payload["protocol"] = mapping.get(protocol, "dns")
+        payload["retry_interval"] = (
+            int(payload.get("retry_interval", protocol_retry_default)) + protocol_retry_increment
+        )
+        return "Shifted protocol and retry cadence."
+    payload["variant_label"] = strategy
+    return "Applied generic mutation marker."
+
+
 def mutate_step_params(
     params: Mapping[str, Any],
     *,
@@ -30,22 +61,15 @@ def mutate_step_params(
             rationale="Mutation disabled (requires explicit lab-only opt-in).",
         )
 
-    if strategy == "low_noise":
-        # Reduce obvious signal by tweaking known noisy keys.
-        if "command" in mutated and isinstance(mutated["command"], str):
-            mutated["command"] = mutated["command"].replace("echo ", "printf ")
-        mutated["sleep_jitter_seconds"] = int(mutated.get("sleep_jitter_seconds", 1)) + 1
-        rationale = "Applied low-noise mutation to command and timing fields."
-    elif strategy == "protocol_shift":
-        if "protocol" in mutated:
-            current = str(mutated["protocol"]).lower()
-            mapping = {"http": "dns", "dns": "https", "https": "http"}
-            mutated["protocol"] = mapping.get(current, "dns")
-        mutated["retry_interval"] = int(mutated.get("retry_interval", 15)) + 5
-        rationale = "Shifted protocol and retry cadence for variant generation."
-    else:
-        mutated["variant_label"] = strategy
-        rationale = "Applied generic mutation marker."
+    rationale = _apply_strategy_mutation(
+        mutated,
+        strategy=strategy,
+        low_noise_jitter_key="sleep_jitter_seconds",
+        low_noise_default=1,
+        low_noise_increment=1,
+        protocol_retry_default=15,
+        protocol_retry_increment=5,
+    )
 
     mutated["mutation_applied"] = True
     return MutationResult(original=original, mutated=mutated, rationale=rationale)
@@ -84,21 +108,15 @@ def mutate_technique(
     mutation["network_touch"] = False
     mutation["dry_run_only"] = True
 
-    if strategy == "evasion-lite":
-        mutation["jitter_ms"] = int(mutation.get("jitter_ms", 250)) + 150
-        if "command" in mutation and isinstance(mutation["command"], str):
-            mutation["command"] = mutation["command"].replace("echo ", "printf ")
-        rationale = "Applied low-noise command and jitter mutation."
-    elif strategy == "protocol-shift":
-        if "protocol" in mutation:
-            protocol = str(mutation["protocol"]).lower()
-            mapping = {"http": "dns", "dns": "https", "https": "http"}
-            mutation["protocol"] = mapping.get(protocol, "dns")
-        mutation["retry_interval"] = int(mutation.get("retry_interval", 10)) + 5
-        rationale = "Shifted protocol and retry cadence."
-    else:
-        mutation["variant_label"] = strategy
-        rationale = "Applied generic strategy label."
+    rationale = _apply_strategy_mutation(
+        mutation,
+        strategy=strategy,
+        low_noise_jitter_key="jitter_ms",
+        low_noise_default=250,
+        low_noise_increment=150,
+        protocol_retry_default=10,
+        protocol_retry_increment=5,
+    )
 
     mutation["mutation_applied"] = True
     return {

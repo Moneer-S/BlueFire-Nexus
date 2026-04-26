@@ -12,7 +12,7 @@ from ...legacy_controls import (
 )
 from ...models import ModuleResult, TelemetryEvent
 from ..base import BaseModule
-from .legacy_base import LegacyAdapterBase
+from .legacy_base import LegacyAdapterBase, _result
 from .legacy_runtime import (
     flatten_indicators,
     instantiate_apt_actor,
@@ -27,29 +27,6 @@ from .legacy_runtime import (
     run_tls_fast_flux,
     safe_call,
 )
-
-
-def _legacy_result(
-    module: str,
-    status: str,
-    message: str,
-    *,
-    techniques: list[str] | None = None,
-    artifacts: Dict[str, Any] | None = None,
-    hints: Dict[str, Any] | None = None,
-    telemetry: list[TelemetryEvent] | None = None,
-    error: str | None = None,
-) -> ModuleResult:
-    return ModuleResult(
-        status=status,
-        module=module,
-        message=message,
-        techniques=techniques or [],
-        artifacts=artifacts or {},
-        detection_hints=hints or {},
-        telemetry=telemetry or [],
-        error=error,
-    )
 
 
 def _capability_artifacts(
@@ -89,7 +66,7 @@ class LegacyPackSummaryModule(BaseModule):
             module=self.name,
             details={"run_id": context.get("run_id", "unknown"), "summary": summary},
         )
-        return _legacy_result(
+        return _result(
             self.name,
             "success",
             "Collected legacy capability enablement summary.",
@@ -170,7 +147,7 @@ class LegacyActorProfileModule(LegacyAdapterBase):
         )
         artifacts["actor_profile"] = profile
         artifacts["tactics"] = tactics
-        return _legacy_result(
+        return _result(
             self.name,
             "success",
             f"Legacy actor profile '{profile['name']}' ready in {mode} mode.",
@@ -337,7 +314,7 @@ class LegacyApt29ResearchModule(LegacyAdapterBase):
             mode,
             details,
         )
-        return _legacy_result(
+        return _result(
             self.name,
             "success",
             f"APT29 legacy research technique '{technique}' prepared in {mode} mode.",
@@ -450,7 +427,7 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
             mode,
             details,
         )
-        return _legacy_result(
+        return _result(
             self.name,
             "success",
             f"{self.actor_name} legacy tactic '{tactic}' / '{technique}' prepared in {mode} mode.",
@@ -665,7 +642,7 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
                 }
             )
         artifacts = _capability_artifacts(context, self.pack_name, capability, mode, details)
-        return _legacy_result(
+        return _result(
             self.name,
             "success",
             f"Legacy protocol '{capability}' prepared in {mode} mode.",
@@ -811,7 +788,7 @@ class LegacyStealthResearchModule(LegacyAdapterBase):
             details={"run_id": context.get("run_id", "unknown"), **details},
         )
         artifacts = _capability_artifacts(context, self.pack_name, capability, mode, details)
-        return _legacy_result(
+        return _result(
             self.name,
             "success",
             f"Legacy stealth capability '{capability}' prepared in {mode} mode.",

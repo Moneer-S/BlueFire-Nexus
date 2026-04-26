@@ -181,7 +181,12 @@ class BlueFireNexus:
         finally:
             telemetry.close()
 
-    def run_scenario_file(self, scenario_path: str, run_id: Optional[str] = None) -> Dict[str, Any]:
+    def run_scenario_file(
+        self,
+        scenario_path: str,
+        run_id: Optional[str] = None,
+        step_param_overrides: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    ) -> Dict[str, Any]:
         context = self._make_run_context(run_id=run_id)
         telemetry = TelemetryBus(self.config, context.output_dir)
         safety = SafetyGate(context)
@@ -193,6 +198,7 @@ class BlueFireNexus:
         overall_status = "success"
 
         try:
+            overrides = step_param_overrides or {}
             for step in scenario.steps:
                 module = self.modules.get(step.module)
                 if not module:
@@ -210,12 +216,16 @@ class BlueFireNexus:
                     continue
 
                 try:
-                    safety.ensure_safe(step.params)
-                    validation_error = module.validate(step.params)
+                    step_params = dict(step.params)
+                    scoped_overrides = overrides.get(step.step_id) or overrides.get(step.module) or {}
+                    if scoped_overrides:
+                        step_params.update(dict(scoped_overrides))
+                    safety.ensure_safe(step_params)
+                    validation_error = module.validate(step_params)
                     if validation_error:
                         raise ValueError(validation_error)
 
-                    result = module.execute(step.params, self._module_context(context, step=step))
+                    result = module.execute(step_params, self._module_context(context, step=step))
                     telemetry.emit_many(result.telemetry)
 
                     module_results[f"{step.module}:{step.step_id}"] = result
