@@ -111,12 +111,30 @@ def test_relative_imports_inside_core_resolve() -> None:
     assert ad.AntiDetectionManager.__name__ == "AntiDetectionManager"
 
 
-def test_anti_forensic_imports_with_psutil() -> None:
-    """Imports anti_forensic wiring (needs psutil at module load)."""
+def test_anti_forensic_imports_without_psutil_when_absent() -> None:
+    """anti_forensic module must import even if psutil is unavailable."""
+    try:
+        import psutil as _ps  # noqa: F401
+
+        pytest.skip("psutil present; no-psutil skip path not exercised here")
+    except ImportError:
+        pass
+
+    import importlib
+
+    import src.core.anti_forensic as af
+
+    assert af.AntiForensicManager.__name__ == "AntiForensicManager"
+    importlib.reload(af)
+    mgr = af.AntiForensicManager()
+    mgr.detect_sandbox()
+
+
+def test_anti_forensic_psutil_checks_when_available() -> None:
     pytest.importorskip("psutil")
     from src.core import anti_forensic as af
 
-    assert af.AntiForensicManager.__name__ == "AntiForensicManager"
+    assert isinstance(af.AntiForensicManager().detect_sandbox(), bool)
 
 
 def test_anti_detection_package_imports_without_psutil() -> None:
