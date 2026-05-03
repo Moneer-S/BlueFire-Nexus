@@ -32,13 +32,13 @@ class EnvironmentValidator:
     @staticmethod
     def detect_sandbox() -> bool:
         blacklist = {
-            'hostname': ['SANDBOX', 'VIRUS'],
-            'mac': ['00:1C:42', '00:0C:29'],
-            'processes': ['vmtoolsd.exe', 'procmon.exe']
+            "hostname": ["SANDBOX", "VIRUS"],
+            "mac": ["00:1C:42", "00:0C:29"],
+            "processes": ["vmtoolsd.exe", "procmon.exe"],
         }
 
         # Hostname check
-        if platform.node().upper() in blacklist['hostname']:
+        if platform.node().upper() in blacklist["hostname"]:
             return True
 
         psutil = _get_psutil()
@@ -47,11 +47,10 @@ class EnvironmentValidator:
 
         # MAC check
         for _nic, addrs in psutil.net_if_addrs().items():
-            if any(a.address[:8] in blacklist['mac'] for a in addrs):
+            if any(a.address[:8] in blacklist["mac"] for a in addrs):
                 return True
 
         # Process check
         return any(
-            p.name().lower() in blacklist['processes']
-            for p in psutil.process_iter(['name'])
+            p.name().lower() in blacklist["processes"] for p in psutil.process_iter(["name"])
         )

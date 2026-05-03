@@ -7,6 +7,7 @@ from .logger import get_logger
 
 logger = get_logger(__name__)
 
+
 class RateLimiter:
     """Rate limiter for controlling request rates."""
 
@@ -39,8 +40,7 @@ class RateLimiter:
         with self.lock:
             # Clean old requests
             self.requests[client_id] = [
-                req_time for req_time in self.requests[client_id]
-                if current_time - req_time < 60
+                req_time for req_time in self.requests[client_id] if current_time - req_time < 60
             ]
 
             # Check rate limit
@@ -78,6 +78,7 @@ class RateLimiter:
             else:
                 self.requests.clear()
             self.concurrent_requests = 0
+
 
 # Create global rate limiter instance
 rate_limiter = RateLimiter()

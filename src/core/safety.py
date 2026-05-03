@@ -62,13 +62,9 @@ class SafetyGate:
         destructive = bool(payload.get("destructive", False))
         acknowledged = bool(payload.get("i_understand_this_is_a_lab", False))
         if destructive and not acknowledged:
-            raise SafetyViolation(
-                "destructive operation requires i_understand_this_is_a_lab=true"
-            )
+            raise SafetyViolation("destructive operation requires i_understand_this_is_a_lab=true")
 
         # Block implicit live-network behavior in non-dry-run mode.
         network_touch = bool(payload.get("network_touch", False))
         if network_touch and not dry_run and not allowed_subnets:
-            raise SafetyViolation(
-                "network_touch operation requires configured allowed_subnets"
-            )
+            raise SafetyViolation("network_touch operation requires configured allowed_subnets")

@@ -45,8 +45,7 @@ class Logger:
         log_file = self.log_dir / f"{name}.log"
         file_handler = logging.FileHandler(log_file)
         file_formatter = logging.Formatter(
-            "[%(asctime)s] %(levelname)s [%(name)s] - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
+            "[%(asctime)s] %(levelname)s [%(name)s] - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
         )
         file_handler.setFormatter(file_formatter)
         self.logger.addHandler(file_handler)
@@ -54,8 +53,7 @@ class Logger:
         # Create console handler
         console_handler = logging.StreamHandler()
         console_formatter = logging.Formatter(
-            "[%(asctime)s] %(levelname)s - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
+            "[%(asctime)s] %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
         )
         console_handler.setFormatter(console_formatter)
         self.logger.addHandler(console_handler)
@@ -132,8 +130,10 @@ class Logger:
         error_message = f"ERROR [{error_type}]: {message}"
         self.logger.error(error_message, exc_info=exc_info)
 
+
 # Default logger
 default_logger = Logger("bluefire")
+
 
 # Helper functions for module-level logging
 def get_structured_logger(name: str, log_level: int = logging.INFO) -> Logger:
@@ -143,6 +143,7 @@ def get_structured_logger(name: str, log_level: int = logging.INFO) -> Logger:
     """
     return Logger(name, log_level=log_level)
 
+
 def debug(message: str) -> None:
     """Log a debug message using the default logger
 
@@ -150,6 +151,7 @@ def debug(message: str) -> None:
         message: The message to log
     """
     default_logger.debug(message)
+
 
 def info(message: str) -> None:
     """Log an info message using the default logger
@@ -159,6 +161,7 @@ def info(message: str) -> None:
     """
     default_logger.info(message)
 
+
 def warning(message: str) -> None:
     """Log a warning message using the default logger
 
@@ -166,6 +169,7 @@ def warning(message: str) -> None:
         message: The message to log
     """
     default_logger.warning(message)
+
 
 def error(message: str) -> None:
     """Log an error message using the default logger
@@ -175,6 +179,7 @@ def error(message: str) -> None:
     """
     default_logger.error(message)
 
+
 def critical(message: str) -> None:
     """Log a critical message using the default logger
 
@@ -182,6 +187,7 @@ def critical(message: str) -> None:
         message: The message to log
     """
     default_logger.critical(message)
+
 
 def log_event(event_type: str, details: Dict[str, Any]) -> None:
     """Log a structured event using the default logger
@@ -192,6 +198,7 @@ def log_event(event_type: str, details: Dict[str, Any]) -> None:
     """
     default_logger.log_event(event_type, details)
 
+
 def log_technique(technique: str, status: str, details: Dict[str, Any]) -> None:
     """Log a technique execution using the default logger
 
@@ -201,6 +208,7 @@ def log_technique(technique: str, status: str, details: Dict[str, Any]) -> None:
         details: Details about the execution
     """
     default_logger.log_technique(technique, status, details)
+
 
 def log_error(error_type: str, message: str, exc_info: bool = False) -> None:
     """Log an error with more structured information using the default logger

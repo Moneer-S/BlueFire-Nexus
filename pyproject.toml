@@ -69,8 +69,8 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "B"]
 
-# Line length: enforce E501 on the orchestration/modular spine; tactical/legacy catalog
-# modules retain long simulated strings and dense tables (refactor in focused passes).
+# Literal simulated CLI transcripts (SMB, PowerShell, robocopy, etc.) dominate these trees;
+# the orchestration spine and tests remain E501-clean at 100 columns.
 extend-per-file-ignores."src/core/access/**/*.py" = ["E501"]
 extend-per-file-ignores."src/core/anti_forensic.py" = ["E501"]
 extend-per-file-ignores."src/core/collection/**/*.py" = ["E501"]
@@ -78,6 +78,7 @@ extend-per-file-ignores."src/core/command_control/**/*.py" = ["E501"]
 extend-per-file-ignores."src/core/credential/**/*.py" = ["E501"]
 extend-per-file-ignores."src/core/defense_evasion/**/*.py" = ["E501"]
 extend-per-file-ignores."src/core/discovery/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/evasion/**/*.py" = ["E501"]
 extend-per-file-ignores."src/core/exfiltration/**/*.py" = ["E501"]
 extend-per-file-ignores."src/core/execution/**/*.py" = ["E501"]
 extend-per-file-ignores."src/core/impact/**/*.py" = ["E501"]

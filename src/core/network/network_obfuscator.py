@@ -18,53 +18,53 @@ class NetworkObfuscator:
                 "dns_tunneling": {
                     "description": "Use DNS for traffic obfuscation",
                     "indicators": ["dns_queries", "dns_responses"],
-                    "evasion": ["query_encryption", "response_encryption"]
+                    "evasion": ["query_encryption", "response_encryption"],
                 },
                 "http_tunneling": {
                     "description": "Use HTTP for traffic obfuscation",
                     "indicators": ["http_requests", "http_responses"],
-                    "evasion": ["request_encryption", "response_encryption"]
+                    "evasion": ["request_encryption", "response_encryption"],
                 },
                 "icmp_tunneling": {
                     "description": "Use ICMP for traffic obfuscation",
                     "indicators": ["icmp_packets", "icmp_responses"],
-                    "evasion": ["packet_encryption", "response_encryption"]
-                }
+                    "evasion": ["packet_encryption", "response_encryption"],
+                },
             },
             "protocol_obfuscation": {
                 "protocol_switching": {
                     "description": "Switch between protocols",
                     "indicators": ["protocol_changes", "connection_changes"],
-                    "evasion": ["change_obfuscation", "connection_hiding"]
+                    "evasion": ["change_obfuscation", "connection_hiding"],
                 },
                 "port_hopping": {
                     "description": "Change ports frequently",
                     "indicators": ["port_changes", "connection_changes"],
-                    "evasion": ["change_obfuscation", "connection_hiding"]
+                    "evasion": ["change_obfuscation", "connection_hiding"],
                 },
                 "domain_rotation": {
                     "description": "Rotate through domains",
                     "indicators": ["domain_changes", "dns_changes"],
-                    "evasion": ["change_obfuscation", "dns_hiding"]
-                }
+                    "evasion": ["change_obfuscation", "dns_hiding"],
+                },
             },
             "content_obfuscation": {
                 "data_encryption": {
                     "description": "Encrypt data in transit",
                     "indicators": ["encrypted_data", "key_exchange"],
-                    "evasion": ["encryption_hiding", "key_hiding"]
+                    "evasion": ["encryption_hiding", "key_hiding"],
                 },
                 "data_compression": {
                     "description": "Compress data in transit",
                     "indicators": ["compressed_data", "compression_ratio"],
-                    "evasion": ["compression_hiding", "ratio_hiding"]
+                    "evasion": ["compression_hiding", "ratio_hiding"],
                 },
                 "data_fragmentation": {
                     "description": "Fragment data in transit",
                     "indicators": ["fragmented_data", "reassembly"],
-                    "evasion": ["fragmentation_hiding", "reassembly_hiding"]
-                }
-            }
+                    "evasion": ["fragmentation_hiding", "reassembly_hiding"],
+                },
+            },
         }
 
         # Initialize obfuscation tools
@@ -72,49 +72,36 @@ class NetworkObfuscator:
             "traffic": {
                 "dns_tunneler": self._dns_tunnel,
                 "http_tunneler": self._http_tunnel,
-                "icmp_tunneler": self._icmp_tunnel
+                "icmp_tunneler": self._icmp_tunnel,
             },
             "protocol": {
                 "protocol_switcher": self._switch_protocol,
                 "port_hopper": self._hop_port,
-                "domain_rotator": self._rotate_domain
+                "domain_rotator": self._rotate_domain,
             },
             "content": {
                 "data_encryptor": self._encrypt_data,
                 "data_compressor": self._compress_data,
-                "data_fragmenter": self._fragment_data
-            }
+                "data_fragmenter": self._fragment_data,
+            },
         }
 
         # Initialize configuration
         self.config = {
-            "dns_servers": [
-                "8.8.8.8",
-                "8.8.4.4",
-                "1.1.1.1",
-                "1.0.0.1"
-            ],
-            "http_proxies": [
-                "proxy1.example.com",
-                "proxy2.example.com",
-                "proxy3.example.com"
-            ],
-            "icmp_targets": [
-                "target1.example.com",
-                "target2.example.com",
-                "target3.example.com"
-            ],
+            "dns_servers": ["8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1"],
+            "http_proxies": ["proxy1.example.com", "proxy2.example.com", "proxy3.example.com"],
+            "icmp_targets": ["target1.example.com", "target2.example.com", "target3.example.com"],
             "ports": list(range(1024, 65536)),
             "domains": [
                 "*.microsoft.com",
                 "*.google.com",
                 "*.amazon.com",
                 "*.cloudflare.com",
-                "*.akamai.com"
+                "*.akamai.com",
             ],
             "encryption_algorithms": ["AES-256", "RSA-4096"],
             "compression_algorithms": ["gzip", "deflate", "bzip2"],
-            "fragmentation_sizes": [64, 128, 256, 512, 1024]
+            "fragmentation_sizes": [64, 128, 256, 512, 1024],
         }
 
     def obfuscate_traffic(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -124,7 +111,7 @@ class NetworkObfuscator:
             result = {
                 "original_data": data,
                 "timestamp": datetime.now().isoformat(),
-                "obfuscation": {}
+                "obfuscation": {},
             }
 
             # Apply traffic obfuscation
@@ -252,7 +239,7 @@ class NetworkObfuscator:
                 "status": "success",
                 "technique": "network_tunneling",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -271,7 +258,7 @@ class NetworkObfuscator:
                 result["details"]["methods"] = {
                     "technique": "Dynamic port forwarding",
                     "protocol": "SSH",
-                    "authentication": "Key-based"
+                    "authentication": "Key-based",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -281,7 +268,7 @@ class NetworkObfuscator:
                 result["details"]["methods"] = {
                     "technique": "TXT records",
                     "protocol": "DNS",
-                    "encoding": "Base32"
+                    "encoding": "Base32",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -291,7 +278,7 @@ class NetworkObfuscator:
                 result["details"]["methods"] = {
                     "technique": "Data field",
                     "protocol": "ICMP",
-                    "encoding": "Binary"
+                    "encoding": "Binary",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -301,7 +288,7 @@ class NetworkObfuscator:
                 "destination": data.get("destination", "external"),
                 "ports": data.get("ports", [80, 443]),
                 "bandwidth": f"{random.randint(100, 1000)} KB/s",
-                "latency": f"{random.randint(10, 100)} ms"
+                "latency": f"{random.randint(10, 100)} ms",
             }
 
             # Security details if enabled
@@ -311,13 +298,17 @@ class NetworkObfuscator:
                         "algorithm": data.get("algorithm", "AES-256"),
                         "key_size": "256 bits",
                         "mode": "CBC",
-                        "key_rotation": "Per session"
+                        "key_rotation": "Per session",
                     },
-                    "compression": {
-                        "algorithm": "LZMA",
-                        "level": "Maximum",
-                        "ratio": f"{random.randint(70, 90)}%"
-                    } if compression else None
+                    "compression": (
+                        {
+                            "algorithm": "LZMA",
+                            "level": "Maximum",
+                            "ratio": f"{random.randint(70, 90)}%",
+                        }
+                        if compression
+                        else None
+                    ),
                 }
 
             # Add MITRE ATT&CK information
@@ -336,7 +327,7 @@ class NetworkObfuscator:
                 "status": "success",
                 "technique": "network_obfuscation",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -355,7 +346,7 @@ class NetworkObfuscator:
                 result["details"]["methods"] = {
                     "technique": "Traffic shaping",
                     "patterns": "Legitimate traffic",
-                    "timing": "Random delays"
+                    "timing": "Random delays",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -365,7 +356,7 @@ class NetworkObfuscator:
                 result["details"]["methods"] = {
                     "technique": "Protocol wrapping",
                     "patterns": "Custom protocols",
-                    "encoding": "Custom encoding"
+                    "encoding": "Custom encoding",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -375,7 +366,7 @@ class NetworkObfuscator:
                 result["details"]["methods"] = {
                     "technique": "Data encoding",
                     "patterns": "Random patterns",
-                    "fragmentation": "Dynamic"
+                    "fragmentation": "Dynamic",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -386,9 +377,9 @@ class NetworkObfuscator:
                     "Traffic shaping",
                     "Protocol wrapping",
                     "Payload encoding",
-                    "Timing manipulation"
+                    "Timing manipulation",
                 ],
-                "detection_rate": f"{random.randint(5, 20)}%"
+                "detection_rate": f"{random.randint(5, 20)}%",
             }
 
             # Security details if enabled
@@ -398,13 +389,13 @@ class NetworkObfuscator:
                         "algorithm": data.get("algorithm", "AES-256"),
                         "key_size": "256 bits",
                         "mode": "CBC",
-                        "key_rotation": "Per session"
+                        "key_rotation": "Per session",
                     },
                     "obfuscation": {
                         "method": "Custom encoding",
                         "complexity": "High",
-                        "reversibility": "Low"
-                    }
+                        "reversibility": "Low",
+                    },
                 }
 
             # Add MITRE ATT&CK information
@@ -422,7 +413,7 @@ class NetworkObfuscator:
                 "status": "success",
                 "technique": "traffic_obfuscation",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -441,7 +432,7 @@ class NetworkObfuscator:
                 result["details"]["methods"] = {
                     "technique": "Data encryption",
                     "patterns": "Encrypted traffic",
-                    "indicators": "Encryption patterns"
+                    "indicators": "Encryption patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -451,7 +442,7 @@ class NetworkObfuscator:
                 result["details"]["methods"] = {
                     "technique": "Packet fragmentation",
                     "patterns": "Fragmented traffic",
-                    "indicators": "Fragmentation patterns"
+                    "indicators": "Fragmentation patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -461,7 +452,7 @@ class NetworkObfuscator:
                 result["details"]["methods"] = {
                     "technique": "Timing manipulation",
                     "patterns": "Timed traffic",
-                    "indicators": "Timing patterns"
+                    "indicators": "Timing patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -472,9 +463,9 @@ class NetworkObfuscator:
                 "features": {
                     "encryption": random.randint(1, 5),
                     "fragmentation": random.randint(1, 5),
-                    "timing": random.randint(1, 5)
+                    "timing": random.randint(1, 5),
                 },
-                "detection_rate": f"{random.randint(5, 20)}%"
+                "detection_rate": f"{random.randint(5, 20)}%",
             }
 
             # Stealth details
@@ -483,14 +474,14 @@ class NetworkObfuscator:
                     "Advanced encryption",
                     "Stealth fragmentation",
                     "Anti-detection",
-                    "Rate limiting"
+                    "Rate limiting",
                 ]
             elif stealth == "medium":
                 result["details"]["techniques"] = [
                     "Basic encryption",
                     "Basic fragmentation",
                     "Basic detection",
-                    "Basic protection"
+                    "Basic protection",
                 ]
 
             # Add MITRE ATT&CK information
@@ -509,7 +500,7 @@ class NetworkObfuscator:
                 "status": "success",
                 "technique": "protocol_obfuscation",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -528,7 +519,7 @@ class NetworkObfuscator:
                 result["details"]["methods"] = {
                     "technique": "Protocol encapsulation",
                     "patterns": "Tunneled traffic",
-                    "indicators": "Tunneling patterns"
+                    "indicators": "Tunneling patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -538,7 +529,7 @@ class NetworkObfuscator:
                 result["details"]["methods"] = {
                     "technique": "Protocol imitation",
                     "patterns": "Mimicked traffic",
-                    "indicators": "Mimicry patterns"
+                    "indicators": "Mimicry patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -548,7 +539,7 @@ class NetworkObfuscator:
                 result["details"]["methods"] = {
                     "technique": "Protocol customization",
                     "patterns": "Custom traffic",
-                    "indicators": "Custom patterns"
+                    "indicators": "Custom patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -559,9 +550,9 @@ class NetworkObfuscator:
                 "features": {
                     "tunneling": random.randint(1, 5),
                     "mimicry": random.randint(1, 5),
-                    "custom": random.randint(1, 5)
+                    "custom": random.randint(1, 5),
                 },
-                "detection_rate": f"{random.randint(5, 20)}%"
+                "detection_rate": f"{random.randint(5, 20)}%",
             }
 
             # Stealth details
@@ -570,14 +561,14 @@ class NetworkObfuscator:
                     "Advanced tunneling",
                     "Stealth mimicry",
                     "Anti-detection",
-                    "Rate limiting"
+                    "Rate limiting",
                 ]
             elif stealth == "medium":
                 result["details"]["techniques"] = [
                     "Basic tunneling",
                     "Basic mimicry",
                     "Basic detection",
-                    "Basic protection"
+                    "Basic protection",
                 ]
 
             # Add MITRE ATT&CK information

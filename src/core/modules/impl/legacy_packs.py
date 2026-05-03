@@ -286,8 +286,7 @@ class LegacyApt29ResearchModule(LegacyAdapterBase):
                 hints.setdefault("legacy_indicators", {}).update(indicators)
             if runtime.get("status") == "failure":
                 details["runtime_warning"] = (
-                    "legacy actor runtime failed for apt29/"
-                    f"{technique}: {runtime.get('error')}"
+                    f"legacy actor runtime failed for apt29/{technique}: {runtime.get('error')}"
                 )
         else:
             details["runtime_outcome"] = {
@@ -390,9 +389,9 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
             if indicators:
                 details["runtime_indicators"] = indicators
             if runtime.get("status") == "failure":
+                err = runtime.get("error")
                 details["runtime_warning"] = (
-                    "legacy actor runtime failed for "
-                    f"{actor_key}/{technique}: {runtime.get('error')}"
+                    f"legacy actor runtime failed for {actor_key}/{technique}: {err}"
                 )
         else:
             details["runtime_outcome"] = {
@@ -477,9 +476,7 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
 
         technique, transport = self._SUPPORTED[capability]
         endpoint = str(
-            params.get("endpoint")
-            or params.get("domain")
-            or self._DEFAULT_ENDPOINTS[capability]
+            params.get("endpoint") or params.get("domain") or self._DEFAULT_ENDPOINTS[capability]
         )
         cadence = int(params.get("cadence_seconds", 30))
         endpoint_host = _endpoint_host(endpoint) or endpoint
@@ -539,8 +536,7 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
                 details["runtime_indicators"] = indicators
             if runtime.get("status") == "failure":
                 details["runtime_warning"] = (
-                    "legacy protocol runtime failed for "
-                    f"{capability}: {runtime.get('error')}"
+                    f"legacy protocol runtime failed for {capability}: {runtime.get('error')}"
                 )
         else:
             details["runtime_outcome"] = {
@@ -768,8 +764,7 @@ class LegacyStealthResearchModule(LegacyAdapterBase):
             details["runtime_outcome"] = runtime
             if runtime.get("status") == "failure":
                 details["runtime_warning"] = (
-                    "legacy stealth capability "
-                    f"'{capability}' failed: {runtime.get('error')}"
+                    f"legacy stealth capability '{capability}' failed: {runtime.get('error')}"
                 )
             indicators = flatten_indicators(runtime)
             if indicators:

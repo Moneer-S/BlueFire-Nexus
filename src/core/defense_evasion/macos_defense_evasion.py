@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
+
 # If macOS is very similar to Linux, could inherit:
 # class MacOSDefenseEvasion(LinuxDefenseEvasion):
 class MacOSDefenseEvasion:
@@ -35,18 +36,24 @@ class MacOSDefenseEvasion:
             try:
                 # Add standard fields to the result returned by handler
                 result = handler(details)
-                result["technique"] = technique # Ensure technique name is in result
+                result["technique"] = technique  # Ensure technique name is in result
                 result["timestamp"] = datetime.now().isoformat()
                 return result
             except Exception as e:
-                logger.error(f"Error executing macOS evasion technique '{technique}': {e}", exc_info=True)
+                logger.error(
+                    f"Error executing macOS evasion technique '{technique}': {e}", exc_info=True
+                )
                 return {"status": "failure", "technique": technique, "reason": str(e)}
         else:
             # Potentially check inherited handler map if using inheritance
             # if super().handler_map.get(technique):
             #     return super().evade(technique, details)
             logger.warning(f"Unsupported macOS evasion technique requested: {technique}")
-            return {"status": "failure", "technique": technique, "reason": f"Unsupported technique '{technique}' for macOS"}
+            return {
+                "status": "failure",
+                "technique": technique,
+                "reason": f"Unsupported technique '{technique}' for macOS",
+            }
 
     # --- Technique Handlers (Implement Later) ---
 

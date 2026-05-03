@@ -21,11 +21,10 @@ class SolanaC2:
 
         # Placeholder for actual Solana transaction logic
         try:
-            tx = self.client.send_transaction({
-                "programId": self.program_id,
-                "data": instruction.encode()
-            })
-            return tx.get('result')
+            tx = self.client.send_transaction(
+                {"programId": self.program_id, "data": instruction.encode()}
+            )
+            return tx.get("result")
         except Exception as e:
             self.logger.error(f"Failed to send transaction: {e}")
             raise

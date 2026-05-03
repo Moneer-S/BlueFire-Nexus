@@ -20,20 +20,20 @@ class APTIntelligence:
                 "network_scanner": self._scan_network,
                 "port_scanner": self._scan_ports,
                 "service_detector": self._detect_services,
-                "vulnerability_scanner": self._scan_vulnerabilities
+                "vulnerability_scanner": self._scan_vulnerabilities,
             },
             "collection": {
                 "file_collector": self._collect_files,
                 "network_capture": self._capture_network,
                 "process_monitor": self._monitor_processes,
-                "registry_collector": self._collect_registry
+                "registry_collector": self._collect_registry,
             },
             "analysis": {
                 "data_analyzer": self._analyze_data,
                 "pattern_detector": self._detect_patterns,
                 "correlation_engine": self._correlate_data,
-                "value_assessor": self._assess_value
-            }
+                "value_assessor": self._assess_value,
+            },
         }
 
         # Initialize intelligence gathering techniques
@@ -42,67 +42,62 @@ class APTIntelligence:
                 "network_mapping": {
                     "description": "Map target network",
                     "indicators": ["network_scanning", "port_scanning"],
-                    "evasion": ["scan_rate_limiting", "traffic_obfuscation"]
+                    "evasion": ["scan_rate_limiting", "traffic_obfuscation"],
                 },
                 "service_discovery": {
                     "description": "Discover running services",
                     "indicators": ["service_scanning", "banner_grabbing"],
-                    "evasion": ["service_obfuscation", "banner_modification"]
+                    "evasion": ["service_obfuscation", "banner_modification"],
                 },
                 "vulnerability_scanning": {
                     "description": "Scan for vulnerabilities",
                     "indicators": ["vuln_scanning", "exploit_testing"],
-                    "evasion": ["scan_rate_limiting", "traffic_obfuscation"]
-                }
+                    "evasion": ["scan_rate_limiting", "traffic_obfuscation"],
+                },
             },
             "collection": {
                 "file_collection": {
                     "description": "Collect target files",
                     "indicators": ["file_access", "file_copying"],
-                    "evasion": ["file_hiding", "access_obfuscation"]
+                    "evasion": ["file_hiding", "access_obfuscation"],
                 },
                 "network_capture": {
                     "description": "Capture network traffic",
                     "indicators": ["packet_capture", "traffic_monitoring"],
-                    "evasion": ["traffic_encryption", "packet_obfuscation"]
+                    "evasion": ["traffic_encryption", "packet_obfuscation"],
                 },
                 "process_monitoring": {
                     "description": "Monitor running processes",
                     "indicators": ["process_monitoring", "memory_access"],
-                    "evasion": ["process_hiding", "memory_obfuscation"]
+                    "evasion": ["process_hiding", "memory_obfuscation"],
                 },
                 "registry_collection": {
                     "description": "Collect registry data",
                     "indicators": ["registry_access", "registry_modification"],
-                    "evasion": ["registry_hiding", "access_obfuscation"]
-                }
+                    "evasion": ["registry_hiding", "access_obfuscation"],
+                },
             },
             "analysis": {
                 "data_analysis": {
                     "description": "Analyze collected data",
                     "indicators": ["data_processing", "pattern_analysis"],
-                    "evasion": ["data_encryption", "processing_obfuscation"]
+                    "evasion": ["data_encryption", "processing_obfuscation"],
                 },
                 "pattern_detection": {
                     "description": "Detect patterns in data",
                     "indicators": ["pattern_analysis", "correlation_analysis"],
-                    "evasion": ["pattern_obfuscation", "analysis_hiding"]
+                    "evasion": ["pattern_obfuscation", "analysis_hiding"],
                 },
                 "value_assessment": {
                     "description": "Assess intelligence value",
                     "indicators": ["value_analysis", "impact_assessment"],
-                    "evasion": ["value_obfuscation", "assessment_hiding"]
-                }
-            }
+                    "evasion": ["value_obfuscation", "assessment_hiding"],
+                },
+            },
         }
 
         # Initialize intelligence storage
-        self.intelligence = {
-            "raw_data": {},
-            "analyzed_data": {},
-            "patterns": {},
-            "assessments": {}
-        }
+        self.intelligence = {"raw_data": {}, "analyzed_data": {}, "patterns": {}, "assessments": {}}
 
         # Initialize metrics
         self.metrics = {
@@ -111,7 +106,7 @@ class APTIntelligence:
             "failed_collections": 0,
             "data_volume": 0,
             "analysis_time": 0,
-            "value_scores": {}
+            "value_scores": {},
         }
 
     def gather_intelligence(self, target: Dict[str, Any]) -> Dict[str, Any]:
@@ -123,7 +118,7 @@ class APTIntelligence:
                 "timestamp": datetime.now().isoformat(),
                 "collections": [],
                 "analysis": {},
-                "value_assessment": {}
+                "value_assessment": {},
             }
 
             # Perform reconnaissance
@@ -178,46 +173,39 @@ class APTIntelligence:
 
         return result
 
-    def _collect_data(self, target: Dict[str, Any],
-                     recon_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _collect_data(
+        self, target: Dict[str, Any], recon_result: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
         """Collect data based on reconnaissance results"""
         collections = []
 
         # File collection
         if "files" in target:
             file_data = self.tools["collection"]["file_collector"](target["files"])
-            collections.append({
-                "type": "files",
-                "data": file_data,
-                "timestamp": datetime.now().isoformat()
-            })
+            collections.append(
+                {"type": "files", "data": file_data, "timestamp": datetime.now().isoformat()}
+            )
 
         # Network capture
         if "network" in recon_result:
             network_data = self.tools["collection"]["network_capture"](recon_result["network"])
-            collections.append({
-                "type": "network",
-                "data": network_data,
-                "timestamp": datetime.now().isoformat()
-            })
+            collections.append(
+                {"type": "network", "data": network_data, "timestamp": datetime.now().isoformat()}
+            )
 
         # Process monitoring
         if "processes" in target:
             process_data = self.tools["collection"]["process_monitor"](target["processes"])
-            collections.append({
-                "type": "processes",
-                "data": process_data,
-                "timestamp": datetime.now().isoformat()
-            })
+            collections.append(
+                {"type": "processes", "data": process_data, "timestamp": datetime.now().isoformat()}
+            )
 
         # Registry collection
         if "registry" in target:
             registry_data = self.tools["collection"]["registry_collector"](target["registry"])
-            collections.append({
-                "type": "registry",
-                "data": registry_data,
-                "timestamp": datetime.now().isoformat()
-            })
+            collections.append(
+                {"type": "registry", "data": registry_data, "timestamp": datetime.now().isoformat()}
+            )
 
         return collections
 
@@ -404,7 +392,7 @@ class APTIntelligence:
                 "status": "success",
                 "technique": "apt_intelligence",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -423,7 +411,7 @@ class APTIntelligence:
                 result["details"]["methods"] = {
                     "technique": "Target reconnaissance",
                     "patterns": "Legitimate reconnaissance",
-                    "indicators": "Reconnaissance patterns"
+                    "indicators": "Reconnaissance patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -433,7 +421,7 @@ class APTIntelligence:
                 result["details"]["methods"] = {
                     "technique": "Infrastructure mapping",
                     "patterns": "Legitimate infrastructure",
-                    "indicators": "Infrastructure patterns"
+                    "indicators": "Infrastructure patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -443,7 +431,7 @@ class APTIntelligence:
                 result["details"]["methods"] = {
                     "technique": "Capability assessment",
                     "patterns": "Legitimate capabilities",
-                    "indicators": "Capability patterns"
+                    "indicators": "Capability patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -454,9 +442,9 @@ class APTIntelligence:
                 "features": {
                     "reconnaissance": random.randint(1, 5),
                     "infrastructure": random.randint(1, 5),
-                    "capabilities": random.randint(1, 5)
+                    "capabilities": random.randint(1, 5),
                 },
-                "detection_rate": f"{random.randint(5, 20)}%"
+                "detection_rate": f"{random.randint(5, 20)}%",
             }
 
             # Stealth details
@@ -465,14 +453,14 @@ class APTIntelligence:
                     "Advanced reconnaissance",
                     "Stealth infrastructure",
                     "Anti-detection",
-                    "Rate limiting"
+                    "Rate limiting",
                 ]
             elif stealth == "medium":
                 result["details"]["techniques"] = [
                     "Basic reconnaissance",
                     "Basic infrastructure",
                     "Basic detection",
-                    "Basic protection"
+                    "Basic protection",
                 ]
 
             # Add MITRE ATT&CK information
@@ -491,7 +479,7 @@ class APTIntelligence:
                 "status": "success",
                 "technique": "threat_intelligence",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -510,7 +498,7 @@ class APTIntelligence:
                 result["details"]["methods"] = {
                     "technique": "Indicator collection",
                     "patterns": "Legitimate indicators",
-                    "indicators": "Indicator patterns"
+                    "indicators": "Indicator patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -520,7 +508,7 @@ class APTIntelligence:
                 result["details"]["methods"] = {
                     "technique": "Tactics analysis",
                     "patterns": "Legitimate tactics",
-                    "indicators": "Tactics patterns"
+                    "indicators": "Tactics patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -530,7 +518,7 @@ class APTIntelligence:
                 result["details"]["methods"] = {
                     "technique": "Technique analysis",
                     "patterns": "Legitimate techniques",
-                    "indicators": "Technique patterns"
+                    "indicators": "Technique patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -541,9 +529,9 @@ class APTIntelligence:
                 "features": {
                     "indicators": random.randint(1, 5),
                     "tactics": random.randint(1, 5),
-                    "techniques": random.randint(1, 5)
+                    "techniques": random.randint(1, 5),
                 },
-                "detection_rate": f"{random.randint(5, 20)}%"
+                "detection_rate": f"{random.randint(5, 20)}%",
             }
 
             # Stealth details
@@ -552,14 +540,14 @@ class APTIntelligence:
                     "Advanced indicators",
                     "Stealth tactics",
                     "Anti-detection",
-                    "Rate limiting"
+                    "Rate limiting",
                 ]
             elif stealth == "medium":
                 result["details"]["techniques"] = [
                     "Basic indicators",
                     "Basic tactics",
                     "Basic detection",
-                    "Basic protection"
+                    "Basic protection",
                 ]
 
             # Add MITRE ATT&CK information

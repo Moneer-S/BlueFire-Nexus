@@ -69,9 +69,10 @@ class LegacyAdapterBase(BaseModule):
     def validate(self, params: Mapping[str, Any]) -> str | None:
         del params
         if platform.system() not in self.supported_platforms:
+            plat_list = ", ".join(self.supported_platforms)
             return (
                 f"{self.name} is not supported on {platform.system()}; "
-                f"supported platforms: {', '.join(self.supported_platforms)}"
+                f"supported platforms: {plat_list}"
             )
         return None
 
@@ -178,13 +179,14 @@ class LegacyAdapterBase(BaseModule):
         self._decision = decision
         if not decision.enabled:
             raise RuntimeError(
-                f"{self.name} is disabled. Enable the relevant legacy pack/capability or "
-                "the master lab toggle before running it."
+                f"{self.name} is disabled. Enable the relevant legacy pack/capability "
+                "or the master lab toggle before running it."
             )
         if decision.mode == "emulate" and not decision.acknowledged:
             raise RuntimeError(
                 f"{self.name} is in emulate mode but lab confirmation is missing. "
-                "Enable lab_confirmation globally, at the pack level, or for the capability."
+                "Enable lab_confirmation globally, at the pack level, or for the "
+                "capability."
             )
         return decision
 

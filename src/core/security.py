@@ -13,6 +13,7 @@ from .logger import get_logger
 
 logger = get_logger(__name__)
 
+
 class SecurityManager:
     """Manages security-related operations for BlueFire-Nexus."""
 
@@ -142,6 +143,7 @@ class SecurityManager:
         except Exception as e:
             logger.error(f"Error during secure delete: {e}")
             return False
+
 
 # Create global security instance
 security = SecurityManager()

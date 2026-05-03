@@ -22,53 +22,53 @@ class LateralMovement:
                 "psexec": {
                     "description": "Use PsExec",
                     "indicators": ["psexec", "remote_execution"],
-                    "evasion": ["execution_hiding", "remote_hiding"]
+                    "evasion": ["execution_hiding", "remote_hiding"],
                 },
                 "wmi": {
                     "description": "Use WMI",
                     "indicators": ["wmi", "remote_execution"],
-                    "evasion": ["execution_hiding", "remote_hiding"]
+                    "evasion": ["execution_hiding", "remote_hiding"],
                 },
                 "powershell": {
                     "description": "Use PowerShell",
                     "indicators": ["powershell", "remote_execution"],
-                    "evasion": ["execution_hiding", "remote_hiding"]
-                }
+                    "evasion": ["execution_hiding", "remote_hiding"],
+                },
             },
             "remote_file_copy": {
                 "smb": {
                     "description": "Use SMB",
                     "indicators": ["smb", "file_copy"],
-                    "evasion": ["file_hiding", "copy_hiding"]
+                    "evasion": ["file_hiding", "copy_hiding"],
                 },
                 "ftp": {
                     "description": "Use FTP",
                     "indicators": ["ftp", "file_copy"],
-                    "evasion": ["file_hiding", "copy_hiding"]
+                    "evasion": ["file_hiding", "copy_hiding"],
                 },
                 "scp": {
                     "description": "Use SCP",
                     "indicators": ["scp", "file_copy"],
-                    "evasion": ["file_hiding", "copy_hiding"]
-                }
+                    "evasion": ["file_hiding", "copy_hiding"],
+                },
             },
             "remote_service": {
                 "creation": {
                     "description": "Use service creation",
                     "indicators": ["service_creation", "remote_service"],
-                    "evasion": ["service_hiding", "remote_hiding"]
+                    "evasion": ["service_hiding", "remote_hiding"],
                 },
                 "modification": {
                     "description": "Use service modification",
                     "indicators": ["service_modification", "remote_service"],
-                    "evasion": ["service_hiding", "remote_hiding"]
+                    "evasion": ["service_hiding", "remote_hiding"],
                 },
                 "stop": {
                     "description": "Use service stop",
                     "indicators": ["service_stop", "remote_service"],
-                    "evasion": ["service_hiding", "remote_hiding"]
-                }
-            }
+                    "evasion": ["service_hiding", "remote_hiding"],
+                },
+            },
         }
 
         # Initialize lateral movement tools
@@ -76,18 +76,18 @@ class LateralMovement:
             "remote_execution": {
                 "psexec_handler": self._handle_psexec,
                 "wmi_handler": self._handle_wmi,
-                "powershell_handler": self._handle_powershell
+                "powershell_handler": self._handle_powershell,
             },
             "remote_file_copy": {
                 "smb_handler": self._handle_smb,
                 "ftp_handler": self._handle_ftp,
-                "scp_handler": self._handle_scp
+                "scp_handler": self._handle_scp,
             },
             "remote_service": {
                 "creation_handler": self._handle_service_creation,
                 "modification_handler": self._handle_service_modification,
-                "stop_handler": self._handle_service_stop
-            }
+                "stop_handler": self._handle_service_stop,
+            },
         }
 
         # Initialize configuration
@@ -96,53 +96,53 @@ class LateralMovement:
                 "psexec": {
                     "targets": ["windows", "linux", "unix"],
                     "commands": ["cmd", "powershell", "bash"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "wmi": {
                     "targets": ["windows", "linux", "unix"],
                     "commands": ["cmd", "powershell", "bash"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "powershell": {
                     "targets": ["windows", "linux", "unix"],
                     "commands": ["cmd", "powershell", "bash"],
-                    "timeouts": [30, 60, 120]
-                }
+                    "timeouts": [30, 60, 120],
+                },
             },
             "remote_file_copy": {
                 "smb": {
                     "targets": ["windows", "linux", "unix"],
                     "shares": ["admin$", "c$", "d$"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "ftp": {
                     "targets": ["windows", "linux", "unix"],
                     "ports": [21, 2121, 2122],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "scp": {
                     "targets": ["windows", "linux", "unix"],
                     "ports": [22, 2222, 2223],
-                    "timeouts": [30, 60, 120]
-                }
+                    "timeouts": [30, 60, 120],
+                },
             },
             "remote_service": {
                 "creation": {
                     "targets": ["windows", "linux", "unix"],
                     "types": ["auto", "manual", "disabled"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "modification": {
                     "targets": ["windows", "linux", "unix"],
                     "types": ["auto", "manual", "disabled"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "stop": {
                     "targets": ["windows", "linux", "unix"],
                     "types": ["auto", "manual", "disabled"],
-                    "timeouts": [30, 60, 120]
-                }
-            }
+                    "timeouts": [30, 60, 120],
+                },
+            },
         }
 
     def move(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -152,7 +152,7 @@ class LateralMovement:
             result = {
                 "original_data": data,
                 "timestamp": datetime.now().isoformat(),
-                "lateral_movement": {}
+                "lateral_movement": {},
             }
 
             # Apply remote execution
@@ -187,7 +187,9 @@ class LateralMovement:
 
         # PowerShell
         if "powershell" in data:
-            result["powershell"] = self.tools["remote_execution"]["powershell_handler"](data["powershell"])
+            result["powershell"] = self.tools["remote_execution"]["powershell_handler"](
+                data["powershell"]
+            )
 
         return result
 
@@ -219,7 +221,9 @@ class LateralMovement:
 
         # Modification
         if "modification" in data:
-            result["modification"] = self.tools["remote_service"]["modification_handler"](data["modification"])
+            result["modification"] = self.tools["remote_service"]["modification_handler"](
+                data["modification"]
+            )
 
         # Stop
         if "stop" in data:
@@ -235,7 +239,7 @@ class LateralMovement:
                 "success": True,
                 "technique": "psexec",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -294,7 +298,9 @@ class LateralMovement:
             if command.lower().startswith("cmd"):
                 output += "Microsoft Windows [Version 10.0.19045.3324]\n"
                 output += "(c) Microsoft Corporation. All rights reserved.\n\n"
-                output += f"C:\\Windows\\System32>{command.split(' ', 1)[1] if ' ' in command else ''}\n"
+                output += (
+                    f"C:\\Windows\\System32>{command.split(' ', 1)[1] if ' ' in command else ''}\n"
+                )
 
             result["details"]["command_output"] = output
             result["details"]["execution_time"] = execution_time
@@ -311,7 +317,7 @@ class LateralMovement:
                 "success": False,
                 "technique": "psexec",
                 "timestamp": datetime.now().isoformat(),
-                "error": str(e)
+                "error": str(e),
             }
 
     def _handle_wmi(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -322,7 +328,7 @@ class LateralMovement:
                 "success": True,
                 "technique": "wmi",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -345,7 +351,7 @@ class LateralMovement:
 
             if method == "process_call":
                 # Using Win32_Process.Create
-                wmi_cmd = f"{wmi_tool} /node:\"{target}\""
+                wmi_cmd = f'{wmi_tool} /node:"{target}"'
 
                 # Add credentials if provided
                 if "username" in data and "password" in data:
@@ -356,12 +362,12 @@ class LateralMovement:
                 else:
                     result["details"]["auth_method"] = "current_user"
 
-                wmi_cmd += f" process call create \"{command}\""
+                wmi_cmd += f' process call create "{command}"'
                 result["details"]["wmi_method"] = "Win32_Process.Create"
 
             elif method == "wmic_node":
                 # Using WMIC /node approach
-                wmi_cmd = f"{wmi_tool} /node:\"{target}\""
+                wmi_cmd = f'{wmi_tool} /node:"{target}"'
 
                 # Add credentials if provided
                 if "username" in data and "password" in data:
@@ -372,12 +378,12 @@ class LateralMovement:
                 else:
                     result["details"]["auth_method"] = "current_user"
 
-                wmi_cmd += f" process call create \"{command}\""
+                wmi_cmd += f' process call create "{command}"'
                 result["details"]["wmi_method"] = "WMIC /node"
 
             elif method == "invoke_wmi":
                 # PowerShell Invoke-WmiMethod
-                wmi_cmd = "powershell -Command \"Invoke-WmiMethod -Class Win32_Process -Name Create"
+                wmi_cmd = 'powershell -Command "Invoke-WmiMethod -Class Win32_Process -Name Create'
                 wmi_cmd += f" -ArgumentList '{command}' -ComputerName {target}"
 
                 # Add credentials if provided
@@ -389,7 +395,7 @@ class LateralMovement:
                 else:
                     result["details"]["auth_method"] = "current_user"
 
-                wmi_cmd += "\""
+                wmi_cmd += '"'
                 result["details"]["wmi_method"] = "Invoke-WmiMethod"
 
             # Execute command (simulation)
@@ -435,7 +441,7 @@ class LateralMovement:
                 "success": False,
                 "technique": "wmi",
                 "timestamp": datetime.now().isoformat(),
-                "error": str(e)
+                "error": str(e),
             }
 
     def _handle_powershell(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -446,7 +452,7 @@ class LateralMovement:
                 "success": True,
                 "technique": "powershell_remoting",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -499,7 +505,9 @@ class LateralMovement:
                     result["details"]["auth_method"] = "current_user"
 
                 result["details"]["powershell_method"] = "Enter-PSSession"
-                result["details"]["note"] = "Interactive session not actually established in simulation mode"
+                result["details"]["note"] = (
+                    "Interactive session not actually established in simulation mode"
+                )
 
             elif method == "new_pssession":
                 # Using New-PSSession
@@ -518,7 +526,7 @@ class LateralMovement:
                 result["details"]["powershell_method"] = "New-PSSession with Invoke-Command"
 
             # Full PowerShell command with wrapper
-            full_ps_cmd = f"powershell -Command \"{ps_cmd}\""
+            full_ps_cmd = f'powershell -Command "{ps_cmd}"'
             result["details"]["full_command"] = full_ps_cmd
 
             # Execute command (simulation)
@@ -548,7 +556,9 @@ class LateralMovement:
 
             # Log MITRE ATT&CK technique ID
             result["details"]["mitre_technique_id"] = "T1059.001"
-            result["details"]["mitre_technique_name"] = "Command and Scripting Interpreter: PowerShell"
+            result["details"]["mitre_technique_name"] = (
+                "Command and Scripting Interpreter: PowerShell"
+            )
 
             return result
 
@@ -558,7 +568,7 @@ class LateralMovement:
                 "success": False,
                 "technique": "powershell_remoting",
                 "timestamp": datetime.now().isoformat(),
-                "error": str(e)
+                "error": str(e),
             }
 
     def _handle_smb(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -569,7 +579,7 @@ class LateralMovement:
                 "success": True,
                 "technique": "smb_file_copy",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -592,7 +602,7 @@ class LateralMovement:
             # Build command based on method
             if method == "copy":
                 # Using copy command
-                cmd = f"copy \"{source_file}\" \\\\{target}\\{share}\\{dest_file}"
+                cmd = f'copy "{source_file}" \\\\{target}\\{share}\\{dest_file}'
                 result["details"]["command"] = cmd
 
                 # Add authentication details if provided
@@ -611,8 +621,8 @@ class LateralMovement:
                 source_dir = os.path.dirname(source_file) or "."
                 source_filename = os.path.basename(source_file)
 
-                cmd = f"robocopy \"{source_dir}\" \\\\{target}\\{share}\\"
-                cmd += f"{os.path.dirname(dest_file) or '.'} \"{source_filename}\" /R:1 /W:1"
+                cmd = f'robocopy "{source_dir}" \\\\{target}\\{share}\\'
+                cmd += f'{os.path.dirname(dest_file) or "."} "{source_filename}" /R:1 /W:1'
 
                 result["details"]["command"] = cmd
 
@@ -651,7 +661,9 @@ class LateralMovement:
             # Simulate file size for the operation
             file_size = random.randint(10000, 50000000)  # Random size between 10KB and 50MB
             result["details"]["file_size"] = file_size
-            result["details"]["bytes_per_second"] = int(file_size / execution_time) if execution_time > 0 else 0
+            result["details"]["bytes_per_second"] = (
+                int(file_size / execution_time) if execution_time > 0 else 0
+            )
 
             # Simulated output based on the method
             if method == "copy":
@@ -662,7 +674,9 @@ class LateralMovement:
                 output += "-------------------------------------------------------------------------------\n\n"
                 output += f"  Started : {datetime.now().strftime('%a %b %d %H:%M:%S %Y')}\n"
                 output += f"   Source : {source_dir}\\\n"
-                output += f"     Dest : \\\\{target}\\{share}\\{os.path.dirname(dest_file) or '.'}\\\n\n"
+                output += (
+                    f"     Dest : \\\\{target}\\{share}\\{os.path.dirname(dest_file) or '.'}\\\n\n"
+                )
                 output += f"    Files : {source_filename}\n\n"
                 output += "  Options : /R:1 /W:1 /DCOPY:DA /COPY:DAT /NP \n\n"
                 output += "------------------------------------------------------------------------------\n\n"
@@ -691,7 +705,7 @@ class LateralMovement:
                 "success": False,
                 "technique": "smb_file_copy",
                 "timestamp": datetime.now().isoformat(),
-                "error": str(e)
+                "error": str(e),
             }
 
     def _handle_ftp(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -702,7 +716,7 @@ class LateralMovement:
                 "success": True,
                 "technique": "ftp_file_copy",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -733,7 +747,7 @@ class LateralMovement:
                 script_content = f"open {target} {port}\n"
                 script_content += f"user {username} {password}\n"
                 script_content += "binary\n"  # Transfer in binary mode
-                script_content += f"put \"{source_file}\" \"{dest_file}\"\n"
+                script_content += f'put "{source_file}" "{dest_file}"\n'
                 script_content += "bye\n"
 
                 # In a real scenario, we would create a temporary script file
@@ -754,12 +768,12 @@ class LateralMovement:
                     f"$client.UploadFile($uri, '{source_file}')"
                 )
 
-                cmd = f"powershell -Command \"{ps_cmd}\""
+                cmd = f'powershell -Command "{ps_cmd}"'
                 result["details"]["command"] = cmd
 
             elif method == "curl":
                 # Using curl for FTP upload
-                cmd = f"curl -T \"{source_file}\" ftp://{target}:{port}/{dest_file} --user {username}:{password}"
+                cmd = f'curl -T "{source_file}" ftp://{target}:{port}/{dest_file} --user {username}:{password}'
                 result["details"]["command"] = cmd
 
             # Execute command (simulation)
@@ -770,7 +784,9 @@ class LateralMovement:
             # Simulate file size for the operation
             file_size = random.randint(10000, 50000000)  # Random size between 10KB and 50MB
             result["details"]["file_size"] = file_size
-            result["details"]["bytes_per_second"] = int(file_size / execution_time) if execution_time > 0 else 0
+            result["details"]["bytes_per_second"] = (
+                int(file_size / execution_time) if execution_time > 0 else 0
+            )
 
             # Simulated output based on the method
             if method == "ftp_command":
@@ -784,14 +800,14 @@ class LateralMovement:
                 output += "200 PORT command successful.\n"
                 output += f"150 Opening BINARY mode data connection for {dest_file}.\n"
                 output += "226 Transfer complete.\n"
-                output += f"ftp: {file_size} bytes sent in {execution_time:.2f}Seconds {int(file_size/execution_time):.2f}Bytes/sec.\n"
+                output += f"ftp: {file_size} bytes sent in {execution_time:.2f}Seconds {int(file_size / execution_time):.2f}Bytes/sec.\n"
                 output += "221 Goodbye.\n"
             elif method == "powershell":
                 output = ""  # PowerShell typically has no output on successful transfer
             elif method == "curl":
                 output = "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n"
                 output += "                                 Dload  Upload   Total   Spent    Left  Speed\n"
-                output += f"100 {file_size/1024:.1f}k    0     0  100 {file_size/1024:.1f}k      0  {file_size/1024/execution_time:.1f}k  0:00:0{int(execution_time)} --:--:--  0:00:0{int(execution_time)} {int(file_size/execution_time)}\n"
+                output += f"100 {file_size / 1024:.1f}k    0     0  100 {file_size / 1024:.1f}k      0  {file_size / 1024 / execution_time:.1f}k  0:00:0{int(execution_time)} --:--:--  0:00:0{int(execution_time)} {int(file_size / execution_time)}\n"
 
             result["details"]["command_output"] = output
             result["details"]["execution_time"] = execution_time
@@ -808,7 +824,7 @@ class LateralMovement:
                 "success": False,
                 "technique": "ftp_file_copy",
                 "timestamp": datetime.now().isoformat(),
-                "error": str(e)
+                "error": str(e),
             }
 
     def _handle_scp(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -819,7 +835,7 @@ class LateralMovement:
                 "success": True,
                 "technique": "scp_file_copy",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -850,13 +866,15 @@ class LateralMovement:
                     result["details"]["auth_details"] = "password authentication via sshpass"
                 else:
                     # Without sshpass, would prompt for password
-                    cmd = f"scp -P {port} \"{source_file}\" {username}@{target}:{dest_path}"
+                    cmd = f'scp -P {port} "{source_file}" {username}@{target}:{dest_path}'
                     result["details"]["auth_details"] = "password authentication via prompt"
 
             elif auth_method == "key":
                 # Using key-based authentication
                 key_file = data.get("key_file", "~/.ssh/id_rsa")
-                cmd = f"scp -P {port} -i \"{key_file}\" \"{source_file}\" {username}@{target}:{dest_path}"
+                cmd = (
+                    f'scp -P {port} -i "{key_file}" "{source_file}" {username}@{target}:{dest_path}'
+                )
                 result["details"]["auth_details"] = f"key authentication using {key_file}"
                 result["details"]["key_file"] = key_file
 
@@ -884,7 +902,9 @@ class LateralMovement:
             # Simulate file size for the operation
             file_size = random.randint(10000, 50000000)  # Random size between 10KB and 50MB
             result["details"]["file_size"] = file_size
-            result["details"]["bytes_per_second"] = int(file_size / execution_time) if execution_time > 0 else 0
+            result["details"]["bytes_per_second"] = (
+                int(file_size / execution_time) if execution_time > 0 else 0
+            )
 
             # Simulated output
             output = ""
@@ -897,14 +917,14 @@ class LateralMovement:
                 output += "debug1: channel 0: new [client-session]\n"
                 output += f"debug1: Sending command: scp -v -t {dest_path}\n"
                 output += f"Sending file modes: C0644 {file_size} {os.path.basename(source_file)}\n"
-                output += f"{source_file}                                  100% {file_size/1024:.1f}KB {int(file_size/1024/execution_time):.1f}KB/s   00:00\n"
+                output += f"{source_file}                                  100% {file_size / 1024:.1f}KB {int(file_size / 1024 / execution_time):.1f}KB/s   00:00\n"
                 output += "debug1: client_input_channel_req: channel 0 rtype exit-status reply 0\n"
                 output += "debug1: channel 0: free: client-session, nchannels 1\n"
                 output += "Transferred: sent 36.4KB, received 3.5KB, 80.4KB total\n"
                 output += "Bytes per second: sent 72.7KB/s, received 7.1KB/s, 160.7KB/s total\n"
                 output += "debug1: Exit status 0\n"
             elif "quiet" not in data or not data["quiet"]:
-                output = f"{source_file}                                  100% {file_size/1024:.1f}KB {int(file_size/1024/execution_time):.1f}KB/s   00:00\n"
+                output = f"{source_file}                                  100% {file_size / 1024:.1f}KB {int(file_size / 1024 / execution_time):.1f}KB/s   00:00\n"
 
             result["details"]["command_output"] = output
             result["details"]["execution_time"] = execution_time
@@ -921,7 +941,7 @@ class LateralMovement:
                 "success": False,
                 "technique": "scp_file_copy",
                 "timestamp": datetime.now().isoformat(),
-                "error": str(e)
+                "error": str(e),
             }
 
     def _handle_service_creation(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -932,7 +952,7 @@ class LateralMovement:
                 "success": True,
                 "technique": "service_creation",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -960,8 +980,8 @@ class LateralMovement:
             if method == "sc":
                 # Using sc.exe command-line utility
                 sc_cmd = f"sc \\\\{target} create {service_name} "
-                sc_cmd += f"displayName= \"{display_name}\" "
-                sc_cmd += f"binPath= \"{binary_path}\" "
+                sc_cmd += f'displayName= "{display_name}" '
+                sc_cmd += f'binPath= "{binary_path}" '
 
                 # Add start type
                 if start_type == "auto":
@@ -982,14 +1002,14 @@ class LateralMovement:
                 # Add optional description if provided
                 if "description" in data:
                     description = data.get("description")
-                    sc_cmd += f"& sc \\\\{target} description {service_name} \"{description}\" "
+                    sc_cmd += f'& sc \\\\{target} description {service_name} "{description}" '
                     result["details"]["description"] = description
 
                 # Add credentials if provided
                 if "username" in data and "password" in data:
                     username = data.get("username")
                     password = data.get("password")
-                    sc_cmd += f"obj= \"{username}\" password= \"{password}\" "
+                    sc_cmd += f'obj= "{username}" password= "{password}" '
                     result["details"]["auth_method"] = "service_account"
                 else:
                     result["details"]["auth_method"] = "local_system"
@@ -1026,7 +1046,7 @@ class LateralMovement:
                     result["details"]["start_service"] = True
 
                 # Wrap in PowerShell command
-                cmd = f"powershell -Command \"{ps_cmd}\""
+                cmd = f'powershell -Command "{ps_cmd}"'
                 result["details"]["command"] = cmd
 
             elif method == "wmi":
@@ -1064,7 +1084,7 @@ class LateralMovement:
                     result["details"]["start_service"] = True
 
                 # Wrap in PowerShell command
-                cmd = f"powershell -Command \"{ps_cmd}\""
+                cmd = f'powershell -Command "{ps_cmd}"'
                 result["details"]["command"] = cmd
 
             # Execute command (simulation)
@@ -1091,7 +1111,9 @@ class LateralMovement:
 
             # Log MITRE ATT&CK technique ID
             result["details"]["mitre_technique_id"] = "T1543.003"
-            result["details"]["mitre_technique_name"] = "Create or Modify System Process: Windows Service"
+            result["details"]["mitre_technique_name"] = (
+                "Create or Modify System Process: Windows Service"
+            )
 
             return result
 
@@ -1101,7 +1123,7 @@ class LateralMovement:
                 "success": False,
                 "technique": "service_creation",
                 "timestamp": datetime.now().isoformat(),
-                "error": str(e)
+                "error": str(e),
             }
 
     def _handle_service_modification(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1112,12 +1134,14 @@ class LateralMovement:
                 "success": True,
                 "technique": "service_modification",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
             target = data.get("target", "localhost")
-            service_name = data.get("service_name", "Spooler")  # Default to a common Windows service
+            service_name = data.get(
+                "service_name", "Spooler"
+            )  # Default to a common Windows service
             data.get("timeout", 60)
 
             # Log operation details
@@ -1149,14 +1173,20 @@ class LateralMovement:
             # Build command based on method and modification type
             if method == "sc":
                 if mod_type == "binary_path":
-                    cmd = f"sc \\\\{target} config {service_name} binPath= \"{mod_value}\""
+                    cmd = f'sc \\\\{target} config {service_name} binPath= "{mod_value}"'
                 elif mod_type == "start_type":
-                    start_type_value = "auto" if mod_value == "auto" else "demand" if mod_value == "manual" else "disabled"
+                    start_type_value = (
+                        "auto"
+                        if mod_value == "auto"
+                        else "demand"
+                        if mod_value == "manual"
+                        else "disabled"
+                    )
                     cmd = f"sc \\\\{target} config {service_name} start= {start_type_value}"
                 elif mod_type == "description":
-                    cmd = f"sc \\\\{target} description {service_name} \"{mod_value}\""
+                    cmd = f'sc \\\\{target} description {service_name} "{mod_value}"'
                 elif mod_type == "display_name":
-                    cmd = f"sc \\\\{target} config {service_name} displayName= \"{mod_value}\""
+                    cmd = f'sc \\\\{target} config {service_name} displayName= "{mod_value}"'
 
                 result["details"]["command"] = cmd
 
@@ -1165,7 +1195,9 @@ class LateralMovement:
                 if mod_type == "binary_path":
                     ps_cmd = f"Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{service_name}' -Name 'ImagePath' -Value '{mod_value}'"
                 elif mod_type == "start_type":
-                    start_type_value = 2 if mod_value == "auto" else 3 if mod_value == "manual" else 4  # 2=Auto, 3=Manual, 4=Disabled
+                    start_type_value = (
+                        2 if mod_value == "auto" else 3 if mod_value == "manual" else 4
+                    )  # 2=Auto, 3=Manual, 4=Disabled
                     ps_cmd = f"Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{service_name}' -Name 'Start' -Value {start_type_value}"
                 elif mod_type == "description":
                     ps_cmd = f"Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{service_name}' -Name 'Description' -Value '{mod_value}'"
@@ -1176,7 +1208,7 @@ class LateralMovement:
                 ps_cmd += f" -ComputerName {target}"
 
                 # Wrap in PowerShell command
-                cmd = f"powershell -Command \"{ps_cmd}\""
+                cmd = f'powershell -Command "{ps_cmd}"'
                 result["details"]["command"] = cmd
 
             elif method == "wmi":
@@ -1186,7 +1218,13 @@ class LateralMovement:
                 if mod_type == "binary_path":
                     ps_cmd += f"$service.PathName = '{mod_value}'; "
                 elif mod_type == "start_type":
-                    start_type_value = "Automatic" if mod_value == "auto" else "Manual" if mod_value == "manual" else "Disabled"
+                    start_type_value = (
+                        "Automatic"
+                        if mod_value == "auto"
+                        else "Manual"
+                        if mod_value == "manual"
+                        else "Disabled"
+                    )
                     ps_cmd += f"$service.StartMode = '{start_type_value}'; "
                 elif mod_type == "description":
                     ps_cmd += f"$service.Description = '{mod_value}'; "
@@ -1201,7 +1239,7 @@ class LateralMovement:
                     result["details"]["restart_service"] = True
 
                 # Wrap in PowerShell command
-                cmd = f"powershell -Command \"{ps_cmd}\""
+                cmd = f'powershell -Command "{ps_cmd}"'
                 result["details"]["command"] = cmd
 
             # Execute command (simulation)
@@ -1222,7 +1260,9 @@ class LateralMovement:
 
             # Log MITRE ATT&CK technique ID
             result["details"]["mitre_technique_id"] = "T1543.003"
-            result["details"]["mitre_technique_name"] = "Create or Modify System Process: Windows Service"
+            result["details"]["mitre_technique_name"] = (
+                "Create or Modify System Process: Windows Service"
+            )
 
             return result
 
@@ -1232,7 +1272,7 @@ class LateralMovement:
                 "success": False,
                 "technique": "service_modification",
                 "timestamp": datetime.now().isoformat(),
-                "error": str(e)
+                "error": str(e),
             }
 
     def _handle_service_stop(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1243,12 +1283,14 @@ class LateralMovement:
                 "success": True,
                 "technique": "service_manipulation",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
             target = data.get("target", "localhost")
-            service_name = data.get("service_name", "Spooler")  # Default to a common Windows service
+            service_name = data.get(
+                "service_name", "Spooler"
+            )  # Default to a common Windows service
             data.get("timeout", 60)
 
             # Log operation details
@@ -1290,10 +1332,12 @@ class LateralMovement:
                     ps_cmd = f"(Get-WmiObject -ComputerName {target} -Class Win32_Service -Filter \"Name='{service_name}'\").Delete()"
                     result["details"]["warning"] = "Service deletion is a destructive operation"
                 elif action == "query":
-                    ps_cmd = f"Get-Service -Name '{service_name}' -ComputerName {target} | Format-List *"
+                    ps_cmd = (
+                        f"Get-Service -Name '{service_name}' -ComputerName {target} | Format-List *"
+                    )
 
                 # Wrap in PowerShell command
-                cmd = f"powershell -Command \"{ps_cmd}\""
+                cmd = f'powershell -Command "{ps_cmd}"'
                 result["details"]["command"] = cmd
 
             elif method == "net":
@@ -1318,7 +1362,9 @@ class LateralMovement:
             output = ""
             if method == "sc":
                 if action == "stop":
-                    output = "[SC] ControlService FAILED 1062:\n\nThe service has not been started.\n"
+                    output = (
+                        "[SC] ControlService FAILED 1062:\n\nThe service has not been started.\n"
+                    )
                     # Alternatively: "[SC] ControlService SUCCESS" for success case
                 elif action == "start":
                     output = "[SC] StartService FAILED 1056:\n\nAn instance of the service is already running.\n"
@@ -1364,7 +1410,9 @@ class LateralMovement:
                 result["details"]["mitre_technique_name"] = "Service Stop"
             else:
                 result["details"]["mitre_technique_id"] = "T1543.003"
-                result["details"]["mitre_technique_name"] = "Create or Modify System Process: Windows Service"
+                result["details"]["mitre_technique_name"] = (
+                    "Create or Modify System Process: Windows Service"
+                )
 
             return result
 
@@ -1374,13 +1422,13 @@ class LateralMovement:
                 "success": False,
                 "technique": "service_manipulation",
                 "timestamp": datetime.now().isoformat(),
-                "error": str(e)
+                "error": str(e),
             }
 
     def _generate_random_name(self, length: int = 8) -> str:
         """Generate a random name for services, files, etc."""
         chars = string.ascii_lowercase + string.digits
-        return ''.join(random.choice(chars) for _ in range(length))
+        return "".join(random.choice(chars) for _ in range(length))
 
     def _log_error(self, message: str) -> None:
         """Log error message"""

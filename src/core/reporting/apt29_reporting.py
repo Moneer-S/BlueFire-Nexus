@@ -32,12 +32,8 @@ class APT29Reporting:
         ch.setLevel(logging.INFO)
 
         # Formatters
-        file_formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        console_formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s'
-        )
+        file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        console_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
         fh.setFormatter(file_formatter)
         ch.setFormatter(console_formatter)
@@ -142,7 +138,7 @@ class APT29Reporting:
                 "success": data.get("success", False),
                 "duration": data.get("duration", 0),
                 "target": data.get("target", "unknown"),
-                "impact_level": data.get("impact_level", "unknown")
+                "impact_level": data.get("impact_level", "unknown"),
             }
 
             # Store updated metrics
@@ -159,7 +155,7 @@ class APT29Reporting:
             "supply_chain": True,
             "data_exfiltration": True,
             "system_shutdown": True,
-            "service_stop": True
+            "service_stop": True,
         }
         return report_triggers.get(operation_type, False)
 
@@ -178,8 +174,8 @@ class APT29Reporting:
                 "metadata": {
                     "generated_by": "APT29Reporting",
                     "version": "1.0",
-                    "report_type": "operation"
-                }
+                    "report_type": "operation",
+                },
             }
 
             # Store report
@@ -201,7 +197,7 @@ class APT29Reporting:
             "timestamp": data.get("timestamp", datetime.now().isoformat()),
             "impact_level": data.get("impact_level", "unknown"),
             "key_actions": self._extract_key_actions(data),
-            "detection_status": self._get_detection_status(data)
+            "detection_status": self._get_detection_status(data),
         }
 
     def _extract_key_actions(self, data: Dict[str, Any]) -> List[str]:
@@ -221,7 +217,7 @@ class APT29Reporting:
             "detected": data.get("detected", False),
             "detection_method": data.get("detection_method", "unknown"),
             "detection_timestamp": data.get("detection_timestamp", None),
-            "evasion_techniques": data.get("evasion_techniques", [])
+            "evasion_techniques": data.get("evasion_techniques", []),
         }
 
     def _extract_indicators(self, data: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -231,7 +227,7 @@ class APT29Reporting:
             "network_indicators": [],
             "process_indicators": [],
             "registry_indicators": [],
-            "behavior_indicators": []
+            "behavior_indicators": [],
         }
 
         if "details" in data:
@@ -271,28 +267,35 @@ class APT29Reporting:
         # Add specific recommendations based on operation type
         op_type = data.get("operation_type", "")
         if op_type == "phishing":
-            recommendations.extend([
-                "Enhance email security controls",
-                "Conduct user awareness training",
-                "Implement phishing simulation program"
-            ])
+            recommendations.extend(
+                [
+                    "Enhance email security controls",
+                    "Conduct user awareness training",
+                    "Implement phishing simulation program",
+                ]
+            )
         elif op_type == "supply_chain":
-            recommendations.extend([
-                "Review software supply chain security",
-                "Implement code signing verification",
-                "Enhance update process security"
-            ])
+            recommendations.extend(
+                [
+                    "Review software supply chain security",
+                    "Implement code signing verification",
+                    "Enhance update process security",
+                ]
+            )
         elif op_type == "data_exfiltration":
-            recommendations.extend([
-                "Implement data loss prevention",
-                "Enhance network monitoring",
-                "Review data classification"
-            ])
+            recommendations.extend(
+                [
+                    "Implement data loss prevention",
+                    "Enhance network monitoring",
+                    "Review data classification",
+                ]
+            )
 
         return recommendations
 
-    def generate_summary_report(self, start_time: Optional[str] = None,
-                              end_time: Optional[str] = None) -> Dict[str, Any]:
+    def generate_summary_report(
+        self, start_time: Optional[str] = None, end_time: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Generate a summary report for a time period"""
         try:
             # Collect all reports in the time period
@@ -318,10 +321,7 @@ class APT29Reporting:
             summary = {
                 "report_id": f"SUM-{int(time.time())}",
                 "timestamp": datetime.now().isoformat(),
-                "period": {
-                    "start": start_time or "beginning",
-                    "end": end_time or "current"
-                },
+                "period": {"start": start_time or "beginning", "end": end_time or "current"},
                 "statistics": {
                     "total_operations": len(reports),
                     "successful_operations": sum(
@@ -331,15 +331,15 @@ class APT29Reporting:
                         1 for r in reports if r["summary"]["status"] == "failed"
                     ),
                     "operation_types": self._count_operation_types(reports),
-                    "impact_levels": self._count_impact_levels(reports)
+                    "impact_levels": self._count_impact_levels(reports),
                 },
                 "key_findings": self._extract_key_findings(reports),
                 "recommendations": self._generate_summary_recommendations(reports),
                 "metadata": {
                     "generated_by": "APT29Reporting",
                     "version": "1.0",
-                    "report_type": "summary"
-                }
+                    "report_type": "summary",
+                },
             }
 
             # Store summary report
@@ -389,7 +389,7 @@ class APT29Reporting:
         # Analyze detection rates
         detected = sum(1 for r in reports if r["summary"]["detection_status"]["detected"])
         if detected > 0:
-            findings.append(f"Detection rate: {detected/len(reports)*100:.1f}%")
+            findings.append(f"Detection rate: {detected / len(reports) * 100:.1f}%")
 
         return findings
 
@@ -411,11 +411,13 @@ class APT29Reporting:
                 recommendations.append(msg)
 
         # General recommendations
-        recommendations.extend([
-            "Review and update security policies",
-            "Enhance monitoring and detection capabilities",
-            "Conduct security awareness training",
-            "Update incident response procedures"
-        ])
+        recommendations.extend(
+            [
+                "Review and update security policies",
+                "Enhance monitoring and detection capabilities",
+                "Conduct security awareness training",
+                "Update incident response procedures",
+            ]
+        )
 
         return recommendations

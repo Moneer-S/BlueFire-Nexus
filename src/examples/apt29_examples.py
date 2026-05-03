@@ -35,7 +35,7 @@ class APT29Examples:
         return {
             "success": True,
             "message": "Initial access techniques demonstrated",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
         }
 
     @staticmethod
@@ -61,7 +61,7 @@ class APT29Examples:
         return {
             "success": True,
             "message": "Execution and persistence techniques demonstrated",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
         }
 
     @staticmethod
@@ -82,7 +82,7 @@ class APT29Examples:
         return {
             "success": True,
             "message": "C2 techniques demonstrated",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
         }
 
     @staticmethod
@@ -109,7 +109,7 @@ class APT29Examples:
         return {
             "success": True,
             "message": "Data exfiltration techniques demonstrated",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
         }
 
     @staticmethod
@@ -135,7 +135,7 @@ class APT29Examples:
         return {
             "success": True,
             "message": "Impact techniques demonstrated",
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
         }
 
     @staticmethod
@@ -180,9 +180,10 @@ class APT29Examples:
                 "powershell": powershell_result,
                 "c2": c2_result,
                 "exfiltration": exfil_result,
-                "impact": impact_result
-            }
+                "impact": impact_result,
+            },
         }
+
 
 def main():
     """Run all APT29 examples"""
@@ -216,6 +217,7 @@ def main():
     except Exception as e:
         print(f"\nError running examples: {str(e)}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

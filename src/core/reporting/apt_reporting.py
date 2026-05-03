@@ -24,8 +24,13 @@ class APTReporting:
         self.reports_dir = self.apt_dir / "reports"
 
         # Create directories if they don't exist
-        for directory in [self.base_dir, self.apt_dir, self.operations_dir,
-                         self.artifacts_dir, self.reports_dir]:
+        for directory in [
+            self.base_dir,
+            self.apt_dir,
+            self.operations_dir,
+            self.artifacts_dir,
+            self.reports_dir,
+        ]:
             directory.mkdir(parents=True, exist_ok=True)
 
         # Set up logging
@@ -41,7 +46,7 @@ class APTReporting:
         ch.setLevel(logging.INFO)
 
         # Formatter
-        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         fh.setFormatter(formatter)
         ch.setFormatter(formatter)
 
@@ -57,7 +62,7 @@ class APTReporting:
             "successful_operations": 0,
             "failed_operations": 0,
             "impact_levels": {},
-            "detection_rates": {}
+            "detection_rates": {},
         }
 
     def log_operation(self, operation: Dict[str, Any]) -> str:
@@ -75,8 +80,7 @@ class APTReporting:
 
             # Log operation
             self.logger.info(
-                f"Operation {operation_id}: {operation['tactic']} - "
-                f"{operation['technique']}"
+                f"Operation {operation_id}: {operation['tactic']} - {operation['technique']}"
             )
 
             # Update metrics
@@ -137,7 +141,7 @@ class APTReporting:
                 "artifacts": artifacts,
                 "metrics": self._calculate_operation_metrics(operation_id),
                 "indicators": self._extract_indicators(operation, artifacts),
-                "recommendations": self._generate_recommendations(operation, artifacts)
+                "recommendations": self._generate_recommendations(operation, artifacts),
             }
 
             # Save report
@@ -151,8 +155,9 @@ class APTReporting:
             self.logger.error(f"Error generating report: {str(e)}")
             raise
 
-    def generate_summary(self, start_time: Optional[str] = None,
-                        end_time: Optional[str] = None) -> Dict[str, Any]:
+    def generate_summary(
+        self, start_time: Optional[str] = None, end_time: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Generate a summary report for a time period"""
         try:
             # Filter operations by time period
@@ -160,21 +165,18 @@ class APTReporting:
 
             # Generate summary
             summary = {
-                "period": {
-                    "start": start_time or "beginning",
-                    "end": end_time or "now"
-                },
+                "period": {"start": start_time or "beginning", "end": end_time or "now"},
                 "total_operations": len(filtered_operations),
                 "operations_by_tactic": self._group_operations_by_tactic(filtered_operations),
                 "success_rate": self._calculate_success_rate(filtered_operations),
                 "impact_levels": self._calculate_impact_levels(filtered_operations),
                 "detection_rates": self._calculate_detection_rates(filtered_operations),
                 "key_findings": self._extract_key_findings(filtered_operations),
-                "recommendations": self._generate_summary_recommendations(filtered_operations)
+                "recommendations": self._generate_summary_recommendations(filtered_operations),
             }
 
             # Save summary
-            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             summary_path = self.reports_dir / f"summary_{ts}.json"
             with open(summary_path, "w") as f:
                 json.dump(summary, f, indent=2)
@@ -222,7 +224,7 @@ class APTReporting:
             "impact_level": operation.get("impact_level", "unknown"),
             "detection_status": operation.get("detection_status", "unknown"),
             "artifact_count": len(artifacts),
-            "indicator_count": len(self._extract_indicators(operation, artifacts))
+            "indicator_count": len(self._extract_indicators(operation, artifacts)),
         }
 
     def _calculate_duration(self, operation: Dict[str, Any]) -> float:
@@ -231,16 +233,11 @@ class APTReporting:
         end_time = datetime.now()
         return (end_time - start_time).total_seconds()
 
-    def _extract_indicators(self, operation: Dict[str, Any],
-                          artifacts: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    def _extract_indicators(
+        self, operation: Dict[str, Any], artifacts: List[Dict[str, Any]]
+    ) -> Dict[str, List[str]]:
         """Extract indicators from operation and artifacts"""
-        indicators = {
-            "file": [],
-            "network": [],
-            "process": [],
-            "registry": [],
-            "behavior": []
-        }
+        indicators = {"file": [], "network": [], "process": [], "registry": [], "behavior": []}
 
         # Extract from operation
         for indicator_type in indicators:
@@ -256,8 +253,9 @@ class APTReporting:
 
         return indicators
 
-    def _generate_recommendations(self, operation: Dict[str, Any],
-                                artifacts: List[Dict[str, Any]]) -> List[str]:
+    def _generate_recommendations(
+        self, operation: Dict[str, Any], artifacts: List[Dict[str, Any]]
+    ) -> List[str]:
         """Generate recommendations based on operation and artifacts"""
         recommendations = []
 
@@ -282,8 +280,9 @@ class APTReporting:
 
         return recommendations
 
-    def _filter_operations_by_time(self, start_time: Optional[str],
-                                 end_time: Optional[str]) -> List[Dict[str, Any]]:
+    def _filter_operations_by_time(
+        self, start_time: Optional[str], end_time: Optional[str]
+    ) -> List[Dict[str, Any]]:
         """Filter operations by time period"""
         filtered = []
 

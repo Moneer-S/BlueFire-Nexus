@@ -29,7 +29,7 @@ class QUICC2:
             if not data:
                 break
             try:
-                await self._execute_command(data.decode(errors='ignore'))
+                await self._execute_command(data.decode(errors="ignore"))
             except Exception as e:
                 self.logger.error(f"Error executing command: {e}")
                 break
@@ -48,8 +48,5 @@ class QUICC2:
         """
         self.logger.info("Starting QUIC server on localhost:4433")
         await serve(
-            "localhost",
-            4433,
-            configuration=self.config,
-            create_protocol=self.handle_connection
+            "localhost", 4433, configuration=self.config, create_protocol=self.handle_connection
         )

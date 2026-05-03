@@ -82,10 +82,7 @@ def mutate_steps(
     strategy: str = "low_noise",
 ) -> list[MutationResult]:
     """Mutate a sequence of step param mappings."""
-    return [
-        mutate_step_params(step, allowed=allowed, strategy=strategy)
-        for step in steps
-    ]
+    return [mutate_step_params(step, allowed=allowed, strategy=strategy) for step in steps]
 
 
 def mutate_technique(

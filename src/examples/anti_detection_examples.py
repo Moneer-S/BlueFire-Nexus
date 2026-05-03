@@ -7,6 +7,7 @@ from ..core.logger import get_logger
 
 logger = get_logger(__name__)
 
+
 class AntiDetectionExamples:
     """Example usage scenarios for anti-detection capabilities."""
 
@@ -87,7 +88,7 @@ class AntiDetectionExamples:
         results = {
             "environment_check": AntiDetectionExamples.basic_environment_check(),
             "memory_protection": AntiDetectionExamples.advanced_memory_protection(),
-            "evasion_techniques": AntiDetectionExamples.comprehensive_evasion()
+            "evasion_techniques": AntiDetectionExamples.comprehensive_evasion(),
         }
 
         # Log overall status
@@ -116,7 +117,7 @@ class AntiDetectionExamples:
         results = {
             "traffic_obfuscation": anti_detection._obfuscate_network(),
             "adapter_stealth": anti_detection._hide_network_adapter(),
-            "connection_stealth": anti_detection._hide_network_connections()
+            "connection_stealth": anti_detection._hide_network_connections(),
         }
 
         # Log results
@@ -141,7 +142,7 @@ class AntiDetectionExamples:
         results = {
             "process_hiding": anti_detection._hide_process(),
             "thread_hiding": anti_detection._hide_threads(),
-            "handle_hiding": anti_detection._hide_handles()
+            "handle_hiding": anti_detection._hide_handles(),
         }
 
         # Log results
@@ -166,7 +167,7 @@ class AntiDetectionExamples:
         results = {
             "file_hiding": anti_detection._hide_files(),
             "file_encryption": anti_detection._encrypt_files(),
-            "file_obfuscation": anti_detection._obfuscate_files()
+            "file_obfuscation": anti_detection._obfuscate_files(),
         }
 
         # Log results
@@ -191,7 +192,7 @@ class AntiDetectionExamples:
         results = {
             "registry_hiding": anti_detection._hide_registry(),
             "registry_encryption": anti_detection._encrypt_registry(),
-            "registry_obfuscation": anti_detection._obfuscate_registry()
+            "registry_obfuscation": anti_detection._obfuscate_registry(),
         }
 
         # Log results
@@ -216,7 +217,7 @@ class AntiDetectionExamples:
         results = {
             "service_hiding": anti_detection._hide_service(),
             "service_encryption": anti_detection._encrypt_service(),
-            "service_obfuscation": anti_detection._obfuscate_service()
+            "service_obfuscation": anti_detection._obfuscate_service(),
         }
 
         # Log results
@@ -243,7 +244,7 @@ class AntiDetectionExamples:
             "process_stealth": AntiDetectionExamples.process_stealth_example(),
             "file_stealth": AntiDetectionExamples.file_stealth_example(),
             "registry_stealth": AntiDetectionExamples.registry_stealth_example(),
-            "service_stealth": AntiDetectionExamples.service_stealth_example()
+            "service_stealth": AntiDetectionExamples.service_stealth_example(),
         }
 
         # Log overall status
@@ -258,6 +259,7 @@ class AntiDetectionExamples:
             logger.warning("Some advanced stealth operations failed")
 
         return results
+
 
 def main():
     """Main function to demonstrate anti-detection capabilities."""
@@ -305,36 +307,27 @@ def main():
         eva_status = "Success" if all(eva_results.values()) else "Partial"
         logger.info(f"  Evasion Techniques: {eva_status}")
         stealth_ok = all(
-            all(status for status in results.values())
-            for results in stealth_results.values()
+            all(status for status in results.values()) for results in stealth_results.values()
         )
         stealth_status = "Success" if stealth_ok else "Warning"
         logger.info(f"  Stealth Operation: {stealth_status}")
 
         logger.info("\nAdvanced Operations:")
         logger.info(
-            "  Network Stealth: "
-            + ("Success" if all(network_results.values()) else "Partial")
+            "  Network Stealth: " + ("Success" if all(network_results.values()) else "Partial")
         )
         logger.info(
-            "  Process Stealth: "
-            + ("Success" if all(process_results.values()) else "Partial")
+            "  Process Stealth: " + ("Success" if all(process_results.values()) else "Partial")
+        )
+        logger.info("  File Stealth: " + ("Success" if all(file_results.values()) else "Partial"))
+        logger.info(
+            "  Registry Stealth: " + ("Success" if all(registry_results.values()) else "Partial")
         )
         logger.info(
-            "  File Stealth: "
-            + ("Success" if all(file_results.values()) else "Partial")
-        )
-        logger.info(
-            "  Registry Stealth: "
-            + ("Success" if all(registry_results.values()) else "Partial")
-        )
-        logger.info(
-            "  Service Stealth: "
-            + ("Success" if all(service_results.values()) else "Partial")
+            "  Service Stealth: " + ("Success" if all(service_results.values()) else "Partial")
         )
         adv_ok = all(
-            all(status for status in results.values())
-            for results in advanced_results.values()
+            all(status for status in results.values()) for results in advanced_results.values()
         )
         adv_status = "Success" if adv_ok else "Warning"
         logger.info(f"  Advanced Stealth: {adv_status}")
@@ -342,6 +335,7 @@ def main():
     except Exception as e:
         logger.error(f"Error in main: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

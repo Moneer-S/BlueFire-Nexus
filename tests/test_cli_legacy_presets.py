@@ -274,4 +274,3 @@ def test_legacy_apply_preset_persists_when_not_preview(tmp_path: Path) -> None:
     persisted = runner.invoke(app, ["legacy-controls", "--config", str(cfg_path)])
     assert persisted.exit_code == 0
     assert "Active preset: c2-simulate" in persisted.stdout
-

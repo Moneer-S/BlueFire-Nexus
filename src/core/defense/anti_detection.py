@@ -17,87 +17,87 @@ class AntiDetectionManager:
                 "process_hollowing": {
                     "description": "Hollow out processes",
                     "indicators": ["process_manipulation", "memory_manipulation"],
-                    "evasion": ["process_hiding", "memory_hiding"]
+                    "evasion": ["process_hiding", "memory_hiding"],
                 },
                 "process_injection": {
                     "description": "Inject code into processes",
                     "indicators": ["code_injection", "memory_manipulation"],
-                    "evasion": ["injection_hiding", "memory_hiding"]
+                    "evasion": ["injection_hiding", "memory_hiding"],
                 },
                 "process_masquerading": {
                     "description": "Masquerade as legitimate process",
                     "indicators": ["process_impersonation", "credential_use"],
-                    "evasion": ["impersonation_hiding", "credential_hiding"]
-                }
+                    "evasion": ["impersonation_hiding", "credential_hiding"],
+                },
             },
             "file_evasion": {
                 "file_hiding": {
                     "description": "Hide files from detection",
                     "indicators": ["file_manipulation", "attribute_changes"],
-                    "evasion": ["file_obfuscation", "attribute_hiding"]
+                    "evasion": ["file_obfuscation", "attribute_hiding"],
                 },
                 "file_encryption": {
                     "description": "Encrypt files to prevent detection",
                     "indicators": ["file_encryption", "key_management"],
-                    "evasion": ["encryption_hiding", "key_hiding"]
+                    "evasion": ["encryption_hiding", "key_hiding"],
                 },
                 "file_compression": {
                     "description": "Compress files to prevent detection",
                     "indicators": ["file_compression", "compression_ratio"],
-                    "evasion": ["compression_hiding", "ratio_hiding"]
-                }
+                    "evasion": ["compression_hiding", "ratio_hiding"],
+                },
             },
             "network_evasion": {
                 "connection_hiding": {
                     "description": "Hide network connections",
                     "indicators": ["connection_manipulation", "port_hiding"],
-                    "evasion": ["connection_obfuscation", "port_hiding"]
+                    "evasion": ["connection_obfuscation", "port_hiding"],
                 },
                 "traffic_encryption": {
                     "description": "Encrypt network traffic",
                     "indicators": ["traffic_encryption", "key_exchange"],
-                    "evasion": ["encryption_hiding", "key_hiding"]
+                    "evasion": ["encryption_hiding", "key_hiding"],
                 },
                 "traffic_compression": {
                     "description": "Compress network traffic",
                     "indicators": ["traffic_compression", "compression_ratio"],
-                    "evasion": ["compression_hiding", "ratio_hiding"]
-                }
+                    "evasion": ["compression_hiding", "ratio_hiding"],
+                },
             },
             "registry_evasion": {
                 "registry_hiding": {
                     "description": "Hide registry modifications",
                     "indicators": ["registry_manipulation", "key_hiding"],
-                    "evasion": ["registry_obfuscation", "key_hiding"]
+                    "evasion": ["registry_obfuscation", "key_hiding"],
                 },
                 "registry_encryption": {
                     "description": "Encrypt registry data",
                     "indicators": ["registry_encryption", "key_management"],
-                    "evasion": ["encryption_hiding", "key_hiding"]
+                    "evasion": ["encryption_hiding", "key_hiding"],
                 },
                 "registry_compression": {
                     "description": "Compress registry data",
                     "indicators": ["registry_compression", "compression_ratio"],
-                    "evasion": ["compression_hiding", "ratio_hiding"]
-                }
+                    "evasion": ["compression_hiding", "ratio_hiding"],
+                },
             },
             "memory_evasion": {
                 "memory_hiding": {
                     "description": "Hide memory modifications",
                     "indicators": ["memory_manipulation", "page_hiding"],
-                    "evasion": ["memory_obfuscation", "page_hiding"]
+                    "evasion": ["memory_obfuscation", "page_hiding"],
                 },
                 "memory_encryption": {
                     "description": "Encrypt memory data",
                     "indicators": ["memory_encryption", "key_management"],
-                    "evasion": ["encryption_hiding", "key_hiding"]
+                    "evasion": ["encryption_hiding", "key_hiding"],
                 },
                 "memory_compression": {
                     "description": "Compress memory data",
                     "indicators": ["memory_compression", "compression_ratio"],
-                    "evasion": ["compression_hiding", "ratio_hiding"]
-                }
-            }
+                    "evasion": ["compression_hiding", "ratio_hiding"],
+                },
+            },
         }
 
         # Initialize evasion tools
@@ -105,28 +105,28 @@ class AntiDetectionManager:
             "process": {
                 "process_hollower": self._hollow_process,
                 "process_injector": self._inject_process,
-                "process_masquerader": self._masquerade_process
+                "process_masquerader": self._masquerade_process,
             },
             "file": {
                 "file_hider": self._hide_file,
                 "file_encryptor": self._encrypt_file,
-                "file_compressor": self._compress_file
+                "file_compressor": self._compress_file,
             },
             "network": {
                 "connection_hider": self._hide_connection,
                 "traffic_encryptor": self._encrypt_traffic,
-                "traffic_compressor": self._compress_traffic
+                "traffic_compressor": self._compress_traffic,
             },
             "registry": {
                 "registry_hider": self._hide_registry,
                 "registry_encryptor": self._encrypt_registry,
-                "registry_compressor": self._compress_registry
+                "registry_compressor": self._compress_registry,
             },
             "memory": {
                 "memory_hider": self._hide_memory,
                 "memory_encryptor": self._encrypt_memory,
-                "memory_compressor": self._compress_memory
-            }
+                "memory_compressor": self._compress_memory,
+            },
         }
 
         # Initialize configuration
@@ -136,47 +136,25 @@ class AntiDetectionManager:
                 "explorer.exe",
                 "chrome.exe",
                 "firefox.exe",
-                "iexplore.exe"
+                "iexplore.exe",
             ],
-            "file_extensions": [
-                ".dll",
-                ".exe",
-                ".sys",
-                ".dat",
-                ".tmp"
-            ],
-            "network_ports": [
-                80,
-                443,
-                53,
-                22,
-                3389
-            ],
+            "file_extensions": [".dll", ".exe", ".sys", ".dat", ".tmp"],
+            "network_ports": [80, 443, 53, 22, 3389],
             "registry_keys": [
                 "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
                 "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
-                "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services"
+                "HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Services",
             ],
-            "memory_regions": [
-                "stack",
-                "heap",
-                "text",
-                "data",
-                "bss"
-            ],
+            "memory_regions": ["stack", "heap", "text", "data", "bss"],
             "encryption_algorithms": ["AES-256", "RSA-4096"],
-            "compression_algorithms": ["gzip", "deflate", "bzip2"]
+            "compression_algorithms": ["gzip", "deflate", "bzip2"],
         }
 
     def evade_detection(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Evade detection for data"""
         try:
             # Initialize result
-            result = {
-                "original_data": data,
-                "timestamp": datetime.now().isoformat(),
-                "evasion": {}
-            }
+            result = {"original_data": data, "timestamp": datetime.now().isoformat(), "evasion": {}}
 
             # Apply process evasion
             process_result = self._apply_process_evasion(data)

@@ -77,7 +77,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "Apply a legacy preset profile "
-            "(safe-baseline/full-simulate/full-emulate/actor-simulate/c2-simulate/stealth-simulate)"
+            "(safe-baseline/full-simulate/full-emulate/actor-simulate/"
+            "c2-simulate/stealth-simulate)"
         ),
     )
     parser.add_argument(
@@ -220,9 +221,7 @@ def _apply_legacy_overrides(nexus: BlueFireNexus, args: argparse.Namespace) -> N
                 True,
             )
     if pack and not capability:
-        active_preset = str(
-            nexus.config_manager.get("modules.legacy.active_preset", "")
-        ).strip()
+        active_preset = str(nexus.config_manager.get("modules.legacy.active_preset", "")).strip()
         if not active_preset:
             nexus.config_manager.set(
                 "modules.legacy.active_preset",
@@ -260,11 +259,9 @@ def main() -> None:
             )
             nexus.config = nexus.config_manager.to_dict()
             nexus._configure_modules()
-            Console().print(
-                "[cyan]Applied guided preset recommendation[/]: "
-                f"{guided_recommendation['objective']} -> "
-                f"{guided_recommendation['recommended_preset']}"
-            )
+            obj = guided_recommendation["objective"]
+            preset = guided_recommendation["recommended_preset"]
+            Console().print(f"[cyan]Applied guided preset recommendation[/]: {obj} -> {preset}")
 
         _apply_legacy_overrides(nexus, args)
 
@@ -274,8 +271,7 @@ def main() -> None:
             for pack in (legacy_summary.get("packs") or {}).values()
         ):
             Console().print(
-                "[yellow]Legacy capability activation[/]: "
-                + json.dumps(legacy_summary, indent=2)
+                "[yellow]Legacy capability activation[/]: " + json.dumps(legacy_summary, indent=2)
             )
 
         result = nexus.run_scenario_file(scenario_path, run_id=args.run_id or None)

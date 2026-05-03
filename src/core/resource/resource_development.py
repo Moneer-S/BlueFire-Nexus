@@ -18,53 +18,53 @@ class ResourceDevelopmentManager:
                 "acquire": {
                     "description": "Use infrastructure acquisition",
                     "indicators": ["infrastructure_acquisition", "system_acquisition"],
-                    "evasion": ["acquisition_hiding", "infrastructure_hiding"]
+                    "evasion": ["acquisition_hiding", "infrastructure_hiding"],
                 },
                 "build": {
                     "description": "Use infrastructure building",
                     "indicators": ["infrastructure_building", "system_building"],
-                    "evasion": ["building_hiding", "infrastructure_hiding"]
+                    "evasion": ["building_hiding", "infrastructure_hiding"],
                 },
                 "test": {
                     "description": "Use infrastructure testing",
                     "indicators": ["infrastructure_testing", "system_testing"],
-                    "evasion": ["testing_hiding", "infrastructure_hiding"]
-                }
+                    "evasion": ["testing_hiding", "infrastructure_hiding"],
+                },
             },
             "capability": {
                 "develop": {
                     "description": "Use capability development",
                     "indicators": ["capability_development", "system_development"],
-                    "evasion": ["development_hiding", "capability_hiding"]
+                    "evasion": ["development_hiding", "capability_hiding"],
                 },
                 "acquire": {
                     "description": "Use capability acquisition",
                     "indicators": ["capability_acquisition", "system_acquisition"],
-                    "evasion": ["acquisition_hiding", "capability_hiding"]
+                    "evasion": ["acquisition_hiding", "capability_hiding"],
                 },
                 "test": {
                     "description": "Use capability testing",
                     "indicators": ["capability_testing", "system_testing"],
-                    "evasion": ["testing_hiding", "capability_hiding"]
-                }
+                    "evasion": ["testing_hiding", "capability_hiding"],
+                },
             },
             "personnel": {
                 "recruit": {
                     "description": "Use personnel recruitment",
                     "indicators": ["personnel_recruitment", "social_recruitment"],
-                    "evasion": ["recruitment_hiding", "personnel_hiding"]
+                    "evasion": ["recruitment_hiding", "personnel_hiding"],
                 },
                 "train": {
                     "description": "Use personnel training",
                     "indicators": ["personnel_training", "social_training"],
-                    "evasion": ["training_hiding", "personnel_hiding"]
+                    "evasion": ["training_hiding", "personnel_hiding"],
                 },
                 "manage": {
                     "description": "Use personnel management",
                     "indicators": ["personnel_management", "social_management"],
-                    "evasion": ["management_hiding", "personnel_hiding"]
-                }
-            }
+                    "evasion": ["management_hiding", "personnel_hiding"],
+                },
+            },
         }
 
         # Initialize resource development tools
@@ -72,18 +72,18 @@ class ResourceDevelopmentManager:
             "infrastructure": {
                 "acquire_handler": self._handle_acquire,
                 "build_handler": self._handle_build,
-                "test_handler": self._handle_test
+                "test_handler": self._handle_test,
             },
             "capability": {
                 "develop_handler": self._handle_develop,
                 "acquire_handler": self._handle_acquire,
-                "test_handler": self._handle_test
+                "test_handler": self._handle_test,
             },
             "personnel": {
                 "recruit_handler": self._handle_recruit,
                 "train_handler": self._handle_train,
-                "manage_handler": self._handle_manage
-            }
+                "manage_handler": self._handle_manage,
+            },
         }
 
         # Initialize configuration
@@ -92,53 +92,53 @@ class ResourceDevelopmentManager:
                 "acquire": {
                     "types": ["server", "network", "storage"],
                     "methods": ["purchase", "lease", "rent"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "build": {
                     "types": ["server", "network", "storage"],
                     "methods": ["construct", "assemble", "configure"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "test": {
                     "types": ["server", "network", "storage"],
                     "methods": ["validate", "verify", "check"],
-                    "timeouts": [30, 60, 120]
-                }
+                    "timeouts": [30, 60, 120],
+                },
             },
             "capability": {
                 "develop": {
                     "types": ["tool", "technique", "method"],
                     "methods": ["create", "design", "implement"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "acquire": {
                     "types": ["tool", "technique", "method"],
                     "methods": ["purchase", "license", "obtain"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "test": {
                     "types": ["tool", "technique", "method"],
                     "methods": ["validate", "verify", "check"],
-                    "timeouts": [30, 60, 120]
-                }
+                    "timeouts": [30, 60, 120],
+                },
             },
             "personnel": {
                 "recruit": {
                     "types": ["skill", "role", "position"],
                     "methods": ["search", "select", "hire"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "train": {
                     "types": ["skill", "role", "position"],
                     "methods": ["teach", "coach", "mentor"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "manage": {
                     "types": ["skill", "role", "position"],
                     "methods": ["lead", "guide", "direct"],
-                    "timeouts": [30, 60, 120]
-                }
-            }
+                    "timeouts": [30, 60, 120],
+                },
+            },
         }
 
     def develop(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -148,7 +148,7 @@ class ResourceDevelopmentManager:
             result = {
                 "original_data": data,
                 "timestamp": datetime.now().isoformat(),
-                "resource_development": {}
+                "resource_development": {},
             }
 
             # Apply infrastructure development
@@ -265,7 +265,7 @@ class ResourceDevelopmentManager:
                 "status": "success",
                 "technique": "infrastructure_development",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -284,7 +284,7 @@ class ResourceDevelopmentManager:
                 result["details"]["methods"] = {
                     "technique": "Host deployment",
                     "patterns": "Legitimate hosting",
-                    "indicators": "Hosting patterns"
+                    "indicators": "Hosting patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -294,7 +294,7 @@ class ResourceDevelopmentManager:
                 result["details"]["methods"] = {
                     "technique": "Network setup",
                     "patterns": "Legitimate network",
-                    "indicators": "Network patterns"
+                    "indicators": "Network patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -304,7 +304,7 @@ class ResourceDevelopmentManager:
                 result["details"]["methods"] = {
                     "technique": "Storage setup",
                     "patterns": "Legitimate storage",
-                    "indicators": "Storage patterns"
+                    "indicators": "Storage patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -315,9 +315,9 @@ class ResourceDevelopmentManager:
                 "features": {
                     "hosting": random.randint(1, 5),
                     "network": random.randint(1, 5),
-                    "storage": random.randint(1, 5)
+                    "storage": random.randint(1, 5),
                 },
-                "detection_rate": f"{random.randint(5, 20)}%"
+                "detection_rate": f"{random.randint(5, 20)}%",
             }
 
             # Stealth details
@@ -326,14 +326,14 @@ class ResourceDevelopmentManager:
                     "Advanced hosting",
                     "Stealth network",
                     "Anti-detection",
-                    "Rate limiting"
+                    "Rate limiting",
                 ]
             elif stealth == "medium":
                 result["details"]["techniques"] = [
                     "Basic hosting",
                     "Basic network",
                     "Basic detection",
-                    "Basic protection"
+                    "Basic protection",
                 ]
 
             # Add MITRE ATT&CK information
@@ -352,7 +352,7 @@ class ResourceDevelopmentManager:
                 "status": "success",
                 "technique": "capability_development",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -371,7 +371,7 @@ class ResourceDevelopmentManager:
                 result["details"]["methods"] = {
                     "technique": "Malware development",
                     "patterns": "Legitimate malware",
-                    "indicators": "Malware patterns"
+                    "indicators": "Malware patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -381,7 +381,7 @@ class ResourceDevelopmentManager:
                 result["details"]["methods"] = {
                     "technique": "Tool development",
                     "patterns": "Legitimate tool",
-                    "indicators": "Tool patterns"
+                    "indicators": "Tool patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -391,7 +391,7 @@ class ResourceDevelopmentManager:
                 result["details"]["methods"] = {
                     "technique": "Code development",
                     "patterns": "Legitimate code",
-                    "indicators": "Code patterns"
+                    "indicators": "Code patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -402,9 +402,9 @@ class ResourceDevelopmentManager:
                 "features": {
                     "malware": random.randint(1, 5),
                     "tool": random.randint(1, 5),
-                    "code": random.randint(1, 5)
+                    "code": random.randint(1, 5),
                 },
-                "detection_rate": f"{random.randint(5, 20)}%"
+                "detection_rate": f"{random.randint(5, 20)}%",
             }
 
             # Stealth details
@@ -413,14 +413,14 @@ class ResourceDevelopmentManager:
                     "Advanced malware",
                     "Stealth tool",
                     "Anti-detection",
-                    "Rate limiting"
+                    "Rate limiting",
                 ]
             elif stealth == "medium":
                 result["details"]["techniques"] = [
                     "Basic malware",
                     "Basic tool",
                     "Basic detection",
-                    "Basic protection"
+                    "Basic protection",
                 ]
 
             # Add MITRE ATT&CK information

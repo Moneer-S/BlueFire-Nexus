@@ -9,6 +9,7 @@ from .security import security
 
 logger = get_logger(__name__)
 
+
 class ThreatActor:
     """Advanced threat actor emulation capabilities."""
 
@@ -31,7 +32,7 @@ class ThreatActor:
             "lateral_movement": [],
             "collection": [],
             "exfiltration": [],
-            "command_and_control": []
+            "command_and_control": [],
         }
         self.operation_log = []
         self.session_id = self._generate_session_id()
@@ -39,7 +40,7 @@ class ThreatActor:
     def _generate_session_id(self) -> str:
         """Generate unique session ID for operation tracking."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        random_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
+        random_suffix = "".join(random.choices(string.ascii_letters + string.digits, k=8))
         return f"threat_emulation_{timestamp}_{random_suffix}"
 
     def log_operation(self, operation: str, details: Dict[str, Any]) -> None:
@@ -77,12 +78,14 @@ class ThreatActor:
             logger.info(f"Session ID: {self.session_id}")
 
             # Log operation initialization
-            self.operation_log.append({
-                "timestamp": datetime.now().isoformat(),
-                "event": "operation_initialized",
-                "actor_type": self.actor_type,
-                "target_info": target_info
-            })
+            self.operation_log.append(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "event": "operation_initialized",
+                    "actor_type": self.actor_type,
+                    "target_info": target_info,
+                }
+            )
 
             # Initialize security context where supported by the active manager.
             if hasattr(security, "initialize_security_context"):
@@ -115,24 +118,28 @@ class ThreatActor:
                 raise ValueError(f"Invalid technique ID: {technique_id}")
 
             # Log technique execution
-            self.operation_log.append({
-                "timestamp": datetime.now().isoformat(),
-                "event": "technique_executed",
-                "technique_id": technique_id,
-                "parameters": parameters
-            })
+            self.operation_log.append(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "event": "technique_executed",
+                    "technique_id": technique_id,
+                    "parameters": parameters,
+                }
+            )
 
             # Execute technique based on category
             category = self._get_technique_category(technique_id)
             result = self._execute_category_technique(category, technique_id, parameters)
 
             # Log result
-            self.operation_log.append({
-                "timestamp": datetime.now().isoformat(),
-                "event": "technique_completed",
-                "technique_id": technique_id,
-                "result": result
-            })
+            self.operation_log.append(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "event": "technique_completed",
+                    "technique_id": technique_id,
+                    "result": result,
+                }
+            )
 
             return result
         except Exception as e:
@@ -200,7 +207,7 @@ class ThreatActor:
             "T1247": "Port Monitors",
             "T1248": "Port Knocking",
             "T1249": "Port Monitors",
-            "T1250": "Port Knocking"
+            "T1250": "Port Knocking",
         }
         return technique_id in valid_techniques
 
@@ -209,47 +216,133 @@ class ThreatActor:
         # Map technique IDs to categories
         category_map = {
             "initial_access": [
-                "T1190", "T1195", "T1196", "T1197", "T1198", "T1199", "T1200",
+                "T1190",
+                "T1195",
+                "T1196",
+                "T1197",
+                "T1198",
+                "T1199",
+                "T1200",
             ],
             "execution": [
-                "T1059", "T1106", "T1129", "T1135", "T1203", "T1204",
-                "T1216", "T1218", "T1220", "T1221",
+                "T1059",
+                "T1106",
+                "T1129",
+                "T1135",
+                "T1203",
+                "T1204",
+                "T1216",
+                "T1218",
+                "T1220",
+                "T1221",
             ],
             "persistence": [
-                "T1053", "T1059", "T1060", "T1071", "T1098", "T1136",
-                "T1137", "T1156", "T1176", "T1197",
+                "T1053",
+                "T1059",
+                "T1060",
+                "T1071",
+                "T1098",
+                "T1136",
+                "T1137",
+                "T1156",
+                "T1176",
+                "T1197",
             ],
             "privilege_escalation": [
-                "T1068", "T1134", "T1157", "T1169", "T1178", "T1181",
-                "T1182", "T1183", "T1184", "T1185",
+                "T1068",
+                "T1134",
+                "T1157",
+                "T1169",
+                "T1178",
+                "T1181",
+                "T1182",
+                "T1183",
+                "T1184",
+                "T1185",
             ],
             "defense_evasion": [
-                "T1027", "T1036", "T1055", "T1070", "T1079", "T1088",
-                "T1099", "T1107", "T1112", "T1116",
+                "T1027",
+                "T1036",
+                "T1055",
+                "T1070",
+                "T1079",
+                "T1088",
+                "T1099",
+                "T1107",
+                "T1112",
+                "T1116",
             ],
             "credential_access": [
-                "T1003", "T1004", "T1012", "T1016", "T1018", "T1021",
-                "T1027", "T1039", "T1040", "T1041",
+                "T1003",
+                "T1004",
+                "T1012",
+                "T1016",
+                "T1018",
+                "T1021",
+                "T1027",
+                "T1039",
+                "T1040",
+                "T1041",
             ],
             "discovery": [
-                "T1010", "T1012", "T1016", "T1018", "T1021", "T1033",
-                "T1049", "T1057", "T1069", "T1082",
+                "T1010",
+                "T1012",
+                "T1016",
+                "T1018",
+                "T1021",
+                "T1033",
+                "T1049",
+                "T1057",
+                "T1069",
+                "T1082",
             ],
             "lateral_movement": [
-                "T1021", "T1028", "T1029", "T1037", "T1040", "T1048",
-                "T1051", "T1052", "T1053", "T1054",
+                "T1021",
+                "T1028",
+                "T1029",
+                "T1037",
+                "T1040",
+                "T1048",
+                "T1051",
+                "T1052",
+                "T1053",
+                "T1054",
             ],
             "collection": [
-                "T1005", "T1006", "T1007", "T1008", "T1009", "T1010",
-                "T1011", "T1012", "T1013", "T1014",
+                "T1005",
+                "T1006",
+                "T1007",
+                "T1008",
+                "T1009",
+                "T1010",
+                "T1011",
+                "T1012",
+                "T1013",
+                "T1014",
             ],
             "exfiltration": [
-                "T1001", "T1002", "T1003", "T1004", "T1005", "T1006",
-                "T1007", "T1008", "T1009", "T1010",
+                "T1001",
+                "T1002",
+                "T1003",
+                "T1004",
+                "T1005",
+                "T1006",
+                "T1007",
+                "T1008",
+                "T1009",
+                "T1010",
             ],
             "command_and_control": [
-                "T1001", "T1002", "T1003", "T1004", "T1005", "T1006",
-                "T1007", "T1008", "T1009", "T1010",
+                "T1001",
+                "T1002",
+                "T1003",
+                "T1004",
+                "T1005",
+                "T1006",
+                "T1007",
+                "T1008",
+                "T1009",
+                "T1010",
             ],
         }
 
@@ -309,7 +402,7 @@ class ThreatActor:
                 "end_time": datetime.now().isoformat(),
                 "techniques_executed": [],
                 "success_rate": 0,
-                "detection_events": []
+                "detection_events": [],
             }
 
             # Analyze operation log
@@ -319,11 +412,13 @@ class ThreatActor:
             for entry in self.operation_log:
                 if entry["event"] == "technique_executed":
                     total_techniques += 1
-                    report["techniques_executed"].append({
-                        "technique_id": entry["technique_id"],
-                        "timestamp": entry["timestamp"],
-                        "parameters": entry["parameters"]
-                    })
+                    report["techniques_executed"].append(
+                        {
+                            "technique_id": entry["technique_id"],
+                            "timestamp": entry["timestamp"],
+                            "parameters": entry["parameters"],
+                        }
+                    )
                 elif entry["event"] == "technique_completed":
                     if entry["result"].get("success", False):
                         successful_techniques += 1
@@ -338,6 +433,7 @@ class ThreatActor:
         except Exception as e:
             logger.error(f"Error generating report: {e}")
             return {"error": str(e)}
+
 
 # Create global threat actor instance
 threat_actor = ThreatActor()

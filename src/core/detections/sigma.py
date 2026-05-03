@@ -6,13 +6,7 @@ from typing import Any, Dict
 
 
 def _safe(value: str) -> str:
-    return (
-        value.lower()
-        .replace(" ", "-")
-        .replace("/", "-")
-        .replace(":", "-")
-        .replace("_", "-")
-    )
+    return value.lower().replace(" ", "-").replace("/", "-").replace(":", "-").replace("_", "-")
 
 
 def generate_sigma_rule(hint: Dict[str, Any]) -> str:
@@ -36,10 +30,7 @@ def generate_sigma_rule(hint: Dict[str, Any]) -> str:
             f"  product: {logsource.get('product', 'windows')}",
             "detection:",
             "  selection:",
-            *[
-                f"    {key}: {value}"
-                for key, value in (detection.get("selection") or {}).items()
-            ],
+            *[f"    {key}: {value}" for key, value in (detection.get("selection") or {}).items()],
             f"  condition: {detection.get('condition', 'selection')}",
             "tags:",
             f"  - attack.{technique.lower()}",

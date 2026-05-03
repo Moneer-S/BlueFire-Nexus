@@ -13,8 +13,7 @@ class LLMProvider(Protocol):
     name: str
     model: str
 
-    def complete(self, prompt: str, context: list[str] | None = None) -> str:
-        ...
+    def complete(self, prompt: str, context: list[str] | None = None) -> str: ...
 
 
 @dataclass

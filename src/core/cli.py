@@ -47,8 +47,8 @@ LEGACY_PRESET_OPTION = typer.Option(
     "--legacy-preset",
     help=(
         "Preset profile "
-        "(safe-baseline/full-simulate/full-emulate/"
-        "actor-simulate/c2-simulate/stealth-simulate)"
+        "(safe-baseline/full-simulate/full-emulate/actor-simulate/"
+        "c2-simulate/stealth-simulate)"
     ),
 )  # noqa: B008
 
@@ -133,14 +133,11 @@ def _apply_legacy_overrides(
         )
         if lab_confirmation:
             nexus.config_manager.set(
-                f"modules.legacy.{normalized_pack}.capabilities."
-                f"{normalized_capability}.lab_confirmation",
+                f"modules.legacy.{normalized_pack}.capabilities.{normalized_capability}.lab_confirmation",
                 True,
             )
     if normalized_pack and not normalized_capability:
-        active_preset = str(
-            nexus.config_manager.get("modules.legacy.active_preset", "")
-        ).strip()
+        active_preset = str(nexus.config_manager.get("modules.legacy.active_preset", "")).strip()
         if not active_preset:
             nexus.config_manager.set(
                 "modules.legacy.active_preset",
@@ -161,11 +158,10 @@ def _render_legacy_activation(nexus: BlueFireNexus) -> None:
         f"Global confirmation: {summary.get('global_lab_acknowledged')}"
     )
     for pack_name, pack_summary in summary.get("packs", {}).items():
-        node = tree.add(
-            f"{pack_name}: enabled={pack_summary.get('enabled')} "
-            f"mode={pack_summary.get('mode')} "
-            f"confirmed={pack_summary.get('acknowledged')}"
-        )
+        en = pack_summary.get("enabled")
+        mode = pack_summary.get("mode")
+        ack = pack_summary.get("acknowledged")
+        node = tree.add(f"{pack_name}: enabled={en} mode={mode} confirmed={ack}")
         enabled_caps = pack_summary.get("enabled_capabilities") or []
         if enabled_caps:
             caps_node = node.add("Capabilities")

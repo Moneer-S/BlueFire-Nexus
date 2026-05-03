@@ -19,53 +19,53 @@ class DefenseEvasionManager:
                 "hollowing": {
                     "description": "Use process hollowing",
                     "indicators": ["process_hollowing", "memory_modification"],
-                    "evasion": ["hollowing_hiding", "process_hiding"]
+                    "evasion": ["hollowing_hiding", "process_hiding"],
                 },
                 "injection": {
                     "description": "Use process injection",
                     "indicators": ["process_injection", "memory_injection"],
-                    "evasion": ["injection_hiding", "process_hiding"]
+                    "evasion": ["injection_hiding", "process_hiding"],
                 },
                 "masquerading": {
                     "description": "Use process masquerading",
                     "indicators": ["process_masquerading", "process_spoofing"],
-                    "evasion": ["masquerading_hiding", "process_hiding"]
-                }
+                    "evasion": ["masquerading_hiding", "process_hiding"],
+                },
             },
             "file": {
                 "hiding": {
                     "description": "Use file hiding",
                     "indicators": ["file_hiding", "attribute_modification"],
-                    "evasion": ["hiding_masking", "file_hiding"]
+                    "evasion": ["hiding_masking", "file_hiding"],
                 },
                 "deletion": {
                     "description": "Use file deletion",
                     "indicators": ["file_deletion", "file_removal"],
-                    "evasion": ["deletion_masking", "file_hiding"]
+                    "evasion": ["deletion_masking", "file_hiding"],
                 },
                 "modification": {
                     "description": "Use file modification",
                     "indicators": ["file_modification", "file_altering"],
-                    "evasion": ["modification_masking", "file_hiding"]
-                }
+                    "evasion": ["modification_masking", "file_hiding"],
+                },
             },
             "network": {
                 "traffic": {
                     "description": "Use network traffic evasion",
                     "indicators": ["traffic_evasion", "traffic_modification"],
-                    "evasion": ["traffic_hiding", "network_hiding"]
+                    "evasion": ["traffic_hiding", "network_hiding"],
                 },
                 "protocol": {
                     "description": "Use network protocol evasion",
                     "indicators": ["protocol_evasion", "protocol_modification"],
-                    "evasion": ["protocol_hiding", "network_hiding"]
+                    "evasion": ["protocol_hiding", "network_hiding"],
                 },
                 "port": {
                     "description": "Use network port evasion",
                     "indicators": ["port_evasion", "port_modification"],
-                    "evasion": ["port_hiding", "network_hiding"]
-                }
-            }
+                    "evasion": ["port_hiding", "network_hiding"],
+                },
+            },
         }
 
         # Initialize defense evasion tools
@@ -73,18 +73,18 @@ class DefenseEvasionManager:
             "process": {
                 "hollowing_handler": self._handle_hollowing,
                 "injection_handler": self._handle_injection,
-                "masquerading_handler": self._handle_masquerading
+                "masquerading_handler": self._handle_masquerading,
             },
             "file": {
                 "hiding_handler": self._handle_hiding,
                 "deletion_handler": self._handle_deletion,
-                "modification_handler": self._handle_modification
+                "modification_handler": self._handle_modification,
             },
             "network": {
                 "traffic_handler": self._handle_traffic,
                 "protocol_handler": self._handle_protocol,
-                "port_handler": self._handle_port
-            }
+                "port_handler": self._handle_port,
+            },
         }
 
         # Initialize configuration
@@ -93,53 +93,53 @@ class DefenseEvasionManager:
                 "hollowing": {
                     "processes": ["svchost.exe", "explorer.exe", "lsass.exe"],
                     "methods": ["suspend", "overwrite", "resume"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "injection": {
                     "processes": ["svchost.exe", "explorer.exe", "lsass.exe"],
                     "methods": ["createremotethread", "queueuserapc", "setwindowshook"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "masquerading": {
                     "processes": ["svchost.exe", "explorer.exe", "lsass.exe"],
                     "methods": ["rename", "spoof", "reimplement"],
-                    "timeouts": [30, 60, 120]
-                }
+                    "timeouts": [30, 60, 120],
+                },
             },
             "file": {
                 "hiding": {
                     "types": ["hidden", "system", "archive"],
                     "methods": ["attribute", "ads", "directory"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "deletion": {
                     "types": ["secure", "wiping", "unlinking"],
                     "methods": ["direct", "api", "tool"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "modification": {
                     "types": ["timestamp", "permission", "content"],
                     "methods": ["direct", "api", "tool"],
-                    "timeouts": [30, 60, 120]
-                }
+                    "timeouts": [30, 60, 120],
+                },
             },
             "network": {
                 "traffic": {
                     "types": ["encryption", "obfuscation", "fragmentation"],
                     "methods": ["custom", "standard", "hybrid"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "protocol": {
                     "types": ["http", "dns", "icmp"],
                     "methods": ["tunneling", "mutation", "mimicry"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "port": {
                     "types": ["standard", "nonstandard", "dynamic"],
                     "methods": ["rotation", "hopping", "binding"],
-                    "timeouts": [30, 60, 120]
-                }
-            }
+                    "timeouts": [30, 60, 120],
+                },
+            },
         }
 
     def evade(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -149,7 +149,7 @@ class DefenseEvasionManager:
             result = {
                 "original_data": data,
                 "timestamp": datetime.now().isoformat(),
-                "defense_evasion": {}
+                "defense_evasion": {},
             }
 
             # Apply process evasion
@@ -233,7 +233,7 @@ class DefenseEvasionManager:
                 "status": "success",
                 "technique": "process_hollowing",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -254,7 +254,7 @@ class DefenseEvasionManager:
                 result["details"]["step3"] = "Wrote new code to process memory"
                 result["details"]["memory_regions"] = {
                     "base_address": f"0x{random.randint(0x10000000, 0xFFFFFFFF):x}",
-                    "size": random.randint(4096, 65536)
+                    "size": random.randint(4096, 65536),
                 }
 
             if method == "resume":
@@ -275,7 +275,7 @@ class DefenseEvasionManager:
                 "status": "success",
                 "technique": "process_injection",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -325,7 +325,7 @@ class DefenseEvasionManager:
                 "status": "success",
                 "technique": "process_masquerading",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -371,7 +371,7 @@ class DefenseEvasionManager:
                 "status": "success",
                 "technique": "file_hiding",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -391,9 +391,7 @@ class DefenseEvasionManager:
                 result["details"]["step1"] = "Created alternate data stream"
                 result["details"]["host_file"] = "legitimate.txt"
                 result["details"]["ads_name"] = "payload.dll"
-                result["details"]["command"] = (
-                    "type malware.dll > legitimate.txt:payload.dll"
-                )
+                result["details"]["command"] = "type malware.dll > legitimate.txt:payload.dll"
                 result["details"]["access_command"] = (
                     "wmic process call create "
                     "%windir%\\system32\\rundll32.exe legitimate.txt:payload.dll,DllMain"
@@ -433,7 +431,7 @@ class DefenseEvasionManager:
                 "status": "success",
                 "technique": "traffic_evasion",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -514,7 +512,7 @@ class DefenseEvasionManager:
                 "status": "success",
                 "technique": "file_evasion",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -533,7 +531,7 @@ class DefenseEvasionManager:
                 result["details"]["methods"] = {
                     "technique": "File attributes",
                     "patterns": "Hidden files",
-                    "indicators": "File patterns"
+                    "indicators": "File patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -543,7 +541,7 @@ class DefenseEvasionManager:
                 result["details"]["methods"] = {
                     "technique": "File spoofing",
                     "patterns": "Legitimate files",
-                    "indicators": "File attributes"
+                    "indicators": "File attributes",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -553,7 +551,7 @@ class DefenseEvasionManager:
                 result["details"]["methods"] = {
                     "technique": "Time manipulation",
                     "patterns": "Modified timestamps",
-                    "indicators": "Time patterns"
+                    "indicators": "Time patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -564,9 +562,9 @@ class DefenseEvasionManager:
                 "features": {
                     "hiding": random.randint(1, 5),
                     "masquerading": random.randint(1, 5),
-                    "timestomping": random.randint(1, 5)
+                    "timestomping": random.randint(1, 5),
                 },
-                "detection_rate": f"{random.randint(5, 20)}%"
+                "detection_rate": f"{random.randint(5, 20)}%",
             }
 
             # Stealth details
@@ -575,14 +573,14 @@ class DefenseEvasionManager:
                     "Advanced hiding",
                     "File masquerading",
                     "Time manipulation",
-                    "Anti-forensics"
+                    "Anti-forensics",
                 ]
             elif stealth == "medium":
                 result["details"]["techniques"] = [
                     "Basic hiding",
                     "File spoofing",
                     "Time modification",
-                    "Basic protection"
+                    "Basic protection",
                 ]
 
             # Add MITRE ATT&CK information
@@ -601,7 +599,7 @@ class DefenseEvasionManager:
                 "status": "success",
                 "technique": "network_evasion",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -620,7 +618,7 @@ class DefenseEvasionManager:
                 result["details"]["methods"] = {
                     "technique": "Traffic manipulation",
                     "patterns": "Legitimate traffic",
-                    "indicators": "Traffic patterns"
+                    "indicators": "Traffic patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -630,7 +628,7 @@ class DefenseEvasionManager:
                 result["details"]["methods"] = {
                     "technique": "Protocol manipulation",
                     "patterns": "Legitimate protocols",
-                    "indicators": "Protocol patterns"
+                    "indicators": "Protocol patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -640,7 +638,7 @@ class DefenseEvasionManager:
                 result["details"]["methods"] = {
                     "technique": "Payload manipulation",
                     "patterns": "Legitimate payloads",
-                    "indicators": "Payload patterns"
+                    "indicators": "Payload patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -651,9 +649,9 @@ class DefenseEvasionManager:
                 "features": {
                     "traffic": random.randint(1, 5),
                     "protocol": random.randint(1, 5),
-                    "payload": random.randint(1, 5)
+                    "payload": random.randint(1, 5),
                 },
-                "detection_rate": f"{random.randint(5, 20)}%"
+                "detection_rate": f"{random.randint(5, 20)}%",
             }
 
             # Stealth details
@@ -662,14 +660,14 @@ class DefenseEvasionManager:
                     "Advanced traffic",
                     "Protocol wrapping",
                     "Payload encryption",
-                    "Anti-detection"
+                    "Anti-detection",
                 ]
             elif stealth == "medium":
                 result["details"]["techniques"] = [
                     "Basic traffic",
                     "Protocol spoofing",
                     "Payload obfuscation",
-                    "Basic protection"
+                    "Basic protection",
                 ]
 
             # Add MITRE ATT&CK information

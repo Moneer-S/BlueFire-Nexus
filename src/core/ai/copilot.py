@@ -40,8 +40,7 @@ class AICopilot:
         """Generate scenario YAML from natural language goal."""
         prompt = (
             "Generate a concise BlueFire scenario YAML with fields: "
-            "id, objective, mitre, steps[]. "
-            f"Goal: {goal}"
+            f"id, objective, mitre, steps[]. Goal: {goal}"
         )
         content = self._ask(prompt)
         output_path = self.run_dir / "copilot_plan.txt"
@@ -51,8 +50,8 @@ class AICopilot:
     def narrate(self, run_id: str) -> Dict[str, str]:
         """Generate SOC-style run narrative."""
         prompt = (
-            "Write a SOC incident narrative with timeline, findings, and recommendations "
-            f"for run_id={run_id}."
+            "Write a SOC incident narrative with timeline, findings, and "
+            f"recommendations for run_id={run_id}."
         )
         content = self._ask(prompt)
         output_path = self.run_dir / "copilot_narrative.md"
@@ -73,4 +72,3 @@ class AICopilot:
         output_path = self.run_dir / "copilot_detections.md"
         output_path.write_text(content, encoding="utf-8")
         return {"path": str(output_path), "content": content}
-

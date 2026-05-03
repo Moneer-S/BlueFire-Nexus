@@ -46,4 +46,3 @@ def test_run_scenario_returns_risk_summary_path(tmp_path) -> None:
     assert risk_summary_path
     payload = Path(risk_summary_path).read_text(encoding="utf-8")
     assert '"risk_summary"' in payload
-

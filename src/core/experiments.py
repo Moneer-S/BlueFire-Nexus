@@ -100,7 +100,7 @@ def run_experiment(
     mutation_state: Dict[str, Any] = {}
 
     for index in range(runs):
-        run_id = f"exp-{scenario.id}-{index+1:03d}"
+        run_id = f"exp-{scenario.id}-{index + 1:03d}"
         step_overrides: Dict[str, Dict[str, Any]] = {}
         if mutation_state:
             mutated_steps = _merge_step_mutation(
@@ -188,4 +188,3 @@ def run_experiment_series(
     except (OSError, json.JSONDecodeError):
         payload["results"] = []
     return payload
-

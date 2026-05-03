@@ -25,9 +25,7 @@ def setup_logger(name: str = "bluefire", log_level: str = "INFO") -> logging.Log
     logger.setLevel(getattr(logging, log_level.upper()))
 
     # Create formatters
-    file_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
+    file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
     # File handler
     log_file = log_dir / f"bluefire_{datetime.now().strftime('%Y%m%d')}.log"
@@ -41,8 +39,10 @@ def setup_logger(name: str = "bluefire", log_level: str = "INFO") -> logging.Log
 
     return logger
 
+
 # Create default logger instance
 logger = setup_logger()
+
 
 def get_logger(name: str) -> logging.Logger:
     """

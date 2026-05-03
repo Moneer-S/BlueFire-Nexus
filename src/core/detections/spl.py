@@ -71,7 +71,7 @@ def render_spl(
     return (
         "| makeresults | eval "
         + ", ".join(eval_parts)
-        + " | where module!=\"\" | table "
+        + ' | where module!="" | table '
         + " ".join(table_fields)
     )
 

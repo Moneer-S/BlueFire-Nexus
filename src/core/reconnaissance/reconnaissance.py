@@ -18,53 +18,53 @@ class ReconnaissanceManager:
                 "scan": {
                     "description": "Use active scanning",
                     "indicators": ["active_scanning", "network_scanning"],
-                    "evasion": ["scan_hiding", "active_hiding"]
+                    "evasion": ["scan_hiding", "active_hiding"],
                 },
                 "probe": {
                     "description": "Use active probing",
                     "indicators": ["active_probing", "network_probing"],
-                    "evasion": ["probe_hiding", "active_hiding"]
+                    "evasion": ["probe_hiding", "active_hiding"],
                 },
                 "enumerate": {
                     "description": "Use active enumeration",
                     "indicators": ["active_enumeration", "network_enumeration"],
-                    "evasion": ["enumeration_hiding", "active_hiding"]
-                }
+                    "evasion": ["enumeration_hiding", "active_hiding"],
+                },
             },
             "passive": {
                 "gather": {
                     "description": "Use passive gathering",
                     "indicators": ["passive_gathering", "network_gathering"],
-                    "evasion": ["gather_hiding", "passive_hiding"]
+                    "evasion": ["gather_hiding", "passive_hiding"],
                 },
                 "monitor": {
                     "description": "Use passive monitoring",
                     "indicators": ["passive_monitoring", "network_monitoring"],
-                    "evasion": ["monitor_hiding", "passive_hiding"]
+                    "evasion": ["monitor_hiding", "passive_hiding"],
                 },
                 "analyze": {
                     "description": "Use passive analysis",
                     "indicators": ["passive_analysis", "network_analysis"],
-                    "evasion": ["analysis_hiding", "passive_hiding"]
-                }
+                    "evasion": ["analysis_hiding", "passive_hiding"],
+                },
             },
             "social": {
                 "search": {
                     "description": "Use social searching",
                     "indicators": ["social_searching", "social_engineering"],
-                    "evasion": ["search_hiding", "social_hiding"]
+                    "evasion": ["search_hiding", "social_hiding"],
                 },
                 "profile": {
                     "description": "Use social profiling",
                     "indicators": ["social_profiling", "social_engineering"],
-                    "evasion": ["profile_hiding", "social_hiding"]
+                    "evasion": ["profile_hiding", "social_hiding"],
                 },
                 "engage": {
                     "description": "Use social engagement",
                     "indicators": ["social_engagement", "social_engineering"],
-                    "evasion": ["engage_hiding", "social_hiding"]
-                }
-            }
+                    "evasion": ["engage_hiding", "social_hiding"],
+                },
+            },
         }
 
         # Initialize reconnaissance tools
@@ -72,18 +72,18 @@ class ReconnaissanceManager:
             "active": {
                 "scan_handler": self._handle_scan,
                 "probe_handler": self._handle_probe,
-                "enumerate_handler": self._handle_enumerate
+                "enumerate_handler": self._handle_enumerate,
             },
             "passive": {
                 "gather_handler": self._handle_gather,
                 "monitor_handler": self._handle_monitor,
-                "analyze_handler": self._handle_analyze
+                "analyze_handler": self._handle_analyze,
             },
             "social": {
                 "search_handler": self._handle_search,
                 "profile_handler": self._handle_profile,
-                "engage_handler": self._handle_engage
-            }
+                "engage_handler": self._handle_engage,
+            },
         }
 
         # Initialize configuration
@@ -92,53 +92,53 @@ class ReconnaissanceManager:
                 "scan": {
                     "types": ["port", "service", "vulnerability"],
                     "methods": ["tcp", "udp", "icmp"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "probe": {
                     "types": ["port", "service", "vulnerability"],
                     "methods": ["tcp", "udp", "icmp"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "enumerate": {
                     "types": ["port", "service", "vulnerability"],
                     "methods": ["tcp", "udp", "icmp"],
-                    "timeouts": [30, 60, 120]
-                }
+                    "timeouts": [30, 60, 120],
+                },
             },
             "passive": {
                 "gather": {
                     "types": ["traffic", "dns", "certificate"],
                     "methods": ["sniff", "capture", "record"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "monitor": {
                     "types": ["traffic", "dns", "certificate"],
                     "methods": ["sniff", "capture", "record"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "analyze": {
                     "types": ["traffic", "dns", "certificate"],
                     "methods": ["sniff", "capture", "record"],
-                    "timeouts": [30, 60, 120]
-                }
+                    "timeouts": [30, 60, 120],
+                },
             },
             "social": {
                 "search": {
                     "types": ["profile", "group", "content"],
                     "methods": ["search", "filter", "extract"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "profile": {
                     "types": ["profile", "group", "content"],
                     "methods": ["search", "filter", "extract"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "engage": {
                     "types": ["profile", "group", "content"],
                     "methods": ["search", "filter", "extract"],
-                    "timeouts": [30, 60, 120]
-                }
-            }
+                    "timeouts": [30, 60, 120],
+                },
+            },
         }
 
     def recon(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -148,7 +148,7 @@ class ReconnaissanceManager:
             result = {
                 "original_data": data,
                 "timestamp": datetime.now().isoformat(),
-                "reconnaissance": {}
+                "reconnaissance": {},
             }
 
             # Apply active reconnaissance
@@ -275,7 +275,7 @@ class ReconnaissanceManager:
                 "status": "success",
                 "technique": "active_reconnaissance",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -294,7 +294,7 @@ class ReconnaissanceManager:
                 result["details"]["methods"] = {
                     "technique": "Target scanning",
                     "patterns": "Legitimate scanning",
-                    "indicators": "Scanning patterns"
+                    "indicators": "Scanning patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -304,7 +304,7 @@ class ReconnaissanceManager:
                 result["details"]["methods"] = {
                     "technique": "Target probing",
                     "patterns": "Legitimate probing",
-                    "indicators": "Probing patterns"
+                    "indicators": "Probing patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -314,7 +314,7 @@ class ReconnaissanceManager:
                 result["details"]["methods"] = {
                     "technique": "Target enumeration",
                     "patterns": "Legitimate enumeration",
-                    "indicators": "Enumeration patterns"
+                    "indicators": "Enumeration patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -325,9 +325,9 @@ class ReconnaissanceManager:
                 "features": {
                     "scanning": random.randint(1, 5),
                     "probing": random.randint(1, 5),
-                    "enumeration": random.randint(1, 5)
+                    "enumeration": random.randint(1, 5),
                 },
-                "detection_rate": f"{random.randint(5, 20)}%"
+                "detection_rate": f"{random.randint(5, 20)}%",
             }
 
             # Stealth details
@@ -336,14 +336,14 @@ class ReconnaissanceManager:
                     "Advanced scanning",
                     "Stealth probing",
                     "Anti-detection",
-                    "Rate limiting"
+                    "Rate limiting",
                 ]
             elif stealth == "medium":
                 result["details"]["techniques"] = [
                     "Basic scanning",
                     "Basic probing",
                     "Basic detection",
-                    "Basic protection"
+                    "Basic protection",
                 ]
 
             # Add MITRE ATT&CK information
@@ -362,7 +362,7 @@ class ReconnaissanceManager:
                 "status": "success",
                 "technique": "passive_reconnaissance",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -381,7 +381,7 @@ class ReconnaissanceManager:
                 result["details"]["methods"] = {
                     "technique": "Data gathering",
                     "patterns": "Legitimate gathering",
-                    "indicators": "Gathering patterns"
+                    "indicators": "Gathering patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -391,7 +391,7 @@ class ReconnaissanceManager:
                 result["details"]["methods"] = {
                     "technique": "Data monitoring",
                     "patterns": "Legitimate monitoring",
-                    "indicators": "Monitoring patterns"
+                    "indicators": "Monitoring patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -401,7 +401,7 @@ class ReconnaissanceManager:
                 result["details"]["methods"] = {
                     "technique": "Data analysis",
                     "patterns": "Legitimate analysis",
-                    "indicators": "Analysis patterns"
+                    "indicators": "Analysis patterns",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -412,9 +412,9 @@ class ReconnaissanceManager:
                 "features": {
                     "gathering": random.randint(1, 5),
                     "monitoring": random.randint(1, 5),
-                    "analysis": random.randint(1, 5)
+                    "analysis": random.randint(1, 5),
                 },
-                "detection_rate": f"{random.randint(5, 20)}%"
+                "detection_rate": f"{random.randint(5, 20)}%",
             }
 
             # Stealth details
@@ -423,14 +423,14 @@ class ReconnaissanceManager:
                     "Advanced gathering",
                     "Stealth monitoring",
                     "Anti-detection",
-                    "Rate limiting"
+                    "Rate limiting",
                 ]
             elif stealth == "medium":
                 result["details"]["techniques"] = [
                     "Basic gathering",
                     "Basic monitoring",
                     "Basic detection",
-                    "Basic protection"
+                    "Basic protection",
                 ]
 
             # Add MITRE ATT&CK information

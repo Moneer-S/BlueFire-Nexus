@@ -27,7 +27,7 @@ class APT29(ThreatActor):
                 "supply_chain": self._supply_chain_compromise,
                 "trusted_relationship": self._trusted_relationship_abuse,
                 "valid_accounts": self._valid_accounts_abuse,
-                "external_remote_services": self._external_remote_services
+                "external_remote_services": self._external_remote_services,
             },
             "execution": {
                 "powershell": self._powershell_execution,
@@ -35,7 +35,7 @@ class APT29(ThreatActor):
                 "wmi": self._wmi_execution,
                 "mshta": self._mshta_execution,
                 "regsvr32": self._regsvr32_execution,
-                "rundll32": self._rundll32_execution
+                "rundll32": self._rundll32_execution,
             },
             "persistence": {
                 "registry": self._registry_persistence,
@@ -43,7 +43,7 @@ class APT29(ThreatActor):
                 "service": self._service_persistence,
                 "startup_folder": self._startup_folder_persistence,
                 "bootkit": self._bootkit_persistence,
-                "account_manipulation": self._account_manipulation
+                "account_manipulation": self._account_manipulation,
             },
             "privilege_escalation": {
                 "token_manipulation": self._token_manipulation,
@@ -51,7 +51,7 @@ class APT29(ThreatActor):
                 "bypass_uac": self._bypass_uac,
                 "access_token_manipulation": self._access_token_manipulation,
                 "dll_search_order_hijacking": self._dll_search_order_hijacking,
-                "image_file_execution_options": self._image_file_execution_options
+                "image_file_execution_options": self._image_file_execution_options,
             },
             "defense_evasion": {
                 "process_hollowing": self._process_hollowing,
@@ -61,7 +61,7 @@ class APT29(ThreatActor):
                 "indicator_removal": self._indicator_removal,
                 "masquerading": self._masquerading,
                 "modify_registry": self._modify_registry,
-                "disable_windows_defender": self._disable_windows_defender
+                "disable_windows_defender": self._disable_windows_defender,
             },
             "credential_access": {
                 "credential_dumping": self._credential_dumping,
@@ -69,7 +69,7 @@ class APT29(ThreatActor):
                 "credential_harvesting": self._credential_harvesting,
                 "kerberoasting": self._kerberoasting,
                 "as_rep_roasting": self._as_rep_roasting,
-                "credential_manager": self._credential_manager
+                "credential_manager": self._credential_manager,
             },
             "discovery": {
                 "system_info": self._system_info_discovery,
@@ -78,7 +78,7 @@ class APT29(ThreatActor):
                 "permission_groups": self._permission_groups_discovery,
                 "network_share_discovery": self._network_share_discovery,
                 "process_discovery": self._process_discovery,
-                "software_discovery": self._software_discovery
+                "software_discovery": self._software_discovery,
             },
             "lateral_movement": {
                 "psexec": self._psexec_lateral_movement,
@@ -86,7 +86,7 @@ class APT29(ThreatActor):
                 "remote_scheduled_task": self._remote_scheduled_task,
                 "remote_service_creation": self._remote_service_creation,
                 "remote_desktop_protocol": self._remote_desktop_protocol,
-                "distributed_component_object_model": self._distributed_component_object_model
+                "distributed_component_object_model": self._distributed_component_object_model,
             },
             "collection": {
                 "data_staged": self._data_staging,
@@ -94,7 +94,7 @@ class APT29(ThreatActor):
                 "input_capture": self._input_capture,
                 "screen_capture": self._screen_capture,
                 "audio_capture": self._audio_capture,
-                "keychain": self._keychain_access
+                "keychain": self._keychain_access,
             },
             "command_and_control": {
                 "dns": self._dns_c2,
@@ -102,7 +102,7 @@ class APT29(ThreatActor):
                 "custom_protocol": self._custom_protocol_c2,
                 "multi_channel": self._multi_channel_c2,
                 "fallback_channels": self._fallback_channels,
-                "dynamic_resolution": self._dynamic_resolution
+                "dynamic_resolution": self._dynamic_resolution,
             },
             "exfiltration": {
                 "data_compressed": self._data_compression,
@@ -120,8 +120,8 @@ class APT29(ThreatActor):
                 "system_shutdown": self._system_shutdown,
                 "endpoint_denial_of_service": self._endpoint_denial_of_service,
                 "network_denial_of_service": self._network_denial_of_service,
-                "ransomware": self._ransomware
-            }
+                "ransomware": self._ransomware,
+            },
         }
 
         # APT29 specific configurations
@@ -132,20 +132,40 @@ class APT29(ThreatActor):
                 "*.amazon.com",
                 "*.cloudflare.com",
                 "*.akamai.com",
-                "*.fastly.com"
+                "*.fastly.com",
             ],
             "user_agents": [
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/89.0",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Edge/91.0.864.59",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Opera/77.0.4054.277"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Opera/77.0.4054.277",
             ],
             "target_extensions": [
-                ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-                ".pdf", ".txt", ".csv", ".eml", ".pst", ".ost",
-                ".db", ".sql", ".bak", ".config", ".ini", ".xml",
-                ".json", ".yaml", ".yml", ".log", ".key", ".pem"
+                ".doc",
+                ".docx",
+                ".xls",
+                ".xlsx",
+                ".ppt",
+                ".pptx",
+                ".pdf",
+                ".txt",
+                ".csv",
+                ".eml",
+                ".pst",
+                ".ost",
+                ".db",
+                ".sql",
+                ".bak",
+                ".config",
+                ".ini",
+                ".xml",
+                ".json",
+                ".yaml",
+                ".yml",
+                ".log",
+                ".key",
+                ".pem",
             ],
             "exfiltration_size_limit": 100 * 1024 * 1024,  # 100MB
             "encryption_algorithms": ["AES-256", "ChaCha20", "RC4"],
@@ -155,21 +175,21 @@ class APT29(ThreatActor):
                 "SecurityHealthService",
                 "Windows Defender",
                 "Windows Security",
-                "Windows Update"
+                "Windows Update",
             ],
             "target_processes": [
                 "svchost.exe",
                 "explorer.exe",
                 "winlogon.exe",
                 "lsass.exe",
-                "services.exe"
+                "services.exe",
             ],
             "target_registry_keys": [
                 "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
                 "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
                 "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
-                "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce"
-            ]
+                "HKEY_CURRENT_USER\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce",
+            ],
         }
 
         # Initialize components
@@ -181,40 +201,45 @@ class APT29(ThreatActor):
         try:
             # Generate phishing email content with APT29's known patterns
             email_content = {
-                "subject": random.choice([
-                    "Important: Security Update Required",
-                    "Urgent: Account Verification Needed",
-                    "Critical: System Maintenance Required",
-                    "Action Required: Security Audit",
-                    "Important: Compliance Update"
-                ]),
+                "subject": random.choice(
+                    [
+                        "Important: Security Update Required",
+                        "Urgent: Account Verification Needed",
+                        "Critical: System Maintenance Required",
+                        "Action Required: Security Audit",
+                        "Important: Compliance Update",
+                    ]
+                ),
                 "body": self._generate_phishing_body(),
                 "attachments": [
                     {
                         "name": "security_update.pdf",
                         "type": "application/pdf",
-                        "size": random.randint(100000, 500000)
+                        "size": random.randint(100000, 500000),
                     },
                     {
                         "name": "compliance_report.xlsx",
                         "type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        "size": random.randint(200000, 800000)
-                    }
+                        "size": random.randint(200000, 800000),
+                    },
                 ],
                 "sender": self._generate_sender_address(),
                 "reply_to": self._generate_reply_to_address(),
-                "headers": self._generate_email_headers()
+                "headers": self._generate_email_headers(),
             }
 
             # Log operation with detailed metadata
-            self.log_operation("phishing", {
-                "target": target,
-                "content": email_content,
-                "timestamp": datetime.now().isoformat(),
-                "campaign_id": self._generate_campaign_id(),
-                "delivery_method": random.choice(["email", "link", "attachment"]),
-                "targeting_info": self._get_targeting_info(target)
-            })
+            self.log_operation(
+                "phishing",
+                {
+                    "target": target,
+                    "content": email_content,
+                    "timestamp": datetime.now().isoformat(),
+                    "campaign_id": self._generate_campaign_id(),
+                    "delivery_method": random.choice(["email", "link", "attachment"]),
+                    "targeting_info": self._get_targeting_info(target),
+                },
+            )
 
             return {
                 "success": True,
@@ -223,16 +248,13 @@ class APT29(ThreatActor):
                 "metadata": {
                     "campaign_id": self._generate_campaign_id(),
                     "timestamp": datetime.now().isoformat(),
-                    "target_info": self._get_targeting_info(target)
-                }
+                    "target_info": self._get_targeting_info(target),
+                },
             }
 
         except Exception as e:
             self.log_error("phishing", str(e))
-            return {
-                "success": False,
-                "message": f"Phishing campaign failed: {str(e)}"
-            }
+            return {"success": False, "message": f"Phishing campaign failed: {str(e)}"}
 
     def _generate_phishing_body(self) -> str:
         """Generate a realistic phishing email body"""
@@ -254,7 +276,7 @@ class APT29(ThreatActor):
 
             Regards,
             IT Department
-            """
+            """,
         ]
         return random.choice(templates)
 
@@ -274,7 +296,7 @@ class APT29(ThreatActor):
             "X-Mailer": "Microsoft Outlook 16.0",
             "X-MSMail-Priority": "Normal",
             "X-Priority": "3",
-            "X-MimeOLE": "Produced By Microsoft MimeOLE V6.1.7601.17514"
+            "X-MimeOLE": "Produced By Microsoft MimeOLE V6.1.7601.17514",
         }
 
     def _generate_campaign_id(self) -> str:
@@ -290,7 +312,7 @@ class APT29(ThreatActor):
             "campaign_type": random.choice(
                 ["security_update", "account_verification", "compliance"]
             ),
-            "targeting_level": random.choice(["broad", "targeted", "high_value"])
+            "targeting_level": random.choice(["broad", "targeted", "high_value"]),
         }
 
     def _supply_chain_compromise(self, target: str) -> Dict[str, Any]:
@@ -299,38 +321,33 @@ class APT29(ThreatActor):
             # Simulate software update compromise with APT29's known patterns
             update_package = {
                 "name": "system_update",
-                "version": f"2.{random.randint(0,9)}.{random.randint(0,9)}",
+                "version": f"2.{random.randint(0, 9)}.{random.randint(0, 9)}",
                 "checksum": hashlib.sha256(os.urandom(32)).hexdigest(),
                 "signature": self._generate_digital_signature(),
                 "timestamp": datetime.now().isoformat(),
                 "components": [
-                    {
-                        "name": "security_update",
-                        "version": "1.0.0",
-                        "type": "critical"
-                    },
-                    {
-                        "name": "system_patch",
-                        "version": "2.1.0",
-                        "type": "optional"
-                    }
+                    {"name": "security_update", "version": "1.0.0", "type": "critical"},
+                    {"name": "system_patch", "version": "2.1.0", "type": "optional"},
                 ],
                 "dependencies": [
                     "Windows Update Service",
                     "System Configuration",
-                    "Security Center"
+                    "Security Center",
                 ],
-                "installation_script": self._generate_installation_script()
+                "installation_script": self._generate_installation_script(),
             }
 
             # Log operation with detailed metadata
-            self.log_operation("supply_chain", {
-                "target": target,
-                "package": update_package,
-                "timestamp": datetime.now().isoformat(),
-                "compromise_type": random.choice(["update_server", "distribution", "signing"]),
-                "target_software": self._get_target_software(target)
-            })
+            self.log_operation(
+                "supply_chain",
+                {
+                    "target": target,
+                    "package": update_package,
+                    "timestamp": datetime.now().isoformat(),
+                    "compromise_type": random.choice(["update_server", "distribution", "signing"]),
+                    "target_software": self._get_target_software(target),
+                },
+            )
 
             return {
                 "success": True,
@@ -339,16 +356,13 @@ class APT29(ThreatActor):
                 "metadata": {
                     "compromise_type": random.choice(["update_server", "distribution", "signing"]),
                     "target_software": self._get_target_software(target),
-                    "timestamp": datetime.now().isoformat()
-                }
+                    "timestamp": datetime.now().isoformat(),
+                },
             }
 
         except Exception as e:
             self.log_error("supply_chain", str(e))
-            return {
-                "success": False,
-                "message": f"Supply chain compromise failed: {str(e)}"
-            }
+            return {"success": False, "message": f"Supply chain compromise failed: {str(e)}"}
 
     def _generate_digital_signature(self) -> str:
         """Generate a realistic digital signature"""
@@ -377,9 +391,9 @@ class APT29(ThreatActor):
         return {
             "name": target,
             "type": random.choice(["system_update", "security_patch", "feature_update"]),
-            "version": f"{random.randint(1,10)}.{random.randint(0,9)}.{random.randint(0,9)}",
+            "version": f"{random.randint(1, 10)}.{random.randint(0, 9)}.{random.randint(0, 9)}",
             "platform": "Windows",
-            "architecture": random.choice(["x86", "x64", "arm64"])
+            "architecture": random.choice(["x86", "x64", "arm64"]),
         }
 
     def _powershell_execution(self, command: str) -> Dict[str, Any]:
@@ -390,14 +404,17 @@ class APT29(ThreatActor):
             obfuscated_command = self._obfuscate_powershell_command(command)
 
             # Log operation with detailed metadata
-            self.log_operation("powershell", {
-                "command": command,
-                "encoded": encoded_command,
-                "obfuscated": obfuscated_command,
-                "timestamp": datetime.now().isoformat(),
-                "execution_method": random.choice(["wmi", "scheduled_task", "service"]),
-                "bypass_technique": self._get_bypass_technique()
-            })
+            self.log_operation(
+                "powershell",
+                {
+                    "command": command,
+                    "encoded": encoded_command,
+                    "obfuscated": obfuscated_command,
+                    "timestamp": datetime.now().isoformat(),
+                    "execution_method": random.choice(["wmi", "scheduled_task", "service"]),
+                    "bypass_technique": self._get_bypass_technique(),
+                },
+            )
 
             return {
                 "success": True,
@@ -407,16 +424,13 @@ class APT29(ThreatActor):
                     "encoded": encoded_command,
                     "obfuscated": obfuscated_command,
                     "execution_method": random.choice(["wmi", "scheduled_task", "service"]),
-                    "bypass_technique": self._get_bypass_technique()
-                }
+                    "bypass_technique": self._get_bypass_technique(),
+                },
             }
 
         except Exception as e:
             self.log_error("powershell", str(e))
-            return {
-                "success": False,
-                "message": f"PowerShell execution failed: {str(e)}"
-            }
+            return {"success": False, "message": f"PowerShell execution failed: {str(e)}"}
 
     def _obfuscate_powershell_command(self, command: str) -> str:
         """Obfuscate PowerShell command using APT29's patterns"""
@@ -432,13 +446,15 @@ class APT29(ThreatActor):
 
     def _get_bypass_technique(self) -> str:
         """Get a random bypass technique"""
-        return random.choice([
-            "amsi_bypass",
-            "etw_bypass",
-            "clm_bypass",
-            "constrained_language_mode",
-            "applocker_bypass"
-        ])
+        return random.choice(
+            [
+                "amsi_bypass",
+                "etw_bypass",
+                "clm_bypass",
+                "constrained_language_mode",
+                "applocker_bypass",
+            ]
+        )
 
     def _process_hollowing(self, target_process: str) -> Dict[str, Any]:
         """Simulate APT29's process hollowing technique"""
@@ -449,30 +465,24 @@ class APT29(ThreatActor):
                 "technique": "process_hollowing",
                 "timestamp": datetime.now().isoformat(),
                 "hollowing_method": random.choice(["ntcreate", "ntunmap", "ntwrite"]),
-                "target_sections": [
-                    ".text",
-                    ".data",
-                    ".rdata",
-                    ".pdata"
-                ],
-                "protection_flags": [
-                    "PAGE_EXECUTE_READ",
-                    "PAGE_READWRITE",
-                    "PAGE_READONLY"
-                ],
+                "target_sections": [".text", ".data", ".rdata", ".pdata"],
+                "protection_flags": ["PAGE_EXECUTE_READ", "PAGE_READWRITE", "PAGE_READONLY"],
                 "process_attributes": {
                     "creation_flags": "CREATE_SUSPENDED",
                     "startup_info": "STARTF_USESHOWWINDOW",
-                    "process_information": "PROCESS_INFORMATION"
-                }
+                    "process_information": "PROCESS_INFORMATION",
+                },
             }
 
             # Log operation with detailed metadata
-            self.log_operation("process_hollowing", {
-                **hollowing_data,
-                "detection_evasion": self._get_detection_evasion_techniques(),
-                "persistence_method": self._get_persistence_method()
-            })
+            self.log_operation(
+                "process_hollowing",
+                {
+                    **hollowing_data,
+                    "detection_evasion": self._get_detection_evasion_techniques(),
+                    "persistence_method": self._get_persistence_method(),
+                },
+            )
 
             return {
                 "success": True,
@@ -481,36 +491,32 @@ class APT29(ThreatActor):
                 "metadata": {
                     "detection_evasion": self._get_detection_evasion_techniques(),
                     "persistence_method": self._get_persistence_method(),
-                    "timestamp": datetime.now().isoformat()
-                }
+                    "timestamp": datetime.now().isoformat(),
+                },
             }
 
         except Exception as e:
             self.log_error("process_hollowing", str(e))
-            return {
-                "success": False,
-                "message": f"Process hollowing failed: {str(e)}"
-            }
+            return {"success": False, "message": f"Process hollowing failed: {str(e)}"}
 
     def _get_detection_evasion_techniques(self) -> List[str]:
         """Get a list of detection evasion techniques"""
-        return random.sample([
-            "process_name_spoofing",
-            "parent_process_spoofing",
-            "command_line_spoofing",
-            "window_title_spoofing",
-            "icon_spoofing"
-        ], random.randint(1, 3))
+        return random.sample(
+            [
+                "process_name_spoofing",
+                "parent_process_spoofing",
+                "command_line_spoofing",
+                "window_title_spoofing",
+                "icon_spoofing",
+            ],
+            random.randint(1, 3),
+        )
 
     def _get_persistence_method(self) -> str:
         """Get a random persistence method"""
-        return random.choice([
-            "registry",
-            "scheduled_task",
-            "service",
-            "startup_folder",
-            "wmi_event"
-        ])
+        return random.choice(
+            ["registry", "scheduled_task", "service", "startup_folder", "wmi_event"]
+        )
 
     def _dns_c2(self, data: bytes) -> Dict[str, Any]:
         """Simulate APT29's DNS-based C2 communication"""
@@ -523,20 +529,23 @@ class APT29(ThreatActor):
                 method=random.choice(["txt", "a", "aaaa", "mx"]),
                 encoding=random.choice(["base64", "hex", "custom"]),
                 compression=random.choice(["none", "gzip", "deflate"]),
-                encryption=random.choice(self.config["encryption_algorithms"])
+                encryption=random.choice(self.config["encryption_algorithms"]),
             )
 
             # Log operation with detailed metadata
-            self.log_operation("dns_c2", {
-                "data_size": len(data),
-                "target": result["target"],
-                "timestamp": datetime.now().isoformat(),
-                "dns_type": result["method"],
-                "encoding": result["encoding"],
-                "compression": result["compression"],
-                "encryption": result["encryption"],
-                "channel": self._get_c2_channel()
-            })
+            self.log_operation(
+                "dns_c2",
+                {
+                    "data_size": len(data),
+                    "target": result["target"],
+                    "timestamp": datetime.now().isoformat(),
+                    "dns_type": result["method"],
+                    "encoding": result["encoding"],
+                    "compression": result["compression"],
+                    "encryption": result["encryption"],
+                    "channel": self._get_c2_channel(),
+                },
+            )
 
             return {
                 "success": True,
@@ -549,27 +558,18 @@ class APT29(ThreatActor):
                         "dns_type": result["method"],
                         "encoding": result["encoding"],
                         "compression": result["compression"],
-                        "encryption": result["encryption"]
-                    }
-                }
+                        "encryption": result["encryption"],
+                    },
+                },
             }
 
         except Exception as e:
             self.log_error("dns_c2", str(e))
-            return {
-                "success": False,
-                "message": f"DNS C2 communication failed: {str(e)}"
-            }
+            return {"success": False, "message": f"DNS C2 communication failed: {str(e)}"}
 
     def _get_c2_channel(self) -> str:
         """Get a random C2 channel"""
-        return random.choice([
-            "primary",
-            "backup",
-            "fallback",
-            "emergency",
-            "alternate"
-        ])
+        return random.choice(["primary", "backup", "fallback", "emergency", "alternate"])
 
     def _data_staging(self, data: bytes) -> Dict[str, Any]:
         """Simulate APT29's data staging technique"""
@@ -577,29 +577,30 @@ class APT29(ThreatActor):
             # Stage data for exfiltration with APT29's patterns
             staging_data = {
                 "size": len(data),
-                "location": random.choice([
-                    "C:\\Windows\\Temp",
-                    "C:\\ProgramData",
-                    "C:\\Users\\Public",
-                    "C:\\Windows\\System32\\config"
-                ]),
+                "location": random.choice(
+                    [
+                        "C:\\Windows\\Temp",
+                        "C:\\ProgramData",
+                        "C:\\Users\\Public",
+                        "C:\\Windows\\System32\\config",
+                    ]
+                ),
                 "timestamp": datetime.now().isoformat(),
                 "compression": random.choice(self.config["compression_methods"]),
                 "encryption": random.choice(self.config["encryption_algorithms"]),
-                "file_attributes": {
-                    "hidden": True,
-                    "system": True,
-                    "readonly": True
-                },
-                "naming_convention": self._generate_staging_filename()
+                "file_attributes": {"hidden": True, "system": True, "readonly": True},
+                "naming_convention": self._generate_staging_filename(),
             }
 
             # Log operation with detailed metadata
-            self.log_operation("data_staging", {
-                **staging_data,
-                "staging_method": self._get_staging_method(),
-                "cleanup_procedure": self._get_cleanup_procedure()
-            })
+            self.log_operation(
+                "data_staging",
+                {
+                    **staging_data,
+                    "staging_method": self._get_staging_method(),
+                    "cleanup_procedure": self._get_cleanup_procedure(),
+                },
+            )
 
             return {
                 "success": True,
@@ -608,42 +609,35 @@ class APT29(ThreatActor):
                 "metadata": {
                     "staging_method": self._get_staging_method(),
                     "cleanup_procedure": self._get_cleanup_procedure(),
-                    "timestamp": datetime.now().isoformat()
-                }
+                    "timestamp": datetime.now().isoformat(),
+                },
             }
 
         except Exception as e:
             self.log_error("data_staging", str(e))
-            return {
-                "success": False,
-                "message": f"Data staging failed: {str(e)}"
-            }
+            return {"success": False, "message": f"Data staging failed: {str(e)}"}
 
     def _generate_staging_filename(self) -> str:
         """Generate a realistic staging filename"""
         prefixes = ["sys", "win", "ms", "svc", "app"]
         suffixes = ["tmp", "dat", "log", "bak", "old"]
-        return f"{random.choice(prefixes)}{random.randint(1000,9999)}.{random.choice(suffixes)}"
+        return f"{random.choice(prefixes)}{random.randint(1000, 9999)}.{random.choice(suffixes)}"
 
     def _get_staging_method(self) -> str:
         """Get a random staging method"""
-        return random.choice([
-            "file_system",
-            "registry",
-            "alternate_data_streams",
-            "volume_shadow_copy",
-            "recycle_bin"
-        ])
+        return random.choice(
+            [
+                "file_system",
+                "registry",
+                "alternate_data_streams",
+                "volume_shadow_copy",
+                "recycle_bin",
+            ]
+        )
 
     def _get_cleanup_procedure(self) -> str:
         """Get a random cleanup procedure"""
-        return random.choice([
-            "secure_delete",
-            "overwrite",
-            "shred",
-            "wipe",
-            "null"
-        ])
+        return random.choice(["secure_delete", "overwrite", "shred", "wipe", "null"])
 
     def _data_encryption(self, data: bytes) -> Dict[str, Any]:
         """Simulate APT29's data encryption technique"""
@@ -654,15 +648,18 @@ class APT29(ThreatActor):
             algorithm = random.choice(self.config["encryption_algorithms"])
 
             # Log operation with detailed metadata
-            self.log_operation("data_encryption", {
-                "data_size": len(data),
-                "key_size": len(key),
-                "iv_size": len(iv),
-                "algorithm": algorithm,
-                "timestamp": datetime.now().isoformat(),
-                "key_derivation": self._get_key_derivation_method(),
-                "padding": self._get_padding_method()
-            })
+            self.log_operation(
+                "data_encryption",
+                {
+                    "data_size": len(data),
+                    "key_size": len(key),
+                    "iv_size": len(iv),
+                    "algorithm": algorithm,
+                    "timestamp": datetime.now().isoformat(),
+                    "key_derivation": self._get_key_derivation_method(),
+                    "padding": self._get_padding_method(),
+                },
+            )
 
             return {
                 "success": True,
@@ -672,36 +669,21 @@ class APT29(ThreatActor):
                     "iv_size": len(iv),
                     "algorithm": algorithm,
                     "key_derivation": self._get_key_derivation_method(),
-                    "padding": self._get_padding_method()
-                }
+                    "padding": self._get_padding_method(),
+                },
             }
 
         except Exception as e:
             self.log_error("data_encryption", str(e))
-            return {
-                "success": False,
-                "message": f"Data encryption failed: {str(e)}"
-            }
+            return {"success": False, "message": f"Data encryption failed: {str(e)}"}
 
     def _get_key_derivation_method(self) -> str:
         """Get a random key derivation method"""
-        return random.choice([
-            "pbkdf2",
-            "bcrypt",
-            "scrypt",
-            "argon2",
-            "hkdf"
-        ])
+        return random.choice(["pbkdf2", "bcrypt", "scrypt", "argon2", "hkdf"])
 
     def _get_padding_method(self) -> str:
         """Get a random padding method"""
-        return random.choice([
-            "pkcs7",
-            "ansix923",
-            "iso10126",
-            "zeros",
-            "none"
-        ])
+        return random.choice(["pkcs7", "ansix923", "iso10126", "zeros", "none"])
 
     def _service_stop(self, service_name: str) -> Dict[str, Any]:
         """Simulate APT29's service disruption technique"""
@@ -714,15 +696,18 @@ class APT29(ThreatActor):
                 "stop_method": random.choice(["sc", "net", "wmi", "powershell"]),
                 "force_stop": random.choice([True, False]),
                 "prevent_restart": random.choice([True, False]),
-                "cleanup_actions": self._get_cleanup_actions()
+                "cleanup_actions": self._get_cleanup_actions(),
             }
 
             # Log operation with detailed metadata
-            self.log_operation("service_stop", {
-                **service_data,
-                "impact_level": self._get_impact_level(),
-                "recovery_method": self._get_recovery_method()
-            })
+            self.log_operation(
+                "service_stop",
+                {
+                    **service_data,
+                    "impact_level": self._get_impact_level(),
+                    "recovery_method": self._get_recovery_method(),
+                },
+            )
 
             return {
                 "success": True,
@@ -731,46 +716,28 @@ class APT29(ThreatActor):
                 "metadata": {
                     "impact_level": self._get_impact_level(),
                     "recovery_method": self._get_recovery_method(),
-                    "timestamp": datetime.now().isoformat()
-                }
+                    "timestamp": datetime.now().isoformat(),
+                },
             }
 
         except Exception as e:
             self.log_error("service_stop", str(e))
-            return {
-                "success": False,
-                "message": f"Service stop failed: {str(e)}"
-            }
+            return {"success": False, "message": f"Service stop failed: {str(e)}"}
 
     def _get_cleanup_actions(self) -> List[str]:
         """Get a list of cleanup actions"""
-        return random.sample([
-            "delete_service",
-            "remove_registry",
-            "clear_logs",
-            "remove_files",
-            "disable_recovery"
-        ], random.randint(1, 3))
+        return random.sample(
+            ["delete_service", "remove_registry", "clear_logs", "remove_files", "disable_recovery"],
+            random.randint(1, 3),
+        )
 
     def _get_impact_level(self) -> str:
         """Get a random impact level"""
-        return random.choice([
-            "low",
-            "medium",
-            "high",
-            "critical",
-            "catastrophic"
-        ])
+        return random.choice(["low", "medium", "high", "critical", "catastrophic"])
 
     def _get_recovery_method(self) -> str:
         """Get a random recovery method"""
-        return random.choice([
-            "manual",
-            "automatic",
-            "backup",
-            "restore_point",
-            "reinstall"
-        ])
+        return random.choice(["manual", "automatic", "backup", "restore_point", "reinstall"])
 
     def _system_shutdown(self) -> Dict[str, Any]:
         """Simulate APT29's system shutdown technique"""
@@ -783,15 +750,18 @@ class APT29(ThreatActor):
                 "shutdown_method": random.choice(["api", "cmd", "wmi", "powershell"]),
                 "force": random.choice([True, False]),
                 "reason": self._get_shutdown_reason(),
-                "cleanup_actions": self._get_shutdown_cleanup_actions()
+                "cleanup_actions": self._get_shutdown_cleanup_actions(),
             }
 
             # Log operation with detailed metadata
-            self.log_operation("system_shutdown", {
-                **shutdown_data,
-                "impact_level": self._get_impact_level(),
-                "recovery_method": self._get_recovery_method()
-            })
+            self.log_operation(
+                "system_shutdown",
+                {
+                    **shutdown_data,
+                    "impact_level": self._get_impact_level(),
+                    "recovery_method": self._get_recovery_method(),
+                },
+            )
 
             return {
                 "success": True,
@@ -800,33 +770,23 @@ class APT29(ThreatActor):
                 "metadata": {
                     "impact_level": self._get_impact_level(),
                     "recovery_method": self._get_recovery_method(),
-                    "timestamp": datetime.now().isoformat()
-                }
+                    "timestamp": datetime.now().isoformat(),
+                },
             }
 
         except Exception as e:
             self.log_error("system_shutdown", str(e))
-            return {
-                "success": False,
-                "message": f"System shutdown failed: {str(e)}"
-            }
+            return {"success": False, "message": f"System shutdown failed: {str(e)}"}
 
     def _get_shutdown_reason(self) -> str:
         """Get a random shutdown reason"""
-        return random.choice([
-            "system_update",
-            "maintenance",
-            "security_patch",
-            "hardware_change",
-            "power_issue"
-        ])
+        return random.choice(
+            ["system_update", "maintenance", "security_patch", "hardware_change", "power_issue"]
+        )
 
     def _get_shutdown_cleanup_actions(self) -> List[str]:
         """Get a list of shutdown cleanup actions"""
-        return random.sample([
-            "save_state",
-            "close_apps",
-            "clear_temp",
-            "update_boot",
-            "secure_storage"
-        ], random.randint(1, 3))
+        return random.sample(
+            ["save_state", "close_apps", "clear_temp", "update_boot", "secure_storage"],
+            random.randint(1, 3),
+        )

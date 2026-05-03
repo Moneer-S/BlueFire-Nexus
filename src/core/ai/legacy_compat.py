@@ -14,4 +14,5 @@ def build_provider(config: Dict[str, Any]) -> AIProvider:
     model = str(config.get("model", "default"))
     return ProviderFactory.build(provider_name, model, config)
 
+
 __all__ = ["AIProvider", "build_provider"]

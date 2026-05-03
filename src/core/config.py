@@ -221,11 +221,7 @@ class ConfigManager:
     def _deep_merge(self, base: Dict[str, Any], incoming: Dict[str, Any]) -> None:
         """Recursively merge incoming values into base dict."""
         for key, value in incoming.items():
-            if (
-                key in base
-                and isinstance(base[key], dict)
-                and isinstance(value, dict)
-            ):
+            if key in base and isinstance(base[key], dict) and isinstance(value, dict):
                 self._deep_merge(base[key], value)
                 continue
             base[key] = value

@@ -21,53 +21,53 @@ class Collection:
                 "file": {
                     "description": "Use file staging",
                     "indicators": ["file_staging", "data_staging"],
-                    "evasion": ["file_hiding", "staging_hiding"]
+                    "evasion": ["file_hiding", "staging_hiding"],
                 },
                 "directory": {
                     "description": "Use directory staging",
                     "indicators": ["directory_staging", "data_staging"],
-                    "evasion": ["directory_hiding", "staging_hiding"]
+                    "evasion": ["directory_hiding", "staging_hiding"],
                 },
                 "archive": {
                     "description": "Use archive staging",
                     "indicators": ["archive_staging", "data_staging"],
-                    "evasion": ["archive_hiding", "staging_hiding"]
-                }
+                    "evasion": ["archive_hiding", "staging_hiding"],
+                },
             },
             "input_capture": {
                 "keyboard": {
                     "description": "Use keyboard capture",
                     "indicators": ["keyboard_capture", "input_capture"],
-                    "evasion": ["keyboard_hiding", "capture_hiding"]
+                    "evasion": ["keyboard_hiding", "capture_hiding"],
                 },
                 "clipboard": {
                     "description": "Use clipboard capture",
                     "indicators": ["clipboard_capture", "input_capture"],
-                    "evasion": ["clipboard_hiding", "capture_hiding"]
+                    "evasion": ["clipboard_hiding", "capture_hiding"],
                 },
                 "screen": {
                     "description": "Use screen capture",
                     "indicators": ["screen_capture", "input_capture"],
-                    "evasion": ["screen_hiding", "capture_hiding"]
-                }
+                    "evasion": ["screen_hiding", "capture_hiding"],
+                },
             },
             "data_compression": {
                 "compression": {
                     "description": "Use data compression",
                     "indicators": ["data_compression", "compression"],
-                    "evasion": ["compression_hiding", "data_hiding"]
+                    "evasion": ["compression_hiding", "data_hiding"],
                 },
                 "encryption": {
                     "description": "Use data encryption",
                     "indicators": ["data_encryption", "encryption"],
-                    "evasion": ["encryption_hiding", "data_hiding"]
+                    "evasion": ["encryption_hiding", "data_hiding"],
                 },
                 "encoding": {
                     "description": "Use data encoding",
                     "indicators": ["data_encoding", "encoding"],
-                    "evasion": ["encoding_hiding", "data_hiding"]
-                }
-            }
+                    "evasion": ["encoding_hiding", "data_hiding"],
+                },
+            },
         }
 
         # Initialize collection tools
@@ -75,18 +75,18 @@ class Collection:
             "data_staging": {
                 "file_handler": self._handle_file_staging,
                 "directory_handler": self._handle_directory_staging,
-                "archive_handler": self._handle_archive_staging
+                "archive_handler": self._handle_archive_staging,
             },
             "input_capture": {
                 "keyboard_handler": self._handle_keyboard_capture,
                 "clipboard_handler": self._handle_clipboard_capture,
-                "screen_handler": self._handle_screen_capture
+                "screen_handler": self._handle_screen_capture,
             },
             "data_compression": {
                 "compression_handler": self._handle_compression,
                 "encryption_handler": self._handle_encryption,
-                "encoding_handler": self._handle_encoding
-            }
+                "encoding_handler": self._handle_encoding,
+            },
         }
 
         # Initialize configuration
@@ -95,53 +95,53 @@ class Collection:
                 "file": {
                     "types": ["txt", "doc", "pdf"],
                     "locations": ["temp", "appdata", "programdata"],
-                    "permissions": ["read", "write", "execute"]
+                    "permissions": ["read", "write", "execute"],
                 },
                 "directory": {
                     "types": ["data", "config", "logs"],
                     "locations": ["temp", "appdata", "programdata"],
-                    "permissions": ["read", "write", "execute"]
+                    "permissions": ["read", "write", "execute"],
                 },
                 "archive": {
                     "types": ["zip", "rar", "7z"],
                     "locations": ["temp", "appdata", "programdata"],
-                    "permissions": ["read", "write", "execute"]
-                }
+                    "permissions": ["read", "write", "execute"],
+                },
             },
             "input_capture": {
                 "keyboard": {
                     "types": ["text", "commands", "passwords"],
                     "files": ["keylog.txt", "commands.txt", "passwords.txt"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "clipboard": {
                     "types": ["text", "files", "images"],
                     "files": ["clipboard.txt", "files.txt", "images.txt"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "screen": {
                     "types": ["screenshots", "videos", "streams"],
                     "files": ["screenshots.png", "videos.avi", "streams.avi"],
-                    "timeouts": [30, 60, 120]
-                }
+                    "timeouts": [30, 60, 120],
+                },
             },
             "data_compression": {
                 "compression": {
                     "types": ["zip", "rar", "7z"],
                     "levels": ["fast", "normal", "best"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "encryption": {
                     "types": ["aes", "rsa", "custom"],
                     "keys": ["128", "256", "512"],
-                    "timeouts": [30, 60, 120]
+                    "timeouts": [30, 60, 120],
                 },
                 "encoding": {
                     "types": ["base64", "hex", "custom"],
                     "methods": ["standard", "custom", "obfuscated"],
-                    "timeouts": [30, 60, 120]
-                }
-            }
+                    "timeouts": [30, 60, 120],
+                },
+            },
         }
 
     def collect(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -151,7 +151,7 @@ class Collection:
             result = {
                 "original_data": data,
                 "timestamp": datetime.now().isoformat(),
-                "collection": {}
+                "collection": {},
             }
 
             # Apply data staging
@@ -200,7 +200,9 @@ class Collection:
 
         # Clipboard capture
         if "clipboard" in data:
-            result["clipboard"] = self.tools["input_capture"]["clipboard_handler"](data["clipboard"])
+            result["clipboard"] = self.tools["input_capture"]["clipboard_handler"](
+                data["clipboard"]
+            )
 
         # Screen capture
         if "screen" in data:
@@ -214,15 +216,21 @@ class Collection:
 
         # Compression
         if "compression" in data:
-            result["compression"] = self.tools["data_compression"]["compression_handler"](data["compression"])
+            result["compression"] = self.tools["data_compression"]["compression_handler"](
+                data["compression"]
+            )
 
         # Encryption
         if "encryption" in data:
-            result["encryption"] = self.tools["data_compression"]["encryption_handler"](data["encryption"])
+            result["encryption"] = self.tools["data_compression"]["encryption_handler"](
+                data["encryption"]
+            )
 
         # Encoding
         if "encoding" in data:
-            result["encoding"] = self.tools["data_compression"]["encoding_handler"](data["encoding"])
+            result["encoding"] = self.tools["data_compression"]["encoding_handler"](
+                data["encoding"]
+            )
 
         return result
 
@@ -233,11 +241,13 @@ class Collection:
                 "status": "success",
                 "technique": "file_staging",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
-            target_files = data.get("files", ["document.docx", "spreadsheet.xlsx", "presentation.pptx"])
+            target_files = data.get(
+                "files", ["document.docx", "spreadsheet.xlsx", "presentation.pptx"]
+            )
             staging_dir = data.get("directory", "C:\\Windows\\Temp\\staged_files")
             staging_method = data.get("method", "copy")
 
@@ -289,11 +299,14 @@ class Collection:
                 "status": "success",
                 "technique": "directory_staging",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
-            source_dirs = data.get("directories", ["C:\\Users\\Administrator\\Documents", "C:\\Users\\Administrator\\Downloads"])
+            source_dirs = data.get(
+                "directories",
+                ["C:\\Users\\Administrator\\Documents", "C:\\Users\\Administrator\\Downloads"],
+            )
             staging_dir = data.get("staging_directory", "C:\\Windows\\Temp\\staged_dirs")
             staging_method = data.get("method", "structure")
             file_filter = data.get("filter", "*.doc*,*.xls*,*.pdf")
@@ -313,24 +326,31 @@ class Collection:
 
                 # Generate stats for the directory (simulated)
                 file_count = random.randint(5, 50)
-                total_size = random.randint(1024*1024, 100*1024*1024)  # 1MB to 100MB
+                total_size = random.randint(1024 * 1024, 100 * 1024 * 1024)  # 1MB to 100MB
 
                 dir_stats[staged_subdir] = {
                     "file_count": file_count,
                     "total_size": total_size,
-                    "average_size": total_size // file_count
+                    "average_size": total_size // file_count,
                 }
 
                 # Directory staging details based on method
                 if staging_method == "structure":
                     result["details"]["operation"] = "Directory structure copy"
-                    result["details"]["commands"] = [f"mkdir {staged_subdir}", f"robocopy {source_dir} {staged_subdir} /E /XF * /LOG:NUL"]
+                    result["details"]["commands"] = [
+                        f"mkdir {staged_subdir}",
+                        f"robocopy {source_dir} {staged_subdir} /E /XF * /LOG:NUL",
+                    ]
                 elif staging_method == "full":
                     result["details"]["operation"] = "Full directory copy"
-                    result["details"]["commands"] = [f"robocopy {source_dir} {staged_subdir} {file_filter} /E /LOG:NUL"]
+                    result["details"]["commands"] = [
+                        f"robocopy {source_dir} {staged_subdir} {file_filter} /E /LOG:NUL"
+                    ]
                 elif staging_method == "mirror":
                     result["details"]["operation"] = "Directory mirror"
-                    result["details"]["commands"] = [f"robocopy {source_dir} {staged_subdir} {file_filter} /MIR /LOG:NUL"]
+                    result["details"]["commands"] = [
+                        f"robocopy {source_dir} {staged_subdir} {file_filter} /MIR /LOG:NUL"
+                    ]
 
             result["details"]["staged_directories"] = staged_dirs
             result["details"]["directory_statistics"] = dir_stats
@@ -352,11 +372,17 @@ class Collection:
                 "status": "success",
                 "technique": "archive_staging",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
-            source_items = data.get("items", ["C:\\Users\\Administrator\\Documents\\important.docx", "C:\\Users\\Administrator\\Downloads\\data.xlsx"])
+            source_items = data.get(
+                "items",
+                [
+                    "C:\\Users\\Administrator\\Documents\\important.docx",
+                    "C:\\Users\\Administrator\\Downloads\\data.xlsx",
+                ],
+            )
             archive_path = data.get("archive_path", "C:\\Windows\\Temp\\staged_data.zip")
             archive_type = data.get("type", "zip")
             password = data.get("password", None)
@@ -378,28 +404,36 @@ class Collection:
 
             for item in source_items:
                 # Generate stats for the item (simulated)
-                item_size = random.randint(10*1024, 5*1024*1024)  # 10KB to 5MB
+                item_size = random.randint(10 * 1024, 5 * 1024 * 1024)  # 10KB to 5MB
                 archive_size += item_size
 
                 item_stats[item] = {
                     "size": item_size,
-                    "last_modified": (datetime.now() - timedelta(days=random.randint(1, 30))).isoformat()
+                    "last_modified": (
+                        datetime.now() - timedelta(days=random.randint(1, 30))
+                    ).isoformat(),
                 }
 
             # Calculate compression ratio (simulated)
-            compressed_size = int(archive_size * random.uniform(0.6, 0.9))  # 60-90% of original size
+            compressed_size = int(
+                archive_size * random.uniform(0.6, 0.9)
+            )  # 60-90% of original size
 
             # Archive commands based on type
             if archive_type == "zip":
                 if password:
-                    result["details"]["command"] = f"7z a -p{password} {archive_path} {' '.join(source_items)}"
+                    result["details"]["command"] = (
+                        f"7z a -p{password} {archive_path} {' '.join(source_items)}"
+                    )
                 else:
                     result["details"]["command"] = f"7z a {archive_path} {' '.join(source_items)}"
             elif archive_type == "tar":
                 result["details"]["command"] = f"tar -czf {archive_path} {' '.join(source_items)}"
             elif archive_type == "rar":
                 if password:
-                    result["details"]["command"] = f"rar a -p{password} {archive_path} {' '.join(source_items)}"
+                    result["details"]["command"] = (
+                        f"rar a -p{password} {archive_path} {' '.join(source_items)}"
+                    )
                 else:
                     result["details"]["command"] = f"rar a {archive_path} {' '.join(source_items)}"
 
@@ -408,13 +442,15 @@ class Collection:
                 "original_size": archive_size,
                 "compressed_size": compressed_size,
                 "compression_ratio": f"{(compressed_size / archive_size) * 100:.1f}%",
-                "item_count": len(source_items)
+                "item_count": len(source_items),
             }
             result["details"]["staging_time"] = datetime.now().isoformat()
 
             # Add MITRE ATT&CK information
             result["details"]["mitre_technique_id"] = "T1560.001"
-            result["details"]["mitre_technique_name"] = "Archive Collected Data: Archive via Utility"
+            result["details"]["mitre_technique_name"] = (
+                "Archive Collected Data: Archive via Utility"
+            )
 
             return result
         except Exception as e:
@@ -428,7 +464,7 @@ class Collection:
                 "status": "success",
                 "technique": "keyboard_capture",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -444,16 +480,22 @@ class Collection:
 
             # Keyboard capture implementation
             result["details"]["capture_start_time"] = datetime.now().isoformat()
-            result["details"]["scheduled_end_time"] = (datetime.now() + timedelta(seconds=duration)).isoformat()
+            result["details"]["scheduled_end_time"] = (
+                datetime.now() + timedelta(seconds=duration)
+            ).isoformat()
 
             # Method-specific details
             if capture_method == "hook":
                 result["details"]["api"] = "SetWindowsHookEx(WH_KEYBOARD_LL)"
-                result["details"]["implementation"] = "Low-level keyboard hook to capture all keystrokes"
+                result["details"]["implementation"] = (
+                    "Low-level keyboard hook to capture all keystrokes"
+                )
                 result["details"]["privileges_required"] = "User"
             elif capture_method == "driver":
                 result["details"]["api"] = "Custom keyboard filter driver"
-                result["details"]["implementation"] = "Kernel-mode driver to intercept keystrokes before processing"
+                result["details"]["implementation"] = (
+                    "Kernel-mode driver to intercept keystrokes before processing"
+                )
                 result["details"]["privileges_required"] = "Administrator"
             elif capture_method == "api":
                 result["details"]["api"] = "GetAsyncKeyState/GetKeyboardState"
@@ -465,7 +507,7 @@ class Collection:
                 "keys_captured": 0,
                 "active": True,
                 "log_size": 0,
-                "target_window": "Not available yet"
+                "target_window": "Not available yet",
             }
 
             # Add MITRE ATT&CK information
@@ -484,7 +526,7 @@ class Collection:
                 "status": "success",
                 "technique": "clipboard_capture",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -500,7 +542,9 @@ class Collection:
 
             # Clipboard capture implementation
             result["details"]["capture_start_time"] = datetime.now().isoformat()
-            result["details"]["scheduled_end_time"] = (datetime.now() + timedelta(seconds=duration)).isoformat()
+            result["details"]["scheduled_end_time"] = (
+                datetime.now() + timedelta(seconds=duration)
+            ).isoformat()
 
             # Method-specific details
             if capture_method == "polling":
@@ -508,25 +552,22 @@ class Collection:
                 result["details"]["implementation"] = "Periodically check clipboard for changes"
             elif capture_method == "hook":
                 result["details"]["api"] = "AddClipboardFormatListener"
-                result["details"]["implementation"] = "Register for clipboard content change notifications"
+                result["details"]["implementation"] = (
+                    "Register for clipboard content change notifications"
+                )
             elif capture_method == "dll":
                 result["details"]["api"] = "SetClipboardViewer"
                 result["details"]["implementation"] = "Legacy clipboard viewer chain"
 
             # Formats to monitor
-            result["details"]["formats"] = [
-                "CF_TEXT",
-                "CF_UNICODETEXT",
-                "CF_BITMAP",
-                "CF_HDROP"
-            ]
+            result["details"]["formats"] = ["CF_TEXT", "CF_UNICODETEXT", "CF_BITMAP", "CF_HDROP"]
 
             # Simulated clipboard monitor stats
             result["details"]["statistics"] = {
                 "items_captured": 0,
                 "last_capture_time": "N/A",
                 "active": True,
-                "log_size": 0
+                "log_size": 0,
             }
 
             # Add MITRE ATT&CK information
@@ -545,7 +586,7 @@ class Collection:
                 "status": "success",
                 "technique": "screen_capture",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -565,7 +606,9 @@ class Collection:
 
             # Screen capture implementation
             result["details"]["capture_start_time"] = datetime.now().isoformat()
-            result["details"]["scheduled_end_time"] = (datetime.now() + timedelta(seconds=duration)).isoformat()
+            result["details"]["scheduled_end_time"] = (
+                datetime.now() + timedelta(seconds=duration)
+            ).isoformat()
 
             # Method-specific details
             if capture_method == "gdi":
@@ -576,8 +619,12 @@ class Collection:
                 result["details"]["implementation"] = "DirectX screen duplication"
             elif capture_method == "wmic":
                 result["details"]["api"] = "WMIC process call create"
-                result["details"]["implementation"] = "Use WMIC to launch external screenshot utility"
-                result["details"]["command"] = "wmic process call create \"powershell -c Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{PRTSC}'); Start-Sleep -m 250; $bitmap = [System.Windows.Forms.Clipboard]::GetImage(); $bitmap.Save('screenshot.png')\""
+                result["details"]["implementation"] = (
+                    "Use WMIC to launch external screenshot utility"
+                )
+                result["details"]["command"] = (
+                    "wmic process call create \"powershell -c Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{PRTSC}'); Start-Sleep -m 250; $bitmap = [System.Windows.Forms.Clipboard]::GetImage(); $bitmap.Save('screenshot.png')\""
+                )
 
             # Calculate expected file size based on resolution and format
             width = 1920  # Simulated screen width
@@ -585,14 +632,18 @@ class Collection:
             bytes_per_pixel = 3
 
             raw_size = width * height * bytes_per_pixel
-            compressed_size = int(raw_size * (quality / 100) * (0.1 if format == "png" else 0.05 if format == "jpg" else 0.5))
+            compressed_size = int(
+                raw_size
+                * (quality / 100)
+                * (0.1 if format == "png" else 0.05 if format == "jpg" else 0.5)
+            )
 
             # Simulated screen capture stats
             result["details"]["statistics"] = {
                 "captures_taken": 0,
                 "resolution": f"{width}x{height}",
                 "estimated_size_per_capture": compressed_size,
-                "active": True
+                "active": True,
             }
 
             result["details"]["expected_captures"] = duration // interval
@@ -614,13 +665,16 @@ class Collection:
                 "status": "success",
                 "technique": "data_compression",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
             compression_type = data.get("type", "zip")
             source_data = data.get("source", "C:\\Collected\\Data")
-            output_file = data.get("output", f"C:\\Windows\\Temp\\compressed_{self._generate_random_string(8)}.{compression_type}")
+            output_file = data.get(
+                "output",
+                f"C:\\Windows\\Temp\\compressed_{self._generate_random_string(8)}.{compression_type}",
+            )
             compression_level = data.get("level", 6)  # 0-9 range, 9 is highest
 
             result["details"]["compression_type"] = compression_type
@@ -630,21 +684,29 @@ class Collection:
 
             # Compression implementation
             # Simulate compression ratios based on file types
-            source_size = random.randint(10*1024*1024, 100*1024*1024)  # 10MB to 100MB
+            source_size = random.randint(10 * 1024 * 1024, 100 * 1024 * 1024)  # 10MB to 100MB
 
             # Different compression ratios based on type
             if compression_type == "zip":
                 ratio = random.uniform(0.6, 0.8)  # 60-80% reduction
-                result["details"]["command"] = f"7z a -tzip -{compression_level} {output_file} {source_data}"
+                result["details"]["command"] = (
+                    f"7z a -tzip -{compression_level} {output_file} {source_data}"
+                )
             elif compression_type == "7z":
                 ratio = random.uniform(0.5, 0.7)  # 50-70% reduction
-                result["details"]["command"] = f"7z a -t7z -{compression_level} {output_file} {source_data}"
+                result["details"]["command"] = (
+                    f"7z a -t7z -{compression_level} {output_file} {source_data}"
+                )
             elif compression_type == "rar":
                 ratio = random.uniform(0.55, 0.75)  # 55-75% reduction
-                result["details"]["command"] = f"rar a -m{compression_level} {output_file} {source_data}"
+                result["details"]["command"] = (
+                    f"rar a -m{compression_level} {output_file} {source_data}"
+                )
             elif compression_type == "gzip":
                 ratio = random.uniform(0.65, 0.85)  # 65-85% reduction
-                result["details"]["command"] = f"gzip -{compression_level} -c {source_data} > {output_file}"
+                result["details"]["command"] = (
+                    f"gzip -{compression_level} -c {source_data} > {output_file}"
+                )
 
             compressed_size = int(source_size * ratio)
 
@@ -653,7 +715,7 @@ class Collection:
                 "original_size": source_size,
                 "compressed_size": compressed_size,
                 "compression_ratio": f"{(compressed_size / source_size) * 100:.1f}%",
-                "space_saved": source_size - compressed_size
+                "space_saved": source_size - compressed_size,
             }
 
             # Compression timestamp
@@ -675,13 +737,15 @@ class Collection:
                 "status": "success",
                 "technique": "data_encryption",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
             encryption_type = data.get("type", "aes")
             source_data = data.get("source", "C:\\Collected\\Data")
-            output_file = data.get("output", f"C:\\Windows\\Temp\\encrypted_{self._generate_random_string(8)}.enc")
+            output_file = data.get(
+                "output", f"C:\\Windows\\Temp\\encrypted_{self._generate_random_string(8)}.enc"
+            )
             key_size = data.get("key_size", 256)
 
             result["details"]["encryption_type"] = encryption_type
@@ -700,23 +764,30 @@ class Collection:
                 result["details"]["iv_hash"] = hashlib.sha256(iv.encode()).hexdigest()
 
             # Source data size
-            source_size = random.randint(10*1024*1024, 100*1024*1024)  # 10MB to 100MB
+            source_size = random.randint(10 * 1024 * 1024, 100 * 1024 * 1024)  # 10MB to 100MB
 
             # Encryption algorithm specific details
             if encryption_type == "aes":
                 result["details"]["algorithm"] = "AES-256-CBC"
-                result["details"]["command"] = f"openssl enc -aes-256-cbc -in {source_data} -out {output_file} -K {key} -iv {iv}"
+                result["details"]["command"] = (
+                    f"openssl enc -aes-256-cbc -in {source_data} -out {output_file} -K {key} -iv {iv}"
+                )
             elif encryption_type == "rsa":
                 result["details"]["algorithm"] = f"RSA-{key_size}"
-                result["details"]["command"] = f"openssl rsautl -encrypt -inkey public_key.pem -pubin -in {source_data} -out {output_file}"
+                result["details"]["command"] = (
+                    f"openssl rsautl -encrypt -inkey public_key.pem -pubin -in {source_data} -out {output_file}"
+                )
             elif encryption_type == "chacha20":
                 result["details"]["algorithm"] = "ChaCha20-Poly1305"
-                result["details"]["command"] = f"openssl enc -chacha20 -in {source_data} -out {output_file} -K {key} -iv {iv}"
+                result["details"]["command"] = (
+                    f"openssl enc -chacha20 -in {source_data} -out {output_file} -K {key} -iv {iv}"
+                )
 
             # Encryption statistics
             result["details"]["statistics"] = {
                 "original_size": source_size,
-                "encrypted_size": source_size + (16 if encryption_type != "rsa" else 0),  # AES/ChaCha padding
+                "encrypted_size": source_size
+                + (16 if encryption_type != "rsa" else 0),  # AES/ChaCha padding
                 "encryption_time": random.uniform(0.5, 5.0),  # Simulated time in seconds
             }
 
@@ -739,13 +810,15 @@ class Collection:
                 "status": "success",
                 "technique": "data_encoding",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
             encoding_type = data.get("type", "base64")
             source_data = data.get("source", "C:\\Collected\\Data")
-            output_file = data.get("output", f"C:\\Windows\\Temp\\encoded_{self._generate_random_string(8)}.txt")
+            output_file = data.get(
+                "output", f"C:\\Windows\\Temp\\encoded_{self._generate_random_string(8)}.txt"
+            )
 
             result["details"]["encoding_type"] = encoding_type
             result["details"]["source_data"] = source_data
@@ -753,25 +826,29 @@ class Collection:
 
             # Encoding implementation
             # Source data size
-            source_size = random.randint(1024*1024, 10*1024*1024)  # 1MB to 10MB
+            source_size = random.randint(1024 * 1024, 10 * 1024 * 1024)  # 1MB to 10MB
 
             # Calculate encoded size based on encoding type
             if encoding_type == "base64":
                 encoded_size = int(source_size * 1.37)  # ~4/3 increase
-                result["details"]["command"] = f"openssl base64 -in {source_data} -out {output_file}"
+                result["details"]["command"] = (
+                    f"openssl base64 -in {source_data} -out {output_file}"
+                )
             elif encoding_type == "hex":
                 encoded_size = source_size * 2  # Each byte becomes 2 hex characters
                 result["details"]["command"] = f"xxd -p {source_data} > {output_file}"
             elif encoding_type == "uuencode":
                 encoded_size = int(source_size * 1.4)  # Rough approximation
-                result["details"]["command"] = f"uuencode {source_data} {os.path.basename(source_data)} > {output_file}"
+                result["details"]["command"] = (
+                    f"uuencode {source_data} {os.path.basename(source_data)} > {output_file}"
+                )
 
             # Encoding statistics
             result["details"]["statistics"] = {
                 "original_size": source_size,
                 "encoded_size": encoded_size,
                 "ratio": f"{(encoded_size / source_size):.2f}",
-                "encoding_time": random.uniform(0.2, 2.0)  # Simulated time in seconds
+                "encoding_time": random.uniform(0.2, 2.0),  # Simulated time in seconds
             }
 
             # Encoding timestamp
@@ -799,4 +876,4 @@ class Collection:
     def _generate_random_string(self, length: int = 8) -> str:
         """Generate a random string of specified length"""
         chars = string.ascii_letters + string.digits
-        return ''.join(random.choice(chars) for _ in range(length))
+        return "".join(random.choice(chars) for _ in range(length))

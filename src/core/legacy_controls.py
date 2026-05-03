@@ -257,9 +257,10 @@ def normalize_capability_name(pack_key: str, capability: str) -> str:
     normalized_capability = _normalize_capability(normalized_pack, capability)
     allowed = LEGACY_PACK_CAPABILITIES.get(normalized_pack, ())
     if allowed and normalized_capability not in allowed:
+        allowed_txt = ", ".join(allowed)
         raise ValueError(
             f"Unknown legacy capability '{capability}' for {normalized_pack}. "
-            f"Expected one of: {', '.join(allowed)}"
+            f"Expected one of: {allowed_txt}"
         )
     return normalized_capability
 
@@ -329,9 +330,7 @@ def _infer_guided_profile_from_text(value: str) -> str | None:
     words = {token.strip(".,:;()[]{}") for token in value.split()}
     if words & safe_markers:
         return "safe-evaluation"
-    if any(
-        keyword in value for keyword in ("emulate", "emulation", "live-fire", "full lab")
-    ):
+    if any(keyword in value for keyword in ("emulate", "emulation", "live-fire", "full lab")):
         return "full-lab-emulation"
     if any(
         keyword in value
@@ -367,8 +366,7 @@ def _infer_guided_profile_from_modules(modules: Sequence[str] | None) -> str | N
         return None
     normalized = {str(name).strip().lower() for name in modules if str(name).strip()}
     has_actor = any(
-        name.startswith("legacy_apt") or name == "legacy_actor_profile"
-        for name in normalized
+        name.startswith("legacy_apt") or name == "legacy_actor_profile" for name in normalized
     )
     has_protocol = "legacy_protocol_research" in normalized
     has_stealth = "legacy_stealth_research" in normalized
@@ -469,8 +467,8 @@ def recommend_legacy_preset_for_scenario(
         "",
         "exercise lab-gated legacy protocol adapters with explicit master or granular enablement.",
         (
-            "exercise lab-gated legacy capability adapters with explicit "
-            "master or granular enablement."
+            "exercise lab-gated legacy capability adapters with explicit master or "
+            "granular enablement."
         ),
         "exercise legacy capability adapters with explicit master or granular enablement.",
     }
@@ -606,9 +604,7 @@ def legacy_preset_overrides(preset_name: str) -> Dict[str, Any]:
 def _capability_candidate_keys(pack_key: str, capability: str) -> tuple[str, list[str]]:
     canonical = _normalize_capability(pack_key, capability)
     alias_map = CAPABILITY_ALIASES.get(pack_key, {})
-    candidates: list[str] = [
-        alias for alias, target in alias_map.items() if target == canonical
-    ]
+    candidates: list[str] = [alias for alias, target in alias_map.items() if target == canonical]
     requested = str(capability).lower().strip()
     if requested not in candidates:
         candidates.append(requested)
@@ -669,19 +665,10 @@ def resolve_legacy_settings(
     global_mode_explicit = "global_mode" in legacy_cfg or "lab_mode" in legacy_cfg
     if master_enabled and global_mode_explicit:
         mode = str(
-            module_mode
-            or capability_mode
-            or global_mode
-            or pack_cfg.get("mode")
-            or "simulate"
+            module_mode or capability_mode or global_mode or pack_cfg.get("mode") or "simulate"
         ).lower()
     else:
-        mode = str(
-            module_mode
-            or capability_mode
-            or pack_cfg.get("mode")
-            or global_mode
-        ).lower()
+        mode = str(module_mode or capability_mode or pack_cfg.get("mode") or global_mode).lower()
     if mode not in {"simulate", "emulate"}:
         mode = "simulate"
 
@@ -753,9 +740,7 @@ def summarize_legacy_controls(config: Mapping[str, Any]) -> Dict[str, Any]:
 
     legacy_cfg = get_legacy_config(config)
     summary: Dict[str, Any] = {
-        "enable_all_lab_capabilities": bool(
-            legacy_cfg.get("enable_all_lab_capabilities", False)
-        ),
+        "enable_all_lab_capabilities": bool(legacy_cfg.get("enable_all_lab_capabilities", False)),
         "global_mode": str(
             legacy_cfg.get("global_mode", legacy_cfg.get("lab_mode", "simulate"))
         ).lower(),
@@ -772,8 +757,7 @@ def summarize_legacy_controls(config: Mapping[str, Any]) -> Dict[str, Any]:
         enabled_capabilities = {
             _normalize_capability(pack_key, capability)
             for capability, capability_cfg in capabilities.items()
-            if isinstance(capability_cfg, Mapping)
-            and capability_cfg.get("enabled", False)
+            if isinstance(capability_cfg, Mapping) and capability_cfg.get("enabled", False)
         }
         summary["packs"][pack_key] = {
             "enabled": bool(pack_cfg.get("enabled", False)),

@@ -13,8 +13,9 @@ from ..network import NetworkObfuscator
 class BaseAPT:
     """Base class for all APT implementations"""
 
-    def __init__(self, name: str, aliases: List[str], origin: str,
-                 focus: List[str], industries: List[str]):
+    def __init__(
+        self, name: str, aliases: List[str], origin: str, focus: List[str], industries: List[str]
+    ):
         # Initialize APT profile
         self.name = name
         self.aliases = aliases
@@ -28,161 +29,161 @@ class BaseAPT:
                 "spear_phishing": {
                     "description": "Targeted phishing campaigns",
                     "indicators": ["malicious_attachments", "themed_content"],
-                    "evasion": ["email_encryption", "attachment_obfuscation"]
+                    "evasion": ["email_encryption", "attachment_obfuscation"],
                 },
                 "watering_hole": {
                     "description": "Compromise of target websites",
                     "indicators": ["compromised_sites", "malicious_redirects"],
-                    "evasion": ["ssl_certificates", "legitimate_domains"]
+                    "evasion": ["ssl_certificates", "legitimate_domains"],
                 },
                 "supply_chain_compromise": {
                     "description": "Compromise software supply chains",
                     "indicators": ["modified_software", "compromised_updates"],
-                    "evasion": ["signature_bypass", "update_verification_bypass"]
-                }
+                    "evasion": ["signature_bypass", "update_verification_bypass"],
+                },
             },
             "execution": {
                 "powershell": {
                     "description": "Execute commands via PowerShell",
                     "indicators": ["powershell_execution", "command_execution"],
-                    "evasion": ["command_obfuscation", "execution_hiding"]
+                    "evasion": ["command_obfuscation", "execution_hiding"],
                 },
                 "command_and_scripting": {
                     "description": "Execute commands and scripts",
                     "indicators": ["script_execution", "command_execution"],
-                    "evasion": ["script_obfuscation", "execution_hiding"]
+                    "evasion": ["script_obfuscation", "execution_hiding"],
                 },
                 "wmi_execution": {
                     "description": "Execute commands via WMI",
                     "indicators": ["wmi_execution", "remote_execution"],
-                    "evasion": ["wmi_obfuscation", "execution_hiding"]
-                }
+                    "evasion": ["wmi_obfuscation", "execution_hiding"],
+                },
             },
             "persistence": {
                 "registry_run_keys": {
                     "description": "Add persistence via registry run keys",
                     "indicators": ["registry_modification", "run_key_addition"],
-                    "evasion": ["registry_hiding", "modification_obfuscation"]
+                    "evasion": ["registry_hiding", "modification_obfuscation"],
                 },
                 "scheduled_tasks": {
                     "description": "Create persistence via scheduled tasks",
                     "indicators": ["task_creation", "task_modification"],
-                    "evasion": ["task_hiding", "creation_obfuscation"]
+                    "evasion": ["task_hiding", "creation_obfuscation"],
                 },
                 "service_creation": {
                     "description": "Create persistence via services",
                     "indicators": ["service_creation", "service_modification"],
-                    "evasion": ["service_hiding", "creation_obfuscation"]
-                }
+                    "evasion": ["service_hiding", "creation_obfuscation"],
+                },
             },
             "privilege_escalation": {
                 "token_manipulation": {
                     "description": "Manipulate access tokens",
                     "indicators": ["token_manipulation", "privilege_escalation"],
-                    "evasion": ["token_hiding", "manipulation_obfuscation"]
+                    "evasion": ["token_hiding", "manipulation_obfuscation"],
                 },
                 "process_injection": {
                     "description": "Inject code into processes",
                     "indicators": ["process_injection", "code_injection"],
-                    "evasion": ["injection_hiding", "code_obfuscation"]
-                }
+                    "evasion": ["injection_hiding", "code_obfuscation"],
+                },
             },
             "defense_evasion": {
                 "process_hollowing": {
                     "description": "Hollow out processes",
                     "indicators": ["process_hollowing", "process_manipulation"],
-                    "evasion": ["process_hiding", "manipulation_obfuscation"]
+                    "evasion": ["process_hiding", "manipulation_obfuscation"],
                 },
                 "network_connection_hiding": {
                     "description": "Hide network connections",
                     "indicators": ["connection_hiding", "network_manipulation"],
-                    "evasion": ["connection_obfuscation", "traffic_hiding"]
-                }
+                    "evasion": ["connection_obfuscation", "traffic_hiding"],
+                },
             },
             "credential_access": {
                 "credential_dumping": {
                     "description": "Dump credentials from memory",
                     "indicators": ["credential_dumping", "memory_manipulation"],
-                    "evasion": ["dump_hiding", "memory_obfuscation"]
+                    "evasion": ["dump_hiding", "memory_obfuscation"],
                 },
                 "keylogging": {
                     "description": "Capture keystrokes",
                     "indicators": ["keylogging", "input_capture"],
-                    "evasion": ["logger_hiding", "capture_obfuscation"]
-                }
+                    "evasion": ["logger_hiding", "capture_obfuscation"],
+                },
             },
             "discovery": {
                 "system_information_discovery": {
                     "description": "Gather system information",
                     "indicators": ["system_discovery", "information_gathering"],
-                    "evasion": ["discovery_hiding", "gathering_obfuscation"]
+                    "evasion": ["discovery_hiding", "gathering_obfuscation"],
                 },
                 "network_service_discovery": {
                     "description": "Discover network services",
                     "indicators": ["service_discovery", "network_mapping"],
-                    "evasion": ["discovery_hiding", "mapping_obfuscation"]
-                }
+                    "evasion": ["discovery_hiding", "mapping_obfuscation"],
+                },
             },
             "lateral_movement": {
                 "psexec": {
                     "description": "Move laterally using PsExec",
                     "indicators": ["psexec_execution", "remote_execution"],
-                    "evasion": ["execution_hiding", "connection_obfuscation"]
+                    "evasion": ["execution_hiding", "connection_obfuscation"],
                 },
                 "wmi": {
                     "description": "Move laterally using WMI",
                     "indicators": ["wmi_execution", "remote_execution"],
-                    "evasion": ["execution_hiding", "connection_obfuscation"]
-                }
+                    "evasion": ["execution_hiding", "connection_obfuscation"],
+                },
             },
             "collection": {
                 "data_staging": {
                     "description": "Stage collected data",
                     "indicators": ["data_staging", "file_manipulation"],
-                    "evasion": ["staging_hiding", "manipulation_obfuscation"]
+                    "evasion": ["staging_hiding", "manipulation_obfuscation"],
                 },
                 "input_capture": {
                     "description": "Capture user input",
                     "indicators": ["input_capture", "user_monitoring"],
-                    "evasion": ["capture_hiding", "monitoring_obfuscation"]
-                }
+                    "evasion": ["capture_hiding", "monitoring_obfuscation"],
+                },
             },
             "command_and_control": {
                 "dns": {
                     "description": "Use DNS for C2",
                     "indicators": ["dns_tunneling", "dns_communication"],
-                    "evasion": ["tunneling_hiding", "communication_obfuscation"]
+                    "evasion": ["tunneling_hiding", "communication_obfuscation"],
                 },
                 "http": {
                     "description": "Use HTTP for C2",
                     "indicators": ["http_tunneling", "http_communication"],
-                    "evasion": ["tunneling_hiding", "communication_obfuscation"]
-                }
+                    "evasion": ["tunneling_hiding", "communication_obfuscation"],
+                },
             },
             "exfiltration": {
                 "data_compression": {
                     "description": "Compress data before exfiltration",
                     "indicators": ["data_compression", "file_manipulation"],
-                    "evasion": ["compression_hiding", "manipulation_obfuscation"]
+                    "evasion": ["compression_hiding", "manipulation_obfuscation"],
                 },
                 "data_encryption": {
                     "description": "Encrypt data before exfiltration",
                     "indicators": ["data_encryption", "file_manipulation"],
-                    "evasion": ["encryption_hiding", "manipulation_obfuscation"]
-                }
+                    "evasion": ["encryption_hiding", "manipulation_obfuscation"],
+                },
             },
             "impact": {
                 "data_encryption": {
                     "description": "Encrypt data for impact",
                     "indicators": ["data_encryption", "file_manipulation"],
-                    "evasion": ["encryption_hiding", "manipulation_obfuscation"]
+                    "evasion": ["encryption_hiding", "manipulation_obfuscation"],
                 },
                 "service_stop": {
                     "description": "Stop services for impact",
                     "indicators": ["service_stop", "service_manipulation"],
-                    "evasion": ["stop_hiding", "manipulation_obfuscation"]
-                }
-            }
+                    "evasion": ["stop_hiding", "manipulation_obfuscation"],
+                },
+            },
         }
 
         # Initialize common configuration
@@ -192,26 +193,32 @@ class BaseAPT:
                 "*.google.com",
                 "*.amazon.com",
                 "*.cloudflare.com",
-                "*.akamai.com"
+                "*.akamai.com",
             ],
             "user_agents": [
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/89.0"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/89.0",
             ],
             "target_extensions": [
-                ".doc", ".docx", ".pdf", ".xls", ".xlsx", ".ppt", ".pptx",
-                ".txt", ".rtf", ".csv", ".eml", ".msg", ".pst", ".ost"
+                ".doc",
+                ".docx",
+                ".pdf",
+                ".xls",
+                ".xlsx",
+                ".ppt",
+                ".pptx",
+                ".txt",
+                ".rtf",
+                ".csv",
+                ".eml",
+                ".msg",
+                ".pst",
+                ".ost",
             ],
             "exfiltration_size_limit": 100 * 1024 * 1024,  # 100MB
             "encryption_algorithms": ["AES-256", "RSA-4096"],
-            "target_services": [
-                "exchange",
-                "sharepoint",
-                "outlook",
-                "onedrive",
-                "teams"
-            ]
+            "target_services": ["exchange", "sharepoint", "outlook", "onedrive", "teams"],
         }
 
         # Initialize common components
@@ -242,8 +249,9 @@ class BaseAPT:
             self._log_error(f"Error executing technique: {str(e)}")
             raise
 
-    def _execute_technique_impl(self, tactic: str, technique: str,
-                              details: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+    def _execute_technique_impl(
+        self, tactic: str, technique: str, details: Dict[str, Any], **kwargs
+    ) -> Dict[str, Any]:
         """Implementation of technique execution"""
         # Implement technique-specific logic here
         return {
@@ -254,7 +262,7 @@ class BaseAPT:
             "evasion": details["evasion"],
             "parameters": kwargs,
             "timestamp": datetime.now().isoformat(),
-            "status": "completed"
+            "status": "completed",
         }
 
     def _apply_evasion(

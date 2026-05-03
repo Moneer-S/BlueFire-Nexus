@@ -8,11 +8,11 @@ class TLSFlux:
     def __init__(self, endpoints=None):
         self.endpoints = endpoints or [
             "https://test-server-1.internal",
-            "https://test-server-2.internal"
+            "https://test-server-2.internal",
         ]
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
         ]
 
     def beacon(self, data: dict):
@@ -25,7 +25,7 @@ class TLSFlux:
                     url=random.choice(self.endpoints),
                     headers={"User-Agent": random.choice(self.user_agents)},
                     json=data,
-                    timeout=10
+                    timeout=10,
                 )
             except requests.exceptions.RequestException:
                 continue

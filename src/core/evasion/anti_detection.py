@@ -11,7 +11,7 @@ class AntiDetection:
                 "status": "success",
                 "technique": "process_evasion",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -30,7 +30,7 @@ class AntiDetection:
                 result["details"]["methods"] = {
                     "technique": data.get("technique", "CreateRemoteThread"),
                     "payload": "Encrypted shellcode",
-                    "cleanup": "Thread removal"
+                    "cleanup": "Thread removal",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -40,7 +40,7 @@ class AntiDetection:
                 result["details"]["methods"] = {
                     "technique": "Section mapping",
                     "payload": "Encrypted executable",
-                    "cleanup": "Section cleanup"
+                    "cleanup": "Section cleanup",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -50,7 +50,7 @@ class AntiDetection:
                 result["details"]["methods"] = {
                     "technique": "Name spoofing",
                     "payload": "Legitimate process name",
-                    "cleanup": "None required"
+                    "cleanup": "None required",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -60,19 +60,14 @@ class AntiDetection:
                 "pid": random.randint(1000, 9999),
                 "parent": "svchost.exe",
                 "integrity": "High",
-                "privileges": ["SeDebugPrivilege", "SeTcbPrivilege"]
+                "privileges": ["SeDebugPrivilege", "SeTcbPrivilege"],
             }
 
             # Stealth details
             result["details"]["stealth"] = {
                 "level": stealth_level,
-                "features": [
-                    "Anti-debugging",
-                    "Anti-VM",
-                    "Anti-sandbox",
-                    "Process hiding"
-                ],
-                "detection_rate": f"{random.randint(5, 20)}%"
+                "features": ["Anti-debugging", "Anti-VM", "Anti-sandbox", "Process hiding"],
+                "detection_rate": f"{random.randint(5, 20)}%",
             }
 
             # Add MITRE ATT&CK information
@@ -91,7 +86,7 @@ class AntiDetection:
                 "status": "success",
                 "technique": "memory_evasion",
                 "timestamp": datetime.now().isoformat(),
-                "details": {}
+                "details": {},
             }
 
             # Get configuration
@@ -110,7 +105,7 @@ class AntiDetection:
                 result["details"]["methods"] = {
                     "technique": "Heap allocation",
                     "protection": protection,
-                    "alignment": "Page-aligned"
+                    "alignment": "Page-aligned",
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
 
@@ -120,7 +115,7 @@ class AntiDetection:
                 result["details"]["methods"] = {
                     "technique": "VirtualAlloc",
                     "protection": protection,
-                    "execution": "Thread execution"
+                    "execution": "Thread execution",
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
 
@@ -130,7 +125,7 @@ class AntiDetection:
                 result["details"]["methods"] = {
                     "technique": "Section mapping",
                     "protection": protection,
-                    "visibility": "Hidden"
+                    "visibility": "Hidden",
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
 
@@ -140,7 +135,7 @@ class AntiDetection:
                 "location": "Heap",
                 "type": "Private",
                 "state": "Committed",
-                "protection": protection
+                "protection": protection,
             }
 
             # Encryption details if enabled
@@ -149,7 +144,7 @@ class AntiDetection:
                     "algorithm": data.get("algorithm", "AES-256"),
                     "key_size": "256 bits",
                     "mode": "CBC",
-                    "key_rotation": "Per session"
+                    "key_rotation": "Per session",
                 }
 
             # Add MITRE ATT&CK information

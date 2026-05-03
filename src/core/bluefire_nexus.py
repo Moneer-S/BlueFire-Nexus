@@ -124,9 +124,7 @@ class BlueFireNexus:
                 )
                 detection_summary = {
                     module_name: {
-                        key: values[0]
-                        for key, values in detection_paths.items()
-                        if values
+                        key: values[0] for key, values in detection_paths.items() if values
                     }
                 }
                 report_path = write_markdown_report(

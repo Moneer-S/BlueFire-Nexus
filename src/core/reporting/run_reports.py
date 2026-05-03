@@ -118,7 +118,7 @@ def write_markdown_report(
                 f"medium={risk_totals['medium']} low={risk_totals['low']}"
             ),
             (
-                f"- Average module risk score: "
+                "- Average module risk score: "
                 f"{(sum(risk_scores) / len(risk_scores)) if risk_scores else 0:.1f}"
             ),
             "",
@@ -127,8 +127,8 @@ def write_markdown_report(
     )
     for pack_name, stats in pack_stats.items():
         lines.append(
-            f"- {pack_name}: total={stats['count']} "
-            f"simulate={stats['simulate']} emulate={stats['emulate']}"
+            f"- {pack_name}: total={stats['count']} simulate={stats['simulate']} "
+            f"emulate={stats['emulate']}"
         )
     lines.extend(
         [
@@ -142,10 +142,7 @@ def write_markdown_report(
         safety_line = ""
         warning_line = ""
         risk = score_module_result(result)
-        risk_line = (
-            f"- Risk score: `{risk.get('score')}` "
-            f"(severity: `{risk.get('severity')}`)"
-        )
+        risk_line = f"- Risk score: `{risk.get('score')}` (severity: `{risk.get('severity')}`)"
         if isinstance(legacy, dict):
             safety_line = (
                 f"- Capability Pack: `{legacy.get('pack')}` / `{legacy.get('capability')}` "

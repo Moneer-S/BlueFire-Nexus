@@ -32,12 +32,8 @@ class APT28Reporting:
         ch.setLevel(logging.INFO)
 
         # Formatters
-        file_formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        console_formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s'
-        )
+        file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        console_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
         fh.setFormatter(file_formatter)
         ch.setFormatter(console_formatter)
@@ -151,7 +147,7 @@ class APT28Reporting:
                 "duration": data.get("duration", 0),
                 "target": data.get("target", "unknown"),
                 "impact_level": data.get("impact_level", "unknown"),
-                "intelligence_value": data.get("intelligence_value", "unknown")
+                "intelligence_value": data.get("intelligence_value", "unknown"),
             }
 
             # Store updated metrics
@@ -168,7 +164,7 @@ class APT28Reporting:
             "network_reconnaissance": True,
             "target_profiling": True,
             "political_intelligence": True,
-            "military_intelligence": True
+            "military_intelligence": True,
         }
         return intel_operations.get(operation_type, False)
 
@@ -188,8 +184,8 @@ class APT28Reporting:
                 "metadata": {
                     "source": data.get("source", "unknown"),
                     "collection_method": data.get("collection_method", "unknown"),
-                    "verification_status": data.get("verification_status", "unknown")
-                }
+                    "verification_status": data.get("verification_status", "unknown"),
+                },
             }
 
             with open(intel_file, "w") as f:
@@ -207,7 +203,7 @@ class APT28Reporting:
             "political_intelligence": True,
             "military_intelligence": True,
             "credential_access": True,
-            "data_exfiltration": True
+            "data_exfiltration": True,
         }
         return report_triggers.get(operation_type, False)
 
@@ -227,8 +223,8 @@ class APT28Reporting:
                 "metadata": {
                     "generated_by": "APT28Reporting",
                     "version": "1.0",
-                    "report_type": "operation"
-                }
+                    "report_type": "operation",
+                },
             }
 
             # Store report
@@ -251,7 +247,7 @@ class APT28Reporting:
             "impact_level": data.get("impact_level", "unknown"),
             "intelligence_value": data.get("intelligence_value", "unknown"),
             "key_actions": self._extract_key_actions(data),
-            "detection_status": self._get_detection_status(data)
+            "detection_status": self._get_detection_status(data),
         }
 
     def _extract_key_actions(self, data: Dict[str, Any]) -> List[str]:
@@ -271,7 +267,7 @@ class APT28Reporting:
             "detected": data.get("detected", False),
             "detection_method": data.get("detection_method", "unknown"),
             "detection_timestamp": data.get("detection_timestamp", None),
-            "evasion_techniques": data.get("evasion_techniques", [])
+            "evasion_techniques": data.get("evasion_techniques", []),
         }
 
     def _extract_indicators(self, data: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -283,7 +279,7 @@ class APT28Reporting:
             "registry_indicators": [],
             "behavior_indicators": [],
             "political_indicators": [],
-            "military_indicators": []
+            "military_indicators": [],
         }
 
         if "details" in data:
@@ -322,8 +318,8 @@ class APT28Reporting:
             "metadata": {
                 "source": data.get("source", "unknown"),
                 "timestamp": data.get("timestamp", datetime.now().isoformat()),
-                "reliability": data.get("reliability", "unknown")
-            }
+                "reliability": data.get("reliability", "unknown"),
+            },
         }
         return intelligence
 
@@ -339,28 +335,35 @@ class APT28Reporting:
         # Add specific recommendations based on operation type
         op_type = data.get("operation_type", "")
         if op_type in ["political_intelligence", "military_intelligence"]:
-            recommendations.extend([
-                "Enhance access controls for sensitive data",
-                "Implement additional monitoring for high-value targets",
-                "Review and update classification procedures"
-            ])
+            recommendations.extend(
+                [
+                    "Enhance access controls for sensitive data",
+                    "Implement additional monitoring for high-value targets",
+                    "Review and update classification procedures",
+                ]
+            )
         elif op_type == "network_reconnaissance":
-            recommendations.extend([
-                "Implement network segmentation",
-                "Enhance network monitoring",
-                "Review firewall rules"
-            ])
+            recommendations.extend(
+                [
+                    "Implement network segmentation",
+                    "Enhance network monitoring",
+                    "Review firewall rules",
+                ]
+            )
         elif op_type == "credential_access":
-            recommendations.extend([
-                "Implement privileged access management",
-                "Enhance password policies",
-                "Review authentication mechanisms"
-            ])
+            recommendations.extend(
+                [
+                    "Implement privileged access management",
+                    "Enhance password policies",
+                    "Review authentication mechanisms",
+                ]
+            )
 
         return recommendations
 
-    def generate_summary_report(self, start_time: Optional[str] = None,
-                              end_time: Optional[str] = None) -> Dict[str, Any]:
+    def generate_summary_report(
+        self, start_time: Optional[str] = None, end_time: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Generate a summary report for a time period"""
         try:
             # Collect all reports in the time period
@@ -386,10 +389,7 @@ class APT28Reporting:
             summary = {
                 "report_id": f"SUM-{int(time.time())}",
                 "timestamp": datetime.now().isoformat(),
-                "period": {
-                    "start": start_time or "beginning",
-                    "end": end_time or "current"
-                },
+                "period": {"start": start_time or "beginning", "end": end_time or "current"},
                 "statistics": {
                     "total_operations": len(reports),
                     "successful_operations": sum(
@@ -400,7 +400,7 @@ class APT28Reporting:
                     ),
                     "operation_types": self._count_operation_types(reports),
                     "impact_levels": self._count_impact_levels(reports),
-                    "intelligence_types": self._count_intelligence_types(reports)
+                    "intelligence_types": self._count_intelligence_types(reports),
                 },
                 "key_findings": self._extract_key_findings(reports),
                 "intelligence_summary": self._generate_intelligence_summary(reports),
@@ -408,8 +408,8 @@ class APT28Reporting:
                 "metadata": {
                     "generated_by": "APT28Reporting",
                     "version": "1.0",
-                    "report_type": "summary"
-                }
+                    "report_type": "summary",
+                },
             }
 
             # Store summary report
@@ -474,7 +474,7 @@ class APT28Reporting:
         # Analyze detection rates
         detected = sum(1 for r in reports if r["summary"]["detection_status"]["detected"])
         if detected > 0:
-            findings.append(f"Detection rate: {detected/len(reports)*100:.1f}%")
+            findings.append(f"Detection rate: {detected / len(reports) * 100:.1f}%")
 
         return findings
 
@@ -486,7 +486,7 @@ class APT28Reporting:
             "high_value_targets": set(),
             "confidence_levels": {},
             "collection_methods": {},
-            "verification_status": {}
+            "verification_status": {},
         }
 
         for report in reports:
@@ -496,8 +496,9 @@ class APT28Reporting:
 
                 # Count intelligence types
                 intel_type = intel["type"]
-                summary["intelligence_types"][intel_type] = \
+                summary["intelligence_types"][intel_type] = (
                     summary["intelligence_types"].get(intel_type, 0) + 1
+                )
 
                 # Track high value targets
                 if intel.get("value") in ["high", "critical"]:
@@ -505,18 +506,21 @@ class APT28Reporting:
 
                 # Count confidence levels
                 confidence = intel["confidence"]
-                summary["confidence_levels"][confidence] = \
+                summary["confidence_levels"][confidence] = (
                     summary["confidence_levels"].get(confidence, 0) + 1
+                )
 
                 # Count collection methods
                 method = intel["collection_method"]
-                summary["collection_methods"][method] = \
+                summary["collection_methods"][method] = (
                     summary["collection_methods"].get(method, 0) + 1
+                )
 
                 # Count verification status
                 status = intel["verification_status"]
-                summary["verification_status"][status] = \
+                summary["verification_status"][status] = (
                     summary["verification_status"].get(status, 0) + 1
+                )
 
         # Convert sets to lists for JSON serialization
         summary["high_value_targets"] = list(summary["high_value_targets"])
@@ -547,12 +551,14 @@ class APT28Reporting:
                 recommendations.append(f"Enhance protection for {intel_type} intelligence targets")
 
         # General recommendations
-        recommendations.extend([
-            "Review and update security policies",
-            "Enhance monitoring and detection capabilities",
-            "Conduct security awareness training",
-            "Update incident response procedures",
-            "Implement intelligence protection measures"
-        ])
+        recommendations.extend(
+            [
+                "Review and update security policies",
+                "Enhance monitoring and detection capabilities",
+                "Conduct security awareness training",
+                "Update incident response procedures",
+                "Implement intelligence protection measures",
+            ]
+        )
 
         return recommendations

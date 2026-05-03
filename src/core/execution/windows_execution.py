@@ -11,13 +11,14 @@ from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+
 class WindowsExecution:
     """Handles Windows-specific command and payload execution."""
 
     def __init__(self):
-        self.config = { # Default config values, can be updated
+        self.config = {  # Default config values, can be updated
             "execution_timeout": 120,
-            "default_shell": "cmd"
+            "default_shell": "cmd",
         }
         self.handler_map = {
             "command": self._handle_command_execution,
@@ -44,45 +45,54 @@ class WindowsExecution:
                 return {"status": "failure", "type": exec_type, "reason": str(e)}
         else:
             logger.warning(f"Unsupported Windows execution type requested: {exec_type}")
-            return {"status": "failure", "type": exec_type, "reason": f"Unsupported execution type '{exec_type}' for Windows"}
+            return {
+                "status": "failure",
+                "type": exec_type,
+                "reason": f"Unsupported execution type '{exec_type}' for Windows",
+            }
 
     # --- Internal Helper ---
-    def _run_command(self, command: str, shell: Optional[str], use_shell: bool, capture: bool = True) -> Tuple[int, str, str]:
+    def _run_command(
+        self, command: str, shell: Optional[str], use_shell: bool, capture: bool = True
+    ) -> Tuple[int, str, str]:
         """Helper to run subprocess commands specifically for Windows."""
         timeout = self.config.get("execution_timeout", 120)
         effective_shell = shell or self.config.get("default_shell", "cmd")
 
-        cmd_list_or_str = command # Default to passing string if use_shell=True
+        cmd_list_or_str = command  # Default to passing string if use_shell=True
         if not use_shell:
             # Basic split, assumes command is executable path + args
             # TODO: Improve argument handling, potentially use shlex for specific cases?
             cmd_list_or_str = command.split()
 
-        logger.info(f"Executing Windows command (shell={effective_shell if use_shell else 'None'}, use_shell={use_shell}): {command}")
+        logger.info(
+            f"Executing Windows command (shell={effective_shell if use_shell else 'None'}, use_shell={use_shell}): {command}"
+        )
 
         try:
-            process = subprocess.run(cmd_list_or_str,
-                                     capture_output=capture,
-                                     text=True,
-                                     check=False,
-                                     timeout=timeout,
-                                     encoding='utf-8',
-                                     errors='ignore',
-                                     shell=use_shell,
-                                     # Windows specific flags if needed (e.g., CREATE_NO_WINDOW)
-                                     # creationflags=subprocess.CREATE_NO_WINDOW
-                                     )
+            process = subprocess.run(
+                cmd_list_or_str,
+                capture_output=capture,
+                text=True,
+                check=False,
+                timeout=timeout,
+                encoding="utf-8",
+                errors="ignore",
+                shell=use_shell,
+                # Windows specific flags if needed (e.g., CREATE_NO_WINDOW)
+                # creationflags=subprocess.CREATE_NO_WINDOW
+            )
 
             logger.debug(f"Command finished. RC: {process.returncode}")
             stdout = process.stdout if process.stdout else ""
             stderr = process.stderr if process.stderr else ""
             return process.returncode, stdout, stderr
         except FileNotFoundError as exc:
-            cmd_executed = cmd_list_or_str[0] if isinstance(cmd_list_or_str, list) else command.split()[0]
+            cmd_executed = (
+                cmd_list_or_str[0] if isinstance(cmd_list_or_str, list) else command.split()[0]
+            )
             logger.error(f"Command or shell not found: {cmd_executed}")
-            raise FileNotFoundError(
-                f"Required command/shell '{cmd_executed}' not found."
-            ) from exc
+            raise FileNotFoundError(f"Required command/shell '{cmd_executed}' not found.") from exc
         except subprocess.TimeoutExpired as exc:
             logger.error(f"Command timed out after {timeout}s: {command}")
             raise TimeoutError(f"Command '{command}' timed out.") from exc
@@ -91,7 +101,9 @@ class WindowsExecution:
             raise
 
     # --- Obfuscation Helper ---
-    def _apply_obfuscation(self, command: str, method: str, obfuscation_type: Optional[str]) -> Tuple[str, Optional[str]]:
+    def _apply_obfuscation(
+        self, command: str, method: str, obfuscation_type: Optional[str]
+    ) -> Tuple[str, Optional[str]]:
         """Applies Windows-relevant obfuscation techniques."""
         if not obfuscation_type:
             return command, None
@@ -103,30 +115,36 @@ class WindowsExecution:
         if obfuscation_type == "base64":
             if method == "powershell":
                 try:
-                    encoded_cmd = base64.b64encode(command.encode('utf-16le')).decode('ascii')
+                    encoded_cmd = base64.b64encode(command.encode("utf-16le")).decode("ascii")
                     obfuscated_command = encoded_cmd
                     applied_obfuscation = "base64_encoded_command"
                 except Exception as e:
-                    logger.warning(f"Base64 encoding for PowerShell failed: {e}. Using original command.")
+                    logger.warning(
+                        f"Base64 encoding for PowerShell failed: {e}. Using original command."
+                    )
             else:
-                logger.warning("Base64 obfuscation only effective for PowerShell method on Windows.")
+                logger.warning(
+                    "Base64 obfuscation only effective for PowerShell method on Windows."
+                )
 
         elif obfuscation_type == "caret":
-            if method == "cmd" or method == "direct": # Caret escaping primarily for CMD
-                 special_chars = r"([&|<>\\(\\)\\@\\^%])"
-                 try:
-                      obfuscated_command = re.sub(special_chars, r"^\\1", command)
-                      obfuscated_command = obfuscated_command.replace("^^", "^")
-                      applied_obfuscation = "cmd_caret_escaping"
-                 except Exception as e:
-                      logger.warning(f"Caret obfuscation failed: {e}. Using original command.")
+            if method == "cmd" or method == "direct":  # Caret escaping primarily for CMD
+                special_chars = r"([&|<>\\(\\)\\@\\^%])"
+                try:
+                    obfuscated_command = re.sub(special_chars, r"^\\1", command)
+                    obfuscated_command = obfuscated_command.replace("^^", "^")
+                    applied_obfuscation = "cmd_caret_escaping"
+                except Exception as e:
+                    logger.warning(f"Caret obfuscation failed: {e}. Using original command.")
             else:
-                 logger.warning("Caret obfuscation only effective for cmd/direct methods on Windows.")
+                logger.warning(
+                    "Caret obfuscation only effective for cmd/direct methods on Windows."
+                )
 
         elif obfuscation_type == "string_concat":
-            if method == "powershell": # Example for PowerShell
+            if method == "powershell":  # Example for PowerShell
                 try:
-                    parts = command.split() # Simple split
+                    parts = command.split()  # Simple split
                     obfuscated_parts = []
                     for part in parts:
                         if len(part) > 2:
@@ -139,31 +157,39 @@ class WindowsExecution:
                     obfuscated_command = " ".join(obfuscated_parts)
                     applied_obfuscation = "string_concatenation"
                 except Exception as e:
-                    logger.warning(f"String concatenation obfuscation failed: {e}. Using original command.")
+                    logger.warning(
+                        f"String concatenation obfuscation failed: {e}. Using original command."
+                    )
             else:
-                 logger.warning("String concatenation example only implemented for PowerShell method.")
+                logger.warning(
+                    "String concatenation example only implemented for PowerShell method."
+                )
 
         # Add more obfuscation types here...
         else:
             logger.warning(f"Unsupported obfuscation type requested: '{obfuscation_type}'.")
 
         if applied_obfuscation:
-             logger.info(f"Applied obfuscation '{applied_obfuscation}'. Preview: {obfuscated_command[:100]}...")
+            logger.info(
+                f"Applied obfuscation '{applied_obfuscation}'. Preview: {obfuscated_command[:100]}..."
+            )
         return obfuscated_command, applied_obfuscation
 
     # --- Command Execution Handler ---
     def _handle_command_execution(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a Windows shell command."""
         original_command = data.get("cmd")
-        method = data.get("method", "direct") # direct, cmd, powershell
+        method = data.get("method", "direct")  # direct, cmd, powershell
         obfuscation = data.get("obfuscation")
         use_system_shell = data.get("use_shell_api", False)
         capture_output = data.get("capture_output", True)
 
         if not original_command:
-             raise ValueError("Missing 'cmd' in command execution data.")
+            raise ValueError("Missing 'cmd' in command execution data.")
 
-        command_to_run, applied_obfuscation = self._apply_obfuscation(original_command, method, obfuscation)
+        command_to_run, applied_obfuscation = self._apply_obfuscation(
+            original_command, method, obfuscation
+        )
 
         shell_to_use = None
         final_command_arg = command_to_run
@@ -173,26 +199,28 @@ class WindowsExecution:
             shell_to_use = shell_executable
             if applied_obfuscation == "base64_encoded_command":
                 final_command_arg = [shell_executable, "-EncodedCommand", command_to_run]
-                use_system_shell = False # Run executable directly
+                use_system_shell = False  # Run executable directly
             else:
                 ps_command_escaped = command_to_run.replace('"', '`"')
-                final_command_arg = f'{shell_executable} -Command \"{ps_command_escaped}\"'
-                use_system_shell = True # Use shell=True to interpret wrapper
+                final_command_arg = f'{shell_executable} -Command "{ps_command_escaped}"'
+                use_system_shell = True  # Use shell=True to interpret wrapper
 
         elif method == "cmd":
-             shell_to_use = "cmd.exe"
-             final_command_arg = f'cmd.exe /c "{command_to_run}"' # Wrap for cmd /c
-             use_system_shell = True # Use shell=True for cmd /c
+            shell_to_use = "cmd.exe"
+            final_command_arg = f'cmd.exe /c "{command_to_run}"'  # Wrap for cmd /c
+            use_system_shell = True  # Use shell=True for cmd /c
 
         elif method == "direct":
-             shell_to_use = None
-             final_command_arg = command_to_run
-             use_system_shell = False
-             if applied_obfuscation == "cmd_caret_escaping":
-                  # Caret escaping needs cmd.exe implicitly
-                  logger.debug("Caret obfuscation used with direct; executing via cmd.exe /c implicitly.")
-                  final_command_arg = f'cmd.exe /c "{command_to_run}"'
-                  use_system_shell = True
+            shell_to_use = None
+            final_command_arg = command_to_run
+            use_system_shell = False
+            if applied_obfuscation == "cmd_caret_escaping":
+                # Caret escaping needs cmd.exe implicitly
+                logger.debug(
+                    "Caret obfuscation used with direct; executing via cmd.exe /c implicitly."
+                )
+                final_command_arg = f'cmd.exe /c "{command_to_run}"'
+                use_system_shell = True
         else:
             logger.warning(f"Unknown Windows execution method '{method}', using direct.")
             final_command_arg = command_to_run
@@ -200,52 +228,65 @@ class WindowsExecution:
 
         details = {
             "original_command": original_command,
-            "command_executed_arg": final_command_arg, # What was formed before _run_command
+            "command_executed_arg": final_command_arg,  # What was formed before _run_command
             "obfuscation_requested": obfuscation,
             "obfuscation_applied": applied_obfuscation,
             "execution_method": method,
             "used_system_shell_api": use_system_shell,
             "shell_invoked": shell_to_use,
             "captured_output": capture_output,
-            "return_code": -1, "stdout": "", "stderr": ""
+            "return_code": -1,
+            "stdout": "",
+            "stderr": "",
         }
 
         try:
             rc, stdout, stderr = self._run_command(
-                final_command_arg if isinstance(final_command_arg, str) else " ".join(final_command_arg),
-                shell=shell_to_use, # Shell executable (e.g., powershell.exe), not just name
+                (
+                    final_command_arg
+                    if isinstance(final_command_arg, str)
+                    else " ".join(final_command_arg)
+                ),
+                shell=shell_to_use,  # Shell executable (e.g., powershell.exe), not just name
                 use_shell=use_system_shell,
-                capture=capture_output
+                capture=capture_output,
             )
             details["return_code"] = rc
             details["stdout"] = stdout
             details["stderr"] = stderr
             status = "success" if rc == 0 else "failure"
-            reason = f"Command failed with return code {rc}." if status == "failure" else "Command executed successfully."
+            reason = (
+                f"Command failed with return code {rc}."
+                if status == "failure"
+                else "Command executed successfully."
+            )
 
         except Exception as e:
             logger.error(f"_run_command failed for '{original_command}': {e}", exc_info=True)
             status = "failure"
             reason = f"Execution failed: {e}"
-            details["stderr"] = reason # Put exception in stderr
+            details["stderr"] = reason  # Put exception in stderr
 
         return {
             "status": status,
             "reason": reason,
             "technique": "command_execution",
-            "details": details
+            "details": details,
         }
 
     # --- Payload Execution Handler ---
     def _handle_payload_execution(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handles Windows payload execution."""
         content_b64 = data.get("content_b64")
-        method = data.get("method") # disk, memory
-        file_extension = data.get("file_extension", ".exe") # Default to exe on windows
+        method = data.get("method")  # disk, memory
+        file_extension = data.get("file_extension", ".exe")  # Default to exe on windows
         args = data.get("args", [])
 
         if not content_b64 or not method:
-            return {"status": "failure", "reason": "Missing content_b64 or method for payload execution."}
+            return {
+                "status": "failure",
+                "reason": "Missing content_b64 or method for payload execution.",
+            }
 
         try:
             payload_bytes = base64.b64decode(content_b64)
@@ -268,14 +309,16 @@ class WindowsExecution:
                 temp_file_name = f"bf_{uuid.uuid4().hex}{file_extension}"
                 temp_file_path = os.path.join(temp_dir, temp_file_name)
 
-                with open(temp_file_path, 'wb') as tmp_file:
+                with open(temp_file_path, "wb") as tmp_file:
                     tmp_file.write(payload_bytes)
                 logger.info(f"Payload written to temporary file: {temp_file_path}")
 
                 command_parts = [temp_file_path] + args
-                command_str = " ".join(f'"{part}"' for part in command_parts) # Quote parts
+                command_str = " ".join(f'"{part}"' for part in command_parts)  # Quote parts
 
-                return_code, stdout, stderr = self._run_command(command_str, shell=None, use_shell=False, capture=True)
+                return_code, stdout, stderr = self._run_command(
+                    command_str, shell=None, use_shell=False, capture=True
+                )
 
                 result_details["temp_file_path"] = temp_file_path
                 result_details["command_executed"] = command_str
@@ -297,7 +340,9 @@ class WindowsExecution:
                         os.remove(temp_file_path)
                         logger.info(f"Cleaned up temporary payload file: {temp_file_path}")
                     except Exception as e_clean:
-                        logger.warning(f"Failed to cleanup temporary file {temp_file_path}: {e_clean}")
+                        logger.warning(
+                            f"Failed to cleanup temporary file {temp_file_path}: {e_clean}"
+                        )
 
         elif method == "memory":
             # Placeholder for Windows memory execution (e.g., shellcode injection)
@@ -307,12 +352,12 @@ class WindowsExecution:
             result_details["reason"] = reason
 
         else:
-             reason = f"Unsupported payload execution method: {method}"
-             status = "failure"
+            reason = f"Unsupported payload execution method: {method}"
+            status = "failure"
 
         return {
             "status": status,
             "reason": reason,
             "technique": f"payload_execution_{method}",
-            "details": result_details
+            "details": result_details,
         }

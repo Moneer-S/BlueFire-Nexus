@@ -6,6 +6,7 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
+
 class LinuxDefenseEvasion:
     """Handles Linux/Unix-like specific defense evasion techniques."""
 
@@ -17,7 +18,7 @@ class LinuxDefenseEvasion:
         """
         self._execute_command = execute_command_func
         self.handler_map = {
-            "file_hide": self._hide_file, # Map specific sub-action
+            "file_hide": self._hide_file,  # Map specific sub-action
             # Add more Linux techniques here (e.g., LD_PRELOAD)
         }
         logger.info("Linux/Unix Defense Evasion handler initialized.")
@@ -30,15 +31,22 @@ class LinuxDefenseEvasion:
             try:
                 # Add standard fields to the result returned by handler
                 result = handler(details)
-                result["technique"] = technique # Ensure technique name is in result
+                result["technique"] = technique  # Ensure technique name is in result
                 result["timestamp"] = datetime.now().isoformat()
                 return result
             except Exception as e:
-                logger.error(f"Error executing Linux/Unix evasion technique '{technique}': {e}", exc_info=True)
+                logger.error(
+                    f"Error executing Linux/Unix evasion technique '{technique}': {e}",
+                    exc_info=True,
+                )
                 return {"status": "failure", "technique": technique, "reason": str(e)}
         else:
             logger.warning(f"Unsupported Linux/Unix evasion technique requested: {technique}")
-            return {"status": "failure", "technique": technique, "reason": f"Unsupported technique '{technique}' for Linux/Unix"}
+            return {
+                "status": "failure",
+                "technique": technique,
+                "reason": f"Unsupported technique '{technique}' for Linux/Unix",
+            }
 
     # --- Technique Handlers ---
 
@@ -46,7 +54,10 @@ class LinuxDefenseEvasion:
         """Hide a file by prepending a dot to its name."""
         target_file = details.get("target_file")
         if not target_file or not os.path.exists(target_file):
-             return {"status": "error", "reason": f"Target file '{target_file}' not provided or does not exist."}
+            return {
+                "status": "error",
+                "reason": f"Target file '{target_file}' not provided or does not exist.",
+            }
 
         result_details = {"target_file": target_file}
         status = "failure"
@@ -56,12 +67,12 @@ class LinuxDefenseEvasion:
         try:
             self.logger.info(f"Attempting to hide file (Unix-like): {target_file}")
             file_path = Path(target_file)
-            if file_path.name.startswith('.'):
-                 status = "skipped"
-                 result_details["reason"] = "File already appears hidden (starts with dot)."
-                 self.logger.warning(result_details["reason"])
+            if file_path.name.startswith("."):
+                status = "skipped"
+                result_details["reason"] = "File already appears hidden (starts with dot)."
+                self.logger.warning(result_details["reason"])
             else:
-                hidden_path = file_path.parent / ('.' + file_path.name)
+                hidden_path = file_path.parent / ("." + file_path.name)
                 try:
                     os.rename(target_file, hidden_path)
                     status = "success"
@@ -82,7 +93,7 @@ class LinuxDefenseEvasion:
             "status": status,
             "mitre_technique_id": mitre_id,
             "mitre_technique_name": mitre_name,
-            "details": result_details
+            "details": result_details,
         }
 
     # Add other Linux/Unix specific methods here

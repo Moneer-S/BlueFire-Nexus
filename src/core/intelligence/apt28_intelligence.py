@@ -22,14 +22,14 @@ class APT28Intelligence:
                     "Think Tanks",
                     "Media Organizations",
                     "Election Systems",
-                    "Political Campaigns"
+                    "Political Campaigns",
                 ],
                 "collection_methods": [
                     "Email Compromise",
                     "Document Theft",
                     "Social Engineering",
                     "Network Infiltration",
-                    "Supply Chain Compromise"
+                    "Supply Chain Compromise",
                 ],
                 "data_types": [
                     "Political Communications",
@@ -37,8 +37,8 @@ class APT28Intelligence:
                     "Strategic Plans",
                     "Internal Memos",
                     "Voter Data",
-                    "Campaign Strategies"
-                ]
+                    "Campaign Strategies",
+                ],
             },
             "military_intelligence": {
                 "target_types": [
@@ -47,14 +47,14 @@ class APT28Intelligence:
                     "Defense Systems",
                     "Military Research",
                     "Arms Manufacturers",
-                    "Defense Infrastructure"
+                    "Defense Infrastructure",
                 ],
                 "collection_methods": [
                     "System Compromise",
                     "Document Exfiltration",
                     "Network Reconnaissance",
                     "Supply Chain Attack",
-                    "Personnel Targeting"
+                    "Personnel Targeting",
                 ],
                 "data_types": [
                     "Military Plans",
@@ -62,9 +62,9 @@ class APT28Intelligence:
                     "Research Data",
                     "Personnel Records",
                     "Infrastructure Details",
-                    "Technical Specifications"
-                ]
-            }
+                    "Technical Specifications",
+                ],
+            },
         }
 
         # Initialize intelligence gathering tools
@@ -73,20 +73,20 @@ class APT28Intelligence:
                 "network_scanner": "Advanced network scanning with evasion",
                 "system_profiler": "System and network profiling",
                 "target_analyzer": "Target organization analysis",
-                "vulnerability_scanner": "Vulnerability assessment"
+                "vulnerability_scanner": "Vulnerability assessment",
             },
             "collection": {
                 "document_grabber": "Document collection and exfiltration",
                 "email_collector": "Email and communication collection",
                 "data_extractor": "Structured data extraction",
-                "media_collector": "Media and file collection"
+                "media_collector": "Media and file collection",
             },
             "analysis": {
                 "intelligence_analyzer": "Intelligence data analysis",
                 "target_profiler": "Target profiling and assessment",
                 "value_assessor": "Intelligence value assessment",
-                "correlation_engine": "Data correlation and analysis"
-            }
+                "correlation_engine": "Data correlation and analysis",
+            },
         }
 
         # Initialize intelligence gathering techniques
@@ -97,14 +97,14 @@ class APT28Intelligence:
                     "Target identification",
                     "Network mapping",
                     "System profiling",
-                    "Vulnerability assessment"
+                    "Vulnerability assessment",
                 ],
                 "evasion": [
                     "Network traffic obfuscation",
                     "Scan rate limiting",
                     "Source IP rotation",
-                    "Protocol abuse"
-                ]
+                    "Protocol abuse",
+                ],
             },
             "data_collection": {
                 "description": "Intelligence data collection",
@@ -112,14 +112,14 @@ class APT28Intelligence:
                     "Access establishment",
                     "Data identification",
                     "Collection execution",
-                    "Data validation"
+                    "Data validation",
                 ],
                 "evasion": [
                     "Traffic encryption",
                     "Data compression",
                     "Transfer rate limiting",
-                    "Protocol tunneling"
-                ]
+                    "Protocol tunneling",
+                ],
             },
             "analysis_and_reporting": {
                 "description": "Intelligence analysis and reporting",
@@ -127,15 +127,15 @@ class APT28Intelligence:
                     "Data processing",
                     "Value assessment",
                     "Correlation analysis",
-                    "Report generation"
+                    "Report generation",
                 ],
                 "evasion": [
                     "Analysis obfuscation",
                     "Report encryption",
                     "Storage protection",
-                    "Access control"
-                ]
-            }
+                    "Access control",
+                ],
+            },
         }
 
     def gather_political_intelligence(self, target: str, method: str) -> Dict[str, Any]:
@@ -153,7 +153,7 @@ class APT28Intelligence:
                 target=target,
                 method=method,
                 operation_id=operation_id,
-                intelligence_type="political"
+                intelligence_type="political",
             )
 
             # Process and analyze collected data
@@ -165,7 +165,7 @@ class APT28Intelligence:
                 target=target,
                 method=method,
                 data=result,
-                analysis=analysis
+                analysis=analysis,
             )
 
             return report
@@ -189,7 +189,7 @@ class APT28Intelligence:
                 target=target,
                 method=method,
                 operation_id=operation_id,
-                intelligence_type="military"
+                intelligence_type="military",
             )
 
             # Process and analyze collected data
@@ -201,7 +201,7 @@ class APT28Intelligence:
                 target=target,
                 method=method,
                 data=result,
-                analysis=analysis
+                analysis=analysis,
             )
 
             return report
@@ -210,8 +210,9 @@ class APT28Intelligence:
             self._log_error(f"Error gathering military intelligence: {str(e)}")
             raise
 
-    def _execute_collection(self, target: str, method: str,
-                          operation_id: str, intelligence_type: str) -> Dict[str, Any]:
+    def _execute_collection(
+        self, target: str, method: str, operation_id: str, intelligence_type: str
+    ) -> Dict[str, Any]:
         """Execute intelligence collection operation"""
         collection_data = {
             "operation_id": operation_id,
@@ -219,7 +220,7 @@ class APT28Intelligence:
             "method": method,
             "intelligence_type": intelligence_type,
             "timestamp": datetime.now().isoformat(),
-            "status": "started"
+            "status": "started",
         }
 
         try:
@@ -253,14 +254,19 @@ class APT28Intelligence:
             "reliability_score": self._calculate_reliability(data),
             "key_findings": self._extract_key_findings(data),
             "correlations": self._identify_correlations(data),
-            "recommendations": self._generate_recommendations(data)
+            "recommendations": self._generate_recommendations(data),
         }
 
         return analysis
 
-    def _generate_intelligence_report(self, operation_id: str, target: str,
-                                   method: str, data: Dict[str, Any],
-                                   analysis: Dict[str, Any]) -> Dict[str, Any]:
+    def _generate_intelligence_report(
+        self,
+        operation_id: str,
+        target: str,
+        method: str,
+        data: Dict[str, Any],
+        analysis: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """Generate intelligence report"""
         report = {
             "report_id": f"INT-{operation_id}",
@@ -273,8 +279,8 @@ class APT28Intelligence:
             "metadata": {
                 "generated_by": "APT28Intelligence",
                 "version": "1.0",
-                "report_type": "intelligence"
-            }
+                "report_type": "intelligence",
+            },
         }
 
         return report
@@ -288,19 +294,14 @@ class APT28Intelligence:
                 "spear_phishing",
                 "credential_theft",
                 "email_forwarding",
-                "account_compromise"
+                "account_compromise",
             ],
-            "data_collected": [
-                "emails",
-                "attachments",
-                "contacts",
-                "calendar_entries"
-            ],
+            "data_collected": ["emails", "attachments", "contacts", "calendar_entries"],
             "evasion_techniques": [
                 "email_encryption",
                 "traffic_obfuscation",
-                "access_pattern_hiding"
-            ]
+                "access_pattern_hiding",
+            ],
         }
 
     def _document_theft(self, target: str) -> Dict[str, Any]:
@@ -312,19 +313,14 @@ class APT28Intelligence:
                 "file_exfiltration",
                 "document_compromise",
                 "data_extraction",
-                "archive_creation"
+                "archive_creation",
             ],
-            "data_collected": [
-                "documents",
-                "presentations",
-                "spreadsheets",
-                "pdfs"
-            ],
+            "data_collected": ["documents", "presentations", "spreadsheets", "pdfs"],
             "evasion_techniques": [
                 "file_encryption",
                 "transfer_obfuscation",
-                "access_pattern_hiding"
-            ]
+                "access_pattern_hiding",
+            ],
         }
 
     def _network_infiltration(self, target: str) -> Dict[str, Any]:
@@ -336,19 +332,19 @@ class APT28Intelligence:
                 "network_mapping",
                 "system_profiling",
                 "vulnerability_scanning",
-                "access_establishment"
+                "access_establishment",
             ],
             "data_collected": [
                 "network_topology",
                 "system_information",
                 "vulnerability_data",
-                "access_credentials"
+                "access_credentials",
             ],
             "evasion_techniques": [
                 "traffic_obfuscation",
                 "scan_rate_limiting",
-                "source_ip_rotation"
-            ]
+                "source_ip_rotation",
+            ],
         }
 
     def _supply_chain_compromise(self, target: str) -> Dict[str, Any]:
@@ -360,19 +356,19 @@ class APT28Intelligence:
                 "vendor_compromise",
                 "software_modification",
                 "hardware_tampering",
-                "update_compromise"
+                "update_compromise",
             ],
             "data_collected": [
                 "vendor_information",
                 "software_details",
                 "hardware_specifications",
-                "update_mechanisms"
+                "update_mechanisms",
             ],
             "evasion_techniques": [
                 "modification_hiding",
                 "signature_verification_bypass",
-                "update_verification_bypass"
-            ]
+                "update_verification_bypass",
+            ],
         }
 
     def _system_compromise(self, target: str) -> Dict[str, Any]:
@@ -384,19 +380,15 @@ class APT28Intelligence:
                 "exploit_development",
                 "privilege_escalation",
                 "persistence_establishment",
-                "access_maintenance"
+                "access_maintenance",
             ],
             "data_collected": [
                 "system_information",
                 "user_credentials",
                 "security_configurations",
-                "access_logs"
+                "access_logs",
             ],
-            "evasion_techniques": [
-                "detection_evasion",
-                "log_tampering",
-                "process_hiding"
-            ]
+            "evasion_techniques": ["detection_evasion", "log_tampering", "process_hiding"],
         }
 
     def _assess_intelligence_value(self, data: Dict[str, Any]) -> str:
@@ -406,7 +398,7 @@ class APT28Intelligence:
             "sensitivity": data.get("sensitivity", "low"),
             "relevance": data.get("relevance", "low"),
             "timeliness": data.get("timeliness", "low"),
-            "completeness": data.get("completeness", "low")
+            "completeness": data.get("completeness", "low"),
         }
 
         # Calculate value score
@@ -428,7 +420,7 @@ class APT28Intelligence:
             "source_reliability": data.get("source_reliability", "low"),
             "data_quality": data.get("data_quality", "low"),
             "verification_status": data.get("verification_status", "unverified"),
-            "collection_method": data.get("collection_method", "unknown")
+            "collection_method": data.get("collection_method", "unknown"),
         }
 
         # Calculate confidence score
@@ -448,7 +440,7 @@ class APT28Intelligence:
             "source_verification": 0.3,
             "data_validation": 0.3,
             "collection_method": 0.2,
-            "corroboration": 0.2
+            "corroboration": 0.2,
         }
 
         score = 0.0
@@ -520,26 +512,32 @@ class APT28Intelligence:
         recommendations = []
 
         # Add general recommendations
-        recommendations.extend([
-            "Continue monitoring target activities",
-            "Maintain established access points",
-            "Update collection methods as needed",
-            "Validate collected intelligence"
-        ])
+        recommendations.extend(
+            [
+                "Continue monitoring target activities",
+                "Maintain established access points",
+                "Update collection methods as needed",
+                "Validate collected intelligence",
+            ]
+        )
 
         # Add specific recommendations based on data type
         if data.get("intelligence_type") == "political":
-            recommendations.extend([
-                "Expand political target coverage",
-                "Enhance policy document collection",
-                "Focus on strategic planning intelligence"
-            ])
+            recommendations.extend(
+                [
+                    "Expand political target coverage",
+                    "Enhance policy document collection",
+                    "Focus on strategic planning intelligence",
+                ]
+            )
         elif data.get("intelligence_type") == "military":
-            recommendations.extend([
-                "Expand military target coverage",
-                "Enhance defense system mapping",
-                "Focus on research data collection"
-            ])
+            recommendations.extend(
+                [
+                    "Expand military target coverage",
+                    "Enhance defense system mapping",
+                    "Focus on research data collection",
+                ]
+            )
 
         return recommendations
 

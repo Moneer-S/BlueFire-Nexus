@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
+
 # If macOS is very similar to Linux, could inherit:
 # class MacOSExecution(LinuxExecution):
 class MacOSExecution:
@@ -14,9 +15,9 @@ class MacOSExecution:
 
     def __init__(self):
         # super().__init__() # If inheriting
-        self.config = { # Default config values
+        self.config = {  # Default config values
             "execution_timeout": 120,
-            "default_shell": "zsh" # Default to zsh for modern macOS
+            "default_shell": "zsh",  # Default to zsh for modern macOS
         }
         self.handler_map = {
             # Potentially inherit command/payload handlers or override
@@ -47,7 +48,11 @@ class MacOSExecution:
             # if super().handler_map.get(exec_type):
             #     return super().execute(exec_type, details)
             logger.warning(f"Unsupported macOS execution type requested: {exec_type}")
-            return {"status": "failure", "type": exec_type, "reason": f"Unsupported execution type '{exec_type}' for macOS"}
+            return {
+                "status": "failure",
+                "type": exec_type,
+                "reason": f"Unsupported execution type '{exec_type}' for macOS",
+            }
 
     # --- Technique Handlers (Implement Later) ---
 
