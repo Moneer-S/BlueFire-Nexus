@@ -102,7 +102,8 @@ class Execution:
              overall_status = "failure"
         else: # No results and no errors likely means no valid request
             overall_status = "failure"
-            if not errors: errors.append("No operation performed.") # Add error if none existed
+            if not errors:
+                errors.append("No operation performed.")
 
         return {
             "status": overall_status,

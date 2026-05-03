@@ -73,17 +73,19 @@ class WindowsExecution:
                                      # creationflags=subprocess.CREATE_NO_WINDOW
                                      )
 
-            self.logger.debug(f"Command finished. RC: {process.returncode}")
+            logger.debug(f"Command finished. RC: {process.returncode}")
             stdout = process.stdout if process.stdout else ""
             stderr = process.stderr if process.stderr else ""
             return process.returncode, stdout, stderr
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             cmd_executed = cmd_list_or_str[0] if isinstance(cmd_list_or_str, list) else command.split()[0]
             logger.error(f"Command or shell not found: {cmd_executed}")
-            raise FileNotFoundError(f"Required command/shell '{cmd_executed}' not found.")
-        except subprocess.TimeoutExpired:
+            raise FileNotFoundError(
+                f"Required command/shell '{cmd_executed}' not found."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
             logger.error(f"Command timed out after {timeout}s: {command}")
-            raise TimeoutError(f"Command '{command}' timed out.")
+            raise TimeoutError(f"Command '{command}' timed out.") from exc
         except Exception as e:
             logger.error(f"Unexpected error running command '{command}': {e}", exc_info=True)
             raise

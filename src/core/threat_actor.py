@@ -3,9 +3,9 @@ import string
 from datetime import datetime
 from typing import Any, Dict, List
 
-from ..core.anti_detection import anti_detection
-from ..core.logger import get_logger
-from ..core.security import security
+from .anti_detection import anti_detection
+from .logger import get_logger
+from .security import security
 
 logger = get_logger(__name__)
 
