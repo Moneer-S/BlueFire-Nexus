@@ -68,10 +68,31 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "B"]
-# E501 stays global: MITRE/long-string legacy modules; refactor in focused passes if desired.
-ignore = ["E501"]
 
-# E701/B904 enforced repo-wide alongside E/F/I/W/B (E501 still ignored globally).
+# Line length: enforce E501 on the orchestration/modular spine; tactical/legacy catalog
+# modules retain long simulated strings and dense tables (refactor in focused passes).
+extend-per-file-ignores."src/core/access/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/actors/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/anti_detection/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/anti_forensic.py" = ["E501"]
+extend-per-file-ignores."src/core/collection/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/command_control/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/credential/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/defense/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/defense_evasion/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/discovery/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/evasion/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/exfiltration/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/execution/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/impact/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/intelligence/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/movement/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/network/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/persistence/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/privilege/**/*.py" = ["E501"]
+extend-per-file-ignores."src/core/reporting/apt*.py" = ["E501"]
+extend-per-file-ignores."src/core/utils/**/*.py" = ["E501"]
+extend-per-file-ignores."src/examples/*.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.10"

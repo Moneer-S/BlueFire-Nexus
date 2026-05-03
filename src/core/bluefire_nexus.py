@@ -217,7 +217,9 @@ class BlueFireNexus:
 
                 try:
                     step_params = dict(step.params)
-                    scoped_overrides = overrides.get(step.step_id) or overrides.get(step.module) or {}
+                    scoped_overrides = (
+                        overrides.get(step.step_id) or overrides.get(step.module) or {}
+                    )
                     if scoped_overrides:
                         step_params.update(dict(scoped_overrides))
                     safety.ensure_safe(step_params)
