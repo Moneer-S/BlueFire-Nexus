@@ -487,7 +487,7 @@ def legacy_scenario_recommendation_cmd(
     config: Path = CONFIG_OPTION,
 ) -> None:
     """Recommend preset using scenario objective + module composition."""
-    from src.core.scenario import load_scenario
+    from .scenario import load_scenario
 
     scenario_data = load_scenario(scenario)
     recommendation = recommend_legacy_preset_for_objective(

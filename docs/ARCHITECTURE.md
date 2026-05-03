@@ -16,7 +16,7 @@ flowchart LR
     legacyModules --> telemetry
     modules --> detections["Detection Engine (src/core/detections)"]
     legacyModules --> detections
-    modules --> report["Purple Report (src/core/reporting.py)"]
+    modules --> report["Purple Report (src/core/reporting/run_reports.py + package exports)"]
     legacyModules --> report
     orchestrator --> safety["Safety Gate (src/core/safety.py)"]
     report --> copilot["AI Copilot + RAG (src/core/ai)"]
@@ -58,6 +58,8 @@ flowchart LR
 - `src/core/detections/engine.py`: detection artifact generation
 - `src/core/ai/copilot.py`: plan/narrate/suggest workflows
 - `src/core/ai/rag.py`: lightweight local retrieval index
+- `src/core/reporting/__init__.py`: public imports for APT reporting classes and JSON/Markdown run outputs
+- `src/core/reporting/run_reports.py`: `write_markdown_report`, `write_json_report`, `write_risk_summary`, `build_risk_summary`
 
 ## Security Model
 

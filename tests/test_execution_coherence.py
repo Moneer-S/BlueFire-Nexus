@@ -105,6 +105,14 @@ def test_relative_imports_inside_core_resolve() -> None:
     assert ad.AntiDetectionManager.__name__ == "AntiDetectionManager"
 
 
+def test_anti_forensic_imports_with_psutil() -> None:
+    """Imports anti_forensic wiring (needs psutil at module load)."""
+    pytest.importorskip("psutil")
+    from src.core import anti_forensic as af
+
+    assert af.AntiForensicManager.__name__ == "AntiForensicManager"
+
+
 def test_anti_detection_package_imports_without_psutil() -> None:
     try:
         import psutil as _unused_ps  # noqa: F401

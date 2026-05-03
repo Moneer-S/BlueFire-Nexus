@@ -11,9 +11,8 @@ if platform.system() == "Windows":
 # Keep typing imports separate
 from typing import Dict, Optional
 
-# Use absolute imports if possible, assume they work
-from src.core.logger import get_logger  # Check if relative is needed based on structure
-from src.core.security import security  # Check if relative is needed
+from .logger import get_logger
+from .security import security
 
 logger = get_logger(__name__)
 

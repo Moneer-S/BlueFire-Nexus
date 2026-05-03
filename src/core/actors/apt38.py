@@ -6,9 +6,9 @@ Implements sophisticated financial cybercrime and state-sponsored capabilities
 from datetime import datetime
 from typing import Any, Dict, List
 
-from src.core.anti_detection import AntiDetectionManager
-from src.core.intelligence.apt_intelligence import APTIntelligence
-from src.core.network import NetworkObfuscator
+from ..anti_detection import AntiDetectionManager
+from ..intelligence.apt_intelligence import APTIntelligence
+from ..network import NetworkObfuscator
 
 
 class APT38:
