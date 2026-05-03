@@ -168,11 +168,13 @@ class APTIntelligence:
 
         # Service detection
         if "services" in target:
-            result["services"] = self.tools["reconnaissance"]["service_detector"](target["services"])
+            svc_det = self.tools["reconnaissance"]["service_detector"]
+            result["services"] = svc_det(target["services"])
 
         # Vulnerability scanning
         if "vulnerabilities" in target:
-            result["vulnerabilities"] = self.tools["reconnaissance"]["vulnerability_scanner"](target["vulnerabilities"])
+            vuln_scan = self.tools["reconnaissance"]["vulnerability_scanner"]
+            result["vulnerabilities"] = vuln_scan(target["vulnerabilities"])
 
         return result
 
@@ -286,7 +288,8 @@ class APTIntelligence:
         # Update value scores
         for data_type, value in result.get("value_assessment", {}).items():
             if data_type != "overall_value":
-                self.metrics["value_scores"][data_type] = self.metrics["value_scores"].get(data_type, 0) + value
+                prev = self.metrics["value_scores"].get(data_type, 0)
+                self.metrics["value_scores"][data_type] = prev + value
 
     def _store_intelligence(self, result: Dict[str, Any]) -> None:
         """Store intelligence data"""

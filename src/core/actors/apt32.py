@@ -34,7 +34,11 @@ class APT32:
             "initial_access": {
                 "spear_phishing": {
                     "description": "Targeted phishing with business themes",
-                    "indicators": ["malicious_attachments", "business_themes", "regional_targeting"],
+                    "indicators": [
+                        "malicious_attachments",
+                        "business_themes",
+                        "regional_targeting",
+                    ],
                     "evasion": ["email_encryption", "attachment_obfuscation"]
                 },
                 "watering_hole": {
@@ -265,7 +269,9 @@ class APT32:
             "status": "completed"
         }
 
-    def _apply_evasion(self, result: Dict[str, Any], evasion_techniques: List[str]) -> Dict[str, Any]:
+    def _apply_evasion(
+        self, result: Dict[str, Any], evasion_techniques: List[str]
+    ) -> Dict[str, Any]:
         """Apply evasion techniques to result"""
         for technique in evasion_techniques:
             if technique == "traffic_obfuscation":

@@ -184,7 +184,8 @@ class DefenseEvasionManager:
 
         # Masquerading
         if "masquerading" in data:
-            result["masquerading"] = self.tools["process"]["masquerading_handler"](data["masquerading"])
+            mask = self.tools["process"]["masquerading_handler"]
+            result["masquerading"] = mask(data["masquerading"])
 
         return result
 
@@ -202,7 +203,8 @@ class DefenseEvasionManager:
 
         # Modification
         if "modification" in data:
-            result["modification"] = self.tools["file"]["modification_handler"](data["modification"])
+            mod = self.tools["file"]["modification_handler"]
+            result["modification"] = mod(data["modification"])
 
         return result
 
@@ -235,7 +237,8 @@ class DefenseEvasionManager:
             }
 
             # Get configuration
-            target_process = data.get("process", self.config["process"]["hollowing"]["processes"][0])
+            default_proc = self.config["process"]["hollowing"]["processes"][0]
+            target_process = data.get("process", default_proc)
             method = data.get("method", self.config["process"]["hollowing"]["methods"][0])
 
             # Process hollowing implementation
@@ -276,7 +279,8 @@ class DefenseEvasionManager:
             }
 
             # Get configuration
-            target_process = data.get("process", self.config["process"]["injection"]["processes"][0])
+            default_inj = self.config["process"]["injection"]["processes"][0]
+            target_process = data.get("process", default_inj)
             method = data.get("method", self.config["process"]["injection"]["methods"][0])
 
             # Process injection implementation
@@ -325,7 +329,8 @@ class DefenseEvasionManager:
             }
 
             # Get configuration
-            target_process = data.get("process", self.config["process"]["masquerading"]["processes"][0])
+            default_masq = self.config["process"]["masquerading"]["processes"][0]
+            target_process = data.get("process", default_masq)
             method = data.get("method", self.config["process"]["masquerading"]["methods"][0])
 
             # Process masquerading implementation
@@ -386,12 +391,21 @@ class DefenseEvasionManager:
                 result["details"]["step1"] = "Created alternate data stream"
                 result["details"]["host_file"] = "legitimate.txt"
                 result["details"]["ads_name"] = "payload.dll"
-                result["details"]["command"] = "type malware.dll > legitimate.txt:payload.dll"
-                result["details"]["access_command"] = "wmic process call create %windir%\\system32\\rundll32.exe legitimate.txt:payload.dll,DllMain"
+                result["details"]["command"] = (
+                    "type malware.dll > legitimate.txt:payload.dll"
+                )
+                result["details"]["access_command"] = (
+                    "wmic process call create "
+                    "%windir%\\system32\\rundll32.exe legitimate.txt:payload.dll,DllMain"
+                )
 
             elif method == "directory":
                 # Hide file in special directory
-                special_dirs = ["C:\\Windows\\Tasks", "C:\\Windows\\System32\\config\\systemprofile", "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"]
+                special_dirs = [
+                    "C:\\Windows\\Tasks",
+                    "C:\\Windows\\System32\\config\\systemprofile",
+                    "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Startup",
+                ]
                 chosen_dir = random.choice(special_dirs)
                 result["details"]["step1"] = f"Placed file in special directory: {chosen_dir}"
                 result["details"]["file"] = "svchost.dll"
@@ -453,7 +467,11 @@ class DefenseEvasionManager:
                     result["details"]["technique"] = "Base64 encoding with custom alphabet"
                 elif method == "hybrid":
                     result["details"]["step1"] = "Used hybrid obfuscation approach"
-                    result["details"]["techniques"] = ["Compression", "Custom encoding", "Random padding"]
+                    result["details"]["techniques"] = [
+                        "Compression",
+                        "Custom encoding",
+                        "Random padding",
+                    ]
 
             elif traffic_type == "fragmentation":
                 # Fragment traffic
@@ -463,10 +481,16 @@ class DefenseEvasionManager:
                     result["details"]["timing"] = "Random delays between packets"
                 elif method == "standard":
                     result["details"]["step1"] = "Used standard IP fragmentation"
-                    result["details"]["fragment_size"] = "576 bytes (minimum guaranteed unfragmented packet size)"
+                    result["details"]["fragment_size"] = (
+                        "576 bytes (minimum guaranteed unfragmented packet size)"
+                    )
                 elif method == "hybrid":
                     result["details"]["step1"] = "Used hybrid fragmentation approach"
-                    result["details"]["techniques"] = ["TCP segmentation", "IP fragmentation", "Session splitting"]
+                    result["details"]["techniques"] = [
+                        "TCP segmentation",
+                        "IP fragmentation",
+                        "Session splitting",
+                    ]
 
             return result
         except Exception as e:

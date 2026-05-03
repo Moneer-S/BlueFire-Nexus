@@ -74,7 +74,10 @@ class APTReporting:
             self.operations[operation_id] = operation
 
             # Log operation
-            self.logger.info(f"Operation {operation_id}: {operation['tactic']} - {operation['technique']}")
+            self.logger.info(
+                f"Operation {operation_id}: {operation['tactic']} - "
+                f"{operation['technique']}"
+            )
 
             # Update metrics
             self._update_metrics(operation)
@@ -171,7 +174,8 @@ class APTReporting:
             }
 
             # Save summary
-            summary_path = self.reports_dir / f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            summary_path = self.reports_dir / f"summary_{ts}.json"
             with open(summary_path, "w") as f:
                 json.dump(summary, f, indent=2)
 
@@ -204,7 +208,8 @@ class APTReporting:
         self.metrics["impact_levels"][impact] = self.metrics["impact_levels"].get(impact, 0) + 1
 
         detection = operation.get("detection_status", "unknown")
-        self.metrics["detection_rates"][detection] = self.metrics["detection_rates"].get(detection, 0) + 1
+        rates = self.metrics["detection_rates"]
+        rates[detection] = rates.get(detection, 0) + 1
 
     def _calculate_operation_metrics(self, operation_id: str) -> Dict[str, Any]:
         """Calculate metrics for a specific operation"""
@@ -258,7 +263,9 @@ class APTReporting:
 
         # Check for high impact operations
         if operation.get("impact_level") == "high":
-            recommendations.append("Review and enhance security controls for high-impact operations")
+            recommendations.append(
+                "Review and enhance security controls for high-impact operations"
+            )
 
         # Check for detection
         if operation.get("detection_status") == "detected":
@@ -362,7 +369,9 @@ class APTReporting:
         # Check overall success rate
         success_rate = self._calculate_success_rate(operations)
         if success_rate < 0.8:
-            recommendations.append("Improve operation success rate through better planning and execution")
+            recommendations.append(
+                "Improve operation success rate through better planning and execution"
+            )
 
         # Check high impact operations
         impact_levels = self._calculate_impact_levels(operations)

@@ -265,7 +265,9 @@ class APT38:
             "status": "completed"
         }
 
-    def _apply_evasion(self, result: Dict[str, Any], evasion_techniques: List[str]) -> Dict[str, Any]:
+    def _apply_evasion(
+        self, result: Dict[str, Any], evasion_techniques: List[str]
+    ) -> Dict[str, Any]:
         """Apply evasion techniques to result"""
         for technique in evasion_techniques:
             if technique == "traffic_obfuscation":

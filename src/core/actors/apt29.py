@@ -110,7 +110,9 @@ class APT29(ThreatActor):
                 "data_staged": self._data_staging,
                 "scheduled_transfer": self._scheduled_transfer,
                 "data_size_limits": self._data_size_limits,
-                "exfiltration_over_alternative_protocol": self._exfiltration_over_alternative_protocol
+                "exfiltration_over_alternative_protocol": (
+                    self._exfiltration_over_alternative_protocol
+                ),
             },
             "impact": {
                 "data_encrypted": self._data_encryption,
@@ -285,7 +287,9 @@ class APT29(ThreatActor):
             "email": target,
             "domain": target.split("@")[1] if "@" in target else "unknown",
             "timestamp": datetime.now().isoformat(),
-            "campaign_type": random.choice(["security_update", "account_verification", "compliance"]),
+            "campaign_type": random.choice(
+                ["security_update", "account_verification", "compliance"]
+            ),
             "targeting_level": random.choice(["broad", "targeted", "high_value"])
         }
 

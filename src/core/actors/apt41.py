@@ -34,12 +34,20 @@ class APT41:
             "initial_access": {
                 "supply_chain_compromise": {
                     "description": "Compromise software supply chains",
-                    "indicators": ["modified_software", "compromised_updates", "malicious_installers"],
+                    "indicators": [
+                        "modified_software",
+                        "compromised_updates",
+                        "malicious_installers",
+                    ],
                     "evasion": ["signature_bypass", "update_verification_bypass", "code_signing"]
                 },
                 "spear_phishing": {
                     "description": "Targeted phishing with business themes",
-                    "indicators": ["malicious_attachments", "business_themes", "regional_targeting"],
+                    "indicators": [
+                        "malicious_attachments",
+                        "business_themes",
+                        "regional_targeting",
+                    ],
                     "evasion": ["email_encryption", "attachment_obfuscation"]
                 },
                 "watering_hole": {
@@ -265,7 +273,9 @@ class APT41:
             "status": "completed"
         }
 
-    def _apply_evasion(self, result: Dict[str, Any], evasion_techniques: List[str]) -> Dict[str, Any]:
+    def _apply_evasion(
+        self, result: Dict[str, Any], evasion_techniques: List[str]
+    ) -> Dict[str, Any]:
         """Apply evasion techniques to result"""
         for technique in evasion_techniques:
             if technique == "traffic_obfuscation":
