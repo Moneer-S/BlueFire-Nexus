@@ -9,6 +9,17 @@ import pytest
 from src.core.execution import Execution
 
 
+def test_module_registry_builtin_classes_unique_and_ordered() -> None:
+    """Single source-of-truth tuple must match discover_modules mapping."""
+    from src.core.modules import BUILTIN_MODULE_CLASSES, discover_modules
+
+    mapped = discover_modules()
+    names = [cls.name for cls in BUILTIN_MODULE_CLASSES]
+    assert len(names) == len(set(names))
+    assert set(names) == set(mapped.keys())
+    assert [mapped[n] for n in names] == list(BUILTIN_MODULE_CLASSES)
+
+
 def test_execution_dispatcher_selects_handler_for_detected_platform() -> None:
     ex = Execution()
     assert ex.os_type in {"Windows", "Linux", "Darwin"}
