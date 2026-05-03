@@ -35,6 +35,9 @@ def test_tac_package_surfaces_resolve() -> None:
     """Single import path per tactical subdomain (lazy where noted elsewhere)."""
     from src.core.collection import Collection
     from src.core.credential import CredentialAccess
+    from src.core.defense import AntiDetectionManager
+    from src.core.defense_evasion import DefenseEvasion, LinuxDefenseEvasion
+    from src.core.evasion import AntiDetection, DefenseEvasionManager
     from src.core.execution import Execution
     from src.core.exfiltration import DataExfiltration, Exfiltration
     from src.core.impact import Impact
@@ -46,6 +49,12 @@ def test_tac_package_surfaces_resolve() -> None:
     from src.core.privilege import PrivilegeEscalation
     from src.core.reconnaissance import ReconnaissanceManager
     from src.core.resource import ResourceDevelopmentManager
+
+    assert AntiDetectionManager.__name__ == "AntiDetectionManager"
+    assert DefenseEvasion.__name__ == "DefenseEvasion"
+    assert LinuxDefenseEvasion.__name__ == "LinuxDefenseEvasion"
+    assert AntiDetection.__name__ == "AntiDetection"
+    assert DefenseEvasionManager.__name__ == "DefenseEvasionManager"
 
     assert Collection.__name__ == "Collection"
     assert CredentialAccess.__name__ == "CredentialAccess"
