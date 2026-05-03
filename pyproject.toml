@@ -74,7 +74,6 @@ extend-per-file-ignores."src/legal_safeguards.py" = ["E701", "B904"]
 extend-per-file-ignores."src/modules/*.py" = ["E701", "B904"]
 extend-per-file-ignores."src/operators/**/*.py" = ["E701", "B904"]
 extend-per-file-ignores."src/core/actors/**/*.py" = ["E701", "B904"]
-extend-per-file-ignores."src/core/anti_detection/anti_detection.py" = ["E701", "B904"]
 extend-per-file-ignores."src/core/reporting/apt*.py" = ["E701", "B904"]
 extend-per-file-ignores."src/core/reporting/apt_reporting.py" = ["E701", "B904"]
 
