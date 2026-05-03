@@ -137,6 +137,23 @@ def test_anti_forensic_psutil_checks_when_available() -> None:
     assert isinstance(af.AntiForensicManager().detect_sandbox(), bool)
 
 
+def test_anti_sandbox_imports_without_psutil_when_absent() -> None:
+    try:
+        import psutil as _ps  # noqa: F401
+
+        pytest.skip("psutil present")
+    except ImportError:
+        pass
+
+    import importlib
+
+    import src.core.anti_sandbox as asn
+
+    assert asn.EnvironmentValidator.__name__ == "EnvironmentValidator"
+    importlib.reload(asn)
+    assert asn.EnvironmentValidator.detect_sandbox() is False
+
+
 def test_anti_detection_package_imports_without_psutil() -> None:
     try:
         import psutil as _unused_ps  # noqa: F401
