@@ -298,18 +298,46 @@ def main():
         # Print summary
         logger.info("\n=== Summary ===")
         logger.info("Basic Operations:")
-        logger.info("  Environment Check: " + ("Success" if not any(env_results.values()) else "Warning"))
-        logger.info("  Memory Protection: " + ("Success" if mem_results["memory_protected"] else "Failed"))
-        logger.info("  Evasion Techniques: " + ("Success" if all(eva_results.values()) else "Partial"))
-        logger.info("  Stealth Operation: " + ("Success" if all(all(status for status in results.values()) for results in stealth_results.values()) else "Warning"))
+        env_status = "Success" if not any(env_results.values()) else "Warning"
+        logger.info(f"  Environment Check: {env_status}")
+        mem_status = "Success" if mem_results["memory_protected"] else "Failed"
+        logger.info(f"  Memory Protection: {mem_status}")
+        eva_status = "Success" if all(eva_results.values()) else "Partial"
+        logger.info(f"  Evasion Techniques: {eva_status}")
+        stealth_ok = all(
+            all(status for status in results.values())
+            for results in stealth_results.values()
+        )
+        stealth_status = "Success" if stealth_ok else "Warning"
+        logger.info(f"  Stealth Operation: {stealth_status}")
 
         logger.info("\nAdvanced Operations:")
-        logger.info("  Network Stealth: " + ("Success" if all(network_results.values()) else "Partial"))
-        logger.info("  Process Stealth: " + ("Success" if all(process_results.values()) else "Partial"))
-        logger.info("  File Stealth: " + ("Success" if all(file_results.values()) else "Partial"))
-        logger.info("  Registry Stealth: " + ("Success" if all(registry_results.values()) else "Partial"))
-        logger.info("  Service Stealth: " + ("Success" if all(service_results.values()) else "Partial"))
-        logger.info("  Advanced Stealth: " + ("Success" if all(all(status for status in results.values()) for results in advanced_results.values()) else "Warning"))
+        logger.info(
+            "  Network Stealth: "
+            + ("Success" if all(network_results.values()) else "Partial")
+        )
+        logger.info(
+            "  Process Stealth: "
+            + ("Success" if all(process_results.values()) else "Partial")
+        )
+        logger.info(
+            "  File Stealth: "
+            + ("Success" if all(file_results.values()) else "Partial")
+        )
+        logger.info(
+            "  Registry Stealth: "
+            + ("Success" if all(registry_results.values()) else "Partial")
+        )
+        logger.info(
+            "  Service Stealth: "
+            + ("Success" if all(service_results.values()) else "Partial")
+        )
+        adv_ok = all(
+            all(status for status in results.values())
+            for results in advanced_results.values()
+        )
+        adv_status = "Success" if adv_ok else "Warning"
+        logger.info(f"  Advanced Stealth: {adv_status}")
 
     except Exception as e:
         logger.error(f"Error in main: {e}")

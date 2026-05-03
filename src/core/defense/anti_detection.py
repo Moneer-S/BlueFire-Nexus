@@ -272,7 +272,8 @@ class AntiDetectionManager:
 
         # Registry compression
         if "compression" in data:
-            result["compression"] = self.tools["registry"]["registry_compressor"](data["compression"])
+            compress = self.tools["registry"]["registry_compressor"]
+            result["compression"] = compress(data["compression"])
 
         return result
 

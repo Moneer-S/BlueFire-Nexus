@@ -137,7 +137,10 @@ default_logger = Logger("bluefire")
 
 # Helper functions for module-level logging
 def get_structured_logger(name: str, log_level: int = logging.INFO) -> Logger:
-    """Return the APT-style ``Logger`` wrapper; use ``src.core.logger.get_logger`` for stdlib loggers."""
+    """Return the APT-style ``Logger`` wrapper.
+
+    For ``logging.Logger``, use ``src.core.logger.get_logger`` instead.
+    """
     return Logger(name, log_level=log_level)
 
 def debug(message: str) -> None:

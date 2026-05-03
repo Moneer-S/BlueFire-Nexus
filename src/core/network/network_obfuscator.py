@@ -195,7 +195,8 @@ class NetworkObfuscator:
 
         # Data fragmentation
         if "fragmentation" in data:
-            result["fragmentation"] = self.tools["content"]["data_fragmenter"](data["fragmentation"])
+            frag = self.tools["content"]["data_fragmenter"]
+            result["fragmentation"] = frag(data["fragmentation"])
 
         return result
 
