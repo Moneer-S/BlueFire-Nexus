@@ -1,12 +1,9 @@
+import logging  # Use standard logging
 import os
-import platform
-import subprocess
-import win32api # Required for registry access
-import win32con # Required for registry access
-import shutil # For copying files if needed
-import tempfile # For creating temp files
-from typing import Dict, Any, Tuple, Optional
-import logging # Use standard logging
+from typing import Any, Dict, Optional
+
+import win32api  # Required for registry access
+import win32con  # Required for registry access
 
 # Assume logger is passed or configured appropriately
 logger = logging.getLogger(__name__)
@@ -52,7 +49,7 @@ class WindowsPersistence:
         command = details.get("command")
         trigger = details.get("trigger", "ONLOGON") # e.g., ONLOGON, ONSTART, HOURLY, DAILY
         force = details.get("force", False) # Overwrite if exists? Use /F flag
-        description = details.get("description", "BlueFire Persistence")
+        details.get("description", "BlueFire Persistence")
 
         if not command:
             return {"status": "failure", "technique": "scheduled_task", "reason": "Missing 'command' in details."}
@@ -132,9 +129,9 @@ class WindowsPersistence:
              return {"status": "failure", "technique": "registry_run_key", "reason": f"Invalid key_type: {key_type}. Use Run or RunOnce."}
 
         hive = valid_hives[hive_str]
-        base_key_path = f"SOFTWARE\Microsoft\Windows\CurrentVersion\{key_type}"
+        base_key_path = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\{key_type}"
 
-        logger.info(f"Attempting to set registry {key_type} key: {hive_str}\{base_key_path}\{value_name}")
+        logger.info(rf"Attempting to set registry {key_type} key: {hive_str}\{base_key_path}\{value_name}")
         logger.debug(f"Registry Command: {command}")
 
         status = "failure"
@@ -165,7 +162,7 @@ class WindowsPersistence:
             else:
                  # Set the value
                  win32api.RegSetValueEx(key_handle, value_name, 0, win32con.REG_SZ, command)
-                 logger.info(f"Successfully set registry value '{value_name}' in {hive_str}\{base_key_path}.")
+                 logger.info(rf"Successfully set registry value '{value_name}' in {hive_str}\{base_key_path}.")
                  status = "success"
 
         except win32api.error as e:
@@ -210,7 +207,7 @@ class WindowsPersistence:
 
             # SHGetFolderPath requires pywin32 >= 223
             # Import locally to avoid import error if not available/needed elsewhere
-            from win32com.shell import shell, shellcon
+            from win32com.shell import shell
             startup_path = shell.SHGetFolderPath(0, folder_id, None, 0)
             if not os.path.isdir(startup_path):
                  logger.warning(f"Startup folder path found but is not a directory: {startup_path}")
@@ -280,8 +277,8 @@ class WindowsPersistence:
                 reason = "File write operation completed but file not found afterwards."
                 logger.error(reason)
 
-        except PermissionError as e:
-            reason = f"Permission denied writing to '{target_path}'. Scope '{scope}' might require elevation." 
+        except PermissionError:
+            reason = f"Permission denied writing to '{target_path}'. Scope '{scope}' might require elevation."
             logger.error(reason, exc_info=True)
         except Exception as e:
             reason = f"Unexpected error creating startup file '{target_path}': {e}"
@@ -296,4 +293,4 @@ class WindowsPersistence:
             "reason": reason if status == "failure" else None
         }
 
-    # Add other Windows-specific methods like _handle_startup_folder, _handle_wmi_subscription etc. here 
+    # Add other Windows-specific methods like _handle_startup_folder, _handle_wmi_subscription etc. here

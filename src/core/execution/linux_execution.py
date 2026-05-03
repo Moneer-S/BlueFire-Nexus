@@ -1,14 +1,13 @@
-import subprocess
-import platform
-import os
 import base64
-import tempfile
 import logging
-import stat # For chmod
-import uuid
+import os
 import shlex
-from typing import Dict, Any, List, Tuple, Optional
+import stat  # For chmod
+import subprocess
+import tempfile
+import uuid
 from datetime import datetime
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +203,7 @@ class LinuxExecution:
                 if not os.path.isdir(temp_dir) or not os.access(temp_dir, os.W_OK):
                      temp_dir = tempfile.gettempdir()
                      logger.warning(f"/tmp not available, using default temp dir: {temp_dir}")
-                
+
                 temp_file_name = f"bf_{uuid.uuid4().hex}{file_extension}"
                 temp_file_path = os.path.join(temp_dir, temp_file_name)
 
@@ -264,4 +263,4 @@ class LinuxExecution:
             "reason": reason,
             "technique": f"payload_execution_{method}",
             "details": result_details
-        } 
+        }

@@ -3,20 +3,14 @@ Consolidated Reconnaissance Module
 Handles reconnaissance for all APT implementations
 """
 
-import os
-import sys
-import time
 import random
-import string
-import hashlib
-import base64
-from typing import Dict, List, Any, Optional
 from datetime import datetime
-from pathlib import Path
+from typing import Any, Dict
+
 
 class ReconnaissanceManager:
     """Handles reconnaissance for all APT implementations"""
-    
+
     def __init__(self):
         # Initialize reconnaissance techniques
         self.techniques = {
@@ -72,7 +66,7 @@ class ReconnaissanceManager:
                 }
             }
         }
-        
+
         # Initialize reconnaissance tools
         self.tools = {
             "active": {
@@ -91,7 +85,7 @@ class ReconnaissanceManager:
                 "engage_handler": self._handle_engage
             }
         }
-        
+
         # Initialize configuration
         self.config = {
             "active": {
@@ -146,7 +140,7 @@ class ReconnaissanceManager:
                 }
             }
         }
-        
+
     def recon(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Perform reconnaissance"""
         try:
@@ -156,124 +150,124 @@ class ReconnaissanceManager:
                 "timestamp": datetime.now().isoformat(),
                 "reconnaissance": {}
             }
-            
+
             # Apply active reconnaissance
             active_result = self._apply_active(data)
             result["reconnaissance"]["active"] = active_result
-            
+
             # Apply passive reconnaissance
             passive_result = self._apply_passive(active_result)
             result["reconnaissance"]["passive"] = passive_result
-            
+
             # Apply social reconnaissance
             social_result = self._apply_social(passive_result)
             result["reconnaissance"]["social"] = social_result
-            
+
             return result
-            
+
         except Exception as e:
             self._log_error(f"Error performing reconnaissance: {str(e)}")
             raise
-            
+
     def _apply_active(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply active reconnaissance techniques"""
         result = {}
-        
+
         # Scan
         if "scan" in data:
             result["scan"] = self.tools["active"]["scan_handler"](data["scan"])
-            
+
         # Probe
         if "probe" in data:
             result["probe"] = self.tools["active"]["probe_handler"](data["probe"])
-            
+
         # Enumerate
         if "enumerate" in data:
             result["enumerate"] = self.tools["active"]["enumerate_handler"](data["enumerate"])
-            
+
         return result
-        
+
     def _apply_passive(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply passive reconnaissance techniques"""
         result = {}
-        
+
         # Gather
         if "gather" in data:
             result["gather"] = self.tools["passive"]["gather_handler"](data["gather"])
-            
+
         # Monitor
         if "monitor" in data:
             result["monitor"] = self.tools["passive"]["monitor_handler"](data["monitor"])
-            
+
         # Analyze
         if "analyze" in data:
             result["analyze"] = self.tools["passive"]["analyze_handler"](data["analyze"])
-            
+
         return result
-        
+
     def _apply_social(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply social reconnaissance techniques"""
         result = {}
-        
+
         # Search
         if "search" in data:
             result["search"] = self.tools["social"]["search_handler"](data["search"])
-            
+
         # Profile
         if "profile" in data:
             result["profile"] = self.tools["social"]["profile_handler"](data["profile"])
-            
+
         # Engage
         if "engage" in data:
             result["engage"] = self.tools["social"]["engage_handler"](data["engage"])
-            
+
         return result
-        
+
     def _handle_scan(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle active scanning"""
         # Implement active scanning
         return {}
-        
+
     def _handle_probe(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle active probing"""
         # Implement active probing
         return {}
-        
+
     def _handle_enumerate(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle active enumeration"""
         # Implement active enumeration
         return {}
-        
+
     def _handle_gather(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle passive gathering"""
         # Implement passive gathering
         return {}
-        
+
     def _handle_monitor(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle passive monitoring"""
         # Implement passive monitoring
         return {}
-        
+
     def _handle_analyze(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle passive analysis"""
         # Implement passive analysis
         return {}
-        
+
     def _handle_search(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle social searching"""
         # Implement social searching
         return {}
-        
+
     def _handle_profile(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle social profiling"""
         # Implement social profiling
         return {}
-        
+
     def _handle_engage(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle social engagement"""
         # Implement social engagement
         return {}
-        
+
     def _handle_active_reconnaissance(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle active-based reconnaissance"""
         try:
@@ -283,16 +277,16 @@ class ReconnaissanceManager:
                 "timestamp": datetime.now().isoformat(),
                 "details": {}
             }
-            
+
             # Get configuration
             reconnaissance_type = data.get("type", "scanning")
             stealth = data.get("stealth", "high")
             timeout = data.get("timeout", 30)
-            
+
             result["details"]["reconnaissance_type"] = reconnaissance_type
             result["details"]["stealth"] = stealth
             result["details"]["timeout"] = timeout
-            
+
             # Active reconnaissance implementation based on type
             if reconnaissance_type == "scanning":
                 # Active scanning
@@ -303,7 +297,7 @@ class ReconnaissanceManager:
                     "indicators": "Scanning patterns"
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
-                
+
             elif reconnaissance_type == "probing":
                 # Active probing
                 result["details"]["implementation"] = "Active probing"
@@ -313,7 +307,7 @@ class ReconnaissanceManager:
                     "indicators": "Probing patterns"
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
-                
+
             elif reconnaissance_type == "enumeration":
                 # Active enumeration
                 result["details"]["implementation"] = "Active enumeration"
@@ -323,7 +317,7 @@ class ReconnaissanceManager:
                     "indicators": "Enumeration patterns"
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
-            
+
             # Reconnaissance details
             result["details"]["reconnaissance"] = {
                 "stealth": stealth,
@@ -335,7 +329,7 @@ class ReconnaissanceManager:
                 },
                 "detection_rate": f"{random.randint(5, 20)}%"
             }
-            
+
             # Stealth details
             if stealth == "high":
                 result["details"]["techniques"] = [
@@ -351,16 +345,16 @@ class ReconnaissanceManager:
                     "Basic detection",
                     "Basic protection"
                 ]
-            
+
             # Add MITRE ATT&CK information
             result["details"]["mitre_technique_id"] = "T1595"
             result["details"]["mitre_technique_name"] = "Active Scanning"
-            
+
             return result
         except Exception as e:
             self._log_error(f"Error in active reconnaissance: {str(e)}")
             return {"status": "error", "message": str(e)}
-            
+
     def _handle_passive_reconnaissance(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle passive-based reconnaissance"""
         try:
@@ -370,16 +364,16 @@ class ReconnaissanceManager:
                 "timestamp": datetime.now().isoformat(),
                 "details": {}
             }
-            
+
             # Get configuration
             reconnaissance_type = data.get("type", "gathering")
             stealth = data.get("stealth", "high")
             encryption = data.get("encryption", True)
-            
+
             result["details"]["reconnaissance_type"] = reconnaissance_type
             result["details"]["stealth"] = stealth
             result["details"]["encryption"] = encryption
-            
+
             # Passive reconnaissance implementation based on type
             if reconnaissance_type == "gathering":
                 # Passive gathering
@@ -390,7 +384,7 @@ class ReconnaissanceManager:
                     "indicators": "Gathering patterns"
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
-                
+
             elif reconnaissance_type == "monitoring":
                 # Passive monitoring
                 result["details"]["implementation"] = "Passive monitoring"
@@ -400,7 +394,7 @@ class ReconnaissanceManager:
                     "indicators": "Monitoring patterns"
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
-                
+
             elif reconnaissance_type == "analysis":
                 # Passive analysis
                 result["details"]["implementation"] = "Passive analysis"
@@ -410,7 +404,7 @@ class ReconnaissanceManager:
                     "indicators": "Analysis patterns"
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
-            
+
             # Reconnaissance details
             result["details"]["reconnaissance"] = {
                 "stealth": stealth,
@@ -422,7 +416,7 @@ class ReconnaissanceManager:
                 },
                 "detection_rate": f"{random.randint(5, 20)}%"
             }
-            
+
             # Stealth details
             if stealth == "high":
                 result["details"]["techniques"] = [
@@ -438,17 +432,17 @@ class ReconnaissanceManager:
                     "Basic detection",
                     "Basic protection"
                 ]
-            
+
             # Add MITRE ATT&CK information
             result["details"]["mitre_technique_id"] = "T1592"
             result["details"]["mitre_technique_name"] = "Gather Victim Host Information"
-            
+
             return result
         except Exception as e:
             self._log_error(f"Error in passive reconnaissance: {str(e)}")
             return {"status": "error", "message": str(e)}
-        
+
     def _log_error(self, message: str) -> None:
         """Log error message"""
         print(f"ERROR: {message}")
-        # Implement proper logging mechanism 
+        # Implement proper logging mechanism

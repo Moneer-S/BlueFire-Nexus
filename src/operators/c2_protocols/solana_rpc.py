@@ -1,6 +1,8 @@
 # src/operators/c2_protocols/solana_rpc.py
-from solana.rpc.api import Client
 import logging
+
+from solana.rpc.api import Client
+
 
 class SolanaC2:
     """
@@ -12,11 +14,11 @@ class SolanaC2:
         self.logger = logging.getLogger(__name__)
         self.client = Client(endpoint)
         self.program_id = program_id
-    
+
     def send_command(self, instruction: str):
         if not instruction:
             raise ValueError("Instruction cannot be empty.")
-        
+
         # Placeholder for actual Solana transaction logic
         try:
             tx = self.client.send_transaction({

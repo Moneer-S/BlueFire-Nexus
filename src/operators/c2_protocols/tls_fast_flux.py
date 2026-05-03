@@ -1,6 +1,8 @@
 # src/operators/c2_protocols/tls_fast_flux.py
-import requests
 import random
+
+import requests
+
 
 class TLSFlux:
     def __init__(self, endpoints=None):
@@ -16,7 +18,7 @@ class TLSFlux:
     def beacon(self, data: dict):
         session = requests.Session()
         session.verify = False  # Disable cert verification for testing
-        
+
         for _ in range(3):  # Retry logic
             try:
                 return session.post(

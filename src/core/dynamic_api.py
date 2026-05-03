@@ -4,9 +4,10 @@ import json
 import os
 from ctypes import wintypes
 
+
 class StealthAPIResolver:
     _kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-    
+
     def __init__(self, hashes_file="api_hashes.json"):
         # Load API hashes from an external JSON file
         if os.path.exists(hashes_file):
@@ -15,7 +16,7 @@ class StealthAPIResolver:
         else:
             self._hashes = {}  # Fallback to empty dictionary
             print("Warning: API hashes file not found. API resolution may fail.")
-    
+
     def resolve(self, hash_val: str, argtypes=None, restype=None):
         """
         Resolve an API function based on its hash (as a string).

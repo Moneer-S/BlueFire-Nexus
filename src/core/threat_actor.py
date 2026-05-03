@@ -1,25 +1,21 @@
-import os
-import sys
-import time
 import random
 import string
-import hashlib
-import base64
-from typing import Dict, List, Optional, Any
 from datetime import datetime
+from typing import Any, Dict, List
+
+from ..core.anti_detection import anti_detection
 from ..core.logger import get_logger
 from ..core.security import security
-from ..core.anti_detection import anti_detection
 
 logger = get_logger(__name__)
 
 class ThreatActor:
     """Advanced threat actor emulation capabilities."""
-    
+
     def __init__(self, actor_type: str = "advanced_persistent_threat"):
         """
         Initialize threat actor emulation.
-        
+
         Args:
             actor_type: Type of threat actor to emulate
         """
@@ -39,7 +35,7 @@ class ThreatActor:
         }
         self.operation_log = []
         self.session_id = self._generate_session_id()
-    
+
     def _generate_session_id(self) -> str:
         """Generate unique session ID for operation tracking."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -65,21 +61,21 @@ class ThreatActor:
                 "error": message,
             }
         )
-    
+
     def initialize_operation(self, target_info: Dict[str, Any]) -> bool:
         """
         Initialize threat emulation operation.
-        
+
         Args:
             target_info: Information about the target environment
-            
+
         Returns:
             bool: Success status
         """
         try:
             logger.info(f"Initializing {self.actor_type} emulation operation")
             logger.info(f"Session ID: {self.session_id}")
-            
+
             # Log operation initialization
             self.operation_log.append({
                 "timestamp": datetime.now().isoformat(),
@@ -87,29 +83,29 @@ class ThreatActor:
                 "actor_type": self.actor_type,
                 "target_info": target_info
             })
-            
+
             # Initialize security context where supported by the active manager.
             if hasattr(security, "initialize_security_context"):
                 security.initialize_security_context()
             else:
                 security.generate_key()
-            
+
             # Set up anti-detection measures
             anti_detection.check_environment()
-            
+
             return True
         except Exception as e:
             logger.error(f"Error initializing operation: {e}")
             return False
-    
+
     def execute_technique(self, technique_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute a specific threat technique.
-        
+
         Args:
             technique_id: MITRE ATT&CK technique ID
             parameters: Technique parameters
-            
+
         Returns:
             Dict[str, Any]: Execution results
         """
@@ -117,7 +113,7 @@ class ThreatActor:
             # Validate technique
             if not self._validate_technique(technique_id):
                 raise ValueError(f"Invalid technique ID: {technique_id}")
-            
+
             # Log technique execution
             self.operation_log.append({
                 "timestamp": datetime.now().isoformat(),
@@ -125,11 +121,11 @@ class ThreatActor:
                 "technique_id": technique_id,
                 "parameters": parameters
             })
-            
+
             # Execute technique based on category
             category = self._get_technique_category(technique_id)
             result = self._execute_category_technique(category, technique_id, parameters)
-            
+
             # Log result
             self.operation_log.append({
                 "timestamp": datetime.now().isoformat(),
@@ -137,12 +133,12 @@ class ThreatActor:
                 "technique_id": technique_id,
                 "result": result
             })
-            
+
             return result
         except Exception as e:
             logger.error(f"Error executing technique {technique_id}: {e}")
             return {"success": False, "error": str(e)}
-    
+
     def _validate_technique(self, technique_id: str) -> bool:
         """Validate technique ID against MITRE ATT&CK framework."""
         valid_techniques = {
@@ -207,7 +203,7 @@ class ThreatActor:
             "T1250": "Port Knocking"
         }
         return technique_id in valid_techniques
-    
+
     def _get_technique_category(self, technique_id: str) -> str:
         """Get MITRE ATT&CK category for technique."""
         # Map technique IDs to categories
@@ -224,13 +220,13 @@ class ThreatActor:
             "exfiltration": ["T1001", "T1002", "T1003", "T1004", "T1005", "T1006", "T1007", "T1008", "T1009", "T1010"],
             "command_and_control": ["T1001", "T1002", "T1003", "T1004", "T1005", "T1006", "T1007", "T1008", "T1009", "T1010"]
         }
-        
+
         for category, techniques in category_map.items():
             if technique_id in techniques:
                 return category
-        
+
         return "unknown"
-    
+
     def _execute_category_technique(self, category: str, technique_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Execute technique based on MITRE ATT&CK category."""
         try:
@@ -261,11 +257,11 @@ class ThreatActor:
         except Exception as e:
             logger.error(f"Error executing {category} technique {technique_id}: {e}")
             return {"success": False, "error": str(e)}
-    
+
     def get_operation_log(self) -> List[Dict[str, Any]]:
         """Get operation log for analysis."""
         return self.operation_log
-    
+
     def generate_report(self) -> Dict[str, Any]:
         """Generate operation report."""
         try:
@@ -278,11 +274,11 @@ class ThreatActor:
                 "success_rate": 0,
                 "detection_events": []
             }
-            
+
             # Analyze operation log
             successful_techniques = 0
             total_techniques = 0
-            
+
             for entry in self.operation_log:
                 if entry["event"] == "technique_executed":
                     total_techniques += 1
@@ -296,15 +292,15 @@ class ThreatActor:
                         successful_techniques += 1
                 elif entry["event"] == "detection_event":
                     report["detection_events"].append(entry)
-            
+
             # Calculate success rate
             if total_techniques > 0:
                 report["success_rate"] = (successful_techniques / total_techniques) * 100
-            
+
             return report
         except Exception as e:
             logger.error(f"Error generating report: {e}")
             return {"error": str(e)}
 
 # Create global threat actor instance
-threat_actor = ThreatActor() 
+threat_actor = ThreatActor()

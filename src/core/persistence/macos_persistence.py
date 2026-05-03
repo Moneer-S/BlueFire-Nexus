@@ -1,12 +1,10 @@
-import os
-import platform
-import subprocess
-import shlex
-import plistlib # For creating LaunchAgent plists
-from typing import Dict, Any, Tuple, Optional, List
 import logging
-from pathlib import Path
+import os
+import plistlib  # For creating LaunchAgent plists
+import shlex
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict
 
 # Assume logger is passed or configured appropriately
 logger = logging.getLogger(__name__)
@@ -175,4 +173,4 @@ class MacOSPersistence:
     # Example placeholder:
     # def _handle_launch_agent(self, details: Dict[str, Any]) -> Dict[str, Any]:
     #     logger.warning("LaunchAgent persistence technique not yet implemented.")
-    #     return {"status": "not_implemented", "technique": "launch_agent", "reason": "Handler not implemented."} 
+    #     return {"status": "not_implemented", "technique": "launch_agent", "reason": "Handler not implemented."}

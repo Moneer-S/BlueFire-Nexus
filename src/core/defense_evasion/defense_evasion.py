@@ -3,27 +3,20 @@ Defense Evasion Module
 Handles techniques to avoid detection by security tools.
 """
 
+import logging
 import os
 import platform
-import logging
-from typing import Dict, Any, Optional, TYPE_CHECKING
 from datetime import datetime
-import stat # For file attributes
-from pathlib import Path # Used by timestomp
+from typing import TYPE_CHECKING, Any, Dict
 
 # Imports needed for PID Spoofing
 if platform.system() == "Windows":
-    import ctypes
-    from ctypes import wintypes
-    import win32con
-    import win32api
-    import win32process
-    import pywintypes # For error handling
+    pass  # For error handling
 
 # Import OS-specific handlers
-from .windows_defense_evasion import WindowsDefenseEvasion
 from .linux_defense_evasion import LinuxDefenseEvasion
 from .macos_defense_evasion import MacOSDefenseEvasion
+from .windows_defense_evasion import WindowsDefenseEvasion
 
 # Avoid circular import for type hinting
 if TYPE_CHECKING:
@@ -106,7 +99,6 @@ class DefenseEvasion:
 
     def run_evasion(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Route defense evasion requests to appropriate handlers."""
-        result = {"status": "failure", "reason": "No technique specified"}
         errors = []
         results_map = {}
 
@@ -155,7 +147,7 @@ class DefenseEvasion:
                 else:
                     # General handlers directly process details
                     evasion_result = handler(details)
-                
+
                 results_map[technique] = evasion_result # Store result under the (potentially adjusted) technique name
                 if evasion_result.get("status") == "failure":
                     errors.append(f"Technique '{technique}' failed: {evasion_result.get('reason', 'Unknown reason')}")
@@ -211,7 +203,7 @@ class DefenseEvasion:
         target_file = details.get("target_file")
         if not target_file or not os.path.exists(target_file):
              return {"status": "error", "reason": f"Target file '{target_file}' not provided or does not exist."}
-             
+
         mode = details.get("mode", self.config.get("default_timestomp_mode", "mimic"))
         source_file = details.get("source_file", self.config.get("default_timestomp_source"))
         access_time_str = details.get("access_time")
@@ -327,17 +319,17 @@ class DefenseEvasion:
 
         # --- Simulation Logic ---
         # In a real scenario, this would involve complex process manipulation (e.g., modifying PEB).
-        # Here, we simulate by: 
+        # Here, we simulate by:
         # 1. Executing the *original* command.
         # 2. Returning a result that *claims* the spoofed command was run.
         self.logger.warning("Argument Spoofing is SIMULATED. Executing the original command but logging the spoofed one.")
-        
+
         try:
             # Execute the *actual* command using the chosen method
             exec_result = self._execute_command(original_command, method=execution_method, capture=True)
-            
+
             result_details["execution_result"] = exec_result # Include actual execution details for debugging/info
-            
+
             # Report success/failure based on the *actual* execution
             status = exec_result.get("status", "failure")
             if status != "success":
@@ -370,7 +362,7 @@ class DefenseEvasion:
         else:
              logger.warning(f"PID Spoofing is not supported on {self.os_type}.")
              return {"status": "not_implemented", "reason": f"PID Spoofing not supported on {self.os_type}", "technique": "pid_spoofing"}
-             
+
     # --- Placeholder Handlers ---
 
     def _handle_process_evasion(self, details: Dict[str, Any]) -> Dict[str, Any]:
@@ -399,7 +391,7 @@ class DefenseEvasion:
 if __name__ == '__main__':
     import json
     import tempfile
-    
+
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     # Mock Execution module for standalone testing
@@ -485,4 +477,4 @@ if __name__ == '__main__':
                        os.remove(p)
                        print(f"Removed: {p}")
                   except OSError as e:
-                       print(f"Error removing {p}: {e}") 
+                       print(f"Error removing {p}: {e}")

@@ -68,7 +68,15 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "B"]
-ignore = []
+# Legacy modules contain extensive long lines (MITRE IDs, payloads); refactor incrementally.
+# CI enforces the rest (imports, whitespace, undefined names, etc.).
+ignore = [
+  "E501",
+  # Legacy operator modules use dense one-line if/try/for patterns; refactor module-by-module.
+  "E701",
+  # Re-raising in subprocess helpers predates PEP 415-style chaining across many call sites.
+  "B904",
+]
 
 [tool.mypy]
 python_version = "3.10"

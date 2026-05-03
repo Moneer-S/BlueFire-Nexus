@@ -1,9 +1,6 @@
-import os
-import platform
 import logging
-from typing import Dict, Any, Optional
 from datetime import datetime
-from pathlib import Path
+from typing import Any, Dict
 
 # Potentially import Linux handler if macOS shares techniques
 # from .linux_defense_evasion import LinuxDefenseEvasion
@@ -57,4 +54,4 @@ class MacOSDefenseEvasion:
     # def _hide_file(self, details: Dict[str, Any]) -> Dict[str, Any]:
     #     # Could call super()._hide_file(details) if inheriting
     #     logger.warning("macOS file hiding not specifically implemented, relying on Linux/Unix logic if inherited.")
-    #     return {"status": "not_implemented", "reason": "macOS specific file_hide not implemented"} 
+    #     return {"status": "not_implemented", "reason": "macOS specific file_hide not implemented"}

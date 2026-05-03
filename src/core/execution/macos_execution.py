@@ -1,9 +1,6 @@
-import subprocess
-import platform
-import os
 import logging
-from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime
+from typing import Any, Dict
 
 # Potentially import Linux handler if macOS shares techniques
 # from .linux_execution import LinuxExecution
@@ -58,4 +55,4 @@ class MacOSExecution:
     # def _handle_command_execution(self, data: Dict[str, Any]) -> Dict[str, Any]:
     #     # Could call super()._handle_command_execution(data) if inheriting
     #     logger.warning("macOS command execution not specifically implemented.")
-    #     return {"status": "not_implemented", "reason": "macOS command execution not implemented"} 
+    #     return {"status": "not_implemented", "reason": "macOS command execution not implemented"}
