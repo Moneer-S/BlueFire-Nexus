@@ -6,9 +6,9 @@ Implements sophisticated political espionage and military intelligence capabilit
 from datetime import datetime
 from typing import Any, Dict, List
 
-from src.core.anti_detection import AntiDetectionManager
-from src.core.intelligence.apt28_intelligence import APT28Intelligence
-from src.core.network import NetworkObfuscator
+from ..anti_detection import AntiDetectionManager
+from ..intelligence.apt28_intelligence import APT28Intelligence
+from ..network import NetworkObfuscator
 
 
 class APT28:
