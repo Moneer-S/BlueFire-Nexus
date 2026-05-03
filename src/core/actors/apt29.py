@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from ..anti_detection import AntiDetectionManager
-from ..network_obfuscator import NetworkObfuscator
+from ..network import NetworkObfuscator
 from ..threat_actor import ThreatActor
 
 

@@ -33,6 +33,8 @@ def test_command_control_package_exports_class() -> None:
 
 def test_tac_package_surfaces_resolve() -> None:
     """Single import path per tactical subdomain (lazy where noted elsewhere)."""
+    from src.core.access import InitialAccessManager
+    from src.core.actors import APT29, BaseAPT
     from src.core.collection import Collection
     from src.core.credential import CredentialAccess
     from src.core.defense import AntiDetectionManager
@@ -48,7 +50,16 @@ def test_tac_package_surfaces_resolve() -> None:
     from src.core.persistence import Persistence
     from src.core.privilege import PrivilegeEscalation
     from src.core.reconnaissance import ReconnaissanceManager
+    from src.core.reporting import APTReporting
     from src.core.resource import ResourceDevelopmentManager
+    from src.core.utils import Logger, get_logger
+
+    assert InitialAccessManager.__name__ == "InitialAccessManager"
+    assert BaseAPT.__name__ == "BaseAPT"
+    assert APT29.__name__ == "APT29"
+    assert APTReporting.__name__ == "APTReporting"
+    assert Logger.__name__ == "Logger"
+    assert callable(get_logger)
 
     assert AntiDetectionManager.__name__ == "AntiDetectionManager"
     assert DefenseEvasion.__name__ == "DefenseEvasion"
@@ -89,14 +100,30 @@ def test_relative_imports_inside_core_resolve() -> None:
     assert rl.RateLimiter is not None
     assert hasattr(sec, "SecurityManager")
 
-    pytest.importorskip("psutil")
     from src.core import anti_detection as ad
 
-    assert hasattr(ad, "AntiDetectionManager")
+    assert ad.AntiDetectionManager.__name__ == "AntiDetectionManager"
+
+
+def test_anti_detection_package_imports_without_psutil() -> None:
+    try:
+        import psutil as _unused_ps  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        pytest.skip("psutil installed; exercising no-psutil import path separately")
+
+    from importlib import reload
+
+    import src.core.anti_detection as ad
+
+    reload(ad)
+
+    mgr_cls = ad.AntiDetectionManager
+    assert mgr_cls.__name__ == "AntiDetectionManager"
 
 
 def test_threat_actor_imports_resolve_with_psutil() -> None:
-    pytest.importorskip("psutil")
     from src.core import threat_actor as ta
 
     assert hasattr(ta, "ThreatActor")

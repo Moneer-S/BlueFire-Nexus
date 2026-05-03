@@ -6,11 +6,20 @@ import sys
 import time
 from typing import Dict, Optional
 
-import psutil
-
-from .logger import get_logger
+from ..logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _get_psutil():
+    """Load psutil on demand so `import src.core.anti_detection` works without optional deps."""
+    try:
+        import psutil as _ps
+    except ImportError as exc:
+        raise ImportError(
+            "AntiDetectionManager anomaly checks require psutil. Install with: pip install psutil"
+        ) from exc
+    return _ps
 
 if platform.system() == "Windows":
     try:
@@ -275,6 +284,7 @@ class AntiDetectionManager:
     def _check_vm_hardware(self) -> bool:
         """Check for VM using hardware indicators."""
         try:
+            psutil = _get_psutil()
             # Check CPU vendor
             cpu_info = platform.processor().lower()
             vm_vendors = ['vmware', 'virtualbox', 'qemu', 'virtual']
@@ -302,6 +312,7 @@ class AntiDetectionManager:
     def _check_memory_anomalies(self) -> bool:
         """Check for memory anomalies."""
         try:
+            psutil = _get_psutil()
             # Check for memory size anomalies
             memory = psutil.virtual_memory()
             if memory.total < 1 * 1024 * 1024 * 1024:  # Less than 1GB
@@ -322,6 +333,7 @@ class AntiDetectionManager:
     def _check_cpu_anomalies(self) -> bool:
         """Check for CPU anomalies."""
         try:
+            psutil = _get_psutil()
             # Check for CPU usage anomalies
             cpu_percent = psutil.cpu_percent(interval=1)
             if cpu_percent > 90:  # High CPU usage
@@ -343,6 +355,7 @@ class AntiDetectionManager:
     def _check_disk_anomalies(self) -> bool:
         """Check for disk anomalies."""
         try:
+            psutil = _get_psutil()
             # Check for disk size anomalies
             disk = psutil.disk_usage('/')
             if disk.total < 10 * 1024 * 1024 * 1024:  # Less than 10GB
@@ -364,6 +377,7 @@ class AntiDetectionManager:
     def _check_network_anomalies(self) -> bool:
         """Check for network anomalies."""
         try:
+            psutil = _get_psutil()
             # Check for network interface anomalies
             interfaces = psutil.net_if_stats()
             if len(interfaces) < 1:
@@ -386,6 +400,7 @@ class AntiDetectionManager:
     def _check_process_anomalies(self) -> bool:
         """Check for process anomalies."""
         try:
+            psutil = _get_psutil()
             # Check for process count anomalies
             processes = psutil.process_iter()
             if len(list(processes)) < 10:  # Less than 10 processes
@@ -814,6 +829,7 @@ class AntiDetectionManager:
     def _get_active_adapter(self) -> Optional[str]:
         """Get name of active network adapter."""
         try:
+            psutil = _get_psutil()
             # Get network interfaces
             interfaces = psutil.net_if_stats()
 
@@ -825,6 +841,3 @@ class AntiDetectionManager:
             return None
         except Exception:
             return None
-
-# Create global anti-detection instance
-anti_detection = AntiDetectionManager()

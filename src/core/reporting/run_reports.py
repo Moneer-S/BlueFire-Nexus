@@ -1,4 +1,4 @@
-"""Run reporting helpers for BlueFire-Nexus."""
+"""Run reporting helpers for BlueFire-Nexus (JSON/Markdown/purple summaries)."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-from .models import ModuleResult
-from .risk import score_module_result
+from ..models import ModuleResult
+from ..risk import score_module_result
 
 
 def write_json_report(run_dir: Path, results: Dict[str, ModuleResult]) -> Path:
