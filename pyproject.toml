@@ -68,15 +68,42 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "B"]
-# Legacy modules contain extensive long lines (MITRE IDs, payloads); refactor incrementally.
-# CI enforces the rest (imports, whitespace, undefined names, etc.).
-ignore = [
-  "E501",
-  # Legacy operator modules use dense one-line if/try/for patterns; refactor module-by-module.
-  "E701",
-  # Re-raising in subprocess helpers predates PEP 415-style chaining across many call sites.
-  "B904",
-]
+# E501 stays global: MITRE/long-string legacy modules; refactor in focused passes if desired.
+ignore = ["E501"]
+
+# Keep E701/B904 enforced for the orchestration/modular spine; suppress only where legacy persists.
+extend-per-file-ignores."src/examples/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/legal_safeguards.py" = ["E701", "B904"]
+extend-per-file-ignores."src/modules/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/operators/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/access/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/actors/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/anti_detection/anti_detection.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/collection/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/command_control/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/credential/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/defense/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/defense_evasion/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/discovery/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/evasion/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/execution/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/exfiltration/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/impact/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/initial_access/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/intelligence/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/movement/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/network/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/persistence/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/privilege/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/reconnaissance/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/reporting/apt*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/reporting/apt_reporting.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/resource/**/*.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/anti_forensic.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/anti_sandbox.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/bluefire.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/crypto.py" = ["E701", "B904"]
+extend-per-file-ignores."src/core/dynamic_api.py" = ["E701", "B904"]
 
 [tool.mypy]
 python_version = "3.10"
