@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from ..anti_detection import AntiDetectionManager
-from ..network.network_obfuscator import NetworkObfuscator
+from ..network import NetworkObfuscator
 
 
 class BaseAPT:
