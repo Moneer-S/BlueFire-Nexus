@@ -1,7 +1,16 @@
 import ctypes
 import platform
+from typing import Any, Optional
 
-import psutil
+
+def _get_psutil() -> Optional[Any]:
+    """Lazy psutil so legacy runtime can load this module in minimal environments."""
+    try:
+        import psutil as _ps
+
+        return _ps
+    except ImportError:
+        return None
 
 
 class EnvironmentValidator:
@@ -14,6 +23,10 @@ class EnvironmentValidator:
 
     @staticmethod
     def check_memory() -> bool:
+        psutil = _get_psutil()
+        if psutil is None:
+            # Cannot measure; avoid false "low RAM" when dependency is absent
+            return True
         return psutil.virtual_memory().total >= 4 * 1024**3  # 4GB RAM check
 
     @staticmethod
@@ -28,11 +41,17 @@ class EnvironmentValidator:
         if platform.node().upper() in blacklist['hostname']:
             return True
 
+        psutil = _get_psutil()
+        if psutil is None:
+            return False
+
         # MAC check
         for _nic, addrs in psutil.net_if_addrs().items():
             if any(a.address[:8] in blacklist['mac'] for a in addrs):
                 return True
 
         # Process check
-        return any(p.name().lower() in blacklist['processes']
-            for p in psutil.process_iter(['name']))
+        return any(
+            p.name().lower() in blacklist['processes']
+            for p in psutil.process_iter(['name'])
+        )
