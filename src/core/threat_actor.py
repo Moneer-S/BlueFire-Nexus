@@ -208,17 +208,49 @@ class ThreatActor:
         """Get MITRE ATT&CK category for technique."""
         # Map technique IDs to categories
         category_map = {
-            "initial_access": ["T1190", "T1195", "T1196", "T1197", "T1198", "T1199", "T1200"],
-            "execution": ["T1059", "T1106", "T1129", "T1135", "T1203", "T1204", "T1216", "T1218", "T1220", "T1221"],
-            "persistence": ["T1053", "T1059", "T1060", "T1071", "T1098", "T1136", "T1137", "T1156", "T1176", "T1197"],
-            "privilege_escalation": ["T1068", "T1134", "T1157", "T1169", "T1178", "T1181", "T1182", "T1183", "T1184", "T1185"],
-            "defense_evasion": ["T1027", "T1036", "T1055", "T1070", "T1079", "T1088", "T1099", "T1107", "T1112", "T1116"],
-            "credential_access": ["T1003", "T1004", "T1012", "T1016", "T1018", "T1021", "T1027", "T1039", "T1040", "T1041"],
-            "discovery": ["T1010", "T1012", "T1016", "T1018", "T1021", "T1033", "T1049", "T1057", "T1069", "T1082"],
-            "lateral_movement": ["T1021", "T1028", "T1029", "T1037", "T1040", "T1048", "T1051", "T1052", "T1053", "T1054"],
-            "collection": ["T1005", "T1006", "T1007", "T1008", "T1009", "T1010", "T1011", "T1012", "T1013", "T1014"],
-            "exfiltration": ["T1001", "T1002", "T1003", "T1004", "T1005", "T1006", "T1007", "T1008", "T1009", "T1010"],
-            "command_and_control": ["T1001", "T1002", "T1003", "T1004", "T1005", "T1006", "T1007", "T1008", "T1009", "T1010"]
+            "initial_access": [
+                "T1190", "T1195", "T1196", "T1197", "T1198", "T1199", "T1200",
+            ],
+            "execution": [
+                "T1059", "T1106", "T1129", "T1135", "T1203", "T1204",
+                "T1216", "T1218", "T1220", "T1221",
+            ],
+            "persistence": [
+                "T1053", "T1059", "T1060", "T1071", "T1098", "T1136",
+                "T1137", "T1156", "T1176", "T1197",
+            ],
+            "privilege_escalation": [
+                "T1068", "T1134", "T1157", "T1169", "T1178", "T1181",
+                "T1182", "T1183", "T1184", "T1185",
+            ],
+            "defense_evasion": [
+                "T1027", "T1036", "T1055", "T1070", "T1079", "T1088",
+                "T1099", "T1107", "T1112", "T1116",
+            ],
+            "credential_access": [
+                "T1003", "T1004", "T1012", "T1016", "T1018", "T1021",
+                "T1027", "T1039", "T1040", "T1041",
+            ],
+            "discovery": [
+                "T1010", "T1012", "T1016", "T1018", "T1021", "T1033",
+                "T1049", "T1057", "T1069", "T1082",
+            ],
+            "lateral_movement": [
+                "T1021", "T1028", "T1029", "T1037", "T1040", "T1048",
+                "T1051", "T1052", "T1053", "T1054",
+            ],
+            "collection": [
+                "T1005", "T1006", "T1007", "T1008", "T1009", "T1010",
+                "T1011", "T1012", "T1013", "T1014",
+            ],
+            "exfiltration": [
+                "T1001", "T1002", "T1003", "T1004", "T1005", "T1006",
+                "T1007", "T1008", "T1009", "T1010",
+            ],
+            "command_and_control": [
+                "T1001", "T1002", "T1003", "T1004", "T1005", "T1006",
+                "T1007", "T1008", "T1009", "T1010",
+            ],
         }
 
         for category, techniques in category_map.items():
@@ -227,7 +259,12 @@ class ThreatActor:
 
         return "unknown"
 
-    def _execute_category_technique(self, category: str, technique_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def _execute_category_technique(
+        self,
+        category: str,
+        technique_id: str,
+        parameters: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """Execute technique based on MITRE ATT&CK category."""
         try:
             if category == "initial_access":
