@@ -92,6 +92,40 @@ def test_discovery_package_exports_class_when_deps_available() -> None:
     assert Discovery.__name__ == "Discovery"
 
 
+def test_discovery_subprocess_only_paths_without_psutil_when_absent() -> None:
+    """User/account discovery must not require psutil (Linux path uses pwd/id)."""
+    try:
+        import psutil as _ps  # noqa: F401
+
+        pytest.skip("psutil installed")
+    except ImportError:
+        pass
+
+    from src.core.discovery.discovery import Discovery as DiscoveryImpl
+
+    d = DiscoveryImpl()
+    out = d.discover({"discover": {"user_info": True}})
+    assert out["status"] == "success"
+    assert "user_info" in out["results"]
+
+
+def test_discovery_psutil_handles_fail_explicitly_when_psutil_absent() -> None:
+    try:
+        import psutil as _ps  # noqa: F401
+
+        pytest.skip("psutil installed")
+    except ImportError:
+        pass
+
+    from src.core.discovery.discovery import Discovery as DiscoveryImpl
+
+    d = DiscoveryImpl()
+    out = d.discover({"discover": {"system_info": True}})
+    assert out["status"] == "failure"
+    assert out["errors"]
+    assert any("psutil" in err.lower() for err in out["errors"])
+
+
 def test_relative_imports_inside_core_resolve() -> None:
     """Package-local imports (`from .logger`) must resolve when core is imported as a package."""
     from src.core import rate_limiter as rl

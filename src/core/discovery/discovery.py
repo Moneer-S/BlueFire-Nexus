@@ -15,7 +15,18 @@ import subprocess
 from datetime import datetime
 from typing import Any, Dict
 
-import psutil
+
+def _require_psutil():
+    """Load psutil on demand so `Discovery` import works without optional deps."""
+    try:
+        import psutil as _ps
+
+        return _ps
+    except ImportError as exc:
+        raise ImportError(
+            "Discovery system/process/service metrics require psutil. Install with: pip install psutil"
+        ) from exc
+
 
 try:
     import nmap
@@ -270,6 +281,7 @@ class Discovery:
 
     def _handle_system_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Gather basic system information using platform and psutil."""
+        psutil = _require_psutil()
         self.logger.info("Gathering system information.")
         details = {}
         try:
@@ -375,6 +387,7 @@ class Discovery:
 
     def _handle_process_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Gather running process information using psutil."""
+        psutil = _require_psutil()
         self.logger.info("Gathering process information.")
         process_list = []
         attrs = data.get("attrs", self.config.get("process_info_attrs", ['pid', 'name', 'username']))
@@ -415,6 +428,7 @@ class Discovery:
 
     def _handle_service_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Gather service information (OS-dependent)."""
+        psutil = _require_psutil()
         self.logger.info("Gathering service information.")
         services = []
         os_type = platform.system()
@@ -597,6 +611,18 @@ class Discovery:
         except Exception as e:
             self.logger.error(f"Error gathering service info: {str(e)}", exc_info=True)
             raise
+
+    def _handle_network_scan(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Catalog alias for Nmap-backed host discovery (see `discover.host_discovery`)."""
+        return self._handle_host_discovery(data)
+
+    def _handle_port_scan(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Catalog alias for Nmap-backed port/service scan (see `discover.port_service_scan`)."""
+        return self._handle_port_service_scan(data)
+
+    def _handle_service_scan(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Catalog alias; same runner as `_handle_port_scan`."""
+        return self._handle_port_service_scan(data)
 
     def _handle_host_discovery(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Perform host discovery (e.g., ping scan) using Nmap."""
