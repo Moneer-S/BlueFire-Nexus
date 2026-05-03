@@ -350,9 +350,12 @@ class Discovery:
                 addrs = []
                 for address in interface_addresses:
                     addr_info = {"family": str(address.family).split('.')[-1]}
-                    if address.address: addr_info["address"] = address.address
-                    if address.netmask: addr_info["netmask"] = address.netmask
-                    if address.broadcast: addr_info["broadcast"] = address.broadcast
+                    if address.address:
+                        addr_info["address"] = address.address
+                    if address.netmask:
+                        addr_info["netmask"] = address.netmask
+                    if address.broadcast:
+                        addr_info["broadcast"] = address.broadcast
                     addrs.append(addr_info)
                 details["network_interfaces"].append({"name": interface_name, "addresses": addrs})
 
@@ -430,8 +433,12 @@ class Discovery:
                            except Exception as e:
                                 self.logger.warning(f"Could not get full info for service '{service.name()}': {e}")
                                 try:
-                                     services.append({"name": service.name(), "error": f"Partial info due to: {e}"})
-                                except Exception: pass
+                                    services.append({
+                                        "name": service.name(),
+                                        "error": f"Partial info due to: {e}",
+                                    })
+                                except Exception:
+                                    pass
                  except ImportError:
                       self.logger.warning("psutil win_service_iter not available on this system. Attempting 'sc query'.")
                       try:
@@ -458,12 +465,12 @@ class Discovery:
                            else:
                                 self.logger.error(f"'sc query' failed or returned empty. Code: {process.returncode}, Error: {process.stderr}")
                                 raise OSError(f"'sc query' failed: {process.stderr or 'No output'}")
-                      except FileNotFoundError:
+                      except FileNotFoundError as exc:
                            self.logger.error("'sc' command not found. Cannot list Windows services.")
-                           raise FileNotFoundError("'sc' command not found.")
-                      except subprocess.TimeoutExpired:
+                           raise FileNotFoundError("'sc' command not found.") from exc
+                      except subprocess.TimeoutExpired as exc:
                            self.logger.error("'sc query' timed out.")
-                           raise TimeoutError("'sc query' timed out.")
+                           raise TimeoutError("'sc query' timed out.") from exc
                       except Exception as e:
                            self.logger.error(f"Failed to list Windows services using 'sc query': {e}", exc_info=True)
                            raise
@@ -500,7 +507,8 @@ class Discovery:
                                    service_info = service.as_dict()
                                    service_info["source"] = "psutil"
                                    services.append(service_info)
-                              if not services: raise NotImplementedError
+                              if not services:
+                                  raise NotImplementedError
                          except (AttributeError, NotImplementedError, ImportError):
                               self.logger.warning("psutil service iteration not available or did not find services. Cannot list Linux services definitively.")
 
@@ -511,13 +519,20 @@ class Discovery:
                               service_info = service.as_dict()
                               service_info["source"] = "psutil"
                               services.append(service_info)
-                         if not services: raise NotImplementedError
-                    except (AttributeError, NotImplementedError, ImportError):
+                         if not services:
+                             raise NotImplementedError
+                    except (
+                        AttributeError,
+                        NotImplementedError,
+                        ImportError,
+                    ) as exc:
                          self.logger.warning("psutil service iteration not available. Cannot list Linux services.")
-                         raise NotImplementedError("No known method available to list Linux services on this system.")
-                except subprocess.TimeoutExpired:
+                         raise NotImplementedError(
+                             "No known method available to list Linux services on this system."
+                         ) from exc
+                except subprocess.TimeoutExpired as exc:
                     self.logger.error("'systemctl list-units' timed out.")
-                    raise TimeoutError("'systemctl list-units' timed out.")
+                    raise TimeoutError("'systemctl list-units' timed out.") from exc
                 except Exception as e:
                     self.logger.error(f"Failed to list Linux services using 'systemctl': {e}", exc_info=True)
                     try:
@@ -525,8 +540,13 @@ class Discovery:
                               service_info = service.as_dict()
                               service_info["source"] = "psutil"
                               services.append(service_info)
-                         if not services: raise NotImplementedError
-                    except (AttributeError, NotImplementedError, ImportError):
+                         if not services:
+                             raise NotImplementedError
+                    except (
+                        AttributeError,
+                        NotImplementedError,
+                        ImportError,
+                    ):
                          self.logger.warning("psutil service iteration not available.")
                          raise
 
@@ -547,12 +567,12 @@ class Discovery:
                       else:
                            self.logger.error(f"'launchctl list' failed or returned empty. Code: {process.returncode}, Error: {process.stderr}")
                            raise OSError(f"'launchctl list' failed: {process.stderr or 'No output'}")
-                 except FileNotFoundError:
+                 except FileNotFoundError as exc:
                       self.logger.error("'launchctl' command not found. Cannot list macOS services.")
-                      raise FileNotFoundError("'launchctl' command not found.")
-                 except subprocess.TimeoutExpired:
+                      raise FileNotFoundError("'launchctl' command not found.") from exc
+                 except subprocess.TimeoutExpired as exc:
                       self.logger.error("'launchctl list' timed out.")
-                      raise TimeoutError("'launchctl list' timed out.")
+                      raise TimeoutError("'launchctl list' timed out.") from exc
                  except Exception as e:
                       self.logger.error(f"Failed to list macOS services using 'launchctl': {e}", exc_info=True)
                       raise
@@ -634,7 +654,7 @@ class Discovery:
 
         except nmap.nmap.PortScannerError as e:
             self.logger.error(f"Nmap PortScannerError during host discovery: {e}", exc_info=True)
-            raise ConnectionError(f"Nmap error: {e}") # Raise a more general error
+            raise ConnectionError(f"Nmap error: {e}") from e
         except Exception as e:
             self.logger.error(f"Error during host discovery: {str(e)}", exc_info=True)
             raise
@@ -721,7 +741,7 @@ class Discovery:
 
         except nmap.nmap.PortScannerError as e:
             self.logger.error(f"Nmap PortScannerError during port/service scan: {e}", exc_info=True)
-            raise ConnectionError(f"Nmap error: {e}")
+            raise ConnectionError(f"Nmap error: {e}") from e
         except Exception as e:
             self.logger.error(f"Error during port/service scan: {str(e)}", exc_info=True)
             raise
@@ -748,7 +768,8 @@ class Discovery:
                 else:
                     self.logger.warning(f"'whoami /all' failed: {err}")
                     ret_simple, out_simple, _ = self._run_command(["whoami"])
-                    if ret_simple == 0: details["current_user"]["username"] = out_simple.strip()
+                    if ret_simple == 0:
+                        details["current_user"]["username"] = out_simple.strip()
 
                 # List all local users
                 ret, out, err = self._run_command(["net", "user"])
@@ -758,7 +779,8 @@ class Discovery:
                     user_lines = []
                     in_users_section = False
                     for line in lines:
-                         if line.startswith("User accounts for"): continue
+                         if line.startswith("User accounts for"):
+                             continue
                          if line.startswith("-----"):
                               in_users_section = True
                               continue
@@ -775,8 +797,10 @@ class Discovery:
             elif os_type in ["Linux", "Darwin"]:
                 # Current user via id
                 ret, out, err = self._run_command(["id"])
-                if ret == 0: details["current_user"]["id_output"] = out.strip()
-                else: self.logger.warning(f"'id' command failed: {err}")
+                if ret == 0:
+                    details["current_user"]["id_output"] = out.strip()
+                else:
+                    self.logger.warning(f"'id' command failed: {err}")
 
                 # List all users from passwd
                 try:
@@ -841,7 +865,8 @@ class Discovery:
                     group_lines = []
                     in_groups_section = False
                     for line in lines:
-                         if line.startswith("Aliases for"): continue
+                         if line.startswith("Aliases for"):
+                             continue
                          if line.startswith("-----"):
                               in_groups_section = True
                               continue
@@ -1005,12 +1030,12 @@ class Discovery:
                                      timeout=timeout, encoding='utf-8', errors='ignore')
             self.logger.debug(f"Command finished. Return code: {process.returncode}")
             return process.returncode, process.stdout, process.stderr
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             self.logger.error(f"Command not found: {cmd[0]}")
-            raise FileNotFoundError(f"Required command '{cmd[0]}' not found.")
-        except subprocess.TimeoutExpired:
+            raise FileNotFoundError(f"Required command '{cmd[0]}' not found.") from exc
+        except subprocess.TimeoutExpired as exc:
             self.logger.error(f"Command timed out after {timeout}s: {' '.join(cmd)}")
-            raise TimeoutError(f"Command '{cmd[0]}' timed out.")
+            raise TimeoutError(f"Command '{cmd[0]}' timed out.") from exc
         except subprocess.CalledProcessError as e:
              self.logger.error(f"Command '{' '.join(cmd)}' failed with return code {e.returncode}. Stderr: {e.stderr}")
              # Don't raise here if check_error is False, return the outputs
