@@ -71,14 +71,7 @@ select = ["E", "F", "I", "W", "B"]
 # E501 stays global: MITRE/long-string legacy modules; refactor in focused passes if desired.
 ignore = ["E501"]
 
-# Keep E701/B904 enforced for the orchestration/modular spine; suppress only where legacy persists.
-extend-per-file-ignores."src/examples/*.py" = ["E701", "B904"]
-extend-per-file-ignores."src/legal_safeguards.py" = ["E701", "B904"]
-extend-per-file-ignores."src/modules/*.py" = ["E701", "B904"]
-extend-per-file-ignores."src/operators/**/*.py" = ["E701", "B904"]
-extend-per-file-ignores."src/core/actors/**/*.py" = ["E701", "B904"]
-extend-per-file-ignores."src/core/reporting/apt*.py" = ["E701", "B904"]
-extend-per-file-ignores."src/core/reporting/apt_reporting.py" = ["E701", "B904"]
+# E701/B904 enforced repo-wide alongside E/F/I/W/B (E501 still ignored globally).
 
 [tool.mypy]
 python_version = "3.10"

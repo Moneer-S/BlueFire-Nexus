@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 from src.core.anti_detection import AntiDetectionManager
 from src.core.intelligence.apt28_intelligence import APT28Intelligence
-from src.core.network.network_obfuscator import NetworkObfuscator
+from src.core.network import NetworkObfuscator
 
 
 class APT28:

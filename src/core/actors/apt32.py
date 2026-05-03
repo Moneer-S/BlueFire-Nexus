@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 from ..anti_detection import AntiDetectionManager
 from ..intelligence.apt28_intelligence import APT28Intelligence as APT32Intelligence
-from ..network.network_obfuscator import NetworkObfuscator
+from ..network import NetworkObfuscator
 
 
 class APT32:

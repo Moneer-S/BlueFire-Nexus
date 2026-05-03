@@ -39,7 +39,7 @@ class AdvancedEvasion:
         try:
             self._exec_asm(asm.encode(), payload)
         except Exception as e:
-            raise RuntimeError(f"Failed to execute foliage obfuscation: {e}")
+            raise RuntimeError(f"Failed to execute foliage obfuscation: {e}") from e
 
     def _exec_asm(self, shellcode: bytes, data: bytes):
         """
