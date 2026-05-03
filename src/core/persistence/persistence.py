@@ -133,7 +133,7 @@ class Persistence:
 
         logger.info(f"Attempting to establish persistence via '{technique}' on {self.os_type}")
         try:
-            # Delegate to the OS-specific handler's establish method or directly call the mapped handler
+            # Delegate to the OS-specific handler (`establish`) or mapped handler path.
             # Using a dedicated establish method in the OS handler class is cleaner
             result = self.os_handler.establish(technique, details)
             return result

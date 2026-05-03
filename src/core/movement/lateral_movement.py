@@ -12,6 +12,14 @@ from pathlib import Path
 from typing import Any, Dict
 
 
+def _powershell_credential_param(username: str, password: str) -> str:
+    return (
+        " -Credential (New-Object System.Management.Automation.PSCredential("
+        f"'{username}', (ConvertTo-SecureString '{password}' "
+        "-AsPlainText -Force)))"
+    )
+
+
 class LateralMovement:
     """Handles lateral movement for all APT implementations"""
 
@@ -390,7 +398,7 @@ class LateralMovement:
                 if "username" in data and "password" in data:
                     username = data.get("username")
                     password = data.get("password")
-                    wmi_cmd += f" -Credential (New-Object System.Management.Automation.PSCredential('{username}', (ConvertTo-SecureString '{password}' -AsPlainText -Force)))"
+                    wmi_cmd += _powershell_credential_param(username, password)
                     result["details"]["auth_method"] = "explicit_credentials"
                 else:
                     result["details"]["auth_method"] = "current_user"
@@ -477,7 +485,7 @@ class LateralMovement:
                 if "username" in data and "password" in data:
                     username = data.get("username")
                     password = data.get("password")
-                    ps_cmd += f" -Credential (New-Object System.Management.Automation.PSCredential('{username}', (ConvertTo-SecureString '{password}' -AsPlainText -Force)))"
+                    ps_cmd += _powershell_credential_param(username, password)
                     result["details"]["auth_method"] = "explicit_credentials"
                 else:
                     result["details"]["auth_method"] = "current_user"
@@ -499,7 +507,7 @@ class LateralMovement:
                 if "username" in data and "password" in data:
                     username = data.get("username")
                     password = data.get("password")
-                    ps_cmd += f" -Credential (New-Object System.Management.Automation.PSCredential('{username}', (ConvertTo-SecureString '{password}' -AsPlainText -Force)))"
+                    ps_cmd += _powershell_credential_param(username, password)
                     result["details"]["auth_method"] = "explicit_credentials"
                 else:
                     result["details"]["auth_method"] = "current_user"
@@ -517,12 +525,15 @@ class LateralMovement:
                 if "username" in data and "password" in data:
                     username = data.get("username")
                     password = data.get("password")
-                    ps_cmd += f" -Credential (New-Object System.Management.Automation.PSCredential('{username}', (ConvertTo-SecureString '{password}' -AsPlainText -Force)))"
+                    ps_cmd += _powershell_credential_param(username, password)
                     result["details"]["auth_method"] = "explicit_credentials"
                 else:
                     result["details"]["auth_method"] = "current_user"
 
-                ps_cmd += f"; Invoke-Command -Session $session -ScriptBlock {{ {command} }}; Remove-PSSession $session"
+                ps_cmd += (
+                    f"; Invoke-Command -Session $session -ScriptBlock {{ {command} }}; "
+                    "Remove-PSSession $session"
+                )
                 result["details"]["powershell_method"] = "New-PSSession with Invoke-Command"
 
             # Full PowerShell command with wrapper
@@ -638,7 +649,11 @@ class LateralMovement:
 
             elif method == "powershell":
                 # Using PowerShell Copy-Item
-                cmd = f"powershell -Command \"Copy-Item -Path '{source_file}' -Destination '\\\\{target}\\{share}\\{dest_file}'\""
+                dest_unc = rf"\\{target}\{share}\{dest_file}"
+                cmd = (
+                    'powershell -Command "'
+                    rf"Copy-Item -Path '{source_file}' -Destination '{dest_unc}'\""
+                )
                 result["details"]["command"] = cmd
 
                 # Add authentication details if provided
@@ -646,7 +661,7 @@ class LateralMovement:
                     username = data.get("username")
                     password = data.get("password")
                     # PowerShell credential block
-                    cred_part = f" -Credential (New-Object System.Management.Automation.PSCredential('{username}', (ConvertTo-SecureString '{password}' -AsPlainText -Force)))"
+                    cred_part = _powershell_credential_param(username, password)
                     cmd += cred_part
                     result["details"]["command"] = cmd
                     result["details"]["auth_method"] = "explicit_credentials"
@@ -669,23 +684,25 @@ class LateralMovement:
             if method == "copy":
                 output = "        1 file(s) copied.\n"
             elif method == "robocopy":
-                output = "-------------------------------------------------------------------------------\n"
-                output += "   ROBOCOPY     ::     Robust File Copy for Windows                              \n"
-                output += "-------------------------------------------------------------------------------\n\n"
+                hdr = "=" * 79 + "\n"
+                output = hdr + "   ROBOCOPY :: Robust File Copy for Windows\n" + hdr + "\n"
                 output += f"  Started : {datetime.now().strftime('%a %b %d %H:%M:%S %Y')}\n"
                 output += f"   Source : {source_dir}\\\n"
-                output += (
-                    f"     Dest : \\\\{target}\\{share}\\{os.path.dirname(dest_file) or '.'}\\\n\n"
-                )
+                dest_leaf = os.path.dirname(dest_file) or "."
+                output += f"     Dest : \\\\{target}\\{share}\\{dest_leaf}\\\n\n"
                 output += f"    Files : {source_filename}\n\n"
                 output += "  Options : /R:1 /W:1 /DCOPY:DA /COPY:DAT /NP \n\n"
-                output += "------------------------------------------------------------------------------\n\n"
+                sep = "-" * 78 + "\n\n"
+                output += sep
                 output += f"                           1    {source_filename}\n"
-                output += "------------------------------------------------------------------------------\n\n"
+                output += "-" * 78 + "\n\n"
                 output += "               Total    Copied   Skipped  Mismatch    FAILED    Extras\n"
                 output += "    Dirs :         1         0         1         0         0         0\n"
                 output += "   Files :         1         1         0         0         0         0\n"
-                output += f"   Bytes :    {file_size}    {file_size}         0         0         0         0\n"
+                output += (
+                    f"   Bytes :    {file_size}    {file_size}         0"
+                    "         0         0         0\n"
+                )
                 output += "   Times :   0:00:00   0:00:00                       0:00:00   0:00:00\n"
             else:  # powershell
                 output = ""  # PowerShell typically has no output on successful copy
@@ -761,9 +778,12 @@ class LateralMovement:
 
             elif method == "powershell":
                 # Using PowerShell for FTP
+                nc = (
+                    "$client.Credentials = New-Object "
+                    f"System.Net.NetworkCredential('{username}', '{password}')\n"
+                )
                 ps_cmd = (
-                    f"$client = New-Object System.Net.WebClient\n"
-                    f"$client.Credentials = New-Object System.Net.NetworkCredential('{username}', '{password}')\n"
+                    f"$client = New-Object System.Net.WebClient\n{nc}"
                     f"$uri = 'ftp://{target}:{port}/{dest_file}'\n"
                     f"$client.UploadFile($uri, '{source_file}')"
                 )
@@ -773,7 +793,10 @@ class LateralMovement:
 
             elif method == "curl":
                 # Using curl for FTP upload
-                cmd = f'curl -T "{source_file}" ftp://{target}:{port}/{dest_file} --user {username}:{password}'
+                cmd = (
+                    f'curl -T "{source_file}" ftp://{target}:{port}/{dest_file} '
+                    f"--user {username}:{password}"
+                )
                 result["details"]["command"] = cmd
 
             # Execute command (simulation)
@@ -800,14 +823,31 @@ class LateralMovement:
                 output += "200 PORT command successful.\n"
                 output += f"150 Opening BINARY mode data connection for {dest_file}.\n"
                 output += "226 Transfer complete.\n"
-                output += f"ftp: {file_size} bytes sent in {execution_time:.2f}Seconds {int(file_size / execution_time):.2f}Bytes/sec.\n"
+                bps = int(file_size / execution_time) if execution_time > 0 else 0
+                output += (
+                    f"ftp: {file_size} bytes sent in {execution_time:.2f}Seconds "
+                    f"{bps:.2f}Bytes/sec.\n"
+                )
                 output += "221 Goodbye.\n"
             elif method == "powershell":
                 output = ""  # PowerShell typically has no output on successful transfer
             elif method == "curl":
-                output = "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n"
-                output += "                                 Dload  Upload   Total   Spent    Left  Speed\n"
-                output += f"100 {file_size / 1024:.1f}k    0     0  100 {file_size / 1024:.1f}k      0  {file_size / 1024 / execution_time:.1f}k  0:00:0{int(execution_time)} --:--:--  0:00:0{int(execution_time)} {int(file_size / execution_time)}\n"
+                output = (
+                    "  % Total    % Received % Xferd  Average Speed   Time"
+                    "    Time     Time  Current\n"
+                )
+                output += (
+                    "                                 Dload  Upload   Total   "
+                    "Spent    Left  Speed\n"
+                )
+                fk = file_size / 1024
+                fkps = fk / execution_time if execution_time > 0 else 0
+                et = int(execution_time)
+                cps = int(file_size / execution_time) if execution_time > 0 else 0
+                output += (
+                    f"100 {fk:.1f}k    0     0  100 {fk:.1f}k      0  {fkps:.1f}k  "
+                    f"0:00:0{et} --:--:--  0:00:0{et} {cps}\n"
+                )
 
             result["details"]["command_output"] = output
             result["details"]["execution_time"] = execution_time
@@ -862,7 +902,8 @@ class LateralMovement:
                 # Using password authentication (would require sshpass in real implementation)
                 if "password" in data:
                     password = data.get("password")
-                    cmd = f"sshpass -p '{password}' scp -P {port} \"{source_file}\" {username}@{target}:{dest_path}"
+                    remote = f"{username}@{target}:{dest_path}"
+                    cmd = f"sshpass -p '{password}' scp -P {port} \"{source_file}\" {remote}"
                     result["details"]["auth_details"] = "password authentication via sshpass"
                 else:
                     # Without sshpass, would prompt for password
@@ -909,7 +950,10 @@ class LateralMovement:
             # Simulated output
             output = ""
             if "verbose" in data and data["verbose"]:
-                output = f"Executing: program /usr/bin/ssh host {target} port {port} command scp -v -t {dest_path}\n"
+                output = (
+                    f"Executing: program /usr/bin/ssh host {target} port {port} "
+                    f"command scp -v -t {dest_path}\n"
+                )
                 output += "OpenSSH_8.2p1 Ubuntu-4ubuntu0.5, OpenSSL 1.1.1f  31 Mar 2020\n"
                 output += "debug1: Reading configuration data /etc/ssh/ssh_config\n"
                 output += f"debug1: Authenticating to {target}:{port} as '{username}'\n"
@@ -917,14 +961,24 @@ class LateralMovement:
                 output += "debug1: channel 0: new [client-session]\n"
                 output += f"debug1: Sending command: scp -v -t {dest_path}\n"
                 output += f"Sending file modes: C0644 {file_size} {os.path.basename(source_file)}\n"
-                output += f"{source_file}                                  100% {file_size / 1024:.1f}KB {int(file_size / 1024 / execution_time):.1f}KB/s   00:00\n"
+                kb_sec = file_size / 1024 / execution_time if execution_time > 0 else 0.0
+                output += (
+                    f"{source_file}                                  "
+                    f"100% {file_size / 1024:.1f}KB "
+                    f"{kb_sec:.1f}KB/s   00:00\n"
+                )
                 output += "debug1: client_input_channel_req: channel 0 rtype exit-status reply 0\n"
                 output += "debug1: channel 0: free: client-session, nchannels 1\n"
                 output += "Transferred: sent 36.4KB, received 3.5KB, 80.4KB total\n"
                 output += "Bytes per second: sent 72.7KB/s, received 7.1KB/s, 160.7KB/s total\n"
                 output += "debug1: Exit status 0\n"
             elif "quiet" not in data or not data["quiet"]:
-                output = f"{source_file}                                  100% {file_size / 1024:.1f}KB {int(file_size / 1024 / execution_time):.1f}KB/s   00:00\n"
+                kb_sec = file_size / 1024 / execution_time if execution_time > 0 else 0.0
+                output = (
+                    f"{source_file}                                  "
+                    f"100% {file_size / 1024:.1f}KB "
+                    f"{kb_sec:.1f}KB/s   00:00\n"
+                )
 
             result["details"]["command_output"] = output
             result["details"]["execution_time"] = execution_time
@@ -1080,7 +1134,11 @@ class LateralMovement:
 
                 # Start service if requested
                 if "start_service" in data and data["start_service"]:
-                    ps_cmd += f"; Invoke-CimMethod -ComputerName {target} -InputObject $service -MethodName StartService"
+                    ps_cmd += (
+                        "; Invoke-CimMethod -ComputerName "
+                        f"{target} -InputObject $service "
+                        "-MethodName StartService"
+                    )
                     result["details"]["start_service"] = True
 
                 # Wrap in PowerShell command
@@ -1192,17 +1250,28 @@ class LateralMovement:
 
             elif method == "powershell":
                 ps_cmd = ""
+                hk_svc = rf"HKLM:\SYSTEM\CurrentControlSet\Services\{service_name}"
                 if mod_type == "binary_path":
-                    ps_cmd = f"Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{service_name}' -Name 'ImagePath' -Value '{mod_value}'"
+                    ps_cmd = (
+                        f"Set-ItemProperty -Path '{hk_svc}' -Name 'ImagePath' -Value '{mod_value}'"
+                    )
                 elif mod_type == "start_type":
                     start_type_value = (
                         2 if mod_value == "auto" else 3 if mod_value == "manual" else 4
-                    )  # 2=Auto, 3=Manual, 4=Disabled
-                    ps_cmd = f"Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{service_name}' -Name 'Start' -Value {start_type_value}"
+                    )
+                    ps_cmd = (
+                        f"Set-ItemProperty -Path '{hk_svc}' -Name 'Start' -Value {start_type_value}"
+                    )
                 elif mod_type == "description":
-                    ps_cmd = f"Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{service_name}' -Name 'Description' -Value '{mod_value}'"
+                    ps_cmd = (
+                        f"Set-ItemProperty -Path '{hk_svc}' -Name 'Description' "
+                        f"-Value '{mod_value}'"
+                    )
                 elif mod_type == "display_name":
-                    ps_cmd = f"Set-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{service_name}' -Name 'DisplayName' -Value '{mod_value}'"
+                    ps_cmd = (
+                        f"Set-ItemProperty -Path '{hk_svc}' -Name 'DisplayName' "
+                        f"-Value '{mod_value}'"
+                    )
 
                 # Add computer name for remote execution
                 ps_cmd += f" -ComputerName {target}"
@@ -1212,8 +1281,12 @@ class LateralMovement:
                 result["details"]["command"] = cmd
 
             elif method == "wmi":
-                # Using WMI to modify service
-                ps_cmd = f"$service = Get-WmiObject -ComputerName {target} -Class Win32_Service -Filter \"Name='{service_name}'\"; "
+                ps_cmd = (
+                    f"$service = Get-WmiObject -ComputerName {target} "
+                    f'-Class Win32_Service -Filter "Name='
+                    f"'{service_name}'\""
+                    "); "
+                )
 
                 if mod_type == "binary_path":
                     ps_cmd += f"$service.PathName = '{mod_value}'; "
@@ -1312,7 +1385,10 @@ class LateralMovement:
                 elif action == "start":
                     cmd = f"sc \\\\{target} start {service_name}"
                 elif action == "restart":
-                    cmd = f"sc \\\\{target} stop {service_name} & sc \\\\{target} start {service_name}"
+                    cmd = (
+                        f"sc \\\\{target} stop {service_name} & "
+                        f"sc \\\\{target} start {service_name}"
+                    )
                 elif action == "delete":
                     cmd = f"sc \\\\{target} delete {service_name}"
                     result["details"]["warning"] = "Service deletion is a destructive operation"
@@ -1329,7 +1405,12 @@ class LateralMovement:
                 elif action == "restart":
                     ps_cmd = f"Restart-Service -Name '{service_name}' -ComputerName {target} -Force"
                 elif action == "delete":
-                    ps_cmd = f"(Get-WmiObject -ComputerName {target} -Class Win32_Service -Filter \"Name='{service_name}'\").Delete()"
+                    filt = rf"Name='{service_name}'"
+                    ps_cmd = (
+                        f"(Get-WmiObject -ComputerName {target} "
+                        f"-Class Win32_Service "
+                        rf'-Filter "{filt}").Delete()'
+                    )
                     result["details"]["warning"] = "Service deletion is a destructive operation"
                 elif action == "query":
                     ps_cmd = (
@@ -1347,9 +1428,13 @@ class LateralMovement:
                     cmd = f"net start \\\\{target} {service_name}"
                 # No direct restart or delete in net commands
                 elif action == "restart":
-                    cmd = f"net stop \\\\{target} {service_name} && net start \\\\{target} {service_name}"
+                    cmd = (
+                        f"net stop \\\\{target} {service_name} && "
+                        f"net start \\\\{target} {service_name}"
+                    )
                 elif action == "query":
-                    cmd = "net helpmsg 3521"  # Not a real query, but net commands have limited service info
+                    # Placeholder (net lacks rich service introspection).
+                    cmd = "net helpmsg 3521"
 
                 result["details"]["command"] = cmd
 
@@ -1367,7 +1452,10 @@ class LateralMovement:
                     )
                     # Alternatively: "[SC] ControlService SUCCESS" for success case
                 elif action == "start":
-                    output = "[SC] StartService FAILED 1056:\n\nAn instance of the service is already running.\n"
+                    output = (
+                        "[SC] StartService FAILED 1056:\n\n"
+                        "An instance of the service is already running.\n"
+                    )
                     # Alternatively: "[SC] StartService SUCCESS" for success case
                 elif action == "restart":
                     output = "[SC] ControlService SUCCESS\n[SC] StartService SUCCESS\n"
@@ -1377,7 +1465,10 @@ class LateralMovement:
                     output = f"SERVICE_NAME: {service_name}\n"
                     output += "        TYPE               : 10  WIN32_OWN_PROCESS\n"
                     output += "        STATE              : 4  RUNNING\n"
-                    output += "                                (STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)\n"
+                    output += (
+                        "                                (STOPPABLE, "
+                        "NOT_PAUSABLE, ACCEPTS_SHUTDOWN)\n"
+                    )
                     output += "        WIN32_EXIT_CODE    : 0  (0x0)\n"
                     output += "        SERVICE_EXIT_CODE  : 0  (0x0)\n"
                     output += "        CHECKPOINT         : 0x0\n"
@@ -1397,9 +1488,15 @@ class LateralMovement:
 
             elif method == "net":
                 if action == "stop":
-                    output = f"The {service_name} service is stopping.\nThe {service_name} service was stopped successfully.\n"
+                    output = (
+                        f"The {service_name} service is stopping.\n"
+                        f"The {service_name} service was stopped successfully.\n"
+                    )
                 elif action == "start":
-                    output = f"The {service_name} service is starting.\nThe {service_name} service was started successfully.\n"
+                    output = (
+                        f"The {service_name} service is starting.\n"
+                        f"The {service_name} service was started successfully.\n"
+                    )
 
             result["details"]["command_output"] = output
             result["details"]["execution_time"] = execution_time

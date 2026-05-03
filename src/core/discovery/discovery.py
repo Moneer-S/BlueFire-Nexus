@@ -24,7 +24,8 @@ def _require_psutil():
         return _ps
     except ImportError as exc:
         raise ImportError(
-            "Discovery system/process/service metrics require psutil. Install with: pip install psutil"
+            "Discovery system/process/service metrics require psutil. "
+            "Install with: pip install psutil"
         ) from exc
 
 
@@ -181,7 +182,8 @@ class Discovery:
             "nmap_path": [
                 "nmap"
             ],  # Path to nmap executable for PortScanner, can be overridden in config
-            "default_nmap_args": "-sV -T4",  # Default args for nmap scans (Service Version, Timing Template 4)
+            # Default args: Service Version detection, Timing Template 4
+            "default_nmap_args": "-sV -T4",
             "default_host_discovery_args": "-sn -T4",  # Ping Scan args
             "max_report_size": 5
             * 1024
@@ -458,14 +460,12 @@ class Discovery:
                         ).isoformat()
                     process_list.append(pinfo)
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    self.logger.debug(
-                        f"Skipping inaccessible process {proc.pid if hasattr(proc, 'pid') else 'unknown'}"
-                    )
+                    proc_pid = getattr(proc, "pid", None) or "unknown"
+                    self.logger.debug(f"Skipping inaccessible process {proc_pid}")
                     pass
                 except Exception as e:
-                    self.logger.warning(
-                        f"Could not get full info for process {proc.pid if hasattr(proc, 'pid') else 'unknown'}: {e}"
-                    )
+                    proc_pid = getattr(proc, "pid", None) or "unknown"
+                    self.logger.warning(f"Could not get full info for process {proc_pid}: {e}")
                     try:
                         minimal_info = {
                             "pid": proc.pid,
@@ -529,7 +529,8 @@ class Discovery:
                                 pass
                 except ImportError:
                     self.logger.warning(
-                        "psutil win_service_iter not available on this system. Attempting 'sc query'."
+                        "psutil win_service_iter not available on this system. "
+                        "Attempting 'sc query'."
                     )
                     try:
                         cmd = ["sc", "query", "state=", "all", "bufsize=", "65535"]
@@ -564,7 +565,8 @@ class Discovery:
                                 services.pop(0)
                         else:
                             self.logger.error(
-                                f"'sc query' failed or returned empty. Code: {process.returncode}, Error: {process.stderr}"
+                                f"'sc query' failed or returned empty. "
+                                f"Code: {process.returncode}, Error: {process.stderr}"
                             )
                             raise OSError(f"'sc query' failed: {process.stderr or 'No output'}")
                     except FileNotFoundError as exc:
@@ -610,7 +612,8 @@ class Discovery:
                                     )
                     else:
                         self.logger.warning(
-                            f"'systemctl' command failed or returned no units. Code: {process.returncode}, Error: {process.stderr}"
+                            f"'systemctl' command failed or returned no units. "
+                            f"Code: {process.returncode}, Error: {process.stderr}"
                         )
                         try:
                             for service in psutil.service_iter():
@@ -621,7 +624,8 @@ class Discovery:
                                 raise NotImplementedError
                         except (AttributeError, NotImplementedError, ImportError):
                             self.logger.warning(
-                                "psutil service iteration not available or did not find services. Cannot list Linux services definitively."
+                                "psutil service iteration not available or did not find services. "
+                                "Cannot list Linux services definitively."
                             )
 
                 except FileNotFoundError:
@@ -693,7 +697,8 @@ class Discovery:
                                 )
                     else:
                         self.logger.error(
-                            f"'launchctl list' failed or returned empty. Code: {process.returncode}, Error: {process.stderr}"
+                            f"'launchctl list' failed or returned empty. "
+                            f"Code: {process.returncode}, Error: {process.stderr}"
                         )
                         raise OSError(f"'launchctl list' failed: {process.stderr or 'No output'}")
                 except FileNotFoundError as exc:
@@ -749,7 +754,8 @@ class Discovery:
         """Perform host discovery (e.g., ping scan) using Nmap."""
         if not self.scanner:
             raise ConnectionError(
-                "Nmap scanner is not available or failed to initialize. Check installation and configuration."
+                "Nmap scanner is not available or failed to initialize. "
+                "Check installation and configuration."
             )
 
         targets = data.get("targets")  # Expecting a string like "192.168.1.0/24" or "host1 host2"
@@ -819,7 +825,8 @@ class Discovery:
         """Perform port and service version scanning using Nmap."""
         if not self.scanner:
             raise ConnectionError(
-                "Nmap scanner is not available or failed to initialize. Check installation and configuration."
+                "Nmap scanner is not available or failed to initialize. "
+                "Check installation and configuration."
             )
 
         targets = data.get("targets")
@@ -830,8 +837,10 @@ class Discovery:
         if not targets:
             raise ValueError("Missing 'targets' parameter for port/service scan.")
 
+        ports_disp = ports or "default"
         self.logger.info(
-            f"Starting port/service scan on targets: {targets}, ports: {ports or 'default'}, args: {arguments}"
+            f"Starting port/service scan on targets: {targets}, "
+            f"ports: {ports_disp}, args: {arguments}"
         )
         details = {"hosts": []}
         try:
@@ -880,7 +889,8 @@ class Discovery:
                     host_data_str = str(host_data)  # Estimate size
                     if current_size + len(host_data_str) > max_size:
                         self.logger.warning(
-                            f"Scan report size limit ({max_size} bytes) reached. Truncating results."
+                            f"Scan report size limit ({max_size} bytes) reached. "
+                            "Truncating results."
                         )
                         details["truncated"] = True
                         break  # Stop adding hosts
@@ -1151,7 +1161,8 @@ class Discovery:
                         ret_admin != 0 and ret_admin != 2
                     ):  # 0 = success, 2 = access denied (expected for non-admin)
                         self.logger.warning(
-                            f"'net session' command returned unexpected code {ret_admin}: {err_admin}"
+                            f"'net session' command returned unexpected code "
+                            f"{ret_admin}: {err_admin}"
                         )
                 except FileNotFoundError:
                     details["is_admin"] = "Unknown ('net' command not found)"
@@ -1228,8 +1239,9 @@ class Discovery:
             self.logger.error(f"Command timed out after {timeout}s: {' '.join(cmd)}")
             raise TimeoutError(f"Command '{cmd[0]}' timed out.") from exc
         except subprocess.CalledProcessError as e:
+            cmd_line = " ".join(cmd)
             self.logger.error(
-                f"Command '{' '.join(cmd)}' failed with return code {e.returncode}. Stderr: {e.stderr}"
+                f"Command '{cmd_line}' failed with return code {e.returncode}. Stderr: {e.stderr}"
             )
             # Don't raise here if check_error is False, return the outputs
             return e.returncode, e.stdout, e.stderr
@@ -1277,12 +1289,22 @@ if __name__ == "__main__":
     # ... (previous sys_info, proc_info, service_info tests) ...
 
     # print("\n--- Testing Host Discovery ---")
-    # host_disc_request = {"discover": {"host_discovery": {"targets": "192.168.1.0/24", "sudo": False}}}
+    # host_disc_request = {
+    #     "discover": {"host_discovery": {"targets": "192.168.1.0/24", "sudo": False}}
+    # }
     # host_disc_result = discovery_module.discover(host_disc_request)
     # print(json.dumps(host_disc_result, indent=2))
 
     # print("\n--- Testing Port/Service Scan ---")
-    # port_scan_request = {"discover": {"port_service_scan": {"targets": "scanme.nmap.org", "ports": "22,80", "sudo": False}}}
+    # port_scan_request = {
+    #     "discover": {
+    #         "port_service_scan": {
+    #             "targets": "scanme.nmap.org",
+    #             "ports": "22,80",
+    #             "sudo": False,
+    #         }
+    #     }
+    # }
     # port_scan_result = discovery_module.discover(port_scan_request)
     # print(json.dumps(port_scan_result, indent=2))
 

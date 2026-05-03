@@ -65,8 +65,9 @@ class WindowsExecution:
             # TODO: Improve argument handling, potentially use shlex for specific cases?
             cmd_list_or_str = command.split()
 
+        shell_name = effective_shell if use_shell else "None"
         logger.info(
-            f"Executing Windows command (shell={effective_shell if use_shell else 'None'}, use_shell={use_shell}): {command}"
+            f"Executing Windows command (shell={shell_name}, use_shell={use_shell}): {command}"
         )
 
         try:
@@ -170,9 +171,8 @@ class WindowsExecution:
             logger.warning(f"Unsupported obfuscation type requested: '{obfuscation_type}'.")
 
         if applied_obfuscation:
-            logger.info(
-                f"Applied obfuscation '{applied_obfuscation}'. Preview: {obfuscated_command[:100]}..."
-            )
+            preview = obfuscated_command[:100]
+            logger.info(f"Applied obfuscation '{applied_obfuscation}'. Preview: {preview}...")
         return obfuscated_command, applied_obfuscation
 
     # --- Command Execution Handler ---
@@ -330,7 +330,11 @@ class WindowsExecution:
                     status = "success"
                     reason = "Payload executed successfully from disk."
                 else:
-                    reason = f"Payload execution from disk failed. RC: {return_code}. Stderr: {stderr[:200]}..."
+                    stderr_snip = stderr[:200]
+                    reason = (
+                        f"Payload execution from disk failed. RC: {return_code}. "
+                        f"Stderr: {stderr_snip}..."
+                    )
 
             except Exception as e:
                 reason = f"Error during disk payload execution: {e}"

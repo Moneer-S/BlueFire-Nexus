@@ -265,11 +265,13 @@ class InitialAccessManager:
                     "HR Director",
                     "Financial Controller",
                 ]
+                tgt_domain = "target-organization.com"
                 for i in range(min(target_count, len(roles))):
+                    local_part = roles[i].lower().replace(" ", ".")
                     targets.append(
                         {
                             "role": roles[i],
-                            "email": f"{roles[i].lower().replace(' ', '.')}@target-organization.com",
+                            "email": f"{local_part}@{tgt_domain}",
                             "personalization_details": [
                                 "Recent conference attendance",
                                 "LinkedIn activity",
@@ -294,11 +296,13 @@ class InitialAccessManager:
                 # Generate fake targets
                 targets = []
                 roles = ["CEO", "CFO", "COO", "CTO", "CISO", "Board Member", "President"]
+                whale_local = ["first.last", "flast", "f.last"]
+                tgt_domain = "target-organization.com"
                 for i in range(min(target_count, len(roles))):
                     targets.append(
                         {
                             "role": roles[i],
-                            "email": f"{['first.last', 'flast', 'f.last'][i % 3]}@target-organization.com",
+                            "email": f"{whale_local[i % 3]}@{tgt_domain}",
                             "personalization_details": [
                                 "Recent earnings call statements",
                                 "Board meeting schedule",

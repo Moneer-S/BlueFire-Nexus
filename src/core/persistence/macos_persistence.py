@@ -166,10 +166,14 @@ class MacOSPersistence:
                     reason += " Agent loaded successfully."
                 else:
                     load_error = exec_result.get("stderr", "Unknown error")
+                    load_rc = exec_result.get("return_code")
                     logger.error(
-                        f"Failed to load LaunchAgent {label}. RC={exec_result.get('return_code')}. Error: {load_error}"
+                        f"Failed to load LaunchAgent {label}. RC={load_rc}. Error: {load_error}"
                     )
-                    reason += f" Warning: Failed to load agent immediately (RC={exec_result.get('return_code')}). Error: {load_error}. It might still load on next login."
+                    reason += (
+                        f" Warning: Failed to load agent immediately (RC={load_rc}). "
+                        f"Error: {load_error}. It might still load on next login."
+                    )
                     # Don't change overall status to failure just because load failed
 
         except IOError as e:
@@ -194,4 +198,5 @@ class MacOSPersistence:
     # Example placeholder:
     # def _handle_launch_agent(self, details: Dict[str, Any]) -> Dict[str, Any]:
     #     logger.warning("LaunchAgent persistence technique not yet implemented.")
-    #     return {"status": "not_implemented", "technique": "launch_agent", "reason": "Handler not implemented."}
+    #     return {"status": "not_implemented", "technique": "launch_agent",
+    #             "reason": "Handler not implemented."}

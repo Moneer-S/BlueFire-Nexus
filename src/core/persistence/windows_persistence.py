@@ -113,7 +113,8 @@ class WindowsPersistence:
                 logger.error(f"Failed to create scheduled task '{task_name}'. RC: {return_code}")
                 logger.error(f"STDOUT: {output}")
                 logger.error(f"STDERR: {error}")
-                error = f"Failed with return code {return_code}. Error: {error or output}"  # Combine outputs for reason
+                # Combine stderr/stdout for the failure reason field
+                error = f"Failed with return code {return_code}. Error: {error or output}"
 
         except Exception as e:
             logger.error(f"Exception creating scheduled task '{task_name}': {e}", exc_info=True)
@@ -199,7 +200,8 @@ class WindowsPersistence:
                 # Set the value
                 win32api.RegSetValueEx(key_handle, value_name, 0, win32con.REG_SZ, command)
                 logger.info(
-                    rf"Successfully set registry value '{value_name}' in {hive_str}\{base_key_path}."
+                    rf"Successfully set registry value '{value_name}' "
+                    rf"in {hive_str}\{base_key_path}."
                 )
                 status = "success"
 
@@ -256,7 +258,8 @@ class WindowsPersistence:
             return startup_path
         except ImportError:
             logger.error(
-                "Could not import 'win32com.shell'. Startup folder path retrieval requires pywin32 extensions."
+                "Could not import 'win32com.shell'. Startup folder path retrieval "
+                "requires pywin32 extensions."
             )
             return None
         except Exception as e:
@@ -334,7 +337,10 @@ class WindowsPersistence:
                 logger.error(reason)
 
         except PermissionError:
-            reason = f"Permission denied writing to '{target_path}'. Scope '{scope}' might require elevation."
+            reason = (
+                f"Permission denied writing to '{target_path}'. "
+                f"Scope '{scope}' might require elevation."
+            )
             logger.error(reason, exc_info=True)
         except Exception as e:
             reason = f"Unexpected error creating startup file '{target_path}': {e}"
@@ -349,4 +355,4 @@ class WindowsPersistence:
             "reason": reason if status == "failure" else None,
         }
 
-    # Add other Windows-specific methods like _handle_startup_folder, _handle_wmi_subscription etc. here
+    # Add other Windows-specific techniques (e.g. WMI subscription) here.

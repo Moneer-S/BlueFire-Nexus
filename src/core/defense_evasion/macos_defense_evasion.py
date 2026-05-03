@@ -60,5 +60,8 @@ class MacOSDefenseEvasion:
     # Example - might reuse Linux implementation or need specific macOS logic
     # def _hide_file(self, details: Dict[str, Any]) -> Dict[str, Any]:
     #     # Could call super()._hide_file(details) if inheriting
-    #     logger.warning("macOS file hiding not specifically implemented, relying on Linux/Unix logic if inherited.")
+    #     logger.warning(
+    #         "macOS file hiding not specifically implemented; may rely on "
+    #         "Linux/Unix logic if inherited."
+    #     )
     #     return {"status": "not_implemented", "reason": "macOS specific file_hide not implemented"}

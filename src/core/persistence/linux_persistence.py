@@ -78,7 +78,10 @@ class LinuxPersistence:
         # Construct the command using safer quoting
         # Check if the marker exists. If not (||), add the new line.
         # Use `echo -e` with the quoted string, which the shell will unquote.
-        add_cron_cmd = f"crontab -l 2>/dev/null | grep -Fxq {quoted_check_marker} || ( (crontab -l 2>/dev/null ; echo -e {quoted_cron_line}) | crontab - )"
+        add_cron_cmd = (
+            f"crontab -l 2>/dev/null | grep -Fxq {quoted_check_marker} "
+            f"|| ( (crontab -l 2>/dev/null ; echo -e {quoted_cron_line}) | crontab - )"
+        )
 
         status = "failure"
         output = ""
@@ -102,13 +105,21 @@ class LinuxPersistence:
                     status = "success"
                     verification_passed = True
                 else:
-                    reason = "Cron job add command succeeded, but verification failed. Job might not be present."
+                    reason = (
+                        "Cron job add command succeeded, but verification failed. "
+                        "Job might not be present."
+                    )
                     logger.error(reason)
                     error = reason
             else:
                 output = exec_result_add.get("output", "")
                 error = exec_result_add.get("error", "")
-                reason = f"Failed to execute cron job addition command. RC: {exec_result_add.get('return_code')}. Error: {error or output}"
+                rc_add = exec_result_add.get("return_code")
+                err_detail = error or output
+                reason = (
+                    f"Failed to execute cron job addition command. RC: {rc_add}. "
+                    f"Error: {err_detail}"
+                )
                 logger.error(reason)
                 error = reason  # Assign to error for reporting
 
@@ -153,7 +164,7 @@ class LinuxPersistence:
         # Parameters:
         # - command: The shell command line to add.
         # - comment: An optional comment to add above the command for identification/idempotency.
-        # - target_scripts: Optional list of specific script filenames (e.g., [".bashrc"]) to target.
+        # - target_scripts: Optional list of script filenames (e.g. [".bashrc"]) to target.
         #                   If None, attempts to find and modify common ones.
 
         command = details.get("command")
@@ -227,7 +238,10 @@ class LinuxPersistence:
                     modified_files.append(str(script_path))
                     overall_status = "success"  # Mark overall success if any file is modified
                 else:
-                    reason = f"Command appended to {script_path}, but verification marker '{check_marker}' not found afterwards."
+                    reason = (
+                        f"Command appended to {script_path}, but verification marker "
+                        f"'{check_marker}' not found afterwards."
+                    )
                     logger.error(reason)
                     failed_files[str(script_path)] = reason
 

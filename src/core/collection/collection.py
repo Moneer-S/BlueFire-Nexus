@@ -623,7 +623,12 @@ class Collection:
                     "Use WMIC to launch external screenshot utility"
                 )
                 result["details"]["command"] = (
-                    "wmic process call create \"powershell -c Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{PRTSC}'); Start-Sleep -m 250; $bitmap = [System.Windows.Forms.Clipboard]::GetImage(); $bitmap.Save('screenshot.png')\""
+                    'wmic process call create "powershell -c '
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    "[System.Windows.Forms.SendKeys]::SendWait('{PRTSC}'); "
+                    "Start-Sleep -m 250; "
+                    "$bitmap = [System.Windows.Forms.Clipboard]::GetImage(); "
+                    "$bitmap.Save('screenshot.png')\""
                 )
 
             # Calculate expected file size based on resolution and format
@@ -671,10 +676,11 @@ class Collection:
             # Get configuration
             compression_type = data.get("type", "zip")
             source_data = data.get("source", "C:\\Collected\\Data")
-            output_file = data.get(
-                "output",
-                f"C:\\Windows\\Temp\\compressed_{self._generate_random_string(8)}.{compression_type}",
+            _compact_name = (
+                rf"C:\Windows\Temp\compressed_{self._generate_random_string(8)}"
+                f".{compression_type}"
             )
+            output_file = data.get("output", _compact_name)
             compression_level = data.get("level", 6)  # 0-9 range, 9 is highest
 
             result["details"]["compression_type"] = compression_type
@@ -770,12 +776,14 @@ class Collection:
             if encryption_type == "aes":
                 result["details"]["algorithm"] = "AES-256-CBC"
                 result["details"]["command"] = (
-                    f"openssl enc -aes-256-cbc -in {source_data} -out {output_file} -K {key} -iv {iv}"
+                    f"openssl enc -aes-256-cbc -in {source_data} -out {output_file} "
+                    f"-K {key} -iv {iv}"
                 )
             elif encryption_type == "rsa":
                 result["details"]["algorithm"] = f"RSA-{key_size}"
                 result["details"]["command"] = (
-                    f"openssl rsautl -encrypt -inkey public_key.pem -pubin -in {source_data} -out {output_file}"
+                    f"openssl rsautl -encrypt -inkey public_key.pem -pubin "
+                    f"-in {source_data} -out {output_file}"
                 )
             elif encryption_type == "chacha20":
                 result["details"]["algorithm"] = "ChaCha20-Poly1305"

@@ -72,8 +72,11 @@ class LinuxExecution:
                 cmd_list_or_str = command.split()
                 use_actual_shell_param = False
 
+        shell_name = effective_shell if use_shell else "None"
         logger.info(
-            f"Executing Linux/Unix command (shell={effective_shell if use_shell else 'None'}, use_shell_param={use_actual_shell_param}): {cmd_list_or_str}"
+            "Executing Linux/Unix command "
+            f"(shell={shell_name}, use_shell_param={use_actual_shell_param}): "
+            f"{cmd_list_or_str}"
         )
 
         try:
@@ -114,7 +117,8 @@ class LinuxExecution:
             return command, None
 
         logger.warning(
-            f"Linux/Unix obfuscation type '{obfuscation_type}' requested but not implemented. Returning original command."
+            f"Linux/Unix obfuscation type '{obfuscation_type}' requested but not "
+            "implemented. Returning original command."
         )
         # Add Linux specific obfuscation later (e.g., hex encoding, command substitution)
         return command, None
@@ -249,7 +253,8 @@ class LinuxExecution:
                     logger.info(f"Made temporary file executable: {temp_file_path}")
                 except Exception as e_chmod:
                     logger.warning(
-                        f"Failed to chmod temporary file {temp_file_path}: {e_chmod}. Execution might fail."
+                        f"Failed to chmod temporary file {temp_file_path}: {e_chmod}. "
+                        "Execution might fail."
                     )
 
                 command_parts = [temp_file_path] + args
@@ -270,7 +275,11 @@ class LinuxExecution:
                     status = "success"
                     reason = "Payload executed successfully from disk."
                 else:
-                    reason = f"Payload execution from disk failed. RC: {return_code}. Stderr: {stderr[:200]}..."
+                    stderr_snip = stderr[:200]
+                    reason = (
+                        f"Payload execution from disk failed. RC: {return_code}. "
+                        f"Stderr: {stderr_snip}..."
+                    )
 
             except Exception as e:
                 reason = f"Error during disk payload execution: {e}"
@@ -285,7 +294,8 @@ class LinuxExecution:
                         )
 
         elif method == "memory":
-            # Placeholder for Linux/Unix memory execution (e.g., memfd_create, LD_PRELOAD for shared libs)
+            # Placeholder for Linux/Unix memory execution (e.g. memfd_create,
+            # LD_PRELOAD for shared libraries)
             logger.warning(f"Linux/Unix payload execution method '{method}' is not implemented.")
             status = "not_implemented"
             reason = "Linux/Unix memory execution is not implemented."

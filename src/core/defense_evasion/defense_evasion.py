@@ -46,7 +46,8 @@ class DefenseEvasion:
 
         if not execution_module:
             logger.error(
-                "DefenseEvasion module initialized WITHOUT Execution module. Some techniques may fail."
+                "DefenseEvasion module initialized WITHOUT Execution module. "
+                "Some techniques may fail."
             )
 
             # Define a dummy _execute_command to prevent errors later?
@@ -172,9 +173,8 @@ class DefenseEvasion:
                     evasion_result  # Store result under the (potentially adjusted) technique name
                 )
                 if evasion_result.get("status") == "failure":
-                    errors.append(
-                        f"Technique '{technique}' failed: {evasion_result.get('reason', 'Unknown reason')}"
-                    )
+                    reasons = evasion_result.get("reason", "Unknown reason")
+                    errors.append(f"Technique '{technique}' failed: {reasons}")
             except Exception as e:
                 error_msg = f"Evasion technique '{technique}' execution failed: {e}"
                 errors.append(error_msg)
@@ -254,7 +254,10 @@ class DefenseEvasion:
         try:
             if mode == "mimic":
                 if not source_file or not os.path.exists(source_file):
-                    reason = f"Source file '{source_file}' for mimic mode not provided or does not exist."
+                    reason = (
+                        f"Source file '{source_file}' for mimic mode "
+                        "not provided or does not exist."
+                    )
                     result_details["reason"] = reason
                     self.logger.error(reason)
                     return {
@@ -270,7 +273,8 @@ class DefenseEvasion:
                 access_time_ts = stat_result.st_atime
                 modify_time_ts = stat_result.st_mtime
                 self.logger.info(
-                    f"Mimicking timestamps from {source_file}: AT={access_time_ts}, MT={modify_time_ts}"
+                    f"Mimicking timestamps from {source_file}: AT={access_time_ts}, "
+                    f"MT={modify_time_ts}"
                 )
 
             elif mode == "specific_time":
@@ -289,7 +293,8 @@ class DefenseEvasion:
 
                     if not access_time_str and not modify_time_str:
                         self.logger.warning(
-                            "Neither access_time nor modify_time provided for specific_time mode. Using current times."
+                            "Neither access_time nor modify_time provided for specific_time "
+                            "mode. Using current times."
                         )
 
                     self.logger.info(
@@ -297,7 +302,10 @@ class DefenseEvasion:
                     )
 
                 except ValueError as e:
-                    reason = f"Invalid time format for specific_time mode: {e}. Expected format: {time_format}"
+                    reason = (
+                        f"Invalid time format for specific_time mode: {e}. "
+                        f"Expected format: {time_format}"
+                    )
                     result_details["reason"] = reason
                     self.logger.error(reason)
                     return {
@@ -376,7 +384,8 @@ class DefenseEvasion:
             }
 
         self.logger.info(
-            f"Attempting Argument Spoofing: Spoofed='{spoofed_command}', Actual='{original_command}'"
+            f"Attempting Argument Spoofing: Spoofed='{spoofed_command}', "
+            f"Actual='{original_command}'"
         )
         result_details["original_command"] = original_command
         result_details["spoofed_command_logged"] = spoofed_command  # Log what it *should* look like
@@ -388,7 +397,8 @@ class DefenseEvasion:
         # 1. Executing the *original* command.
         # 2. Returning a result that *claims* the spoofed command was run.
         self.logger.warning(
-            "Argument Spoofing is SIMULATED. Executing the original command but logging the spoofed one."
+            "Argument Spoofing is SIMULATED. Executing the original command but "
+            "logging the spoofed one."
         )
 
         try:
@@ -408,11 +418,13 @@ class DefenseEvasion:
                     "reason", "Actual command execution failed."
                 )
                 self.logger.error(
-                    f"Argument Spoofing simulation failed because underlying command failed: {result_details['reason']}"
+                    "Argument Spoofing simulation failed because underlying command failed: "
+                    f"{result_details['reason']}"
                 )
             else:
                 self.logger.info(
-                    "Argument Spoofing simulation completed (actual command ran successfully). Logging spoofed command."
+                    "Argument Spoofing simulation completed (actual command ran successfully). "
+                    "Logging spoofed command."
                 )
 
         except Exception as e:
@@ -559,13 +571,15 @@ if __name__ == "__main__":
         print(json.dumps(stomp_mimic_result, indent=2))
         if os.path.exists(target_for_stomp):
             target_stat = os.stat(target_for_stomp)
-            print(
-                f"Target ({os.path.basename(target_for_stomp)}) Times: AT={datetime.fromtimestamp(target_stat.st_atime)}, MT={datetime.fromtimestamp(target_stat.st_mtime)}"
-            )
+            t_at = datetime.fromtimestamp(target_stat.st_atime)
+            t_mt = datetime.fromtimestamp(target_stat.st_mtime)
+            tn = os.path.basename(target_for_stomp)
+            print(f"Target ({tn}) Times: AT={t_at}, MT={t_mt}")
             mimic_stat = os.stat(mimic_file_path)
-            print(
-                f"Source ({os.path.basename(mimic_file_path)}) Times: AT={datetime.fromtimestamp(mimic_stat.st_atime)}, MT={datetime.fromtimestamp(mimic_stat.st_mtime)}"
-            )
+            mn = os.path.basename(mimic_file_path)
+            m_at = datetime.fromtimestamp(mimic_stat.st_atime)
+            m_mt = datetime.fromtimestamp(mimic_stat.st_mtime)
+            print(f"Source ({mn}) Times: AT={m_at}, MT={m_mt}")
 
         print("\n--- Testing Timestomping (Specific Time) --- ")
         specific_time = "2023-05-15 10:30:00"
@@ -584,9 +598,10 @@ if __name__ == "__main__":
         print(json.dumps(stomp_specific_result, indent=2))
         if os.path.exists(target_for_stomp):
             target_stat = os.stat(target_for_stomp)
-            print(
-                f"Target ({os.path.basename(target_for_stomp)}) Times: AT={datetime.fromtimestamp(target_stat.st_atime)}, MT={datetime.fromtimestamp(target_stat.st_mtime)}"
-            )
+            t_at = datetime.fromtimestamp(target_stat.st_atime)
+            t_mt = datetime.fromtimestamp(target_stat.st_mtime)
+            tn = os.path.basename(target_for_stomp)
+            print(f"Target ({tn}) Times: AT={t_at}, MT={t_mt}")
 
     finally:
         # Clean up test files

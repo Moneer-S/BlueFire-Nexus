@@ -69,21 +69,7 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "B"]
 
-# Literal simulated CLI transcripts (SMB, PowerShell, robocopy, etc.) dominate these trees;
-# the orchestration spine and tests remain E501-clean at 100 columns.
-extend-per-file-ignores."src/core/access/**/*.py" = ["E501"]
-extend-per-file-ignores."src/core/anti_forensic.py" = ["E501"]
-extend-per-file-ignores."src/core/collection/**/*.py" = ["E501"]
-extend-per-file-ignores."src/core/command_control/**/*.py" = ["E501"]
-extend-per-file-ignores."src/core/defense_evasion/**/*.py" = ["E501"]
-extend-per-file-ignores."src/core/discovery/**/*.py" = ["E501"]
-extend-per-file-ignores."src/core/evasion/**/*.py" = ["E501"]
-extend-per-file-ignores."src/core/exfiltration/**/*.py" = ["E501"]
-extend-per-file-ignores."src/core/execution/**/*.py" = ["E501"]
-extend-per-file-ignores."src/core/impact/**/*.py" = ["E501"]
-extend-per-file-ignores."src/core/movement/**/*.py" = ["E501"]
-extend-per-file-ignores."src/core/persistence/**/*.py" = ["E501"]
-extend-per-file-ignores."src/core/privilege/**/*.py" = ["E501"]
+# Line length (100) enforced under [tool.ruff] with no tactical E501 waivers.
 
 [tool.mypy]
 python_version = "3.10"

