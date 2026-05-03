@@ -18,10 +18,7 @@ if TYPE_CHECKING:
 # Import the Execution module interface (adjust path as necessary)
 from ..execution.execution import Execution
 from .linux_persistence import LinuxPersistence
-
-# Import macOS handler when created
 from .macos_persistence import MacOSPersistence
-from .windows_persistence import WindowsPersistence
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +55,8 @@ class Persistence:
 
         # Instantiate the appropriate OS handler
         if self.os_type == "Windows":
+            from .windows_persistence import WindowsPersistence
+
             self.os_handler = WindowsPersistence(execute_command_func=_execute_command_wrapper)
             logger.info("Initialized Windows Persistence handler.")
         elif self.os_type == "Linux":

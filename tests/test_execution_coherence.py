@@ -31,6 +31,36 @@ def test_command_control_package_exports_class() -> None:
     assert CommandControl.__name__ == "CommandControl"
 
 
+def test_tac_package_surfaces_resolve() -> None:
+    """Single import path per tactical subdomain (lazy where noted elsewhere)."""
+    from src.core.collection import Collection
+    from src.core.credential import CredentialAccess
+    from src.core.execution import Execution
+    from src.core.impact import Impact
+    from src.core.initial_access import InitialAccess
+    from src.core.intelligence import APTIntelligence
+    from src.core.movement import LateralMovement
+    from src.core.network import NetworkObfuscator
+    from src.core.persistence import Persistence
+    from src.core.privilege import PrivilegeEscalation
+    from src.core.reconnaissance import ReconnaissanceManager
+    from src.core.resource import ResourceDevelopmentManager
+
+    assert Collection.__name__ == "Collection"
+    assert CredentialAccess.__name__ == "CredentialAccess"
+    assert Impact.__name__ == "Impact"
+    assert InitialAccess.__name__ == "InitialAccess"
+    assert APTIntelligence.__name__ == "APTIntelligence"
+    assert LateralMovement.__name__ == "LateralMovement"
+    assert NetworkObfuscator.__name__ == "NetworkObfuscator"
+    assert Persistence.__name__ == "Persistence"
+    assert PrivilegeEscalation.__name__ == "PrivilegeEscalation"
+    assert ReconnaissanceManager.__name__ == "ReconnaissanceManager"
+    assert ResourceDevelopmentManager.__name__ == "ResourceDevelopmentManager"
+
+    Persistence(Execution())
+
+
 def test_discovery_package_exports_class_when_deps_available() -> None:
     """Discovery pulls psutil; skip in minimal CI envs."""
     pytest.importorskip("psutil")
