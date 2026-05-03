@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from src.core.execution import Execution
@@ -52,14 +54,18 @@ def test_tac_package_surfaces_resolve() -> None:
     from src.core.reconnaissance import ReconnaissanceManager
     from src.core.reporting import APTReporting
     from src.core.resource import ResourceDevelopmentManager
-    from src.core.utils import Logger, get_logger
+    from src.core.utils import Logger, get_structured_logger
 
     assert InitialAccessManager.__name__ == "InitialAccessManager"
     assert BaseAPT.__name__ == "BaseAPT"
     assert APT29.__name__ == "APT29"
     assert APTReporting.__name__ == "APTReporting"
     assert Logger.__name__ == "Logger"
-    assert callable(get_logger)
+    assert callable(get_structured_logger)
+    from src.core.logger import get_logger as std_get_logger
+
+    assert isinstance(std_get_logger("bf.coherence.probe"), logging.Logger)
+    assert isinstance(get_structured_logger("bf.struct.probe"), Logger)
 
     assert AntiDetectionManager.__name__ == "AntiDetectionManager"
     assert DefenseEvasion.__name__ == "DefenseEvasion"
