@@ -1,20 +1,31 @@
 import os
 import platform
-
-import psutil
+from typing import Any, Dict, Optional
 
 # Only import win32 modules if on Windows
 if platform.system() == "Windows":
     import win32api
     import win32con
     import win32security
-# Keep typing imports separate
-from typing import Dict, Optional
+else:
+    win32api = None  # type: ignore[assignment]
+    win32con = None  # type: ignore[assignment]
+    win32security = None  # type: ignore[assignment]
 
 from .logger import get_logger
 from .security import security
 
 logger = get_logger(__name__)
+
+
+def _psutil_or_none() -> Any:
+    """Lazy psutil so `import anti_forensic` works in minimal CI images."""
+    try:
+        import psutil as _ps
+
+        return _ps
+    except ImportError:
+        return None
 
 class AntiForensicManager:
     """Anti-forensic and sandbox detection techniques.""" # Updated description
@@ -65,6 +76,12 @@ class AntiForensicManager:
 
     def _check_processes(self) -> bool:
         """Check for sandbox-related processes."""
+        psutil = _psutil_or_none()
+        if psutil is None:
+            logger.warning(
+                "Sandbox process check skipped: psutil not installed (pip install psutil for full checks)."
+            )
+            return False
         try:
             # Check if running processes match indicators
             for proc in psutil.process_iter(['name']):
@@ -134,6 +151,9 @@ class AntiForensicManager:
 
     def _check_memory(self) -> bool:
         """Check for low total memory, often indicative of VMs."""
+        psutil = _psutil_or_none()
+        if psutil is None:
+            return False
         try:
             total_memory_gb = psutil.virtual_memory().total / (1024**3)
             # Check for less than ~3.5 GB RAM as a more modern threshold
@@ -149,6 +169,9 @@ class AntiForensicManager:
 
     def _check_cpu(self) -> bool:
         """Check for low physical CPU core count."""
+        psutil = _psutil_or_none()
+        if psutil is None:
+            return False
         try:
             # Prefer checking physical cores
             cpu_count = psutil.cpu_count(logical=False)
@@ -171,6 +194,9 @@ class AntiForensicManager:
 
     def _check_disk(self) -> bool:
         """Check for suspicious disk properties (e.g., small size, VM-specific types)."""
+        psutil = _psutil_or_none()
+        if psutil is None:
+            return False
         try:
             # Check total disk size of root partition
             root_usage = psutil.disk_usage(os.path.abspath(os.sep))
@@ -197,6 +223,9 @@ class AntiForensicManager:
     def _check_network(self) -> bool:
         """Check for indicators like a single network adapter or specific MAC prefixes."""
         vm_mac_prefixes = ("00:05:69", "00:0c:29", "00:1c:14", "00:50:56", "08:00:27") # VMware, VirtualBox
+        psutil = _psutil_or_none()
+        if psutil is None:
+            return False
         try:
             interfaces = psutil.net_if_addrs()
             adapter_count = 0
