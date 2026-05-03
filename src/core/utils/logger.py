@@ -136,16 +136,8 @@ class Logger:
 default_logger = Logger("bluefire")
 
 # Helper functions for module-level logging
-def get_logger(name: str, log_level: int = logging.INFO) -> Logger:
-    """Get a logger with the specified name
-
-    Args:
-        name: The name of the logger
-        log_level: The minimum log level to record
-
-    Returns:
-        A Logger instance
-    """
+def get_structured_logger(name: str, log_level: int = logging.INFO) -> Logger:
+    """Return the APT-style ``Logger`` wrapper; use ``src.core.logger.get_logger`` for stdlib loggers."""
     return Logger(name, log_level=log_level)
 
 def debug(message: str) -> None:
