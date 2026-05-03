@@ -20,24 +20,26 @@ from .impl.standard_modules import (
     ResourceDevelopmentModule,
 )
 
+# Single source of truth for first-party module classes (ordering = registration order).
+BUILTIN_MODULE_CLASSES: tuple[Type[BaseModule], ...] = (
+    CommandControlModule,
+    InitialAccessModule,
+    DefenseEvasionModule,
+    AntiDetectionModule,
+    DiscoveryModule,
+    IntelligenceModule,
+    NetworkObfuscatorModule,
+    ResourceDevelopmentModule,
+    ReconnaissanceModule,
+    ExfiltrationModule,
+    PersistenceModule,
+    ExecutionModule,
+)
+
 
 def discover_modules() -> Dict[str, Type[BaseModule]]:
     """Return built-in module classes registered by module name."""
-    module_types: tuple[Type[BaseModule], ...] = (
-        CommandControlModule,
-        InitialAccessModule,
-        DefenseEvasionModule,
-        AntiDetectionModule,
-        DiscoveryModule,
-        IntelligenceModule,
-        NetworkObfuscatorModule,
-        ResourceDevelopmentModule,
-        ReconnaissanceModule,
-        ExfiltrationModule,
-        PersistenceModule,
-        ExecutionModule,
-    )
-    return {module_type.name: module_type for module_type in module_types}
+    return {module_type.name: module_type for module_type in BUILTIN_MODULE_CLASSES}
 
 
 def build_runtime_modules(
