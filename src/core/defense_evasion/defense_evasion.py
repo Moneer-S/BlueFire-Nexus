@@ -13,10 +13,9 @@ from typing import TYPE_CHECKING, Any, Dict
 if platform.system() == "Windows":
     pass  # For error handling
 
-# Import OS-specific handlers
+# Import OS-specific handlers (Windows handler is lazy: requires pywin32)
 from .linux_defense_evasion import LinuxDefenseEvasion
 from .macos_defense_evasion import MacOSDefenseEvasion
-from .windows_defense_evasion import WindowsDefenseEvasion
 
 # Avoid circular import for type hinting
 if TYPE_CHECKING:
@@ -69,6 +68,8 @@ class DefenseEvasion:
 
         # Instantiate the appropriate OS handler
         if self.os_type == "Windows":
+            from .windows_defense_evasion import WindowsDefenseEvasion
+
             self.os_handler = WindowsDefenseEvasion(self._execute_command)
         elif self.os_type == "Linux":
             self.os_handler = LinuxDefenseEvasion(self._execute_command)
