@@ -3,17 +3,25 @@ Consolidated Discovery Module
 Handles discovery for all APT implementations
 """
 
-import grp  # For Linux/macOS group info
 import json
 import logging
 import os
 import platform
-import pwd  # For Linux/macOS user info
 import random
 import string
 import subprocess
 from datetime import datetime
 from typing import Any, Dict
+
+# POSIX-only stdlib modules used by Linux/macOS user/group discovery branches.
+# On Windows the corresponding handlers take a different code path that does
+# not touch these names, so a None fallback is safe.
+try:
+    import grp  # type: ignore[import-not-found]
+    import pwd  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - Windows lacks pwd/grp stdlib modules
+    grp = None  # type: ignore[assignment]
+    pwd = None  # type: ignore[assignment]
 
 
 def _require_psutil():
