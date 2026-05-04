@@ -53,7 +53,7 @@ flowchart LR
 - `src/core/modules/impl/legacy_packs.py`: actor, protocol, and stealth capability-pack adapters
 - `src/core/modules/impl/legacy_runtime.py`: safe execution wrappers for legacy internals in emulate mode
 - `src/core/legacy_controls.py`: master-toggle plus granular-toggle resolution and activation summaries
-- `src/core/telemetry/sinks.py`: JSONL, OpenSearch, Elasticsearch, NGSIEM, Splunk HEC sinks
+- `src/core/telemetry/sinks.py`: local JSONL sink (baseline is local-first; outbound SIEM exporters were removed during stabilization)
 - `src/core/telemetry/bus.py`: fan-out bus
 - `src/core/detections/engine.py`: detection artifact generation
 - `src/core/ai/copilot.py`: plan/narrate/suggest workflows

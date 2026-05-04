@@ -38,7 +38,7 @@ This document provides essential guidelines for using the BlueFire-Nexus platfor
 ## 5. Monitoring and Analysis
 
 *   Monitor the target test environment during simulation runs.
-*   If configured, check telemetry outputs (e.g., Splunk, Elastic) for logged events.
+*   Inspect the per-run JSONL telemetry artifact at `output/<run_id>/telemetry.jsonl` for the events emitted by each module.
 *   Review application logs (default: `logs/bluefire.log`, path configurable in `config.yaml`) for execution details and potential errors.
 
 ## 6. Security

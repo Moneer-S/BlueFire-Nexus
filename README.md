@@ -155,7 +155,7 @@ flowchart LR
     configYaml["config.yaml + .env"] --> orchestrator
     orchestrator --> moduleRegistry["ModuleRegistry (BaseModule + built-ins + plugins)"]
     orchestrator --> safetyGate["SafetyGate"]
-    orchestrator --> telemetryBus["TelemetryBus (JSONL default; OpenSearch/Elasticsearch/NGSIEM/Splunk opt-in)"]
+    orchestrator --> telemetryBus["TelemetryBus (local JSONL run artifact)"]
     orchestrator --> detectionGen["DetectionEngine (Sigma/YARA-L/SPL)"]
     orchestrator --> aiCopilot["AICopilot (provider-selected, template fallback)"]
     orchestrator --> runArtifacts["output/run_id/* (report, detections, copilot output)"]
@@ -195,14 +195,14 @@ User-selected, config-driven provider selection with zero lock-in:
 
 By default, provider implementations are safety-preserving and do not force live external calls.
 
-## SIEM connector priorities
+## Telemetry
 
-Telemetry sink order and support:
-1. OpenSearch
-2. Elasticsearch
-3. NGSIEM (HEC-style)
-4. Splunk HEC
-5. JSONL (always available default sink)
+Telemetry is local-first in the current baseline. Each run writes a JSON
+Lines artifact to `output/<run_id>/telemetry.jsonl` alongside the run report
+and any detection drafts. There are no outbound SIEM exporters in the
+baseline; legacy `telemetry.sinks` config entries naming `splunk`,
+`opensearch`, `elasticsearch`, or `ngsiem` are ignored at load time with a
+deprecation warning.
 
 ## Testing
 
@@ -227,7 +227,9 @@ python -m compileall -q src
 
 ## Optional local lab
 
-`docker-compose.lab.yml` provides a simple local stack with OpenSearch + Dashboards + a BlueFire container profile.
+`docker-compose.lab.yml` provides a containerised BlueFire profile for running
+scenarios in a clean Python environment without installing dependencies on
+the host.
 
 ## License
 

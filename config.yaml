@@ -103,40 +103,19 @@ modules:
           enabled: true
           emulate_enabled: false
 
+# Telemetry is local-first in the current baseline. Outbound SIEM exporters
+# (Splunk/OpenSearch/Elasticsearch/NGSIEM) were removed during stabilization;
+# legacy `sinks` entries naming those types are ignored at load time with a
+# deprecation warning rather than restoring egress silently.
 telemetry:
   enabled: true
   default_sink: "jsonl"
+  local:
+    enabled: true
+    file: "telemetry.jsonl"
   sinks:
     - type: "jsonl"
       enabled: true
-    - type: "opensearch"
-      enabled: false
-      endpoint: "{{ env OPENSEARCH_ENDPOINT }}"
-      headers:
-        Authorization: "Bearer {{ env OPENSEARCH_API_KEY }}"
-      timeout_seconds: 10
-      verify_ssl: true
-    - type: "elasticsearch"
-      enabled: false
-      endpoint: "{{ env ELASTICSEARCH_ENDPOINT }}"
-      headers:
-        Authorization: "ApiKey {{ env ELASTICSEARCH_API_KEY }}"
-      timeout_seconds: 10
-      verify_ssl: true
-    - type: "ngsiem"
-      enabled: false
-      endpoint: "{{ env NGSIEM_HEC_ENDPOINT }}"
-      headers:
-        Authorization: "Bearer {{ env NGSIEM_TOKEN }}"
-      timeout_seconds: 10
-      verify_ssl: true
-    - type: "splunk"
-      enabled: false
-      endpoint: "{{ env SPLUNK_HEC_ENDPOINT }}"
-      headers:
-        Authorization: "Splunk {{ env SPLUNK_TOKEN }}"
-      timeout_seconds: 10
-      verify_ssl: true
 
 copilot:
   enabled: false

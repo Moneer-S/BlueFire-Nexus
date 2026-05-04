@@ -1,22 +1,23 @@
-"""Telemetry package exports."""
+"""Telemetry package exports.
+
+Baseline is local-first. Outbound SIEM exporters were removed during
+stabilization; the package surface only exposes the local sink and the bus.
+"""
 
 from .bus import TelemetryBus
 from .sinks import (
-    ElasticsearchSink,
     JSONLSink,
-    NGSIEMSink,
-    OpenSearchSink,
-    SplunkHECSink,
+    LocalTelemetrySink,
+    SinkResult,
+    TelemetrySink,
     build_sinks,
 )
 
 __all__ = [
     "TelemetryBus",
-    "build_sinks",
+    "TelemetrySink",
+    "SinkResult",
     "JSONLSink",
-    "OpenSearchSink",
-    "ElasticsearchSink",
-    "NGSIEMSink",
-    "SplunkHECSink",
+    "LocalTelemetrySink",
+    "build_sinks",
 ]
-
