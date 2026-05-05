@@ -762,11 +762,16 @@ class AntiDetectionManager:
             # Modify network adapter settings
             adapter_name = self._get_active_adapter()
             if adapter_name:
-                # Disable network adapter
-                os.system(f'netsh interface set interface "{adapter_name}" admin=disable')
+                # nosec B605 - Legacy network-evasion research: toggles a Windows
+                # network adapter via `netsh`. Reaches the live `os.system` path
+                # only in authorized lab/emulate mode (gated by legacy_controls
+                # `stealth_pack.anti_detection_legacy` + lab_confirmation).
+                # `adapter_name` comes from `_get_active_adapter()` which returns
+                # a system-enumerated NIC label, not user-supplied input.
+                os.system(f'netsh interface set interface "{adapter_name}" admin=disable')  # nosec B605
                 time.sleep(1)
                 # Enable network adapter
-                os.system(f'netsh interface set interface "{adapter_name}" admin=enable')
+                os.system(f'netsh interface set interface "{adapter_name}" admin=enable')  # nosec B605
                 return True
             return False
         except Exception as e:

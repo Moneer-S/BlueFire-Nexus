@@ -6,9 +6,12 @@ register the resulting paths under a clear key in ``ModuleResult.artifacts``.
 This test enforces both halves:
 
 1. Snapshot the on-disk state of every well-known write target (project
-   ``output/``, project ``logs/``, project root cwd) before each module
-   ``execute()``. Any new file appearing outside ``context["output_dir"]``
-   after execute returns is a violation.
+   ``output/``, project ``logs/``) before each module ``execute()``. Any
+   *new* file (created or modified after the test window starts) appearing
+   outside ``context["output_dir"]`` after execute returns is a violation.
+   Pre-existing files from prior local runs are explicitly ignored via an
+   mtime filter so the test stays deterministic when developers iterate
+   without cleaning ``output/``.
 
 2. Walk every string value in ``ModuleResult.artifacts`` (recursively).
    Any value that names an existing file on disk must resolve under
@@ -21,6 +24,7 @@ test covers where artifacts physically live.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Set
 
@@ -45,14 +49,31 @@ _WATCHED_DIRS = (
 )
 
 
-def _snapshot(paths: Iterable[Path]) -> Set[Path]:
+def _snapshot(paths: Iterable[Path], *, mtime_after: float | None = None) -> Set[Path]:
+    """Snapshot files under ``paths``, optionally restricted to recent mtimes.
+
+    ``mtime_after`` filters out files that have not been touched since that
+    timestamp. This keeps the test deterministic when the project ``output/``
+    directory contains stale artifacts from prior local runs: only files
+    written *during the test window* count. The invariant we are enforcing
+    (no module writes outside ``context["output_dir"]``) is preserved
+    because *new* writes always update mtime.
+    """
     seen: Set[Path] = set()
     for p in paths:
         if not p.exists():
             continue
         for child in p.rglob("*"):
-            if child.is_file():
-                seen.add(child.resolve())
+            if not child.is_file():
+                continue
+            if mtime_after is not None:
+                try:
+                    if child.stat().st_mtime <= mtime_after:
+                        continue
+                except OSError:
+                    # File disappeared between rglob and stat; ignore.
+                    continue
+            seen.add(child.resolve())
     return seen
 
 
@@ -112,17 +133,21 @@ def _run_and_assert_paths(
     context = _make_context(tmp_path, cfg)
     context["output_dir"] = output_dir
 
-    before = _snapshot(_WATCHED_DIRS)
+    # Use mtime filtering so files left over from prior local runs don't get
+    # attributed to this test. Subtract a small fudge factor (1s) to absorb
+    # filesystem mtime granularity on platforms that round to whole seconds.
+    test_window_start = time.time() - 1.0
+    before = _snapshot(_WATCHED_DIRS, mtime_after=test_window_start)
     try:
         result = module.execute(_params_for(module_name), context)
     except RuntimeError:
         # Legacy adapter rejected because pack disabled; nothing to assert.
-        after = _snapshot(_WATCHED_DIRS)
+        after = _snapshot(_WATCHED_DIRS, mtime_after=test_window_start)
         leaked = sorted(after - before)
         assert not leaked, f"{module_name} created files outside output_dir while raising: {leaked}"
         return
 
-    after = _snapshot(_WATCHED_DIRS)
+    after = _snapshot(_WATCHED_DIRS, mtime_after=test_window_start)
     leaked = sorted(p for p in (after - before) if output_dir not in p.parents)
     assert not leaked, (
         f"{module_name} wrote files outside context['output_dir']:\n  "

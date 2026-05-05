@@ -255,7 +255,12 @@ class Collection:
                 staged_files.append(staged_file)
 
                 # Calculate file hash (simulated)
-                file_hash = hashlib.md5(f"{file}_{random.randint(1, 10000)}".encode()).hexdigest()
+                # nosec B324 - MD5 used to fabricate a deterministic-looking
+                # staging hash for simulated collection telemetry. Not used for
+                # any integrity, authentication, or security decision.
+                file_hash = hashlib.md5(  # nosec B324
+                    f"{file}_{random.randint(1, 10000)}".encode(), usedforsecurity=False
+                ).hexdigest()
                 file_hashes[staged_file] = file_hash
 
                 # File staging details based on method

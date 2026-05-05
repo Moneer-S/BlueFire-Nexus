@@ -277,7 +277,9 @@ class APT29(ThreatActor):
 
     def _generate_campaign_id(self) -> str:
         """Generate a unique campaign ID"""
-        return f"APT29-CAMP-{hashlib.md5(str(time.time()).encode()).hexdigest()[:8]}"
+        # nosec B324 - MD5 used for non-cryptographic identity (short campaign tag),
+        # not for any security or integrity decision. Authorized lab use only.
+        return f"APT29-CAMP-{hashlib.md5(str(time.time()).encode(), usedforsecurity=False).hexdigest()[:8]}"  # nosec B324
 
     def _get_targeting_info(self, target: str) -> Dict[str, Any]:
         """Get targeting information for the phishing campaign"""
