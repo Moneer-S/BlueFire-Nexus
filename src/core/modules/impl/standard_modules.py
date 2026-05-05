@@ -573,6 +573,168 @@ class ReconnaissanceModule(BaseModule):
         )
 
 
+# Collection technique catalog.
+#
+# Aligned with the technique surface of the legacy
+# `src/core/collection/collection.py` class (file/directory/archive staging,
+# keyboard/clipboard/screen capture, compression, encryption, encoding).
+# Adds audio_capture (T1123) and email_collection (T1114.001) which are
+# commonly-requested techniques not in the legacy class.
+_COLLECTION_PROFILES: Dict[str, Dict[str, Any]] = {
+    "file_staging": {
+        "mitre": "T1074.001",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "selection_value": "staging",
+        "event_type": "collection_file_staging",
+        "title_prefix": "Local file staging on",
+    },
+    "directory_staging": {
+        "mitre": "T1074.001",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "selection_value": "staging-dir",
+        "event_type": "collection_directory_staging",
+        "title_prefix": "Local directory staging on",
+    },
+    "archive_collected": {
+        "mitre": "T1560",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "tar -",
+        "event_type": "collection_archive_collected",
+        "title_prefix": "Archiving collected data on",
+    },
+    "archive_compressed": {
+        "mitre": "T1560.002",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "gzip",
+        "event_type": "collection_archive_compressed",
+        "title_prefix": "Compressed archive of collected data on",
+    },
+    "archive_encrypted": {
+        "mitre": "T1560.001",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "openssl",
+        "event_type": "collection_archive_encrypted",
+        "title_prefix": "Encrypted archive of collected data on",
+    },
+    "keyboard_capture": {
+        "mitre": "T1056.001",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "SetWindowsHookEx",
+        "event_type": "collection_keyboard_capture",
+        "title_prefix": "Keystroke capture on",
+    },
+    "clipboard_capture": {
+        "mitre": "T1115",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "GetClipboardData",
+        "event_type": "collection_clipboard_capture",
+        "title_prefix": "Clipboard capture on",
+    },
+    "screen_capture": {
+        "mitre": "T1113",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "BitBlt",
+        "event_type": "collection_screen_capture",
+        "title_prefix": "Screen capture on",
+    },
+    "audio_capture": {
+        "mitre": "T1123",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "audio_capture",
+        "event_type": "collection_audio_capture",
+        "title_prefix": "Audio capture on",
+    },
+    "email_collection": {
+        "mitre": "T1114.001",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "file.path|contains",
+        "selection_value": ".pst",
+        "event_type": "collection_email_collection",
+        "title_prefix": "Local email collection on",
+    },
+}
+
+
+class CollectionModule(BaseModule):
+    """Standard adapter for the collection tactic.
+
+    Produces simulate-mode telemetry, ATT&CK-aligned detection hints, and
+    structured artifacts for ten collection techniques. The legacy
+    `src/core/collection/collection.py` class is preserved as the source
+    of technique coverage; emulate-mode wiring is a follow-up.
+    """
+
+    name = "collection"
+    attack_techniques = (
+        "T1074.001",
+        "T1560",
+        "T1560.001",
+        "T1560.002",
+        "T1056.001",
+        "T1115",
+        "T1113",
+        "T1123",
+        "T1114.001",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        requested = str(params.get("technique") or "file_staging").lower()
+        profile_key = (
+            requested if requested in _COLLECTION_PROFILES else "file_staging"
+        )
+        profile = _COLLECTION_PROFILES[profile_key]
+        target = str(params.get("target") or "lab-host")
+
+        details = {
+            "technique": profile_key,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+            "selection_value": profile["selection_value"],
+        }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details=details,
+        )
+        hints = {
+            "title": f"{profile['title_prefix']} {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: profile["selection_value"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "collection_technique": profile_key,
+            "target_host": target,
+        }
+        if requested != profile_key:
+            hints["unrecognized_collection_technique"] = requested
+
+        return _result(
+            self.name,
+            "success",
+            f"Simulated collection technique '{profile_key}' on {target}.",
+            techniques=[profile["mitre"]],
+            telemetry=[event],
+            hints=hints,
+            artifacts={
+                "technique": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            },
+        )
+
+
 class LegacyWrappedModule(BaseModule):
     """Adapter that wraps existing legacy modules into ModuleResult objects."""
 
