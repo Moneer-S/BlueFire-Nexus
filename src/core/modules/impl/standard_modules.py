@@ -192,35 +192,163 @@ class DefenseEvasionModule(BaseModule):
         )
 
 
+# Discovery profile catalog: maps a `discovery_type` value to its MITRE
+# technique, default Sigma-style logsource, default detection selection
+# template, and the telemetry event type and synthetic artifact builder.
+#
+# Adding a new profile is a single entry here; the module body branches off
+# `discovery_type` and uses these values to shape telemetry, artifacts, and
+# detection hints. Keeping the catalog in code (not config) means the
+# `tests/test_module_*.py` registry-wide tests cover every entry.
+_DISCOVERY_PROFILES: Dict[str, Dict[str, Any]] = {
+    "network_scan": {
+        "mitre": "T1046",
+        "logsource": {"category": "network_connection", "product": "linux"},
+        "selection_field": "network.target|in",
+        "title_prefix": "Network/service discovery against",
+        "event_type": "discovery_network_scan",
+    },
+    "host_discovery": {
+        "mitre": "T1018",
+        "logsource": {"category": "network_connection", "product": "linux"},
+        "selection_field": "network.target|in",
+        "title_prefix": "Remote host discovery against",
+        "event_type": "discovery_host_enumeration",
+    },
+    "port_scan": {
+        "mitre": "T1046",
+        "logsource": {"category": "network_connection", "product": "linux"},
+        "selection_field": "network.target|in",
+        "title_prefix": "Port/service scan against",
+        "event_type": "discovery_port_scan",
+    },
+    "service_scan": {
+        "mitre": "T1046",
+        "logsource": {"category": "network_connection", "product": "linux"},
+        "selection_field": "network.target|in",
+        "title_prefix": "Service-version scan against",
+        "event_type": "discovery_service_scan",
+    },
+    "system_info": {
+        "mitre": "T1082",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "title_prefix": "System information enumeration on",
+        "event_type": "discovery_system_info",
+    },
+    "process_info": {
+        "mitre": "T1057",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "title_prefix": "Process enumeration on",
+        "event_type": "discovery_process_info",
+    },
+    "service_info": {
+        "mitre": "T1007",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "title_prefix": "System service enumeration on",
+        "event_type": "discovery_service_info",
+    },
+    "user_info": {
+        "mitre": "T1087",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "title_prefix": "Account enumeration on",
+        "event_type": "discovery_user_info",
+    },
+    "group_info": {
+        "mitre": "T1069",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "title_prefix": "Permission group enumeration on",
+        "event_type": "discovery_group_info",
+    },
+    "files": {
+        "mitre": "T1083",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "title_prefix": "File and directory enumeration on",
+        "event_type": "discovery_file_enumeration",
+    },
+}
+
+
 class DiscoveryModule(BaseModule):
     name = "discovery"
-    attack_techniques = ("T1046",)
+    attack_techniques = ("T1046", "T1018", "T1082", "T1057", "T1007", "T1087", "T1069", "T1083")
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        targets = params.get("targets") or context.get("allowed_subnets", [])
-        if isinstance(targets, str):
-            targets = [targets]
-        discovered = [{"target": t, "status": "simulated_up"} for t in targets]
+        targets_raw = params.get("targets") or context.get("allowed_subnets", [])
+        if isinstance(targets_raw, str):
+            targets = [targets_raw]
+        else:
+            targets = list(targets_raw)
+
+        # `discovery_type` selects the catalog entry. Honour it explicitly so
+        # scenarios that pass `discovery_type: files` etc. produce different
+        # telemetry/detections rather than the old one-size-fits-all shape.
+        # Unknown values fall back to `network_scan` to preserve existing
+        # behaviour.
+        requested_type = str(params.get("discovery_type") or "network_scan").lower()
+        profile_key = requested_type if requested_type in _DISCOVERY_PROFILES else "network_scan"
+        profile = _DISCOVERY_PROFILES[profile_key]
+
+        # `network_touch=False` is the documented "planning only" hint:
+        # synthesise telemetry shape WITHOUT enumerating discovered targets.
+        # Default is True (matches prior behaviour for scenarios that don't
+        # set the flag).
+        network_touch = bool(params.get("network_touch", True))
+        if network_touch:
+            discovered = [{"target": t, "status": "simulated_up"} for t in targets]
+        else:
+            discovered = []
+
         event = TelemetryEvent(
-            event_type="discovery",
+            event_type=profile["event_type"],
             module=self.name,
-            details={"targets": targets, "discovered_count": len(discovered)},
+            details={
+                "discovery_type": profile_key,
+                "targets": targets,
+                "discovered_count": len(discovered),
+                "network_touch": network_touch,
+                "mitre_technique": profile["mitre"],
+            },
         )
+        title_target = ", ".join(targets) if targets else "lab subnets"
         hints = {
-            "title": "Network/service discovery behavior",
-            "logsource": {"category": "network_connection", "product": "linux"},
-            "detection": {"selection": {"network.target|in": targets}, "condition": "selection"},
-            "mitre_technique": "T1046",
+            "title": f"{profile['title_prefix']} {title_target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: targets or ["lab"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "discovery_type": profile_key,
             "network_targets": targets,
+            "network_touch": network_touch,
         }
+        if requested_type != profile_key:
+            hints["unrecognized_discovery_type"] = requested_type
+
+        message = (
+            f"Simulated {profile_key} discovery against {len(discovered)} targets."
+            if network_touch
+            else f"Planned {profile_key} discovery for {len(targets)} targets (no network touch)."
+        )
         return _result(
             self.name,
             "success",
-            f"Simulated discovery against {len(discovered)} targets.",
-            techniques=["T1046"],
+            message,
+            techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={"targets": targets, "discovered": discovered},
+            artifacts={
+                "discovery_type": profile_key,
+                "targets": targets,
+                "discovered": discovered,
+                "network_touch": network_touch,
+            },
         )
 
 
