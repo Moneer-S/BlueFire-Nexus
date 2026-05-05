@@ -97,6 +97,61 @@ def test_actor_emits_actor_signature_and_refined_mitre(
     )
 
 
+def test_each_actor_has_distinct_aka_aliases() -> None:
+    """`aka` is a defender-facing list of vendor-report aliases per actor."""
+    aliases = {cls.actor_name: tuple(cls.aka) for cls in _ACTOR_CLASSES}
+    for actor_name, aka in aliases.items():
+        assert aka, f"{actor_name} must declare at least one alias in aka"
+    # Each actor's alias tuple must be distinct from the others (no
+    # accidental copy-paste of one actor's vendor names onto another).
+    distinct_alias_tuples = {tuple(sorted(aka)) for aka in aliases.values()}
+    assert len(distinct_alias_tuples) == len(aliases), (
+        f"Per-actor aka tuples must be distinct: {aliases}"
+    )
+
+
+@pytest.mark.parametrize("cls", _ACTOR_CLASSES, ids=lambda c: c.__name__)
+def test_actor_emits_aka_in_detection_selection(
+    cls: Type[LegacyGenericActorTechniqueModule],
+) -> None:
+    module = cls()
+    result = module.execute(
+        {"tactic": "execution", "technique": "powershell", "target": "lab-user"},
+        _lab_simulate_context(),
+    )
+    selection = result.detection_hints["detection"]["selection"]
+    assert selection["legacy.actor_aka"] == list(cls.aka)
+
+
+@pytest.mark.parametrize("cls", _ACTOR_CLASSES, ids=lambda c: c.__name__)
+def test_actor_emits_tactic_specific_logsource(
+    cls: Type[LegacyGenericActorTechniqueModule],
+) -> None:
+    """Per-tactic logsource replaces the old generic threat_intelligence."""
+    module = cls()
+    result = module.execute(
+        {"tactic": "command_and_control", "technique": "https", "target": "lab-host"},
+        _lab_simulate_context(),
+    )
+    logsource = result.detection_hints["logsource"]
+    assert logsource["category"] == "network_connection"
+    assert logsource["product"] == "host"
+
+
+def test_apt29_emits_actor_signature_and_aka() -> None:
+    """APT29 has its own execute path; signature + aka must still appear."""
+    from src.core.modules.impl.legacy_packs import LegacyApt29ResearchModule
+
+    module = LegacyApt29ResearchModule()
+    result = module.execute(
+        {"technique": "phishing", "target": "lab-user"},
+        _lab_simulate_context(),
+    )
+    selection = result.detection_hints["detection"]["selection"]
+    assert selection["legacy.actor_signature"] == "cozy_bear_dukes"
+    assert "Cozy Bear" in selection["legacy.actor_aka"]
+
+
 def test_generic_base_still_produces_generic_signature() -> None:
     """The generic base class must remain functional and signature-free."""
     base = LegacyGenericActorTechniqueModule()
