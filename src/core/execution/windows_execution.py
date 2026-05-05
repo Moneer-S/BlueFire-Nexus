@@ -61,7 +61,12 @@ class WindowsExecution:
         logger.info(f"Executing Windows command (shell={effective_shell if use_shell else 'None'}, use_shell={use_shell}): {command}")
 
         try:
-            process = subprocess.run(cmd_list_or_str,
+            # nosec B602 - Authorized lab/emulate execution adapter (Windows
+            # variant). Same gating as the Linux adapter: ExecutionModule
+            # requires `dry_run=False` AND `allow_real_execution=True`. The
+            # registry-wide safety test asserts subprocess.run does not fire
+            # in dry-run mode.
+            process = subprocess.run(cmd_list_or_str,  # nosec B602
                                      capture_output=capture,
                                      text=True,
                                      check=False,
@@ -211,7 +216,10 @@ class WindowsExecution:
         }
 
         try:
-            rc, stdout, stderr = self._run_command(
+            # nosec B604 - Wrapper hands shell config to internal `_run_command`
+            # helper. Same lab gating as the Linux adapter: gated by
+            # ExecutionModule.allow_real_execution=False default.
+            rc, stdout, stderr = self._run_command(  # nosec B604
                 final_command_arg if isinstance(final_command_arg, str) else " ".join(final_command_arg),
                 shell=shell_to_use, # Shell executable (e.g., powershell.exe), not just name
                 use_shell=use_system_shell,

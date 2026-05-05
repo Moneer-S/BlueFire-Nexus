@@ -472,7 +472,12 @@ if __name__ == '__main__':
             werkzeug_log = logging.getLogger('werkzeug')
             werkzeug_log.setLevel(logging.ERROR)
             mock_c2_logger.info("Starting mock server...")
-            mock_server.run(host='0.0.0.0', port=8080)
+            # nosec B104 - Mock C2 lab server. Binding 0.0.0.0 is intentional so
+            # an emulated agent on a peer lab VM can reach it. Reaches this path
+            # only when the C2 module is explicitly enabled and the mock-server
+            # branch is selected; runs in a daemon thread on a non-privileged
+            # port. Not started by default.
+            mock_server.run(host='0.0.0.0', port=8080)  # nosec B104
 
         server_thread = threading.Thread(target=run_mock_server, daemon=True, name="MockC2ServerThread")
         server_thread.start()

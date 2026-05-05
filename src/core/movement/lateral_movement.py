@@ -826,7 +826,11 @@ class LateralMovement:
             target = data.get("target", "localhost")
             port = data.get("port", 22)
             source_file = data.get("source", "payload.exe")
-            dest_path = data.get("destination", "/tmp/payload.exe")
+            # nosec B108 - Default destination for simulated lateral-movement
+            # payload transfer in lab. Caller is expected to override
+            # `destination` per scenario; the literal is only the fallback for
+            # simulated telemetry shape.
+            dest_path = data.get("destination", "/tmp/payload.exe")  # nosec B108
             username = data.get("username", "user")
             data.get("timeout", 60)
 

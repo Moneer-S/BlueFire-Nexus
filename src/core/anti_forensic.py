@@ -440,7 +440,10 @@ class AntiForensicManager:
         if self.is_windows:
              temp_dirs_to_check.extend([os.environ.get("TEMP"), os.environ.get("TMP")])
         else: # Linux/macOS
-             temp_dirs_to_check.append("/tmp")
+             # nosec B108 - "/tmp" is the standard POSIX temp directory we want
+             # to scan for adversary-emulation cleanup artifacts. We are reading
+             # an enumeration target, not creating a file there.
+             temp_dirs_to_check.append("/tmp")  # nosec B108
              # Consider adding user-specific cache? e.g., os.path.expanduser("~/.cache") - scope?
              user_home_tmp = os.path.join(os.path.expanduser("~"), ".tmp") # Some apps use ~/.tmp
              if os.path.isdir(user_home_tmp):

@@ -1,6 +1,10 @@
 import ctypes
 
-from Crypto.Random import get_random_bytes
+# nosec B413 - `Crypto` here resolves to pycryptodome (not the long-deprecated
+# pycrypto). pycryptodome is the actively maintained drop-in replacement and is
+# pinned in pyproject.toml. The dependency name `pycryptodome` provides the
+# `Crypto` namespace by design.
+from Crypto.Random import get_random_bytes  # nosec B413
 
 
 class AdvancedEvasion:
