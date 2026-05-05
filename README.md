@@ -191,24 +191,21 @@ Bandit runs strict at `-ll` (medium and higher). Each expected dual-use offensiv
 
 ## Roadmap
 
-Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top items:
+Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top open items:
 
-- **Missing standard modules.** Five ATT&CK tactics (`credential_access`, `lateral_movement`, `privilege_escalation`, `impact`, `collection`) have substantial legacy implementations but no registered standard module yet.
-- **Per-input fan-out across modules.** The Discovery module now fans out telemetry/hints by `discovery_type`. Same pattern wanted for `command_control`, `persistence`, `defense_evasion`, `network_obfuscator`, `intelligence`, `reconnaissance`, `resource_development`.
-- **Actor-specific adapters.** APT28/32/38/41 currently share a generic adapter; per-actor tradecraft fingerprinting is a quality lift.
-- **AI provider end-to-end implementation.** Pick one (Ollama for offline-first, or OpenAI-compatible for BYOK) and wire it through `OpenAICompatibleProvider.complete()`.
-- **AI/operator planning improvements.** Either implement one real provider end-to-end or make copilot artifacts opt-in.
-- **Reports / risk summary polish.** Mode badges, blocked-step section, ATT&CK-coverage cross-check.
+- **Emulate-mode bridges for the new tactic modules.** `credential_access`, `lateral_movement`, `privilege_escalation`, `impact`, and `collection` are simulate-only today. Each has a substantial legacy implementation under `src/core/<tactic>/*.py` that is preserved but not yet invoked.
+- **AI provider end-to-end implementation.** Pick one (Ollama for offline-first, or OpenAI-compatible for BYOK) and wire it through `OpenAICompatibleProvider.complete()`. Until then, the local TemplateProvider remains the deterministic offline default.
+- **Step-to-step artifact propagation.** Scenario steps cannot read artifacts from earlier steps in the same chain; a `previous_step_results` mapping in the runtime context would let modules opt into chained inputs (e.g. discovery feeding credential_access target selection).
 - **Future observed-telemetry correlation.** Roadmap only; not in current baseline. No remote SIEM exporters or external collectors today.
 
 ---
 
 ## Status snapshot
 
-- 415 passing tests, 5 intentional skips, 0 failures.
+- 451 passing tests, 5 intentional skips, 0 failures.
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
-- 25 modules registered (17 standard + 8 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
-- 9 shipped scenarios, all passing dry-run.
+- 26 modules registered (17 standard + 9 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
+- 9 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.
 - Capability inventory: [docs/reports/capability_inventory.md](docs/reports/capability_inventory.md).
 - Scenario coverage: [docs/reports/scenario_validation.md](docs/reports/scenario_validation.md).
 - Roadmap: [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md).

@@ -47,11 +47,11 @@ visibility.
 |---|---|---|
 | `legacy_capability_summary` | (meta) | Reports active legacy enablement state. |
 | `legacy_actor_profile` | actor_pack | Loads APT actor profile (apt29 / apt28 / apt32 / apt38 / apt41). |
-| `legacy_apt29_research` | actor_pack | Per-technique adapter for APT29 research code. |
-| `legacy_apt28_research` | actor_pack | Generic actor adapter for APT28. |
-| `legacy_apt32_research` | actor_pack | Generic actor adapter for APT32. |
-| `legacy_apt38_research` | actor_pack | Generic actor adapter for APT38. |
-| `legacy_apt41_research` | actor_pack | Generic actor adapter for APT41. |
+| `legacy_apt29_research` | actor_pack | Per-technique adapter for APT29 research code. Aliases: Cozy Bear, The Dukes, Nobelium, Midnight Blizzard. |
+| `legacy_apt28_research` | actor_pack | Per-actor APT28 adapter. Aliases: Fancy Bear, Sofacy, Sednit, Strontium, Pawn Storm. Refines tactic→technique mapping (T1059.001 / T1071.001 / T1027). |
+| `legacy_apt32_research` | actor_pack | Per-actor APT32 adapter. Aliases: OceanLotus, SeaLotus, Cobalt Kitty, APT-C-00. Refines mapping for VB loaders (T1059.005) and watering-hole (T1189). |
+| `legacy_apt38_research` | actor_pack | Per-actor APT38 adapter. Aliases: Lazarus (financial), Bluenoroff, Stardust Chollima. Surfaces disk-wipe (T1561) and scheduled-task persistence (T1053.005). |
+| `legacy_apt41_research` | actor_pack | Per-actor APT41 adapter. Aliases: Wicked Panda, Barium, Winnti. Surfaces web-shell (T1505.003) and WMI-event persistence (T1546.003). |
 | `legacy_protocol_research` | c2_pack | DNS tunneling / TLS fast-flux / WebSocket-QUIC / Solana RPC / network obfuscation. |
 | `legacy_stealth_research` | stealth_pack | Anti-forensic / anti-sandbox / anti-detection / dynamic API resolution. |
 
@@ -107,7 +107,11 @@ consumes those hints to emit per-run artifact files:
 
 Common hint keys: `title`, `logsource`, `detection`, `condition`,
 `mitre_technique`, plus topic-specific fields like `network_protocol`,
-`network_url`, `process_command_line`.
+`network_url`, `process_command_line`. Per-actor adapters additionally
+emit `legacy.actor_signature` (stable per-actor identifier) and
+`legacy.actor_aka` (vendor-report aliases) inside the Sigma `selection`
+block so generated rules can be filtered by actor regardless of which
+pack produced them.
 
 ## Legacy code preservation
 

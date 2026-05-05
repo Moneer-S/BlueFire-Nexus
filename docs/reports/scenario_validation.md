@@ -30,12 +30,12 @@ output/<run_id>/
 
 | Scenario | Steps | ATT&CK coverage | Theme |
 |---|---:|---|---|
-| `apt29_credential_access` | 4 | T1566 / T1059 / T1027 / T1041 | APT29-style credential access chain. |
+| `apt29_credential_access` | 5 | T1566 / T1059 / T1027 / T1555 / T1041 | APT29-style credential access chain. |
 | `fin7_initial_access_to_c2` | 3 | T1566 / T1059 / T1071.001 | FIN7-style initial access to C2 chain. |
-| `healthcare_ransomware` | 4 | T1566 / T1059 / T1053.005 / T1041 | Healthcare ransomware precursor chain. |
-| `insider_exfil_dns` | 3 | T1083 / T1041 / T1572 | Insider DNS-based data exfiltration. |
-| `legacy_actor_apt29` | 5 | T1566 / T1059 / T1036 / T1071.004 | APT29 research pack via legacy adapters. |
-| `legacy_actor_family_full` | 8 | T1566 / T1059 / T1036 / T1071 / T1589 | Smoke-test for every actor adapter (APT29/28/32/38/41). |
+| `healthcare_ransomware` | 5 | T1566 / T1059 / T1053 / T1041 / T1486 | Healthcare ransomware end-to-end chain (precursor → impact). |
+| `insider_exfil_dns` | 4 | T1083 / T1041 / T1071.004 / T1572 | Insider DNS-based data exfiltration. |
+| `legacy_actor_apt29` | 5 | T1589 / T1566 / T1059 / T1036 | APT29 research pack via legacy adapters. |
+| `legacy_actor_family_full` | 8 | T1059 / T1071 / T1589 / T1561 / T1566 | Smoke-test for every actor adapter (APT29/28/32/38/41). |
 | `legacy_c2_protocols` | 6 | T1071.004 / T1572 / T1090 | Legacy C2 protocol research (DNS/TLS/QUIC/RPC). |
 | `legacy_flagship_blended` | 5 | T1589 / T1566 / T1071.004 / T1070 | Blended actor + protocol + stealth research. |
 | `legacy_stealth_research` | 5 | T1497 / T1562 / T1070 / T1027 | Anti-forensic / anti-sandbox / anti-detection research. |
@@ -43,11 +43,11 @@ output/<run_id>/
 ## Per-scenario notes
 
 ### `apt29_credential_access`
-Four-step actor-aligned chain (initial access → execution → anti-detection
-→ exfiltration). With the `credential_access` standard module now
-registered, scenario authors can repoint the third step from
-`anti_detection` to `credential_access` with `technique: lsass_dump` (or
-similar) to surface T1003.001 telemetry directly.
+Five-step actor-aligned chain (initial access → execution →
+anti-detection → credential extraction → exfiltration). The
+credential-extraction step uses the `credential_access` standard
+module with `technique: browser_credentials` to surface T1555.003
+telemetry, satisfying the parent T1555 declared in `attack_coverage`.
 
 ### `fin7_initial_access_to_c2`
 Three-step chain demonstrating phish → loader execution → C2 beacon. The
@@ -55,15 +55,18 @@ encoded PowerShell payload in step 2 is a synthetic example; the C2 URL
 in step 3 (`https://example.lab/c2`) sits inside the lab allowlist.
 
 ### `healthcare_ransomware`
-Four-step ransomware-precursor chain. The `impact` standard module
-(T1486 data encryption / T1485 destruction / T1496 resource hijacking,
-etc.) is now available for scenarios that want to extend this chain
-into the impact tactic.
+Five-step ransomware end-to-end chain (initial access → execution →
+persistence → exfiltration → encryption-impact). The final `impact`
+step uses `technique: data_encryption` to surface T1486 telemetry.
+The `impact` standard module never writes destructive payloads under
+any input — telemetry is purely synthesised.
 
 ### `insider_exfil_dns`
-Three-step insider DNS-exfil chain. Step 1 (`discovery`) uses
-`discovery_type: files` (T1083) and `network_touch: true` — both honored
-by the standard module's per-input fan-out.
+Four-step insider DNS-exfil chain (file discovery → exfiltration via
+DNS tunnel → DNS-channel C2 metadata → network obfuscation). Step 1
+uses `discovery_type: files` (T1083) and `network_touch: true`. The
+DNS-channel C2 step (`command_control` with `channel: dns`) emits
+T1071.004 alongside the obfuscation step's T1572.
 
 ### `legacy_actor_apt29`
 Five-step legacy-adapter showcase exercising APT29-specific phishing and
