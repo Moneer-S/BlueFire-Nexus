@@ -2,6 +2,14 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
+# Modern setuptools auto-discovery does not pick up a top-level `src/` package
+# out of the box, which leaves `from src.core import ...` unresolvable in a
+# clean `pip install -e .` install. Spell the discovery out explicitly so the
+# `src` namespace and every subpackage land in site-packages on CI.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
 [project]
 name = "bluefire-nexus"
 version = "2.0.0"
