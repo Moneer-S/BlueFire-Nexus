@@ -1,4 +1,4 @@
-"""Legacy capability pack adapters for actor, C2, and stealth research code."""
+"""Legacy capability pack adapters for actor, C2, stealth, and tactic research code."""
 
 from __future__ import annotations
 
@@ -14,11 +14,13 @@ from ...models import ModuleResult, TelemetryEvent
 from ..base import BaseModule
 from .legacy_base import LegacyAdapterBase, _result
 from .legacy_runtime import (
+    CREDENTIAL_TECHNIQUE_KEYS,
     flatten_indicators,
     instantiate_apt_actor,
     normalize_protocol_key,
     normalize_stealth_key,
     run_actor_technique,
+    run_credential_access,
     run_dns_tunneling,
     run_network_obfuscation,
     run_quic_placeholder,
@@ -591,6 +593,232 @@ class LegacyApt41ResearchModule(LegacyGenericActorTechniqueModule):
     }
 
 
+# Per-technique simulate-mode tradecraft notes for the legacy
+# credential-access adapter. The `notes` field is what makes the legacy
+# adapter distinct from the standard `credential_access` module: it
+# surfaces operator-facing context (canonical tools, file paths, follow-
+# up extractor commands) sourced from the preserved legacy class. None
+# of these notes encode commands the adapter actually executes.
+_LEGACY_CREDENTIAL_NOTES: Dict[str, Dict[str, Any]] = {
+    "lsass_dump": {
+        "title": "Legacy LSASS memory-dump tradecraft research",
+        "logsource": {"category": "process_access", "product": "windows"},
+        "selection_field": "target.process.name",
+        "selection_value": "lsass.exe",
+        "event_type": "legacy_credential_access_lsass",
+        "notes": {
+            "canonical_tools": ["procdump", "comsvcs.dll MiniDump", "WerFault", "MiniDumpWriteDump"],
+            "follow_up_extractor": "mimikatz `sekurlsa::minidump` / pypykatz `lsa minidump`",
+            "default_dump_path": "C:\\Windows\\Temp\\<random>.dmp",
+        },
+    },
+    "sam_dump": {
+        "title": "Legacy SAM hive credential-extraction tradecraft research",
+        "logsource": {"category": "registry_event", "product": "windows"},
+        "selection_field": "registry.key|contains",
+        "selection_value": "SAM",
+        "event_type": "legacy_credential_access_sam",
+        "notes": {
+            "canonical_tools": ["reg save HKLM\\SAM", "esentutl /y /vss"],
+            "follow_up_extractor": "secretsdump.py / impacket SAMR",
+            "files": ["SYSTEM", "SAM", "SECURITY"],
+        },
+    },
+    "ntds_dump": {
+        "title": "Legacy NTDS.dit domain-credential tradecraft research",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "file.path|contains",
+        "selection_value": "NTDS.dit",
+        "event_type": "legacy_credential_access_ntds",
+        "notes": {
+            "canonical_tools": ["ntdsutil ifm", "vssadmin create shadow", "esentutl /y /vss"],
+            "follow_up_extractor": "secretsdump.py -ntds NTDS.dit -system SYSTEM LOCAL",
+        },
+    },
+    "browser_credentials": {
+        "title": "Legacy browser stored-credential tradecraft research",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "selection_value": "Login Data",
+        "event_type": "legacy_credential_access_browser",
+        "notes": {
+            "browsers": ["chrome", "edge", "firefox"],
+            "credential_artifacts": ["Login Data", "Cookies", "key4.db", "logins.json"],
+        },
+    },
+    "keychain": {
+        "title": "Legacy macOS Keychain credential tradecraft research",
+        "logsource": {"category": "file_event", "product": "macos"},
+        "selection_field": "file.path|contains",
+        "selection_value": "login.keychain",
+        "event_type": "legacy_credential_access_keychain",
+        "notes": {
+            "canonical_paths": ["~/Library/Keychains/login.keychain-db"],
+            "follow_up_extractor": "security find-generic-password / chainbreaker",
+        },
+    },
+    "ssh_keys": {
+        "title": "Legacy SSH private-key file-access tradecraft research",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "selection_value": ".ssh/id_",
+        "event_type": "legacy_credential_access_ssh",
+        "notes": {
+            "canonical_paths": ["~/.ssh/id_rsa", "~/.ssh/id_ed25519", "~/.ssh/known_hosts"],
+            "common_misuse": "passphrase-less keys harvested for lateral movement",
+        },
+    },
+    "keylogging": {
+        "title": "Legacy keyboard-input capture tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "SetWindowsHookEx",
+        "event_type": "legacy_credential_access_keylogging",
+        "notes": {
+            "canonical_apis": ["SetWindowsHookEx WH_KEYBOARD_LL", "GetAsyncKeyState"],
+            "telemetry_signal": "process registers low-level keyboard hook",
+        },
+    },
+    "clipboard": {
+        "title": "Legacy clipboard-data capture tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "GetClipboardData",
+        "event_type": "legacy_credential_access_clipboard",
+        "notes": {
+            "canonical_apis": ["OpenClipboard", "GetClipboardData", "AddClipboardFormatListener"],
+            "common_misuse": "wallet-address swap, credential capture between paste actions",
+        },
+    },
+    "screen_capture": {
+        "title": "Legacy screen-capture credential-harvest tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "BitBlt",
+        "event_type": "legacy_credential_access_screen",
+        "notes": {
+            "canonical_apis": ["BitBlt", "GetDC", "PrintWindow"],
+            "common_misuse": "MFA token / SSO challenge screen capture",
+        },
+    },
+}
+
+
+class LegacyCredentialAccessModule(LegacyAdapterBase):
+    """Adapter for the preserved `CredentialAccess` legacy class.
+
+    Companion to the simulate-only standard `credential_access` module.
+    This adapter sits behind the standard legacy gating pattern
+    (`tactic_pack` / `credential_access` capability) so the rich
+    tradecraft notes from `src/core/credential/credential_access.py`
+    are reachable without changing the safety/mode model of the
+    standard module. In simulate mode it emits the per-technique notes
+    directly. In emulate mode it routes through `safe_call` into the
+    legacy class, which itself produces synthesised tradecraft
+    descriptors — never live subprocess/socket calls.
+    """
+
+    name = "legacy_credential_access"
+    pack_name = "tactic_pack"
+    capability_name = "credential_access"
+    attack_techniques = (
+        "T1003.001",
+        "T1003.002",
+        "T1003.003",
+        "T1555.003",
+        "T1555.001",
+        "T1552.004",
+        "T1056.001",
+        "T1115",
+        "T1113",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        decision = self._ensure_allowed(context)
+        mode = decision.mode
+
+        requested = str(params.get("technique") or "lsass_dump").lower()
+        technique_key = (
+            requested if requested in CREDENTIAL_TECHNIQUE_KEYS else "lsass_dump"
+        )
+        legacy_key, mitre = CREDENTIAL_TECHNIQUE_KEYS[technique_key]
+        profile = _LEGACY_CREDENTIAL_NOTES[technique_key]
+        target = str(params.get("target") or "lab-host")
+
+        details: Dict[str, Any] = {
+            "technique": technique_key,
+            "legacy_key": legacy_key,
+            "mitre_technique": mitre,
+            "target": target,
+            "mode": mode,
+            "tradecraft_notes": dict(profile["notes"]),
+        }
+
+        if mode == "emulate":
+            runtime = safe_call(run_credential_access, technique_key, params)
+            details["runtime_outcome"] = runtime
+            indicators = flatten_indicators(runtime)
+            if indicators:
+                details["runtime_indicators"] = indicators
+            if runtime.get("status") == "failure":
+                details["runtime_warning"] = (
+                    "legacy credential-access runtime failed for "
+                    f"{technique_key}: {runtime.get('error')}"
+                )
+        else:
+            details["runtime_outcome"] = {
+                "status": "simulated",
+                "technique": technique_key,
+                "reason": "simulate mode selected",
+            }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details={
+                "run_id": context.get("run_id", "unknown"),
+                **details,
+            },
+        )
+        hints: Dict[str, Any] = {
+            "title": f"{profile['title']} on {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {
+                    profile["selection_field"]: profile["selection_value"],
+                    "legacy.pack": self.pack_name,
+                    "legacy.capability": self.capability_name,
+                    "legacy.technique": technique_key,
+                },
+                "condition": "selection",
+            },
+            "mitre_technique": mitre,
+            "credential_technique": technique_key,
+            "target_host": target,
+            "tradecraft_notes": dict(profile["notes"]),
+        }
+        if requested != technique_key:
+            hints["unrecognized_credential_technique"] = requested
+
+        artifacts = _capability_artifacts(
+            context,
+            self.pack_name,
+            self.capability_name,
+            mode,
+            details,
+        )
+        return _result(
+            self.name,
+            "success",
+            f"Legacy credential-access tradecraft for '{technique_key}' "
+            f"prepared in {mode} mode.",
+            techniques=[mitre],
+            artifacts=artifacts,
+            hints=hints,
+            telemetry=[event],
+        )
+
+
 class LegacyProtocolResearchModule(LegacyAdapterBase):
     name = "legacy_protocol_research"
     attack_techniques = ("T1071.004", "T1572", "T1090")
@@ -967,6 +1195,7 @@ def discover_legacy_modules() -> Dict[str, type[BaseModule]]:
         LegacyApt32ResearchModule.name: LegacyApt32ResearchModule,
         LegacyApt38ResearchModule.name: LegacyApt38ResearchModule,
         LegacyApt41ResearchModule.name: LegacyApt41ResearchModule,
+        LegacyCredentialAccessModule.name: LegacyCredentialAccessModule,
         LegacyProtocolResearchModule.name: LegacyProtocolResearchModule,
         LegacyStealthResearchModule.name: LegacyStealthResearchModule,
     }
@@ -981,6 +1210,7 @@ __all__ = [
     "LegacyApt32ResearchModule",
     "LegacyApt38ResearchModule",
     "LegacyApt41ResearchModule",
+    "LegacyCredentialAccessModule",
     "LegacyProtocolResearchModule",
     "LegacyStealthResearchModule",
     "discover_legacy_modules",

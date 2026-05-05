@@ -149,6 +149,63 @@ def run_network_obfuscation(payload: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Standard credential-access technique keys mapped to the nested input
+# shape the preserved `CredentialAccess.access(...)` class expects, plus
+# the canonical MITRE technique each emits. Kept here (not in the
+# adapter) so other call sites — including future legacy-tactic helpers
+# — can reuse the same mapping without import cycles.
+CREDENTIAL_TECHNIQUE_KEYS: Dict[str, tuple[str, str]] = {
+    "lsass_dump": ("lsass", "T1003.001"),
+    "sam_dump": ("sam", "T1003.002"),
+    "ntds_dump": ("ntds", "T1003.003"),
+    "browser_credentials": ("browser", "T1555.003"),
+    "keychain": ("keychain", "T1555.001"),
+    "ssh_keys": ("ssh", "T1552.004"),
+    "keylogging": ("keylogging", "T1056.001"),
+    "clipboard": ("clipboard", "T1115"),
+    "screen_capture": ("screen", "T1113"),
+}
+
+
+def run_credential_access(technique: str, params: Mapping[str, Any]) -> Dict[str, Any]:
+    """Invoke the preserved `CredentialAccess` legacy class for one technique.
+
+    The legacy class consumes a nested input dict (`{"lsass": {...}}`) and
+    dispatches to a per-technique handler that builds tradecraft notes
+    (commands, MITRE refs, dump-file metadata). It does not subprocess,
+    socket, or write files itself — every handler returns a synthesised
+    descriptor dict. The helper unwraps the nested result back to the
+    flat shape adapter consumers expect.
+    """
+    legacy_key, mitre = CREDENTIAL_TECHNIQUE_KEYS.get(
+        technique, ("lsass", "T1003.001")
+    )
+    cls = _load_attr("src.core.credential.credential_access", "CredentialAccess")
+    legacy = cls()
+    payload = {legacy_key: dict(params)}
+    raw = legacy.access(payload)
+
+    nested = raw.get("credential_access", {}) if isinstance(raw, Mapping) else {}
+    branch_outcome: Dict[str, Any] = {}
+    for branch in ("dumping", "extraction", "interception"):
+        branch_value = nested.get(branch) if isinstance(nested, Mapping) else None
+        if isinstance(branch_value, Mapping) and legacy_key in branch_value:
+            handler_result = branch_value.get(legacy_key)
+            if isinstance(handler_result, Mapping):
+                branch_outcome = dict(handler_result)
+            break
+
+    status = str(branch_outcome.get("status", "completed"))
+    return {
+        "status": status if status in {"success", "completed", "error", "failure"} else "completed",
+        "technique": technique,
+        "legacy_key": legacy_key,
+        "mitre_technique": mitre,
+        "details": dict(branch_outcome.get("details", {})),
+        "timestamp": branch_outcome.get("timestamp", raw.get("timestamp", "")),
+    }
+
+
 def run_stealth_capability(capability: str, params: Mapping[str, Any]) -> Dict[str, Any]:
     cap = normalize_stealth_key(capability)
     runtime_cap = "anti_detection" if cap == "anti_detection_legacy" else cap

@@ -16,7 +16,7 @@ SAFE_DOMAIN_PATTERNS = (
     "*.invalid",
     "*.test",
 )
-LEGACY_PACK_KEYS = ("actor_pack", "c2_pack", "stealth_pack")
+LEGACY_PACK_KEYS = ("actor_pack", "c2_pack", "stealth_pack", "tactic_pack")
 LEGACY_PACK_CAPABILITIES: Dict[str, tuple[str, ...]] = {
     "actor_pack": ("apt29", "apt28", "apt32", "apt38", "apt41", "actor_profile"),
     "c2_pack": (
@@ -32,6 +32,10 @@ LEGACY_PACK_CAPABILITIES: Dict[str, tuple[str, ...]] = {
         "anti_detection_legacy",
         "dynamic_api",
     ),
+    # Tactic pack wraps the preserved per-tactic legacy classes. New
+    # capabilities are added one focused PR at a time so the adapter
+    # surface stays reviewable.
+    "tactic_pack": ("credential_access",),
 }
 CAPABILITY_ALIASES: Dict[str, Dict[str, str]] = {
     "c2_pack": {
