@@ -573,6 +573,158 @@ class ReconnaissanceModule(BaseModule):
         )
 
 
+# Privilege-escalation technique catalog.
+#
+# Aligned with the technique surface of the legacy
+# `src/core/privilege/privilege_escalation.py` class (token impersonation /
+# duplication / creation, process hollowing / injection / masquerading,
+# service creation / modification). Adds a `uac_bypass` profile commonly
+# requested by purple-team scenarios.
+_PRIVILEGE_ESCALATION_PROFILES: Dict[str, Dict[str, Any]] = {
+    "token_impersonation": {
+        "mitre": "T1134.001",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "ImpersonateLoggedOnUser",
+        "event_type": "privilege_escalation_token_impersonation",
+        "title_prefix": "Token impersonation on",
+    },
+    "token_duplication": {
+        "mitre": "T1134.001",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "DuplicateTokenEx",
+        "event_type": "privilege_escalation_token_duplication",
+        "title_prefix": "Access token duplication on",
+    },
+    "token_creation": {
+        "mitre": "T1134.003",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "LogonUser",
+        "event_type": "privilege_escalation_token_creation",
+        "title_prefix": "Make-and-impersonate token on",
+    },
+    "process_hollowing": {
+        "mitre": "T1055.012",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "NtUnmapViewOfSection",
+        "event_type": "privilege_escalation_process_hollowing",
+        "title_prefix": "Process hollowing on",
+    },
+    "process_injection": {
+        "mitre": "T1055",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "WriteProcessMemory",
+        "event_type": "privilege_escalation_process_injection",
+        "title_prefix": "Process injection on",
+    },
+    "process_masquerading": {
+        "mitre": "T1036.005",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.image|endswith",
+        "selection_value": "svchost.exe",
+        "event_type": "privilege_escalation_process_masquerading",
+        "title_prefix": "Process-name masquerading on",
+    },
+    "service_creation": {
+        "mitre": "T1543.003",
+        "logsource": {"category": "service_creation", "product": "windows"},
+        "selection_field": "service.name|contains",
+        "selection_value": "svc",
+        "event_type": "privilege_escalation_service_creation",
+        "title_prefix": "Privileged Windows service creation on",
+    },
+    "service_modification": {
+        "mitre": "T1543.003",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.image_path|contains",
+        "selection_value": "svc",
+        "event_type": "privilege_escalation_service_modification",
+        "title_prefix": "Privileged Windows service modification on",
+    },
+    "uac_bypass": {
+        "mitre": "T1548.002",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "fodhelper",
+        "event_type": "privilege_escalation_uac_bypass",
+        "title_prefix": "UAC bypass attempt on",
+    },
+}
+
+
+class PrivilegeEscalationModule(BaseModule):
+    """Standard adapter for the privilege-escalation tactic.
+
+    Produces simulate-mode telemetry, ATT&CK-aligned detection hints, and
+    structured artifacts for nine privilege-escalation techniques. The
+    legacy `src/core/privilege/privilege_escalation.py` class is preserved
+    as the source of technique coverage; emulate-mode wiring is a follow-up.
+    """
+
+    name = "privilege_escalation"
+    attack_techniques = (
+        "T1134.001",
+        "T1134.003",
+        "T1055.012",
+        "T1055",
+        "T1036.005",
+        "T1543.003",
+        "T1548.002",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        requested = str(params.get("technique") or "token_impersonation").lower()
+        profile_key = (
+            requested if requested in _PRIVILEGE_ESCALATION_PROFILES else "token_impersonation"
+        )
+        profile = _PRIVILEGE_ESCALATION_PROFILES[profile_key]
+        target = str(params.get("target") or "lab-host")
+
+        details = {
+            "technique": profile_key,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+            "selection_value": profile["selection_value"],
+        }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details=details,
+        )
+        hints = {
+            "title": f"{profile['title_prefix']} {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: profile["selection_value"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "privesc_technique": profile_key,
+            "target_host": target,
+        }
+        if requested != profile_key:
+            hints["unrecognized_privesc_technique"] = requested
+
+        return _result(
+            self.name,
+            "success",
+            f"Simulated privilege-escalation technique '{profile_key}' on {target}.",
+            techniques=[profile["mitre"]],
+            telemetry=[event],
+            hints=hints,
+            artifacts={
+                "technique": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            },
+        )
+
+
 class LegacyWrappedModule(BaseModule):
     """Adapter that wraps existing legacy modules into ModuleResult objects."""
 
