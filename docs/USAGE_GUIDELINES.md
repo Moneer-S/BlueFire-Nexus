@@ -1,56 +1,190 @@
-# Usage Guidelines for BlueFire-Nexus
+# BlueFire Nexus — usage guidelines
 
-This document provides essential guidelines for using the BlueFire-Nexus platform responsibly and effectively.
+Complement to [README.md](../README.md). Covers operator workflows, the
+broader CLI surface, scenario authoring, and legacy capability-pack
+enablement.
 
-## 1. Ethical and Legal Compliance
+## 1. Authorization and scope
 
-**CRITICAL:** Adherence to ethical principles and legal requirements is paramount.
+- **Always** obtain explicit, written authorization before exercising any
+  technique against any system or network.
+- **Always** operate inside isolated lab / purple-team environments.
+- Strictly adhere to the authorized scope of testing.
+- Review [legal/ethical_guidelines.md](../legal/ethical_guidelines.md).
 
-*   **Authorization:** ALWAYS obtain explicit, written permission before conducting any operations against any system or network.
-*   **Environment:** ONLY operate BlueFire-Nexus within designated, isolated laboratory or testing environments.
-*   **Scope:** Strictly adhere to the authorized scope of testing.
-*   **Review:** Familiarize yourself thoroughly with the [Ethical Use Policy](legal/ethical_guidelines.md) before proceeding.
+## 2. Install and configure
 
-## 2. Installation and Configuration
+See the [README quickstart](../README.md#quickstart). Key files:
 
-*   Follow the setup instructions in the main [README.md](README.md#installation).
-*   Pay close attention to the configuration steps outlined in the [README.md](README.md#configuration), especially regarding:
-    *   The primary configuration file (`./config.yaml`).
-    *   Using the example template (`config/config.example.yaml`).
-    *   Setting up environment variables (`.env`) for sensitive data.
-    *   Configuring safety parameters (`general.safeties`) appropriate for your test environment.
+- `config.yaml` — runtime configuration. `general.dry_run: true` by default.
+- `config/config.example.yaml` — annotated template you can copy.
+- `.env` — secrets and provider keys (never commit). Template is
+  `.env.example`.
+- `general.safeties` — `allowed_subnets`, `max_runtime`. Honour them.
 
-## 3. Running Simulations
+The shipped `config.yaml` enables the legacy capability packs in
+`simulate` mode at the per-capability level. The master
+`enable_all_lab_capabilities: false` keeps `emulate` mode gated. This is
+the right default for purple-team work; tighten or loosen per environment.
 
-*   The primary method for running simulations is via the command line as described in the [README.md Usage Section](README.md#usage).
-    ```bash
-    # Example: Run a simulation using a specific profile
-    ./scripts/bluefire.sh --profile <profile_name> 
-    ```
-*   Understand the arguments accepted by `scripts/bluefire.sh` (`--profile`, `--ai`, `--exfil`) and how they relate to the simulation execution controlled by `src/run_scenario.py`.
-*   Refer to specific module documentation (if available) or code comments within `src/core/` for details on how different profiles or arguments trigger specific operations and techniques.
+## 3. Run a scenario
 
-## 4. Advanced Usage (Programmatic)
+Two entry points to the same runtime:
 
-*   For custom integrations or complex scenarios, the `BlueFireNexus` class can be used programmatically. See the example in the [README.md](README.md#programmatic-usage-advanced).
-*   Carefully examine the required parameters for `execute_operation` based on the target module's implementation in `src/core/`.
+```bash
+# Module form (the supported way)
+python -m src.run_scenario --profile apt29_credential_access --output-json
+python -m src.run_scenario --scenario-file scenarios/insider_exfil_dns.yaml --output-json
 
-## 5. Monitoring and Analysis
+# Shell wrapper (thin convenience layer)
+./scripts/bluefire.sh --profile apt29_credential_access --output-json
+```
 
-*   Monitor the target test environment during simulation runs.
-*   Inspect the per-run JSONL telemetry artifact at `output/<run_id>/telemetry.jsonl` for the events emitted by each module.
-*   Review application logs (default: `logs/bluefire.log`, path configurable in `config.yaml`) for execution details and potential errors.
+Common flags on `run_scenario`:
 
-## 6. Security
+- `--profile <name>` — load a built-in profile.
+- `--scenario-file <path>` — load a scenario YAML.
+- `--output-json` — emit machine-readable summary on stdout.
+- `--run-id <id>` — pin the run id for stable output paths.
+- `--legacy-preset <name>` — apply a legacy capability preset for this run only.
+- `--legacy-guided` — auto-apply the recommended preset based on the scenario objective.
+- `--legacy-pack <pack> --legacy-capability <cap>` — granular per-capability override.
 
-*   Never expose BlueFire-Nexus or its C2 channels outside the isolated test environment.
-*   Keep dependencies updated (`pip install -r requirements.txt --upgrade`).
-*   Treat configuration files and environment variables containing sensitive information securely.
+## 4. CLI surface
 
-# Usage Guidelines for BlueFire-Nexus
+The Typer-based CLI in `src/core/cli.py` exposes operator workflows:
 
-## MITRE ATT&CK Mapping
-BlueFire-Nexus emulates adversary techniques mapped to MITRE ATT&CK. For example:
-- **Process Injection:** T1055.002 (Process Doppelgänging/Reflective DLL Injection)
-- **DNS Exfiltration:** T1041 (Exfiltration Over Command and Control Channel)
-- **TLS Certificate Mimicry:** T1573.002 (Encrypted Channel)
+```bash
+# Run a scenario or natural-language plan
+python -m src.core.cli run-scenario scenarios/insider_exfil_dns.yaml
+python -m src.core.cli plan "Emulate APT29 credential access chain"
+python -m src.core.cli suggest-detections <run-id>
+
+# Inspect legacy capability presets
+python -m src.core.cli legacy-presets
+python -m src.core.cli legacy-guided-presets
+python -m src.core.cli legacy-recommend-preset detection --apply
+python -m src.core.cli legacy-scenario-recommendation scenarios/legacy_c2_protocols.yaml --apply
+python -m src.core.cli legacy-risk-ladder
+python -m src.core.cli legacy-risk-posture --config config.yaml
+python -m src.core.cli legacy-operator-guide
+
+# Apply a preset to config
+python -m src.core.cli legacy-apply-preset c2-sim --config config.yaml
+python -m src.core.cli legacy-apply-preset full-simulate --config config.yaml --preview-only
+
+# Inspect a previous run
+python -m src.core.cli show-risk-summary output/<run-id>/risk_summary.json --top 10
+```
+
+Preset shorthand mappings (accepted by both `legacy-apply-preset` and `--legacy-preset`):
+
+| Preset | Effect |
+|---|---|
+| `safe-baseline` | All packs disabled. |
+| `full-simulate` | All packs enabled in simulate mode. |
+| `full-emulate` | All packs enabled in emulate mode with lab confirmation. |
+| `actor-simulate` | Actor pack only. |
+| `c2-simulate` | C2/protocol pack only. |
+| `stealth-simulate` | Stealth pack only. |
+
+Aliases: `simulate-all` → `full-simulate`, `actor-sim` → `actor-simulate`, etc.
+
+## 5. Legacy capability packs
+
+Three opt-in research packs preserve the offensive code paths. All ship
+**disabled by default**.
+
+### Master (global) lab toggle
+
+```yaml
+modules:
+  legacy:
+    enable_all_lab_capabilities: true
+    lab_confirmation: true
+    global_mode: simulate         # or emulate
+```
+
+### Granular per-pack / per-capability
+
+```yaml
+modules:
+  legacy:
+    actor_pack:
+      enabled: true
+      mode: simulate
+      capabilities:
+        apt29:
+          enabled: true
+        apt28:
+          enabled: false
+    c2_pack:
+      enabled: false
+      capabilities:
+        dns_tunneling:
+          enabled: true
+    stealth_pack:
+      enabled: true
+      mode: simulate
+      capabilities:
+        anti_forensic:
+          enabled: true
+```
+
+### Capability aliases (accepted in YAML and CLI flags)
+
+| Alias | Resolves to |
+|---|---|
+| `quic_c2`, `quic` | `websocket_quic` |
+| `network_obfuscator` | `network_obfuscator_legacy` |
+| `anti_detection` | `anti_detection_legacy` |
+| `dns`, `dns_tunnel` | `dns_tunneling` |
+
+### Backward-compatible config keys
+
+| Old | New |
+|---|---|
+| `lab_mode` | `global_mode` |
+| `lab_acknowledged` | `global_lab_acknowledged` (and per-pack `lab_confirmation`) |
+| capability `emulate_enabled: true` | resolves to `mode=emulate` + `lab_confirmation=true` |
+
+## 6. Programmatic usage
+
+```python
+from src.core.bluefire_nexus import BlueFireNexus
+
+nexus = BlueFireNexus("config.yaml")
+result = nexus.execute_operation(
+    "execution",
+    {"command": "echo hello", "network_touch": False},
+)
+print(result["status"], result["run_id"])
+```
+
+For repeated runs with optional jitter:
+
+```python
+from src.core.experiments import run_experiment_series
+
+summary = run_experiment_series("scenarios/apt29_credential_access.yaml", iterations=3, jitter=False)
+```
+
+## 7. Monitoring a run
+
+- Inspect `output/<run_id>/telemetry.jsonl` for events emitted by each module step.
+- Inspect `output/<run_id>/report.md` for the purple-team narrative.
+- Inspect `output/<run_id>/detections/{sigma,yara_l,spl}/` for ATT&CK-mapped detection drafts.
+- Inspect `output/<run_id>/risk_summary.json` for the run risk posture.
+- Application logs default to `logs/bluefire.log` (path configurable in `config.yaml`).
+
+## 8. ATT&CK mapping notes
+
+BlueFire emulates techniques mapped to MITRE ATT&CK. Examples currently
+covered:
+
+- **Process Injection** — T1055.002 (Process Doppelgänging / Reflective DLL Injection) via legacy stealth research.
+- **DNS Exfiltration** — T1041 (Exfiltration Over C2 Channel) and T1071.004 (DNS application-layer protocol).
+- **TLS Channel Mimicry** — T1573.002 (Encrypted Channel) via legacy TLS fast-flux research.
+- **Discovery family** — T1046, T1018, T1082, T1057, T1007, T1087, T1069, T1083 via the standard `discovery` module's per-input fan-out.
+
+Per-module / per-pack detail: [reports/capability_inventory.md](reports/capability_inventory.md).
