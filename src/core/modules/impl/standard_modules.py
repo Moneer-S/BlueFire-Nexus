@@ -133,62 +133,278 @@ class ExecutionModule(BaseModule):
         )
 
 
+# Persistence technique catalog.
+_PERSISTENCE_PROFILES: Dict[str, Dict[str, Any]] = {
+    "scheduled_task": {
+        "mitre": "T1053.005",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "schtasks",
+        "event_type": "persistence_scheduled_task",
+        "title_prefix": "Scheduled task persistence on",
+    },
+    "cron": {
+        "mitre": "T1053.003",
+        "logsource": {"category": "process_creation", "product": "linux"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "crontab",
+        "event_type": "persistence_cron",
+        "title_prefix": "Cron-job persistence on",
+    },
+    "registry_run_key": {
+        "mitre": "T1547.001",
+        "logsource": {"category": "registry_event", "product": "windows"},
+        "selection_field": "registry.key|contains",
+        "selection_value": "Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run",
+        "event_type": "persistence_registry_run_key",
+        "title_prefix": "Run-key registry persistence on",
+    },
+    "service": {
+        "mitre": "T1543.003",
+        "logsource": {"category": "service_creation", "product": "windows"},
+        "selection_field": "service.image_path|contains",
+        "selection_value": "svc",
+        "event_type": "persistence_service",
+        "title_prefix": "Windows service persistence on",
+    },
+    "launch_agent": {
+        "mitre": "T1543.001",
+        "logsource": {"category": "file_event", "product": "macos"},
+        "selection_field": "file.path|contains",
+        "selection_value": "LaunchAgents",
+        "event_type": "persistence_launch_agent",
+        "title_prefix": "Launch-agent persistence on",
+    },
+    "launch_daemon": {
+        "mitre": "T1543.004",
+        "logsource": {"category": "file_event", "product": "macos"},
+        "selection_field": "file.path|contains",
+        "selection_value": "LaunchDaemons",
+        "event_type": "persistence_launch_daemon",
+        "title_prefix": "Launch-daemon persistence on",
+    },
+    "wmi_subscription": {
+        "mitre": "T1546.003",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "__EventFilter",
+        "event_type": "persistence_wmi_subscription",
+        "title_prefix": "WMI event-subscription persistence on",
+    },
+    "startup_folder": {
+        "mitre": "T1547.001",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "file.path|contains",
+        "selection_value": "Startup",
+        "event_type": "persistence_startup_folder",
+        "title_prefix": "Startup-folder persistence on",
+    },
+    "bashrc": {
+        "mitre": "T1546.004",
+        "logsource": {"category": "file_event", "product": "linux"},
+        "selection_field": "file.path|contains",
+        "selection_value": ".bashrc",
+        "event_type": "persistence_bashrc",
+        "title_prefix": "Shell-rc persistence on",
+    },
+    "bootkit": {
+        "mitre": "T1542.003",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "bcdedit",
+        "event_type": "persistence_bootkit",
+        "title_prefix": "Bootkit persistence on",
+    },
+}
+
+
 class PersistenceModule(BaseModule):
     name = "persistence"
-    attack_techniques = ("T1053",)
+    attack_techniques = (
+        "T1053.005",
+        "T1053.003",
+        "T1547.001",
+        "T1543.003",
+        "T1543.001",
+        "T1543.004",
+        "T1546.003",
+        "T1546.004",
+        "T1542.003",
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        technique = str(params.get("technique", "scheduled_task"))
+        requested = str(params.get("technique") or "scheduled_task").lower()
+        profile_key = (
+            requested if requested in _PERSISTENCE_PROFILES else "scheduled_task"
+        )
+        profile = _PERSISTENCE_PROFILES[profile_key]
+        target = str(params.get("target") or "lab-host")
+
         event = TelemetryEvent(
-            event_type="persistence_simulated",
+            event_type=profile["event_type"],
             module=self.name,
-            details={"technique": technique, "run_id": context["run_id"]},
+            details={
+                "technique": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+                "selection_value": profile["selection_value"],
+            },
         )
         hints = {
-            "title": f"Persistence behavior: {technique}",
-            "logsource": {"category": "process_creation", "product": "windows"},
+            "title": f"{profile['title_prefix']} {target}",
+            "logsource": dict(profile["logsource"]),
             "detection": {
-                "selection": {"persistence.technique": technique},
+                "selection": {profile["selection_field"]: profile["selection_value"]},
                 "condition": "selection",
             },
-            "mitre_technique": "T1053",
+            "mitre_technique": profile["mitre"],
+            "persistence_technique": profile_key,
+            "target_host": target,
         }
+        if requested != profile_key:
+            hints["unrecognized_persistence_technique"] = requested
+
         return _result(
             self.name,
             "success",
-            f"Simulated persistence technique {technique}.",
-            techniques=["T1053"],
+            f"Simulated persistence technique '{profile_key}' on {target}.",
+            techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={"technique": technique},
+            artifacts={
+                "technique": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            },
         )
+
+
+# Defense-evasion technique catalog.
+_DEFENSE_EVASION_PROFILES: Dict[str, Dict[str, Any]] = {
+    "argument_spoofing": {
+        "mitre": "T1564.010",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "--legit",
+        "event_type": "defense_evasion_argument_spoofing",
+        "title_prefix": "Process-argument spoofing on",
+    },
+    "masquerading": {
+        "mitre": "T1036",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.image|endswith",
+        "selection_value": "svchost.exe",
+        "event_type": "defense_evasion_masquerading",
+        "title_prefix": "Process-name masquerading on",
+    },
+    "timestomping": {
+        "mitre": "T1070.006",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.action",
+        "selection_value": "timestamp_modify",
+        "event_type": "defense_evasion_timestomping",
+        "title_prefix": "File timestomping on",
+    },
+    "log_clearing": {
+        "mitre": "T1070.001",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "wevtutil cl",
+        "event_type": "defense_evasion_log_clearing",
+        "title_prefix": "Event-log clearing on",
+    },
+    "hidden_files": {
+        "mitre": "T1564.001",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.attributes|contains",
+        "selection_value": "hidden",
+        "event_type": "defense_evasion_hidden_files",
+        "title_prefix": "Hidden-file creation on",
+    },
+    "system_binary_proxy": {
+        "mitre": "T1218",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.image|endswith",
+        "selection_value": "rundll32.exe",
+        "event_type": "defense_evasion_system_binary_proxy",
+        "title_prefix": "System-binary proxy execution on",
+    },
+    "powershell_obfuscation": {
+        "mitre": "T1027",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "FromBase64String",
+        "event_type": "defense_evasion_powershell_obfuscation",
+        "title_prefix": "PowerShell-payload obfuscation on",
+    },
+    "impair_defenses": {
+        "mitre": "T1562.001",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.name|contains",
+        "selection_value": "WinDefend",
+        "event_type": "defense_evasion_impair_defenses",
+        "title_prefix": "Defensive-tool impairment on",
+    },
+}
 
 
 class DefenseEvasionModule(BaseModule):
     name = "defense_evasion"
-    attack_techniques = ("T1036", "T1070.006")
+    attack_techniques = (
+        "T1564.010",
+        "T1036",
+        "T1070.006",
+        "T1070.001",
+        "T1564.001",
+        "T1218",
+        "T1027",
+        "T1562.001",
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        technique = str(params.get("technique", "argument_spoofing"))
+        requested = str(params.get("technique") or "argument_spoofing").lower()
+        profile_key = (
+            requested if requested in _DEFENSE_EVASION_PROFILES else "argument_spoofing"
+        )
+        profile = _DEFENSE_EVASION_PROFILES[profile_key]
+        target = str(params.get("target") or "lab-host")
+
         event = TelemetryEvent(
-            event_type="defense_evasion_simulated",
+            event_type=profile["event_type"],
             module=self.name,
-            details={"technique": technique, "run_id": context["run_id"]},
+            details={
+                "technique": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+                "selection_value": profile["selection_value"],
+            },
         )
         hints = {
-            "title": f"Defense evasion behavior: {technique}",
-            "logsource": {"category": "process_creation", "product": "linux"},
-            "detection": {"selection": {"evasion.technique": technique}, "condition": "selection"},
-            "mitre_technique": "T1036",
+            "title": f"{profile['title_prefix']} {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: profile["selection_value"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "evasion_technique": profile_key,
+            "target_host": target,
         }
+        if requested != profile_key:
+            hints["unrecognized_evasion_technique"] = requested
+
         return _result(
             self.name,
             "success",
-            f"Simulated defense evasion technique {technique}.",
-            techniques=["T1036"],
+            f"Simulated defense-evasion technique '{profile_key}' on {target}.",
+            techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={"technique": technique},
+            artifacts={
+                "technique": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            },
         )
 
 
@@ -390,33 +606,116 @@ class ExfiltrationModule(BaseModule):
         )
 
 
+# Command-control channel catalog.
+#
+# Each `channel` value maps to its MITRE technique, sigma-style logsource,
+# detection selection field, and synthetic event_type. Detection drafts now
+# vary per channel instead of emitting a single hardcoded shape.
+_COMMAND_CONTROL_PROFILES: Dict[str, Dict[str, Any]] = {
+    "http": {
+        "mitre": "T1071.001",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.url|contains",
+        "event_type": "command_control_http",
+        "title_prefix": "Application-layer HTTP C2 to",
+    },
+    "https": {
+        "mitre": "T1071.001",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.url|contains",
+        "event_type": "command_control_https",
+        "title_prefix": "Application-layer HTTPS C2 to",
+    },
+    "dns": {
+        "mitre": "T1071.004",
+        "logsource": {"category": "dns", "product": "network"},
+        "selection_field": "dns.question.name|contains",
+        "event_type": "command_control_dns",
+        "title_prefix": "DNS-tunneled C2 to",
+    },
+    "tcp": {
+        "mitre": "T1095",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "event_type": "command_control_tcp",
+        "title_prefix": "Non-application-layer TCP C2 to",
+    },
+    "icmp": {
+        "mitre": "T1095",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.protocol",
+        "event_type": "command_control_icmp",
+        "title_prefix": "ICMP-tunneled C2 to",
+    },
+    "websocket": {
+        "mitre": "T1071.001",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.url|contains",
+        "event_type": "command_control_websocket",
+        "title_prefix": "WebSocket C2 to",
+    },
+    "mail": {
+        "mitre": "T1071.003",
+        "logsource": {"category": "email", "product": "host"},
+        "selection_field": "email.recipient|contains",
+        "event_type": "command_control_mail",
+        "title_prefix": "Mail-channel C2 to",
+    },
+    "web_service": {
+        "mitre": "T1102",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.url|contains",
+        "event_type": "command_control_web_service",
+        "title_prefix": "Web-service-bidirectional C2 to",
+    },
+}
+
+
 class CommandControlModule(BaseModule):
     name = "command_control"
-    attack_techniques = ("T1071.001",)
+    attack_techniques = ("T1071.001", "T1071.003", "T1071.004", "T1095", "T1102")
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        channel = str(params.get("channel", "http"))
-        c2_url = str(params.get("c2_url", "https://example.invalid/c2"))
+        requested = str(params.get("channel") or "http").lower()
+        profile_key = requested if requested in _COMMAND_CONTROL_PROFILES else "http"
+        profile = _COMMAND_CONTROL_PROFILES[profile_key]
+        c2_url = str(params.get("c2_url") or "https://example.invalid/c2")
+
         event = TelemetryEvent(
-            event_type="c2_beacon_simulated",
+            event_type=profile["event_type"],
             module=self.name,
-            details={"channel": channel, "c2_url": c2_url},
+            details={
+                "channel": profile_key,
+                "c2_url": c2_url,
+                "mitre_technique": profile["mitre"],
+            },
         )
         hints = {
-            "title": "Application-layer C2 communication",
-            "logsource": {"category": "network_connection", "product": "windows"},
-            "detection": {"selection": {"network.url|contains": c2_url}, "condition": "selection"},
-            "mitre_technique": "T1071.001",
+            "title": f"{profile['title_prefix']} {c2_url}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: c2_url},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "c2_channel": profile_key,
             "network_url": c2_url,
         }
+        if requested != profile_key:
+            hints["unrecognized_c2_channel"] = requested
+
         return _result(
             self.name,
             "success",
-            f"Simulated C2 beacon over {channel}.",
-            techniques=["T1071.001"],
+            f"Simulated C2 beacon over {profile_key} to {c2_url}.",
+            techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={"channel": channel, "c2_url": c2_url},
+            artifacts={
+                "channel": profile_key,
+                "c2_url": c2_url,
+                "mitre_technique": profile["mitre"],
+            },
         )
 
 
@@ -448,128 +747,523 @@ class AntiDetectionModule(BaseModule):
         )
 
 
+# Intelligence-collection profile catalog.
+#
+# `intelligence_type` selects the catalog entry. Default falls back to
+# `actor_research` keyed on `focus` (preserving the legacy single-arg shape).
+_INTELLIGENCE_PROFILES: Dict[str, Dict[str, Any]] = {
+    "actor_research": {
+        "mitre": "T1591.002",
+        "logsource": {"category": "threat_intelligence", "product": "vendor"},
+        "selection_field": "threat.actor",
+        "event_type": "intelligence_actor_research",
+        "title_prefix": "Threat-actor research on",
+    },
+    "ttp_research": {
+        "mitre": "T1591",
+        "logsource": {"category": "threat_intelligence", "product": "vendor"},
+        "selection_field": "threat.ttp_focus",
+        "event_type": "intelligence_ttp_research",
+        "title_prefix": "TTP catalog research on",
+    },
+    "ioc_collection": {
+        "mitre": "T1592.002",
+        "logsource": {"category": "threat_intelligence", "product": "ioc_feed"},
+        "selection_field": "threat.ioc_class",
+        "event_type": "intelligence_ioc_collection",
+        "title_prefix": "IOC collection focused on",
+    },
+    "vuln_research": {
+        "mitre": "T1588.006",
+        "logsource": {"category": "threat_intelligence", "product": "vuln_feed"},
+        "selection_field": "threat.cve_pattern",
+        "event_type": "intelligence_vuln_research",
+        "title_prefix": "Vulnerability research focused on",
+    },
+    "credential_intel": {
+        "mitre": "T1589.001",
+        "logsource": {"category": "threat_intelligence", "product": "leak_feed"},
+        "selection_field": "threat.credential_corpus",
+        "event_type": "intelligence_credential_intel",
+        "title_prefix": "Credential leak research on",
+    },
+    "domain_intel": {
+        "mitre": "T1590.005",
+        "logsource": {"category": "threat_intelligence", "product": "passive_dns"},
+        "selection_field": "threat.domain_pattern",
+        "event_type": "intelligence_domain_intel",
+        "title_prefix": "Domain-history research on",
+    },
+    "network_intel": {
+        "mitre": "T1590",
+        "logsource": {"category": "threat_intelligence", "product": "asn_feed"},
+        "selection_field": "threat.network_pattern",
+        "event_type": "intelligence_network_intel",
+        "title_prefix": "Network-topology research on",
+    },
+}
+
+
 class IntelligenceModule(BaseModule):
     name = "intelligence"
-    attack_techniques = ("T1595",)
+    attack_techniques = (
+        "T1591",
+        "T1591.002",
+        "T1592.002",
+        "T1588.006",
+        "T1589.001",
+        "T1590",
+        "T1590.005",
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        focus = str(params.get("focus", "apt29"))
+        # Backwards compat: prior callers used `focus` only. New callers may
+        # pass `intelligence_type` to select a specific catalog entry; without
+        # it, default to actor_research keyed by the legacy `focus` value.
+        requested = str(params.get("intelligence_type") or "actor_research").lower()
+        profile_key = (
+            requested if requested in _INTELLIGENCE_PROFILES else "actor_research"
+        )
+        profile = _INTELLIGENCE_PROFILES[profile_key]
+        focus = str(params.get("focus") or "apt29")
+
         event = TelemetryEvent(
-            event_type="intelligence_collection_simulated",
+            event_type=profile["event_type"],
             module=self.name,
-            details={"focus": focus},
+            details={
+                "intelligence_type": profile_key,
+                "focus": focus,
+                "mitre_technique": profile["mitre"],
+            },
         )
         hints = {
-            "title": f"Intelligence collection focus: {focus}",
-            "logsource": {"category": "threat_intelligence", "product": "generic"},
+            "title": f"{profile['title_prefix']} {focus}",
+            "logsource": dict(profile["logsource"]),
             "detection": {
-                "selection": {"intelligence.focus": focus},
+                "selection": {profile["selection_field"]: focus},
                 "condition": "selection",
             },
-            "mitre_technique": "T1595",
+            "mitre_technique": profile["mitre"],
+            "intelligence_type": profile_key,
+            "intelligence_focus": focus,
         }
+        if requested != profile_key:
+            hints["unrecognized_intelligence_type"] = requested
+
         return _result(
             self.name,
             "success",
-            f"Collected simulated intelligence for {focus}.",
-            techniques=["T1595"],
+            f"Collected simulated {profile_key} intelligence on {focus}.",
+            techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={"focus": focus, "confidence": "medium"},
+            artifacts={
+                "intelligence_type": profile_key,
+                "focus": focus,
+                "confidence": "medium",
+                "mitre_technique": profile["mitre"],
+            },
         )
+
+
+# Network-obfuscator profile catalog.
+_NETWORK_OBFUSCATOR_PROFILES: Dict[str, Dict[str, Any]] = {
+    "dns": {
+        "mitre": "T1572",
+        "logsource": {"category": "dns", "product": "network"},
+        "selection_field": "dns.question.length",
+        "selection_value": ">100",
+        "event_type": "network_obfuscation_dns",
+        "title_prefix": "DNS-tunneled obfuscation on",
+    },
+    "domain_fronting": {
+        "mitre": "T1090.004",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "tls.sni|contains",
+        "selection_value": "cdn",
+        "event_type": "network_obfuscation_domain_fronting",
+        "title_prefix": "Domain-fronting obfuscation on",
+    },
+    "multi_hop": {
+        "mitre": "T1090.003",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.hop_count",
+        "selection_value": ">3",
+        "event_type": "network_obfuscation_multi_hop",
+        "title_prefix": "Multi-hop proxy obfuscation on",
+    },
+    "tor": {
+        "mitre": "T1090.003",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 9001,
+        "event_type": "network_obfuscation_tor",
+        "title_prefix": "Tor-circuit obfuscation on",
+    },
+    "internal_proxy": {
+        "mitre": "T1090.001",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 8080,
+        "event_type": "network_obfuscation_internal_proxy",
+        "title_prefix": "Internal-proxy obfuscation on",
+    },
+    "external_proxy": {
+        "mitre": "T1090.002",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_country|in",
+        "selection_value": "external",
+        "event_type": "network_obfuscation_external_proxy",
+        "title_prefix": "External-proxy obfuscation on",
+    },
+    "protocol_tunneling": {
+        "mitre": "T1572",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.encapsulation",
+        "selection_value": "tunnel",
+        "event_type": "network_obfuscation_protocol_tunneling",
+        "title_prefix": "Protocol-tunneling obfuscation on",
+    },
+    "jitter_padding": {
+        "mitre": "T1001.003",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.payload_padding",
+        "selection_value": "padded",
+        "event_type": "network_obfuscation_jitter_padding",
+        "title_prefix": "Jitter/padding obfuscation on",
+    },
+}
 
 
 class NetworkObfuscatorModule(BaseModule):
     name = "network_obfuscator"
-    attack_techniques = ("T1572",)
+    attack_techniques = (
+        "T1572",
+        "T1090.001",
+        "T1090.002",
+        "T1090.003",
+        "T1090.004",
+        "T1001.003",
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        protocol = str(params.get("protocol", "dns"))
+        requested = str(params.get("protocol") or "dns").lower()
+        profile_key = (
+            requested if requested in _NETWORK_OBFUSCATOR_PROFILES else "dns"
+        )
+        profile = _NETWORK_OBFUSCATOR_PROFILES[profile_key]
+
         event = TelemetryEvent(
-            event_type="network_obfuscation_simulated",
+            event_type=profile["event_type"],
             module=self.name,
-            details={"protocol": protocol},
+            details={
+                "protocol": profile_key,
+                "mitre_technique": profile["mitre"],
+                "selection_value": profile["selection_value"],
+            },
         )
         hints = {
-            "title": f"Network protocol obfuscation: {protocol}",
-            "logsource": {"category": "network_connection", "product": "generic"},
+            "title": f"{profile['title_prefix']} egress channel",
+            "logsource": dict(profile["logsource"]),
             "detection": {
-                "selection": {"network.protocol": protocol},
+                "selection": {profile["selection_field"]: profile["selection_value"]},
                 "condition": "selection",
             },
-            "mitre_technique": "T1572",
-            "network_protocol": protocol,
+            "mitre_technique": profile["mitre"],
+            "network_protocol": profile_key,
+            "obfuscation_profile": profile_key,
         }
+        if requested != profile_key:
+            hints["unrecognized_obfuscation_protocol"] = requested
+
         return _result(
             self.name,
             "success",
-            f"Simulated obfuscation over protocol {protocol}.",
-            techniques=["T1572"],
+            f"Simulated network obfuscation via '{profile_key}'.",
+            techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={"protocol": protocol},
+            artifacts={
+                "protocol": profile_key,
+                "mitre_technique": profile["mitre"],
+            },
         )
+
+
+# Resource-development profile catalog.
+_RESOURCE_DEVELOPMENT_PROFILES: Dict[str, Dict[str, Any]] = {
+    "domain": {
+        "mitre": "T1583.001",
+        "logsource": {"category": "infrastructure_provisioning", "product": "registrar"},
+        "selection_field": "resource.kind",
+        "event_type": "resource_development_domain",
+        "title_prefix": "Adversary domain registration:",
+    },
+    "vps": {
+        "mitre": "T1583.003",
+        "logsource": {"category": "infrastructure_provisioning", "product": "cloud"},
+        "selection_field": "resource.kind",
+        "event_type": "resource_development_vps",
+        "title_prefix": "Adversary VPS provisioning:",
+    },
+    "web_service": {
+        "mitre": "T1583.006",
+        "logsource": {"category": "infrastructure_provisioning", "product": "saas"},
+        "selection_field": "resource.kind",
+        "event_type": "resource_development_web_service",
+        "title_prefix": "Adversary web-service account:",
+    },
+    "email_account": {
+        "mitre": "T1585.002",
+        "logsource": {"category": "account_provisioning", "product": "saas"},
+        "selection_field": "resource.kind",
+        "event_type": "resource_development_email_account",
+        "title_prefix": "Adversary email-account creation:",
+    },
+    "social_account": {
+        "mitre": "T1585.001",
+        "logsource": {"category": "account_provisioning", "product": "saas"},
+        "selection_field": "resource.kind",
+        "event_type": "resource_development_social_account",
+        "title_prefix": "Adversary social-media account:",
+    },
+    "code_signing_cert": {
+        "mitre": "T1588.003",
+        "logsource": {"category": "certificate_acquisition", "product": "ca"},
+        "selection_field": "resource.kind",
+        "event_type": "resource_development_code_signing_cert",
+        "title_prefix": "Code-signing certificate acquisition:",
+    },
+    "compromised_infrastructure": {
+        "mitre": "T1584.001",
+        "logsource": {"category": "infrastructure_provisioning", "product": "compromised"},
+        "selection_field": "resource.kind",
+        "event_type": "resource_development_compromised_infrastructure",
+        "title_prefix": "Compromised-infrastructure acquisition:",
+    },
+    "malware": {
+        "mitre": "T1588.001",
+        "logsource": {"category": "tooling_acquisition", "product": "marketplace"},
+        "selection_field": "resource.kind",
+        "event_type": "resource_development_malware",
+        "title_prefix": "Adversary malware acquisition:",
+    },
+    "exploit": {
+        "mitre": "T1588.005",
+        "logsource": {"category": "tooling_acquisition", "product": "marketplace"},
+        "selection_field": "resource.kind",
+        "event_type": "resource_development_exploit",
+        "title_prefix": "Adversary exploit acquisition:",
+    },
+    "vulnerability": {
+        "mitre": "T1588.006",
+        "logsource": {"category": "threat_intelligence", "product": "vuln_feed"},
+        "selection_field": "resource.kind",
+        "event_type": "resource_development_vulnerability",
+        "title_prefix": "Adversary vulnerability acquisition:",
+    },
+}
 
 
 class ResourceDevelopmentModule(BaseModule):
     name = "resource_development"
-    attack_techniques = ("T1583",)
+    attack_techniques = (
+        "T1583.001",
+        "T1583.003",
+        "T1583.006",
+        "T1585.001",
+        "T1585.002",
+        "T1588.001",
+        "T1588.003",
+        "T1588.005",
+        "T1588.006",
+        "T1584.001",
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        resource_type = str(params.get("resource_type", "infrastructure"))
+        requested = str(params.get("resource_type") or "domain").lower()
+        profile_key = (
+            requested if requested in _RESOURCE_DEVELOPMENT_PROFILES else "domain"
+        )
+        # Backwards-compat: legacy default "infrastructure" -> map to "vps".
+        if requested == "infrastructure":
+            profile_key = "vps"
+        profile = _RESOURCE_DEVELOPMENT_PROFILES[profile_key]
+
         event = TelemetryEvent(
-            event_type="resource_development_simulated",
+            event_type=profile["event_type"],
             module=self.name,
-            details={"resource_type": resource_type},
+            details={
+                "resource_type": profile_key,
+                "mitre_technique": profile["mitre"],
+            },
         )
         hints = {
-            "title": f"Adversary resource development: {resource_type}",
-            "logsource": {"category": "infrastructure_provisioning", "product": "generic"},
+            "title": f"{profile['title_prefix']} {profile_key}",
+            "logsource": dict(profile["logsource"]),
             "detection": {
-                "selection": {"resource.type": resource_type},
+                "selection": {profile["selection_field"]: profile_key},
                 "condition": "selection",
             },
-            "mitre_technique": "T1583",
+            "mitre_technique": profile["mitre"],
+            "resource_type": profile_key,
         }
+        if requested not in _RESOURCE_DEVELOPMENT_PROFILES and requested != "infrastructure":
+            hints["unrecognized_resource_type"] = requested
+
         return _result(
             self.name,
             "success",
-            f"Simulated resource development for {resource_type}.",
-            techniques=["T1583"],
+            f"Simulated resource development: {profile_key}.",
+            techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={"resource_type": resource_type},
+            artifacts={
+                "resource_type": profile_key,
+                "mitre_technique": profile["mitre"],
+            },
         )
+
+
+# Reconnaissance source catalog.
+_RECONNAISSANCE_PROFILES: Dict[str, Dict[str, Any]] = {
+    "osint": {
+        "mitre": "T1593",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_host|in",
+        "selection_value": ["github.com", "linkedin.com"],
+        "event_type": "reconnaissance_osint",
+        "title_prefix": "OSINT reconnaissance from",
+    },
+    "whois": {
+        "mitre": "T1590.001",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 43,
+        "event_type": "reconnaissance_whois",
+        "title_prefix": "WHOIS reconnaissance from",
+    },
+    "dns_records": {
+        "mitre": "T1590.002",
+        "logsource": {"category": "dns", "product": "network"},
+        "selection_field": "dns.record_type|in",
+        "selection_value": ["MX", "SOA", "TXT"],
+        "event_type": "reconnaissance_dns_records",
+        "title_prefix": "DNS-record reconnaissance from",
+    },
+    "email_harvesting": {
+        "mitre": "T1589.002",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_host|contains",
+        "selection_value": "hunter.io",
+        "event_type": "reconnaissance_email_harvesting",
+        "title_prefix": "Email-address harvesting from",
+    },
+    "social_media": {
+        "mitre": "T1593.001",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_host|in",
+        "selection_value": ["twitter.com", "x.com", "linkedin.com"],
+        "event_type": "reconnaissance_social_media",
+        "title_prefix": "Social-media reconnaissance from",
+    },
+    "search_engine": {
+        "mitre": "T1593.002",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_host|in",
+        "selection_value": ["google.com", "bing.com", "duckduckgo.com"],
+        "event_type": "reconnaissance_search_engine",
+        "title_prefix": "Search-engine reconnaissance from",
+    },
+    "code_repository": {
+        "mitre": "T1593.003",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_host|in",
+        "selection_value": ["github.com", "gitlab.com", "bitbucket.org"],
+        "event_type": "reconnaissance_code_repository",
+        "title_prefix": "Code-repository reconnaissance from",
+    },
+    "active_scan": {
+        "mitre": "T1595.001",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 0,
+        "event_type": "reconnaissance_active_scan",
+        "title_prefix": "Active IP-block scan from",
+    },
+    "service_banner": {
+        "mitre": "T1595.002",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.banner_grab",
+        "selection_value": True,
+        "event_type": "reconnaissance_service_banner",
+        "title_prefix": "Service-banner scan from",
+    },
+    "vuln_scan": {
+        "mitre": "T1595.002",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.tool",
+        "selection_value": "vuln_scanner",
+        "event_type": "reconnaissance_vuln_scan",
+        "title_prefix": "Vulnerability scan from",
+    },
+}
 
 
 class ReconnaissanceModule(BaseModule):
     name = "reconnaissance"
-    attack_techniques = ("T1592",)
+    attack_techniques = (
+        "T1593",
+        "T1593.001",
+        "T1593.002",
+        "T1593.003",
+        "T1590.001",
+        "T1590.002",
+        "T1589.002",
+        "T1595.001",
+        "T1595.002",
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        source = str(params.get("source", "osint"))
+        requested = str(params.get("source") or "osint").lower()
+        profile_key = (
+            requested if requested in _RECONNAISSANCE_PROFILES else "osint"
+        )
+        profile = _RECONNAISSANCE_PROFILES[profile_key]
+
         event = TelemetryEvent(
-            event_type="reconnaissance_simulated",
+            event_type=profile["event_type"],
             module=self.name,
-            details={"source": source},
+            details={
+                "source": profile_key,
+                "mitre_technique": profile["mitre"],
+                "selection_value": profile["selection_value"],
+            },
         )
         hints = {
-            "title": f"Reconnaissance activity from source: {source}",
-            "logsource": {"category": "network_connection", "product": "generic"},
+            "title": f"{profile['title_prefix']} {profile_key}",
+            "logsource": dict(profile["logsource"]),
             "detection": {
-                "selection": {"reconnaissance.source": source},
+                "selection": {profile["selection_field"]: profile["selection_value"]},
                 "condition": "selection",
             },
-            "mitre_technique": "T1592",
+            "mitre_technique": profile["mitre"],
+            "reconnaissance_source": profile_key,
         }
+        if requested != profile_key:
+            hints["unrecognized_recon_source"] = requested
+
         return _result(
             self.name,
             "success",
-            f"Simulated reconnaissance via {source}.",
-            techniques=["T1592"],
+            f"Simulated reconnaissance via '{profile_key}'.",
+            techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={"source": source},
+            artifacts={
+                "source": profile_key,
+                "mitre_technique": profile["mitre"],
+            },
         )
 
 
