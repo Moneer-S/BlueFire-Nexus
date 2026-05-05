@@ -573,6 +573,153 @@ class ReconnaissanceModule(BaseModule):
         )
 
 
+# Lateral-movement technique catalog.
+#
+# Aligned with the technique surface of the legacy
+# `src/core/movement/lateral_movement.py` class (psexec / wmi / powershell-
+# remoting / smb / ssh / ftp / scp / service_creation). The legacy class is
+# preserved for emulate-mode follow-up; this module produces simulate-mode
+# telemetry and hints.
+_LATERAL_MOVEMENT_PROFILES: Dict[str, Dict[str, Any]] = {
+    "psexec": {
+        "mitre": "T1021.002",
+        "logsource": {"category": "network_connection", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "PsExec",
+        "event_type": "lateral_movement_psexec",
+        "title_prefix": "PsExec lateral movement to",
+    },
+    "wmi": {
+        "mitre": "T1047",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "wmic",
+        "event_type": "lateral_movement_wmi",
+        "title_prefix": "WMI remote execution against",
+    },
+    "winrm": {
+        "mitre": "T1021.006",
+        "logsource": {"category": "network_connection", "product": "windows"},
+        "selection_field": "network.dst_port",
+        "selection_value": 5985,
+        "event_type": "lateral_movement_winrm",
+        "title_prefix": "WinRM/PowerShell remoting against",
+    },
+    "smb_share": {
+        "mitre": "T1021.002",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "file.path|contains",
+        "selection_value": "ADMIN$",
+        "event_type": "lateral_movement_smb_share",
+        "title_prefix": "SMB administrative-share access on",
+    },
+    "ssh": {
+        "mitre": "T1021.004",
+        "logsource": {"category": "network_connection", "product": "linux"},
+        "selection_field": "network.dst_port",
+        "selection_value": 22,
+        "event_type": "lateral_movement_ssh",
+        "title_prefix": "SSH lateral movement to",
+    },
+    "ftp_transfer": {
+        "mitre": "T1570",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 21,
+        "event_type": "lateral_movement_ftp_transfer",
+        "title_prefix": "FTP lateral tool transfer to",
+    },
+    "scp_transfer": {
+        "mitre": "T1570",
+        "logsource": {"category": "network_connection", "product": "linux"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "scp ",
+        "event_type": "lateral_movement_scp_transfer",
+        "title_prefix": "SCP lateral tool transfer to",
+    },
+    "service_create": {
+        "mitre": "T1543.003",
+        "logsource": {"category": "service_creation", "product": "windows"},
+        "selection_field": "service.image_path|contains",
+        "selection_value": "svcname",
+        "event_type": "lateral_movement_service_create",
+        "title_prefix": "Remote Windows service creation on",
+    },
+}
+
+
+class LateralMovementModule(BaseModule):
+    """Standard adapter for the lateral-movement tactic.
+
+    Produces simulate-mode telemetry, ATT&CK-aligned detection hints, and
+    structured artifacts for eight lateral-movement techniques. The legacy
+    `src/core/movement/lateral_movement.py` class is preserved as the
+    source of technique coverage; emulate-mode wiring is a follow-up.
+    """
+
+    name = "lateral_movement"
+    attack_techniques = (
+        "T1021.002",
+        "T1047",
+        "T1021.006",
+        "T1021.004",
+        "T1570",
+        "T1543.003",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        requested = str(params.get("technique") or "psexec").lower()
+        profile_key = (
+            requested if requested in _LATERAL_MOVEMENT_PROFILES else "psexec"
+        )
+        profile = _LATERAL_MOVEMENT_PROFILES[profile_key]
+        source = str(params.get("source") or "lab-attacker")
+        target = str(params.get("target") or "lab-host")
+
+        details = {
+            "technique": profile_key,
+            "source": source,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+            "selection_value": profile["selection_value"],
+        }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details=details,
+        )
+        hints = {
+            "title": f"{profile['title_prefix']} {target} (from {source})",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: profile["selection_value"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "lateral_technique": profile_key,
+            "source_host": source,
+            "target_host": target,
+        }
+        if requested != profile_key:
+            hints["unrecognized_lateral_technique"] = requested
+
+        return _result(
+            self.name,
+            "success",
+            f"Simulated lateral-movement technique '{profile_key}' from {source} to {target}.",
+            techniques=[profile["mitre"]],
+            telemetry=[event],
+            hints=hints,
+            artifacts={
+                "technique": profile_key,
+                "source": source,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            },
+        )
+
+
 class LegacyWrappedModule(BaseModule):
     """Adapter that wraps existing legacy modules into ModuleResult objects."""
 

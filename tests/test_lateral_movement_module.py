@@ -1,0 +1,122 @@
+"""Focused tests for the standard `lateral_movement` module."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict
+
+import pytest
+
+from src.core.models import TelemetryEvent
+from src.core.modules.impl.standard_modules import (
+    LateralMovementModule,
+    _LATERAL_MOVEMENT_PROFILES,
+)
+
+
+def _ctx(tmp_path: Path) -> Dict[str, Any]:
+    return {
+        "run_id": "lateral-movement-test",
+        "output_dir": tmp_path,
+        "config": {},
+        "dry_run": True,
+        "max_runtime": 60,
+        "allowed_subnets": [],
+    }
+
+
+def test_default_technique_is_psexec(tmp_path: Path) -> None:
+    mod = LateralMovementModule()
+    result = mod.execute({}, _ctx(tmp_path))
+    assert result.status == "success"
+    assert result.techniques == ["T1021.002"]
+    assert result.artifacts["technique"] == "psexec"
+    assert result.detection_hints["mitre_technique"] == "T1021.002"
+    assert result.telemetry[0].event_type == "lateral_movement_psexec"
+
+
+@pytest.mark.parametrize(
+    "technique,expected_mitre",
+    [
+        ("psexec", "T1021.002"),
+        ("wmi", "T1047"),
+        ("winrm", "T1021.006"),
+        ("smb_share", "T1021.002"),
+        ("ssh", "T1021.004"),
+        ("ftp_transfer", "T1570"),
+        ("scp_transfer", "T1570"),
+        ("service_create", "T1543.003"),
+    ],
+)
+def test_technique_fans_out_to_correct_mitre(
+    technique: str, expected_mitre: str, tmp_path: Path
+) -> None:
+    mod = LateralMovementModule()
+    result = mod.execute(
+        {"technique": technique, "source": "attacker-1", "target": "victim-1"},
+        _ctx(tmp_path),
+    )
+    assert result.techniques == [expected_mitre]
+    assert result.detection_hints["mitre_technique"] == expected_mitre
+    assert result.detection_hints["lateral_technique"] == technique
+
+
+def test_unknown_technique_falls_back_with_marker(tmp_path: Path) -> None:
+    mod = LateralMovementModule()
+    result = mod.execute({"technique": "not_a_thing"}, _ctx(tmp_path))
+    assert result.artifacts["technique"] == "psexec"
+    assert result.techniques == ["T1021.002"]
+    assert result.detection_hints.get("unrecognized_lateral_technique") == "not_a_thing"
+
+
+def test_source_and_target_are_recorded(tmp_path: Path) -> None:
+    mod = LateralMovementModule()
+    result = mod.execute(
+        {"technique": "winrm", "source": "jumpbox-01", "target": "fileserver-03"},
+        _ctx(tmp_path),
+    )
+    assert result.artifacts["source"] == "jumpbox-01"
+    assert result.artifacts["target"] == "fileserver-03"
+    assert result.detection_hints["source_host"] == "jumpbox-01"
+    assert result.detection_hints["target_host"] == "fileserver-03"
+    assert "fileserver-03" in result.detection_hints["title"]
+    assert "jumpbox-01" in result.detection_hints["title"]
+
+
+def test_each_profile_emits_a_distinct_event_type(tmp_path: Path) -> None:
+    mod = LateralMovementModule()
+    seen: set[str] = set()
+    for technique in _LATERAL_MOVEMENT_PROFILES:
+        result = mod.execute({"technique": technique}, _ctx(tmp_path))
+        assert isinstance(result.telemetry[0], TelemetryEvent)
+        seen.add(result.telemetry[0].event_type)
+    assert len(seen) == len(_LATERAL_MOVEMENT_PROFILES)
+
+
+def test_logsource_categories_span_network_and_host(tmp_path: Path) -> None:
+    """Mix of network_connection / process_creation / file_event / service_creation."""
+    mod = LateralMovementModule()
+    categories: set[str] = set()
+    for technique in _LATERAL_MOVEMENT_PROFILES:
+        result = mod.execute({"technique": technique}, _ctx(tmp_path))
+        categories.add(result.detection_hints["logsource"]["category"])
+    assert "network_connection" in categories
+    assert "process_creation" in categories
+    assert "file_event" in categories
+    assert "service_creation" in categories
+
+
+def test_module_registers_at_canonical_name() -> None:
+    from src.core.modules.registry import build_runtime_modules
+
+    modules = build_runtime_modules()
+    assert "lateral_movement" in modules
+    assert isinstance(modules["lateral_movement"], LateralMovementModule)
+
+
+def test_module_advertises_all_catalog_techniques() -> None:
+    expected = {profile["mitre"] for profile in _LATERAL_MOVEMENT_PROFILES.values()}
+    advertised = set(LateralMovementModule.attack_techniques)
+    assert expected.issubset(advertised), (
+        f"Missing techniques on class attribute: {expected - advertised}"
+    )
