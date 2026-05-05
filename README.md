@@ -152,15 +152,13 @@ Full enable/disable surface, preset profiles, and YAML examples: [docs/USAGE_GUI
 
 ## AI / copilot layer
 
-Honest current state:
+- **Template / offline provider works.** A deterministic local provider produces copilot artifacts every run with no external dependencies and no API key required. This is the default and is suitable for air-gapped use.
+- **Remote provider scaffolding.** `ProviderFactory` recognizes `openai`, `anthropic`, `google`, `ollama`, `llama.cpp`, `lm-studio`, and `openai_compatible`. Real provider plumbing for any specific backend is planned but not active in the current baseline.
+- **RAG retrieval.** A small TF-IDF index over `README.md`, `docs/ARCHITECTURE.md`, and the run report powers context for copilot prompts. No external dependencies.
+- **Mutation engine reachable from the CLI.** `python -m src.run_scenario --mutate <strategy>` applies a mutation strategy to every step's params before dispatch. Strategies: `low_noise`, `evasion-lite`, `protocol_shift`, `protocol-shift`. The mutation strategy is recorded in the run summary so mutation is never silent.
+- **Experiment harness.** `run_experiment_series` (`src/core/experiments.py`) supports repeated scenario runs with optional bounded jitter.
 
-- **Template / offline provider works.** A deterministic local provider produces copilot artifacts every run with no external dependencies and no API key required. This is the default.
-- **Remote provider interfaces exist as scaffolding.** `OpenAICompatibleProvider` is wired to `ProviderFactory` and accepts the names `openai`, `anthropic`, `google`, `ollama`, `llama.cpp`, `lm-studio`, and `openai_compatible`, but the current implementation intentionally does not call out — it returns a stub. Implementing a real provider is on the roadmap; pick one (Ollama is the obvious offline-first choice) rather than ship multiple half-finished integrations.
-- **RAG retrieval works.** A small TF-IDF index over `README.md`, `docs/ARCHITECTURE.md`, and the run report powers context for copilot prompts.
-- **Mutation engine reachable from CLI.** `python -m src.run_scenario --mutate <strategy>` applies a mutation strategy to every step's params before dispatch. Strategies: `low_noise`, `evasion-lite`, `protocol_shift`, `protocol-shift`. Mutation requires explicit operator opt-in (the `--mutate` flag itself); the run summary records the strategy used so mutation is never silent.
-- **Experiment harness works.** `run_experiment` and `run_experiment_series` (`src/core/experiments.py`) support repeated scenario runs with optional jitter.
-
-Full audit: [docs/reports/ai_operator_audit.md](docs/reports/ai_operator_audit.md).
+Full reference: [docs/reports/ai_layer.md](docs/reports/ai_layer.md).
 
 ---
 
@@ -207,13 +205,13 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ite
 
 ## Status snapshot
 
-- 230 passing tests, 5 intentional skips, 0 failures.
-- Bandit strict; 14 narrow per-line `nosec` justifications across 11 source files.
-- 21 modules registered (12 standard + 9 legacy adapters).
+- 415 passing tests, 5 intentional skips, 0 failures.
+- Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
+- 25 modules registered (17 standard + 8 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
 - 9 shipped scenarios, all passing dry-run.
 - Capability inventory: [docs/reports/capability_inventory.md](docs/reports/capability_inventory.md).
-- Scenario validation: [docs/reports/scenario_validation.md](docs/reports/scenario_validation.md).
-- Autonomous-work changelog: [docs/reports/autonomous_work_log.md](docs/reports/autonomous_work_log.md).
+- Scenario coverage: [docs/reports/scenario_validation.md](docs/reports/scenario_validation.md).
+- Roadmap: [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md).
 
 ---
 
