@@ -192,7 +192,7 @@ class ConfigManager:
             if not legacy.get("lab_confirmation", False):
                 legacy["lab_confirmation"] = bool(legacy.get("lab_acknowledged"))
 
-        for pack_name in ("actor_pack", "c2_pack", "stealth_pack"):
+        for pack_name in ("actor_pack", "c2_pack", "stealth_pack", "tactic_pack"):
             pack = legacy.get(pack_name, {})
             if not isinstance(pack, dict):
                 continue

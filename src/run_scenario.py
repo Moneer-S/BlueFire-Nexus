@@ -107,7 +107,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--legacy-pack",
         type=str,
         default="",
-        help="Granular legacy pack override (actor_pack/c2_pack/stealth_pack)",
+        help="Granular legacy pack override (actor_pack/c2_pack/stealth_pack/tactic_pack)",
     )
     parser.add_argument(
         "--legacy-capability",

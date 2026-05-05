@@ -94,6 +94,15 @@ def _lab_simulate_config() -> Dict[str, Any]:
             for k in ("anti_forensic", "anti_sandbox", "anti_detection_legacy", "dynamic_api")
         },
     }
+    legacy["tactic_pack"] = {
+        "enabled": True,
+        "mode": "simulate",
+        "lab_confirmation": True,
+        "capabilities": {
+            k: {"enabled": True, "mode": "simulate"}
+            for k in ("credential_access",)
+        },
+    }
     return cfg
 
 
@@ -137,6 +146,7 @@ _MINIMAL_PARAMS: Dict[str, Dict[str, Any]] = {
     "legacy_apt41_research": {"technique": "phishing", "target": "lab-user"},
     "legacy_protocol_research": {"protocol": "dns_tunneling"},
     "legacy_stealth_research": {"capability": "anti_forensic"},
+    "legacy_credential_access": {"technique": "lsass_dump", "target": "lab-host"},
 }
 
 
