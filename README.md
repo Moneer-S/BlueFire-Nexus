@@ -1,285 +1,228 @@
-# BlueFire-Nexus
+# BlueFire Nexus
 
-[![tests](https://img.shields.io/badge/tests-pytest-blue)](#testing)
-[![security](https://img.shields.io/badge/security-bandit%2Bgitleaks-green)](#security-first-defaults)
+[![tests](https://img.shields.io/badge/tests-pytest-blue)](#development--tests)
+[![security](https://img.shields.io/badge/security-bandit%20strict-green)](#development--tests)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](#quickstart)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
-BlueFire-Nexus is a **high-fidelity adversary emulation and purple-team
-research framework**. It models realistic offensive tradecraft (APT actor
-packs, credential access, lateral movement, C2 protocol research, evasion,
-exfiltration) and pairs it with local defensive outputs (telemetry,
-detection drafts, run reports, AI/copilot narratives) in one config-driven
-runtime. It is dual-use by nature — intended for authorized lab and
-purple-team work, not as a generic BAS/compliance simulator.
+> **BlueFire Nexus is a high-fidelity, AI-augmented adversary-emulation and purple-team research framework for modeling offensive tradecraft, generating local defensive artifacts, and validating detection logic in controlled environments.**
 
-Each run can produce:
-- ATT&CK-mapped module telemetry as `output/<run_id>/telemetry.jsonl`
-- Detection drafts in **Sigma**, **YARA-L**, and **Splunk SPL** — all
-  generated locally to `output/<run_id>/detections/`. SPL here is a
-  detection-rule output format, not a Splunk exporter or SIEM connector.
-- A local run report (Markdown + JSON) and risk summary
-- SOC-oriented narrative artifacts via an optional AI copilot (template
-  fallback available offline; no API keys required for default operation)
+It is built around four ideas that most security tooling treats as separate concerns:
 
-## Security-first defaults
+- **Offensive tradecraft realism.** Actor-inspired chains (APT29 / APT28 / APT32 / APT38 / APT41), C2 protocol research (DNS tunneling, TLS fast-flux, QUIC, RPC), stealth/evasion research, and exfiltration modeling — preserved, gated, and testable rather than sanitised away.
+- **Local defensive artifacts.** Every run writes structured telemetry, ATT&CK-mapped detection drafts (Sigma + YARA-L + SPL), purple-team reports, and a risk summary to the run output directory. Local-first by design; no external integrations required.
+- **AI-assisted operator analysis.** Optional copilot narratives and detection suggestions, with a deterministic offline fallback so the framework never requires an API key to function.
+- **Safe-by-default lab controls.** Dry-run on by default, lab confirmation required for live emulation, allowed-subnet and runtime caps, destructive-operation acknowledgments, registry-wide tests that prove no module can leak side effects in dry-run.
 
-- Dry-run enabled by default (`general.dry_run: true`); a registry-wide
-  test asserts no module touches `subprocess`, `socket`, `requests`, or
-  `urllib` while dry-run is active.
-- No outbound SIEM exporters in the baseline. Telemetry is local-only.
-  Legacy `telemetry.sinks` entries naming `splunk`/`opensearch`/
-  `elasticsearch`/`ngsiem` are warned-and-ignored at load time.
-- AI providers and any future remote integrations are explicit opt-ins.
-- Deny-by-default safety gates (`allowed_subnets`, `max_runtime`).
-- Advanced offensive research is **gated, not removed**. Legacy capability
-  packs (actor / C2 / stealth) ship disabled and require either a master
-  lab toggle or per-pack/per-capability enablement in `config.yaml`.
-  `simulate` mode is the default; `emulate` requires explicit lab
-  confirmation.
-- Destructive behavior (e.g. exfiltration with `destructive=true`) requires
-  an explicit acknowledgment flag.
-- A registry-wide test asserts every module writes its files only under
-  `context["output_dir"]` and registers them in `ModuleResult.artifacts`.
-- Secret scanning and security checks run in CI (`gitleaks`,
-  `detect-secrets`, `bandit`, `pip-audit`); secret scanners run *before*
-  Bandit so dual-use findings cannot mask leaked credentials.
+---
 
-Read:
-- `SECURITY.md`
-- `legal/ethical_guidelines.md`
-- `.env.example`
+## Why it exists
+
+Adversary-emulation tooling tends to fall into one of three traps:
+
+- **Sanitised compliance simulators** that produce green dashboards but no realistic offensive telemetry.
+- **Fragmented script collections** that have offensive realism but no orchestration, no telemetry contract, and no safety story.
+- **Unsafe operator suites** that have realism and orchestration but no gating, no defensive output, and no clean way to run them in a controlled environment.
+
+BlueFire Nexus tries to bridge these:
+
+- Offensive operator realism — preserved in legacy capability packs and modelled in standard modules.
+- Defensive validation — every run produces detection drafts and a risk summary that a SOC analyst can actually consume.
+- AI-assisted analysis — copilot artifacts that work offline by default and can be wired to a real provider per operator preference.
+- Structured local outputs — predictable artifact paths under `output/<run_id>/`.
+- Controlled lab execution — explicit `simulate` / `emulate` / `lab` modes; nothing dangerous happens unless the operator says so.
+
+---
+
+## What it does
+
+- **Adversary-emulation runtime** orchestrating ATT&CK-aligned scenarios from YAML.
+- **Module registry** with a single ModuleResult contract enforced by registry-wide tests.
+- **Actor / C2 / stealth legacy research packs** wired through gated adapters.
+- **Local telemetry** as JSON Lines per run.
+- **Detection draft generation** for Sigma rules, YARA-L rules, and Splunk SPL searches.
+- **Reports + risk summary** in Markdown and JSON.
+- **AI / copilot layer** with offline template fallback and a scaffold for provider-backed runs.
+- **Safety / mode controls** (`dry_run`, `simulate`, `emulate`, `lab` confirmation, allowed subnets, max runtime).
+- **Mutation engine** for parameter variant generation (Python API today; CLI wiring tracked on the roadmap).
+
+---
+
+## Current baseline
+
+- **Local-first.** Telemetry, reports, detections, and copilot artifacts all land under `output/<run_id>/`.
+- **No outbound SIEM exporters in the baseline.** Splunk HEC / OpenSearch / Elasticsearch / NGSIEM connectors were intentionally removed during stabilization. Legacy `telemetry.sinks` config entries naming those types are warned-and-ignored at load time so old configs do not crash and do not silently regain network egress.
+- **Dry-run is the default.** A registry-wide test asserts no module invokes `subprocess`, `socket`, `requests`, or `urllib` while `dry_run=True`.
+- **Mode model: `simulate` / `emulate` / `lab`.** `simulate` synthesises telemetry locally; `emulate` invokes the real research code paths; `lab` requires explicit `lab_confirmation: true`.
+- **Remote integrations are explicit opt-ins.** AI providers are user-configured. Any future remote observability work is roadmap, not current functionality.
+- **Advanced offensive modules are gated, not removed.** Actor packs, C2 protocol research, stealth research, and per-OS adapters all ship disabled by default and require either the master lab toggle or per-pack/per-capability enablement.
+
+---
 
 ## Quickstart
 
 ```bash
+git clone https://github.com/Moneer-S/BlueFire-Nexus.git
+cd BlueFire-Nexus
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 python -m pip install --upgrade pip
 pip install -r requirements-dev.txt
 pip install -e .
 cp .env.example .env
+
 python -m src.run_scenario --profile apt29_credential_access --output-json
 ```
 
-Or use the shell wrapper:
+Then look at `output/<run_id>/`. That is the entire surface area you need to get started.
 
-```bash
-./scripts/bluefire.sh --profile apt29_credential_access --output-json
+A broader command reference is in [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELINES.md). The architecture, mode model, and ModuleResult contract live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+---
+
+## Example output
+
+```
+output/<run_id>/
+├── telemetry.jsonl              # one JSON event per module step
+├── report.md                    # purple-team narrative
+├── report.json                  # structured per-step result
+├── risk_summary.json            # per-run risk posture
+├── detections/
+│   ├── sigma/*.yml              # Sigma detection drafts
+│   ├── yara_l/*.yaral           # YARA-L detection drafts
+│   ├── spl/*.spl                # local Splunk SPL searches (NOT a connector)
+│   └── coverage_<run_id>.json   # ATT&CK technique coverage map
+├── copilot_narrative.md         # optional AI-augmented narrative
+├── copilot_plan.txt             # optional plan output
+└── copilot_detections.md        # optional detection-strategy summary
 ```
 
-The same install steps are what CI runs (see
-`.github/workflows/tests.yml`); a clean clone going through this sequence
-should match CI exactly. `netifaces` is an optional `[net]` extra (its sdist
-needs a C compiler) — install with `pip install -e .[net]` only if you need
-the legacy network discovery helpers that depend on it.
+Splunk SPL is generated as **local detection-rule output**. It is not a Splunk exporter or SIEM connector.
 
-## Core workflows
+---
 
-### Run a scenario file
-```bash
-python -m src.run_scenario --scenario-file scenarios/healthcare_ransomware.yaml --output-json
-```
+## Core concepts
 
-### Run via Rich/Typer CLI
-```bash
-python -m src.core.cli run-scenario scenarios/insider_exfil_dns.yaml
-python -m src.core.cli plan "Emulate APT29 credential access chain"
-python -m src.core.cli suggest-detections run-20260101010101-abcd1234
-python -m src.core.cli legacy-presets
-python -m src.core.cli legacy-guided-presets
-python -m src.core.cli legacy-recommend-preset detection --apply
-python -m src.core.cli legacy-scenario-recommendation scenarios/legacy_c2_protocols.yaml --apply
-python -m src.core.cli legacy-risk-ladder
-python -m src.core.cli legacy-risk-posture --config config.yaml
-python -m src.core.cli show-risk-summary output/<run-id>/risk_summary.json --top 10
-python -m src.core.cli legacy-operator-guide
-python -m src.core.cli legacy-apply-preset c2-sim --config config.yaml
-python -m src.core.cli run-scenario scenarios/legacy_flagship_blended.yaml --legacy-preset full-simulate
-```
+| Concept | Where it lives | What it does |
+|---|---|---|
+| Scenario | `scenarios/*.yaml` | Declares an ATT&CK-aligned chain of module steps. |
+| Module | `src/core/modules/impl/standard_modules.py` + legacy adapters | Implements one ATT&CK tactic; registered in `BUILTIN_MODULE_CLASSES`. |
+| ModuleResult | `src/core/models.py` | Single contract: `status`, `module`, `message`, `techniques`, `artifacts`, `telemetry`, `detection_hints`, `error`, `timestamp`. |
+| Telemetry event | `src/core/models.py` (`TelemetryEvent`) | Append-only structured event with `event_type`, `module`, `details`, `severity`, `timestamp`. |
+| Detection hint | `ModuleResult.detection_hints` | Drives Sigma / YARA-L / SPL artifact generation. |
+| Legacy pack | `src/core/modules/impl/legacy_packs.py` + `legacy_runtime.py` | Actor / C2 / stealth research adapters with explicit lab gates. |
+| Mode | scenario param + `legacy_controls.py` | `dry_run`, `simulate`, `emulate`. Determines whether real side effects can run. |
 
-### Enable legacy capability packs quickly or granularly
-BlueFire-Nexus now supports advanced legacy research packs for actor emulation,
-protocol/C2 experiments, and stealth research. These remain disabled by default
-and are communicated up front through config and CLI output.
+---
 
-For a single global lab toggle in `config.yaml`:
+## Modes and safety
 
-```yaml
-modules:
-  legacy:
-    enable_all_lab_capabilities: true
-    lab_confirmation: true
-    global_mode: simulate
-```
+Every run is shaped by three orthogonal mode controls. Defaults are safe; advanced behaviour requires explicit opt-in.
 
-For granular per-pack and per-capability control:
+- **`general.dry_run`** (default `true`). When true, no module invokes real subprocess / socket / HTTP primitives. The contract is enforced by [tests/test_module_safety.py](tests/test_module_safety.py).
+- **Legacy capability `mode`**: `simulate` (default for any enabled capability) or `emulate`. `simulate` produces local telemetry/artifacts describing the technique without invoking the real research code. `emulate` requires explicit `lab_confirmation: true` at the global, pack, or capability level.
+- **`ExecutionModule.allow_real_execution`** (default `false`). Real `subprocess.run` invocations require BOTH `dry_run=False` AND `allow_real_execution=true`.
 
-```yaml
-modules:
-  legacy:
-    actor_pack:
-      enabled: true
-      mode: simulate
-      capabilities:
-        apt29:
-          enabled: true
-    c2_pack:
-      enabled: false
-      capabilities:
-        dns_tunneling:
-          enabled: true
-```
+Additional safety primitives:
 
-The runtime prints a legacy activation summary showing:
-- whether the global master toggle is on,
-- which packs/capabilities are enabled,
-- whether activation came from the master or granular controls,
-- whether each capability is in `simulate` or `emulate` mode.
+- `general.safeties.allowed_subnets` — orchestrator-level subnet allowlist.
+- `general.safeties.max_runtime` — hard ceiling on per-run wall time.
+- Destructive-operation acknowledgment — e.g. exfiltration with `destructive=true` is rejected unless `i_understand_this_is_a_lab=true` is also passed.
+- Artifact path enforcement — [tests/test_module_artifact_paths.py](tests/test_module_artifact_paths.py) asserts no module writes outside `context["output_dir"]`.
+- Bandit strict — every dual-use offensive pattern carries a narrow per-line `# nosec BXXX – <reason>` justification; new unjustified findings fail CI.
 
-CLI aliases are accepted for convenience and normalized internally:
-- C2: `quic_c2`/`quic` -> `websocket_quic`, `network_obfuscator` -> `network_obfuscator_legacy`
-- Stealth: `anti_detection` -> `anti_detection_legacy`
+Full safety story: [SECURITY.md](SECURITY.md).
 
-Preset profiles are available for quick enablement:
-- `safe-baseline`: keep all legacy packs disabled (default-safe posture)
-- `full-simulate`: enable all packs in simulate mode
-- `full-emulate`: enable all packs in emulate mode with lab confirmation
-- `actor-simulate`, `c2-simulate`, `stealth-simulate`: pack-focused simulation presets
-
-You can either:
-- apply a preset just for one run (`--legacy-preset` on `run-scenario` / `run-operation`), or
-- persist a preset to config via `legacy-apply-preset` (use `--preview-only` for dry preview).
-- ask for objective-driven recommendations via `legacy-recommend-preset` and
-  inspect all objective mappings with `legacy-guided-presets`.
-- derive recommendations directly from a scenario file via
-  `legacy-scenario-recommendation`.
-- inspect current config risk with `legacy-risk-posture` and run-level risk
-  artifacts with `show-risk-summary`.
-
-`python -m src.run_scenario` now also supports:
-- `--legacy-guided` to auto-apply the recommended preset from scenario objective,
-- `--legacy-pack` and `--legacy-capability` for granular one-by-one overrides.
-- It now writes `risk_summary.json` per run and prints its path in the summary.
-
-Legacy config aliases are also supported for backward compatibility:
-- `lab_mode` -> `global_mode`
-- `lab_acknowledged` -> `global_lab_acknowledged` and `lab_confirmation`
-- `emulate_enabled: true` (capability-level) -> emulate mode with lab confirmation
-
-### Programmatic usage
-```python
-from src.core.bluefire_nexus import BlueFireNexus
-
-nexus = BlueFireNexus("config.yaml")
-result = nexus.execute_operation(
-    "execution",
-    {"command": "echo hello", "network_touch": False},
-)
-print(result["status"], result["run_id"])
-```
-
-## Architecture (current)
-
-```mermaid
-flowchart LR
-    cliRunner["CLI (scripts/bluefire.sh + src/run_scenario.py + src/core/cli.py)"] --> orchestrator["BlueFireNexus"]
-    scenarioFiles["scenarios/*.yaml"] --> orchestrator
-    configYaml["config.yaml + .env"] --> orchestrator
-    orchestrator --> moduleRegistry["ModuleRegistry (BaseModule + built-ins + plugins)"]
-    orchestrator --> safetyGate["SafetyGate"]
-    orchestrator --> telemetryBus["TelemetryBus (local JSONL run artifact)"]
-    orchestrator --> detectionGen["DetectionEngine (Sigma/YARA-L/SPL)"]
-    orchestrator --> aiCopilot["AICopilot (provider-selected, template fallback)"]
-    orchestrator --> runArtifacts["output/run_id/* (report, detections, copilot output)"]
-```
-
-## Scenario library
-
-- `scenarios/apt29_credential_access.yaml`
-- `scenarios/fin7_initial_access_to_c2.yaml`
-- `scenarios/healthcare_ransomware.yaml`
-- `scenarios/insider_exfil_dns.yaml`
-- `scenarios/legacy_actor_apt29.yaml`
-- `scenarios/legacy_actor_family_full.yaml`
-- `scenarios/legacy_c2_protocols.yaml`
-- `scenarios/legacy_stealth_research.yaml`
-- `scenarios/legacy_flagship_blended.yaml`
+---
 
 ## Legacy capability packs
 
-These packs preserve and surface the most advanced research-oriented parts of
-the codebase instead of hiding or deleting them:
+Three opt-in research packs preserve the most advanced offensive code paths instead of hiding or deleting them:
 
-- Actor pack: APT29/APT28/APT32/APT38/APT41 research profiles
-- C2/protocol pack: DNS tunneling, TLS fast-flux-style beaconing, QUIC, Solana RPC
-- Stealth pack: anti-forensic, anti-sandbox, anti-detection, dynamic API research
+- **Actor pack** — APT29 / APT28 / APT32 / APT38 / APT41 research adapters.
+- **C2 / protocol pack** — DNS tunneling, TLS fast-flux, QUIC, Solana RPC, network obfuscation.
+- **Stealth pack** — anti-forensic, anti-sandbox, anti-detection, dynamic API resolution research.
 
-All of these are normalized into the same runtime model used by standard
-modules, so they can produce telemetry, reports, and detection drafts.
+All packs ship **disabled by default**. Enable globally with the master lab toggle or per-pack/per-capability with explicit opt-in. `simulate` is the default mode for any enabled capability; `emulate` requires lab confirmation.
 
-## AI provider strategy
+Full enable/disable surface, preset profiles, and YAML examples: [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELINES.md). Per-pack case studies: [docs/case-studies/](docs/case-studies/).
 
-User-selected, config-driven provider selection with zero lock-in:
-- `template` / `none` (offline deterministic fallback)
-- `openai`, `anthropic`, `google`
-- `ollama`, `llama.cpp`, `lm-studio`
-- `openai_compatible`
+---
 
-By default, provider implementations are safety-preserving and do not force live external calls.
+## AI / copilot layer
 
-## Telemetry
+Honest current state:
 
-Telemetry is local-first in the current baseline. Each run writes a JSON
-Lines artifact to `output/<run_id>/telemetry.jsonl` alongside the run report
-and any detection drafts. There are no outbound SIEM exporters in the
-baseline; legacy `telemetry.sinks` config entries naming `splunk`,
-`opensearch`, `elasticsearch`, or `ngsiem` are ignored at load time with a
-deprecation warning.
+- **Template / offline provider works.** A deterministic local provider produces copilot artifacts every run with no external dependencies and no API key required. This is the default.
+- **Remote provider interfaces exist as scaffolding.** `OpenAICompatibleProvider` is wired to `ProviderFactory` and accepts the names `openai`, `anthropic`, `google`, `ollama`, `llama.cpp`, `lm-studio`, and `openai_compatible`, but the current implementation intentionally does not call out — it returns a stub. Implementing a real provider is on the roadmap; pick one (Ollama is the obvious offline-first choice) rather than ship multiple half-finished integrations.
+- **RAG retrieval works.** A small TF-IDF index over `README.md`, `docs/ARCHITECTURE.md`, and the run report powers context for copilot prompts.
+- **Mutation engine exists.** `mutate_step_params`, `mutate_steps`, and `mutate_technique` (`src/core/ai/mutation.py`) are functional and tested. They are not yet wired into a CLI flag; see roadmap.
+- **Experiment harness works.** `run_experiment` and `run_experiment_series` (`src/core/experiments.py`) support repeated scenario runs with optional jitter.
 
-## Testing
+Full audit: [docs/reports/ai_operator_audit.md](docs/reports/ai_operator_audit.md).
+
+---
+
+## Development & tests
+
+Standard install + test loop:
 
 ```bash
-pytest -q
+pip install -r requirements-dev.txt
+pip install -e .
+
 python -m compileall -q src tests
+pytest -q
+bandit -r src -ll
+detect-secrets scan --all-files --baseline .secrets.baseline
+pip-audit
 ```
+
+CI runs the same gates plus gitleaks (history scan) and SBOM generation. Workflows: [.github/workflows/tests.yml](.github/workflows/tests.yml), [.github/workflows/analysis.yml](.github/workflows/analysis.yml).
 
 Three registry-wide enforcement tests run on every module:
 
-- `tests/test_module_contract.py` — every module returns a conformant
-  `ModuleResult` (correct fields, types, and a status from
-  `success | failure | blocked | skipped | partial_success`).
-- `tests/test_module_safety.py` — strict dry-run safety: no module touches
-  `subprocess`, `socket`, `requests`, or `urllib` while `dry_run=True`,
-  in either lab-off or lab-simulate mode.
-- `tests/test_module_artifact_paths.py` — every module writes its files
-  only under `context["output_dir"]` and registers them in
-  `ModuleResult.artifacts`.
+- [tests/test_module_contract.py](tests/test_module_contract.py) — every module returns a conformant `ModuleResult` (correct fields, types, status from `success | failure | blocked | skipped | partial_success`).
+- [tests/test_module_safety.py](tests/test_module_safety.py) — strict dry-run safety: no module touches `subprocess`, `socket`, `requests`, or `urllib` while `dry_run=True`, in either lab-off or lab-simulate mode.
+- [tests/test_module_artifact_paths.py](tests/test_module_artifact_paths.py) — every module writes its files only under `context["output_dir"]` and registers them in `ModuleResult.artifacts`.
 
-## Development quality gates
+Bandit runs strict at `-ll` (medium and higher). Each expected dual-use offensive pattern carries a narrow per-line `# nosec BXXX – <reason>` justification.
 
-- `pyproject.toml`: pytest, black, ruff, mypy, bandit config
-- `.pre-commit-config.yaml`: ruff, bandit, detect-secrets, gitleaks
-- `.github/workflows/tests.yml`
-- `.github/workflows/analysis.yml`
+---
 
-## Case studies
+## Roadmap
 
-- `docs/case-studies/apt29_credential_access.md`
-- `docs/case-studies/legacy_protocol_pack.md`
-- `docs/case-studies/legacy_stealth_pack.md`
-- `docs/case-studies/healthcare_ransomware.md`
+Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top items:
 
-## Optional local lab
+- **Missing standard modules.** Five ATT&CK tactics (`credential_access`, `lateral_movement`, `privilege_escalation`, `impact`, `collection`) have substantial legacy implementations but no registered standard module yet.
+- **Per-input fan-out across modules.** The Discovery module now fans out telemetry/hints by `discovery_type`. Same pattern wanted for `command_control`, `persistence`, `defense_evasion`, `network_obfuscator`, `intelligence`, `reconnaissance`, `resource_development`.
+- **Actor-specific adapters.** APT28/32/38/41 currently share a generic adapter; per-actor tradecraft fingerprinting is a quality lift.
+- **Mutation engine CLI wiring.** `--mutate <strategy>` on `run_scenario`.
+- **AI/operator planning improvements.** Either implement one real provider end-to-end or make copilot artifacts opt-in.
+- **Reports / risk summary polish.** Mode badges, blocked-step section, ATT&CK-coverage cross-check.
+- **Future observed-telemetry correlation.** Roadmap only; not in current baseline. No remote SIEM exporters or external collectors today.
 
-`docker-compose.lab.yml` provides a containerised BlueFire profile for running
-scenarios in a clean Python environment without installing dependencies on
-the host.
+---
 
-## License
+## Status snapshot
 
-MIT. See `LICENSE`.
+- 230 passing tests, 5 intentional skips, 0 failures.
+- Bandit strict; 14 narrow per-line `nosec` justifications across 11 source files.
+- 21 modules registered (12 standard + 9 legacy adapters).
+- 9 shipped scenarios, all passing dry-run.
+- Capability inventory: [docs/reports/capability_inventory.md](docs/reports/capability_inventory.md).
+- Scenario validation: [docs/reports/scenario_validation.md](docs/reports/scenario_validation.md).
+- Autonomous-work changelog: [docs/reports/autonomous_work_log.md](docs/reports/autonomous_work_log.md).
+
+---
 
 ## Disclaimer
 
-Use only in authorized, isolated environments for defensive testing and research.
+BlueFire Nexus is **dual-use security research tooling**. Use only in authorized, isolated environments for defensive testing, purple-team validation, and security research. The author and contributors accept no responsibility for misuse.
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).
