@@ -5,20 +5,45 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](#quickstart)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
-BlueFire-Nexus is a **config-driven purple-team adversary emulation platform** built to bridge automated detection engineering with human-led investigation.
+BlueFire-Nexus is a **high-fidelity adversary emulation and purple-team
+research framework**. It models realistic offensive tradecraft (APT actor
+packs, credential access, lateral movement, C2 protocol research, evasion,
+exfiltration) and pairs it with local defensive outputs (telemetry,
+detection drafts, run reports, AI/copilot narratives) in one config-driven
+runtime. It is dual-use by nature — intended for authorized lab and
+purple-team work, not as a generic BAS/compliance simulator.
 
 Each run can produce:
-- ATT&CK-mapped module telemetry
-- Detection drafts (**Sigma**, **YARA-L**, **Splunk SPL**)
-- SOC-oriented narrative artifacts via an optional AI copilot (template fallback available offline)
+- ATT&CK-mapped module telemetry as `output/<run_id>/telemetry.jsonl`
+- Detection drafts in **Sigma**, **YARA-L**, and **Splunk SPL** — all
+  generated locally to `output/<run_id>/detections/`. SPL here is a
+  detection-rule output format, not a Splunk exporter or SIEM connector.
+- A local run report (Markdown + JSON) and risk summary
+- SOC-oriented narrative artifacts via an optional AI copilot (template
+  fallback available offline; no API keys required for default operation)
 
 ## Security-first defaults
 
-- Dry-run enabled by default (`general.dry_run: true`)
-- No implicit egress to SIEM, AI, or C2 endpoints
-- Deny-by-default safety gates (`allowed_subnets`, `max_runtime`)
-- Optional destructive behavior requires explicit acknowledgment flag
-- Secret scanning and security checks in CI (`gitleaks`, `detect-secrets`, `bandit`, `pip-audit`)
+- Dry-run enabled by default (`general.dry_run: true`); a registry-wide
+  test asserts no module touches `subprocess`, `socket`, `requests`, or
+  `urllib` while dry-run is active.
+- No outbound SIEM exporters in the baseline. Telemetry is local-only.
+  Legacy `telemetry.sinks` entries naming `splunk`/`opensearch`/
+  `elasticsearch`/`ngsiem` are warned-and-ignored at load time.
+- AI providers and any future remote integrations are explicit opt-ins.
+- Deny-by-default safety gates (`allowed_subnets`, `max_runtime`).
+- Advanced offensive research is **gated, not removed**. Legacy capability
+  packs (actor / C2 / stealth) ship disabled and require either a master
+  lab toggle or per-pack/per-capability enablement in `config.yaml`.
+  `simulate` mode is the default; `emulate` requires explicit lab
+  confirmation.
+- Destructive behavior (e.g. exfiltration with `destructive=true`) requires
+  an explicit acknowledgment flag.
+- A registry-wide test asserts every module writes its files only under
+  `context["output_dir"]` and registers them in `ModuleResult.artifacts`.
+- Secret scanning and security checks run in CI (`gitleaks`,
+  `detect-secrets`, `bandit`, `pip-audit`); secret scanners run *before*
+  Bandit so dual-use findings cannot mask leaked credentials.
 
 Read:
 - `SECURITY.md`
@@ -30,7 +55,9 @@ Read:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements-dev.txt
+pip install -e .
 cp .env.example .env
 python -m src.run_scenario --profile apt29_credential_access --output-json
 ```
@@ -40,6 +67,12 @@ Or use the shell wrapper:
 ```bash
 ./scripts/bluefire.sh --profile apt29_credential_access --output-json
 ```
+
+The same install steps are what CI runs (see
+`.github/workflows/tests.yml`); a clean clone going through this sequence
+should match CI exactly. `netifaces` is an optional `[net]` extra (its sdist
+needs a C compiler) — install with `pip install -e .[net]` only if you need
+the legacy network discovery helpers that depend on it.
 
 ## Core workflows
 
@@ -208,8 +241,20 @@ deprecation warning.
 
 ```bash
 pytest -q
-python -m compileall -q src
+python -m compileall -q src tests
 ```
+
+Three registry-wide enforcement tests run on every module:
+
+- `tests/test_module_contract.py` — every module returns a conformant
+  `ModuleResult` (correct fields, types, and a status from
+  `success | failure | blocked | skipped | partial_success`).
+- `tests/test_module_safety.py` — strict dry-run safety: no module touches
+  `subprocess`, `socket`, `requests`, or `urllib` while `dry_run=True`,
+  in either lab-off or lab-simulate mode.
+- `tests/test_module_artifact_paths.py` — every module writes its files
+  only under `context["output_dir"]` and registers them in
+  `ModuleResult.artifacts`.
 
 ## Development quality gates
 

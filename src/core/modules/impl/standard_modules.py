@@ -331,13 +331,22 @@ class IntelligenceModule(BaseModule):
             module=self.name,
             details={"focus": focus},
         )
+        hints = {
+            "title": f"Intelligence collection focus: {focus}",
+            "logsource": {"category": "threat_intelligence", "product": "generic"},
+            "detection": {
+                "selection": {"intelligence.focus": focus},
+                "condition": "selection",
+            },
+            "mitre_technique": "T1595",
+        }
         return _result(
             self.name,
             "success",
             f"Collected simulated intelligence for {focus}.",
             techniques=["T1595"],
             telemetry=[event],
-            hints={"mitre_technique": "T1595"},
+            hints=hints,
             artifacts={"focus": focus, "confidence": "medium"},
         )
 
@@ -353,13 +362,23 @@ class NetworkObfuscatorModule(BaseModule):
             module=self.name,
             details={"protocol": protocol},
         )
+        hints = {
+            "title": f"Network protocol obfuscation: {protocol}",
+            "logsource": {"category": "network_connection", "product": "generic"},
+            "detection": {
+                "selection": {"network.protocol": protocol},
+                "condition": "selection",
+            },
+            "mitre_technique": "T1572",
+            "network_protocol": protocol,
+        }
         return _result(
             self.name,
             "success",
             f"Simulated obfuscation over protocol {protocol}.",
             techniques=["T1572"],
             telemetry=[event],
-            hints={"mitre_technique": "T1572", "network_protocol": protocol},
+            hints=hints,
             artifacts={"protocol": protocol},
         )
 
@@ -375,13 +394,22 @@ class ResourceDevelopmentModule(BaseModule):
             module=self.name,
             details={"resource_type": resource_type},
         )
+        hints = {
+            "title": f"Adversary resource development: {resource_type}",
+            "logsource": {"category": "infrastructure_provisioning", "product": "generic"},
+            "detection": {
+                "selection": {"resource.type": resource_type},
+                "condition": "selection",
+            },
+            "mitre_technique": "T1583",
+        }
         return _result(
             self.name,
             "success",
             f"Simulated resource development for {resource_type}.",
             techniques=["T1583"],
             telemetry=[event],
-            hints={"mitre_technique": "T1583"},
+            hints=hints,
             artifacts={"resource_type": resource_type},
         )
 
@@ -397,13 +425,22 @@ class ReconnaissanceModule(BaseModule):
             module=self.name,
             details={"source": source},
         )
+        hints = {
+            "title": f"Reconnaissance activity from source: {source}",
+            "logsource": {"category": "network_connection", "product": "generic"},
+            "detection": {
+                "selection": {"reconnaissance.source": source},
+                "condition": "selection",
+            },
+            "mitre_technique": "T1592",
+        }
         return _result(
             self.name,
             "success",
             f"Simulated reconnaissance via {source}.",
             techniques=["T1592"],
             telemetry=[event],
-            hints={"mitre_technique": "T1592"},
+            hints=hints,
             artifacts={"source": source},
         )
 
