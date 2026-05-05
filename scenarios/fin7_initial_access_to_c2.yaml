@@ -1,7 +1,7 @@
 id: fin7_initial_access_to_c2
 name: FIN7 Initial Access to C2
 objective: Simulate a FIN7-like chain from initial access through command-and-control.
-attack_techniques:
+attack_coverage:
   - T1566
   - T1059
   - T1071.001

@@ -47,11 +47,17 @@ def load_scenario(path: str | Path) -> Scenario:
                 params=step.get("params") or step.get("operation") or {},
             )
         )
+    declared_techniques = (
+        raw.get("attack_coverage")
+        or raw.get("mitre")
+        or raw.get("attack_techniques")
+        or []
+    )
     return Scenario(
         id=str(raw.get("id", scenario_path.stem)),
         name=str(raw.get("name", scenario_path.stem)),
         objective=str(raw.get("objective", "")),
-        attack_techniques=raw.get("attack_coverage", raw.get("mitre", [])),
+        attack_techniques=list(declared_techniques),
         steps=steps,
         expected_detections=raw.get("expected_detections", []),
         blue_team_guidance=raw.get("blue_team_guidance", []),

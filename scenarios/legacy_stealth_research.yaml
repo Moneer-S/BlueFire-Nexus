@@ -5,7 +5,6 @@ attack_coverage:
   - T1497
   - T1562
   - T1070
-  - T1027
 fail_fast: false
 steps:
   - id: summarize-controls
