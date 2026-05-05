@@ -11,6 +11,69 @@ from ..models import ModuleResult
 from ..risk import score_module_result
 
 
+def _mode_badge(result: ModuleResult) -> Dict[str, Any]:
+    """Extract a per-module mode/safety summary for report rendering.
+
+    Reads from `result.artifacts` and `result.detection_hints` because most
+    standard and legacy modules already record mode-relevant fields there.
+    Returns a small dict with the keys reports want to surface:
+
+    * `mode`         — "emulate" / "simulate" / "dry-run" / "real-execution"
+    * `pack`         — capability pack name when the result is from a legacy
+                       adapter, else empty
+    * `network_touch`— bool when the module honours the `network_touch`
+                       contract, else None
+    * `target_os`    — operator-resolved target OS when the module
+                       honours `target_os`, else empty
+    * `lab_acknowledged` — true when the result was produced under explicit
+                           lab confirmation, else false
+    * `destructive`  — true when the result represents a destructive
+                       operation that received explicit acknowledgment
+    """
+    artifacts = result.artifacts if isinstance(result.artifacts, dict) else {}
+    hints = result.detection_hints if isinstance(result.detection_hints, dict) else {}
+
+    legacy = artifacts.get("legacy")
+    pack = ""
+    mode = ""
+    lab_acknowledged = False
+    if isinstance(legacy, dict):
+        pack = str(legacy.get("pack") or "")
+        mode = str(legacy.get("mode") or "")
+        decision = legacy.get("decision")
+        if isinstance(decision, dict):
+            lab_acknowledged = bool(decision.get("acknowledged", False))
+
+    if not mode:
+        # Standard modules: infer simulate vs real-execution from artifacts.
+        if "stdout" in artifacts and "return_code" in artifacts:
+            output = str(artifacts.get("stdout") or "")
+            mode = "dry-run" if output.startswith("[dry-run]") else "real-execution"
+        else:
+            mode = "simulate"
+
+    network_touch_value: Any = artifacts.get("network_touch")
+    if network_touch_value is None:
+        network_touch_value = hints.get("network_touch")
+
+    target_os = str(artifacts.get("target_os") or hints.get("target_os") or "")
+
+    destructive = False
+    if artifacts.get("destructive") and artifacts.get("i_understand_this_is_a_lab"):
+        destructive = True
+
+    return {
+        "mode": mode,
+        "pack": pack,
+        "network_touch": (
+            bool(network_touch_value) if isinstance(network_touch_value, bool) else None
+        ),
+        "target_os": target_os,
+        "lab_acknowledged": lab_acknowledged,
+        "destructive": destructive,
+    }
+
+
 def write_json_report(run_dir: Path, results: Dict[str, ModuleResult]) -> Path:
     """Write machine-readable run report."""
     output = run_dir / "report.json"
@@ -137,6 +200,7 @@ def write_markdown_report(
             "",
         ]
     )
+    blocked_steps: list[str] = []
     for module_name, result in results.items():
         legacy = result.artifacts.get("legacy")
         safety_line = ""
@@ -154,18 +218,47 @@ def write_markdown_report(
             payload = legacy.get("payload", {})
             if isinstance(payload, dict) and payload.get("runtime_warning"):
                 warning_line = f"- Runtime warning: {payload.get('runtime_warning')}"
+        if result.status == "blocked":
+            blocked_steps.append(module_name)
+        badge = _mode_badge(result)
+        mode_line = f"- Mode: `{badge['mode']}`"
+        extras: list[str] = []
+        if badge["network_touch"] is not None:
+            extras.append(f"network_touch=`{badge['network_touch']}`")
+        if badge["target_os"]:
+            extras.append(f"target_os=`{badge['target_os']}`")
+        if badge["lab_acknowledged"]:
+            extras.append("lab_acknowledged=`true`")
+        if badge["destructive"]:
+            extras.append("destructive=`true (acknowledged)`")
+        if extras:
+            mode_line += " (" + ", ".join(extras) + ")"
         lines.extend(
             [
                 f"### {module_name}",
                 f"- Status: `{result.status}`",
                 f"- Message: {result.message or 'n/a'}",
                 f"- Techniques: {', '.join(result.techniques) if result.techniques else 'n/a'}",
+                mode_line,
                 risk_line,
                 safety_line,
                 warning_line,
                 "",
             ]
         )
+
+    if blocked_steps:
+        lines.extend(
+            [
+                "## Blocked Steps",
+                "",
+                "The following steps did not run because a safety/lab gate was not satisfied:",
+                "",
+            ]
+        )
+        for module_name in blocked_steps:
+            lines.append(f"- `{module_name}`")
+        lines.append("")
     lines.append("## Detection Artifacts")
     lines.append("")
     for module_name, outputs in detections.items():
@@ -182,6 +275,7 @@ def build_risk_summary(results: Dict[str, ModuleResult]) -> Dict[str, Any]:
     modules: list[Dict[str, Any]] = []
     totals = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     scores: list[int] = []
+    blocked: list[str] = []
     for module_name, result in results.items():
         risk = score_module_result(result)
         severity = str(risk.get("severity", "low")).lower()
@@ -190,6 +284,9 @@ def build_risk_summary(results: Dict[str, ModuleResult]) -> Dict[str, Any]:
         totals[severity] += 1
         score = int(risk.get("score", 0))
         scores.append(score)
+        if result.status == "blocked":
+            blocked.append(module_name)
+        badge = _mode_badge(result)
         modules.append(
             {
                 "module": module_name,
@@ -197,9 +294,14 @@ def build_risk_summary(results: Dict[str, ModuleResult]) -> Dict[str, Any]:
                 "status": result.status,
                 "score": score,
                 "severity": severity,
+                "mode": badge["mode"],
+                "network_touch": badge["network_touch"],
+                "target_os": badge["target_os"],
+                "lab_acknowledged": badge["lab_acknowledged"],
+                "destructive": badge["destructive"],
                 "pack": risk.get("pack", ""),
                 "capability": risk.get("capability", ""),
-                "mode": risk.get("mode", ""),
+                "legacy_mode": risk.get("mode", ""),
                 "runtime_warning": bool(risk.get("runtime_warning", False)),
                 "rationale": list(risk.get("rationale", [])),
             }
@@ -216,6 +318,7 @@ def build_risk_summary(results: Dict[str, ModuleResult]) -> Dict[str, Any]:
         "max_score": max(scores) if scores else 0,
         "min_score": min(scores) if scores else 0,
         "module_count": len(modules),
+        "blocked_steps": blocked,
         "modules": modules,
     }
 
