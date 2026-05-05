@@ -2,9 +2,7 @@ id: legacy_actor_family_full
 name: Legacy Actor Family Full Coverage
 objective: Exercise all legacy actor family adapters through one ATT&CK-mapped scenario.
 attack_coverage:
-  - T1566
   - T1059
-  - T1036
   - T1071
   - T1589
 fail_fast: false

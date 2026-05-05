@@ -23,6 +23,13 @@ steps:
       controlled_domain: exfil.example.lab
       data_set: synthetic_hr_exports
       network_touch: true
+  - id: step-2b
+    name: Establish DNS-channel C2 metadata
+    module: command_control
+    params:
+      channel: dns
+      c2_url: dns://exfil.example.lab
+      network_touch: true
   - id: step-3
     name: Obfuscate exfil traffic pattern
     module: network_obfuscator
