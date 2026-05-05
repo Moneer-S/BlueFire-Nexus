@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 import shlex
 import subprocess  # nosec B404
 from datetime import datetime, timezone
@@ -9,6 +10,39 @@ from typing import Any, Dict, Mapping
 
 from ...models import ModuleResult, TelemetryEvent
 from ..base import BaseModule
+
+
+# Operator-facing target_os values map to a sigma-style logsource.
+# Used by ExecutionModule (and optionally other modules) so detection
+# drafts match the OS the operator is emulating against rather than
+# defaulting to a single hardcoded shape.
+_EXECUTION_LOGSOURCE_BY_OS: Dict[str, Dict[str, str]] = {
+    "windows": {"category": "process_creation", "product": "windows"},
+    "linux": {"category": "process_creation", "product": "linux"},
+    "macos": {"category": "process_creation", "product": "macos"},
+    "darwin": {"category": "process_creation", "product": "macos"},
+}
+
+
+def _resolve_target_os(params: Mapping[str, Any]) -> str:
+    """Resolve the operator-facing target_os value or fall back to host OS.
+
+    Order of precedence:
+    1. Explicit `target_os` param (windows / linux / macos / darwin).
+    2. `platform.system()` mapped to the same vocabulary.
+    3. Hard fallback: linux (the most common purple-team lab host).
+    """
+    explicit = str(params.get("target_os") or "").strip().lower()
+    if explicit in _EXECUTION_LOGSOURCE_BY_OS:
+        return "macos" if explicit == "darwin" else explicit
+
+    system = platform.system().lower()
+    mapping = {"windows": "windows", "linux": "linux", "darwin": "macos"}
+    return mapping.get(system, "linux")
+
+
+def _execution_logsource(target_os: str) -> Dict[str, str]:
+    return dict(_EXECUTION_LOGSOURCE_BY_OS.get(target_os, _EXECUTION_LOGSOURCE_BY_OS["linux"]))
 
 
 def _result(
@@ -103,24 +137,27 @@ class ExecutionModule(BaseModule):
                     error=str(exc),
                 )
 
+        target_os = _resolve_target_os(params)
         event = TelemetryEvent(
             event_type="execution",
             module=self.name,
             details={
                 "command": command,
                 "return_code": rc,
+                "target_os": target_os,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
         hints = {
-            "title": "Suspicious command execution",
-            "logsource": {"category": "process_creation", "product": "windows"},
+            "title": f"Suspicious command execution ({target_os})",
+            "logsource": _execution_logsource(target_os),
             "detection": {
                 "selection": {"process.command_line|contains": command.split(" ")[0]},
                 "condition": "selection",
             },
             "mitre_technique": "T1059",
             "process_command_line": command,
+            "target_os": target_os,
         }
         return _result(
             self.name,
@@ -129,7 +166,12 @@ class ExecutionModule(BaseModule):
             techniques=["T1059"],
             telemetry=[event],
             hints=hints,
-            artifacts={"command": command, "stdout": output, "return_code": rc},
+            artifacts={
+                "command": command,
+                "stdout": output,
+                "return_code": rc,
+                "target_os": target_os,
+            },
         )
 
 
