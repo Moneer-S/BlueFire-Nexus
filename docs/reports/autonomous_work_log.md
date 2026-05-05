@@ -6,6 +6,23 @@ PR delivered. Intended as a quick "what changed and why" alongside `git log`.
 
 ## 2026-05-05
 
+- **#PENDING — `feat/run-scenario-mutate-flag`**: Wires `mutation.mutate_step_params`
+  into `python -m src.run_scenario --mutate <strategy>`. Strategies validated
+  against the documented set (`low_noise` / `evasion-lite` / `protocol_shift`
+  / `protocol-shift`); operator opt-in is explicit; mutation is recorded in
+  the run summary. README updated. Closes the "mutation engine CLI wiring"
+  roadmap item. +6 focused tests in `tests/test_run_scenario_mutate.py`.
+- **#15 (`010945e`) — `feat/per-input-fanout-batch`**: Per-input fan-out for
+  the seven remaining placeholder standard modules (`command_control` 8,
+  `persistence` 10, `defense_evasion` 8, `network_obfuscator` 8,
+  `intelligence` 7, `reconnaissance` 10, `resource_development` 10). Same
+  catalog pattern as Discovery / credential_access / etc. Backwards-compat
+  preserved (legacy defaults still resolve; `intelligence` accepts new
+  `intelligence_type`; `resource_development` aliases `infrastructure` →
+  `vps`). +30 focused tests in `tests/test_fanout_batch.py`. Closes
+  roadmap item 3 ("Detection hint shape doesn't fan out by input").
+- **#14 (`05e80bb`) — `docs/post-missing-tactics-update`**: Logs PR #8/#13;
+  marks `next_roadmap.md` item 1 as CLOSED.
 - **#13 (`48b7524`) — `feat/missing-tactics-batch`**: Bundled
   `lateral_movement` (8-entry catalog), `privilege_escalation` (9),
   `impact` (10), and `collection` (10) into one PR after the

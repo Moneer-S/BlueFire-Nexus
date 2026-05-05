@@ -13,6 +13,7 @@ from typing import Any, Dict
 from rich.console import Console
 from rich.table import Table
 
+from src.core.ai.mutation import mutate_step_params
 from src.core.bluefire_nexus import BlueFireNexus
 from src.core.config import config
 from src.core.legacy_controls import (
@@ -26,6 +27,11 @@ from src.core.legacy_controls import (
     summarize_legacy_controls,
 )
 from src.core.scenario import load_scenario
+
+# Mutation strategies recognized by `src.core.ai.mutation`. Listed here so
+# argparse can validate `--mutate` and the operator gets a clear error on
+# unknown values rather than silent fallback to a generic marker.
+_MUTATE_STRATEGIES = ("low_noise", "evasion-lite", "protocol_shift", "protocol-shift")
 
 
 def _normalize_legacy_mode(value: str) -> str:
@@ -109,7 +115,41 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Auto-apply recommended preset based on scenario objective before other overrides",
     )
+    parser.add_argument(
+        "--mutate",
+        type=str,
+        default="",
+        choices=("",) + _MUTATE_STRATEGIES,
+        help=(
+            "Apply an AI mutation strategy to every step's params before dispatch. "
+            "Implies explicit lab opt-in (mutation requires `allowed=True`). "
+            "Default empty = no mutation. Strategies: "
+            f"{', '.join(_MUTATE_STRATEGIES)}."
+        ),
+    )
     return parser
+
+
+def _build_mutation_overrides(
+    scenario_path: str, strategy: str
+) -> Dict[str, Dict[str, Any]]:
+    """Compute per-step mutated params for `nexus.run_scenario_file`.
+
+    Returns a mapping of `step_id -> mutated params dict`. Loads the
+    scenario file using the same loader the runtime uses, then applies
+    `mutate_step_params(..., allowed=True, strategy=...)` to each step.
+
+    The operator must explicitly choose `--mutate <strategy>` for this to
+    fire; the mutation engine itself still requires `allowed=True`, which
+    is satisfied here because the operator chose the strategy on the CLI.
+    Mutation is recorded in the summary so it is never silent.
+    """
+    scenario = load_scenario(scenario_path)
+    overrides: Dict[str, Dict[str, Any]] = {}
+    for step in scenario.steps:
+        result = mutate_step_params(step.params, allowed=True, strategy=strategy)
+        overrides[step.step_id] = result.mutated
+    return overrides
 
 
 def _resolve_scenario_path(profile: str, scenario_file: str) -> str:
@@ -153,6 +193,8 @@ def _print_summary(result: Dict[str, Any]) -> None:
     table.add_row("Report", str(result.get("report_path")))
     if result.get("risk_summary_path"):
         table.add_row("Risk summary", str(result.get("risk_summary_path")))
+    if result.get("mutation_strategy"):
+        table.add_row("Mutation strategy", str(result.get("mutation_strategy")))
     steps = result.get("steps", [])
     table.add_row("Steps", str(len(steps)))
     legacy = result.get("legacy_controls")
@@ -278,7 +320,21 @@ def main() -> None:
                 + json.dumps(legacy_summary, indent=2)
             )
 
-        result = nexus.run_scenario_file(scenario_path, run_id=args.run_id or None)
+        step_overrides = None
+        if args.mutate:
+            step_overrides = _build_mutation_overrides(scenario_path, args.mutate)
+            Console().print(
+                "[magenta]Applying AI mutation strategy[/]: "
+                f"{args.mutate} (lab opt-in implied by --mutate)"
+            )
+
+        result = nexus.run_scenario_file(
+            scenario_path,
+            run_id=args.run_id or None,
+            step_param_overrides=step_overrides,
+        )
+        if args.mutate:
+            result["mutation_strategy"] = args.mutate
 
         _print_summary(result)
         if args.output_json:

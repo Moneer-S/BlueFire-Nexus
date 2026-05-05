@@ -99,12 +99,12 @@ The artifacts produced today (`report.md`, `report.json`, `risk_summary.json`) c
 
 **Suggested approach:** Extend `run_reports.py` to render a per-step "mode badge" and a "real side-effects" indicator. Add a "blocked steps" section. Cheap; no behaviour change required.
 
-### 10. AI mutation engine is decoupled from scenario runs
-`mutate_step_params`, `mutate_steps`, `mutate_technique` exist (`src/core/ai/mutation.py`) and are tested (`tests/test_mutation.py`) but they aren't called from `run_scenario` or any standard CLI command. There's a `--legacy-guided` and `--legacy-preset` on `run_scenario`, but no `--mutate` or `--variant`.
-
-**Why it matters:** Mutation/variant generation is in the value prop. If it isn't reachable from the operator path, it doesn't count.
-
-**Suggested approach:** Add `--mutate <strategy>` to `run_scenario` that applies `mutate_step_params` to each step's params before dispatch. Gate behind explicit opt-in (mutation already requires `allowed=True`). Cover with a test.
+### 10. AI mutation engine is decoupled from scenario runs — **CLOSED**
+**Status:** Closed by the `--mutate` flag on `python -m src.run_scenario`.
+Strategies: `low_noise`, `evasion-lite`, `protocol_shift`, `protocol-shift`.
+Operator opt-in is explicit (the flag itself); the strategy is recorded in
+the run summary so mutation is never silent. Covered by
+`tests/test_run_scenario_mutate.py`.
 
 ## Workstream sequencing recommendation
 

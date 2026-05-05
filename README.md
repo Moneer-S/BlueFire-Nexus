@@ -44,7 +44,7 @@ BlueFire Nexus tries to bridge these:
 - **Reports + risk summary** in Markdown and JSON.
 - **AI / copilot layer** with offline template fallback and a scaffold for provider-backed runs.
 - **Safety / mode controls** (`dry_run`, `simulate`, `emulate`, `lab` confirmation, allowed subnets, max runtime).
-- **Mutation engine** for parameter variant generation (Python API today; CLI wiring tracked on the roadmap).
+- **Mutation engine** for parameter variant generation (`--mutate <strategy>` on `python -m src.run_scenario`; strategies include `low_noise`, `evasion-lite`, `protocol_shift`).
 
 ---
 
@@ -157,7 +157,7 @@ Honest current state:
 - **Template / offline provider works.** A deterministic local provider produces copilot artifacts every run with no external dependencies and no API key required. This is the default.
 - **Remote provider interfaces exist as scaffolding.** `OpenAICompatibleProvider` is wired to `ProviderFactory` and accepts the names `openai`, `anthropic`, `google`, `ollama`, `llama.cpp`, `lm-studio`, and `openai_compatible`, but the current implementation intentionally does not call out — it returns a stub. Implementing a real provider is on the roadmap; pick one (Ollama is the obvious offline-first choice) rather than ship multiple half-finished integrations.
 - **RAG retrieval works.** A small TF-IDF index over `README.md`, `docs/ARCHITECTURE.md`, and the run report powers context for copilot prompts.
-- **Mutation engine exists.** `mutate_step_params`, `mutate_steps`, and `mutate_technique` (`src/core/ai/mutation.py`) are functional and tested. They are not yet wired into a CLI flag; see roadmap.
+- **Mutation engine reachable from CLI.** `python -m src.run_scenario --mutate <strategy>` applies a mutation strategy to every step's params before dispatch. Strategies: `low_noise`, `evasion-lite`, `protocol_shift`, `protocol-shift`. Mutation requires explicit operator opt-in (the `--mutate` flag itself); the run summary records the strategy used so mutation is never silent.
 - **Experiment harness works.** `run_experiment` and `run_experiment_series` (`src/core/experiments.py`) support repeated scenario runs with optional jitter.
 
 Full audit: [docs/reports/ai_operator_audit.md](docs/reports/ai_operator_audit.md).
@@ -198,7 +198,7 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ite
 - **Missing standard modules.** Five ATT&CK tactics (`credential_access`, `lateral_movement`, `privilege_escalation`, `impact`, `collection`) have substantial legacy implementations but no registered standard module yet.
 - **Per-input fan-out across modules.** The Discovery module now fans out telemetry/hints by `discovery_type`. Same pattern wanted for `command_control`, `persistence`, `defense_evasion`, `network_obfuscator`, `intelligence`, `reconnaissance`, `resource_development`.
 - **Actor-specific adapters.** APT28/32/38/41 currently share a generic adapter; per-actor tradecraft fingerprinting is a quality lift.
-- **Mutation engine CLI wiring.** `--mutate <strategy>` on `run_scenario`.
+- **AI provider end-to-end implementation.** Pick one (Ollama for offline-first, or OpenAI-compatible for BYOK) and wire it through `OpenAICompatibleProvider.complete()`.
 - **AI/operator planning improvements.** Either implement one real provider end-to-end or make copilot artifacts opt-in.
 - **Reports / risk summary polish.** Mode badges, blocked-step section, ATT&CK-coverage cross-check.
 - **Future observed-telemetry correlation.** Roadmap only; not in current baseline. No remote SIEM exporters or external collectors today.
