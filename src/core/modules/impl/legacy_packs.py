@@ -336,14 +336,23 @@ class LegacyApt29ResearchModule(LegacyAdapterBase):
 
 
 class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
-    """Adapter for non-APT29 actor profile classes."""
+    """Adapter base for non-APT29 actor profile classes.
+
+    Per-actor subclasses below override `_TACTIC_TO_TECHNIQUE`,
+    `attack_techniques`, and `actor_signature` so each actor's adapter
+    emits the technique surface and detection-relevant identifiers
+    matching public reporting on that actor's tradecraft. The base
+    class keeps the generic mapping so direct instantiation still
+    works for testing.
+    """
 
     attack_techniques = ("T1589", "T1059", "T1071")
     pack_name = "actor_pack"
     capability_name = "apt28"
     actor_name = "APT28"
+    actor_signature: str = ""
 
-    _TACTIC_TO_TECHNIQUE = {
+    _TACTIC_TO_TECHNIQUE: Mapping[str, str] = {
         "initial_access": "T1566",
         "execution": "T1059",
         "defense_evasion": "T1036",
@@ -407,15 +416,18 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
             module=self.name,
             details={"run_id": context.get("run_id", "unknown"), **details},
         )
+        selection: Dict[str, Any] = {
+            "legacy.actor": self.actor_name,
+            "legacy.tactic": tactic,
+            "legacy.technique": technique,
+        }
+        if self.actor_signature:
+            selection["legacy.actor_signature"] = self.actor_signature
         hints = {
             "title": f"{self.actor_name} legacy technique: {tactic}/{technique}",
             "logsource": {"category": "threat_intelligence", "product": "generic"},
             "detection": {
-                "selection": {
-                    "legacy.actor": self.actor_name,
-                    "legacy.tactic": tactic,
-                    "legacy.technique": technique,
-                },
+                "selection": selection,
                 "condition": "selection",
             },
             "mitre_technique": mitre,
@@ -436,6 +448,113 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
             hints=hints,
             telemetry=[event],
         )
+
+
+class LegacyApt28ResearchModule(LegacyGenericActorTechniqueModule):
+    """APT28 / Sofacy / Fancy Bear adapter.
+
+    Refines the generic actor surface for APT28's commonly-reported
+    tradecraft: spearphishing attachments (T1566.001), PowerShell
+    execution (T1059.001), obfuscation (T1027), and HTTP/HTTPS C2
+    (T1071.001).
+    """
+
+    name = "legacy_apt28_research"
+    capability_name = "apt28"
+    actor_name = "APT28"
+    actor_signature = "fancy_bear_sofacy"
+    attack_techniques = ("T1566", "T1566.001", "T1059.001", "T1027", "T1071", "T1071.001")
+    _TACTIC_TO_TECHNIQUE: Mapping[str, str] = {
+        "initial_access": "T1566.001",
+        "execution": "T1059.001",
+        "defense_evasion": "T1027",
+        "command_and_control": "T1071.001",
+    }
+
+
+class LegacyApt32ResearchModule(LegacyGenericActorTechniqueModule):
+    """APT32 / OceanLotus adapter.
+
+    Reflects OceanLotus tradecraft: spearphishing attachment + link
+    (T1566.001 / T1566.002), Visual Basic loaders such as KerrDown
+    (T1059.005), obfuscation (T1027), HTTPS C2 (T1071.001), and
+    drive-by / watering-hole compromise (T1189).
+    """
+
+    name = "legacy_apt32_research"
+    capability_name = "apt32"
+    actor_name = "APT32"
+    actor_signature = "oceanlotus"
+    attack_techniques = (
+        "T1566.001",
+        "T1566.002",
+        "T1059.005",
+        "T1027",
+        "T1071.001",
+        "T1189",
+    )
+    _TACTIC_TO_TECHNIQUE: Mapping[str, str] = {
+        "initial_access": "T1566.001",
+        "execution": "T1059.005",
+        "defense_evasion": "T1027",
+        "command_and_control": "T1071.001",
+    }
+
+
+class LegacyApt38ResearchModule(LegacyGenericActorTechniqueModule):
+    """APT38 / Lazarus financial sub-cluster adapter.
+
+    Reflects financially-motivated DPRK tradecraft: spearphishing
+    (T1566), PowerShell (T1059.001), disk-wiping for cover-up
+    (T1561), HTTPS C2 (T1071.001), and scheduled-task persistence
+    (T1053.005).
+    """
+
+    name = "legacy_apt38_research"
+    capability_name = "apt38"
+    actor_name = "APT38"
+    actor_signature = "lazarus_apt38"
+    attack_techniques = (
+        "T1566",
+        "T1059.001",
+        "T1561",
+        "T1071.001",
+        "T1053.005",
+    )
+    _TACTIC_TO_TECHNIQUE: Mapping[str, str] = {
+        "initial_access": "T1566",
+        "execution": "T1059.001",
+        "defense_evasion": "T1561",
+        "command_and_control": "T1071.001",
+    }
+
+
+class LegacyApt41ResearchModule(LegacyGenericActorTechniqueModule):
+    """APT41 dual-purpose adapter.
+
+    Reflects APT41's mixed espionage/criminal tradecraft:
+    spearphishing (T1566), PowerShell loaders (T1059.001), web
+    shells (T1505.003), HTTPS C2 (T1071.001), and WMI-event
+    persistence (T1546.003).
+    """
+
+    name = "legacy_apt41_research"
+    capability_name = "apt41"
+    actor_name = "APT41"
+    actor_signature = "apt41_dual_use"
+    attack_techniques = (
+        "T1566",
+        "T1059.001",
+        "T1505.003",
+        "T1071.001",
+        "T1546.003",
+    )
+    _TACTIC_TO_TECHNIQUE: Mapping[str, str] = {
+        "initial_access": "T1566",
+        "execution": "T1059.001",
+        "defense_evasion": "T1505.003",
+        "command_and_control": "T1071.001",
+    }
 
 
 class LegacyProtocolResearchModule(LegacyAdapterBase):
@@ -810,26 +929,10 @@ def discover_legacy_modules() -> Dict[str, type[BaseModule]]:
         LegacyPackSummaryModule.name: LegacyPackSummaryModule,
         LegacyActorProfileModule.name: LegacyActorProfileModule,
         LegacyApt29ResearchModule.name: LegacyApt29ResearchModule,
-        "legacy_apt28_research": type(
-            "LegacyApt28ResearchModule",
-            (LegacyGenericActorTechniqueModule,),
-            {"name": "legacy_apt28_research", "capability_name": "apt28", "actor_name": "APT28"},
-        ),
-        "legacy_apt32_research": type(
-            "LegacyApt32ResearchModule",
-            (LegacyGenericActorTechniqueModule,),
-            {"name": "legacy_apt32_research", "capability_name": "apt32", "actor_name": "APT32"},
-        ),
-        "legacy_apt38_research": type(
-            "LegacyApt38ResearchModule",
-            (LegacyGenericActorTechniqueModule,),
-            {"name": "legacy_apt38_research", "capability_name": "apt38", "actor_name": "APT38"},
-        ),
-        "legacy_apt41_research": type(
-            "LegacyApt41ResearchModule",
-            (LegacyGenericActorTechniqueModule,),
-            {"name": "legacy_apt41_research", "capability_name": "apt41", "actor_name": "APT41"},
-        ),
+        LegacyApt28ResearchModule.name: LegacyApt28ResearchModule,
+        LegacyApt32ResearchModule.name: LegacyApt32ResearchModule,
+        LegacyApt38ResearchModule.name: LegacyApt38ResearchModule,
+        LegacyApt41ResearchModule.name: LegacyApt41ResearchModule,
         LegacyProtocolResearchModule.name: LegacyProtocolResearchModule,
         LegacyStealthResearchModule.name: LegacyStealthResearchModule,
     }
@@ -840,6 +943,10 @@ __all__ = [
     "LegacyActorProfileModule",
     "LegacyApt29ResearchModule",
     "LegacyGenericActorTechniqueModule",
+    "LegacyApt28ResearchModule",
+    "LegacyApt32ResearchModule",
+    "LegacyApt38ResearchModule",
+    "LegacyApt41ResearchModule",
     "LegacyProtocolResearchModule",
     "LegacyStealthResearchModule",
     "discover_legacy_modules",
