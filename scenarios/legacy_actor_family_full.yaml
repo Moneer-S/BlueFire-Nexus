@@ -5,6 +5,8 @@ attack_coverage:
   - T1059
   - T1071
   - T1589
+  - T1561
+  - T1566
 fail_fast: false
 steps:
   - id: summary

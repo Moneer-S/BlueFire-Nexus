@@ -78,3 +78,55 @@ def test_unknown_modules_are_flagged() -> None:
             if step.module and step.module not in classes:
                 unknown.append((scenario_path.name, step.module))
     assert not unknown, f"Scenarios reference unknown modules: {unknown}"
+
+
+def _collect_emitted_techniques(steps: list[dict]) -> set[str]:
+    emitted: set[str] = set()
+    for step in steps:
+        for tech in step.get("techniques", []) or []:
+            emitted.add(str(tech))
+    return emitted
+
+
+def _is_satisfied_by_run(declared: str, emitted: set[str]) -> bool:
+    if declared in emitted:
+        return True
+    parent_prefix = f"{declared}."
+    return any(tech.startswith(parent_prefix) for tech in emitted)
+
+
+@pytest.mark.parametrize(
+    "scenario_path",
+    sorted(Path("scenarios").glob("*.yaml")),
+    ids=lambda p: p.stem,
+)
+def test_runtime_emits_declared_attack_coverage(scenario_path: Path, tmp_path) -> None:
+    """Stronger drift gate: each declared technique must be exercised by an
+    actual scenario step (parent-of-subtechnique still satisfies parent).
+    Catches the case where the scenario's specific param choices never
+    trigger emission of a technique listed in `attack_coverage`.
+    """
+    from src.core.bluefire_nexus import BlueFireNexus
+    from src.core.config import ConfigManager
+
+    scenario = load_scenario(scenario_path)
+    declared = list(scenario.attack_techniques)
+    if not declared:
+        pytest.skip(f"{scenario_path.name} declares no attack_coverage")
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg = ConfigManager(str(cfg_path))
+    # Legacy scenarios need lab opt-in so their adapters can run.
+    cfg.set("modules.legacy.enable_all_lab_capabilities", True)
+    cfg.set("modules.legacy.lab_confirmation", True)
+    cfg.save()
+    nexus = BlueFireNexus(str(cfg_path))
+
+    result = nexus.run_scenario_file(str(scenario_path))
+    emitted = _collect_emitted_techniques(result.get("steps", []))
+
+    drift = [tech for tech in declared if not _is_satisfied_by_run(str(tech), emitted)]
+    assert not drift, (
+        f"{scenario_path.name} declares attack_coverage techniques that no "
+        f"step actually emitted at runtime: {drift}. Emitted: {sorted(emitted)}."
+    )

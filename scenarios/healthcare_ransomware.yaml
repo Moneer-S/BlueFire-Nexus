@@ -5,6 +5,7 @@ attack_coverage:
   - T1059
   - T1053
   - T1041
+  - T1486
 fail_fast: false
 steps:
   - id: step1
@@ -31,6 +32,13 @@ steps:
     module: exfiltration
     params:
       method: via_c2
+      network_touch: false
+  - id: step5
+    name: Ransomware encryption-impact simulation
+    module: impact
+    params:
+      technique: data_encryption
+      target: hospital-fileshare
       network_touch: false
 expected_detections:
   - process_creation
