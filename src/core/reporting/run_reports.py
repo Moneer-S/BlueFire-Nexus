@@ -170,6 +170,14 @@ def write_markdown_report(
             pack_stats[pack_name]["simulate"] += 1
 
     coverage_text = ", ".join(sorted(attack_coverage)) if attack_coverage else "n/a"
+    # Build technique -> [module:step, ...] map so defenders can see which
+    # step covers which technique without cross-referencing JSON output.
+    technique_to_steps: Dict[str, list[str]] = {}
+    for step_key, result in results.items():
+        if not result.techniques:
+            continue
+        for tech in result.techniques:
+            technique_to_steps.setdefault(tech, []).append(step_key)
     lines.extend(
         [
             f"- ATT&CK techniques covered: {coverage_text}",
@@ -193,6 +201,17 @@ def write_markdown_report(
             f"- {pack_name}: total={stats['count']} "
             f"simulate={stats['simulate']} emulate={stats['emulate']}"
         )
+    if technique_to_steps:
+        lines.extend(
+            [
+                "",
+                "## ATT&CK Technique Coverage",
+                "",
+            ]
+        )
+        for tech in sorted(technique_to_steps):
+            covering = ", ".join(f"`{step_key}`" for step_key in technique_to_steps[tech])
+            lines.append(f"- {tech} — {covering}")
     lines.extend(
         [
             "",
@@ -270,7 +289,11 @@ def write_markdown_report(
     return report_path
 
 
-def build_risk_summary(results: Dict[str, ModuleResult]) -> Dict[str, Any]:
+def build_risk_summary(
+    results: Dict[str, ModuleResult],
+    *,
+    scenario_name: str = "",
+) -> Dict[str, Any]:
     """Build a machine-readable risk summary across module results."""
     modules: list[Dict[str, Any]] = []
     totals = {"critical": 0, "high": 0, "medium": 0, "low": 0}
@@ -307,7 +330,7 @@ def build_risk_summary(results: Dict[str, ModuleResult]) -> Dict[str, Any]:
             }
         )
     average = (sum(scores) / len(scores)) if scores else 0.0
-    return {
+    summary: Dict[str, Any] = {
         "risk_summary": {
             "critical": totals["critical"],
             "high": totals["high"],
@@ -321,11 +344,19 @@ def build_risk_summary(results: Dict[str, ModuleResult]) -> Dict[str, Any]:
         "blocked_steps": blocked,
         "modules": modules,
     }
+    if scenario_name:
+        summary["scenario"] = scenario_name
+    return summary
 
 
-def write_risk_summary(run_dir: Path, results: Dict[str, ModuleResult]) -> Path:
+def write_risk_summary(
+    run_dir: Path,
+    results: Dict[str, ModuleResult],
+    *,
+    scenario_name: str = "",
+) -> Path:
     """Write a machine-readable risk summary report to disk."""
     target = run_dir / "risk_summary.json"
-    summary = build_risk_summary(results)
+    summary = build_risk_summary(results, scenario_name=scenario_name)
     target.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     return target

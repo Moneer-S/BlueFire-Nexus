@@ -268,15 +268,21 @@ class BlueFireNexus:
             detection_summary: Dict[str, Dict[str, str]] = {}
             for step_result in steps_results:
                 module_name = step_result.get("module")
+                step_id = step_result.get("step_id")
                 detections = step_result.get("detections") or {}
                 if not module_name:
                     continue
+                # Key the per-step detections by `module:step_id` so multi-step
+                # scenarios that re-use a single module no longer overwrite
+                # each other in the rendered report. Falls back to the bare
+                # module name when no step_id is present.
+                step_key = f"{module_name}:{step_id}" if step_id else str(module_name)
                 if isinstance(detections, dict):
                     summarized = {
                         key: values[0] if isinstance(values, list) and values else str(values)
                         for key, values in detections.items()
                     }
-                    detection_summary[str(module_name)] = summarized
+                    detection_summary[step_key] = summarized
 
             report_path = write_markdown_report(
                 context.output_dir,
@@ -285,7 +291,11 @@ class BlueFireNexus:
                 detection_summary,
             )
             write_json_report(context.output_dir, module_results)
-            risk_summary_path = write_risk_summary(context.output_dir, module_results)
+            risk_summary_path = write_risk_summary(
+                context.output_dir,
+                module_results,
+                scenario_name=scenario.name,
+            )
             copilot_summary = copilot.narrate(context.run_id)
 
             return {
