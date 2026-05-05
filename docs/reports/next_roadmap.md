@@ -1,5 +1,13 @@
 # BlueFire-Nexus next roadmap
 
+> **Update 2026-05-05:** Item 1 ("five ATT&CK tactics with no registered
+> standard module") is **CLOSED**. All five missing tactics —
+> `credential_access`, `lateral_movement`, `privilege_escalation`,
+> `impact`, `collection` — now have registered standard modules with
+> per-input fan-out catalogs, MITRE-aligned hints, and focused tests.
+> Registry grew from 12 → 17 standard modules (21 → 25 total including
+> legacy adapters). Items 2–10 remain open.
+
 Companion to [capability_inventory.md](capability_inventory.md). Identifies the
 top functionality gaps preventing the framework from feeling like a coherent
 high-fidelity adversary-emulation platform, and ranks them by impact.
@@ -14,12 +22,22 @@ the same safety gates that already work for `legacy_protocol_research` and
 
 ## Top 10 functionality gaps (ranked)
 
-### 1. Five ATT&CK tactics have no registered standard module
-**Missing:** `credential_access`, `lateral_movement`, `privilege_escalation`, `impact`, `collection`. All five have substantial legacy implementations (~5,400 lines combined) but no registry entry, so scenarios cannot reference them.
+### 1. Five ATT&CK tactics have no registered standard module — **CLOSED**
+**Status:** Closed by PR #8 (`credential_access`) and PR #13 (`lateral_movement`, `privilege_escalation`, `impact`, `collection`).
 
-**Why it matters most:** The single biggest gap between BlueFire's positioning ("high-fidelity adversary emulation") and what its scenarios can actually express. `apt29_credential_access` is named for credential access but routes its third step through `anti_detection` because no `credential_access` module exists.
+All five new modules use the per-input fan-out pattern established by
+`DiscoveryModule` (PR #6): a profile catalog that maps an operator-facing
+technique value to its MITRE sub-technique, logsource, detection-selection
+field, and telemetry event_type. Per-technique counts: credential_access
+9, lateral_movement 8, privilege_escalation 9, impact 10, collection 10.
+Total: +46 distinct techniques mapped to MITRE.
 
-**Suggested approach:** Add 5 new standard modules of similar shape to the existing toys, then wire them as thin adapters around the legacy implementations behind the same `simulate` / `emulate` gating that legacy_protocol_research and legacy_stealth_research already use. One focused PR per module.
+Legacy classes (`src/core/credential/credential_access.py`,
+`src/core/movement/lateral_movement.py`, `src/core/privilege/privilege_escalation.py`,
+`src/core/impact/impact.py`, `src/core/collection/collection.py` —
+~5,400 lines combined) preserved unchanged. The five new standard modules
+are simulate-only; emulate-mode wiring to the legacy classes is a
+separate follow-up that can land per-tactic without architecture changes.
 
 ### 2. Standard modules are mostly placeholders despite rich legacy code existing
 **Examples:** `discovery` returns `[{"target": ..., "status": "simulated_up"}]` but `src/core/discovery/discovery.py` (~1,100 lines) has real Nmap-backed host/port/service scan, system/process/service info, user/group/privilege enumeration with proper psutil + pwd/grp handling. Same pattern for `execution`, `persistence`, `defense_evasion`, `network_obfuscator`, `command_control`, `exfiltration`, `intelligence`, `reconnaissance`, `resource_development`.

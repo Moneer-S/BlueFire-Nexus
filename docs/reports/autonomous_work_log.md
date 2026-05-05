@@ -6,7 +6,23 @@ PR delivered. Intended as a quick "what changed and why" alongside `git log`.
 
 ## 2026-05-05
 
-- **#7 — `docs/readme-positioning-overhaul`**: Rewrote `README.md` as a
+- **#13 (`48b7524`) — `feat/missing-tactics-batch`**: Bundled
+  `lateral_movement` (8-entry catalog), `privilege_escalation` (9),
+  `impact` (10), and `collection` (10) into one PR after the
+  individually-staged PRs #9/#10/#11/#12 conflicted on the same insertion
+  points in `standard_modules.py` and `test_module_contract.py`. Combined
+  with #8 (credential_access), all five missing ATT&CK-tactic modules from
+  `next_roadmap.md` item 1 are now on main. Registry: 21 → 25 modules.
+  +80 tests. Closed PRs #9/#10/#11/#12 with rationale (branches retained).
+- **#8 (`7d2d127`) — `feat/credential-access-module`**: New
+  `CredentialAccessModule` registered in `BUILTIN_MODULE_CLASSES`. 9-entry
+  technique catalog (lsass_dump / sam_dump / ntds_dump / browser_credentials
+  / keychain / ssh_keys / keylogging / clipboard / screen_capture). +17
+  focused tests in `tests/test_credential_access_module.py`. First of the
+  five missing ATT&CK-tactic modules from the roadmap. Legacy
+  `src/core/credential/credential_access.py` preserved unchanged for
+  emulate-mode follow-up.
+- **#7 (`fdb3cfd`) — `docs/readme-positioning-overhaul`**: Rewrote `README.md` as a
   high-fidelity adversary-emulation pitch (hero / why / what / baseline /
   quickstart / example output / core concepts / modes & safety / legacy
   packs / AI layer / dev & tests / roadmap). Moved CLI command lists to
