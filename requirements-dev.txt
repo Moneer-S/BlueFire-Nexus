@@ -18,6 +18,10 @@ mypy>=1.10.0
 bandit[toml]>=1.7.9
 pip-audit>=2.7.3
 detect-secrets>=1.5.0
+# `cyclonedx-bom` ships the `cyclonedx-py` CLI used by the analysis workflow
+# to generate the SBOM. The transitively-installed `cyclonedx-python-lib` is
+# the library only and does not provide the CLI.
+cyclonedx-bom>=4.6.0
 
 # Automation
 pre-commit>=3.7.1
