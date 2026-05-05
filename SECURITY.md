@@ -2,123 +2,132 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.0.x   | :white_check_mark: |
+| Version | Supported |
+| ------- | --------- |
+| 2.x     | yes       |
+| 1.x     | no        |
 
-## Reporting a Vulnerability
+## Scope and threat model
 
-We take the security of BlueFire-Nexus seriously. If you believe you have found a security vulnerability, please report it responsibly.
+BlueFire-Nexus is a high-fidelity adversary emulation framework intended for
+authorized purple-team labs and security research. It is dual-use by design:
+it preserves realistic offensive tradecraft (APT actor packs, credential
+access, lateral movement, C2 protocol research, evasion, exfiltration) and
+gates that capability behind explicit configuration, lab confirmation, and
+default-safe behaviour.
 
-**Please consider reporting security vulnerabilities privately if possible.** You can do this through GitHub's private vulnerability reporting feature if enabled for this repository. Alternatively, create a standard GitHub Issue, but **avoid including sensitive details** that could be exploited before a fix is available. Clearly title the issue to indicate its security-sensitive nature.
+The primary security goals are:
 
-Please include the requested information listed below (as much as you can provide) in your report to help us better understand the nature and scope of the possible issue:
+- prevent accidental real-world impact,
+- prevent secret leakage,
+- prevent implicit third-party data exfiltration,
+- keep advanced/offensive functionality explicitly gated rather than removed.
 
-* Type of issue (e.g. buffer overflow, SQL injection, cross-site scripting, etc.)
-* Full paths of source file(s) related to the manifestation of the issue
-* The location of the affected source code (tag/branch/commit or direct URL)
-* Any special configuration required to reproduce the issue
-* Step-by-step instructions to reproduce the issue
-* Proof-of-concept or exploit code (if possible)
-* Impact of the issue, including how an attacker might exploit the issue
+Out of scope:
 
-This information will help us triage your report more quickly.
+- unsupported forks,
+- intentionally unsafe local modifications,
+- running against unauthorized targets.
 
-## Preferred Languages
+## Safe defaults
 
-We prefer all communications to be in English.
+These defaults are baked into the shipped configs and enforced by registry-wide
+tests; they are not best-effort guidance.
 
-## Security Best Practices
+- **Dry-run is on by default** (`general.dry_run: true`).
+  `tests/test_module_safety.py` parametrizes over every registered module
+  and asserts that no module invokes `subprocess.{run, Popen, call,
+  check_call, check_output, getoutput, getstatusoutput}`, `os.{system,
+  popen}`, `socket.{socket, create_connection}`,
+  `requests.{get, post, put, delete, patch, head, options, request,
+  Session}`, `urllib.request.urlopen`, or `aiohttp.ClientSession` while
+  `dry_run=True`. This holds in both lab-off and lab-simulate modes.
+  Modules synthesise telemetry and artifacts in dry-run instead of calling
+  real primitives.
 
-When using BlueFire-Nexus, please follow these security best practices:
+- **Telemetry is local-first.** No outbound SIEM exporters
+  (Splunk HEC, OpenSearch, Elasticsearch, NGSIEM, generic HTTP bulk) ship
+  in the baseline. Each run writes a JSON Lines artifact to
+  `output/<run_id>/telemetry.jsonl`. Legacy `telemetry.sinks` config
+  entries naming any of those remote types are warned-and-ignored at load
+  time so old configs do not crash and do not silently regain network
+  egress.
 
-1. **Authorization**
-   - Only use the platform in authorized testing environments
-   - Obtain proper permissions before conducting any security tests
-   - Document all testing activities and obtain necessary approvals
+- **Artifact writes are constrained to the run output directory.**
+  `tests/test_module_artifact_paths.py` parametrizes over every module and
+  asserts that no new files appear outside `context["output_dir"]` after
+  `execute()` returns, and that every artifact-referenced on-disk path
+  resolves under that directory.
 
-2. **Access Control** (For the environment where BlueFire-Nexus is run)
-   - Implement strong authentication mechanisms for the host system
-   - Use appropriate user permissions
-   - Monitor and log access attempts to the system
+- **Module results conform to a single contract.**
+  `tests/test_module_contract.py` parametrizes over every module and
+  asserts the result is a `ModuleResult` with correct types and a status
+  from `success | failure | blocked | skipped | partial_success`. A
+  registry-level test asserts no duplicate names and that
+  `instance.name == registry_key`.
 
-3. **Configuration**
-   - Use secure configuration settings (refer to `config.example.yaml`)
-   - Enable encryption options where applicable
-   - Implement proper logging and monitoring
-   - Regularly review configurations
+- **Allowed-subnet and runtime controls** (`general.safeties.allowed_subnets`,
+  `general.safeties.max_runtime`) are honoured by the orchestrator's
+  `SafetyGate` before module dispatch.
 
-4. **Network Security** (For the environment where BlueFire-Nexus is run)
-   - Use secure protocols (HTTPS, SSH, etc.) for related infrastructure if applicable
-   - Implement proper network segmentation if running in a complex environment
-   - Monitor network traffic for suspicious activity
+- **Legacy capability packs are disabled by default.** Actor / C2 / stealth
+  packs require either:
+  - the master lab toggle (`modules.legacy.enable_all_lab_capabilities: true`
+    plus `lab_confirmation: true`), or
+  - per-pack and per-capability enablement in `config.yaml`.
+  `simulate` mode is the default for any enabled legacy capability;
+  `emulate` requires explicit `lab_confirmation: true` at the pack or
+  capability level.
 
-5. **Data Protection**
-   - Securely handle any sensitive data generated or used during simulations
-   - Encrypt sensitive data if stored
-   - Implement proper data cleanup procedures after testing
+- **Destructive behaviour requires explicit acknowledgment.** For example,
+  the exfiltration module rejects `destructive=true` unless the same call
+  also passes `i_understand_this_is_a_lab=true`.
 
-6. **Monitoring and Logging**
-   - Enable comprehensive logging via the configuration
-   - Monitor system activities where the tool is running
-   - Regularly review logs for anomalies
+- **Real `ExecutionModule` invocations require `dry_run=False` AND
+  `allow_real_execution=true`.** Both must be set explicitly; either
+  default leaves execution simulated.
 
-7. **Updates and Maintenance**
-   - Keep the platform updated by pulling the latest changes from the repository
-   - Keep dependencies updated (`pip install -r requirements.txt --upgrade`)
-   - Regularly review the changelog for security updates
+- **AI providers are opt-in** and require user-supplied configuration.
+  No API keys are bundled in source. The default `template` provider is
+  fully offline.
 
-8. **Incident Response** (For your testing environment)
-   - Have a documented incident response plan for issues arising during simulations
-   - Document and analyze any security incidents that occur during testing
-   - Implement improvements based on lessons learned
+- **Optional remote integrations are explicit opt-ins.** No remote
+  observability collector is present in the baseline. (See
+  `docs/ARCHITECTURE.md` for the future-roadmap notes; nothing in that
+  section is currently active code.)
 
-## Security Features
+## Reporting a vulnerability
 
-BlueFire-Nexus includes several security features:
+Use GitHub security advisories (preferred) or open an issue with minimal
+exploit detail. Please include:
 
-1. **Encryption**
-   - Configurable encryption options for various modules (e.g., AES-256-GCM)
-   - Support for secure communication protocols in relevant handlers
+- affected file path(s),
+- commit hash or branch,
+- reproduction steps,
+- impact,
+- suggested fix (if available).
 
-2. **Stealth**
-   - Configurable stealth levels
-   - Anti-detection and anti-forensics techniques implemented in various modules
+Do not include live credentials or sensitive customer data in reports.
 
-3. **Logging & Monitoring**
-   - Detailed logging of operations
-   - Configurable log levels and outputs
-   - Monitoring integration points (e.g., Prometheus planned)
+## Secure development controls
 
-## Security Updates
+CI and local hooks enforce:
 
-Security updates will be provided through commits to the main repository branch and documented in the `CHANGELOG.md`.
+- `ruff`, `black --check`, `mypy`,
+- `bandit` (medium-and-higher; tuned for a dual-use adversary-emulation
+  repo with narrow `nosec` justifications instead of mass exclusions),
+- `pip-audit`,
+- secret detection via `gitleaks` and `detect-secrets`. Secret scanners
+  run **before** Bandit so expected dual-use offensive-code findings cannot
+  fail the workflow before secret scanning is checked.
 
-## Security Testing
+## Sensitive data handling
 
-We encourage security testing of BlueFire-Nexus:
-
-1. **Community Testing**
-   - Users are encouraged to perform code reviews and vulnerability testing.
-   - Please report findings responsibly as outlined above.
-
-2. **Internal Testing**
-   - Ongoing development includes considerations for secure coding practices.
-   - Automated checks (linting, type checking) are part of the development process.
-
-## Security Documentation
-
-Security information can be found in:
-
-* This `SECURITY.md` file
-* The main `README.md`
-* Configuration examples (`config/config.example.yaml`)
-* Module-specific documentation (planned/within code)
+- Keep secrets in `.env` (never commit it).
+- Use `.env.example` for variable names only.
+- Do not commit customer identifiers, internal hostnames, private IP
+  inventories, or personal data.
 
 ## Contact
 
-For security-related inquiries or discussions that are not suitable for public GitHub Issues, please contact the project maintainers through available GitHub communication channels (e.g., mentioning them in a relevant discussion or issue if appropriate, or via profile contact information if provided by the maintainer).
-
-## Acknowledgments
-
-We would like to thank all security researchers who contribute to making BlueFire-Nexus more secure through responsible disclosure. 
+Open a GitHub Security Advisory or an issue tagged `security`.

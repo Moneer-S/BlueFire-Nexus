@@ -1,9 +1,8 @@
-import os
-import platform
 import logging
-from typing import Dict, Any, Optional
+import os
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -86,4 +85,4 @@ class LinuxDefenseEvasion:
             "details": result_details
         }
 
-    # Add other Linux/Unix specific methods here 
+    # Add other Linux/Unix specific methods here

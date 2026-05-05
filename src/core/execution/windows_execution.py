@@ -1,15 +1,13 @@
-import subprocess
-import platform
-import os
 import base64
-import tempfile
 import logging
-import re # For caret obfuscation
-import stat # For chmod
+import os
+import random
+import re  # For caret obfuscation
+import subprocess
+import tempfile
 import uuid
-import shlex
-from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -48,44 +46,46 @@ class WindowsExecution:
             logger.warning(f"Unsupported Windows execution type requested: {exec_type}")
             return {"status": "failure", "type": exec_type, "reason": f"Unsupported execution type '{exec_type}' for Windows"}
 
-    # --- Internal Helper --- 
+    # --- Internal Helper ---
     def _run_command(self, command: str, shell: Optional[str], use_shell: bool, capture: bool = True) -> Tuple[int, str, str]:
         """Helper to run subprocess commands specifically for Windows."""
         timeout = self.config.get("execution_timeout", 120)
         effective_shell = shell or self.config.get("default_shell", "cmd")
-        
+
         cmd_list_or_str = command # Default to passing string if use_shell=True
         if not use_shell:
             # Basic split, assumes command is executable path + args
             # TODO: Improve argument handling, potentially use shlex for specific cases?
-            cmd_list_or_str = command.split() 
+            cmd_list_or_str = command.split()
 
         logger.info(f"Executing Windows command (shell={effective_shell if use_shell else 'None'}, use_shell={use_shell}): {command}")
 
         try:
-            process = subprocess.run(cmd_list_or_str, 
-                                     capture_output=capture, 
-                                     text=True, 
-                                     check=False, 
-                                     timeout=timeout, 
-                                     encoding='utf-8', 
+            process = subprocess.run(cmd_list_or_str,
+                                     capture_output=capture,
+                                     text=True,
+                                     check=False,
+                                     timeout=timeout,
+                                     encoding='utf-8',
                                      errors='ignore',
                                      shell=use_shell,
                                      # Windows specific flags if needed (e.g., CREATE_NO_WINDOW)
                                      # creationflags=subprocess.CREATE_NO_WINDOW
                                      )
-            
-            self.logger.debug(f"Command finished. RC: {process.returncode}")
+
+            logger.debug(f"Command finished. RC: {process.returncode}")
             stdout = process.stdout if process.stdout else ""
             stderr = process.stderr if process.stderr else ""
             return process.returncode, stdout, stderr
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             cmd_executed = cmd_list_or_str[0] if isinstance(cmd_list_or_str, list) else command.split()[0]
             logger.error(f"Command or shell not found: {cmd_executed}")
-            raise FileNotFoundError(f"Required command/shell '{cmd_executed}' not found.")
-        except subprocess.TimeoutExpired:
+            raise FileNotFoundError(
+                f"Required command/shell '{cmd_executed}' not found."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
             logger.error(f"Command timed out after {timeout}s: {command}")
-            raise TimeoutError(f"Command '{command}' timed out.")
+            raise TimeoutError(f"Command '{command}' timed out.") from exc
         except Exception as e:
             logger.error(f"Unexpected error running command '{command}': {e}", exc_info=True)
             raise
@@ -315,4 +315,4 @@ class WindowsExecution:
             "reason": reason,
             "technique": f"payload_execution_{method}",
             "details": result_details
-        } 
+        }

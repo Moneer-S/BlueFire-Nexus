@@ -1,0 +1,50 @@
+id: legacy_stealth_research
+name: Legacy Stealth Research Pack
+objective: Exercise anti-forensic, anti-sandbox, anti-detection, and dynamic API research modules through the modern runtime.
+attack_coverage:
+  - T1497
+  - T1562
+  - T1070
+  - T1027
+fail_fast: false
+steps:
+  - id: summarize-controls
+    name: Report effective legacy activation state
+    module: legacy_capability_summary
+    params: {}
+  - id: anti-forensic-sim
+    name: Simulate anti-forensic cleanup behaviors
+    module: legacy_stealth_research
+    params:
+      capability: anti_forensic
+      target: current_host
+      network_touch: false
+  - id: anti-sandbox-sim
+    name: Simulate anti-sandbox environment checks
+    module: legacy_stealth_research
+    params:
+      capability: anti_sandbox
+      target: current_process
+      network_touch: false
+  - id: anti-detection-sim
+    name: Simulate anti-detection evasion research
+    module: legacy_stealth_research
+    params:
+      capability: anti_detection_legacy
+      target: current_process
+      network_touch: false
+  - id: dynamic-api-sim
+    name: Simulate dynamic API resolution research
+    module: legacy_stealth_research
+    params:
+      capability: dynamic_api
+      api_hash: "0xA3D82B19"
+      network_touch: false
+expected_detections:
+  - Visibility into anti-forensic cleanup intent and emulate/simulate mode state
+  - Detection hints for anti-sandbox checks and stealth research capability use
+  - Structured reporting for dynamic API resolution research actions
+blue_team_guidance:
+  - Alert on attempts to clear event logs, prefetch, or temp artifacts in production-like telemetry.
+  - Investigate sandbox-detection logic and debugger checks executed by suspicious processes.
+  - Track dynamic API resolution and import-hiding behavior as potential evasion signals.

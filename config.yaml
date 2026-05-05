@@ -1,35 +1,126 @@
-# config.yaml - Main Configuration for BlueFire-Nexus
+# BlueFire-Nexus runtime configuration (safe defaults)
 general:
-  name: "BlueFire-Nexus" # Example general setting
-  version: "1.0.0"     # Example general setting
-  mode: "simulation"     # Example general setting (simulation, testing, production)
-  log_level: "INFO"      # Overridden by env var if set
+  name: "BlueFire-Nexus"
+  version: "2.0.0"
+  mode: "simulation"
+  log_level: "INFO"
+  dry_run: true
   safeties:
-    auto_wipe: true
-    max_runtime: 14400  # 4 hours
-    allowed_subnets: 
-      - "10.100.0.0/24"
-      # Add other safety nets like allowed target domains/IPs if needed
+    auto_wipe: false
+    max_runtime: 3600
+    allowed_subnets:
+      - "10.0.0.0/24"
 
 modules:
-  # Add configurations for specific modules as needed
-  # Example for command_control, referencing the old network setting
-  command_control: 
-    c2_channels:
-      - protocol: dns
-        domain: "test.internal"
-        encryption_key: "{{ env ENCRYPT_KEY }}" 
-    # Add other module configs here, e.g., defense_evasion, exfiltration...
+  ai:
+    enabled: false
+    provider: "template"
+    model: "default"
+    api_base: ""
+  command_control:
+    enabled: false
+  discovery:
+    enabled: true
+  execution:
+    enabled: true
+    allow_real_execution: false
+    timeout_seconds: 10
+  persistence:
+    enabled: true
+  defense_evasion:
+    enabled: true
+  anti_detection:
+    enabled: true
+  exfiltration:
+    enabled: false
+  intelligence:
+    enabled: true
+  network_obfuscator:
+    enabled: true
+  resource_development:
+    enabled: true
+  reconnaissance:
+    enabled: true
+  legacy:
+    enable_all_lab_capabilities: false
+    lab_mode: "simulate"
+    lab_acknowledged: false
+    actor_pack:
+      enabled: true
+      mode: "simulate"
+      lab_acknowledged: false
+      capabilities:
+        apt29:
+          enabled: true
+          emulate_enabled: false
+        apt28:
+          enabled: true
+          emulate_enabled: false
+        apt32:
+          enabled: true
+          emulate_enabled: false
+        apt38:
+          enabled: true
+          emulate_enabled: false
+        apt41:
+          enabled: true
+          emulate_enabled: false
+    c2_pack:
+      enabled: true
+      mode: "simulate"
+      lab_acknowledged: false
+      capabilities:
+        dns_tunneling:
+          enabled: true
+          emulate_enabled: false
+        tls_fast_flux:
+          enabled: true
+          emulate_enabled: false
+        websocket_quic:
+          enabled: true
+          emulate_enabled: false
+        solana_rpc:
+          enabled: true
+          emulate_enabled: false
+        network_obfuscator_legacy:
+          enabled: true
+          emulate_enabled: false
+    stealth_pack:
+      enabled: true
+      mode: "simulate"
+      lab_acknowledged: false
+      capabilities:
+        anti_forensic:
+          enabled: true
+          emulate_enabled: false
+        anti_sandbox:
+          enabled: true
+          emulate_enabled: false
+        anti_detection_legacy:
+          enabled: true
+          emulate_enabled: false
+        dynamic_api:
+          enabled: true
+          emulate_enabled: false
 
-telemetry: # Kept top-level as it seems distinct from 'general'/'modules'
-  enabled: true # Assuming telemetry is enabled if section exists
-  splunk:
-    host: "https://splunk.test.internal"
-    token: "{{ env SPLUNK_TOKEN }}"
-  elastic:
-    hosts: ["https://elastic.test.internal:9200"]
+# Telemetry is local-first in the current baseline. Outbound SIEM exporters
+# (Splunk/OpenSearch/Elasticsearch/NGSIEM) were removed during stabilization;
+# legacy `sinks` entries naming those types are ignored at load time with a
+# deprecation warning rather than restoring egress silently.
+telemetry:
+  enabled: true
+  default_sink: "jsonl"
+  local:
+    enabled: true
+    file: "telemetry.jsonl"
+  sinks:
+    - type: "jsonl"
+      enabled: true
 
-# Deprecated top-level keys (moved under general/modules):
-# network: 
-#   c2_channels: ... (moved to modules.command_control)
-# safeties: ... (moved to general.safeties)
+copilot:
+  enabled: false
+  rag:
+    knowledge_paths:
+      - "README.md"
+      - "docs/ARCHITECTURE.md"
+      - "docs"

@@ -3,32 +3,22 @@ Consolidated Persistence Module
 Handles persistence for all APT implementations
 """
 
-import os
-import sys
-import time
-import random
-import string
-import hashlib
-import base64
-from typing import Dict, List, Any, Optional, TYPE_CHECKING
-from datetime import datetime
-from pathlib import Path
 import logging
 import platform
-import shlex # For safe command splitting
+import random
+import string
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Dict
 
 # Avoid circular import for type hinting
 if TYPE_CHECKING:
-    from ..execution.execution import Execution 
+    from ..execution.execution import Execution
 
 # Import the OS-specific handlers
-from .windows_persistence import WindowsPersistence
-from .linux_persistence import LinuxPersistence
-# Import macOS handler when created
-from .macos_persistence import MacOSPersistence
-
 # Import the Execution module interface (adjust path as necessary)
 from ..execution.execution import Execution
+from .linux_persistence import LinuxPersistence
+from .macos_persistence import MacOSPersistence
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +55,8 @@ class Persistence:
 
         # Instantiate the appropriate OS handler
         if self.os_type == "Windows":
+            from .windows_persistence import WindowsPersistence
+
             self.os_handler = WindowsPersistence(execute_command_func=_execute_command_wrapper)
             logger.info("Initialized Windows Persistence handler.")
         elif self.os_type == "Linux":
@@ -83,7 +75,10 @@ class Persistence:
 
     def update_config(self, config: Dict[str, Any]):
         """Update internal config with loaded configuration."""
-        # This method is now empty as the configuration is managed by the OS-specific handlers
+        module_cfg = config.get("modules", {}).get("persistence", {})
+        if self.os_handler and hasattr(self.os_handler, "update_config"):
+            self.os_handler.update_config(module_cfg)
+        logger.info("Persistence module configuration updated.")
 
     def establish_persistence(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -132,7 +127,7 @@ class Persistence:
     def _log_error(self, message: str, exc_info=False) -> None:
         """Log errors using the initialized logger."""
         logger.error(message, exc_info=exc_info)
-        
+
     def _generate_random_string(self, length: int = 8) -> str:
         """Generate a random string of fixed length."""
         letters = string.ascii_lowercase + string.digits
@@ -141,8 +136,7 @@ class Persistence:
 # Example Usage (for testing)
 if __name__ == '__main__':
     import json
-    import inspect # Needed for _handle_not_implemented helper
-    
+
     # Basic logging setup for testing
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -211,8 +205,8 @@ if __name__ == '__main__':
         print(json.dumps(cron_result, indent=2))
     else:
         print("Skipping Cron Job test (not Linux/macOS)")
-        
+
     print("\n--- Testing Not Implemented Technique ---")
     ni_request = {"persist": {"technique": "dhcp", "details": {}}}
     ni_result = persistence_module.establish_persistence(ni_request)
-    print(json.dumps(ni_result, indent=2)) 
+    print(json.dumps(ni_result, indent=2))

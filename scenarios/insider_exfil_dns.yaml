@@ -1,0 +1,38 @@
+id: insider_exfil_dns
+name: Insider DNS Exfiltration
+objective: Simulate insider-driven DNS-based data exfiltration from a restricted lab subnet.
+mitre:
+  - T1041
+  - T1071.004
+  - T1572
+fail_fast: true
+steps:
+  - id: step-1
+    name: Identify sensitive files
+    module: discovery
+    params:
+      targets:
+        - 10.0.0.35
+      discovery_type: files
+      network_touch: true
+  - id: step-2
+    name: Stage data for exfiltration
+    module: exfiltration
+    params:
+      method: dns_tunnel
+      controlled_domain: exfil.example.lab
+      data_set: synthetic_hr_exports
+      network_touch: true
+  - id: step-3
+    name: Obfuscate exfil traffic pattern
+    module: network_obfuscator
+    params:
+      protocol: dns
+      jitter_percent: 35
+      network_touch: true
+expected_detections:
+  - Alert on high-volume DNS query entropy and long labels
+  - Correlate file staging with outbound DNS beacon patterns
+blue_team_guidance:
+  - Baseline normal DNS request lengths per host and detect deviations
+  - Use DNS sinkhole logs to map suspicious subdomains to endpoint process lineage

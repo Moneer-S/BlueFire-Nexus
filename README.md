@@ -1,202 +1,285 @@
-![BlueFire Nexus Banner](docs/assets/logo_banner.png)
+# BlueFire-Nexus
 
-<!-- # BlueFire-Nexus --> <!-- Comment out original title -->
+[![tests](https://img.shields.io/badge/tests-pytest-blue)](#testing)
+[![security](https://img.shields.io/badge/security-bandit%2Bgitleaks-green)](#security-first-defaults)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue)](#quickstart)
+[![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
-A comprehensive Advanced Persistent Threat (APT) simulation platform designed for security testing, red team operations, and threat hunting within controlled environments.
+BlueFire-Nexus is a **high-fidelity adversary emulation and purple-team
+research framework**. It models realistic offensive tradecraft (APT actor
+packs, credential access, lateral movement, C2 protocol research, evasion,
+exfiltration) and pairs it with local defensive outputs (telemetry,
+detection drafts, run reports, AI/copilot narratives) in one config-driven
+runtime. It is dual-use by nature — intended for authorized lab and
+purple-team work, not as a generic BAS/compliance simulator.
 
-## Overview
+Each run can produce:
+- ATT&CK-mapped module telemetry as `output/<run_id>/telemetry.jsonl`
+- Detection drafts in **Sigma**, **YARA-L**, and **Splunk SPL** — all
+  generated locally to `output/<run_id>/detections/`. SPL here is a
+  detection-rule output format, not a Splunk exporter or SIEM connector.
+- A local run report (Markdown + JSON) and risk summary
+- SOC-oriented narrative artifacts via an optional AI copilot (template
+  fallback available offline; no API keys required for default operation)
 
-BlueFire-Nexus provides a framework for simulating various APT techniques and tactics, primarily based on the MITRE ATT&CK® framework. It allows security professionals to test detection capabilities, validate security controls, and understand complex attack chains in a safe and isolated lab setting.
+## Security-first defaults
 
-**Disclaimer:** This tool is intended for **educational and authorized security testing purposes only** in isolated environments. Unauthorized use or deployment against systems without explicit permission is strictly prohibited. Always adhere to the [Ethical Use Policy](legal/ethical_guidelines.md).
+- Dry-run enabled by default (`general.dry_run: true`); a registry-wide
+  test asserts no module touches `subprocess`, `socket`, `requests`, or
+  `urllib` while dry-run is active.
+- No outbound SIEM exporters in the baseline. Telemetry is local-only.
+  Legacy `telemetry.sinks` entries naming `splunk`/`opensearch`/
+  `elasticsearch`/`ngsiem` are warned-and-ignored at load time.
+- AI providers and any future remote integrations are explicit opt-ins.
+- Deny-by-default safety gates (`allowed_subnets`, `max_runtime`).
+- Advanced offensive research is **gated, not removed**. Legacy capability
+  packs (actor / C2 / stealth) ship disabled and require either a master
+  lab toggle or per-pack/per-capability enablement in `config.yaml`.
+  `simulate` mode is the default; `emulate` requires explicit lab
+  confirmation.
+- Destructive behavior (e.g. exfiltration with `destructive=true`) requires
+  an explicit acknowledgment flag.
+- A registry-wide test asserts every module writes its files only under
+  `context["output_dir"]` and registers them in `ModuleResult.artifacts`.
+- Secret scanning and security checks run in CI (`gitleaks`,
+  `detect-secrets`, `bandit`, `pip-audit`); secret scanners run *before*
+  Bandit so dual-use findings cannot mask leaked credentials.
 
-## Features
+Read:
+- `SECURITY.md`
+- `legal/ethical_guidelines.md`
+- `.env.example`
 
-![BlueFire Nexus Key Features](docs/assets/key_features.png)
-
-BlueFire-Nexus is built around a modular architecture, simulating various stages of an APT lifecycle:
-
-*   **Execution:** Manages the execution of commands and payloads.
-*   **Command & Control (C2):** Simulates C2 communication channels (e.g., DNS, HTTP) for implant control. (Configuration in `config.yaml` under `modules.command_control.c2_channels`)
-*   **Persistence:** Implements techniques to maintain access to compromised systems.
-*   **Defense Evasion:** Includes techniques to bypass security controls (e.g., Process Hollowing, Argument Spoofing, Parent PID Spoofing).
-*   **Exfiltration:** Simulates methods for extracting data from target environments.
-*   **Initial Access:** Models techniques for gaining an initial foothold (e.g., phishing placeholders).
-*   **Anti-Detection:** Focuses on techniques to avoid detection by security tools (e.g., Sandbox Evasion, Memory Evasion). (See `src/core/anti_sandbox.py`, `src/core/evasion/anti_detection.py`)
-*   **Discovery:** Simulates methods for reconnaissance within a network (e.g., Network/Service Scanning).
-*   **Intelligence:** Handles gathering and simulation related to APT group TTPs and threat intelligence.
-*   **Network Obfuscator:** Implements techniques for obscuring network traffic patterns.
-*   **Resource Development:** Simulates the acquisition and setup of attack infrastructure and capabilities.
-*   **Reconnaissance:** Models active and passive information gathering techniques.
-
-*(Note: The implementation depth of each module may vary. Refer to the code in `src/core/` for details.)*
-
-### Security Features
-
-- Modular design based on APT tactics.
-- Configuration-driven execution (`config.yaml`).
-- Safety mechanisms (configurable in `config.yaml` under `general.safeties`, e.g., `max_runtime`, `allowed_subnets`).
-- Placeholder integrations for telemetry (Splunk, Elastic - see `config.yaml` under `telemetry`).
-
-## Installation
+## Quickstart
 
 ```bash
-# Clone the repository
-git clone <your-repo-url> BlueFire-Nexus
-# Example: git clone https://github.com/yourusername/BlueFire-Nexus.git
-
-# Navigate to the project directory
-cd BlueFire-Nexus
-
-# Create a Python virtual environment (Recommended)
 python -m venv .venv
-source .venv/bin/activate  # On Linux/macOS
-# .venv\Scripts\activate   # On Windows
-
-# Install dependencies
-pip install -r requirements.txt
-# Optional: Install dev dependencies
-# pip install -r requirements-dev.txt 
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements-dev.txt
+pip install -e .
+cp .env.example .env
+python -m src.run_scenario --profile apt29_credential_access --output-json
 ```
 
-## Configuration
-
-The main configuration file used by the application is `config.yaml` located in the project root.
-
-1.  **Review/Create `config.yaml`**: If `config.yaml` doesn't exist, a default one might be created on first run (depending on core logic). It's recommended to create it manually based on your needs.
-2.  **Use Example as Template**: A detailed template outlining available options and the expected structure (`general`, `modules`, `telemetry`) can be found at `config/config.example.yaml`. You can use this as a reference when creating or modifying your root `config.yaml`.
-3.  **Customize `config.yaml`**: Edit the root `config.yaml` file to define your desired simulation parameters, safety settings, module configurations, and telemetry endpoints.
-
-    ```yaml
-    # Example structure for ./config.yaml
-    general:
-      name: "MySimulation"
-      mode: "simulation"
-      log_level: "INFO" 
-      safeties:
-        auto_wipe: false # Be careful with auto_wipe!
-        max_runtime: 7200 # 2 hours
-        allowed_subnets: 
-          - "192.168.56.0/24" # Example isolated lab network
-
-    modules:
-      # Enable/disable or configure specific modules
-      command_control: 
-        enabled: true
-        c2_channels:
-          - protocol: dns
-            domain: "apt.internal.lab"
-            encryption_key: "{{ env ENCRYPT_KEY }}" # Use env var for secrets
-
-      defense_evasion:
-        enabled: true
-        # Add specific technique configs if needed
-
-    telemetry: 
-      enabled: true
-      splunk:
-        host: "https://splunk.internal.lab:8088"
-        token: "{{ env SPLUNK_TOKEN }}"
-      # elastic: ... 
-    ```
-4.  **Environment Variables**: Note that sensitive values like API keys or encryption keys should be sourced from environment variables (e.g., `{{ env SPLUNK_TOKEN }}`) using a `.env` file or system environment variables. Load dotenv is used (`src/core/config.py`). Create a `.env` file in the root directory:
-    ```dotenv
-    # .env file
-    ENCRYPT_KEY=your_secret_encryption_key_here
-    SPLUNK_TOKEN=your_splunk_hec_token_here
-    # BLUEFIRE_KILLSWITCH=http://your_killswitch_url (Optional)
-    # LOG_LEVEL=DEBUG (Optional, overrides config file)
-    ```
-
-## Usage
-
-The primary way to run simulations is via the command-line script:
+Or use the shell wrapper:
 
 ```bash
-# Example: Run the persistence scenario
-./scripts/bluefire.sh --profile establish_persistence 
-
-# Example: Run with AI features enabled and DNS exfiltration (if supported)
-./scripts/bluefire.sh --profile intel_gathering --ai --exfil dns 
+./scripts/bluefire.sh --profile apt29_credential_access --output-json
 ```
 
-This script acts as a wrapper around `src/run_scenario.py`, which likely parses the profile and other arguments to orchestrate the simulation using the `BlueFireNexus` core class.
+The same install steps are what CI runs (see
+`.github/workflows/tests.yml`); a clean clone going through this sequence
+should match CI exactly. `netifaces` is an optional `[net]` extra (its sdist
+needs a C compiler) — install with `pip install -e .[net]` only if you need
+the legacy network discovery helpers that depend on it.
 
-### Programmatic Usage (Advanced)
+## Core workflows
 
-It's also possible to import and use the `BlueFireNexus` class directly in Python scripts for more complex integrations or custom scenarios:
+### Run a scenario file
+```bash
+python -m src.run_scenario --scenario-file scenarios/healthcare_ransomware.yaml --output-json
+```
 
+### Run via Rich/Typer CLI
+```bash
+python -m src.core.cli run-scenario scenarios/insider_exfil_dns.yaml
+python -m src.core.cli plan "Emulate APT29 credential access chain"
+python -m src.core.cli suggest-detections run-20260101010101-abcd1234
+python -m src.core.cli legacy-presets
+python -m src.core.cli legacy-guided-presets
+python -m src.core.cli legacy-recommend-preset detection --apply
+python -m src.core.cli legacy-scenario-recommendation scenarios/legacy_c2_protocols.yaml --apply
+python -m src.core.cli legacy-risk-ladder
+python -m src.core.cli legacy-risk-posture --config config.yaml
+python -m src.core.cli show-risk-summary output/<run-id>/risk_summary.json --top 10
+python -m src.core.cli legacy-operator-guide
+python -m src.core.cli legacy-apply-preset c2-sim --config config.yaml
+python -m src.core.cli run-scenario scenarios/legacy_flagship_blended.yaml --legacy-preset full-simulate
+```
+
+### Enable legacy capability packs quickly or granularly
+BlueFire-Nexus now supports advanced legacy research packs for actor emulation,
+protocol/C2 experiments, and stealth research. These remain disabled by default
+and are communicated up front through config and CLI output.
+
+For a single global lab toggle in `config.yaml`:
+
+```yaml
+modules:
+  legacy:
+    enable_all_lab_capabilities: true
+    lab_confirmation: true
+    global_mode: simulate
+```
+
+For granular per-pack and per-capability control:
+
+```yaml
+modules:
+  legacy:
+    actor_pack:
+      enabled: true
+      mode: simulate
+      capabilities:
+        apt29:
+          enabled: true
+    c2_pack:
+      enabled: false
+      capabilities:
+        dns_tunneling:
+          enabled: true
+```
+
+The runtime prints a legacy activation summary showing:
+- whether the global master toggle is on,
+- which packs/capabilities are enabled,
+- whether activation came from the master or granular controls,
+- whether each capability is in `simulate` or `emulate` mode.
+
+CLI aliases are accepted for convenience and normalized internally:
+- C2: `quic_c2`/`quic` -> `websocket_quic`, `network_obfuscator` -> `network_obfuscator_legacy`
+- Stealth: `anti_detection` -> `anti_detection_legacy`
+
+Preset profiles are available for quick enablement:
+- `safe-baseline`: keep all legacy packs disabled (default-safe posture)
+- `full-simulate`: enable all packs in simulate mode
+- `full-emulate`: enable all packs in emulate mode with lab confirmation
+- `actor-simulate`, `c2-simulate`, `stealth-simulate`: pack-focused simulation presets
+
+You can either:
+- apply a preset just for one run (`--legacy-preset` on `run-scenario` / `run-operation`), or
+- persist a preset to config via `legacy-apply-preset` (use `--preview-only` for dry preview).
+- ask for objective-driven recommendations via `legacy-recommend-preset` and
+  inspect all objective mappings with `legacy-guided-presets`.
+- derive recommendations directly from a scenario file via
+  `legacy-scenario-recommendation`.
+- inspect current config risk with `legacy-risk-posture` and run-level risk
+  artifacts with `show-risk-summary`.
+
+`python -m src.run_scenario` now also supports:
+- `--legacy-guided` to auto-apply the recommended preset from scenario objective,
+- `--legacy-pack` and `--legacy-capability` for granular one-by-one overrides.
+- It now writes `risk_summary.json` per run and prints its path in the summary.
+
+Legacy config aliases are also supported for backward compatibility:
+- `lab_mode` -> `global_mode`
+- `lab_acknowledged` -> `global_lab_acknowledged` and `lab_confirmation`
+- `emulate_enabled: true` (capability-level) -> emulate mode with lab confirmation
+
+### Programmatic usage
 ```python
 from src.core.bluefire_nexus import BlueFireNexus
-from src.core.config import config # Access the global config manager
 
-# Ensure config is loaded (BlueFireNexus constructor handles this)
-nexus = BlueFireNexus() 
-
-# Access configuration
-# c2_config = config.get('modules.command_control', {})
-
-# Execute operations directly (structure depends on module implementation)
-# Note: The exact format for 'operation_data' depends on the target module.
-try:
-    result = nexus.execute_operation("discovery", {
-        "scan_type": "network_scan", 
-        "targets": ["192.168.56.1/24"]
-        # Add other necessary parameters for the discovery module...
-    })
-    print(f"Discovery Result: {result}")
-
-    result_evasion = nexus.execute_operation("defense_evasion", {
-         "technique": "pid_spoofing", 
-         "target_command": "powershell.exe -Command ..." 
-         # Add other necessary parameters...
-    })
-    print(f"Evasion Result: {result_evasion}")
-
-except Exception as e:
-    print(f"An error occurred: {e}")
-
+nexus = BlueFireNexus("config.yaml")
+result = nexus.execute_operation(
+    "execution",
+    {"command": "echo hello", "network_touch": False},
+)
+print(result["status"], result["run_id"])
 ```
 
-Refer to the `execute_operation` method in `src/core/bluefire_nexus.py` and the implementations within specific modules (e.g., `src/core/discovery/discovery.py`) for details on required parameters.
+## Architecture (current)
 
-## Architecture
+```mermaid
+flowchart LR
+    cliRunner["CLI (scripts/bluefire.sh + src/run_scenario.py + src/core/cli.py)"] --> orchestrator["BlueFireNexus"]
+    scenarioFiles["scenarios/*.yaml"] --> orchestrator
+    configYaml["config.yaml + .env"] --> orchestrator
+    orchestrator --> moduleRegistry["ModuleRegistry (BaseModule + built-ins + plugins)"]
+    orchestrator --> safetyGate["SafetyGate"]
+    orchestrator --> telemetryBus["TelemetryBus (local JSONL run artifact)"]
+    orchestrator --> detectionGen["DetectionEngine (Sigma/YARA-L/SPL)"]
+    orchestrator --> aiCopilot["AICopilot (provider-selected, template fallback)"]
+    orchestrator --> runArtifacts["output/run_id/* (report, detections, copilot output)"]
+```
 
-The platform is structured as follows:
+## Scenario library
 
-1.  **Entry Point**: `scripts/bluefire.sh` parses command-line arguments and invokes `src/run_scenario.py`.
-2.  **Scenario Runner**: `src/run_scenario.py` likely interprets the profile/arguments and orchestrates the simulation sequence.
-3.  **Core Orchestrator**: `src/core/bluefire_nexus.py` contains the `BlueFireNexus` class which initializes and manages all the individual modules. It loads configuration via `ConfigManager` and provides the `execute_operation` method.
-4.  **Configuration Manager**: `src/core/config.py` (`ConfigManager` class) handles loading `./config.yaml` and environment variables (`.env`).
-5.  **Core Modules**: Located under `src/core/<module_type>/`. Each module (e.g., `CommandControl`, `DefenseEvasion`) encapsulates logic related to a specific APT tactic or function.
-6.  **Supporting Code**: Utilities, security functions, loggers potentially reside within `src/core/` or other subdirectories.
-7.  **Archived Code**: Unused, experimental, or outdated components are moved to the `archive/` directory for reference.
-8.  **Tools**: Separate utilities (like the AI trainer) are in the `tools/` directory.
+- `scenarios/apt29_credential_access.yaml`
+- `scenarios/fin7_initial_access_to_c2.yaml`
+- `scenarios/healthcare_ransomware.yaml`
+- `scenarios/insider_exfil_dns.yaml`
+- `scenarios/legacy_actor_apt29.yaml`
+- `scenarios/legacy_actor_family_full.yaml`
+- `scenarios/legacy_c2_protocols.yaml`
+- `scenarios/legacy_stealth_research.yaml`
+- `scenarios/legacy_flagship_blended.yaml`
 
-## Security Considerations
+## Legacy capability packs
 
-- **Restricted Environment**: **CRITICAL:** Only run BlueFire-Nexus in fully isolated, non-production lab environments where you have explicit authorization.
-- **Configuration Safeties**: Carefully configure `general.safeties` in `config.yaml` (e.g., `allowed_subnets`, `max_runtime`) to limit potential impact.
-- **Ethical Use**: Strictly adhere to the [Ethical Use Policy](legal/ethical_guidelines.md).
-- **Monitoring**: Monitor the simulation environment closely. Utilize the telemetry integrations if configured.
-- **Dependencies**: Review dependencies for security vulnerabilities.
+These packs preserve and surface the most advanced research-oriented parts of
+the codebase instead of hiding or deleting them:
 
-## Contributing
+- Actor pack: APT29/APT28/APT32/APT38/APT41 research profiles
+- C2/protocol pack: DNS tunneling, TLS fast-flux-style beaconing, QUIC, Solana RPC
+- Stealth pack: anti-forensic, anti-sandbox, anti-detection, dynamic API research
 
-Contributions are welcome! Please follow standard GitHub practices:
+All of these are normalized into the same runtime model used by standard
+modules, so they can produce telemetry, reports, and detection drafts.
 
-1.  Fork the repository.
-2.  Create a feature branch (`git checkout -b feature/AmazingFeature`).
-3.  Commit your changes (`git commit -m 'Add some AmazingFeature'`).
-4.  Push to the branch (`git push origin feature/AmazingFeature`).
-5.  Open a Pull Request.
+## AI provider strategy
 
-Please review `CONTRIBUTING.md` and `DEVELOPER.MD` (if available/updated) for more details.
+User-selected, config-driven provider selection with zero lock-in:
+- `template` / `none` (offline deterministic fallback)
+- `openai`, `anthropic`, `google`
+- `ollama`, `llama.cpp`, `lm-studio`
+- `openai_compatible`
+
+By default, provider implementations are safety-preserving and do not force live external calls.
+
+## Telemetry
+
+Telemetry is local-first in the current baseline. Each run writes a JSON
+Lines artifact to `output/<run_id>/telemetry.jsonl` alongside the run report
+and any detection drafts. There are no outbound SIEM exporters in the
+baseline; legacy `telemetry.sinks` config entries naming `splunk`,
+`opensearch`, `elasticsearch`, or `ngsiem` are ignored at load time with a
+deprecation warning.
+
+## Testing
+
+```bash
+pytest -q
+python -m compileall -q src tests
+```
+
+Three registry-wide enforcement tests run on every module:
+
+- `tests/test_module_contract.py` — every module returns a conformant
+  `ModuleResult` (correct fields, types, and a status from
+  `success | failure | blocked | skipped | partial_success`).
+- `tests/test_module_safety.py` — strict dry-run safety: no module touches
+  `subprocess`, `socket`, `requests`, or `urllib` while `dry_run=True`,
+  in either lab-off or lab-simulate mode.
+- `tests/test_module_artifact_paths.py` — every module writes its files
+  only under `context["output_dir"]` and registers them in
+  `ModuleResult.artifacts`.
+
+## Development quality gates
+
+- `pyproject.toml`: pytest, black, ruff, mypy, bandit config
+- `.pre-commit-config.yaml`: ruff, bandit, detect-secrets, gitleaks
+- `.github/workflows/tests.yml`
+- `.github/workflows/analysis.yml`
+
+## Case studies
+
+- `docs/case-studies/apt29_credential_access.md`
+- `docs/case-studies/legacy_protocol_pack.md`
+- `docs/case-studies/legacy_stealth_pack.md`
+- `docs/case-studies/healthcare_ransomware.md`
+
+## Optional local lab
+
+`docker-compose.lab.yml` provides a containerised BlueFire profile for running
+scenarios in a clean Python environment without installing dependencies on
+the host.
 
 ## License
 
-This project is licensed under the MIT License - see the `LICENSE` file for details.
+MIT. See `LICENSE`.
 
 ## Disclaimer
 
-This tool is provided "as is" without warranty of any kind. The authors or contributors are not responsible for any misuse or damage caused by this tool. Use it responsibly and ethically.
+Use only in authorized, isolated environments for defensive testing and research.

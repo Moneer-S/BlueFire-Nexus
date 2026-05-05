@@ -1,0 +1,36 @@
+id: fin7_initial_access_to_c2
+name: FIN7 Initial Access to C2
+objective: Simulate a FIN7-like chain from initial access through command-and-control.
+attack_techniques:
+  - T1566
+  - T1059
+  - T1071.001
+fail_fast: true
+steps:
+  - id: step_01
+    name: Initial Access
+    module: initial_access
+    params:
+      vector: spearphishing_attachment
+      target: finance-user
+  - id: step_02
+    name: Loader Execution
+    module: execution
+    params:
+      command: "powershell -nop -w hidden -enc UwB0AGEAcgB0AC0AUAByAG8AYwBlAHMAcwA="
+      network_touch: false
+  - id: step_03
+    name: C2 Beacon
+    module: command_control
+    params:
+      channel: http
+      c2_url: "https://example.lab/c2"
+      network_touch: false
+expected_detections:
+  - Suspicious office process spawning script interpreter
+  - Encoded command line execution
+  - Beacon-like outbound application traffic
+blue_team_guidance:
+  - Correlate parent-child process chains from office apps to script engines.
+  - Alert on high-entropy or encoded command lines.
+  - Baseline and detect unusual periodic outbound connections.

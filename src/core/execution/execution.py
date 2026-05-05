@@ -3,23 +3,16 @@ Execution Module
 Handles command and payload execution.
 """
 
-import subprocess
-import platform
-import os
-import base64
-import tempfile
 import logging
-import re # For caret obfuscation
-import stat # For chmod
-import uuid
-from typing import Dict, Any, List, Tuple, Optional
+import platform
 from datetime import datetime
-import shlex
+from typing import Any, Dict
+
+from .linux_execution import LinuxExecution
+from .macos_execution import MacOSExecution
 
 # Import OS-specific handlers
 from .windows_execution import WindowsExecution
-from .linux_execution import LinuxExecution
-from .macos_execution import MacOSExecution
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +47,7 @@ class Execution:
 
     def update_config(self, config: Dict[str, Any]):
         """Update general config and delegate to OS handler config."""
-        exec_config = config.get("execution", {})
+        exec_config = config.get("modules", {}).get("execution", {})
         self.config.update(exec_config)
         if self.os_handler and hasattr(self.os_handler, 'update_config'):
              self.os_handler.update_config(exec_config) # Pass relevant part
@@ -108,8 +101,9 @@ class Execution:
         elif errors: # No successes, and errors occurred
              overall_status = "failure"
         else: # No results and no errors likely means no valid request
-            overall_status = "failure" 
-            if not errors: errors.append("No operation performed.") # Add error if none existed
+            overall_status = "failure"
+            if not errors:
+                errors.append("No operation performed.")
 
         return {
             "status": overall_status,
@@ -121,16 +115,16 @@ class Execution:
     # Convenience method for direct command execution (used by other modules)
     def execute_command(self, command: str, capture_output: bool = True, method: str = "direct") -> Dict[str, Any]:
         """Provides a simple interface for running a command via the OS handler."""
-        self.logger.debug(f"Executing direct command request: '{command}'")
+        logger.debug(f"Executing direct command request: '{command}'")
         if not self.os_handler:
             return {"status": "failure", "reason": f"Execution handler not available for OS: {self.os_type}"}
-        
+
         command_details = {
              "cmd": command,
              "method": method,
              "capture_output": capture_output
         }
-        
+
         try:
              # Directly call the OS handler's command execution method if possible
              if hasattr(self.os_handler, '_handle_command_execution'):
@@ -154,10 +148,10 @@ class Execution:
 # Example Usage (for testing)
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
+
     execution_module = Execution()
     # execution_module.update_config({}) # Load actual config here if needed
-    
+
     print("\n--- Testing Command Execution (Direct) ---")
     cmd_request_direct = {"execute": {"command": {"cmd": "whoami"}}}
     cmd_result_direct = execution_module.execute(cmd_request_direct)
@@ -179,7 +173,7 @@ if __name__ == '__main__':
         print(json.dumps(cmd_result_bash, indent=2))
     else:
         print("Skipping Bash test (is Windows)")
-        
+
     print("\n--- Testing Command Execution (Failure) ---")
     cmd_request_fail = {"execute": {"command": {"cmd": "nonexistent_command_12345", "method": "direct"}}}
     cmd_result_fail = execution_module.execute(cmd_request_fail)
@@ -208,4 +202,4 @@ if __name__ == '__main__':
         cmd_result_concat = execution_module.execute(cmd_request_concat)
         print(json.dumps(cmd_result_concat, indent=2))
     else:
-        print("Skipping String Concat Bash test (is Windows)") 
+        print("Skipping String Concat Bash test (is Windows)")

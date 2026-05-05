@@ -1,6 +1,7 @@
 # src/legal_safeguards.py
 import os
 
+
 def secure_wipe(path):
     """
     Overwrites the file with random data, then deletes it.

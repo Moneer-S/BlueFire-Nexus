@@ -1,6 +1,7 @@
-from datetime import datetime
-from typing import Dict, Any
 import random
+from datetime import datetime
+from typing import Any, Dict
+
 
 class AntiDetection:
     def _handle_process_evasion(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -12,16 +13,16 @@ class AntiDetection:
                 "timestamp": datetime.now().isoformat(),
                 "details": {}
             }
-            
+
             # Get configuration
             evasion_type = data.get("type", "injection")
             target_process = data.get("process", "explorer.exe")
             stealth_level = data.get("stealth", "high")
-            
+
             result["details"]["evasion_type"] = evasion_type
             result["details"]["target_process"] = target_process
             result["details"]["stealth_level"] = stealth_level
-            
+
             # Evasion implementation based on type
             if evasion_type == "injection":
                 # Process injection
@@ -32,7 +33,7 @@ class AntiDetection:
                     "cleanup": "Thread removal"
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
-                
+
             elif evasion_type == "hollowing":
                 # Process hollowing
                 result["details"]["implementation"] = "Process hollowing"
@@ -42,7 +43,7 @@ class AntiDetection:
                     "cleanup": "Section cleanup"
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
-                
+
             elif evasion_type == "masquerading":
                 # Process masquerading
                 result["details"]["implementation"] = "Process masquerading"
@@ -52,7 +53,7 @@ class AntiDetection:
                     "cleanup": "None required"
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
-            
+
             # Process details
             result["details"]["process"] = {
                 "name": target_process,
@@ -61,7 +62,7 @@ class AntiDetection:
                 "integrity": "High",
                 "privileges": ["SeDebugPrivilege", "SeTcbPrivilege"]
             }
-            
+
             # Stealth details
             result["details"]["stealth"] = {
                 "level": stealth_level,
@@ -73,16 +74,16 @@ class AntiDetection:
                 ],
                 "detection_rate": f"{random.randint(5, 20)}%"
             }
-            
+
             # Add MITRE ATT&CK information
             result["details"]["mitre_technique_id"] = "T1055"
             result["details"]["mitre_technique_name"] = "Process Injection"
-            
+
             return result
         except Exception as e:
             self._log_error(f"Error in process evasion: {str(e)}")
             return {"status": "error", "message": str(e)}
-            
+
     def _handle_memory_evasion(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle memory-based anti-detection"""
         try:
@@ -92,16 +93,16 @@ class AntiDetection:
                 "timestamp": datetime.now().isoformat(),
                 "details": {}
             }
-            
+
             # Get configuration
             evasion_type = data.get("type", "allocation")
             protection = data.get("protection", "RWX")
             encryption = data.get("encryption", True)
-            
+
             result["details"]["evasion_type"] = evasion_type
             result["details"]["protection"] = protection
             result["details"]["encryption"] = encryption
-            
+
             # Evasion implementation based on type
             if evasion_type == "allocation":
                 # Memory allocation
@@ -112,7 +113,7 @@ class AntiDetection:
                     "alignment": "Page-aligned"
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
-                
+
             elif evasion_type == "injection":
                 # Memory injection
                 result["details"]["implementation"] = "Memory injection"
@@ -122,7 +123,7 @@ class AntiDetection:
                     "execution": "Thread execution"
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
-                
+
             elif evasion_type == "hiding":
                 # Memory hiding
                 result["details"]["implementation"] = "Memory hiding"
@@ -132,7 +133,7 @@ class AntiDetection:
                     "visibility": "Hidden"
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
-            
+
             # Memory details
             result["details"]["memory"] = {
                 "size": f"{random.randint(100, 1000)} KB",
@@ -141,7 +142,7 @@ class AntiDetection:
                 "state": "Committed",
                 "protection": protection
             }
-            
+
             # Encryption details if enabled
             if encryption:
                 result["details"]["encryption"] = {
@@ -150,12 +151,12 @@ class AntiDetection:
                     "mode": "CBC",
                     "key_rotation": "Per session"
                 }
-            
+
             # Add MITRE ATT&CK information
             result["details"]["mitre_technique_id"] = "T1055.012"
             result["details"]["mitre_technique_name"] = "Process Injection: Process Hollowing"
-            
+
             return result
         except Exception as e:
             self._log_error(f"Error in memory evasion: {str(e)}")
-            return {"status": "error", "message": str(e)} 
+            return {"status": "error", "message": str(e)}

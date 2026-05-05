@@ -1,0 +1,50 @@
+id: legacy_flagship_blended
+name: Legacy Capability Flagship Blend
+objective: Showcase actor, protocol, and stealth legacy packs in one safety-gated research scenario.
+attack_coverage:
+  - T1589
+  - T1566
+  - T1071.004
+  - T1070
+fail_fast: false
+steps:
+  - id: summary
+    name: Show effective legacy activation state
+    module: legacy_capability_summary
+    params: {}
+  - id: actor
+    name: Prepare APT29 legacy actor profile
+    module: legacy_actor_profile
+    params:
+      actor: apt29
+      tactics:
+        - credential_access
+        - command_and_control
+  - id: actor-research
+    name: Prepare APT29 phishing research
+    module: legacy_apt29_research
+    params:
+      technique: phishing
+      target: finance-user
+  - id: protocol
+    name: Prepare DNS tunneling protocol research
+    module: legacy_protocol_research
+    params:
+      protocol: dns_tunneling
+      domain: exfil.example.lab
+      cadence_seconds: 20
+  - id: stealth
+    name: Prepare anti-forensic stealth research
+    module: legacy_stealth_research
+    params:
+      capability: anti_forensic
+      target: current_process
+expected_detections:
+  - Legacy actor activation summary is captured in telemetry and reports
+  - APT29 research hints produce ATT&CK-aligned detection drafts
+  - DNS tunneling research emits network-focused detection metadata
+  - Anti-forensic research surfaces safety-gated stealth indicators
+blue_team_guidance:
+  - Review activation summaries to confirm whether master or granular legacy toggles were used.
+  - Validate detection drafts for phishing, DNS tunneling, and stealth cleanup behaviors.
+  - Keep emulate mode disabled outside tightly scoped lab environments.

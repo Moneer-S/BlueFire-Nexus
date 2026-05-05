@@ -3,20 +3,14 @@ Consolidated Initial Access Module
 Handles initial access for all APT implementations
 """
 
-import os
-import sys
-import time
 import random
-import string
-import hashlib
-import base64
-from typing import Dict, List, Any, Optional
 from datetime import datetime
-from pathlib import Path
+from typing import Any, Dict
+
 
 class InitialAccessManager:
     """Handles initial access for all APT implementations"""
-    
+
     def __init__(self):
         # Initialize initial access techniques
         self.techniques = {
@@ -72,7 +66,7 @@ class InitialAccessManager:
                 }
             }
         }
-        
+
         # Initialize initial access tools
         self.tools = {
             "phishing": {
@@ -91,7 +85,7 @@ class InitialAccessManager:
                 "trust_handler": self._handle_trust
             }
         }
-        
+
         # Initialize configuration
         self.config = {
             "phishing": {
@@ -146,7 +140,7 @@ class InitialAccessManager:
                 }
             }
         }
-        
+
     def access(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Gain initial access"""
         try:
@@ -156,79 +150,79 @@ class InitialAccessManager:
                 "timestamp": datetime.now().isoformat(),
                 "initial_access": {}
             }
-            
+
             # Apply phishing access
             phishing_result = self._apply_phishing(data)
             result["initial_access"]["phishing"] = phishing_result
-            
+
             # Apply exploit access
             exploit_result = self._apply_exploit(phishing_result)
             result["initial_access"]["exploit"] = exploit_result
-            
+
             # Apply supply access
             supply_result = self._apply_supply(exploit_result)
             result["initial_access"]["supply"] = supply_result
-            
+
             return result
-            
+
         except Exception as e:
             self._log_error(f"Error gaining initial access: {str(e)}")
             raise
-            
+
     def _apply_phishing(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply phishing access techniques"""
         result = {}
-        
+
         # Email
         if "email" in data:
             result["email"] = self.tools["phishing"]["email_handler"](data["email"])
-            
+
         # Web
         if "web" in data:
             result["web"] = self.tools["phishing"]["web_handler"](data["web"])
-            
+
         # Social
         if "social" in data:
             result["social"] = self.tools["phishing"]["social_handler"](data["social"])
-            
+
         return result
-        
+
     def _apply_exploit(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply exploit access techniques"""
         result = {}
-        
+
         # Remote
         if "remote" in data:
             result["remote"] = self.tools["exploit"]["remote_handler"](data["remote"])
-            
+
         # Local
         if "local" in data:
             result["local"] = self.tools["exploit"]["local_handler"](data["local"])
-            
+
         # Zero day
         if "zero_day" in data:
             result["zero_day"] = self.tools["exploit"]["zero_day_handler"](data["zero_day"])
-            
+
         return result
-        
+
     def _apply_supply(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply supply access techniques"""
         result = {}
-        
+
         # Chain
         if "chain" in data:
             result["chain"] = self.tools["supply"]["chain_handler"](data["chain"])
-            
+
         # Compromise
         if "compromise" in data:
             result["compromise"] = self.tools["supply"]["compromise_handler"](data["compromise"])
-            
+
         # Trust
         if "trust" in data:
             result["trust"] = self.tools["supply"]["trust_handler"](data["trust"])
-            
+
         return result
-        
+
     def _handle_email(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle email phishing"""
         try:
@@ -238,18 +232,18 @@ class InitialAccessManager:
                 "timestamp": datetime.now().isoformat(),
                 "details": {}
             }
-            
+
             # Get configuration
             email_type = data.get("type", "spear")
             target_count = data.get("target_count", 10)
             attachment = data.get("attachment", False)
             link = data.get("link", True)
-            
+
             result["details"]["email_type"] = email_type
             result["details"]["target_count"] = target_count
             result["details"]["attachment"] = attachment
             result["details"]["link"] = link
-            
+
             # Email campaign details
             if email_type == "spear":
                 # Spear phishing (targeted)
@@ -257,7 +251,7 @@ class InitialAccessManager:
                 result["details"]["targeting"] = "High-value individuals based on role and access"
                 result["details"]["personalization"] = "High - customized per recipient"
                 result["details"]["research_depth"] = "Deep - social media, professional profiles, recent activities"
-                
+
                 # Generate fake targets
                 targets = []
                 roles = ["CEO", "CFO", "CTO", "CISO", "System Administrator", "HR Director", "Financial Controller"]
@@ -273,14 +267,14 @@ class InitialAccessManager:
                         ][i % 4]
                     })
                 result["details"]["targets"] = targets
-                
+
             elif email_type == "whaling":
                 # Whaling (executive targeting)
                 result["details"]["campaign_type"] = "Executive whaling campaign"
                 result["details"]["targeting"] = "C-suite executives and board members"
                 result["details"]["personalization"] = "Very high - deep research on executive's communications style"
                 result["details"]["research_depth"] = "Extensive - public appearances, speeches, writing style analysis"
-                
+
                 # Generate fake targets
                 targets = []
                 roles = ["CEO", "CFO", "COO", "CTO", "CISO", "Board Member", "President"]
@@ -296,19 +290,19 @@ class InitialAccessManager:
                         ][i % 4]
                     })
                 result["details"]["targets"] = targets
-                
+
             elif email_type == "mass":
                 # Mass phishing
                 result["details"]["campaign_type"] = "Broad mass phishing"
                 result["details"]["targeting"] = "Wide corporate audience"
                 result["details"]["personalization"] = "Low - generic content with company name"
                 result["details"]["research_depth"] = "Basic - company structure and email format"
-                
+
                 # Generate fake targets
                 result["details"]["target_count"] = target_count
                 result["details"]["email_pattern"] = "first.last@target-organization.com"
                 result["details"]["departments"] = ["IT", "Finance", "HR", "Operations", "Sales", "Marketing"]
-                
+
             # Email content
             subject_lines = {
                 "spear": [
@@ -330,7 +324,7 @@ class InitialAccessManager:
                     "Urgent: Update your credentials immediately"
                 ]
             }
-            
+
             result["details"]["email_content"] = {
                 "from_display": "IT Security Team" if email_type == "mass" else "Mark Johnson, IT Security" if email_type == "spear" else "David Williams, CFO",
                 "from_email": "security@legitimate-looking-domain.com" if email_type == "mass" else "mark.johnson@similar-company-domain.com" if email_type == "spear" else "d.williams@executive-domain.com",
@@ -339,7 +333,7 @@ class InitialAccessManager:
                 "urgency_indicators": ["immediate action", "urgent", "deadline", "important", "required"],
                 "pretext": "Security update required" if email_type == "mass" else "Document approval needed" if email_type == "spear" else "Financial approval required"
             }
-            
+
             # Email delivery
             result["details"]["delivery"] = {
                 "infrastructure": "Compromised third-party email server",
@@ -347,7 +341,7 @@ class InitialAccessManager:
                 "timing": "Tuesday morning, business hours",
                 "spoofing_technique": "Display name spoofing" if email_type == "mass" else "Domain lookalike" if email_type == "spear" else "Modified mail headers"
             }
-            
+
             # Attachment details if enabled
             if attachment:
                 attachment_types = {
@@ -367,11 +361,11 @@ class InitialAccessManager:
                         {"name": "HR_Form.doc", "type": "Word Macro", "payload": "VBA macro downloader"}
                     ]
                 }
-                
+
                 result["details"]["attachment"] = random.choice(attachment_types[email_type])
                 result["details"]["attachment"]["obfuscation"] = "Password protected archive" if email_type != "mass" else "Double extension (.pdf.exe)"
                 result["details"]["attachment"]["detection_bypass"] = "Custom packer" if email_type == "whaling" else "Encrypted payload sections" if email_type == "spear" else "Simple XOR encoding"
-            
+
             # Link details if enabled
             if link:
                 link_types = {
@@ -391,16 +385,16 @@ class InitialAccessManager:
                         {"url": "https://employee-portal-access.com", "type": "Credential Harvester", "disguise": "Employee portal"}
                     ]
                 }
-                
+
                 result["details"]["link"] = random.choice(link_types[email_type])
                 result["details"]["link"]["obfuscation"] = "URL shortener" if email_type == "mass" else "Typosquatting domain" if email_type == "spear" else "Subdomain of legitimate site"
                 result["details"]["link"]["hosting"] = "Compromised WordPress site" if email_type == "mass" else "Custom phishing infrastructure" if email_type == "whaling" else "Cloud-hosted landing page"
-            
+
             # Success metrics
             open_rate = 0.6 if email_type == "spear" else 0.7 if email_type == "whaling" else 0.3
             click_rate = 0.4 if email_type == "spear" else 0.5 if email_type == "whaling" else 0.1
             compromise_rate = 0.3 if email_type == "spear" else 0.4 if email_type == "whaling" else 0.05
-            
+
             result["details"]["estimated_success"] = {
                 "emails_sent": target_count,
                 "open_rate": open_rate,
@@ -408,60 +402,60 @@ class InitialAccessManager:
                 "compromise_rate": compromise_rate,
                 "estimated_compromises": int(target_count * compromise_rate)
             }
-            
+
             # Add MITRE ATT&CK information
             result["details"]["mitre_technique_id"] = "T1566.001"
             result["details"]["mitre_technique_name"] = "Phishing: Spearphishing Attachment" if attachment else "Phishing: Spearphishing Link"
-            
+
             return result
         except Exception as e:
             self._log_error(f"Error in email phishing: {str(e)}")
             return {"status": "error", "message": str(e)}
-        
+
     def _handle_web(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle web phishing"""
         # Implement web phishing
         return {}
-        
+
     def _handle_social(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle social phishing"""
         # Implement social phishing
         return {}
-        
+
     def _handle_remote(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle remote exploitation"""
         # Implement remote exploitation
         return {}
-        
+
     def _handle_local(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle local exploitation"""
         # Implement local exploitation
         return {}
-        
+
     def _handle_zero_day(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle zero-day exploitation"""
         # Implement zero-day exploitation
         return {}
-        
+
     def _handle_chain(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle supply chain compromise"""
         # Implement supply chain compromise
         return {}
-        
+
     def _handle_compromise(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle software compromise"""
         # Implement software compromise
         return {}
-        
+
     def _handle_trust(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle trust relationship compromise"""
         # Implement trust relationship compromise
         return {}
-        
+
     def _log_error(self, message: str) -> None:
         """Log error message"""
         print(f"ERROR: {message}")
-        # Implement proper logging mechanism 
+        # Implement proper logging mechanism
 
     def _handle_phishing(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle phishing-based initial access"""
@@ -472,16 +466,16 @@ class InitialAccessManager:
                 "timestamp": datetime.now().isoformat(),
                 "details": {}
             }
-            
+
             # Get configuration
             phishing_type = data.get("type", "spear")
             target_type = data.get("target", "user")
             delivery_method = data.get("delivery", "email")
-            
+
             result["details"]["phishing_type"] = phishing_type
             result["details"]["target_type"] = target_type
             result["details"]["delivery_method"] = delivery_method
-            
+
             # Phishing implementation based on type
             if phishing_type == "spear":
                 # Spear phishing
@@ -492,7 +486,7 @@ class InitialAccessManager:
                     "personalization": "Custom content per target"
                 }
                 result["details"]["success_rate"] = f"{random.randint(30, 50)}%"
-                
+
             elif phishing_type == "whaling":
                 # Whaling
                 result["details"]["implementation"] = "Executive-level phishing"
@@ -502,7 +496,7 @@ class InitialAccessManager:
                     "personalization": "High-value content"
                 }
                 result["details"]["success_rate"] = f"{random.randint(20, 40)}%"
-                
+
             elif phishing_type == "mass":
                 # Mass phishing
                 result["details"]["implementation"] = "Broad phishing campaign"
@@ -512,7 +506,7 @@ class InitialAccessManager:
                     "personalization": "Template-based"
                 }
                 result["details"]["success_rate"] = f"{random.randint(1, 5)}%"
-            
+
             # Delivery method implementation
             if delivery_method == "email":
                 result["details"]["email"] = {
@@ -522,21 +516,21 @@ class InitialAccessManager:
                     "attachments": data.get("attachments", []),
                     "links": data.get("links", [])
                 }
-                
+
             elif delivery_method == "smishing":
                 result["details"]["sms"] = {
                     "message": data.get("message", "Your account needs verification"),
                     "sender": data.get("sender", "SERVICE"),
                     "links": data.get("links", [])
                 }
-                
+
             elif delivery_method == "vishing":
                 result["details"]["voice"] = {
                     "script": data.get("script", "Account verification"),
                     "caller_id": data.get("caller_id", "Unknown"),
                     "duration": data.get("duration", "2-5 minutes")
                 }
-            
+
             # Campaign details
             result["details"]["campaign"] = {
                 "start_date": datetime.now().isoformat(),
@@ -545,16 +539,16 @@ class InitialAccessManager:
                 "success_count": random.randint(1, 50),
                 "detection_rate": f"{random.randint(5, 20)}%"
             }
-            
+
             # Add MITRE ATT&CK information
             result["details"]["mitre_technique_id"] = "T1566"
             result["details"]["mitre_technique_name"] = "Phishing"
-            
+
             return result
         except Exception as e:
             self._log_error(f"Error in phishing: {str(e)}")
             return {"status": "error", "message": str(e)}
-            
+
     def _handle_exploitation(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle exploitation-based initial access"""
         try:
@@ -564,16 +558,16 @@ class InitialAccessManager:
                 "timestamp": datetime.now().isoformat(),
                 "details": {}
             }
-            
+
             # Get configuration
             exploit_type = data.get("type", "remote")
             target_type = data.get("target", "service")
             payload_type = data.get("payload", "shellcode")
-            
+
             result["details"]["exploit_type"] = exploit_type
             result["details"]["target_type"] = target_type
             result["details"]["payload_type"] = payload_type
-            
+
             # Exploitation implementation based on type
             if exploit_type == "remote":
                 # Remote exploitation
@@ -584,7 +578,7 @@ class InitialAccessManager:
                     "vulnerability": "Remote code execution"
                 }
                 result["details"]["success_rate"] = f"{random.randint(40, 60)}%"
-                
+
             elif exploit_type == "local":
                 # Local exploitation
                 result["details"]["implementation"] = "Local privilege escalation"
@@ -594,7 +588,7 @@ class InitialAccessManager:
                     "vulnerability": "Privilege escalation"
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
-                
+
             elif exploit_type == "client":
                 # Client-side exploitation
                 result["details"]["implementation"] = "Client-side attack"
@@ -604,7 +598,7 @@ class InitialAccessManager:
                     "vulnerability": "Memory corruption"
                 }
                 result["details"]["success_rate"] = f"{random.randint(30, 50)}%"
-            
+
             # Payload implementation
             if payload_type == "shellcode":
                 result["details"]["payload"] = {
@@ -613,7 +607,7 @@ class InitialAccessManager:
                     "encoding": "Base64",
                     "execution": "Memory injection"
                 }
-                
+
             elif payload_type == "meterpreter":
                 result["details"]["payload"] = {
                     "type": "Meterpreter",
@@ -621,7 +615,7 @@ class InitialAccessManager:
                     "staging": True,
                     "features": ["Process migration", "Keylogging", "Screen capture"]
                 }
-                
+
             elif payload_type == "custom":
                 result["details"]["payload"] = {
                     "type": "Custom",
@@ -629,7 +623,7 @@ class InitialAccessManager:
                     "persistence": data.get("persistence", True),
                     "evasion": data.get("evasion", True)
                 }
-            
+
             # Exploitation details
             result["details"]["exploitation"] = {
                 "target": data.get("target", "example.com"),
@@ -638,12 +632,12 @@ class InitialAccessManager:
                 "vector": data.get("vector", "network"),
                 "detection": f"{random.randint(10, 30)}%"
             }
-            
+
             # Add MITRE ATT&CK information
             result["details"]["mitre_technique_id"] = "T1210"
             result["details"]["mitre_technique_name"] = "Exploitation of Remote Services"
-            
+
             return result
         except Exception as e:
             self._log_error(f"Error in exploitation: {str(e)}")
-            return {"status": "error", "message": str(e)} 
+            return {"status": "error", "message": str(e)}

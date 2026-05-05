@@ -3,20 +3,14 @@ Consolidated Resource Development Module
 Handles resource development for all APT implementations
 """
 
-import os
-import sys
-import time
 import random
-import string
-import hashlib
-import base64
-from typing import Dict, List, Any, Optional
 from datetime import datetime
-from pathlib import Path
+from typing import Any, Dict
+
 
 class ResourceDevelopmentManager:
     """Handles resource development for all APT implementations"""
-    
+
     def __init__(self):
         # Initialize resource development techniques
         self.techniques = {
@@ -72,7 +66,7 @@ class ResourceDevelopmentManager:
                 }
             }
         }
-        
+
         # Initialize resource development tools
         self.tools = {
             "infrastructure": {
@@ -91,7 +85,7 @@ class ResourceDevelopmentManager:
                 "manage_handler": self._handle_manage
             }
         }
-        
+
         # Initialize configuration
         self.config = {
             "infrastructure": {
@@ -146,7 +140,7 @@ class ResourceDevelopmentManager:
                 }
             }
         }
-        
+
     def develop(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Develop resources"""
         try:
@@ -156,114 +150,114 @@ class ResourceDevelopmentManager:
                 "timestamp": datetime.now().isoformat(),
                 "resource_development": {}
             }
-            
+
             # Apply infrastructure development
             infrastructure_result = self._apply_infrastructure(data)
             result["resource_development"]["infrastructure"] = infrastructure_result
-            
+
             # Apply capability development
             capability_result = self._apply_capability(infrastructure_result)
             result["resource_development"]["capability"] = capability_result
-            
+
             # Apply personnel development
             personnel_result = self._apply_personnel(capability_result)
             result["resource_development"]["personnel"] = personnel_result
-            
+
             return result
-            
+
         except Exception as e:
             self._log_error(f"Error developing resources: {str(e)}")
             raise
-            
+
     def _apply_infrastructure(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply infrastructure development techniques"""
         result = {}
-        
+
         # Acquire
         if "acquire" in data:
             result["acquire"] = self.tools["infrastructure"]["acquire_handler"](data["acquire"])
-            
+
         # Build
         if "build" in data:
             result["build"] = self.tools["infrastructure"]["build_handler"](data["build"])
-            
+
         # Test
         if "test" in data:
             result["test"] = self.tools["infrastructure"]["test_handler"](data["test"])
-            
+
         return result
-        
+
     def _apply_capability(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply capability development techniques"""
         result = {}
-        
+
         # Develop
         if "develop" in data:
             result["develop"] = self.tools["capability"]["develop_handler"](data["develop"])
-            
+
         # Acquire
         if "acquire" in data:
             result["acquire"] = self.tools["capability"]["acquire_handler"](data["acquire"])
-            
+
         # Test
         if "test" in data:
             result["test"] = self.tools["capability"]["test_handler"](data["test"])
-            
+
         return result
-        
+
     def _apply_personnel(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply personnel development techniques"""
         result = {}
-        
+
         # Recruit
         if "recruit" in data:
             result["recruit"] = self.tools["personnel"]["recruit_handler"](data["recruit"])
-            
+
         # Train
         if "train" in data:
             result["train"] = self.tools["personnel"]["train_handler"](data["train"])
-            
+
         # Manage
         if "manage" in data:
             result["manage"] = self.tools["personnel"]["manage_handler"](data["manage"])
-            
+
         return result
-        
+
     def _handle_acquire(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle infrastructure acquisition"""
         # Implement infrastructure acquisition
         return {}
-        
+
     def _handle_build(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle infrastructure building"""
         # Implement infrastructure building
         return {}
-        
+
     def _handle_test(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle infrastructure testing"""
         # Implement infrastructure testing
         return {}
-        
+
     def _handle_develop(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle capability development"""
         # Implement capability development
         return {}
-        
+
     def _handle_recruit(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle personnel recruitment"""
         # Implement personnel recruitment
         return {}
-        
+
     def _handle_train(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle personnel training"""
         # Implement personnel training
         return {}
-        
+
     def _handle_manage(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle personnel management"""
         # Implement personnel management
         return {}
-        
+
     def _handle_infrastructure_development(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle infrastructure-based development"""
         try:
@@ -273,16 +267,16 @@ class ResourceDevelopmentManager:
                 "timestamp": datetime.now().isoformat(),
                 "details": {}
             }
-            
+
             # Get configuration
             infrastructure_type = data.get("type", "hosting")
             stealth = data.get("stealth", "high")
             persistence = data.get("persistence", True)
-            
+
             result["details"]["infrastructure_type"] = infrastructure_type
             result["details"]["stealth"] = stealth
             result["details"]["persistence"] = persistence
-            
+
             # Infrastructure development implementation based on type
             if infrastructure_type == "hosting":
                 # Infrastructure hosting
@@ -293,7 +287,7 @@ class ResourceDevelopmentManager:
                     "indicators": "Hosting patterns"
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
-                
+
             elif infrastructure_type == "network":
                 # Infrastructure network
                 result["details"]["implementation"] = "Infrastructure network"
@@ -303,7 +297,7 @@ class ResourceDevelopmentManager:
                     "indicators": "Network patterns"
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
-                
+
             elif infrastructure_type == "storage":
                 # Infrastructure storage
                 result["details"]["implementation"] = "Infrastructure storage"
@@ -313,7 +307,7 @@ class ResourceDevelopmentManager:
                     "indicators": "Storage patterns"
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
-            
+
             # Infrastructure details
             result["details"]["infrastructure"] = {
                 "stealth": stealth,
@@ -325,7 +319,7 @@ class ResourceDevelopmentManager:
                 },
                 "detection_rate": f"{random.randint(5, 20)}%"
             }
-            
+
             # Stealth details
             if stealth == "high":
                 result["details"]["techniques"] = [
@@ -341,16 +335,16 @@ class ResourceDevelopmentManager:
                     "Basic detection",
                     "Basic protection"
                 ]
-            
+
             # Add MITRE ATT&CK information
             result["details"]["mitre_technique_id"] = "T1583"
             result["details"]["mitre_technique_name"] = "Acquire Infrastructure"
-            
+
             return result
         except Exception as e:
             self._log_error(f"Error in infrastructure development: {str(e)}")
             return {"status": "error", "message": str(e)}
-            
+
     def _handle_capability_development(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle capability-based development"""
         try:
@@ -360,16 +354,16 @@ class ResourceDevelopmentManager:
                 "timestamp": datetime.now().isoformat(),
                 "details": {}
             }
-            
+
             # Get configuration
             capability_type = data.get("type", "malware")
             stealth = data.get("stealth", "high")
             encryption = data.get("encryption", True)
-            
+
             result["details"]["capability_type"] = capability_type
             result["details"]["stealth"] = stealth
             result["details"]["encryption"] = encryption
-            
+
             # Capability development implementation based on type
             if capability_type == "malware":
                 # Malware capability
@@ -380,7 +374,7 @@ class ResourceDevelopmentManager:
                     "indicators": "Malware patterns"
                 }
                 result["details"]["success_rate"] = f"{random.randint(70, 90)}%"
-                
+
             elif capability_type == "tool":
                 # Tool capability
                 result["details"]["implementation"] = "Tool capability"
@@ -390,7 +384,7 @@ class ResourceDevelopmentManager:
                     "indicators": "Tool patterns"
                 }
                 result["details"]["success_rate"] = f"{random.randint(60, 80)}%"
-                
+
             elif capability_type == "code":
                 # Code capability
                 result["details"]["implementation"] = "Code capability"
@@ -400,7 +394,7 @@ class ResourceDevelopmentManager:
                     "indicators": "Code patterns"
                 }
                 result["details"]["success_rate"] = f"{random.randint(50, 70)}%"
-            
+
             # Capability details
             result["details"]["capability"] = {
                 "stealth": stealth,
@@ -412,7 +406,7 @@ class ResourceDevelopmentManager:
                 },
                 "detection_rate": f"{random.randint(5, 20)}%"
             }
-            
+
             # Stealth details
             if stealth == "high":
                 result["details"]["techniques"] = [
@@ -428,17 +422,17 @@ class ResourceDevelopmentManager:
                     "Basic detection",
                     "Basic protection"
                 ]
-            
+
             # Add MITRE ATT&CK information
             result["details"]["mitre_technique_id"] = "T1587"
             result["details"]["mitre_technique_name"] = "Develop Capabilities"
-            
+
             return result
         except Exception as e:
             self._log_error(f"Error in capability development: {str(e)}")
             return {"status": "error", "message": str(e)}
-        
+
     def _log_error(self, message: str) -> None:
         """Log error message"""
         print(f"ERROR: {message}")
-        # Implement proper logging mechanism 
+        # Implement proper logging mechanism

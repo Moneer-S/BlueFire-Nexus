@@ -1,14 +1,13 @@
-import subprocess
-import platform
-import os
 import base64
-import tempfile
 import logging
-import stat # For chmod
-import uuid
+import os
 import shlex
-from typing import Dict, Any, List, Tuple, Optional
+import stat  # For chmod
+import subprocess
+import tempfile
+import uuid
 from datetime import datetime
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -80,17 +79,19 @@ class LinuxExecution:
                                      shell=use_actual_shell_param # Typically False when passing list
                                      )
 
-            self.logger.debug(f"Command finished. RC: {process.returncode}")
+            logger.debug(f"Command finished. RC: {process.returncode}")
             stdout = process.stdout if process.stdout else ""
             stderr = process.stderr if process.stderr else ""
             return process.returncode, stdout, stderr
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             cmd_executed = cmd_list_or_str[0] if isinstance(cmd_list_or_str, list) else command.split()[0]
             logger.error(f"Command or shell not found: {cmd_executed}")
-            raise FileNotFoundError(f"Required command/shell '{cmd_executed}' not found.")
-        except subprocess.TimeoutExpired:
+            raise FileNotFoundError(
+                f"Required command/shell '{cmd_executed}' not found."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
             logger.error(f"Command timed out after {timeout}s: {command}")
-            raise TimeoutError(f"Command '{command}' timed out.")
+            raise TimeoutError(f"Command '{command}' timed out.") from exc
         except Exception as e:
             logger.error(f"Unexpected error running command '{command}': {e}", exc_info=True)
             raise
@@ -204,7 +205,7 @@ class LinuxExecution:
                 if not os.path.isdir(temp_dir) or not os.access(temp_dir, os.W_OK):
                      temp_dir = tempfile.gettempdir()
                      logger.warning(f"/tmp not available, using default temp dir: {temp_dir}")
-                
+
                 temp_file_name = f"bf_{uuid.uuid4().hex}{file_extension}"
                 temp_file_path = os.path.join(temp_dir, temp_file_name)
 
@@ -264,4 +265,4 @@ class LinuxExecution:
             "reason": reason,
             "technique": f"payload_execution_{method}",
             "details": result_details
-        } 
+        }

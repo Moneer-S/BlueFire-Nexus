@@ -1,17 +1,15 @@
-import os
-import platform
-import logging
-from typing import Dict, Any, Optional
-from datetime import datetime
-import stat
-
 # Windows-specific imports
 import ctypes
+import logging
+import os
 from ctypes import wintypes
-import win32con
-import win32api
-import win32process
+from datetime import datetime
+from typing import Any, Dict
+
 import pywintypes
+import win32api
+import win32con
+import win32process
 
 logger = logging.getLogger(__name__)
 
@@ -232,4 +230,4 @@ class WindowsDefenseEvasion:
 
     # Add other Windows-specific methods here
 
-    # Add other Windows-specific methods here 
+    # Add other Windows-specific methods here

@@ -4,21 +4,29 @@
 -r requirements.txt
 
 # Testing
-pytest>=7.4.0
-pytest-cov>=4.1.0
+pytest>=8.2.0
+pytest-cov>=5.0.0
 
 # Formatting & Linting
-black>=23.11.0
-flake8>=6.1.0
-pylint>=3.0.0
+black>=24.4.2
+ruff>=0.5.0
 
 # Type Checking
-mypy>=1.7.0
+mypy>=1.10.0
+
+# Security
+bandit[toml]>=1.7.9
+pip-audit>=2.7.3
+detect-secrets>=1.5.0
+# `cyclonedx-bom` ships the `cyclonedx-py` CLI used by the analysis workflow
+# to generate the SBOM. The transitively-installed `cyclonedx-python-lib` is
+# the library only and does not provide the CLI.
+cyclonedx-bom>=4.6.0
+
+# Automation
+pre-commit>=3.7.1
 
 # Documentation
-sphinx>=7.2.0
-sphinx-rtd-theme>=1.3.0
-sphinx-autodoc-typehints>=1.25.0
-
-# Optional: Add any other dev-specific tools here
-# pre-commit>=3.0.0  # Example: if using pre-commit hooks 
+sphinx>=7.3.0
+sphinx-rtd-theme>=2.0.0
+sphinx-autodoc-typehints>=2.2.0

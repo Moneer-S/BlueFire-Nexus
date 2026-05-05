@@ -3,21 +3,17 @@ Base APT Implementation
 Consolidates common functionality across all APT implementations
 """
 
-import os
-import sys
-import time
-import random
-import string
-import hashlib
-import base64
-from typing import Dict, List, Any, Optional
 from datetime import datetime
-from pathlib import Path
+from typing import Any, Dict, List
+
+from ..anti_detection import AntiDetectionManager
+from ..network import NetworkObfuscator
+
 
 class BaseAPT:
     """Base class for all APT implementations"""
-    
-    def __init__(self, name: str, aliases: List[str], origin: str, 
+
+    def __init__(self, name: str, aliases: List[str], origin: str,
                  focus: List[str], industries: List[str]):
         # Initialize APT profile
         self.name = name
@@ -25,7 +21,7 @@ class BaseAPT:
         self.suspected_origin = origin
         self.primary_focus = focus
         self.target_industries = industries
-        
+
         # Initialize common techniques
         self.techniques = {
             "initial_access": {
@@ -188,7 +184,7 @@ class BaseAPT:
                 }
             }
         }
-        
+
         # Initialize common configuration
         self.config = {
             "c2_domains": [
@@ -217,11 +213,11 @@ class BaseAPT:
                 "teams"
             ]
         }
-        
+
         # Initialize common components
         self.network_obfuscator = NetworkObfuscator()
         self.anti_detection = AntiDetectionManager()
-        
+
     def execute_technique(self, tactic: str, technique: str, **kwargs) -> Dict[str, Any]:
         """Execute a specific technique"""
         try:
@@ -230,23 +226,23 @@ class BaseAPT:
                 raise ValueError(f"Invalid tactic: {tactic}")
             if technique not in self.techniques[tactic]:
                 raise ValueError(f"Invalid technique: {technique}")
-                
+
             # Get technique details
             technique_details = self.techniques[tactic][technique]
-            
+
             # Execute technique
             result = self._execute_technique_impl(tactic, technique, technique_details, **kwargs)
-            
+
             # Apply evasion
             result = self._apply_evasion(result, technique_details["evasion"])
-            
+
             return result
-            
+
         except Exception as e:
             self._log_error(f"Error executing technique: {str(e)}")
             raise
-            
-    def _execute_technique_impl(self, tactic: str, technique: str, 
+
+    def _execute_technique_impl(self, tactic: str, technique: str,
                               details: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         """Implementation of technique execution"""
         # Implement technique-specific logic here
@@ -260,19 +256,21 @@ class BaseAPT:
             "timestamp": datetime.now().isoformat(),
             "status": "completed"
         }
-        
+
     def _apply_evasion(self, result: Dict[str, Any], evasion_techniques: List[str]) -> Dict[str, Any]:
         """Apply evasion techniques to result"""
         for technique in evasion_techniques:
             if technique == "traffic_obfuscation":
                 result = self.network_obfuscator.obfuscate_traffic(result)
             elif technique == "detection_evasion":
-                result = self.anti_detection.evade_detection(result)
+                result = dict(result)
+                evasion_status = self.anti_detection.evade_detection()
+                result["detection_evasion"] = evasion_status
             # Add more evasion techniques as needed
-            
+
         return result
-        
+
     def _log_error(self, message: str) -> None:
         """Log error message"""
         print(f"ERROR: {message}")
-        # Implement proper logging mechanism 
+        # Implement proper logging mechanism

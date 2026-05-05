@@ -3,22 +3,38 @@ Consolidated Discovery Module
 Handles discovery for all APT implementations
 """
 
+import json
+import logging
 import os
-import sys
-import time
+import platform
 import random
 import string
-import hashlib
-import base64
-from typing import Dict, List, Any, Optional
-from datetime import datetime
-from pathlib import Path
-import logging
-import platform
-import psutil
 import subprocess
-import grp # For Linux/macOS group info
-import pwd # For Linux/macOS user info
+from datetime import datetime
+from typing import Any, Dict
+
+# POSIX-only stdlib modules used by Linux/macOS user/group discovery branches.
+# On Windows the corresponding handlers take a different code path that does
+# not touch these names, so a None fallback is safe.
+try:
+    import grp  # type: ignore[import-not-found]
+    import pwd  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - Windows lacks pwd/grp stdlib modules
+    grp = None  # type: ignore[assignment]
+    pwd = None  # type: ignore[assignment]
+
+
+def _require_psutil():
+    """Load psutil on demand so `Discovery` import works without optional deps."""
+    try:
+        import psutil as _ps
+
+        return _ps
+    except ImportError as exc:
+        raise ImportError(
+            "Discovery system/process/service metrics require psutil. Install with: pip install psutil"
+        ) from exc
+
 
 try:
     import nmap
@@ -29,7 +45,7 @@ except ImportError:
 
 class Discovery:
     """Handles discovery for all APT implementations"""
-    
+
     def __init__(self):
         # Initialize discovery techniques
         self.techniques = {
@@ -85,7 +101,7 @@ class Discovery:
                 }
             }
         }
-        
+
         # Initialize discovery tools
         self.tools = {
             "system": {
@@ -104,7 +120,7 @@ class Discovery:
                 "privilege_info_handler": self._handle_privilege_info
             }
         }
-        
+
         # Initialize configuration
         self.config = {
             "system": {
@@ -166,10 +182,10 @@ class Discovery:
             "max_report_size": 5 * 1024 * 1024 # Limit report size (e.g., 5MB) to prevent excessive memory use
         }
         self.logger = logging.getLogger(__name__)
-        
+
     def update_config(self, config: Dict[str, Any]):
         """Update internal config with loaded configuration."""
-        discovery_config = config.get("discovery", {})
+        discovery_config = config.get("modules", {}).get("discovery", {})
         # Merge deeply for nested configs like nmap_path
         for key, value in discovery_config.items():
             if isinstance(value, dict) and isinstance(self.config.get(key), dict):
@@ -177,7 +193,7 @@ class Discovery:
             else:
                 self.config[key] = value
         self.logger.info("Discovery module configuration updated.")
-        
+
         # Check Nmap availability after config update
         if NMAP_AVAILABLE:
             try:
@@ -224,7 +240,7 @@ class Discovery:
             except Exception as e:
                 errors.append(f"Service Info Discovery failed: {e}")
                 self._log_error(f"Service Info Discovery failed: {e}")
-        
+
         if discovery_requests.get("host_discovery"):
             host_config = discovery_requests["host_discovery"] if isinstance(discovery_requests["host_discovery"], dict) else {}
             try:
@@ -256,7 +272,7 @@ class Discovery:
             except Exception as e:
                 errors.append(f"Group Info Discovery failed: {e}")
                 self._log_error(f"Group Info Discovery failed: {e}")
-        
+
         if discovery_requests.get("privilege_info"):
             priv_config = discovery_requests["privilege_info"] if isinstance(discovery_requests["privilege_info"], dict) else {}
             try:
@@ -268,11 +284,12 @@ class Discovery:
         if errors:
             result["status"] = "partial_success" if result["results"] else "failure"
             result["errors"] = errors
-            
+
         return result
-            
+
     def _handle_system_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Gather basic system information using platform and psutil."""
+        psutil = _require_psutil()
         self.logger.info("Gathering system information.")
         details = {}
         try:
@@ -312,7 +329,7 @@ class Discovery:
                 "used_gb": round(svmem.used / (1024**3), 2),
                 "percentage_used": svmem.percent
             }
-            
+
             try:
                 swap = psutil.swap_memory()
                 details["swap_memory"] = {
@@ -353,9 +370,12 @@ class Discovery:
                 addrs = []
                 for address in interface_addresses:
                     addr_info = {"family": str(address.family).split('.')[-1]}
-                    if address.address: addr_info["address"] = address.address
-                    if address.netmask: addr_info["netmask"] = address.netmask
-                    if address.broadcast: addr_info["broadcast"] = address.broadcast
+                    if address.address:
+                        addr_info["address"] = address.address
+                    if address.netmask:
+                        addr_info["netmask"] = address.netmask
+                    if address.broadcast:
+                        addr_info["broadcast"] = address.broadcast
                     addrs.append(addr_info)
                 details["network_interfaces"].append({"name": interface_name, "addresses": addrs})
 
@@ -375,12 +395,13 @@ class Discovery:
 
     def _handle_process_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Gather running process information using psutil."""
+        psutil = _require_psutil()
         self.logger.info("Gathering process information.")
         process_list = []
-        attrs = data.get("attrs", self.config.get("process_info_attrs", ['pid', 'name', 'username'])) 
+        attrs = data.get("attrs", self.config.get("process_info_attrs", ['pid', 'name', 'username']))
         required_attrs = {'pid', 'name'}
         final_attrs = list(required_attrs.union(set(attrs)))
-        
+
         try:
             for proc in psutil.process_iter(attrs=final_attrs, ad_value=None):
                  try:
@@ -415,10 +436,11 @@ class Discovery:
 
     def _handle_service_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Gather service information (OS-dependent)."""
+        psutil = _require_psutil()
         self.logger.info("Gathering service information.")
         services = []
         os_type = platform.system()
-        
+
         try:
             if os_type == "Windows":
                  try:
@@ -433,15 +455,19 @@ class Discovery:
                            except Exception as e:
                                 self.logger.warning(f"Could not get full info for service '{service.name()}': {e}")
                                 try:
-                                     services.append({"name": service.name(), "error": f"Partial info due to: {e}"})
-                                except Exception: pass
+                                    services.append({
+                                        "name": service.name(),
+                                        "error": f"Partial info due to: {e}",
+                                    })
+                                except Exception:
+                                    pass
                  except ImportError:
                       self.logger.warning("psutil win_service_iter not available on this system. Attempting 'sc query'.")
                       try:
                            cmd = ["sc", "query", "state=", "all", "bufsize=", "65535"]
                            timeout = self.config.get("discovery_timeout", 60)
                            process = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout, encoding='utf-8', errors='ignore')
-                           
+
                            if process.returncode == 0 and process.stdout:
                                 services.append({"raw_output": process.stdout, "parse_status": "Requires parsing"})
                                 current_service = {}
@@ -461,12 +487,12 @@ class Discovery:
                            else:
                                 self.logger.error(f"'sc query' failed or returned empty. Code: {process.returncode}, Error: {process.stderr}")
                                 raise OSError(f"'sc query' failed: {process.stderr or 'No output'}")
-                      except FileNotFoundError:
+                      except FileNotFoundError as exc:
                            self.logger.error("'sc' command not found. Cannot list Windows services.")
-                           raise FileNotFoundError("'sc' command not found.")
-                      except subprocess.TimeoutExpired:
+                           raise FileNotFoundError("'sc' command not found.") from exc
+                      except subprocess.TimeoutExpired as exc:
                            self.logger.error("'sc query' timed out.")
-                           raise TimeoutError("'sc query' timed out.")
+                           raise TimeoutError("'sc query' timed out.") from exc
                       except Exception as e:
                            self.logger.error(f"Failed to list Windows services using 'sc query': {e}", exc_info=True)
                            raise
@@ -503,7 +529,8 @@ class Discovery:
                                    service_info = service.as_dict()
                                    service_info["source"] = "psutil"
                                    services.append(service_info)
-                              if not services: raise NotImplementedError
+                              if not services:
+                                  raise NotImplementedError
                          except (AttributeError, NotImplementedError, ImportError):
                               self.logger.warning("psutil service iteration not available or did not find services. Cannot list Linux services definitively.")
 
@@ -514,13 +541,20 @@ class Discovery:
                               service_info = service.as_dict()
                               service_info["source"] = "psutil"
                               services.append(service_info)
-                         if not services: raise NotImplementedError
-                    except (AttributeError, NotImplementedError, ImportError):
+                         if not services:
+                             raise NotImplementedError
+                    except (
+                        AttributeError,
+                        NotImplementedError,
+                        ImportError,
+                    ) as exc:
                          self.logger.warning("psutil service iteration not available. Cannot list Linux services.")
-                         raise NotImplementedError("No known method available to list Linux services on this system.")
-                except subprocess.TimeoutExpired:
+                         raise NotImplementedError(
+                             "No known method available to list Linux services on this system."
+                         ) from exc
+                except subprocess.TimeoutExpired as exc:
                     self.logger.error("'systemctl list-units' timed out.")
-                    raise TimeoutError("'systemctl list-units' timed out.")
+                    raise TimeoutError("'systemctl list-units' timed out.") from exc
                 except Exception as e:
                     self.logger.error(f"Failed to list Linux services using 'systemctl': {e}", exc_info=True)
                     try:
@@ -528,8 +562,13 @@ class Discovery:
                               service_info = service.as_dict()
                               service_info["source"] = "psutil"
                               services.append(service_info)
-                         if not services: raise NotImplementedError
-                    except (AttributeError, NotImplementedError, ImportError):
+                         if not services:
+                             raise NotImplementedError
+                    except (
+                        AttributeError,
+                        NotImplementedError,
+                        ImportError,
+                    ):
                          self.logger.warning("psutil service iteration not available.")
                          raise
 
@@ -550,12 +589,12 @@ class Discovery:
                       else:
                            self.logger.error(f"'launchctl list' failed or returned empty. Code: {process.returncode}, Error: {process.stderr}")
                            raise OSError(f"'launchctl list' failed: {process.stderr or 'No output'}")
-                 except FileNotFoundError:
+                 except FileNotFoundError as exc:
                       self.logger.error("'launchctl' command not found. Cannot list macOS services.")
-                      raise FileNotFoundError("'launchctl' command not found.")
-                 except subprocess.TimeoutExpired:
+                      raise FileNotFoundError("'launchctl' command not found.") from exc
+                 except subprocess.TimeoutExpired as exc:
                       self.logger.error("'launchctl list' timed out.")
-                      raise TimeoutError("'launchctl list' timed out.")
+                      raise TimeoutError("'launchctl list' timed out.") from exc
                  except Exception as e:
                       self.logger.error(f"Failed to list macOS services using 'launchctl': {e}", exc_info=True)
                       raise
@@ -580,19 +619,31 @@ class Discovery:
         except Exception as e:
             self.logger.error(f"Error gathering service info: {str(e)}", exc_info=True)
             raise
-        
+
+    def _handle_network_scan(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Catalog alias for Nmap-backed host discovery (see `discover.host_discovery`)."""
+        return self._handle_host_discovery(data)
+
+    def _handle_port_scan(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Catalog alias for Nmap-backed port/service scan (see `discover.port_service_scan`)."""
+        return self._handle_port_service_scan(data)
+
+    def _handle_service_scan(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Catalog alias; same runner as `_handle_port_scan`."""
+        return self._handle_port_service_scan(data)
+
     def _handle_host_discovery(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Perform host discovery (e.g., ping scan) using Nmap."""
         if not self.scanner:
             raise ConnectionError("Nmap scanner is not available or failed to initialize. Check installation and configuration.")
-            
+
         targets = data.get("targets") # Expecting a string like "192.168.1.0/24" or "host1 host2"
         arguments = data.get("arguments", self.config.get("default_host_discovery_args", "-sn -T4"))
         sudo = data.get("sudo", False) # Whether to run nmap with sudo (needed for some scan types like SYN)
-        
+
         if not targets:
             raise ValueError("Missing 'targets' parameter for host discovery.")
-            
+
         self.logger.info(f"Starting host discovery on targets: {targets} with args: {arguments}")
         details = {}
         try:
@@ -605,7 +656,7 @@ class Discovery:
             details["scan_stats"] = self.scanner.scanstats()
             details["hosts_up"] = []
             details["hosts_down"] = []
-            
+
             all_hosts = self.scanner.all_hosts()
             for host in all_hosts:
                 if self.scanner[host].state() == 'up':
@@ -623,7 +674,7 @@ class Discovery:
                     details["hosts_up"].append(host_info)
                 else:
                     details["hosts_down"].append({'host': host, 'status': self.scanner[host].state()})
-                    
+
             result = {
                 "status": "success",
                 "technique": "host_discovery",
@@ -637,11 +688,11 @@ class Discovery:
 
         except nmap.nmap.PortScannerError as e:
             self.logger.error(f"Nmap PortScannerError during host discovery: {e}", exc_info=True)
-            raise ConnectionError(f"Nmap error: {e}") # Raise a more general error
+            raise ConnectionError(f"Nmap error: {e}") from e
         except Exception as e:
             self.logger.error(f"Error during host discovery: {str(e)}", exc_info=True)
             raise
-            
+
     def _handle_port_service_scan(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Perform port and service version scanning using Nmap."""
         if not self.scanner:
@@ -651,10 +702,10 @@ class Discovery:
         ports = data.get("ports") # e.g., "22,80,443", "1-1000"
         arguments = data.get("arguments", self.config.get("default_nmap_args", "-sV -T4"))
         sudo = data.get("sudo", False)
-        
+
         if not targets:
             raise ValueError("Missing 'targets' parameter for port/service scan.")
-            
+
         self.logger.info(f"Starting port/service scan on targets: {targets}, ports: {ports or 'default'}, args: {arguments}")
         details = {"hosts": []}
         try:
@@ -665,7 +716,7 @@ class Discovery:
             self.scanner.scan(hosts=targets, ports=ports, arguments=arguments, sudo=sudo)
             details["command_line"] = self.scanner.command_line()
             details["scan_stats"] = self.scanner.scanstats()
-            
+
             # Limit report size
             current_size = 0
             max_size = self.config.get("max_report_size", 5 * 1024 * 1024)
@@ -683,7 +734,7 @@ class Discovery:
                          host_data['addresses'] = self.scanner[host]['addresses']
                     if 'vendor' in self.scanner[host] and self.scanner[host]['vendor']:
                          host_data['vendor'] = self.scanner[host]['vendor']
-                    
+
                     protocols = self.scanner[host].all_protocols()
                     for proto in protocols: # e.g., 'tcp', 'udp'
                         host_data['protocols'][proto] = []
@@ -700,17 +751,17 @@ class Discovery:
                                 'conf': port_info['conf'],
                                 'cpe': port_info['cpe']
                             })
-                    
+
                     # Check size before adding
                     host_data_str = str(host_data) # Estimate size
                     if current_size + len(host_data_str) > max_size:
                         self.logger.warning(f"Scan report size limit ({max_size} bytes) reached. Truncating results.")
                         details["truncated"] = True
                         break # Stop adding hosts
-                    
+
                     details["hosts"].append(host_data)
                     current_size += len(host_data_str)
-                    
+
             result = {
                 "status": "success",
                 "technique": "port_service_scan",
@@ -721,20 +772,20 @@ class Discovery:
             }
             self.logger.info(f"Port/Service scan complete for {len(details['hosts'])} hosts.")
             return result
-            
+
         except nmap.nmap.PortScannerError as e:
             self.logger.error(f"Nmap PortScannerError during port/service scan: {e}", exc_info=True)
-            raise ConnectionError(f"Nmap error: {e}")
+            raise ConnectionError(f"Nmap error: {e}") from e
         except Exception as e:
             self.logger.error(f"Error during port/service scan: {str(e)}", exc_info=True)
             raise
-            
+
     def _handle_user_info(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Gather user account information (OS-dependent)."""
         self.logger.info("Gathering user information.")
         details = {"users": [], "current_user": {}}
         os_type = platform.system()
-        
+
         try:
             # Current user always useful
             try:
@@ -742,16 +793,17 @@ class Discovery:
             except OSError:
                 self.logger.warning("Could not get login name via os.getlogin().")
                 details["current_user"]["login_name"] = "Unavailable"
-            
+
             if os_type == "Windows":
                 # Get current user details more reliably
                 ret, out, err = self._run_command(["whoami", "/all"])
                 if ret == 0:
                     details["current_user"]["whoami_all"] = out # Rich info, needs parsing if specific fields wanted
-                else: 
+                else:
                     self.logger.warning(f"'whoami /all' failed: {err}")
                     ret_simple, out_simple, _ = self._run_command(["whoami"])
-                    if ret_simple == 0: details["current_user"]["username"] = out_simple.strip()
+                    if ret_simple == 0:
+                        details["current_user"]["username"] = out_simple.strip()
 
                 # List all local users
                 ret, out, err = self._run_command(["net", "user"])
@@ -761,11 +813,12 @@ class Discovery:
                     user_lines = []
                     in_users_section = False
                     for line in lines:
-                         if line.startswith("User accounts for"): continue
-                         if line.startswith("-----"): 
+                         if line.startswith("User accounts for"):
+                             continue
+                         if line.startswith("-----"):
                               in_users_section = True
                               continue
-                         if line.startswith("The command completed successfully"): 
+                         if line.startswith("The command completed successfully"):
                               in_users_section = False
                               continue
                          if in_users_section and line.strip():
@@ -774,12 +827,14 @@ class Discovery:
                 else:
                     self.logger.warning(f"'net user' command failed: {err}")
                     details["users_error"] = f"'net user' failed: {err}"
-            
+
             elif os_type in ["Linux", "Darwin"]:
                 # Current user via id
                 ret, out, err = self._run_command(["id"])
-                if ret == 0: details["current_user"]["id_output"] = out.strip()
-                else: self.logger.warning(f"'id' command failed: {err}")
+                if ret == 0:
+                    details["current_user"]["id_output"] = out.strip()
+                else:
+                    self.logger.warning(f"'id' command failed: {err}")
 
                 # List all users from passwd
                 try:
@@ -844,11 +899,12 @@ class Discovery:
                     group_lines = []
                     in_groups_section = False
                     for line in lines:
-                         if line.startswith("Aliases for"): continue
-                         if line.startswith("-----"): 
+                         if line.startswith("Aliases for"):
+                             continue
+                         if line.startswith("-----"):
                               in_groups_section = True
                               continue
-                         if line.startswith("The command completed successfully"): 
+                         if line.startswith("The command completed successfully"):
                               in_groups_section = False
                               continue
                          if in_groups_section and line.strip():
@@ -859,7 +915,7 @@ class Discovery:
                 else:
                     self.logger.warning(f"'net localgroup' command failed: {err}")
                     details["groups_error"] = f"'net localgroup' failed: {err}"
-            
+
             elif os_type in ["Linux", "Darwin"]:
                 # Current user's groups via id
                 ret, out, err = self._run_command(["id"])
@@ -947,7 +1003,7 @@ class Discovery:
                     # Requires pywin32 usually, or ctypes - keep it simple with command
                     ret_admin, _, err_admin = self._run_command(["net", "session"], check_error=False) # Fails if not admin
                     details["is_admin"] = (ret_admin == 0)
-                    if ret_admin != 0 and ret_admin != 2: # 0 = success, 2 = access denied (expected for non-admin) 
+                    if ret_admin != 0 and ret_admin != 2: # 0 = success, 2 = access denied (expected for non-admin)
                         self.logger.warning(f"'net session' command returned unexpected code {ret_admin}: {err_admin}")
                 except FileNotFoundError:
                      details["is_admin"] = "Unknown ('net' command not found)"
@@ -984,8 +1040,8 @@ class Discovery:
                 "status": "success",
                 "technique": "privilege_discovery",
                 # No single perfect MITRE ID, relates to T1087, T1069, T1548
-                "mitre_technique_id": "T1087/T1069/T1548", 
-                "mitre_technique_name": "Privilege/Account/Group Discovery", 
+                "mitre_technique_id": "T1087/T1069/T1548",
+                "mitre_technique_name": "Privilege/Account/Group Discovery",
                 "timestamp": datetime.now().isoformat(),
                 "details": details
             }
@@ -1004,43 +1060,43 @@ class Discovery:
         timeout = self.config.get("discovery_timeout", 60)
         self.logger.debug(f"Running command: {' '.join(cmd)}")
         try:
-            process = subprocess.run(cmd, capture_output=True, text=True, check=check_error, 
+            process = subprocess.run(cmd, capture_output=True, text=True, check=check_error,
                                      timeout=timeout, encoding='utf-8', errors='ignore')
             self.logger.debug(f"Command finished. Return code: {process.returncode}")
             return process.returncode, process.stdout, process.stderr
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             self.logger.error(f"Command not found: {cmd[0]}")
-            raise FileNotFoundError(f"Required command '{cmd[0]}' not found.")
-        except subprocess.TimeoutExpired:
+            raise FileNotFoundError(f"Required command '{cmd[0]}' not found.") from exc
+        except subprocess.TimeoutExpired as exc:
             self.logger.error(f"Command timed out after {timeout}s: {' '.join(cmd)}")
-            raise TimeoutError(f"Command '{cmd[0]}' timed out.")
+            raise TimeoutError(f"Command '{cmd[0]}' timed out.") from exc
         except subprocess.CalledProcessError as e:
              self.logger.error(f"Command '{' '.join(cmd)}' failed with return code {e.returncode}. Stderr: {e.stderr}")
              # Don't raise here if check_error is False, return the outputs
-             return e.returncode, e.stdout, e.stderr 
+             return e.returncode, e.stdout, e.stderr
         except Exception as e:
             self.logger.error(f"Unexpected error running command '{' '.join(cmd)}': {e}", exc_info=True)
             raise # Re-raise unexpected errors
-            
+
     def _log_error(self, message: str) -> None:
         """Log error message"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
         os.makedirs(log_dir, exist_ok=True)
-        
+
         log_file = os.path.join(log_dir, "discovery.log")
         with open(log_file, "a") as f:
             f.write(f"[{timestamp}] ERROR: {message}\n")
-            
+
     def _generate_random_string(self, length: int = 8) -> str:
         """Generate a random string of specified length"""
         chars = string.ascii_letters + string.digits
-        return ''.join(random.choice(chars) for _ in range(length)) 
+        return ''.join(random.choice(chars) for _ in range(length))
 
-# --- Example Usage --- 
+# --- Example Usage ---
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
+
     discovery_module = Discovery()
     config_example = {
         "discovery": {
@@ -1048,8 +1104,8 @@ if __name__ == '__main__':
             "discovery_timeout": 120
         }
     }
-    discovery_module.update_config(config_example) 
-    
+    discovery_module.update_config(config_example)
+
     # ... (previous sys_info, proc_info, service_info tests) ...
 
     # print("\n--- Testing Host Discovery ---")
@@ -1075,4 +1131,4 @@ if __name__ == '__main__':
     print("\n--- Testing Privilege Info ---")
     priv_info_request = {"discover": {"privilege_info": True}}
     priv_info_result = discovery_module.discover(priv_info_request)
-    print(json.dumps(priv_info_result, indent=2)) 
+    print(json.dumps(priv_info_result, indent=2))
