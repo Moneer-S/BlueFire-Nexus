@@ -12,6 +12,7 @@ from .impl.standard_modules import (
     DiscoveryModule,
     ExecutionModule,
     ExfiltrationModule,
+    ImpactModule,
     InitialAccessModule,
     IntelligenceModule,
     NetworkObfuscatorModule,
@@ -34,6 +35,7 @@ BUILTIN_MODULE_CLASSES: tuple[Type[BaseModule], ...] = (
     ExfiltrationModule,
     PersistenceModule,
     ExecutionModule,
+    ImpactModule,
 )
 
 

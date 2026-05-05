@@ -573,6 +573,169 @@ class ReconnaissanceModule(BaseModule):
         )
 
 
+# Impact technique catalog.
+#
+# Aligned with the technique surface of the legacy `src/core/impact/impact.py`
+# class (encryption / deletion / modification / service_stop|modify|delete /
+# reboot / shutdown / crash). Adds resource_hijacking (T1496) which is a
+# commonly-requested impact technique not in the legacy class.
+_IMPACT_PROFILES: Dict[str, Dict[str, Any]] = {
+    "data_encryption": {
+        "mitre": "T1486",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.extension|in",
+        "selection_value": [".locked", ".enc", ".crypt"],
+        "event_type": "impact_data_encryption",
+        "title_prefix": "Data encryption for impact on",
+    },
+    "data_destruction": {
+        "mitre": "T1485",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.operation",
+        "selection_value": "delete",
+        "event_type": "impact_data_destruction",
+        "title_prefix": "Bulk file destruction on",
+    },
+    "data_manipulation": {
+        "mitre": "T1565",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.operation",
+        "selection_value": "modify",
+        "event_type": "impact_data_manipulation",
+        "title_prefix": "Stored data manipulation on",
+    },
+    "service_stop": {
+        "mitre": "T1489",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.action",
+        "selection_value": "stop",
+        "event_type": "impact_service_stop",
+        "title_prefix": "Defensive service stop on",
+    },
+    "service_modify": {
+        "mitre": "T1489",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.action",
+        "selection_value": "disable",
+        "event_type": "impact_service_modify",
+        "title_prefix": "Defensive service modification on",
+    },
+    "service_delete": {
+        "mitre": "T1489",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.action",
+        "selection_value": "delete",
+        "event_type": "impact_service_delete",
+        "title_prefix": "Defensive service deletion on",
+    },
+    "system_reboot": {
+        "mitre": "T1529",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "shutdown /r",
+        "event_type": "impact_system_reboot",
+        "title_prefix": "Forced system reboot on",
+    },
+    "system_shutdown": {
+        "mitre": "T1529",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "shutdown /s",
+        "event_type": "impact_system_shutdown",
+        "title_prefix": "Forced system shutdown on",
+    },
+    "endpoint_dos": {
+        "mitre": "T1499",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "fork-bomb",
+        "event_type": "impact_endpoint_dos",
+        "title_prefix": "Endpoint denial-of-service on",
+    },
+    "resource_hijacking": {
+        "mitre": "T1496",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.image|endswith",
+        "selection_value": "miner.exe",
+        "event_type": "impact_resource_hijacking",
+        "title_prefix": "Resource hijacking on",
+    },
+}
+
+
+class ImpactModule(BaseModule):
+    """Standard adapter for the impact tactic.
+
+    Produces simulate-mode telemetry, ATT&CK-aligned detection hints, and
+    structured artifacts for ten impact techniques. The legacy
+    `src/core/impact/impact.py` class is preserved as the source of
+    technique coverage; emulate-mode wiring is a follow-up.
+
+    Note: this module never writes destructive payloads under any input.
+    Telemetry shape is synthesised; no real file system, registry, service,
+    or system-shutdown side effects occur even with `dry_run=False`.
+    """
+
+    name = "impact"
+    attack_techniques = (
+        "T1486",
+        "T1485",
+        "T1565",
+        "T1489",
+        "T1529",
+        "T1499",
+        "T1496",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        requested = str(params.get("technique") or "data_encryption").lower()
+        profile_key = (
+            requested if requested in _IMPACT_PROFILES else "data_encryption"
+        )
+        profile = _IMPACT_PROFILES[profile_key]
+        target = str(params.get("target") or "lab-host")
+
+        details = {
+            "technique": profile_key,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+            "selection_value": profile["selection_value"],
+        }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details=details,
+        )
+        hints = {
+            "title": f"{profile['title_prefix']} {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: profile["selection_value"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "impact_technique": profile_key,
+            "target_host": target,
+        }
+        if requested != profile_key:
+            hints["unrecognized_impact_technique"] = requested
+
+        return _result(
+            self.name,
+            "success",
+            f"Simulated impact technique '{profile_key}' on {target}.",
+            techniques=[profile["mitre"]],
+            telemetry=[event],
+            hints=hints,
+            artifacts={
+                "technique": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            },
+        )
+
+
 class LegacyWrappedModule(BaseModule):
     """Adapter that wraps existing legacy modules into ModuleResult objects."""
 
