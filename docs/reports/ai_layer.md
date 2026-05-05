@@ -23,7 +23,7 @@ normal operation.
 modules:
   ai:
     enabled: false
-    provider: "template"   # or: openai, anthropic, google, ollama, lm-studio, openai_compatible
+    provider: "template"   # or: openai, anthropic, google, ollama, llama.cpp, lm-studio, openai_compatible
     model: "default"
     api_base: ""
 ```
