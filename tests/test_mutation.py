@@ -30,3 +30,51 @@ def test_mutate_step_and_technique_share_protocol_shift_behavior():
     )
     assert mutated["mutated_params"]["protocol"] == "dns"
     assert mutated["mutated_params"]["retry_interval"] == 15
+
+
+def test_mutate_step_disallowed_returns_original_untouched():
+    """When `allowed=False`, mutation must be a no-op (no lab opt-in implied)."""
+    original = {"command": "echo something", "sleep_jitter_seconds": 5}
+    result = mutate_step_params(original, allowed=False, strategy="low_noise")
+    assert result.mutated == original
+    assert "Mutation disabled" in result.rationale
+
+
+def test_mutate_low_noise_substitutes_echo_and_bumps_jitter():
+    result = mutate_step_params(
+        {"command": "echo hi", "sleep_jitter_seconds": 1},
+        allowed=True,
+        strategy="low_noise",
+    )
+    assert result.mutated["command"] == "printf hi"
+    assert result.mutated["sleep_jitter_seconds"] == 2
+    assert result.mutated["mutation_applied"] is True
+
+
+def test_mutate_unknown_strategy_emits_variant_label():
+    """Unknown strategies don't raise — they record a variant marker."""
+    result = mutate_step_params(
+        {"command": "echo hi"},
+        allowed=True,
+        strategy="unknown_marker",
+    )
+    assert result.mutated["variant_label"] == "unknown_marker"
+    assert result.mutated["mutation_applied"] is True
+
+
+def test_mutate_protocol_shift_cycles_through_known_protocols():
+    """http -> dns -> https -> http cycle."""
+    after_http = mutate_step_params(
+        {"protocol": "http"}, allowed=True, strategy="protocol_shift"
+    ).mutated
+    assert after_http["protocol"] == "dns"
+
+    after_dns = mutate_step_params(
+        {"protocol": "dns"}, allowed=True, strategy="protocol_shift"
+    ).mutated
+    assert after_dns["protocol"] == "https"
+
+    after_https = mutate_step_params(
+        {"protocol": "https"}, allowed=True, strategy="protocol_shift"
+    ).mutated
+    assert after_https["protocol"] == "http"

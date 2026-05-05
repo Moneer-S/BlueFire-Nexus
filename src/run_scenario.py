@@ -59,7 +59,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ai",
         action="store_true",
-        help="Enable AI copilot for this run (config override only for current process)",
+        help=(
+            "Enable AI copilot artifacts (plan/narrative/detection-suggestion) "
+            "for this run. Uses the offline TemplateProvider by default — no "
+            "API key required. Override `modules.ai.provider` in config.yaml "
+            "to use a different provider when one is implemented."
+        ),
     )
     parser.add_argument(
         "--run-id",
