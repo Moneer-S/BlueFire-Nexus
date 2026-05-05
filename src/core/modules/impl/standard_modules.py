@@ -737,6 +737,630 @@ class CredentialAccessModule(BaseModule):
         )
 
 
+# Lateral-movement technique catalog.
+#
+# Aligned with the technique surface of the legacy
+# `src/core/movement/lateral_movement.py` class (psexec / wmi / powershell-
+# remoting / smb / ssh / ftp / scp / service_creation). The legacy class is
+# preserved for emulate-mode follow-up; this module produces simulate-mode
+# telemetry and hints.
+_LATERAL_MOVEMENT_PROFILES: Dict[str, Dict[str, Any]] = {
+    "psexec": {
+        "mitre": "T1021.002",
+        "logsource": {"category": "network_connection", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "PsExec",
+        "event_type": "lateral_movement_psexec",
+        "title_prefix": "PsExec lateral movement to",
+    },
+    "wmi": {
+        "mitre": "T1047",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "wmic",
+        "event_type": "lateral_movement_wmi",
+        "title_prefix": "WMI remote execution against",
+    },
+    "winrm": {
+        "mitre": "T1021.006",
+        "logsource": {"category": "network_connection", "product": "windows"},
+        "selection_field": "network.dst_port",
+        "selection_value": 5985,
+        "event_type": "lateral_movement_winrm",
+        "title_prefix": "WinRM/PowerShell remoting against",
+    },
+    "smb_share": {
+        "mitre": "T1021.002",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "file.path|contains",
+        "selection_value": "ADMIN$",
+        "event_type": "lateral_movement_smb_share",
+        "title_prefix": "SMB administrative-share access on",
+    },
+    "ssh": {
+        "mitre": "T1021.004",
+        "logsource": {"category": "network_connection", "product": "linux"},
+        "selection_field": "network.dst_port",
+        "selection_value": 22,
+        "event_type": "lateral_movement_ssh",
+        "title_prefix": "SSH lateral movement to",
+    },
+    "ftp_transfer": {
+        "mitre": "T1570",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 21,
+        "event_type": "lateral_movement_ftp_transfer",
+        "title_prefix": "FTP lateral tool transfer to",
+    },
+    "scp_transfer": {
+        "mitre": "T1570",
+        "logsource": {"category": "network_connection", "product": "linux"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "scp ",
+        "event_type": "lateral_movement_scp_transfer",
+        "title_prefix": "SCP lateral tool transfer to",
+    },
+    "service_create": {
+        "mitre": "T1543.003",
+        "logsource": {"category": "service_creation", "product": "windows"},
+        "selection_field": "service.image_path|contains",
+        "selection_value": "svcname",
+        "event_type": "lateral_movement_service_create",
+        "title_prefix": "Remote Windows service creation on",
+    },
+}
+
+
+class LateralMovementModule(BaseModule):
+    """Standard adapter for the lateral-movement tactic.
+
+    Produces simulate-mode telemetry, ATT&CK-aligned detection hints, and
+    structured artifacts for eight lateral-movement techniques. The legacy
+    `src/core/movement/lateral_movement.py` class is preserved as the
+    source of technique coverage; emulate-mode wiring is a follow-up.
+    """
+
+    name = "lateral_movement"
+    attack_techniques = (
+        "T1021.002",
+        "T1047",
+        "T1021.006",
+        "T1021.004",
+        "T1570",
+        "T1543.003",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        requested = str(params.get("technique") or "psexec").lower()
+        profile_key = (
+            requested if requested in _LATERAL_MOVEMENT_PROFILES else "psexec"
+        )
+        profile = _LATERAL_MOVEMENT_PROFILES[profile_key]
+        source = str(params.get("source") or "lab-attacker")
+        target = str(params.get("target") or "lab-host")
+
+        details = {
+            "technique": profile_key,
+            "source": source,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+            "selection_value": profile["selection_value"],
+        }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details=details,
+        )
+        hints = {
+            "title": f"{profile['title_prefix']} {target} (from {source})",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: profile["selection_value"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "lateral_technique": profile_key,
+            "source_host": source,
+            "target_host": target,
+        }
+        if requested != profile_key:
+            hints["unrecognized_lateral_technique"] = requested
+
+        return _result(
+            self.name,
+            "success",
+            f"Simulated lateral-movement technique '{profile_key}' from {source} to {target}.",
+            techniques=[profile["mitre"]],
+            telemetry=[event],
+            hints=hints,
+            artifacts={
+                "technique": profile_key,
+                "source": source,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            },
+        )
+
+
+# Privilege-escalation technique catalog.
+#
+# Aligned with the technique surface of the legacy
+# `src/core/privilege/privilege_escalation.py` class (token impersonation /
+# duplication / creation, process hollowing / injection / masquerading,
+# service creation / modification). Adds a `uac_bypass` profile commonly
+# requested by purple-team scenarios.
+_PRIVILEGE_ESCALATION_PROFILES: Dict[str, Dict[str, Any]] = {
+    "token_impersonation": {
+        "mitre": "T1134.001",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "ImpersonateLoggedOnUser",
+        "event_type": "privilege_escalation_token_impersonation",
+        "title_prefix": "Token impersonation on",
+    },
+    "token_duplication": {
+        "mitre": "T1134.001",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "DuplicateTokenEx",
+        "event_type": "privilege_escalation_token_duplication",
+        "title_prefix": "Access token duplication on",
+    },
+    "token_creation": {
+        "mitre": "T1134.003",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "LogonUser",
+        "event_type": "privilege_escalation_token_creation",
+        "title_prefix": "Make-and-impersonate token on",
+    },
+    "process_hollowing": {
+        "mitre": "T1055.012",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "NtUnmapViewOfSection",
+        "event_type": "privilege_escalation_process_hollowing",
+        "title_prefix": "Process hollowing on",
+    },
+    "process_injection": {
+        "mitre": "T1055",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "WriteProcessMemory",
+        "event_type": "privilege_escalation_process_injection",
+        "title_prefix": "Process injection on",
+    },
+    "process_masquerading": {
+        "mitre": "T1036.005",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.image|endswith",
+        "selection_value": "svchost.exe",
+        "event_type": "privilege_escalation_process_masquerading",
+        "title_prefix": "Process-name masquerading on",
+    },
+    "service_creation": {
+        "mitre": "T1543.003",
+        "logsource": {"category": "service_creation", "product": "windows"},
+        "selection_field": "service.name|contains",
+        "selection_value": "svc",
+        "event_type": "privilege_escalation_service_creation",
+        "title_prefix": "Privileged Windows service creation on",
+    },
+    "service_modification": {
+        "mitre": "T1543.003",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.image_path|contains",
+        "selection_value": "svc",
+        "event_type": "privilege_escalation_service_modification",
+        "title_prefix": "Privileged Windows service modification on",
+    },
+    "uac_bypass": {
+        "mitre": "T1548.002",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "fodhelper",
+        "event_type": "privilege_escalation_uac_bypass",
+        "title_prefix": "UAC bypass attempt on",
+    },
+}
+
+
+class PrivilegeEscalationModule(BaseModule):
+    """Standard adapter for the privilege-escalation tactic.
+
+    Produces simulate-mode telemetry, ATT&CK-aligned detection hints, and
+    structured artifacts for nine privilege-escalation techniques. The
+    legacy `src/core/privilege/privilege_escalation.py` class is preserved
+    as the source of technique coverage; emulate-mode wiring is a follow-up.
+    """
+
+    name = "privilege_escalation"
+    attack_techniques = (
+        "T1134.001",
+        "T1134.003",
+        "T1055.012",
+        "T1055",
+        "T1036.005",
+        "T1543.003",
+        "T1548.002",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        requested = str(params.get("technique") or "token_impersonation").lower()
+        profile_key = (
+            requested if requested in _PRIVILEGE_ESCALATION_PROFILES else "token_impersonation"
+        )
+        profile = _PRIVILEGE_ESCALATION_PROFILES[profile_key]
+        target = str(params.get("target") or "lab-host")
+
+        details = {
+            "technique": profile_key,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+            "selection_value": profile["selection_value"],
+        }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details=details,
+        )
+        hints = {
+            "title": f"{profile['title_prefix']} {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: profile["selection_value"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "privesc_technique": profile_key,
+            "target_host": target,
+        }
+        if requested != profile_key:
+            hints["unrecognized_privesc_technique"] = requested
+
+        return _result(
+            self.name,
+            "success",
+            f"Simulated privilege-escalation technique '{profile_key}' on {target}.",
+            techniques=[profile["mitre"]],
+            telemetry=[event],
+            hints=hints,
+            artifacts={
+                "technique": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            },
+        )
+
+
+# Impact technique catalog.
+#
+# Aligned with the technique surface of the legacy `src/core/impact/impact.py`
+# class (encryption / deletion / modification / service_stop|modify|delete /
+# reboot / shutdown / crash). Adds resource_hijacking (T1496) which is a
+# commonly-requested impact technique not in the legacy class.
+_IMPACT_PROFILES: Dict[str, Dict[str, Any]] = {
+    "data_encryption": {
+        "mitre": "T1486",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.extension|in",
+        "selection_value": [".locked", ".enc", ".crypt"],
+        "event_type": "impact_data_encryption",
+        "title_prefix": "Data encryption for impact on",
+    },
+    "data_destruction": {
+        "mitre": "T1485",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.operation",
+        "selection_value": "delete",
+        "event_type": "impact_data_destruction",
+        "title_prefix": "Bulk file destruction on",
+    },
+    "data_manipulation": {
+        "mitre": "T1565",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.operation",
+        "selection_value": "modify",
+        "event_type": "impact_data_manipulation",
+        "title_prefix": "Stored data manipulation on",
+    },
+    "service_stop": {
+        "mitre": "T1489",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.action",
+        "selection_value": "stop",
+        "event_type": "impact_service_stop",
+        "title_prefix": "Defensive service stop on",
+    },
+    "service_modify": {
+        "mitre": "T1489",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.action",
+        "selection_value": "disable",
+        "event_type": "impact_service_modify",
+        "title_prefix": "Defensive service modification on",
+    },
+    "service_delete": {
+        "mitre": "T1489",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.action",
+        "selection_value": "delete",
+        "event_type": "impact_service_delete",
+        "title_prefix": "Defensive service deletion on",
+    },
+    "system_reboot": {
+        "mitre": "T1529",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "shutdown /r",
+        "event_type": "impact_system_reboot",
+        "title_prefix": "Forced system reboot on",
+    },
+    "system_shutdown": {
+        "mitre": "T1529",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "shutdown /s",
+        "event_type": "impact_system_shutdown",
+        "title_prefix": "Forced system shutdown on",
+    },
+    "endpoint_dos": {
+        "mitre": "T1499",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "fork-bomb",
+        "event_type": "impact_endpoint_dos",
+        "title_prefix": "Endpoint denial-of-service on",
+    },
+    "resource_hijacking": {
+        "mitre": "T1496",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.image|endswith",
+        "selection_value": "miner.exe",
+        "event_type": "impact_resource_hijacking",
+        "title_prefix": "Resource hijacking on",
+    },
+}
+
+
+class ImpactModule(BaseModule):
+    """Standard adapter for the impact tactic.
+
+    Produces simulate-mode telemetry, ATT&CK-aligned detection hints, and
+    structured artifacts for ten impact techniques. The legacy
+    `src/core/impact/impact.py` class is preserved as the source of
+    technique coverage; emulate-mode wiring is a follow-up.
+
+    Note: this module never writes destructive payloads under any input.
+    Telemetry shape is synthesised; no real file system, registry, service,
+    or system-shutdown side effects occur even with `dry_run=False`.
+    """
+
+    name = "impact"
+    attack_techniques = (
+        "T1486",
+        "T1485",
+        "T1565",
+        "T1489",
+        "T1529",
+        "T1499",
+        "T1496",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        requested = str(params.get("technique") or "data_encryption").lower()
+        profile_key = (
+            requested if requested in _IMPACT_PROFILES else "data_encryption"
+        )
+        profile = _IMPACT_PROFILES[profile_key]
+        target = str(params.get("target") or "lab-host")
+
+        details = {
+            "technique": profile_key,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+            "selection_value": profile["selection_value"],
+        }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details=details,
+        )
+        hints = {
+            "title": f"{profile['title_prefix']} {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: profile["selection_value"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "impact_technique": profile_key,
+            "target_host": target,
+        }
+        if requested != profile_key:
+            hints["unrecognized_impact_technique"] = requested
+
+        return _result(
+            self.name,
+            "success",
+            f"Simulated impact technique '{profile_key}' on {target}.",
+            techniques=[profile["mitre"]],
+            telemetry=[event],
+            hints=hints,
+            artifacts={
+                "technique": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            },
+        )
+
+
+# Collection technique catalog.
+#
+# Aligned with the technique surface of the legacy
+# `src/core/collection/collection.py` class (file/directory/archive staging,
+# keyboard/clipboard/screen capture, compression, encryption, encoding).
+# Adds audio_capture (T1123) and email_collection (T1114.001) which are
+# commonly-requested techniques not in the legacy class.
+_COLLECTION_PROFILES: Dict[str, Dict[str, Any]] = {
+    "file_staging": {
+        "mitre": "T1074.001",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "selection_value": "staging",
+        "event_type": "collection_file_staging",
+        "title_prefix": "Local file staging on",
+    },
+    "directory_staging": {
+        "mitre": "T1074.001",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "selection_value": "staging-dir",
+        "event_type": "collection_directory_staging",
+        "title_prefix": "Local directory staging on",
+    },
+    "archive_collected": {
+        "mitre": "T1560",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "tar -",
+        "event_type": "collection_archive_collected",
+        "title_prefix": "Archiving collected data on",
+    },
+    "archive_compressed": {
+        "mitre": "T1560.002",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "gzip",
+        "event_type": "collection_archive_compressed",
+        "title_prefix": "Compressed archive of collected data on",
+    },
+    "archive_encrypted": {
+        "mitre": "T1560.001",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "openssl",
+        "event_type": "collection_archive_encrypted",
+        "title_prefix": "Encrypted archive of collected data on",
+    },
+    "keyboard_capture": {
+        "mitre": "T1056.001",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "SetWindowsHookEx",
+        "event_type": "collection_keyboard_capture",
+        "title_prefix": "Keystroke capture on",
+    },
+    "clipboard_capture": {
+        "mitre": "T1115",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "GetClipboardData",
+        "event_type": "collection_clipboard_capture",
+        "title_prefix": "Clipboard capture on",
+    },
+    "screen_capture": {
+        "mitre": "T1113",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "BitBlt",
+        "event_type": "collection_screen_capture",
+        "title_prefix": "Screen capture on",
+    },
+    "audio_capture": {
+        "mitre": "T1123",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "audio_capture",
+        "event_type": "collection_audio_capture",
+        "title_prefix": "Audio capture on",
+    },
+    "email_collection": {
+        "mitre": "T1114.001",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "file.path|contains",
+        "selection_value": ".pst",
+        "event_type": "collection_email_collection",
+        "title_prefix": "Local email collection on",
+    },
+}
+
+
+class CollectionModule(BaseModule):
+    """Standard adapter for the collection tactic.
+
+    Produces simulate-mode telemetry, ATT&CK-aligned detection hints, and
+    structured artifacts for ten collection techniques. The legacy
+    `src/core/collection/collection.py` class is preserved as the source
+    of technique coverage; emulate-mode wiring is a follow-up.
+    """
+
+    name = "collection"
+    attack_techniques = (
+        "T1074.001",
+        "T1560",
+        "T1560.001",
+        "T1560.002",
+        "T1056.001",
+        "T1115",
+        "T1113",
+        "T1123",
+        "T1114.001",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        requested = str(params.get("technique") or "file_staging").lower()
+        profile_key = (
+            requested if requested in _COLLECTION_PROFILES else "file_staging"
+        )
+        profile = _COLLECTION_PROFILES[profile_key]
+        target = str(params.get("target") or "lab-host")
+
+        details = {
+            "technique": profile_key,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+            "selection_value": profile["selection_value"],
+        }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details=details,
+        )
+        hints = {
+            "title": f"{profile['title_prefix']} {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: profile["selection_value"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "collection_technique": profile_key,
+            "target_host": target,
+        }
+        if requested != profile_key:
+            hints["unrecognized_collection_technique"] = requested
+
+        return _result(
+            self.name,
+            "success",
+            f"Simulated collection technique '{profile_key}' on {target}.",
+            techniques=[profile["mitre"]],
+            telemetry=[event],
+            hints=hints,
+            artifacts={
+                "technique": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            },
+        )
+
+
 class LegacyWrappedModule(BaseModule):
     """Adapter that wraps existing legacy modules into ModuleResult objects."""
 
