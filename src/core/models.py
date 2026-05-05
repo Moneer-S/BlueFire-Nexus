@@ -2,10 +2,28 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
+
+LOGGER = logging.getLogger(__name__)
+
+# Allowed module result statuses.
+#
+# - success:          ran to completion, produced expected artifacts/telemetry.
+# - failure:          ran but did not complete the requested operation.
+# - blocked:          refused to run because a safety/lab gate is not satisfied.
+# - skipped:          intentionally not run (e.g. capability disabled, platform
+#                     mismatch, no-op in current mode).
+# - partial_success:  produced some telemetry/artifacts but did not complete
+#                     every requested step. Real distinct state, not aliased
+#                     to "success".
+ModuleStatus = Literal["success", "failure", "blocked", "skipped", "partial_success"]
+ALLOWED_STATUSES: frozenset[str] = frozenset(
+    ("success", "failure", "blocked", "skipped", "partial_success")
+)
 
 
 def utc_now_iso() -> str:
@@ -37,6 +55,19 @@ class ModuleResult:
     detection_hints: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
     timestamp: str = field(default_factory=utc_now_iso)
+
+    def __post_init__(self) -> None:
+        # Soft warning only — never raise, to keep forward compatibility for
+        # plugin/legacy modules that have not been audited yet. Phase 7 contract
+        # tests surface non-conformant statuses as test failures instead.
+        if self.status not in ALLOWED_STATUSES:
+            LOGGER.warning(
+                "ModuleResult for module '%s' uses non-standard status %r; "
+                "expected one of %s",
+                self.module,
+                self.status,
+                sorted(ALLOWED_STATUSES),
+            )
 
 
 @dataclass(slots=True)
