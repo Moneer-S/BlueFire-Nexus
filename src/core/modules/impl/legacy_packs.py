@@ -163,6 +163,8 @@ class LegacyApt29ResearchModule(LegacyAdapterBase):
     attack_techniques = ("T1566", "T1059", "T1036", "T1071.004")
     pack_name = "actor_pack"
     capability_name = "apt29"
+    actor_signature = "cozy_bear_dukes"
+    aka = ("Cozy Bear", "The Dukes", "Nobelium", "Midnight Blizzard")
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         decision = evaluate_legacy_capability(
@@ -271,6 +273,16 @@ class LegacyApt29ResearchModule(LegacyAdapterBase):
             }
             techniques = ["T1071.004"]
 
+        # Inject the per-actor signature + alias surface so APT29's detection
+        # drafts carry the same correlation fields as the per-actor APT28/32/
+        # 38/41 adapters. Defenders can then filter Sigma/SPL rules by actor
+        # signature regardless of which actor pack produced them.
+        selection = hints.setdefault("detection", {}).setdefault("selection", {})
+        if self.actor_signature:
+            selection["legacy.actor_signature"] = self.actor_signature
+        if self.aka:
+            selection["legacy.actor_aka"] = list(self.aka)
+
         if mode == "emulate":
             runtime = safe_call(
                 run_actor_technique,
@@ -351,12 +363,23 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
     capability_name = "apt28"
     actor_name = "APT28"
     actor_signature: str = ""
+    aka: tuple[str, ...] = ()
 
     _TACTIC_TO_TECHNIQUE: Mapping[str, str] = {
         "initial_access": "T1566",
         "execution": "T1059",
         "defense_evasion": "T1036",
         "command_and_control": "T1071",
+    }
+
+    # Tactic -> Sigma logsource. Falls back to threat_intelligence/generic
+    # when the tactic isn't in this map. Per-actor subclasses can override
+    # to emit different log surfaces (e.g. APT32 watering-hole tradecraft).
+    _TACTIC_TO_LOGSOURCE: Mapping[str, Mapping[str, str]] = {
+        "initial_access": {"category": "email", "product": "generic"},
+        "execution": {"category": "process_creation", "product": "host"},
+        "defense_evasion": {"category": "process_creation", "product": "host"},
+        "command_and_control": {"category": "network_connection", "product": "host"},
     }
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -423,9 +446,16 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
         }
         if self.actor_signature:
             selection["legacy.actor_signature"] = self.actor_signature
+        if self.aka:
+            selection["legacy.actor_aka"] = list(self.aka)
+        logsource = dict(
+            self._TACTIC_TO_LOGSOURCE.get(
+                tactic, {"category": "threat_intelligence", "product": "generic"}
+            )
+        )
         hints = {
             "title": f"{self.actor_name} legacy technique: {tactic}/{technique}",
-            "logsource": {"category": "threat_intelligence", "product": "generic"},
+            "logsource": logsource,
             "detection": {
                 "selection": selection,
                 "condition": "selection",
@@ -463,6 +493,7 @@ class LegacyApt28ResearchModule(LegacyGenericActorTechniqueModule):
     capability_name = "apt28"
     actor_name = "APT28"
     actor_signature = "fancy_bear_sofacy"
+    aka = ("Fancy Bear", "Sofacy", "Sednit", "Strontium", "Pawn Storm")
     attack_techniques = ("T1566", "T1566.001", "T1059.001", "T1027", "T1071", "T1071.001")
     _TACTIC_TO_TECHNIQUE: Mapping[str, str] = {
         "initial_access": "T1566.001",
@@ -485,6 +516,7 @@ class LegacyApt32ResearchModule(LegacyGenericActorTechniqueModule):
     capability_name = "apt32"
     actor_name = "APT32"
     actor_signature = "oceanlotus"
+    aka = ("OceanLotus", "SeaLotus", "Cobalt Kitty", "APT-C-00")
     attack_techniques = (
         "T1566.001",
         "T1566.002",
@@ -514,6 +546,7 @@ class LegacyApt38ResearchModule(LegacyGenericActorTechniqueModule):
     capability_name = "apt38"
     actor_name = "APT38"
     actor_signature = "lazarus_apt38"
+    aka = ("Lazarus (financial)", "Bluenoroff", "Stardust Chollima")
     attack_techniques = (
         "T1566",
         "T1059.001",
@@ -542,6 +575,7 @@ class LegacyApt41ResearchModule(LegacyGenericActorTechniqueModule):
     capability_name = "apt41"
     actor_name = "APT41"
     actor_signature = "apt41_dual_use"
+    aka = ("Wicked Panda", "Barium", "Winnti")
     attack_techniques = (
         "T1566",
         "T1059.001",
