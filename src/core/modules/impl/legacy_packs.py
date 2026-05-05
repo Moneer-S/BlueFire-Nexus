@@ -774,7 +774,7 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
 
 class LegacyStealthResearchModule(LegacyAdapterBase):
     name = "legacy_stealth_research"
-    attack_techniques = ("T1497", "T1562", "T1070")
+    attack_techniques = ("T1497", "T1562", "T1070", "T1027")
     pack_name = "stealth_pack"
     capability_name = "anti_forensic"
 

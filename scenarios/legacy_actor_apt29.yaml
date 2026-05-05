@@ -2,10 +2,10 @@ id: legacy_actor_apt29
 name: Legacy APT29 Research Pack
 objective: Exercise the legacy APT29 actor capability pack through the modern runtime adapter layer.
 attack_coverage:
+  - T1589
   - T1566
   - T1059
   - T1036
-  - T1071.004
 fail_fast: false
 steps:
   - id: legacy-summary
