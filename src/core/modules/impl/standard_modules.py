@@ -573,6 +573,170 @@ class ReconnaissanceModule(BaseModule):
         )
 
 
+# Credential-access technique catalog.
+#
+# Each entry maps an operator-facing `technique` value to its MITRE ATT&CK
+# sub-technique, the Sigma-style logsource a defender would query, the
+# detection-selection field that identifies the technique, and the synthetic
+# telemetry event_type emitted by the module.
+#
+# This catalog is intentionally aligned with the technique surface of the
+# legacy `src/core/credential/credential_access.py` class (LSASS / SAM /
+# NTDS / browser / keychain / SSH / keylogging / clipboard / screen capture).
+# That legacy class is preserved for emulate-mode follow-up work; this
+# module produces realistic simulate-mode telemetry/hints without invoking
+# its real side-effect paths.
+_CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
+    "lsass_dump": {
+        "mitre": "T1003.001",
+        "logsource": {"category": "process_access", "product": "windows"},
+        "selection_field": "target.process.name",
+        "selection_value": "lsass.exe",
+        "event_type": "credential_access_lsass_dump",
+        "title_prefix": "LSASS process credential extraction",
+    },
+    "sam_dump": {
+        "mitre": "T1003.002",
+        "logsource": {"category": "registry_event", "product": "windows"},
+        "selection_field": "registry.key|contains",
+        "selection_value": "SAM",
+        "event_type": "credential_access_sam_dump",
+        "title_prefix": "SAM hive credential extraction",
+    },
+    "ntds_dump": {
+        "mitre": "T1003.003",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "file.path|contains",
+        "selection_value": "NTDS.dit",
+        "event_type": "credential_access_ntds_dump",
+        "title_prefix": "NTDS.dit domain credential extraction",
+    },
+    "browser_credentials": {
+        "mitre": "T1555.003",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "selection_value": "Login Data",
+        "event_type": "credential_access_browser",
+        "title_prefix": "Browser stored-credential extraction",
+    },
+    "keychain": {
+        "mitre": "T1555.001",
+        "logsource": {"category": "file_event", "product": "macos"},
+        "selection_field": "file.path|contains",
+        "selection_value": "login.keychain",
+        "event_type": "credential_access_keychain",
+        "title_prefix": "macOS Keychain credential extraction",
+    },
+    "ssh_keys": {
+        "mitre": "T1552.004",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "selection_value": ".ssh/id_",
+        "event_type": "credential_access_ssh",
+        "title_prefix": "SSH private-key file access",
+    },
+    "keylogging": {
+        "mitre": "T1056.001",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "SetWindowsHookEx",
+        "event_type": "credential_access_keylogging",
+        "title_prefix": "Keyboard input capture",
+    },
+    "clipboard": {
+        "mitre": "T1115",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "GetClipboardData",
+        "event_type": "credential_access_clipboard",
+        "title_prefix": "Clipboard data capture",
+    },
+    "screen_capture": {
+        "mitre": "T1113",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "BitBlt",
+        "event_type": "credential_access_screen_capture",
+        "title_prefix": "Screen capture for credential harvest",
+    },
+}
+
+
+class CredentialAccessModule(BaseModule):
+    """Standard adapter for the credential-access tactic.
+
+    Produces simulate-mode telemetry, ATT&CK-aligned detection hints, and
+    structured artifacts for nine credential-access techniques. The legacy
+    class at `src/core/credential/credential_access.py` is preserved as the
+    source of technique coverage; emulate-mode wiring is a follow-up.
+    """
+
+    name = "credential_access"
+    attack_techniques = (
+        "T1003.001",
+        "T1003.002",
+        "T1003.003",
+        "T1555.003",
+        "T1555.001",
+        "T1552.004",
+        "T1056.001",
+        "T1115",
+        "T1113",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        requested = str(params.get("technique") or "lsass_dump").lower()
+        profile_key = (
+            requested if requested in _CREDENTIAL_ACCESS_PROFILES else "lsass_dump"
+        )
+        profile = _CREDENTIAL_ACCESS_PROFILES[profile_key]
+        target = str(params.get("target") or "lab-host")
+
+        # Default behaviour mirrors the rest of the standard modules: no
+        # subprocess / socket / HTTP calls under any input. Per-technique
+        # telemetry shape is synthesised so detection drafts vary by
+        # technique rather than emitting a single hardcoded shape.
+        details = {
+            "technique": profile_key,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+            "selection_value": profile["selection_value"],
+        }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details=details,
+        )
+        hints = {
+            "title": f"{profile['title_prefix']} on {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: profile["selection_value"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "credential_technique": profile_key,
+            "target_host": target,
+        }
+        if requested != profile_key:
+            hints["unrecognized_credential_technique"] = requested
+
+        return _result(
+            self.name,
+            "success",
+            f"Simulated credential-access technique '{profile_key}' against {target}.",
+            techniques=[profile["mitre"]],
+            telemetry=[event],
+            hints=hints,
+            artifacts={
+                "technique": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            },
+        )
+
+
 class LegacyWrappedModule(BaseModule):
     """Adapter that wraps existing legacy modules into ModuleResult objects."""
 

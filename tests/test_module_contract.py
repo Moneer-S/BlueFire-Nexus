@@ -123,6 +123,7 @@ _MINIMAL_PARAMS: Dict[str, Dict[str, Any]] = {
     "network_obfuscator": {"protocol": "dns"},
     "resource_development": {"resource_type": "infrastructure"},
     "reconnaissance": {"source": "osint"},
+    "credential_access": {"technique": "lsass_dump", "target": "lab-host"},
     "legacy_capability_summary": {},
     "legacy_actor_profile": {"actor": "apt29", "tactics": ["credential_access"]},
     "legacy_apt29_research": {"technique": "phishing", "target": "lab-user"},

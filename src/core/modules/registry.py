@@ -8,6 +8,7 @@ from .impl.legacy_packs import discover_legacy_modules
 from .impl.standard_modules import (
     AntiDetectionModule,
     CommandControlModule,
+    CredentialAccessModule,
     DefenseEvasionModule,
     DiscoveryModule,
     ExecutionModule,
@@ -34,6 +35,7 @@ BUILTIN_MODULE_CLASSES: tuple[Type[BaseModule], ...] = (
     ExfiltrationModule,
     PersistenceModule,
     ExecutionModule,
+    CredentialAccessModule,
 )
 
 
