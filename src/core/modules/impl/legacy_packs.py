@@ -15,6 +15,7 @@ from ..base import BaseModule
 from .legacy_base import LegacyAdapterBase, _result
 from .legacy_runtime import (
     CREDENTIAL_TECHNIQUE_KEYS,
+    IMPACT_TECHNIQUE_KEYS,
     LATERAL_MOVEMENT_TECHNIQUE_KEYS,
     PRIVILEGE_ESCALATION_TECHNIQUE_KEYS,
     flatten_indicators,
@@ -24,6 +25,7 @@ from .legacy_runtime import (
     run_actor_technique,
     run_credential_access,
     run_dns_tunneling,
+    run_impact,
     run_lateral_movement,
     run_network_obfuscation,
     run_privilege_escalation,
@@ -1284,6 +1286,228 @@ class LegacyPrivilegeEscalationModule(LegacyAdapterBase):
         )
 
 
+# Per-technique simulate-mode tradecraft notes for the legacy impact
+# adapter. Notes describe the destructive pattern each technique
+# represents — the adapter NEVER writes destructive payloads. The
+# legacy class is itself purely descriptive: handlers synthesise
+# command strings, MITRE refs, and target paths without performing
+# encryption, deletion, service-control, or shutdown side effects.
+_LEGACY_IMPACT_NOTES: Dict[str, Dict[str, Any]] = {
+    "data_encryption": {
+        "title": "Legacy data-encryption (ransomware) tradecraft research",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.extension|in",
+        "selection_value": [".locked", ".enc", ".crypt"],
+        "event_type": "legacy_impact_data_encryption",
+        "notes": {
+            "common_extensions": [".locked", ".enc", ".crypt", ".lck"],
+            "telemetry_signal": "high-volume file rewrites + ransom-note creation",
+            "common_misuse": "AES-256/RSA hybrid; key exfiltrated before encryption",
+        },
+    },
+    "data_destruction": {
+        "title": "Legacy bulk file-destruction tradecraft research",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.operation",
+        "selection_value": "delete",
+        "event_type": "legacy_impact_data_destruction",
+        "notes": {
+            "canonical_tools": ["sdelete", "cipher /w", "shred"],
+            "common_misuse": "wipe of backups + shadow copies before delivery",
+        },
+    },
+    "data_manipulation": {
+        "title": "Legacy stored-data-manipulation tradecraft research",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.operation",
+        "selection_value": "modify",
+        "event_type": "legacy_impact_data_manipulation",
+        "notes": {
+            "common_misuse": "wallet-address swap, transaction tampering, ledger fraud",
+            "telemetry_signal": "bulk write to records database without matching read pattern",
+        },
+    },
+    "service_stop": {
+        "title": "Legacy defensive service-stop tradecraft research",
+        "logsource": {"category": "service_event", "product": "windows"},
+        "selection_field": "service.action",
+        "selection_value": "stop",
+        "event_type": "legacy_impact_service_stop",
+        "notes": {
+            "canonical_tools": ["sc.exe stop", "Stop-Service", "net stop"],
+            "common_targets": ["AV/EDR services", "backup services", "logging services"],
+        },
+    },
+    "service_modify": {
+        "title": "Legacy defensive service-modification tradecraft research",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.action",
+        "selection_value": "disable",
+        "event_type": "legacy_impact_service_modify",
+        "notes": {
+            "canonical_tools": ["sc.exe config", "Set-Service", "ChangeServiceConfig"],
+            "common_misuse": "disable AV/EDR by changing service start type to disabled",
+        },
+    },
+    "service_delete": {
+        "title": "Legacy defensive service-deletion tradecraft research",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.action",
+        "selection_value": "delete",
+        "event_type": "legacy_impact_service_delete",
+        "notes": {
+            "canonical_tools": ["sc.exe delete"],
+            "common_misuse": "permanent removal of recovery / forensic agents",
+        },
+    },
+    "system_reboot": {
+        "title": "Legacy forced system-reboot tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "shutdown /r",
+        "event_type": "legacy_impact_system_reboot",
+        "notes": {
+            "canonical_tools": ["shutdown /r /f /t 0", "Restart-Computer -Force"],
+            "common_misuse": "force reboot to load attacker-modified bootloader / persistence",
+        },
+    },
+    "system_shutdown": {
+        "title": "Legacy forced system-shutdown tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "shutdown /s",
+        "event_type": "legacy_impact_system_shutdown",
+        "notes": {
+            "canonical_tools": ["shutdown /s /f /t 0", "Stop-Computer -Force"],
+            "common_misuse": "post-encryption shutdown to deny recovery window",
+        },
+    },
+    "endpoint_dos": {
+        "title": "Legacy endpoint denial-of-service tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "fork-bomb",
+        "event_type": "legacy_impact_endpoint_dos",
+        "notes": {
+            "canonical_patterns": ["fork-bomb", "memory-bomb allocation loops", "thread storm"],
+            "telemetry_signal": "sustained CPU/RAM pressure spawned from a single root process",
+        },
+    },
+}
+
+
+class LegacyImpactModule(LegacyAdapterBase):
+    """Adapter for the preserved `Impact` legacy class.
+
+    Companion to the simulate-only standard `impact` module. Sits
+    behind `tactic_pack` / `impact` capability gating. Surfaces
+    per-technique tradecraft notes (canonical tools, telemetry
+    signals, common-misuse context) in simulate mode. Emulate mode
+    routes through `safe_call` into the legacy class which itself
+    returns synthesised tradecraft descriptors only — no live file
+    encryption, deletion, service-control, or system-shutdown side
+    effects.
+    """
+
+    name = "legacy_impact"
+    pack_name = "tactic_pack"
+    capability_name = "impact"
+    attack_techniques = (
+        "T1485",
+        "T1486",
+        "T1489",
+        "T1499",
+        "T1529",
+        "T1543.003",
+        "T1565",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        decision = self._ensure_allowed(context)
+        mode = decision.mode
+
+        requested = str(params.get("technique") or "data_encryption").lower()
+        technique_key = (
+            requested if requested in IMPACT_TECHNIQUE_KEYS else "data_encryption"
+        )
+        branch, legacy_key, mitre = IMPACT_TECHNIQUE_KEYS[technique_key]
+        profile = _LEGACY_IMPACT_NOTES[technique_key]
+        target = str(params.get("target") or "lab-host")
+
+        details: Dict[str, Any] = {
+            "technique": technique_key,
+            "legacy_key": legacy_key,
+            "legacy_branch": branch,
+            "mitre_technique": mitre,
+            "target": target,
+            "mode": mode,
+            "tradecraft_notes": dict(profile["notes"]),
+        }
+
+        if mode == "emulate":
+            runtime = safe_call(run_impact, technique_key, params)
+            details["runtime_outcome"] = runtime
+            indicators = flatten_indicators(runtime)
+            if indicators:
+                details["runtime_indicators"] = indicators
+            if runtime.get("status") == "failure":
+                details["runtime_warning"] = (
+                    "legacy impact runtime failed for "
+                    f"{technique_key}: {runtime.get('error')}"
+                )
+        else:
+            details["runtime_outcome"] = {
+                "status": "simulated",
+                "technique": technique_key,
+                "reason": "simulate mode selected",
+            }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details={
+                "run_id": context.get("run_id", "unknown"),
+                **details,
+            },
+        )
+        hints: Dict[str, Any] = {
+            "title": f"{profile['title']} on {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {
+                    profile["selection_field"]: profile["selection_value"],
+                    "legacy.pack": self.pack_name,
+                    "legacy.capability": self.capability_name,
+                    "legacy.technique": technique_key,
+                },
+                "condition": "selection",
+            },
+            "mitre_technique": mitre,
+            "impact_technique": technique_key,
+            "target_host": target,
+            "tradecraft_notes": dict(profile["notes"]),
+        }
+        if requested != technique_key:
+            hints["unrecognized_impact_technique"] = requested
+
+        artifacts = _capability_artifacts(
+            context,
+            self.pack_name,
+            self.capability_name,
+            mode,
+            details,
+        )
+        return _result(
+            self.name,
+            "success",
+            f"Legacy impact tradecraft for '{technique_key}' prepared in {mode} mode.",
+            techniques=[mitre],
+            artifacts=artifacts,
+            hints=hints,
+            telemetry=[event],
+        )
+
+
 class LegacyProtocolResearchModule(LegacyAdapterBase):
     name = "legacy_protocol_research"
     attack_techniques = ("T1071.004", "T1572", "T1090")
@@ -1663,6 +1887,7 @@ def discover_legacy_modules() -> Dict[str, type[BaseModule]]:
         LegacyCredentialAccessModule.name: LegacyCredentialAccessModule,
         LegacyLateralMovementModule.name: LegacyLateralMovementModule,
         LegacyPrivilegeEscalationModule.name: LegacyPrivilegeEscalationModule,
+        LegacyImpactModule.name: LegacyImpactModule,
         LegacyProtocolResearchModule.name: LegacyProtocolResearchModule,
         LegacyStealthResearchModule.name: LegacyStealthResearchModule,
     }
@@ -1680,6 +1905,7 @@ __all__ = [
     "LegacyCredentialAccessModule",
     "LegacyLateralMovementModule",
     "LegacyPrivilegeEscalationModule",
+    "LegacyImpactModule",
     "LegacyProtocolResearchModule",
     "LegacyStealthResearchModule",
     "discover_legacy_modules",
