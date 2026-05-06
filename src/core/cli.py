@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
 
-from .bluefire_nexus import BlueFireNexus
+from .bluefire_nexus import BlueFireNexus, resolve_output_root
 from .legacy_controls import (
     CAPABILITY_ALIASES,
     capability_aliases,
@@ -300,7 +300,10 @@ def risk_summary_cmd(
     if candidate.exists():
         summary_path = candidate / "risk_summary.json" if candidate.is_dir() else candidate
     else:
-        summary_path = Path("output") / run_target / "risk_summary.json"
+        # Honour `general.output_root` / `BLUEFIRE_OUTPUT_ROOT` so this
+        # command finds runs in non-default output roots (test
+        # harnesses, production deployments that pin a custom location).
+        summary_path = resolve_output_root() / run_target / "risk_summary.json"
     if not summary_path.exists():
         raise typer.BadParameter(
             f"Risk summary file not found: {summary_path}",
@@ -581,7 +584,9 @@ def legacy_run_risk_cmd(
     top: int = typer.Option(10, "--top", min=1, max=100),
 ) -> None:
     """Show summarized risk posture for an existing run."""
-    target = Path("output") / run_id / "risk_summary.json"
+    # Honour `general.output_root` / `BLUEFIRE_OUTPUT_ROOT` so this
+    # command finds runs that did NOT land under the default `output/`.
+    target = resolve_output_root() / run_id / "risk_summary.json"
     if not target.exists():
         raise typer.BadParameter(
             f"Risk summary not found for run '{run_id}'. Expected: {target}",
