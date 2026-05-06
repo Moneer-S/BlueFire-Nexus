@@ -32,16 +32,20 @@ def test_registry_includes_legacy_lateral_movement() -> None:
     assert instance.capability_name == "lateral_movement"
     expected_subset = {
         "T1021.002",  # PsExec / SMB share
-        "T1021.004",  # SSH lateral
+        "T1021.004",  # SSH lateral remote services
         "T1021.006",  # WinRM
         "T1047",      # WMI
         "T1059.001",  # PowerShell remoting
-        "T1105",      # FTP / SCP lateral tool transfer
         "T1543.003",  # Service create / modify
         "T1489",      # Service stop / disruption
-        "T1570",      # Lateral tool transfer (parent)
+        "T1570",      # Lateral tool transfer (FTP / SCP)
     }
     assert expected_subset.issubset(set(instance.attack_techniques))
+    # T1105 (Ingress Tool Transfer) was previously advertised but the
+    # adapter now normalises FTP/SCP transfers to T1570 (Lateral Tool
+    # Transfer) which is the canonical ATT&CK technique for moving
+    # tools between internal systems.
+    assert "T1105" not in instance.attack_techniques
 
 
 def test_disabled_pack_raises_runtime_error(tmp_path: Path) -> None:
@@ -155,8 +159,9 @@ def test_run_artifacts_remain_under_output_dir(tmp_path: Path) -> None:
         ("powershell_remoting", "T1059.001"),
         ("winrm", "T1021.006"),
         ("smb_share", "T1021.002"),
-        ("ftp_transfer", "T1105"),
-        ("scp_transfer", "T1105"),
+        ("ftp_transfer", "T1570"),
+        ("scp_transfer", "T1570"),
+        ("ssh", "T1021.004"),
         ("service_create", "T1543.003"),
         ("service_modify", "T1543.003"),
         ("service_stop", "T1489"),

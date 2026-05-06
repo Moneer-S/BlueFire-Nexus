@@ -911,6 +911,19 @@ _LEGACY_LATERAL_MOVEMENT_NOTES: Dict[str, Dict[str, Any]] = {
             "default_port": 22,
         },
     },
+    "ssh": {
+        "title": "Legacy SSH remote-services lateral tradecraft research",
+        "logsource": {"category": "network_connection", "product": "linux"},
+        "selection_field": "network.dst_port",
+        "selection_value": 22,
+        "event_type": "legacy_lateral_movement_ssh",
+        "notes": {
+            "canonical_tools": ["ssh", "ssh-copy-id", "OpenSSH client"],
+            "default_port": 22,
+            "common_misuse": "key-based auth abuse + port forwarding for pivoting",
+            "follow_up": "may chain into _handle_scp for SSH-borne file transfer",
+        },
+    },
     "service_create": {
         "title": "Legacy remote service-creation tradecraft research",
         "logsource": {"category": "service_creation", "product": "windows"},
@@ -968,7 +981,6 @@ class LegacyLateralMovementModule(LegacyAdapterBase):
         "T1021.006",
         "T1047",
         "T1059.001",
-        "T1105",
         "T1543.003",
         "T1489",
         "T1570",

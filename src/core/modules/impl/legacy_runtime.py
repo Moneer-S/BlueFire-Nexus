@@ -255,8 +255,22 @@ LATERAL_MOVEMENT_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
     "powershell_remoting": ("execution", "powershell", "T1059.001"),
     "winrm": ("execution", "powershell", "T1021.006"),
     "smb_share": ("file", "smb", "T1021.002"),
-    "ftp_transfer": ("file", "ftp", "T1105"),
-    "scp_transfer": ("file", "scp", "T1105"),
+    # T1570 (Lateral Tool Transfer) is the canonical ATT&CK technique
+    # for moving tools BETWEEN internal systems; the legacy class itself
+    # records the older T1105 (Ingress Tool Transfer) inside its handler
+    # details, but the adapter normalises to T1570 to match the standard
+    # `lateral_movement` module's profile and the broader ATT&CK
+    # convention. The legacy-original T1105 remains visible in
+    # `runtime_outcome.details.mitre_technique_id` for operators who
+    # want to trace back to the preserved class output.
+    "ftp_transfer": ("file", "ftp", "T1570"),
+    "scp_transfer": ("file", "scp", "T1570"),
+    # SSH lateral session (T1021.004) shares the preserved `_handle_scp`
+    # tradecraft surface (SCP rides SSH transport). The handler emits
+    # SCP-shaped command/path details; the adapter advertises the
+    # broader SSH lateral-services technique because that is what an
+    # operator usually intends when they pick `ssh` here.
+    "ssh": ("file", "scp", "T1021.004"),
     "service_create": ("service", "service_creation", "T1543.003"),
     "service_modify": ("service", "service_modification", "T1543.003"),
     "service_stop": ("service", "service_stop", "T1489"),
