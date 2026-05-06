@@ -54,10 +54,33 @@ visibility.
 | `legacy_apt41_research` | actor_pack | Per-actor APT41 adapter. Aliases: Wicked Panda, Barium, Winnti. Surfaces web-shell (T1505.003) and WMI-event persistence (T1546.003). |
 | `legacy_protocol_research` | c2_pack | DNS tunneling / TLS fast-flux / WebSocket-QUIC / Solana RPC / network obfuscation. |
 | `legacy_stealth_research` | stealth_pack | Anti-forensic / anti-sandbox / anti-detection / dynamic API resolution. |
+| `legacy_credential_access` | tactic_pack | Per-technique adapter wrapping `src/core/credential/credential_access.py`. Surfaces tradecraft notes for LSASS / SAM / NTDS dumping, browser-credential / keychain / SSH-key extraction, and keyboard / clipboard / screen capture. |
+| `legacy_lateral_movement` | tactic_pack | Per-technique adapter wrapping `src/core/movement/lateral_movement.py`. Surfaces tradecraft notes for PsExec / WMI / PowerShell-remoting / WinRM / SMB-share / FTP / SCP transfers and Windows-service create / modify / stop. |
+| `legacy_privilege_escalation` | tactic_pack | Per-technique adapter wrapping `src/core/privilege/privilege_escalation.py`. Surfaces tradecraft notes for token impersonation / duplication / make-and-impersonate, process hollowing / injection / masquerading, and service create / modify / stop. |
+| `legacy_impact` | tactic_pack | Per-technique adapter wrapping `src/core/impact/impact.py`. Surfaces tradecraft notes for ransomware encryption, bulk file destruction, stored-data manipulation, defensive service stop / modify / delete, system reboot / shutdown, and endpoint denial-of-service. |
+| `legacy_collection` | tactic_pack | Per-technique adapter wrapping `src/core/collection/collection.py`. Surfaces tradecraft notes for file / directory / archive staging, keyboard / clipboard / screen capture, and compression / encryption / encoding of collected data. |
 
 All legacy packs ship **disabled by default**. Enable globally with the
 master lab toggle or per-pack/per-capability with explicit opt-in. See
 [USAGE_GUIDELINES.md](../USAGE_GUIDELINES.md) for enablement examples.
+
+### Standard vs legacy tactic modules
+
+The standard tactic modules (`credential_access`, `lateral_movement`,
+`privilege_escalation`, `impact`, `collection`) remain simulate-only.
+They are NOT secretly routed to the legacy adapters; if a scenario
+wants the legacy adapter behaviour it must explicitly use
+`module: legacy_<tactic>`. There is no `emulate_via_legacy` flag and
+no implicit fallback — the two surfaces are separate by design:
+
+- **Standard module** (`module: credential_access`) — local synthetic
+  telemetry + Sigma drafts, no legacy code path, not gated by
+  `tactic_pack`.
+- **Legacy adapter** (`module: legacy_credential_access`) — gated by
+  `modules.legacy.tactic_pack.capabilities.credential_access`,
+  surfaces the rich legacy-class tradecraft notes, runs the legacy
+  class through `safe_call` only when emulate mode + lab confirmation
+  are explicit.
 
 ## Mode model
 
