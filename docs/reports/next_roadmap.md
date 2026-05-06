@@ -66,22 +66,23 @@ The following gaps have been closed and are kept here for context.
   scenario name, `risk_summary.json` includes a `scenario` field so
   downstream consumers can identify the scenario without reading the
   `run_id` directory layout.
+- **Tactic-pack legacy adapters.** The preserved per-tactic legacy
+  classes under `src/core/credential/`, `src/core/movement/`,
+  `src/core/privilege/`, `src/core/impact/`, and `src/core/collection/`
+  are now reachable through five explicit, gated adapter modules:
+  `legacy_credential_access`, `legacy_lateral_movement`,
+  `legacy_privilege_escalation`, `legacy_impact`, and
+  `legacy_collection`. Each sits behind a new `tactic_pack` /
+  `<tactic>` capability and uses the same `evaluate_legacy_capability`
+  + `_ensure_allowed` + `safe_call` pattern the actor / C2 / stealth
+  adapters already use. Standard tactic modules remain simulate-only
+  and unchanged in their safety/mode model. Scenarios that want the
+  legacy behaviour must explicitly say `module: legacy_<tactic>` —
+  there is no implicit routing or `emulate_via_legacy` flag.
 
 ## Open items
 
-### 1. Emulate-mode bridges for the new tactic modules
-The five recently-added standard modules (`credential_access`,
-`lateral_movement`, `privilege_escalation`, `impact`, `collection`) are
-simulate-only. Each has a substantial legacy implementation under
-`src/core/<tactic>/*.py` (~5,400 lines combined) that is preserved but
-not yet invoked.
-
-**Approach:** For each tactic, add an emulate-mode path that calls the
-legacy class through the same `safe_call` + `_ensure_allowed` pattern
-the existing legacy adapters use. Gate behind explicit
-`lab_confirmation`. One focused PR per tactic.
-
-### 2. AI provider end-to-end implementation
+### 1. AI provider end-to-end implementation
 `OpenAICompatibleProvider` is wired to `ProviderFactory` and recognizes
 the major provider names, but the current implementation produces a
 structured stub response rather than calling out.
@@ -92,7 +93,7 @@ choice; OpenAI-compatible is the obvious BYOK choice) and implement
 fallback path. Avoid multi-provider sprawl until at least one real
 backend is solid.
 
-### 3. Step-to-step artifact propagation
+### 2. Step-to-step artifact propagation
 Scenario steps cannot read artifacts from earlier steps in the same
 chain. This is the deepest reason scenarios feel like disconnected
 calls rather than coherent adversary chains.
@@ -102,7 +103,7 @@ dict, passed to each step's `execute()`. Modules can opt in to read
 prior step outputs (e.g. `discovery` results feeding `credential_access`
 target selection).
 
-### 4. Future remote-observability story
+### 3. Future remote-observability story
 Out of scope for the local-first baseline. If/when added, would belong
 in a separate optional module behind explicit configuration. No remote
 SIEM exporters or external collectors today.

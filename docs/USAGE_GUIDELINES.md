@@ -129,7 +129,29 @@ modules:
       capabilities:
         anti_forensic:
           enabled: true
+    tactic_pack:
+      enabled: true
+      mode: simulate
+      lab_confirmation: false        # only required for emulate mode
+      capabilities:
+        credential_access:
+          enabled: true
+        lateral_movement:
+          enabled: false
+        privilege_escalation:
+          enabled: false
+        impact:
+          enabled: false
+        collection:
+          enabled: false
 ```
+
+The `tactic_pack` capabilities map to explicit modules — scenarios use
+`module: legacy_credential_access`, `module: legacy_lateral_movement`,
+`module: legacy_privilege_escalation`, `module: legacy_impact`, or
+`module: legacy_collection`. The simulate-only standard tactic
+modules (`module: credential_access`, etc.) are unchanged and are
+NOT routed through the legacy adapters.
 
 ### Capability aliases (accepted in YAML and CLI flags)
 

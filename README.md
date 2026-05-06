@@ -138,13 +138,14 @@ Full safety story: [SECURITY.md](SECURITY.md).
 
 ## Legacy capability packs
 
-Three opt-in research packs preserve the most advanced offensive code paths instead of hiding or deleting them:
+Four opt-in research packs preserve the most advanced offensive code paths instead of hiding or deleting them:
 
 - **Actor pack** — APT29 / APT28 / APT32 / APT38 / APT41 research adapters.
 - **C2 / protocol pack** — DNS tunneling, TLS fast-flux, QUIC, Solana RPC, network obfuscation.
 - **Stealth pack** — anti-forensic, anti-sandbox, anti-detection, dynamic API resolution research.
+- **Tactic pack** — credential-access, lateral-movement, privilege-escalation, impact, and collection research adapters wrapping the preserved per-tactic legacy classes (`legacy_credential_access`, `legacy_lateral_movement`, `legacy_privilege_escalation`, `legacy_impact`, `legacy_collection`).
 
-All packs ship **disabled by default**. Enable globally with the master lab toggle or per-pack/per-capability with explicit opt-in. `simulate` is the default mode for any enabled capability; `emulate` requires lab confirmation.
+All packs ship **disabled by default**. Enable globally with the master lab toggle or per-pack/per-capability with explicit opt-in. `simulate` is the default mode for any enabled capability; `emulate` requires lab confirmation. The standard tactic modules (`credential_access`, etc.) remain simulate-only and are NOT routed through the legacy adapters; scenarios that want the legacy behaviour must explicitly use `module: legacy_<tactic>`.
 
 Full enable/disable surface, preset profiles, and YAML examples: [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELINES.md). Per-pack case studies: [docs/case-studies/](docs/case-studies/).
 
@@ -193,7 +194,6 @@ Bandit runs strict at `-ll` (medium and higher). Each expected dual-use offensiv
 
 Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top open items:
 
-- **Emulate-mode bridges for the new tactic modules.** `credential_access`, `lateral_movement`, `privilege_escalation`, `impact`, and `collection` are simulate-only today. Each has a substantial legacy implementation under `src/core/<tactic>/*.py` that is preserved but not yet invoked.
 - **AI provider end-to-end implementation.** Pick one (Ollama for offline-first, or OpenAI-compatible for BYOK) and wire it through `OpenAICompatibleProvider.complete()`. Until then, the local TemplateProvider remains the deterministic offline default.
 - **Step-to-step artifact propagation.** Scenario steps cannot read artifacts from earlier steps in the same chain; a `previous_step_results` mapping in the runtime context would let modules opt into chained inputs (e.g. discovery feeding credential_access target selection).
 - **Future observed-telemetry correlation.** Roadmap only; not in current baseline. No remote SIEM exporters or external collectors today.
@@ -202,9 +202,9 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ope
 
 ## Status snapshot
 
-- 451 passing tests, 5 intentional skips, 0 failures.
+- 562 passing tests, 5 intentional skips, 0 failures.
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
-- 26 modules registered (17 standard + 9 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
+- 31 modules registered (17 standard + 14 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
 - 9 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.
 - Capability inventory: [docs/reports/capability_inventory.md](docs/reports/capability_inventory.md).
 - Scenario coverage: [docs/reports/scenario_validation.md](docs/reports/scenario_validation.md).
