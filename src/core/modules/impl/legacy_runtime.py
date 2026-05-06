@@ -149,11 +149,76 @@ def run_network_obfuscation(payload: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
-# Standard credential-access technique keys mapped to the nested input
-# shape the preserved `CredentialAccess.access(...)` class expects, plus
-# the canonical MITRE technique each emits. Kept here (not in the
-# adapter) so other call sites — including future legacy-tactic helpers
-# — can reuse the same mapping without import cycles.
+# Per-tactic dispatch tables for the preserved legacy classes.
+#
+# Earlier versions of these helpers fed a single-key payload like
+# ``{"browser": {...}}`` into the staged-pipeline entrypoint of each
+# legacy class (``CredentialAccess.access``, ``LateralMovement.move``,
+# ``PrivilegeEscalation.escalate``, ``Impact.impact``, ``Collection.collect``).
+# Those entrypoints chain three sub-stages and pass each stage's RESULT
+# (not the original payload) to the next stage. So a payload meant for
+# the second or third stage was silently dropped — the helper returned
+# an empty `details` dict.
+#
+# The fix below dispatches directly to the per-technique handler method
+# (``_handle_<method>``) the preserved class already exposes. The third
+# field of each dispatch tuple is therefore the handler-method *suffix*,
+# not a stage-input key. ``branch`` is retained only for diagnostic
+# telemetry on the adapter so reports still distinguish staging vs.
+# capture vs. compression results.
+#
+# This also resolves the privilege-escalation ``creation`` collision:
+# token_creation -> ``_handle_creation`` (token branch),
+# service_creation -> ``_handle_service_creation`` (service branch).
+
+
+def _dispatch_legacy_handler(
+    legacy: Any, method: str, params: Mapping[str, Any]
+) -> Dict[str, Any]:
+    """Call ``legacy._handle_<method>(dict(params))`` defensively.
+
+    Returns an empty dict if the method does not exist (so an
+    incorrectly registered dispatch row surfaces as empty details
+    rather than an AttributeError) or if the handler raises (so
+    `safe_call` upstream can normalise the failure shape).
+    """
+    handler = getattr(legacy, f"_handle_{method}", None)
+    if handler is None:
+        return {}
+    outcome = handler(dict(params))
+    if not isinstance(outcome, Mapping):
+        return {}
+    return dict(outcome)
+
+
+def _legacy_runtime_result(
+    technique: str,
+    legacy_method: str,
+    mitre: str,
+    branch_outcome: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Normalise a legacy handler's outcome into the adapter's runtime shape."""
+    status = str(branch_outcome.get("status", "completed"))
+    if status not in {"success", "completed", "error", "failure"}:
+        status = "completed"
+    return {
+        "status": status,
+        "technique": technique,
+        "legacy_method": legacy_method,
+        # `legacy_key` retained for backward compatibility with adapters
+        # / telemetry consumers that already field this name.
+        "legacy_key": legacy_method,
+        "mitre_technique": mitre,
+        "details": dict(branch_outcome.get("details", {})),
+        "timestamp": branch_outcome.get("timestamp", ""),
+    }
+
+
+# CredentialAccess: (legacy_handler_method, canonical_mitre).
+# Legacy class methods: _handle_lsass / _handle_sam / _handle_ntds
+# (dumping); _handle_browser / _handle_keychain / _handle_ssh
+# (extraction); _handle_keylogging / _handle_clipboard / _handle_screen
+# (interception).
 CREDENTIAL_TECHNIQUE_KEYS: Dict[str, tuple[str, str]] = {
     "lsass_dump": ("lsass", "T1003.001"),
     "sam_dump": ("sam", "T1003.002"),
@@ -168,58 +233,22 @@ CREDENTIAL_TECHNIQUE_KEYS: Dict[str, tuple[str, str]] = {
 
 
 def run_credential_access(technique: str, params: Mapping[str, Any]) -> Dict[str, Any]:
-    """Invoke the preserved `CredentialAccess` legacy class for one technique.
-
-    The legacy class consumes a nested input dict (`{"lsass": {...}}`) and
-    dispatches to a per-technique handler that builds tradecraft notes
-    (commands, MITRE refs, dump-file metadata). It does not subprocess,
-    socket, or write files itself — every handler returns a synthesised
-    descriptor dict. The helper unwraps the nested result back to the
-    flat shape adapter consumers expect.
-    """
-    legacy_key, mitre = CREDENTIAL_TECHNIQUE_KEYS.get(
+    """Invoke the per-technique handler on the preserved `CredentialAccess` class."""
+    legacy_method, mitre = CREDENTIAL_TECHNIQUE_KEYS.get(
         technique, ("lsass", "T1003.001")
     )
     cls = _load_attr("src.core.credential.credential_access", "CredentialAccess")
     legacy = cls()
-    payload = {legacy_key: dict(params)}
-    raw = legacy.access(payload)
-
-    # The credential-access class buckets handler results under one of
-    # three branches (dumping / extraction / interception). The unwrap
-    # helper finds whichever branch the handler lives in.
-    branch_outcome: Dict[str, Any] = {}
-    for branch in ("dumping", "extraction", "interception"):
-        outcome = _unwrap_legacy_branch(
-            raw,
-            outer_key="credential_access",
-            branch=branch,
-            legacy_handler_key=legacy_key,
-        )
-        if outcome:
-            branch_outcome = outcome
-            break
-
-    status = str(branch_outcome.get("status", "completed"))
-    return {
-        "status": status if status in {"success", "completed", "error", "failure"} else "completed",
-        "technique": technique,
-        "legacy_key": legacy_key,
-        "mitre_technique": mitre,
-        "details": dict(branch_outcome.get("details", {})),
-        "timestamp": branch_outcome.get("timestamp", raw.get("timestamp", "")),
-    }
+    branch_outcome = _dispatch_legacy_handler(legacy, legacy_method, params)
+    return _legacy_runtime_result(technique, legacy_method, mitre, branch_outcome)
 
 
-# Standard lateral-movement technique keys mapped to:
-#   (branch, legacy_handler_key, canonical_mitre)
-# `branch` selects the inner dict the legacy `LateralMovement.move(...)`
-# class places its handler result under (`execution`, `file`, `service`).
-# `legacy_handler_key` is the data-key the legacy class dispatches on
-# inside `_apply_remote_*`. The mapping covers the standard
-# LateralMovementModule profile keys plus three legacy-only handlers
-# (powershell-remoting, service modification, service stop) that the
-# standard module does not expose today.
+# LateralMovement: (branch, legacy_handler_method, canonical_mitre).
+# Branch is for telemetry only. Service-branch methods are
+# ``_handle_service_creation`` / ``_handle_service_modification`` /
+# ``_handle_service_stop``, distinct from the data-key names
+# (``creation`` / ``modification`` / ``stop``) used by the staged-
+# pipeline entrypoint.
 LATERAL_MOVEMENT_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
     "psexec": ("execution", "psexec", "T1021.002"),
     "wmi": ("execution", "wmi", "T1047"),
@@ -228,82 +257,31 @@ LATERAL_MOVEMENT_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
     "smb_share": ("file", "smb", "T1021.002"),
     "ftp_transfer": ("file", "ftp", "T1105"),
     "scp_transfer": ("file", "scp", "T1105"),
-    "service_create": ("service", "creation", "T1543.003"),
-    "service_modify": ("service", "modification", "T1543.003"),
-    "service_stop": ("service", "stop", "T1489"),
+    "service_create": ("service", "service_creation", "T1543.003"),
+    "service_modify": ("service", "service_modification", "T1543.003"),
+    "service_stop": ("service", "service_stop", "T1489"),
 }
 
 
-def _unwrap_legacy_branch(
-    raw: Mapping[str, Any],
-    *,
-    outer_key: str,
-    branch: str,
-    legacy_handler_key: str,
-) -> Dict[str, Any]:
-    """Generic unwrap helper for the nested legacy-class result shape.
-
-    Legacy classes return `{outer_key: {branch: {legacy_handler_key: {...}}}}`
-    or fall back to descriptive top-level keys. This helper returns a
-    flat handler-result dict, regardless of which branch the legacy
-    class placed the result in.
-    """
-    nested = raw.get(outer_key, {}) if isinstance(raw, Mapping) else {}
-    branch_value = nested.get(branch) if isinstance(nested, Mapping) else None
-    if isinstance(branch_value, Mapping) and legacy_handler_key in branch_value:
-        handler_result = branch_value.get(legacy_handler_key)
-        if isinstance(handler_result, Mapping):
-            return dict(handler_result)
-    # Fallback: scan every branch for the handler key (defensive).
-    if isinstance(nested, Mapping):
-        for value in nested.values():
-            if isinstance(value, Mapping) and legacy_handler_key in value:
-                handler_result = value.get(legacy_handler_key)
-                if isinstance(handler_result, Mapping):
-                    return dict(handler_result)
-    return {}
-
-
 def run_lateral_movement(technique: str, params: Mapping[str, Any]) -> Dict[str, Any]:
-    """Invoke the preserved `LateralMovement` legacy class for one technique.
-
-    The legacy class consumes a nested input dict (`{"psexec": {...}}`)
-    and dispatches to a per-technique handler that synthesises
-    tradecraft notes (commands, MITRE refs, file paths). No live
-    network or process side effect occurs — every handler returns a
-    descriptor dict.
-    """
-    branch, legacy_key, mitre = LATERAL_MOVEMENT_TECHNIQUE_KEYS.get(
+    """Invoke the per-technique handler on the preserved `LateralMovement` class."""
+    _branch, legacy_method, mitre = LATERAL_MOVEMENT_TECHNIQUE_KEYS.get(
         technique, ("execution", "psexec", "T1021.002")
     )
     cls = _load_attr("src.core.movement.lateral_movement", "LateralMovement")
     legacy = cls()
-    payload = {legacy_key: dict(params)}
-    raw = legacy.move(payload)
-
-    branch_outcome = _unwrap_legacy_branch(
-        raw,
-        outer_key="lateral_movement",
-        branch=branch,
-        legacy_handler_key=legacy_key,
-    )
-    status = str(branch_outcome.get("status", "completed"))
-    return {
-        "status": status if status in {"success", "completed", "error", "failure"} else "completed",
-        "technique": technique,
-        "legacy_key": legacy_key,
-        "mitre_technique": mitre,
-        "details": dict(branch_outcome.get("details", {})),
-        "timestamp": branch_outcome.get("timestamp", raw.get("timestamp", "")),
-    }
+    branch_outcome = _dispatch_legacy_handler(legacy, legacy_method, params)
+    return _legacy_runtime_result(technique, legacy_method, mitre, branch_outcome)
 
 
-# Standard privilege-escalation technique keys mapped to:
-#   (branch, legacy_handler_key, canonical_mitre)
-# Branch matches the legacy class's three-bucket dispatch shape
-# (token / process / service). Note that `creation` lives under both
-# token (`token_creation`) and service (`service_creation`) branches —
-# the explicit branch in the tuple disambiguates them.
+# PrivilegeEscalation: (branch, legacy_handler_method, canonical_mitre).
+# Token-branch ``creation`` collides with service-branch ``creation``
+# under the staged-pipeline entrypoint, so dispatch goes through the
+# per-method names: ``_handle_creation`` (token, T1134.003) vs.
+# ``_handle_service_creation`` (service, T1543.003). They are distinct
+# methods on the legacy class — see `_handle_creation` (token) and
+# `_handle_service_creation` (service) in
+# `src/core/privilege/privilege_escalation.py`.
 PRIVILEGE_ESCALATION_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
     "token_impersonation": ("token", "impersonation", "T1134.001"),
     "token_duplication": ("token", "duplication", "T1134.002"),
@@ -311,55 +289,37 @@ PRIVILEGE_ESCALATION_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
     "process_hollowing": ("process", "hollowing", "T1055.012"),
     "process_injection": ("process", "injection", "T1055"),
     "process_masquerading": ("process", "masquerading", "T1036.005"),
-    "service_creation": ("service", "creation", "T1543.003"),
-    "service_modification": ("service", "modification", "T1543.003"),
-    "service_stop": ("service", "stop", "T1489"),
+    "service_creation": ("service", "service_creation", "T1543.003"),
+    "service_modification": ("service", "service_modification", "T1543.003"),
+    "service_stop": ("service", "service_stop", "T1489"),
 }
 
 
 def run_privilege_escalation(
     technique: str, params: Mapping[str, Any]
 ) -> Dict[str, Any]:
-    """Invoke the preserved `PrivilegeEscalation` legacy class for one technique."""
-    branch, legacy_key, mitre = PRIVILEGE_ESCALATION_TECHNIQUE_KEYS.get(
+    """Invoke the per-technique handler on the preserved `PrivilegeEscalation` class."""
+    _branch, legacy_method, mitre = PRIVILEGE_ESCALATION_TECHNIQUE_KEYS.get(
         technique, ("token", "impersonation", "T1134.001")
     )
     cls = _load_attr("src.core.privilege.privilege_escalation", "PrivilegeEscalation")
     legacy = cls()
-    payload = {legacy_key: dict(params)}
-    raw = legacy.escalate(payload)
-
-    branch_outcome = _unwrap_legacy_branch(
-        raw,
-        outer_key="privilege_escalation",
-        branch=branch,
-        legacy_handler_key=legacy_key,
-    )
-    status = str(branch_outcome.get("status", "completed"))
-    return {
-        "status": status if status in {"success", "completed", "error", "failure"} else "completed",
-        "technique": technique,
-        "legacy_key": legacy_key,
-        "mitre_technique": mitre,
-        "details": dict(branch_outcome.get("details", {})),
-        "timestamp": branch_outcome.get("timestamp", raw.get("timestamp", "")),
-    }
+    branch_outcome = _dispatch_legacy_handler(legacy, legacy_method, params)
+    return _legacy_runtime_result(technique, legacy_method, mitre, branch_outcome)
 
 
-# Standard impact technique keys mapped to:
-#   (branch, legacy_handler_key, canonical_mitre)
-# Branch matches the legacy `Impact.impact(...)` three-bucket dispatch
-# shape (data / service / system). The legacy class is purely
-# descriptive: every handler synthesises operator-facing strings
-# (encryption command, file paths, MITRE ID) without writing data,
-# stopping services, or rebooting the host.
+# Impact: (branch, legacy_handler_method, canonical_mitre).
+# Service-branch methods on the legacy class are ``_handle_service_stop``
+# / ``_handle_service_modify`` / ``_handle_service_delete``. System-
+# branch methods are ``_handle_reboot`` / ``_handle_shutdown`` /
+# ``_handle_crash``.
 IMPACT_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
     "data_encryption": ("data", "encryption", "T1486"),
     "data_destruction": ("data", "deletion", "T1485"),
     "data_manipulation": ("data", "modification", "T1565"),
-    "service_stop": ("service", "stop", "T1489"),
-    "service_modify": ("service", "modify", "T1543.003"),
-    "service_delete": ("service", "delete", "T1543.003"),
+    "service_stop": ("service", "service_stop", "T1489"),
+    "service_modify": ("service", "service_modify", "T1543.003"),
+    "service_delete": ("service", "service_delete", "T1543.003"),
     "system_reboot": ("system", "reboot", "T1529"),
     "system_shutdown": ("system", "shutdown", "T1529"),
     "endpoint_dos": ("system", "crash", "T1499"),
@@ -367,46 +327,29 @@ IMPACT_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
 
 
 def run_impact(technique: str, params: Mapping[str, Any]) -> Dict[str, Any]:
-    """Invoke the preserved `Impact` legacy class for one technique."""
-    branch, legacy_key, mitre = IMPACT_TECHNIQUE_KEYS.get(
+    """Invoke the per-technique handler on the preserved `Impact` class."""
+    _branch, legacy_method, mitre = IMPACT_TECHNIQUE_KEYS.get(
         technique, ("data", "encryption", "T1486")
     )
     cls = _load_attr("src.core.impact.impact", "Impact")
     legacy = cls()
-    payload = {legacy_key: dict(params)}
-    raw = legacy.impact(payload)
-
-    branch_outcome = _unwrap_legacy_branch(
-        raw,
-        outer_key="impact",
-        branch=branch,
-        legacy_handler_key=legacy_key,
-    )
-    status = str(branch_outcome.get("status", "completed"))
-    return {
-        "status": status if status in {"success", "completed", "error", "failure"} else "completed",
-        "technique": technique,
-        "legacy_key": legacy_key,
-        "mitre_technique": mitre,
-        "details": dict(branch_outcome.get("details", {})),
-        "timestamp": branch_outcome.get("timestamp", raw.get("timestamp", "")),
-    }
+    branch_outcome = _dispatch_legacy_handler(legacy, legacy_method, params)
+    return _legacy_runtime_result(technique, legacy_method, mitre, branch_outcome)
 
 
-# Standard collection technique keys mapped to:
-#   (branch, legacy_handler_key, canonical_mitre)
-# Branch matches the legacy `Collection.collect(...)` three-bucket
-# dispatch shape (staging / capture / compression). The legacy class
-# is purely descriptive; handlers synthesise tradecraft strings (file
-# paths, archive commands, encoding names) without writing data,
-# spawning processes, or touching the keyboard / clipboard / screen.
+# Collection: (branch, legacy_handler_method, canonical_mitre).
+# Methods on the legacy class are ``_handle_file_staging`` /
+# ``_handle_directory_staging`` / ``_handle_archive_staging``
+# (staging); ``_handle_keyboard_capture`` / ``_handle_clipboard_capture``
+# / ``_handle_screen_capture`` (capture); ``_handle_compression`` /
+# ``_handle_encryption`` / ``_handle_encoding`` (compression).
 COLLECTION_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
-    "file_staging": ("staging", "file", "T1074.001"),
-    "directory_staging": ("staging", "directory", "T1074.001"),
-    "archive_staging": ("staging", "archive", "T1560.001"),
-    "keyboard_capture": ("capture", "keyboard", "T1056.001"),
-    "clipboard_capture": ("capture", "clipboard", "T1115"),
-    "screen_capture": ("capture", "screen", "T1113"),
+    "file_staging": ("staging", "file_staging", "T1074.001"),
+    "directory_staging": ("staging", "directory_staging", "T1074.001"),
+    "archive_staging": ("staging", "archive_staging", "T1560.001"),
+    "keyboard_capture": ("capture", "keyboard_capture", "T1056.001"),
+    "clipboard_capture": ("capture", "clipboard_capture", "T1115"),
+    "screen_capture": ("capture", "screen_capture", "T1113"),
     "compression": ("compression", "compression", "T1560"),
     "encryption": ("compression", "encryption", "T1022"),
     "encoding": ("compression", "encoding", "T1132"),
@@ -414,30 +357,14 @@ COLLECTION_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
 
 
 def run_collection(technique: str, params: Mapping[str, Any]) -> Dict[str, Any]:
-    """Invoke the preserved `Collection` legacy class for one technique."""
-    branch, legacy_key, mitre = COLLECTION_TECHNIQUE_KEYS.get(
-        technique, ("staging", "file", "T1074.001")
+    """Invoke the per-technique handler on the preserved `Collection` class."""
+    _branch, legacy_method, mitre = COLLECTION_TECHNIQUE_KEYS.get(
+        technique, ("staging", "file_staging", "T1074.001")
     )
     cls = _load_attr("src.core.collection.collection", "Collection")
     legacy = cls()
-    payload = {legacy_key: dict(params)}
-    raw = legacy.collect(payload)
-
-    branch_outcome = _unwrap_legacy_branch(
-        raw,
-        outer_key="collection",
-        branch=branch,
-        legacy_handler_key=legacy_key,
-    )
-    status = str(branch_outcome.get("status", "completed"))
-    return {
-        "status": status if status in {"success", "completed", "error", "failure"} else "completed",
-        "technique": technique,
-        "legacy_key": legacy_key,
-        "mitre_technique": mitre,
-        "details": dict(branch_outcome.get("details", {})),
-        "timestamp": branch_outcome.get("timestamp", raw.get("timestamp", "")),
-    }
+    branch_outcome = _dispatch_legacy_handler(legacy, legacy_method, params)
+    return _legacy_runtime_result(technique, legacy_method, mitre, branch_outcome)
 
 
 def run_stealth_capability(capability: str, params: Mapping[str, Any]) -> Dict[str, Any]:

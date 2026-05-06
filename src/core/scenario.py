@@ -47,12 +47,22 @@ def load_scenario(path: str | Path) -> Scenario:
                 params=step.get("params") or step.get("operation") or {},
             )
         )
-    declared_techniques = (
-        raw.get("attack_coverage")
-        or raw.get("mitre")
-        or raw.get("attack_techniques")
-        or []
-    )
+    # Resolve declared techniques. Fall back to legacy keys ONLY when the
+    # canonical `attack_coverage` key is absent — an explicit empty list
+    # under `attack_coverage: []` must be preserved (e.g. an experimental
+    # scenario that intentionally declares no coverage). Truthy/falsy
+    # short-circuiting (`a or b`) silently swallowed empty lists, which
+    # made `attack_coverage: []` indistinguishable from "missing key" and
+    # caused declared coverage to drift to whichever fallback was first
+    # populated.
+    if "attack_coverage" in raw:
+        declared_techniques = raw.get("attack_coverage") or []
+    elif "mitre" in raw:
+        declared_techniques = raw.get("mitre") or []
+    elif "attack_techniques" in raw:
+        declared_techniques = raw.get("attack_techniques") or []
+    else:
+        declared_techniques = []
     return Scenario(
         id=str(raw.get("id", scenario_path.stem)),
         name=str(raw.get("name", scenario_path.stem)),
