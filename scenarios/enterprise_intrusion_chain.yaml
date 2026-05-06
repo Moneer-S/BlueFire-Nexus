@@ -91,7 +91,13 @@ steps:
     module: lateral_movement
     params:
       technique: psexec
-      source: finance-analyst-laptop
+      # Pivot host (`source`) is propagated from the upstream
+      # `harvest-browser-creds` credential-access step rather than
+      # re-declared. The destination (`target`) stays explicit since
+      # no upstream step has enumerated `corp-fileshare`. Demonstrates
+      # the lateral_movement module's `source_from_step` consumer
+      # complement to the existing `target_from_step` slot.
+      source_from_step: harvest-browser-creds
       target: corp-fileshare
       network_touch: false
 
