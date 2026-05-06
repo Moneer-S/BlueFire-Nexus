@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,11 +56,36 @@ class BlueFireNexus:
         if module_name in self.modules:
             self.modules[module_name].update_config(existing)
 
+    def _output_root(self) -> Path:
+        """Return the configured runtime output root (default ``output``).
+
+        Resolution order (first non-empty wins):
+
+        1. ``general.output_root`` in the loaded config — for explicit
+           per-config control (production deployments, scenarios that
+           pin a specific output location).
+        2. ``BLUEFIRE_OUTPUT_ROOT`` env var — for ambient test
+           isolation (the test harness sets this once per session so
+           tests that do not pass an explicit config still produce
+           artifacts under a tmp directory rather than the project-
+           root ``output/``).
+        3. ``output`` — default, preserves existing CLI behaviour.
+        """
+        general = self.config.get("general", {}) if isinstance(self.config, Mapping) else {}
+        if isinstance(general, Mapping):
+            configured = str(general.get("output_root", "")).strip()
+            if configured:
+                return Path(configured)
+        env_root = os.environ.get("BLUEFIRE_OUTPUT_ROOT", "").strip()
+        if env_root:
+            return Path(env_root)
+        return Path("output")
+
     def _make_run_context(self, run_id: Optional[str] = None) -> RunContext:
         run_identifier = run_id or (
             f"run-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
         )
-        out_dir = Path("output") / run_identifier
+        out_dir = self._output_root() / run_identifier
         out_dir.mkdir(parents=True, exist_ok=True)
 
         safeties = self.config.get("general", {}).get("safeties", {})
@@ -318,7 +344,7 @@ class BlueFireNexus:
         return copilot.plan(goal)
 
     def suggest_detections(self, run_id: str) -> Dict[str, str]:
-        run_dir = Path("output") / run_id
+        run_dir = self._output_root() / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
         copilot = AICopilot(self.config, run_dir)
         return copilot.suggest_detections(run_id)

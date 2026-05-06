@@ -15,6 +15,7 @@ from src.core.modules.registry import build_runtime_modules
 
 def _enable_lateral_movement(cfg_path: Path, *, mode: str, ack: bool) -> None:
     cfg = ConfigManager(str(cfg_path))
+    cfg.set("general.output_root", str(cfg_path.parent / "output"))
     base = "modules.legacy.tactic_pack.capabilities.lateral_movement"
     cfg.set(f"{base}.enabled", True)
     cfg.set(f"{base}.mode", mode)
@@ -45,7 +46,9 @@ def test_registry_includes_legacy_lateral_movement() -> None:
 
 def test_disabled_pack_raises_runtime_error(tmp_path: Path) -> None:
     cfg_path = tmp_path / "config.yaml"
-    ConfigManager(str(cfg_path)).save()
+    cfg = ConfigManager(str(cfg_path))
+    cfg.set("general.output_root", str(tmp_path / "output"))
+    cfg.save()
     nexus = BlueFireNexus(str(cfg_path))
     result = nexus.execute_operation(
         "legacy_lateral_movement",

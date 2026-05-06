@@ -139,7 +139,9 @@ def run_experiment(
 
         mutation_state = _mutate_run_params(result, enable_jitter=jitter)
 
-    out_dir = Path("output") / f"experiment-{scenario.id}"
+    # Honor the runtime's configured output root so callers (especially
+    # tests) can scope experiment artifacts under an isolated directory.
+    out_dir = nexus._output_root() / f"experiment-{scenario.id}"
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / "summary.json"
     target.write_text(json.dumps(output_records, indent=2), encoding="utf-8")
