@@ -106,7 +106,20 @@ class BlueFireNexus:
     def _module_context(
         run_context: RunContext,
         step: Optional[Mapping[str, Any]] = None,
+        previous_step_results: Optional[Mapping[str, Mapping[str, Any]]] = None,
     ) -> Dict[str, Any]:
+        """Build the per-step runtime context dict passed to ``module.execute``.
+
+        The optional ``previous_step_results`` mapping carries upstream
+        steps' results keyed by step_id, so downstream modules can opt
+        into reading prior outputs (e.g. a later credential-access step
+        consuming a discovery step's host list). The mapping is always
+        present in the returned context (possibly empty) — modules that
+        do not opt in simply ignore the key.
+
+        The mapping is a defensive copy to avoid downstream mutations
+        leaking back into the runtime's accumulator.
+        """
         payload: Dict[str, Any] = {
             "run_context": run_context,
             "run_id": run_context.run_id,
@@ -114,6 +127,10 @@ class BlueFireNexus:
             "allowed_subnets": run_context.allowed_subnets,
             "max_runtime": run_context.max_runtime,
             "config": run_context.config,
+            "previous_step_results": {
+                str(step_id): dict(record)
+                for step_id, record in (previous_step_results or {}).items()
+            },
         }
         if step is not None:
             payload["step"] = step
@@ -221,6 +238,11 @@ class BlueFireNexus:
         scenario = load_scenario(scenario_path)
         module_results: Dict[str, ModuleResult] = {}
         steps_results: list[Dict[str, Any]] = []
+        # Accumulator for step-to-step artifact propagation. Built
+        # incrementally after each step completes; passed read-only into
+        # subsequent steps' module.execute via _module_context. Modules
+        # that don't opt in simply ignore the context key.
+        previous_step_results: Dict[str, Dict[str, Any]] = {}
         overall_status = "success"
 
         try:
@@ -251,10 +273,26 @@ class BlueFireNexus:
                     if validation_error:
                         raise ValueError(validation_error)
 
-                    result = module.execute(step_params, self._module_context(context, step=step))
+                    result = module.execute(
+                        step_params,
+                        self._module_context(
+                            context,
+                            step=step,
+                            previous_step_results=previous_step_results,
+                        ),
+                    )
                     telemetry.emit_many(result.telemetry)
 
                     module_results[f"{step.module}:{step.step_id}"] = result
+                    # Record this step's outcome for downstream steps.
+                    # Modules that opt into chained inputs read this via
+                    # ``context["previous_step_results"][<step_id>]``.
+                    previous_step_results[step.step_id] = {
+                        "status": result.status,
+                        "module": step.module,
+                        "techniques": list(result.techniques),
+                        "artifacts": dict(result.artifacts),
+                    }
                     detection_paths = write_detection_artifacts(
                         context.output_dir,
                         context.run_id,
@@ -288,6 +326,16 @@ class BlueFireNexus:
                             "message": str(exc),
                         }
                     )
+                    # Record the error for downstream steps so they can
+                    # decide whether to abort, retry, or proceed without
+                    # the upstream output.
+                    previous_step_results[step.step_id] = {
+                        "status": "error",
+                        "module": step.module,
+                        "techniques": [],
+                        "artifacts": {},
+                        "error": str(exc),
+                    }
                     if scenario.fail_fast:
                         break
 
