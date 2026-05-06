@@ -285,8 +285,10 @@ opt into reading from it by accepting a small set of `*_from_step`
 params.
 
 The standard modules that currently consume this are
-`credential_access` and `exfiltration`. Both use the same
-`target_from_step` opt-in:
+`credential_access`, `exfiltration`, and `lateral_movement`. All
+three use the same `target_from_step` opt-in;
+`lateral_movement` additionally exposes a `source_from_step` slot
+for the attacker pivot host:
 
 ```yaml
 steps:
@@ -309,6 +311,20 @@ steps:
       target_from_step: enumerate-files
       network_touch: false
 
+  - id: lateral-to-fileshare
+    name: Lateral movement to fileshare via PsExec
+    module: lateral_movement
+    params:
+      technique: psexec
+      # Pivot host (`source`) is propagated from the upstream
+      # credential-access step. `target` stays explicit because no
+      # upstream step has enumerated `corp-fileshare`. Both axes are
+      # independent: the lateral_movement module supports
+      # `source_from_step` AND `target_from_step` in the same step.
+      source_from_step: harvest-browser-creds
+      target: corp-fileshare
+      network_touch: false
+
   - id: stage-collected-data
     name: Stage collected files for exfiltration
     module: collection
@@ -329,23 +345,29 @@ steps:
 ```
 
 When propagation happens, the downstream module's result records
-the upstream step id under `target_propagated_from_step` in
-`artifacts`, `detection_hints`, and the telemetry event's `details`,
-so downstream consumers (report tables, SIEM searches) can see
-which step provided the target.
+the upstream step id under `target_propagated_from_step` (and/or
+`source_propagated_from_step` for lateral_movement) in `artifacts`,
+`detection_hints`, and the telemetry event's `details`, so
+downstream consumers (report tables, SIEM searches) can see which
+step provided each value.
 
-Resolution order (first non-empty wins):
-1. Explicit `target` param.
-2. `target_from_step` → upstream step's `artifacts.target` (single)
-   or first entry of `artifacts.targets` (multi).
-3. The module's documented default (`lab-host` for both
-   credential-access and exfiltration today).
+Resolution order (first non-empty wins, evaluated per axis):
+1. Explicit `target` / `source` param.
+2. `target_from_step` / `source_from_step` → upstream step's
+   `artifacts.target` (single) or first entry of `artifacts.targets`
+   (multi).
+3. The module's documented default. Today:
+   - credential_access: `target` defaults to `lab-host`.
+   - exfiltration: `target` defaults to `lab-host`.
+   - lateral_movement: `target` defaults to `lab-host`,
+     `source` defaults to `lab-attacker`.
 
 This is opt-in per module and per scenario step. The runtime never
 auto-injects values into params; modules that don't read
 `previous_step_results` are unaffected. See
-`scenarios/enterprise_intrusion_chain.yaml` for both working
-examples (`harvest-browser-creds` and `exfil-over-c2`).
+`scenarios/enterprise_intrusion_chain.yaml` for all three worked
+examples (`harvest-browser-creds`, `lateral-to-fileshare`, and
+`exfil-over-c2`).
 
 ## 6. Programmatic usage
 

@@ -1617,23 +1617,50 @@ class LateralMovementModule(BaseModule):
             requested if requested in _LATERAL_MOVEMENT_PROFILES else "psexec"
         )
         profile = _LATERAL_MOVEMENT_PROFILES[profile_key]
-        source = str(params.get("source") or "lab-attacker")
-        target = str(params.get("target") or "lab-host")
 
-        details = {
+        # Two independent step-to-step propagation slots:
+        #   - `target_from_step` resolves the lateral-movement
+        #     destination (where the attacker pivots TO). Pairs
+        #     naturally with discovery (the upstream step that
+        #     enumerated reachable hosts).
+        #   - `source_from_step` resolves the attacker host (where
+        #     the lateral movement originates FROM). Pairs naturally
+        #     with credential_access (the upstream step that
+        #     harvested creds on the pivot host).
+        # Both slots are optional and independent. Explicit `target`
+        # / `source` always win over their respective propagated
+        # values. Falling back to the documented module defaults
+        # ("lab-host" / "lab-attacker") preserves prior behaviour
+        # for callers that don't opt in.
+        target, target_propagated_from = resolve_target_from_step(
+            params, context, fallback="lab-host"
+        )
+        source, source_propagated_from = resolve_target_from_step(
+            params,
+            context,
+            fallback="lab-attacker",
+            param_key="source",
+            step_param_key="source_from_step",
+        )
+
+        details: Dict[str, Any] = {
             "technique": profile_key,
             "source": source,
             "target": target,
             "mitre_technique": profile["mitre"],
             "selection_value": profile["selection_value"],
         }
+        if target_propagated_from:
+            details["target_propagated_from_step"] = target_propagated_from
+        if source_propagated_from:
+            details["source_propagated_from_step"] = source_propagated_from
 
         event = TelemetryEvent(
             event_type=profile["event_type"],
             module=self.name,
             details=details,
         )
-        hints = {
+        hints: Dict[str, Any] = {
             "title": f"{profile['title_prefix']} {target} (from {source})",
             "logsource": dict(profile["logsource"]),
             "detection": {
@@ -1647,6 +1674,21 @@ class LateralMovementModule(BaseModule):
         }
         if requested != profile_key:
             hints["unrecognized_lateral_technique"] = requested
+        if target_propagated_from:
+            hints["target_propagated_from_step"] = target_propagated_from
+        if source_propagated_from:
+            hints["source_propagated_from_step"] = source_propagated_from
+
+        artifacts: Dict[str, Any] = {
+            "technique": profile_key,
+            "source": source,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+        }
+        if target_propagated_from:
+            artifacts["target_propagated_from_step"] = target_propagated_from
+        if source_propagated_from:
+            artifacts["source_propagated_from_step"] = source_propagated_from
 
         return _result(
             self.name,
@@ -1655,12 +1697,7 @@ class LateralMovementModule(BaseModule):
             techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={
-                "technique": profile_key,
-                "source": source,
-                "target": target,
-                "mitre_technique": profile["mitre"],
-            },
+            artifacts=artifacts,
         )
 
 
