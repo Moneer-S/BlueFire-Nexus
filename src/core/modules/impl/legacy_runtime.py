@@ -393,6 +393,53 @@ def run_impact(technique: str, params: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Standard collection technique keys mapped to:
+#   (branch, legacy_handler_key, canonical_mitre)
+# Branch matches the legacy `Collection.collect(...)` three-bucket
+# dispatch shape (staging / capture / compression). The legacy class
+# is purely descriptive; handlers synthesise tradecraft strings (file
+# paths, archive commands, encoding names) without writing data,
+# spawning processes, or touching the keyboard / clipboard / screen.
+COLLECTION_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
+    "file_staging": ("staging", "file", "T1074.001"),
+    "directory_staging": ("staging", "directory", "T1074.001"),
+    "archive_staging": ("staging", "archive", "T1560.001"),
+    "keyboard_capture": ("capture", "keyboard", "T1056.001"),
+    "clipboard_capture": ("capture", "clipboard", "T1115"),
+    "screen_capture": ("capture", "screen", "T1113"),
+    "compression": ("compression", "compression", "T1560"),
+    "encryption": ("compression", "encryption", "T1022"),
+    "encoding": ("compression", "encoding", "T1132"),
+}
+
+
+def run_collection(technique: str, params: Mapping[str, Any]) -> Dict[str, Any]:
+    """Invoke the preserved `Collection` legacy class for one technique."""
+    branch, legacy_key, mitre = COLLECTION_TECHNIQUE_KEYS.get(
+        technique, ("staging", "file", "T1074.001")
+    )
+    cls = _load_attr("src.core.collection.collection", "Collection")
+    legacy = cls()
+    payload = {legacy_key: dict(params)}
+    raw = legacy.collect(payload)
+
+    branch_outcome = _unwrap_legacy_branch(
+        raw,
+        outer_key="collection",
+        branch=branch,
+        legacy_handler_key=legacy_key,
+    )
+    status = str(branch_outcome.get("status", "completed"))
+    return {
+        "status": status if status in {"success", "completed", "error", "failure"} else "completed",
+        "technique": technique,
+        "legacy_key": legacy_key,
+        "mitre_technique": mitre,
+        "details": dict(branch_outcome.get("details", {})),
+        "timestamp": branch_outcome.get("timestamp", raw.get("timestamp", "")),
+    }
+
+
 def run_stealth_capability(capability: str, params: Mapping[str, Any]) -> Dict[str, Any]:
     cap = normalize_stealth_key(capability)
     runtime_cap = "anti_detection" if cap == "anti_detection_legacy" else cap
