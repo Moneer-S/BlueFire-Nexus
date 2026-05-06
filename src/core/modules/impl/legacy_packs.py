@@ -15,6 +15,7 @@ from ..base import BaseModule
 from .legacy_base import LegacyAdapterBase, _result
 from .legacy_runtime import (
     CREDENTIAL_TECHNIQUE_KEYS,
+    LATERAL_MOVEMENT_TECHNIQUE_KEYS,
     flatten_indicators,
     instantiate_apt_actor,
     normalize_protocol_key,
@@ -22,6 +23,7 @@ from .legacy_runtime import (
     run_actor_technique,
     run_credential_access,
     run_dns_tunneling,
+    run_lateral_movement,
     run_network_obfuscation,
     run_quic_placeholder,
     run_solana_rpc,
@@ -819,6 +821,243 @@ class LegacyCredentialAccessModule(LegacyAdapterBase):
         )
 
 
+# Per-technique simulate-mode tradecraft notes for the legacy
+# lateral-movement adapter. Each entry mirrors the public-record
+# tradecraft surface for the technique (canonical tools, file paths,
+# protocol/port indicators) sourced from the preserved legacy class.
+_LEGACY_LATERAL_MOVEMENT_NOTES: Dict[str, Dict[str, Any]] = {
+    "psexec": {
+        "title": "Legacy PsExec lateral-movement tradecraft research",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "PsExec",
+        "event_type": "legacy_lateral_movement_psexec",
+        "notes": {
+            "canonical_tools": ["PsExec", "smbexec.py", "PAExec"],
+            "service_name_pattern": "PSEXESVC",
+            "default_share": "ADMIN$",
+        },
+    },
+    "wmi": {
+        "title": "Legacy WMI remote-execution tradecraft research",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "wmic",
+        "event_type": "legacy_lateral_movement_wmi",
+        "notes": {
+            "canonical_tools": ["wmic.exe", "Invoke-WmiMethod", "wmiexec.py"],
+            "telemetry_signal": "wmiprvse spawning unusual children",
+        },
+    },
+    "powershell_remoting": {
+        "title": "Legacy PowerShell remoting tradecraft research",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "Invoke-Command",
+        "event_type": "legacy_lateral_movement_powershell_remoting",
+        "notes": {
+            "canonical_tools": ["Invoke-Command", "Enter-PSSession", "wsmprovhost.exe"],
+            "transport": "WSMan over HTTP/HTTPS",
+        },
+    },
+    "winrm": {
+        "title": "Legacy WinRM/PowerShell-remoting tradecraft research",
+        "logsource": {"category": "network_connection", "product": "windows"},
+        "selection_field": "network.dst_port",
+        "selection_value": 5985,
+        "event_type": "legacy_lateral_movement_winrm",
+        "notes": {
+            "canonical_tools": ["winrs", "Enter-PSSession"],
+            "default_ports": [5985, 5986],
+            "transport": "WSMan",
+        },
+    },
+    "smb_share": {
+        "title": "Legacy SMB administrative-share tradecraft research",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "file.path|contains",
+        "selection_value": "ADMIN$",
+        "event_type": "legacy_lateral_movement_smb_share",
+        "notes": {
+            "canonical_tools": ["net use", "smbclient", "Copy-Item -ToSession"],
+            "shares": ["ADMIN$", "C$", "IPC$"],
+        },
+    },
+    "ftp_transfer": {
+        "title": "Legacy FTP lateral-tool-transfer tradecraft research",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 21,
+        "event_type": "legacy_lateral_movement_ftp_transfer",
+        "notes": {
+            "canonical_tools": ["ftp.exe", "curl ftp://"],
+            "default_port": 21,
+        },
+    },
+    "scp_transfer": {
+        "title": "Legacy SCP lateral-tool-transfer tradecraft research",
+        "logsource": {"category": "process_creation", "product": "linux"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "scp ",
+        "event_type": "legacy_lateral_movement_scp_transfer",
+        "notes": {
+            "canonical_tools": ["scp", "rsync -e ssh"],
+            "default_port": 22,
+        },
+    },
+    "service_create": {
+        "title": "Legacy remote service-creation tradecraft research",
+        "logsource": {"category": "service_creation", "product": "windows"},
+        "selection_field": "service.image_path|contains",
+        "selection_value": "svchost.exe",
+        "event_type": "legacy_lateral_movement_service_create",
+        "notes": {
+            "canonical_tools": ["sc.exe create", "New-Service", "services.py (impacket)"],
+            "telemetry_signal": "Windows event 7045 (service installed)",
+        },
+    },
+    "service_modify": {
+        "title": "Legacy remote service-modification tradecraft research",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.image_path|contains",
+        "selection_value": "svchost.exe",
+        "event_type": "legacy_lateral_movement_service_modify",
+        "notes": {
+            "canonical_tools": ["sc.exe config", "Set-Service"],
+            "telemetry_signal": "registry-key change under HKLM\\SYSTEM\\CurrentControlSet\\Services",
+        },
+    },
+    "service_stop": {
+        "title": "Legacy remote service-stop / disruption tradecraft research",
+        "logsource": {"category": "service_event", "product": "windows"},
+        "selection_field": "service.action",
+        "selection_value": "stopped",
+        "event_type": "legacy_lateral_movement_service_stop",
+        "notes": {
+            "canonical_tools": ["sc.exe stop", "Stop-Service"],
+            "common_targets": ["AV/EDR services", "backup agents", "logging services"],
+        },
+    },
+}
+
+
+class LegacyLateralMovementModule(LegacyAdapterBase):
+    """Adapter for the preserved `LateralMovement` legacy class.
+
+    Companion to the simulate-only standard `lateral_movement` module.
+    Sits behind `tactic_pack` / `lateral_movement` capability gating.
+    Surfaces per-technique tradecraft notes (canonical tools, default
+    ports, telemetry signals) from `src/core/movement/lateral_movement.py`
+    in simulate mode; emulate mode routes through `safe_call` into the
+    legacy class which itself returns synthesised tradecraft descriptors
+    only — no live network or process side effects.
+    """
+
+    name = "legacy_lateral_movement"
+    pack_name = "tactic_pack"
+    capability_name = "lateral_movement"
+    attack_techniques = (
+        "T1021.002",
+        "T1021.004",
+        "T1021.006",
+        "T1047",
+        "T1059.001",
+        "T1105",
+        "T1543.003",
+        "T1489",
+        "T1570",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        decision = self._ensure_allowed(context)
+        mode = decision.mode
+
+        requested = str(params.get("technique") or "psexec").lower()
+        technique_key = (
+            requested if requested in LATERAL_MOVEMENT_TECHNIQUE_KEYS else "psexec"
+        )
+        branch, legacy_key, mitre = LATERAL_MOVEMENT_TECHNIQUE_KEYS[technique_key]
+        profile = _LEGACY_LATERAL_MOVEMENT_NOTES[technique_key]
+        target = str(params.get("target") or "lab-host")
+        source = str(params.get("source") or "lab-attacker")
+
+        details: Dict[str, Any] = {
+            "technique": technique_key,
+            "legacy_key": legacy_key,
+            "legacy_branch": branch,
+            "mitre_technique": mitre,
+            "source": source,
+            "target": target,
+            "mode": mode,
+            "tradecraft_notes": dict(profile["notes"]),
+        }
+
+        if mode == "emulate":
+            runtime = safe_call(run_lateral_movement, technique_key, params)
+            details["runtime_outcome"] = runtime
+            indicators = flatten_indicators(runtime)
+            if indicators:
+                details["runtime_indicators"] = indicators
+            if runtime.get("status") == "failure":
+                details["runtime_warning"] = (
+                    "legacy lateral-movement runtime failed for "
+                    f"{technique_key}: {runtime.get('error')}"
+                )
+        else:
+            details["runtime_outcome"] = {
+                "status": "simulated",
+                "technique": technique_key,
+                "reason": "simulate mode selected",
+            }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details={
+                "run_id": context.get("run_id", "unknown"),
+                **details,
+            },
+        )
+        hints: Dict[str, Any] = {
+            "title": f"{profile['title']} {source} -> {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {
+                    profile["selection_field"]: profile["selection_value"],
+                    "legacy.pack": self.pack_name,
+                    "legacy.capability": self.capability_name,
+                    "legacy.technique": technique_key,
+                },
+                "condition": "selection",
+            },
+            "mitre_technique": mitre,
+            "lateral_movement_technique": technique_key,
+            "source_host": source,
+            "target_host": target,
+            "tradecraft_notes": dict(profile["notes"]),
+        }
+        if requested != technique_key:
+            hints["unrecognized_lateral_movement_technique"] = requested
+
+        artifacts = _capability_artifacts(
+            context,
+            self.pack_name,
+            self.capability_name,
+            mode,
+            details,
+        )
+        return _result(
+            self.name,
+            "success",
+            f"Legacy lateral-movement tradecraft for '{technique_key}' "
+            f"prepared in {mode} mode.",
+            techniques=[mitre],
+            artifacts=artifacts,
+            hints=hints,
+            telemetry=[event],
+        )
+
+
 class LegacyProtocolResearchModule(LegacyAdapterBase):
     name = "legacy_protocol_research"
     attack_techniques = ("T1071.004", "T1572", "T1090")
@@ -1196,6 +1435,7 @@ def discover_legacy_modules() -> Dict[str, type[BaseModule]]:
         LegacyApt38ResearchModule.name: LegacyApt38ResearchModule,
         LegacyApt41ResearchModule.name: LegacyApt41ResearchModule,
         LegacyCredentialAccessModule.name: LegacyCredentialAccessModule,
+        LegacyLateralMovementModule.name: LegacyLateralMovementModule,
         LegacyProtocolResearchModule.name: LegacyProtocolResearchModule,
         LegacyStealthResearchModule.name: LegacyStealthResearchModule,
     }
@@ -1211,6 +1451,7 @@ __all__ = [
     "LegacyApt38ResearchModule",
     "LegacyApt41ResearchModule",
     "LegacyCredentialAccessModule",
+    "LegacyLateralMovementModule",
     "LegacyProtocolResearchModule",
     "LegacyStealthResearchModule",
     "discover_legacy_modules",
