@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Mapping
 
 from ...models import ModuleResult, TelemetryEvent
-from ..base import BaseModule
+from ..base import BaseModule, resolve_target_from_step
 
 
 # Operator-facing target_os values map to a sigma-style logsource.
@@ -1426,25 +1426,35 @@ class CredentialAccessModule(BaseModule):
             requested if requested in _CREDENTIAL_ACCESS_PROFILES else "lsass_dump"
         )
         profile = _CREDENTIAL_ACCESS_PROFILES[profile_key]
-        target = str(params.get("target") or "lab-host")
+        # Optional step-to-step propagation: when the scenario step
+        # sets `target_from_step: <step_id>` and does NOT pass an
+        # explicit `target`, pick up the upstream step's
+        # `artifacts.target` (single-target upstream) or first entry
+        # of `artifacts.targets` (multi-target upstream like
+        # discovery). Explicit `target` always wins.
+        target, propagated_from = resolve_target_from_step(
+            params, context, fallback="lab-host"
+        )
 
         # Default behaviour mirrors the rest of the standard modules: no
         # subprocess / socket / HTTP calls under any input. Per-technique
         # telemetry shape is synthesised so detection drafts vary by
         # technique rather than emitting a single hardcoded shape.
-        details = {
+        details: Dict[str, Any] = {
             "technique": profile_key,
             "target": target,
             "mitre_technique": profile["mitre"],
             "selection_value": profile["selection_value"],
         }
+        if propagated_from:
+            details["target_propagated_from_step"] = propagated_from
 
         event = TelemetryEvent(
             event_type=profile["event_type"],
             module=self.name,
             details=details,
         )
-        hints = {
+        hints: Dict[str, Any] = {
             "title": f"{profile['title_prefix']} on {target}",
             "logsource": dict(profile["logsource"]),
             "detection": {
@@ -1457,6 +1467,16 @@ class CredentialAccessModule(BaseModule):
         }
         if requested != profile_key:
             hints["unrecognized_credential_technique"] = requested
+        if propagated_from:
+            hints["target_propagated_from_step"] = propagated_from
+
+        artifacts: Dict[str, Any] = {
+            "technique": profile_key,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+        }
+        if propagated_from:
+            artifacts["target_propagated_from_step"] = propagated_from
 
         return _result(
             self.name,
@@ -1465,11 +1485,7 @@ class CredentialAccessModule(BaseModule):
             techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={
-                "technique": profile_key,
-                "target": target,
-                "mitre_technique": profile["mitre"],
-            },
+            artifacts=artifacts,
         )
 
 

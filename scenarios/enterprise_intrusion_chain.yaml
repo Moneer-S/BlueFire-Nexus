@@ -75,7 +75,15 @@ steps:
     module: credential_access
     params:
       technique: browser_credentials
-      target: finance-analyst-laptop
+      # Target is propagated from the upstream `enumerate-files`
+      # discovery step rather than re-declared here. This
+      # demonstrates the runtime's `previous_step_results` plumbing:
+      # the credential-access module reads
+      # `context["previous_step_results"]["enumerate-files"]
+      # ["artifacts"]["targets"]` and uses the first entry as the
+      # effective target. Explicit `target:` would still win if
+      # provided.
+      target_from_step: enumerate-files
       network_touch: false
 
   - id: lateral-to-fileshare
