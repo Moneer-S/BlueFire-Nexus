@@ -177,6 +177,26 @@ def test_collection_returns_rich_details_for_every_technique(technique: str) -> 
 # ---------------------------------------------------------------------------
 
 
+def test_ssh_keys_handler_mitre_id_is_normalised_to_modern_technique() -> None:
+    """The preserved SSH-keys handler still records the deprecated
+    T1145 ("Private Keys") MITRE id internally. The adapter normalises
+    that to the modern T1552.004 ("Unsecured Credentials: Private Keys")
+    so detection drafts and report tables stay aligned with the current
+    ATT&CK matrix. The legacy id is preserved under
+    `legacy_mitre_technique_id` for traceability.
+    """
+    result = run_credential_access("ssh_keys", {})
+    assert result["mitre_technique"] == "T1552.004"
+    details = result["details"]
+    assert details["mitre_technique_id"] == "T1552.004"
+    assert details["legacy_mitre_technique_id"] == "T1145"
+    # Legacy display name preserved for traceability under the
+    # `legacy_mitre_technique_name` field; adapter consumers that
+    # render detection drafts use the technique id as the source of
+    # truth, so a stale display name is non-fatal.
+    assert details.get("legacy_mitre_technique_name") == "Private Keys"
+
+
 def test_unrecognized_technique_does_not_raise() -> None:
     """Unrecognized technique names must not blow up the helper."""
     for run, default_method in (

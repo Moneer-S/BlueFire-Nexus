@@ -172,6 +172,48 @@ def run_network_obfuscation(payload: Mapping[str, Any]) -> Dict[str, Any]:
 # service_creation -> ``_handle_service_creation`` (service branch).
 
 
+# Deprecated -> modern ATT&CK technique id translation. Some preserved
+# legacy handlers still emit superseded technique ids (notably the SSH
+# private-keys handler, which records the deprecated T1145 / "Private
+# Keys" technique). Adapter-facing output should advertise the modern
+# equivalent so detection drafts and report tables track the current
+# ATT&CK matrix; the original legacy id is preserved under a clearly
+# named field so operators can still trace back to the legacy class
+# output.
+_LEGACY_MITRE_REPLACEMENTS: Dict[str, str] = {
+    # T1145 ("Private Keys") was superseded by T1552.004
+    # ("Unsecured Credentials: Private Keys") in ATT&CK matrix updates.
+    "T1145": "T1552.004",
+}
+
+
+def _normalize_handler_mitre(details: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate deprecated handler MITRE ids to modern equivalents.
+
+    Preserves the original (legacy) id under ``legacy_mitre_technique_id``
+    and the original name under ``legacy_mitre_technique_name`` so the
+    legacy class output remains traceable. No-op when the handler MITRE
+    id is already modern or absent.
+    """
+    if not isinstance(details, dict):
+        return details
+    handler_mitre = details.get("mitre_technique_id")
+    replacement = _LEGACY_MITRE_REPLACEMENTS.get(str(handler_mitre)) if handler_mitre else None
+    if replacement is None:
+        return details
+    normalised = dict(details)
+    normalised["legacy_mitre_technique_id"] = handler_mitre
+    if "mitre_technique_name" in normalised:
+        normalised["legacy_mitre_technique_name"] = normalised["mitre_technique_name"]
+    normalised["mitre_technique_id"] = replacement
+    # Best-effort modern name. We do not attempt to re-derive the
+    # canonical ATT&CK display name here (that would require a full
+    # technique catalogue); the legacy name stays under
+    # `legacy_mitre_technique_name`. Adapter consumers that render
+    # detection drafts use the technique id as the source of truth.
+    return normalised
+
+
 def _dispatch_legacy_handler(
     legacy: Any, method: str, params: Mapping[str, Any]
 ) -> Dict[str, Any]:
@@ -201,6 +243,8 @@ def _legacy_runtime_result(
     status = str(branch_outcome.get("status", "completed"))
     if status not in {"success", "completed", "error", "failure"}:
         status = "completed"
+    raw_details = dict(branch_outcome.get("details", {}))
+    details = _normalize_handler_mitre(raw_details)
     return {
         "status": status,
         "technique": technique,
@@ -209,7 +253,7 @@ def _legacy_runtime_result(
         # / telemetry consumers that already field this name.
         "legacy_key": legacy_method,
         "mitre_technique": mitre,
-        "details": dict(branch_outcome.get("details", {})),
+        "details": details,
         "timestamp": branch_outcome.get("timestamp", ""),
     }
 
