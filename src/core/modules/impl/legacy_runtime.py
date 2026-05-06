@@ -298,6 +298,54 @@ def run_lateral_movement(technique: str, params: Mapping[str, Any]) -> Dict[str,
     }
 
 
+# Standard privilege-escalation technique keys mapped to:
+#   (branch, legacy_handler_key, canonical_mitre)
+# Branch matches the legacy class's three-bucket dispatch shape
+# (token / process / service). Note that `creation` lives under both
+# token (`token_creation`) and service (`service_creation`) branches —
+# the explicit branch in the tuple disambiguates them.
+PRIVILEGE_ESCALATION_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
+    "token_impersonation": ("token", "impersonation", "T1134.001"),
+    "token_duplication": ("token", "duplication", "T1134.002"),
+    "token_creation": ("token", "creation", "T1134.003"),
+    "process_hollowing": ("process", "hollowing", "T1055.012"),
+    "process_injection": ("process", "injection", "T1055"),
+    "process_masquerading": ("process", "masquerading", "T1036.005"),
+    "service_creation": ("service", "creation", "T1543.003"),
+    "service_modification": ("service", "modification", "T1543.003"),
+    "service_stop": ("service", "stop", "T1489"),
+}
+
+
+def run_privilege_escalation(
+    technique: str, params: Mapping[str, Any]
+) -> Dict[str, Any]:
+    """Invoke the preserved `PrivilegeEscalation` legacy class for one technique."""
+    branch, legacy_key, mitre = PRIVILEGE_ESCALATION_TECHNIQUE_KEYS.get(
+        technique, ("token", "impersonation", "T1134.001")
+    )
+    cls = _load_attr("src.core.privilege.privilege_escalation", "PrivilegeEscalation")
+    legacy = cls()
+    payload = {legacy_key: dict(params)}
+    raw = legacy.escalate(payload)
+
+    branch_outcome = _unwrap_legacy_branch(
+        raw,
+        outer_key="privilege_escalation",
+        branch=branch,
+        legacy_handler_key=legacy_key,
+    )
+    status = str(branch_outcome.get("status", "completed"))
+    return {
+        "status": status if status in {"success", "completed", "error", "failure"} else "completed",
+        "technique": technique,
+        "legacy_key": legacy_key,
+        "mitre_technique": mitre,
+        "details": dict(branch_outcome.get("details", {})),
+        "timestamp": branch_outcome.get("timestamp", raw.get("timestamp", "")),
+    }
+
+
 def run_stealth_capability(capability: str, params: Mapping[str, Any]) -> Dict[str, Any]:
     cap = normalize_stealth_key(capability)
     runtime_cap = "anti_detection" if cap == "anti_detection_legacy" else cap
