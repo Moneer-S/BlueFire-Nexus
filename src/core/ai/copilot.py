@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
+from ..configuration import get_ai_config
 from .providers import LLMProvider, ProviderFactory
 from .rag import RAGIndex
 
@@ -15,11 +16,13 @@ class AICopilot:
     def __init__(self, config: Dict[str, Any], run_dir: Path) -> None:
         self.config = config
         self.run_dir = run_dir
-        ai_cfg = config.get("modules", {}).get("ai", {})
+        # Route through the central helper so the copilot picks up the
+        # documented AI-config shape (api_key_env / timeout / max_tokens
+        # / provider_settings) and the `ai_providers.<name>` block flow-
+        # through without re-implementing the merge here.
+        ai_cfg = get_ai_config(config)
         self.enabled = bool(ai_cfg.get("enabled", False))
-        provider_name = str(ai_cfg.get("provider", "template"))
-        model_name = str(ai_cfg.get("model", "default"))
-        self.provider: LLMProvider = ProviderFactory.build(provider_name, model_name, ai_cfg)
+        self.provider: LLMProvider = ProviderFactory.from_ai_config(ai_cfg)
 
         project_root = Path.cwd()
         self.rag = RAGIndex(
