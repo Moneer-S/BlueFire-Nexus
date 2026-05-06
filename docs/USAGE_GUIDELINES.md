@@ -284,7 +284,9 @@ without re-declaring it. The runtime threads a read-only
 opt into reading from it by accepting a small set of `*_from_step`
 params.
 
-The `credential_access` standard module is the first to support this:
+The standard modules that currently consume this are
+`credential_access` and `exfiltration`. Both use the same
+`target_from_step` opt-in:
 
 ```yaml
 steps:
@@ -306,10 +308,28 @@ steps:
       # An explicit `target:` would still win if added.
       target_from_step: enumerate-files
       network_touch: false
+
+  - id: stage-collected-data
+    name: Stage collected files for exfiltration
+    module: collection
+    params:
+      technique: file_staging
+      target: corp-fileshare
+      network_touch: false
+
+  - id: exfil-over-c2
+    name: Exfiltrate staged data over C2
+    module: exfiltration
+    params:
+      method: via_c2
+      # Source host is propagated from the upstream collection step:
+      # `previous_step_results['stage-collected-data'].artifacts.target`.
+      target_from_step: stage-collected-data
+      network_touch: false
 ```
 
-When propagation happens, the credential-access result records the
-upstream step id under `target_propagated_from_step` in
+When propagation happens, the downstream module's result records
+the upstream step id under `target_propagated_from_step` in
 `artifacts`, `detection_hints`, and the telemetry event's `details`,
 so downstream consumers (report tables, SIEM searches) can see
 which step provided the target.
@@ -318,12 +338,14 @@ Resolution order (first non-empty wins):
 1. Explicit `target` param.
 2. `target_from_step` → upstream step's `artifacts.target` (single)
    or first entry of `artifacts.targets` (multi).
-3. The module's documented default (`lab-host` for credential-access).
+3. The module's documented default (`lab-host` for both
+   credential-access and exfiltration today).
 
 This is opt-in per module and per scenario step. The runtime never
 auto-injects values into params; modules that don't read
 `previous_step_results` are unaffected. See
-`scenarios/enterprise_intrusion_chain.yaml` for a working example.
+`scenarios/enterprise_intrusion_chain.yaml` for both working
+examples (`harvest-browser-creds` and `exfil-over-c2`).
 
 ## 6. Programmatic usage
 

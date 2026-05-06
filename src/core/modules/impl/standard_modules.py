@@ -624,27 +624,55 @@ class ExfiltrationModule(BaseModule):
                 techniques=["T1041"],
                 error="missing_lab_acknowledgment",
             )
+        # Optional step-to-step propagation: when the scenario step
+        # sets `target_from_step: <step_id>` and does NOT pass an
+        # explicit `target`, pick up the upstream step's
+        # `artifacts.target` (single-target upstream like collection)
+        # or first entry of `artifacts.targets` (multi-target upstream
+        # like discovery). Explicit `target` always wins. The semantic
+        # contract is "the host the data was exfiltrated FROM" so the
+        # natural pairing is collection -> exfiltration.
+        target, propagated_from = resolve_target_from_step(
+            params, context, fallback="lab-host"
+        )
         artifact_name = f"exfil_{context['run_id']}.txt"
+        details: Dict[str, Any] = {
+            "method": method,
+            "target": target,
+            "artifact": artifact_name,
+        }
+        if propagated_from:
+            details["target_propagated_from_step"] = propagated_from
         event = TelemetryEvent(
             event_type="exfiltration_simulated",
             module=self.name,
-            details={"method": method, "artifact": artifact_name},
+            details=details,
         )
-        hints = {
-            "title": "Potential data exfiltration",
+        hints: Dict[str, Any] = {
+            "title": f"Potential data exfiltration from {target}",
             "logsource": {"category": "network_connection", "product": "windows"},
             "detection": {"selection": {"exfil.method": method}, "condition": "selection"},
             "mitre_technique": "T1041",
             "network_method": method,
+            "source_host": target,
         }
+        if propagated_from:
+            hints["target_propagated_from_step"] = propagated_from
+        artifacts: Dict[str, Any] = {
+            "method": method,
+            "target": target,
+            "artifact_name": artifact_name,
+        }
+        if propagated_from:
+            artifacts["target_propagated_from_step"] = propagated_from
         return _result(
             self.name,
             "success",
-            f"Simulated exfiltration via {method}.",
+            f"Simulated exfiltration via {method} from {target}.",
             techniques=["T1041"],
             telemetry=[event],
             hints=hints,
-            artifacts={"method": method, "artifact_name": artifact_name},
+            artifacts=artifacts,
         )
 
 
