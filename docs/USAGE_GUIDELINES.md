@@ -170,6 +170,55 @@ NOT routed through the legacy adapters.
 | `lab_acknowledged` | `global_lab_acknowledged` (and per-pack `lab_confirmation`) |
 | capability `emulate_enabled: true` | resolves to `mode=emulate` + `lab_confirmation=true` |
 
+### Step-to-step propagation in scenario YAML
+
+Scenario steps can optionally consume an upstream step's output
+without re-declaring it. The runtime threads a read-only
+`previous_step_results` mapping into every step's context; modules
+opt into reading from it by accepting a small set of `*_from_step`
+params.
+
+The `credential_access` standard module is the first to support this:
+
+```yaml
+steps:
+  - id: enumerate-files
+    name: Enumerate sensitive files
+    module: discovery
+    params:
+      discovery_type: files
+      targets: ['finance-analyst-laptop']
+      network_touch: false
+
+  - id: harvest-browser-creds
+    name: Harvest stored browser credentials
+    module: credential_access
+    params:
+      technique: browser_credentials
+      # `target` not declared here; the module pulls it from
+      # `previous_step_results['enumerate-files'].artifacts.targets[0]`.
+      # An explicit `target:` would still win if added.
+      target_from_step: enumerate-files
+      network_touch: false
+```
+
+When propagation happens, the credential-access result records the
+upstream step id under `target_propagated_from_step` in
+`artifacts`, `detection_hints`, and the telemetry event's `details`,
+so downstream consumers (report tables, SIEM searches) can see
+which step provided the target.
+
+Resolution order (first non-empty wins):
+1. Explicit `target` param.
+2. `target_from_step` → upstream step's `artifacts.target` (single)
+   or first entry of `artifacts.targets` (multi).
+3. The module's documented default (`lab-host` for credential-access).
+
+This is opt-in per module and per scenario step. The runtime never
+auto-injects values into params; modules that don't read
+`previous_step_results` are unaffected. See
+`scenarios/enterprise_intrusion_chain.yaml` for a working example.
+
 ## 6. Programmatic usage
 
 ```python
