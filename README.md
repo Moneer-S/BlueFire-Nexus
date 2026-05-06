@@ -202,10 +202,11 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ope
 
 ## Status snapshot
 
-- 562 passing tests, 5 intentional skips, 0 failures.
+- 659 passing tests, 5 intentional skips, 0 failures (~44s full-suite wallclock).
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
 - 31 modules registered (17 standard + 14 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
-- 9 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.
+- 10 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.
+- Step-to-step artifact propagation: the runtime threads a read-only `previous_step_results` mapping into each step's context so downstream modules can opt into reading prior outputs.
 - Capability inventory: [docs/reports/capability_inventory.md](docs/reports/capability_inventory.md).
 - Scenario coverage: [docs/reports/scenario_validation.md](docs/reports/scenario_validation.md).
 - Roadmap: [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md).
