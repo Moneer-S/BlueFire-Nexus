@@ -16,6 +16,7 @@ from .legacy_base import LegacyAdapterBase, _result
 from .legacy_runtime import (
     CREDENTIAL_TECHNIQUE_KEYS,
     LATERAL_MOVEMENT_TECHNIQUE_KEYS,
+    PRIVILEGE_ESCALATION_TECHNIQUE_KEYS,
     flatten_indicators,
     instantiate_apt_actor,
     normalize_protocol_key,
@@ -25,6 +26,7 @@ from .legacy_runtime import (
     run_dns_tunneling,
     run_lateral_movement,
     run_network_obfuscation,
+    run_privilege_escalation,
     run_quic_placeholder,
     run_solana_rpc,
     run_stealth_capability,
@@ -1058,6 +1060,230 @@ class LegacyLateralMovementModule(LegacyAdapterBase):
         )
 
 
+# Per-technique simulate-mode tradecraft notes for the legacy
+# privilege-escalation adapter. Each entry surfaces the canonical APIs,
+# tools, and telemetry signals associated with the technique sourced
+# from the preserved legacy class. None of the strings are commands the
+# adapter actually executes.
+_LEGACY_PRIVILEGE_ESCALATION_NOTES: Dict[str, Dict[str, Any]] = {
+    "token_impersonation": {
+        "title": "Legacy access-token impersonation tradecraft research",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "ImpersonateLoggedOnUser",
+        "event_type": "legacy_privilege_escalation_token_impersonation",
+        "notes": {
+            "canonical_apis": ["OpenProcessToken", "ImpersonateLoggedOnUser"],
+            "follow_up": "act under the impersonated security context",
+        },
+    },
+    "token_duplication": {
+        "title": "Legacy token-duplication tradecraft research",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "DuplicateTokenEx",
+        "event_type": "legacy_privilege_escalation_token_duplication",
+        "notes": {
+            "canonical_apis": ["OpenProcessToken", "DuplicateTokenEx", "CreateProcessWithTokenW"],
+            "follow_up": "spawn process under the duplicated primary token",
+        },
+    },
+    "token_creation": {
+        "title": "Legacy make-and-impersonate token tradecraft research",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "LogonUser",
+        "event_type": "legacy_privilege_escalation_token_creation",
+        "notes": {
+            "canonical_apis": ["LogonUser", "CreateProcessWithLogonW"],
+            "telemetry_signal": "Windows event 4624 logon-type 9 (NewCredentials)",
+        },
+    },
+    "process_hollowing": {
+        "title": "Legacy process-hollowing tradecraft research",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "NtUnmapViewOfSection",
+        "event_type": "legacy_privilege_escalation_process_hollowing",
+        "notes": {
+            "canonical_apis": ["CreateProcess CREATE_SUSPENDED", "NtUnmapViewOfSection", "VirtualAllocEx", "WriteProcessMemory", "SetThreadContext"],
+            "common_targets": ["svchost.exe", "explorer.exe", "RuntimeBroker.exe"],
+        },
+    },
+    "process_injection": {
+        "title": "Legacy process-injection tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "WriteProcessMemory",
+        "event_type": "legacy_privilege_escalation_process_injection",
+        "notes": {
+            "canonical_apis": ["VirtualAllocEx", "WriteProcessMemory", "CreateRemoteThread", "QueueUserAPC", "NtMapViewOfSection"],
+            "techniques_covered": ["DLL injection (T1055.001)", "APC injection (T1055.004)", "Thread execution hijack (T1055.003)"],
+        },
+    },
+    "process_masquerading": {
+        "title": "Legacy process-name masquerading tradecraft research",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.image|endswith",
+        "selection_value": "svchost.exe",
+        "event_type": "legacy_privilege_escalation_process_masquerading",
+        "notes": {
+            "common_misuse": "renaming attacker binary to a system-image filename",
+            "telemetry_signal": "image path mismatch with parent / unusual command line",
+        },
+    },
+    "service_creation": {
+        "title": "Legacy privileged service-creation tradecraft research",
+        "logsource": {"category": "service_creation", "product": "windows"},
+        "selection_field": "service.image_path|contains",
+        "selection_value": "svchost.exe",
+        "event_type": "legacy_privilege_escalation_service_creation",
+        "notes": {
+            "canonical_tools": ["sc.exe create", "New-Service", "OpenSCManager + CreateService"],
+            "telemetry_signal": "Windows event 7045 (service installed)",
+        },
+    },
+    "service_modification": {
+        "title": "Legacy privileged service-modification tradecraft research",
+        "logsource": {"category": "service_modification", "product": "windows"},
+        "selection_field": "service.image_path|contains",
+        "selection_value": "svchost.exe",
+        "event_type": "legacy_privilege_escalation_service_modification",
+        "notes": {
+            "canonical_tools": ["sc.exe config", "Set-Service", "ChangeServiceConfig"],
+            "telemetry_signal": "registry change under HKLM\\SYSTEM\\CurrentControlSet\\Services",
+        },
+    },
+    "service_stop": {
+        "title": "Legacy privileged service-stop tradecraft research",
+        "logsource": {"category": "service_event", "product": "windows"},
+        "selection_field": "service.action",
+        "selection_value": "stopped",
+        "event_type": "legacy_privilege_escalation_service_stop",
+        "notes": {
+            "canonical_tools": ["sc.exe stop", "Stop-Service", "ControlService SERVICE_CONTROL_STOP"],
+            "common_targets": ["AV/EDR services", "logging services"],
+        },
+    },
+}
+
+
+class LegacyPrivilegeEscalationModule(LegacyAdapterBase):
+    """Adapter for the preserved `PrivilegeEscalation` legacy class.
+
+    Companion to the simulate-only standard `privilege_escalation`
+    module. Sits behind `tactic_pack` / `privilege_escalation`
+    capability gating. Surfaces per-technique tradecraft notes
+    (canonical APIs, tools, telemetry signals) from
+    `src/core/privilege/privilege_escalation.py` in simulate mode;
+    emulate mode routes through `safe_call` into the legacy class
+    which itself returns synthesised tradecraft descriptors only — no
+    live syscall, process-injection, or service-control side effects.
+    """
+
+    name = "legacy_privilege_escalation"
+    pack_name = "tactic_pack"
+    capability_name = "privilege_escalation"
+    attack_techniques = (
+        "T1134.001",
+        "T1134.002",
+        "T1134.003",
+        "T1055",
+        "T1055.012",
+        "T1036.005",
+        "T1543.003",
+        "T1489",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        decision = self._ensure_allowed(context)
+        mode = decision.mode
+
+        requested = str(params.get("technique") or "token_impersonation").lower()
+        technique_key = (
+            requested
+            if requested in PRIVILEGE_ESCALATION_TECHNIQUE_KEYS
+            else "token_impersonation"
+        )
+        branch, legacy_key, mitre = PRIVILEGE_ESCALATION_TECHNIQUE_KEYS[technique_key]
+        profile = _LEGACY_PRIVILEGE_ESCALATION_NOTES[technique_key]
+        target = str(params.get("target") or "lab-host")
+
+        details: Dict[str, Any] = {
+            "technique": technique_key,
+            "legacy_key": legacy_key,
+            "legacy_branch": branch,
+            "mitre_technique": mitre,
+            "target": target,
+            "mode": mode,
+            "tradecraft_notes": dict(profile["notes"]),
+        }
+
+        if mode == "emulate":
+            runtime = safe_call(run_privilege_escalation, technique_key, params)
+            details["runtime_outcome"] = runtime
+            indicators = flatten_indicators(runtime)
+            if indicators:
+                details["runtime_indicators"] = indicators
+            if runtime.get("status") == "failure":
+                details["runtime_warning"] = (
+                    "legacy privilege-escalation runtime failed for "
+                    f"{technique_key}: {runtime.get('error')}"
+                )
+        else:
+            details["runtime_outcome"] = {
+                "status": "simulated",
+                "technique": technique_key,
+                "reason": "simulate mode selected",
+            }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details={
+                "run_id": context.get("run_id", "unknown"),
+                **details,
+            },
+        )
+        hints: Dict[str, Any] = {
+            "title": f"{profile['title']} on {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {
+                    profile["selection_field"]: profile["selection_value"],
+                    "legacy.pack": self.pack_name,
+                    "legacy.capability": self.capability_name,
+                    "legacy.technique": technique_key,
+                },
+                "condition": "selection",
+            },
+            "mitre_technique": mitre,
+            "privilege_escalation_technique": technique_key,
+            "target_host": target,
+            "tradecraft_notes": dict(profile["notes"]),
+        }
+        if requested != technique_key:
+            hints["unrecognized_privilege_escalation_technique"] = requested
+
+        artifacts = _capability_artifacts(
+            context,
+            self.pack_name,
+            self.capability_name,
+            mode,
+            details,
+        )
+        return _result(
+            self.name,
+            "success",
+            f"Legacy privilege-escalation tradecraft for '{technique_key}' "
+            f"prepared in {mode} mode.",
+            techniques=[mitre],
+            artifacts=artifacts,
+            hints=hints,
+            telemetry=[event],
+        )
+
+
 class LegacyProtocolResearchModule(LegacyAdapterBase):
     name = "legacy_protocol_research"
     attack_techniques = ("T1071.004", "T1572", "T1090")
@@ -1436,6 +1662,7 @@ def discover_legacy_modules() -> Dict[str, type[BaseModule]]:
         LegacyApt41ResearchModule.name: LegacyApt41ResearchModule,
         LegacyCredentialAccessModule.name: LegacyCredentialAccessModule,
         LegacyLateralMovementModule.name: LegacyLateralMovementModule,
+        LegacyPrivilegeEscalationModule.name: LegacyPrivilegeEscalationModule,
         LegacyProtocolResearchModule.name: LegacyProtocolResearchModule,
         LegacyStealthResearchModule.name: LegacyStealthResearchModule,
     }
@@ -1452,6 +1679,7 @@ __all__ = [
     "LegacyApt41ResearchModule",
     "LegacyCredentialAccessModule",
     "LegacyLateralMovementModule",
+    "LegacyPrivilegeEscalationModule",
     "LegacyProtocolResearchModule",
     "LegacyStealthResearchModule",
     "discover_legacy_modules",

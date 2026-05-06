@@ -100,7 +100,7 @@ def _lab_simulate_config() -> Dict[str, Any]:
         "lab_confirmation": True,
         "capabilities": {
             k: {"enabled": True, "mode": "simulate"}
-            for k in ("credential_access", "lateral_movement")
+            for k in ("credential_access", "lateral_movement", "privilege_escalation")
         },
     }
     return cfg
@@ -150,6 +150,10 @@ _MINIMAL_PARAMS: Dict[str, Dict[str, Any]] = {
     "legacy_lateral_movement": {
         "technique": "psexec",
         "source": "lab-attacker",
+        "target": "lab-host",
+    },
+    "legacy_privilege_escalation": {
+        "technique": "token_impersonation",
         "target": "lab-host",
     },
 }
