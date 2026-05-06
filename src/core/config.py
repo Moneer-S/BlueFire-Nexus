@@ -45,10 +45,30 @@ class ConfigManager:
             },
             "modules": {
                 "ai": {
+                    # Local-first defaults: the runtime stays fully
+                    # offline unless an operator explicitly opts in.
+                    # `provider: template` is the deterministic offline
+                    # provider; `enabled: false` keeps the copilot
+                    # workflow opt-in. Adding keys here that are
+                    # honoured by `core.configuration.get_ai_config`
+                    # makes the AI config shape self-documenting.
                     "enabled": False,
                     "provider": "template",
                     "model": "default",
                     "api_base": "",
+                    # Name of the env var that holds the provider's
+                    # API key when one is needed. The runtime never
+                    # reads this for the template provider; it is
+                    # exposed here so plug-and-play remote-provider
+                    # implementations have a documented place to look.
+                    "api_key_env": "",
+                    # Per-request timeout (seconds) for any future
+                    # remote-provider implementation. No effect on
+                    # the offline template provider.
+                    "timeout": 30,
+                    # Suggested completion-length cap. No effect on
+                    # the offline template provider.
+                    "max_tokens": 1024,
                 },
                 "legacy": {
                     "enable_all_lab_capabilities": False,
