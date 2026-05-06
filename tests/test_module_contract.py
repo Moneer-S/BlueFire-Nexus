@@ -105,6 +105,7 @@ def _lab_simulate_config() -> Dict[str, Any]:
                 "lateral_movement",
                 "privilege_escalation",
                 "impact",
+                "collection",
             )
         },
     }
@@ -162,6 +163,7 @@ _MINIMAL_PARAMS: Dict[str, Dict[str, Any]] = {
         "target": "lab-host",
     },
     "legacy_impact": {"technique": "data_encryption", "target": "lab-host"},
+    "legacy_collection": {"technique": "file_staging", "target": "lab-host"},
 }
 
 

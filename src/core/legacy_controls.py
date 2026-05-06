@@ -40,6 +40,7 @@ LEGACY_PACK_CAPABILITIES: Dict[str, tuple[str, ...]] = {
         "lateral_movement",
         "privilege_escalation",
         "impact",
+        "collection",
     ),
 }
 CAPABILITY_ALIASES: Dict[str, Dict[str, str]] = {

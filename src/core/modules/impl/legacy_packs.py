@@ -14,6 +14,7 @@ from ...models import ModuleResult, TelemetryEvent
 from ..base import BaseModule
 from .legacy_base import LegacyAdapterBase, _result
 from .legacy_runtime import (
+    COLLECTION_TECHNIQUE_KEYS,
     CREDENTIAL_TECHNIQUE_KEYS,
     IMPACT_TECHNIQUE_KEYS,
     LATERAL_MOVEMENT_TECHNIQUE_KEYS,
@@ -23,6 +24,7 @@ from .legacy_runtime import (
     normalize_protocol_key,
     normalize_stealth_key,
     run_actor_technique,
+    run_collection,
     run_credential_access,
     run_dns_tunneling,
     run_impact,
@@ -1508,6 +1510,231 @@ class LegacyImpactModule(LegacyAdapterBase):
         )
 
 
+# Per-technique simulate-mode tradecraft notes for the legacy
+# collection adapter. Notes describe the staging / capture /
+# compression patterns each technique represents — sourced from the
+# preserved legacy class. The adapter never writes archives, captures
+# input, or compresses data; the legacy class is itself purely
+# descriptive.
+_LEGACY_COLLECTION_NOTES: Dict[str, Dict[str, Any]] = {
+    "file_staging": {
+        "title": "Legacy local file-staging tradecraft research",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "selection_value": "staging",
+        "event_type": "legacy_collection_file_staging",
+        "notes": {
+            "common_paths": [
+                "%TEMP%\\<random>\\",
+                "%PROGRAMDATA%\\<vendor>\\",
+                "/tmp/.<dotdir>/",  # nosec B108 - tradecraft note describing attacker staging path; the adapter does not write here
+            ],
+            "telemetry_signal": "bulk file copies into a single staging directory",
+        },
+    },
+    "directory_staging": {
+        "title": "Legacy local directory-staging tradecraft research",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "selection_value": "staging-dir",
+        "event_type": "legacy_collection_directory_staging",
+        "notes": {
+            "common_misuse": "tree of victim documents copied prior to archive + exfil",
+            "telemetry_signal": "high directory-create rate followed by archive activity",
+        },
+    },
+    "archive_staging": {
+        "title": "Legacy archive-collected-data tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "tar -",
+        "event_type": "legacy_collection_archive_staging",
+        "notes": {
+            "canonical_tools": ["tar", "7z a", "rar a", "zip -r"],
+            "common_misuse": "stage + archive + encrypt before exfiltration over C2",
+        },
+    },
+    "keyboard_capture": {
+        "title": "Legacy keyboard-input capture tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "SetWindowsHookEx",
+        "event_type": "legacy_collection_keyboard_capture",
+        "notes": {
+            "canonical_apis": ["SetWindowsHookEx WH_KEYBOARD_LL", "GetAsyncKeyState"],
+            "telemetry_signal": "process registers low-level keyboard hook",
+        },
+    },
+    "clipboard_capture": {
+        "title": "Legacy clipboard-data capture tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "GetClipboardData",
+        "event_type": "legacy_collection_clipboard_capture",
+        "notes": {
+            "canonical_apis": ["OpenClipboard", "GetClipboardData", "AddClipboardFormatListener"],
+            "common_misuse": "long-lived listener watching for credential / wallet paste",
+        },
+    },
+    "screen_capture": {
+        "title": "Legacy screen-capture collection tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "BitBlt",
+        "event_type": "legacy_collection_screen_capture",
+        "notes": {
+            "canonical_apis": ["BitBlt", "GetDC", "PrintWindow"],
+            "common_misuse": "periodic screenshots saved to staging directory",
+        },
+    },
+    "compression": {
+        "title": "Legacy collected-data compression tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "gzip",
+        "event_type": "legacy_collection_compression",
+        "notes": {
+            "canonical_tools": ["gzip", "bzip2", "xz", "Compress-Archive"],
+            "telemetry_signal": "compression utility invoked on staging directory",
+        },
+    },
+    "encryption": {
+        "title": "Legacy collected-data encryption tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "openssl",
+        "event_type": "legacy_collection_encryption",
+        "notes": {
+            "canonical_tools": ["openssl enc", "gpg --encrypt", "7z a -p"],
+            "common_misuse": "AES-256 encryption of staged archive prior to exfil",
+        },
+    },
+    "encoding": {
+        "title": "Legacy collected-data encoding tradecraft research",
+        "logsource": {"category": "process_creation", "product": "host"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "base64",
+        "event_type": "legacy_collection_encoding",
+        "notes": {
+            "canonical_tools": ["base64", "certutil -encode", "PowerShell [Convert]::ToBase64String"],
+            "common_misuse": "encode archive bytes for HTTP body / DNS-TXT exfil",
+        },
+    },
+}
+
+
+class LegacyCollectionModule(LegacyAdapterBase):
+    """Adapter for the preserved `Collection` legacy class.
+
+    Companion to the simulate-only standard `collection` module. Sits
+    behind `tactic_pack` / `collection` capability gating. Surfaces
+    per-technique tradecraft notes (canonical tools, default paths,
+    telemetry signals) in simulate mode. Emulate mode routes through
+    `safe_call` into the legacy class which itself returns synthesised
+    tradecraft descriptors only — no live archive creation, input
+    capture, or file write side effects.
+    """
+
+    name = "legacy_collection"
+    pack_name = "tactic_pack"
+    capability_name = "collection"
+    attack_techniques = (
+        "T1022",
+        "T1056.001",
+        "T1074.001",
+        "T1113",
+        "T1115",
+        "T1132",
+        "T1560",
+        "T1560.001",
+    )
+
+    def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
+        decision = self._ensure_allowed(context)
+        mode = decision.mode
+
+        requested = str(params.get("technique") or "file_staging").lower()
+        technique_key = (
+            requested if requested in COLLECTION_TECHNIQUE_KEYS else "file_staging"
+        )
+        branch, legacy_key, mitre = COLLECTION_TECHNIQUE_KEYS[technique_key]
+        profile = _LEGACY_COLLECTION_NOTES[technique_key]
+        target = str(params.get("target") or "lab-host")
+
+        details: Dict[str, Any] = {
+            "technique": technique_key,
+            "legacy_key": legacy_key,
+            "legacy_branch": branch,
+            "mitre_technique": mitre,
+            "target": target,
+            "mode": mode,
+            "tradecraft_notes": dict(profile["notes"]),
+        }
+
+        if mode == "emulate":
+            runtime = safe_call(run_collection, technique_key, params)
+            details["runtime_outcome"] = runtime
+            indicators = flatten_indicators(runtime)
+            if indicators:
+                details["runtime_indicators"] = indicators
+            if runtime.get("status") == "failure":
+                details["runtime_warning"] = (
+                    "legacy collection runtime failed for "
+                    f"{technique_key}: {runtime.get('error')}"
+                )
+        else:
+            details["runtime_outcome"] = {
+                "status": "simulated",
+                "technique": technique_key,
+                "reason": "simulate mode selected",
+            }
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details={
+                "run_id": context.get("run_id", "unknown"),
+                **details,
+            },
+        )
+        hints: Dict[str, Any] = {
+            "title": f"{profile['title']} on {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {
+                    profile["selection_field"]: profile["selection_value"],
+                    "legacy.pack": self.pack_name,
+                    "legacy.capability": self.capability_name,
+                    "legacy.technique": technique_key,
+                },
+                "condition": "selection",
+            },
+            "mitre_technique": mitre,
+            "collection_technique": technique_key,
+            "target_host": target,
+            "tradecraft_notes": dict(profile["notes"]),
+        }
+        if requested != technique_key:
+            hints["unrecognized_collection_technique"] = requested
+
+        artifacts = _capability_artifacts(
+            context,
+            self.pack_name,
+            self.capability_name,
+            mode,
+            details,
+        )
+        return _result(
+            self.name,
+            "success",
+            f"Legacy collection tradecraft for '{technique_key}' prepared in {mode} mode.",
+            techniques=[mitre],
+            artifacts=artifacts,
+            hints=hints,
+            telemetry=[event],
+        )
+
+
 class LegacyProtocolResearchModule(LegacyAdapterBase):
     name = "legacy_protocol_research"
     attack_techniques = ("T1071.004", "T1572", "T1090")
@@ -1888,6 +2115,7 @@ def discover_legacy_modules() -> Dict[str, type[BaseModule]]:
         LegacyLateralMovementModule.name: LegacyLateralMovementModule,
         LegacyPrivilegeEscalationModule.name: LegacyPrivilegeEscalationModule,
         LegacyImpactModule.name: LegacyImpactModule,
+        LegacyCollectionModule.name: LegacyCollectionModule,
         LegacyProtocolResearchModule.name: LegacyProtocolResearchModule,
         LegacyStealthResearchModule.name: LegacyStealthResearchModule,
     }
@@ -1906,6 +2134,7 @@ __all__ = [
     "LegacyLateralMovementModule",
     "LegacyPrivilegeEscalationModule",
     "LegacyImpactModule",
+    "LegacyCollectionModule",
     "LegacyProtocolResearchModule",
     "LegacyStealthResearchModule",
     "discover_legacy_modules",
