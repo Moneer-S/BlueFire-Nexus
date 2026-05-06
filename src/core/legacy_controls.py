@@ -35,7 +35,12 @@ LEGACY_PACK_CAPABILITIES: Dict[str, tuple[str, ...]] = {
     # Tactic pack wraps the preserved per-tactic legacy classes. New
     # capabilities are added one focused PR at a time so the adapter
     # surface stays reviewable.
-    "tactic_pack": ("credential_access", "lateral_movement", "privilege_escalation"),
+    "tactic_pack": (
+        "credential_access",
+        "lateral_movement",
+        "privilege_escalation",
+        "impact",
+    ),
 }
 CAPABILITY_ALIASES: Dict[str, Dict[str, str]] = {
     "c2_pack": {

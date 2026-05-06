@@ -346,6 +346,53 @@ def run_privilege_escalation(
     }
 
 
+# Standard impact technique keys mapped to:
+#   (branch, legacy_handler_key, canonical_mitre)
+# Branch matches the legacy `Impact.impact(...)` three-bucket dispatch
+# shape (data / service / system). The legacy class is purely
+# descriptive: every handler synthesises operator-facing strings
+# (encryption command, file paths, MITRE ID) without writing data,
+# stopping services, or rebooting the host.
+IMPACT_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
+    "data_encryption": ("data", "encryption", "T1486"),
+    "data_destruction": ("data", "deletion", "T1485"),
+    "data_manipulation": ("data", "modification", "T1565"),
+    "service_stop": ("service", "stop", "T1489"),
+    "service_modify": ("service", "modify", "T1543.003"),
+    "service_delete": ("service", "delete", "T1543.003"),
+    "system_reboot": ("system", "reboot", "T1529"),
+    "system_shutdown": ("system", "shutdown", "T1529"),
+    "endpoint_dos": ("system", "crash", "T1499"),
+}
+
+
+def run_impact(technique: str, params: Mapping[str, Any]) -> Dict[str, Any]:
+    """Invoke the preserved `Impact` legacy class for one technique."""
+    branch, legacy_key, mitre = IMPACT_TECHNIQUE_KEYS.get(
+        technique, ("data", "encryption", "T1486")
+    )
+    cls = _load_attr("src.core.impact.impact", "Impact")
+    legacy = cls()
+    payload = {legacy_key: dict(params)}
+    raw = legacy.impact(payload)
+
+    branch_outcome = _unwrap_legacy_branch(
+        raw,
+        outer_key="impact",
+        branch=branch,
+        legacy_handler_key=legacy_key,
+    )
+    status = str(branch_outcome.get("status", "completed"))
+    return {
+        "status": status if status in {"success", "completed", "error", "failure"} else "completed",
+        "technique": technique,
+        "legacy_key": legacy_key,
+        "mitre_technique": mitre,
+        "details": dict(branch_outcome.get("details", {})),
+        "timestamp": branch_outcome.get("timestamp", raw.get("timestamp", "")),
+    }
+
+
 def run_stealth_capability(capability: str, params: Mapping[str, Any]) -> Dict[str, Any]:
     cap = normalize_stealth_key(capability)
     runtime_cap = "anti_detection" if cap == "anti_detection_legacy" else cap
