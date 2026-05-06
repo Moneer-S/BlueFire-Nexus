@@ -116,6 +116,13 @@ steps:
     module: exfiltration
     params:
       method: via_c2
+      # Source host is propagated from the upstream
+      # `stage-collected-data` collection step rather than re-
+      # declared here. This demonstrates a second
+      # `previous_step_results` consumer pair (collection ->
+      # exfiltration) on top of the existing discovery ->
+      # credential_access pair earlier in this scenario.
+      target_from_step: stage-collected-data
       network_touch: false
 
   - id: ransomware-impact
