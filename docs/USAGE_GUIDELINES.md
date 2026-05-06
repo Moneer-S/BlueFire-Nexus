@@ -27,6 +27,79 @@ The shipped `config.yaml` enables the legacy capability packs in
 `enable_all_lab_capabilities: false` keeps `emulate` mode gated. This is
 the right default for purple-team work; tighten or loosen per environment.
 
+### Configuration model
+
+BlueFire-Nexus is designed to support both a simple toggle workflow
+and granular advanced configuration. The runtime resolves settings
+from multiple sources with the following documented precedence:
+
+1. **CLI flag** — operator's most-specific request (e.g.
+   `--legacy-preset full-simulate`).
+2. **Scenario step param** — per-step overrides in scenario YAML
+   (e.g. `target_from_step: enumerate-files`).
+3. **Config file** — `general.*` and `modules.*` keys in
+   `config.yaml`.
+4. **Environment variable** — for ambient runtime control (test
+   isolation, container deployments, e.g. `BLUEFIRE_OUTPUT_ROOT`).
+5. **Default** — the local-first, simulate-only baseline.
+
+The single intentional deviation is the runtime output root: there
+is no CLI flag or scenario step that overrides it, so the order
+simplifies to **config (`general.output_root`) > env
+(`BLUEFIRE_OUTPUT_ROOT`) > default (`output`)**.
+
+A small set of helpers in `src/core/configuration.py` exposes the
+resolved values for the most common reads:
+
+| Helper | Returns |
+|---|---|
+| `resolve_output_root(config)` | `Path` for the runtime output root. |
+| `get_safety_config(config)` | `dict` with `dry_run`, `auto_wipe`, `max_runtime`, `allowed_subnets`, `allowed_domains`. |
+| `get_ai_config(config)` | `dict` with `enabled`, `provider`, `model`, `api_base`, `api_key_env`, `timeout`, `max_tokens`, `provider_settings`, `known_providers`. |
+| `get_mutation_config(config)` | `dict` with `enabled`, `default_strategy`, `allowed_strategies`. |
+| `is_legacy_capability_enabled(config, pack, capability)` | `bool`. Thin wrapper over `evaluate_legacy_capability`. |
+| `is_offline_ai(config)` | `bool` — `True` for the local-first baseline. |
+| `resolve_setting(*, cli, scenario, config, env, default)` | Generic precedence helper for scattered settings. |
+
+Helpers always return documented defaults when keys are absent and
+tolerate malformed (non-mapping) input rather than raising.
+
+### AI provider config shape (preparation only — local-first today)
+
+The default AI layer remains the deterministic offline
+`TemplateProvider`. There is no remote provider implementation in the
+shipped baseline; the runtime never makes network calls under default
+config. The config shape below is documented so plug-and-play
+provider implementations can be wired in later without re-shaping
+config:
+
+```yaml
+modules:
+  ai:
+    enabled: false              # opt-in copilot artifacts
+    provider: template          # default: deterministic, offline
+    model: default
+    api_base: ""                # OpenAI-compatible endpoint URL
+    api_key_env: ""             # name of env var holding the API key
+    timeout: 30                 # seconds (no effect on template)
+    max_tokens: 1024            # length cap (no effect on template)
+
+ai_providers:
+  openai_compatible:
+    api_base: "{{ env OPENAI_COMPATIBLE_BASE_URL }}"
+    model: "model-name"
+  # other vendor-specific blocks are tolerated; the runtime does not
+  # dial out under any default config.
+```
+
+`get_ai_config` populates `modules.ai.api_base` / `model` from the
+matching `ai_providers.<provider>` block when the top-level value is
+empty, so operators can stash provider settings in one place. The
+default provider remains `template`. **Ollama is NOT a default**;
+it can be reached as an OpenAI-compatible endpoint by setting
+`provider: openai_compatible` and pointing `api_base` at the local
+Ollama server, but it is not privileged over any other provider.
+
 ## 3. Run a scenario
 
 Two entry points to the same runtime:
