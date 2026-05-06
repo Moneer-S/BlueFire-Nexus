@@ -330,7 +330,154 @@ def get_mutation_config(config: Optional[Mapping[str, Any]] = None) -> dict:
     return resolved
 
 
+# ---------------------------------------------------------------------------
+# Simple-mode cross-cutting presets
+# ---------------------------------------------------------------------------
+#
+# These presets span more than legacy controls — they touch
+# `general.*`, `modules.ai.*`, and `modules.legacy.*` together so an
+# operator can pick a posture in one action rather than editing
+# scattered fields. They are config-level overrides, not hidden
+# runtime behaviour: applying a preset writes the documented dot-path
+# values into the loaded config and that's it.
+#
+# The legacy-only presets in `legacy_controls.LEGACY_PRESET_PROFILES`
+# remain available for fine-grained legacy-pack work; these presets
+# are additive — operators can apply a simple preset and then layer a
+# legacy preset on top, or vice-versa.
+
+# Each preset ships a "description" (operator-facing) plus a flat
+# dot-path "overrides" mapping that the runner applies via
+# `config_manager.set(...)`. Keep the keys conservative — these
+# presets must never override a more-specific operator choice that
+# already lives in `config.yaml` UNLESS the operator explicitly
+# applies the preset.
+_SIMPLE_PRESETS: dict = {
+    "local_safe": {
+        "description": (
+            "Most conservative baseline. Dry-run enabled, no legacy "
+            "packs, AI in offline template mode."
+        ),
+        "overrides": {
+            "general.dry_run": True,
+            "modules.ai.enabled": False,
+            "modules.ai.provider": "template",
+            "modules.legacy.enable_all_lab_capabilities": False,
+            "modules.legacy.global_mode": "simulate",
+            "modules.legacy.global_lab_acknowledged": False,
+            "modules.legacy.lab_confirmation": False,
+        },
+    },
+    "lab_legacy_enabled": {
+        "description": (
+            "All approved legacy capability packs enabled in simulate "
+            "mode for purple-team detection-regression work. Emulate "
+            "mode stays gated until lab acknowledgement is added "
+            "explicitly."
+        ),
+        "overrides": {
+            "general.dry_run": True,
+            "modules.ai.enabled": False,
+            "modules.ai.provider": "template",
+            "modules.legacy.enable_all_lab_capabilities": True,
+            "modules.legacy.global_mode": "simulate",
+            "modules.legacy.global_lab_acknowledged": False,
+            "modules.legacy.lab_confirmation": False,
+        },
+    },
+    "ai_enabled": {
+        "description": (
+            "Enable the offline copilot template provider so scenario "
+            "runs produce plan / narrative / detection-suggestion "
+            "artifacts. No network calls; no API keys required."
+        ),
+        "overrides": {
+            "modules.ai.enabled": True,
+            "modules.ai.provider": "template",
+        },
+    },
+    "ai_disabled": {
+        "description": "Explicitly disable the AI copilot artifact layer.",
+        "overrides": {
+            "modules.ai.enabled": False,
+            "modules.ai.provider": "template",
+        },
+    },
+    "strict_local": {
+        "description": (
+            "Hardest local-first posture. Dry-run enabled, no legacy, "
+            "no AI, safety gates restricted to loopback only."
+        ),
+        "overrides": {
+            "general.dry_run": True,
+            "general.safeties.allowed_subnets": [],
+            "general.safeties.allowed_domains": ["localhost"],
+            "modules.ai.enabled": False,
+            "modules.ai.provider": "template",
+            "modules.legacy.enable_all_lab_capabilities": False,
+            "modules.legacy.global_mode": "simulate",
+            "modules.legacy.global_lab_acknowledged": False,
+            "modules.legacy.lab_confirmation": False,
+        },
+    },
+}
+
+
+def simple_preset_names() -> Tuple[str, ...]:
+    """Return the canonical list of simple-mode preset names."""
+    return tuple(_SIMPLE_PRESETS.keys())
+
+
+def simple_preset_catalog() -> dict:
+    """Return a deep copy of the preset catalogue for CLI rendering."""
+    import copy
+
+    return {
+        name: {
+            "description": entry["description"],
+            "overrides": dict(entry["overrides"]),
+        }
+        for name, entry in _SIMPLE_PRESETS.items()
+    }
+
+
+def simple_preset_overrides(name: str) -> dict:
+    """Return the flat dot-path overrides for a simple-mode preset.
+
+    Raises ``ValueError`` for unknown preset names so CLI / programmatic
+    callers fail loudly rather than silently applying nothing.
+    """
+    canonical = str(name or "").strip().lower()
+    if canonical not in _SIMPLE_PRESETS:
+        allowed = ", ".join(sorted(_SIMPLE_PRESETS))
+        raise ValueError(
+            f"Unknown simple-mode preset {name!r}. Expected one of: {allowed}"
+        )
+    return dict(_SIMPLE_PRESETS[canonical]["overrides"])
+
+
+def apply_simple_preset(config_manager: Any, name: str) -> dict:
+    """Apply a simple-mode preset to a ``ConfigManager``-like object.
+
+    The argument is duck-typed: anything with a ``set(dot_path,
+    value)`` method (i.e. ``ConfigManager``) is accepted, so callers
+    don't need to import the class here. Returns the applied
+    overrides dict for telemetry/logging.
+    """
+    overrides = simple_preset_overrides(name)
+    setter = getattr(config_manager, "set", None)
+    if not callable(setter):
+        raise TypeError(
+            "apply_simple_preset requires a ConfigManager-like object with a "
+            "callable .set(dot_path, value) method"
+        )
+    for path, value in overrides.items():
+        setter(path, value)
+    return overrides
+
+
 __all__ = [
+    "apply_simple_preset",
     "get_ai_config",
     "get_mutation_config",
     "get_safety_config",
@@ -338,4 +485,7 @@ __all__ = [
     "is_offline_ai",
     "resolve_output_root",
     "resolve_setting",
+    "simple_preset_catalog",
+    "simple_preset_names",
+    "simple_preset_overrides",
 ]

@@ -100,6 +100,39 @@ it can be reached as an OpenAI-compatible endpoint by setting
 `provider: openai_compatible` and pointing `api_base` at the local
 Ollama server, but it is not privileged over any other provider.
 
+### Simple-mode presets (cross-cutting)
+
+Operators who want to switch posture in one action — rather than
+editing scattered `general.*`, `modules.legacy.*`, and `modules.ai.*`
+fields — can apply a simple-mode preset:
+
+```bash
+python -m src.core.cli simple-presets
+python -m src.core.cli apply-simple-preset local_safe --config config.yaml
+python -m src.core.cli apply-simple-preset lab_legacy_enabled --config config.yaml --preview-only
+```
+
+| Preset | Effect |
+|---|---|
+| `local_safe` | dry_run on, no legacy packs, AI in offline template mode. The most conservative baseline. |
+| `lab_legacy_enabled` | All approved legacy capability packs enabled in `simulate` mode. Emulate mode stays gated until lab acknowledgement is added explicitly. AI stays offline. |
+| `ai_enabled` | Enable the offline copilot template provider so scenario runs produce plan / narrative / detection-suggestion artifacts. No network calls. |
+| `ai_disabled` | Explicitly disable the AI copilot artifact layer. |
+| `strict_local` | Hardest local-first posture — dry_run on, no legacy, no AI, safety gates restricted to loopback only. |
+
+Simple-mode presets are additive on top of the existing
+**legacy-only** preset profiles (`safe-baseline`, `full-simulate`,
+`full-emulate`, `actor-simulate`, `c2-simulate`, `stealth-simulate`)
+exposed via `python -m src.core.cli legacy-presets`. The legacy
+presets touch only `modules.legacy.*`; the simple-mode presets touch
+`general.*`, `modules.ai.*`, and `modules.legacy.*` together. You
+can apply one simple preset and then layer a legacy preset for
+finer control.
+
+The `--preview-only` flag prints the dot-path overrides without
+writing the config file — useful for inspecting what a preset
+would change before committing to it.
+
 ## 3. Run a scenario
 
 Two entry points to the same runtime:

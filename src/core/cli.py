@@ -13,6 +13,11 @@ from rich.table import Table
 from rich.tree import Tree
 
 from .bluefire_nexus import BlueFireNexus, resolve_output_root
+from .configuration import (
+    apply_simple_preset,
+    simple_preset_catalog,
+    simple_preset_names,
+)
 from .legacy_controls import (
     CAPABILITY_ALIASES,
     capability_aliases,
@@ -367,6 +372,56 @@ def legacy_presets_cmd() -> None:
         description = str(details.get("description", ""))
         table.add_row(preset, aliases, risk, description)
     console.print(table)
+
+
+@app.command("simple-presets")
+def simple_presets_cmd() -> None:
+    """List cross-cutting simple-mode presets (general / legacy / AI)."""
+    table = Table(title="Simple-mode config presets")
+    table.add_column("Preset")
+    table.add_column("Description")
+    for name, entry in simple_preset_catalog().items():
+        table.add_row(name, str(entry.get("description", "")))
+    console.print(table)
+
+
+@app.command("apply-simple-preset")
+def apply_simple_preset_cmd(
+    preset: str = typer.Argument(..., help="Simple-mode preset name."),
+    config: Path = typer.Option(
+        Path("config.yaml"),
+        "--config",
+        "-c",
+        help="Path to the config file to update.",
+    ),
+    preview_only: bool = typer.Option(
+        False,
+        "--preview-only",
+        help="Print the dot-path overrides without writing the config file.",
+    ),
+) -> None:
+    """Apply a simple-mode preset (general / legacy / AI) to the config."""
+    canonical = preset.strip().lower()
+    if canonical not in simple_preset_names():
+        raise typer.BadParameter(
+            f"Unknown simple-mode preset {preset!r}. Available: "
+            f"{', '.join(sorted(simple_preset_names()))}"
+        )
+    nexus = BlueFireNexus(str(config))
+    overrides = apply_simple_preset(nexus.config_manager, canonical)
+    table = Table(title=f"Simple preset overrides: {canonical}")
+    table.add_column("Key")
+    table.add_column("Value")
+    for path, value in overrides.items():
+        table.add_row(path, str(value))
+    console.print(table)
+    if preview_only:
+        console.print(
+            "[yellow]preview-only:[/] preset overrides not persisted to config."
+        )
+        return
+    nexus.config_manager.save()
+    console.print(f"[green]Persisted preset {canonical!r} to[/] {config}")
 
 
 @app.command("legacy-guided-presets")
