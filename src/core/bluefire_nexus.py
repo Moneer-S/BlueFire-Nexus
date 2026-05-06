@@ -22,6 +22,36 @@ from .scenario import load_scenario
 from .telemetry import TelemetryBus
 
 
+def resolve_output_root(config: Optional[Mapping[str, Any]] = None) -> Path:
+    """Resolve the runtime output root with the documented precedence.
+
+    Resolution order (first non-empty wins):
+
+    1. ``general.output_root`` in the loaded config — for explicit
+       per-config control (production deployments, scenarios that
+       pin a specific output location).
+    2. ``BLUEFIRE_OUTPUT_ROOT`` env var — for ambient test isolation
+       (the test harness sets this once per session so tests that do
+       not pass an explicit config still produce artifacts under a
+       tmp directory rather than the project-root ``output/``).
+    3. ``output`` — default, preserves existing CLI behaviour.
+
+    Exposed as a module-level helper so CLI lookup commands that take
+    a bare run id (without instantiating ``BlueFireNexus``) can locate
+    artifact directories using the same precedence as the runtime.
+    """
+    if isinstance(config, Mapping):
+        general = config.get("general")
+        if isinstance(general, Mapping):
+            configured = str(general.get("output_root", "")).strip()
+            if configured:
+                return Path(configured)
+    env_root = os.environ.get("BLUEFIRE_OUTPUT_ROOT", "").strip()
+    if env_root:
+        return Path(env_root)
+    return Path("output")
+
+
 class BlueFireNexus:
     """Coordinates scenario execution across registered modules."""
 
@@ -57,29 +87,8 @@ class BlueFireNexus:
             self.modules[module_name].update_config(existing)
 
     def _output_root(self) -> Path:
-        """Return the configured runtime output root (default ``output``).
-
-        Resolution order (first non-empty wins):
-
-        1. ``general.output_root`` in the loaded config — for explicit
-           per-config control (production deployments, scenarios that
-           pin a specific output location).
-        2. ``BLUEFIRE_OUTPUT_ROOT`` env var — for ambient test
-           isolation (the test harness sets this once per session so
-           tests that do not pass an explicit config still produce
-           artifacts under a tmp directory rather than the project-
-           root ``output/``).
-        3. ``output`` — default, preserves existing CLI behaviour.
-        """
-        general = self.config.get("general", {}) if isinstance(self.config, Mapping) else {}
-        if isinstance(general, Mapping):
-            configured = str(general.get("output_root", "")).strip()
-            if configured:
-                return Path(configured)
-        env_root = os.environ.get("BLUEFIRE_OUTPUT_ROOT", "").strip()
-        if env_root:
-            return Path(env_root)
-        return Path("output")
+        """Instance proxy for :func:`resolve_output_root` against ``self.config``."""
+        return resolve_output_root(self.config)
 
     def _make_run_context(self, run_id: Optional[str] = None) -> RunContext:
         run_identifier = run_id or (
