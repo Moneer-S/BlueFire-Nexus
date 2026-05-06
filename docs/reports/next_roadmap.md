@@ -79,6 +79,50 @@ The following gaps have been closed and are kept here for context.
   and unchanged in their safety/mode model. Scenarios that want the
   legacy behaviour must explicitly say `module: legacy_<tactic>` —
   there is no implicit routing or `emulate_via_legacy` flag.
+- **Direct `_handle_*` dispatch in tactic_pack helpers.** Earlier
+  versions of the `run_<tactic>(...)` helpers fed payloads through the
+  legacy class's staged-pipeline entrypoint, which silently dropped
+  techniques meant for the second or third dispatch stage and let
+  `service_creation` / `token_creation` collide on the same data key.
+  Helpers now dispatch directly to `_handle_<method>` so every
+  advertised technique returns rich, technique-specific details and
+  the token/service collision is resolved.
+- **Cross-adapter consistency tests + lateral_movement MITRE
+  normalisation.** A new test set pins five structural invariants
+  across the entire `tactic_pack` family (every dispatch entry has a
+  handler, every emitted MITRE id is advertised, every advertised
+  MITRE id is reachable, every dispatch entry has tradecraft notes,
+  no orphan notes). `legacy_lateral_movement` now emits T1570
+  (Lateral Tool Transfer) for FTP/SCP transfers — matching the
+  standard module's MITRE convention — instead of the legacy class's
+  internal T1105. A new `ssh` dispatch entry advertises T1021.004.
+  The deprecated T1145 emitted by the SSH-keys handler is normalised
+  to the modern T1552.004 in adapter output, with the legacy id
+  preserved under `legacy_mitre_technique_id` for traceability.
+- **Step-to-step artifact propagation.** The runtime now threads a
+  read-only `previous_step_results` mapping into every step's
+  context. Built incrementally as the scenario runs; carries
+  `{step_id: {status, module, techniques, artifacts}}` for upstream
+  steps (errored steps included). Modules opt in by reading
+  `context["previous_step_results"]` — the runtime never auto-injects
+  values into params. No new artifact-path surface, no safety/mode
+  model change.
+- **Enterprise intrusion kill-chain scenario.** A new shipped
+  scenario (`scenarios/enterprise_intrusion_chain.yaml`) chains 12
+  standard modules end-to-end (`resource_development` →
+  `reconnaissance` → `initial_access` → `execution` →
+  `defense_evasion` → `discovery` → `credential_access` →
+  `lateral_movement` → `collection` → `command_control` →
+  `exfiltration` → `impact`) with explicit tradecraft expectations
+  and blue-team guidance. Realistic purple-team validation harness;
+  all steps simulate-only.
+- **Test isolation + artifact-path performance.** The runtime output
+  root is now resolved through a three-layer precedence
+  (config / env var / default `output`), so tests automatically
+  scope nexus runs to a session tmp dir. The artifact-path test
+  was restructured to a session-scope canary plus per-test artifact-
+  string validation, dropping wallclock from ~12 min to ~13s while
+  preserving the discipline.
 
 ## Open items
 
@@ -93,17 +137,7 @@ choice; OpenAI-compatible is the obvious BYOK choice) and implement
 fallback path. Avoid multi-provider sprawl until at least one real
 backend is solid.
 
-### 2. Step-to-step artifact propagation
-Scenario steps cannot read artifacts from earlier steps in the same
-chain. This is the deepest reason scenarios feel like disconnected
-calls rather than coherent adversary chains.
-
-**Approach:** Add a `previous_step_results` mapping to the context
-dict, passed to each step's `execute()`. Modules can opt in to read
-prior step outputs (e.g. `discovery` results feeding `credential_access`
-target selection).
-
-### 3. Future remote-observability story
+### 2. Future remote-observability story
 Out of scope for the local-first baseline. If/when added, would belong
 in a separate optional module behind explicit configuration. No remote
 SIEM exporters or external collectors today.

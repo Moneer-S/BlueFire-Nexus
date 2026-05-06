@@ -39,6 +39,7 @@ output/<run_id>/
 | `legacy_c2_protocols` | 6 | T1071.004 / T1572 / T1090 | Legacy C2 protocol research (DNS/TLS/QUIC/RPC). |
 | `legacy_flagship_blended` | 5 | T1589 / T1566 / T1071.004 / T1070 | Blended actor + protocol + stealth research. |
 | `legacy_stealth_research` | 5 | T1497 / T1562 / T1070 / T1027 | Anti-forensic / anti-sandbox / anti-detection research. |
+| `enterprise_intrusion_chain` | 12 | T1583.001 / T1593 / T1566 / T1059 / T1036 / T1083 / T1555.003 / T1021.002 / T1074.001 / T1071.001 / T1041 / T1486 | Realistic 12-step APT-style enterprise intrusion (resource-development → reconnaissance → initial-access → execution → defense-evasion → discovery → credential-access → lateral-movement → collection → C2 → exfiltration → ransomware-impact). |
 
 ## Per-scenario notes
 
@@ -91,6 +92,19 @@ run.
 ### `legacy_stealth_research`
 Five-step stealth research chain exercising anti-forensic, anti-sandbox,
 anti-detection, and dynamic API research adapters.
+
+### `enterprise_intrusion_chain`
+Twelve-step realistic adversary chain: resource development (attacker
+domain registration, T1583.001) → OSINT reconnaissance (T1593) →
+spearphishing initial access (T1566) → encoded-PowerShell loader
+execution (T1059) → process-name masquerading (T1036) → file
+discovery (T1083) → browser stored-credential extraction (T1555.003)
+→ PsExec lateral movement to a fileshare (T1021.002) → file staging
+(T1074.001) → HTTPS C2 channel (T1071.001) → exfiltration over C2
+(T1041) → ransomware encryption-impact simulation (T1486). All steps
+run in simulate mode; no destructive payloads under any input.
+Designed as a purple-team validation harness covering the full
+ATT&CK kill chain end-to-end.
 
 ## Authoring scenarios
 
