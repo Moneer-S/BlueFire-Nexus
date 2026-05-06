@@ -1,0 +1,151 @@
+id: enterprise_intrusion_chain
+name: Enterprise intrusion kill chain
+objective: |
+  Simulate a multi-stage adversary intrusion against a financial-services
+  lab from initial reconnaissance through ransomware-impact simulation.
+  Exercises 12 standard modules end-to-end so purple-team validation
+  covers a realistic adversary chain rather than isolated technique
+  callouts. All steps run in simulate mode by default; no destructive
+  payloads are written under any input.
+attack_coverage:
+  - T1583.001
+  - T1593
+  - T1566
+  - T1059
+  - T1036
+  - T1083
+  - T1555.003
+  - T1021.002
+  - T1074.001
+  - T1071.001
+  - T1041
+  - T1486
+fail_fast: false
+steps:
+  - id: stage-infrastructure
+    name: Adversary stages attacker-controlled domain
+    module: resource_development
+    params:
+      resource_type: domain
+      target: invoice-portal.example.lab
+      network_touch: false
+
+  - id: target-recon
+    name: OSINT enumeration of victim org
+    module: reconnaissance
+    params:
+      source: osint
+      target: example.lab
+      network_touch: false
+
+  - id: phish-delivery
+    name: Spearphishing email delivers loader
+    module: initial_access
+    params:
+      vector: phishing_email
+      target: finance-analyst@example.lab
+      network_touch: false
+
+  - id: loader-execution
+    name: Loader execution on victim host
+    module: execution
+    params:
+      command: powershell -nop -w hidden -enc UwB0AGEAcgB0AC0AUAByAG8AYwBlAHMAcwA=
+      network_touch: false
+
+  - id: masquerade
+    name: Loader masquerades as svchost.exe
+    module: defense_evasion
+    params:
+      technique: masquerading
+      target: finance-analyst-laptop
+      network_touch: false
+
+  - id: enumerate-files
+    name: Enumerate sensitive files on victim host
+    module: discovery
+    params:
+      discovery_type: files
+      targets:
+        - finance-analyst-laptop
+      network_touch: false
+
+  - id: harvest-browser-creds
+    name: Harvest stored browser credentials
+    module: credential_access
+    params:
+      technique: browser_credentials
+      target: finance-analyst-laptop
+      network_touch: false
+
+  - id: lateral-to-fileshare
+    name: Lateral movement to fileshare via PsExec
+    module: lateral_movement
+    params:
+      technique: psexec
+      source: finance-analyst-laptop
+      target: corp-fileshare
+      network_touch: false
+
+  - id: stage-collected-data
+    name: Stage collected files for exfiltration
+    module: collection
+    params:
+      technique: file_staging
+      target: corp-fileshare
+      network_touch: false
+
+  - id: c2-channel
+    name: Establish HTTPS C2 channel
+    module: command_control
+    params:
+      channel: https
+      c2_url: https://invoice-portal.example.lab/c2
+      network_touch: false
+
+  - id: exfil-over-c2
+    name: Exfiltrate staged data over C2
+    module: exfiltration
+    params:
+      method: via_c2
+      network_touch: false
+
+  - id: ransomware-impact
+    name: Simulate ransomware encryption-impact
+    module: impact
+    params:
+      technique: data_encryption
+      target: corp-fileshare
+      network_touch: false
+
+expected_detections:
+  - Adversary domain provisioning correlated with later phishing sender domain
+  - Spearphishing precursor (email + LNK / macro / encoded payload)
+  - Encoded PowerShell loader on a finance-user host
+  - Process-name masquerading (image-name vs. parent / command-line mismatch)
+  - Bulk file enumeration immediately preceding credential harvesting
+  - Browser stored-credential extraction (Login Data / Cookies access)
+  - PsExec / SMB administrative-share lateral movement to fileshare
+  - Local data staging immediately before HTTPS-channel egress
+  - HTTPS C2 beaconing to a freshly-provisioned attacker domain
+  - Bulk file rewrites and ransom-note creation on the fileshare
+
+blue_team_guidance:
+  - Correlate domain-registration intelligence (T1583.001) with later
+    HTTPS C2 (T1071.001) destinations to spot infrastructure-warning
+    paths early.
+  - Alert on encoded-PowerShell process creations from email-app parent
+    chains; this scenario's loader step is the canonical signal.
+  - Tune masquerading detections by comparing process image path with
+    parent process and command-line; the masquerade step models the
+    common svchost.exe rename pattern.
+  - File-enumeration spikes on user endpoints immediately before
+    credential extraction are a high-fidelity precursor — this scenario
+    sequences them deliberately to test that detection.
+  - PsExec to ADMIN$ followed by file staging on the destination is a
+    classic "lateral + collection" pattern; tune service-creation
+    (event 7045) plus file-event correlation rules against this
+    scenario's run telemetry.
+  - High-volume file rewrites with `.locked` / `.enc` / `.crypt`
+    extensions are the impact-step signal; ensure ransomware analytics
+    fire on this step's synthetic events.
