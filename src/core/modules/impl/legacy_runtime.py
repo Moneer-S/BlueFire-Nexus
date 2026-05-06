@@ -185,16 +185,108 @@ def run_credential_access(technique: str, params: Mapping[str, Any]) -> Dict[str
     payload = {legacy_key: dict(params)}
     raw = legacy.access(payload)
 
-    nested = raw.get("credential_access", {}) if isinstance(raw, Mapping) else {}
+    # The credential-access class buckets handler results under one of
+    # three branches (dumping / extraction / interception). The unwrap
+    # helper finds whichever branch the handler lives in.
     branch_outcome: Dict[str, Any] = {}
     for branch in ("dumping", "extraction", "interception"):
-        branch_value = nested.get(branch) if isinstance(nested, Mapping) else None
-        if isinstance(branch_value, Mapping) and legacy_key in branch_value:
-            handler_result = branch_value.get(legacy_key)
-            if isinstance(handler_result, Mapping):
-                branch_outcome = dict(handler_result)
+        outcome = _unwrap_legacy_branch(
+            raw,
+            outer_key="credential_access",
+            branch=branch,
+            legacy_handler_key=legacy_key,
+        )
+        if outcome:
+            branch_outcome = outcome
             break
 
+    status = str(branch_outcome.get("status", "completed"))
+    return {
+        "status": status if status in {"success", "completed", "error", "failure"} else "completed",
+        "technique": technique,
+        "legacy_key": legacy_key,
+        "mitre_technique": mitre,
+        "details": dict(branch_outcome.get("details", {})),
+        "timestamp": branch_outcome.get("timestamp", raw.get("timestamp", "")),
+    }
+
+
+# Standard lateral-movement technique keys mapped to:
+#   (branch, legacy_handler_key, canonical_mitre)
+# `branch` selects the inner dict the legacy `LateralMovement.move(...)`
+# class places its handler result under (`execution`, `file`, `service`).
+# `legacy_handler_key` is the data-key the legacy class dispatches on
+# inside `_apply_remote_*`. The mapping covers the standard
+# LateralMovementModule profile keys plus three legacy-only handlers
+# (powershell-remoting, service modification, service stop) that the
+# standard module does not expose today.
+LATERAL_MOVEMENT_TECHNIQUE_KEYS: Dict[str, tuple[str, str, str]] = {
+    "psexec": ("execution", "psexec", "T1021.002"),
+    "wmi": ("execution", "wmi", "T1047"),
+    "powershell_remoting": ("execution", "powershell", "T1059.001"),
+    "winrm": ("execution", "powershell", "T1021.006"),
+    "smb_share": ("file", "smb", "T1021.002"),
+    "ftp_transfer": ("file", "ftp", "T1105"),
+    "scp_transfer": ("file", "scp", "T1105"),
+    "service_create": ("service", "creation", "T1543.003"),
+    "service_modify": ("service", "modification", "T1543.003"),
+    "service_stop": ("service", "stop", "T1489"),
+}
+
+
+def _unwrap_legacy_branch(
+    raw: Mapping[str, Any],
+    *,
+    outer_key: str,
+    branch: str,
+    legacy_handler_key: str,
+) -> Dict[str, Any]:
+    """Generic unwrap helper for the nested legacy-class result shape.
+
+    Legacy classes return `{outer_key: {branch: {legacy_handler_key: {...}}}}`
+    or fall back to descriptive top-level keys. This helper returns a
+    flat handler-result dict, regardless of which branch the legacy
+    class placed the result in.
+    """
+    nested = raw.get(outer_key, {}) if isinstance(raw, Mapping) else {}
+    branch_value = nested.get(branch) if isinstance(nested, Mapping) else None
+    if isinstance(branch_value, Mapping) and legacy_handler_key in branch_value:
+        handler_result = branch_value.get(legacy_handler_key)
+        if isinstance(handler_result, Mapping):
+            return dict(handler_result)
+    # Fallback: scan every branch for the handler key (defensive).
+    if isinstance(nested, Mapping):
+        for value in nested.values():
+            if isinstance(value, Mapping) and legacy_handler_key in value:
+                handler_result = value.get(legacy_handler_key)
+                if isinstance(handler_result, Mapping):
+                    return dict(handler_result)
+    return {}
+
+
+def run_lateral_movement(technique: str, params: Mapping[str, Any]) -> Dict[str, Any]:
+    """Invoke the preserved `LateralMovement` legacy class for one technique.
+
+    The legacy class consumes a nested input dict (`{"psexec": {...}}`)
+    and dispatches to a per-technique handler that synthesises
+    tradecraft notes (commands, MITRE refs, file paths). No live
+    network or process side effect occurs — every handler returns a
+    descriptor dict.
+    """
+    branch, legacy_key, mitre = LATERAL_MOVEMENT_TECHNIQUE_KEYS.get(
+        technique, ("execution", "psexec", "T1021.002")
+    )
+    cls = _load_attr("src.core.movement.lateral_movement", "LateralMovement")
+    legacy = cls()
+    payload = {legacy_key: dict(params)}
+    raw = legacy.move(payload)
+
+    branch_outcome = _unwrap_legacy_branch(
+        raw,
+        outer_key="lateral_movement",
+        branch=branch,
+        legacy_handler_key=legacy_key,
+    )
     status = str(branch_outcome.get("status", "completed"))
     return {
         "status": status if status in {"success", "completed", "error", "failure"} else "completed",
