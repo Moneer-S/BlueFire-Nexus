@@ -22,6 +22,10 @@ from src.core.modules.registry import build_runtime_modules
 
 def _enable_credential_access(cfg_path: Path, *, mode: str, ack: bool) -> None:
     cfg = ConfigManager(str(cfg_path))
+    # Scope every nexus run made through this config to the test's
+    # tmp_path so concurrent / sibling tests can never observe each
+    # other's run directories under the project-root output/.
+    cfg.set("general.output_root", str(cfg_path.parent / "output"))
     base = "modules.legacy.tactic_pack.capabilities.credential_access"
     cfg.set(f"{base}.enabled", True)
     cfg.set(f"{base}.mode", mode)
@@ -65,7 +69,9 @@ def test_registry_includes_legacy_credential_access() -> None:
 def test_disabled_pack_raises_runtime_error(tmp_path: Path) -> None:
     """No tactic_pack configuration => RuntimeError from _ensure_allowed."""
     cfg_path = tmp_path / "config.yaml"
-    ConfigManager(str(cfg_path)).save()
+    cfg = ConfigManager(str(cfg_path))
+    cfg.set("general.output_root", str(tmp_path / "output"))
+    cfg.save()
     nexus = BlueFireNexus(str(cfg_path))
     result = nexus.execute_operation(
         "legacy_credential_access",
