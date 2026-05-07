@@ -252,14 +252,49 @@ local-server analog. The `enabled: true` gate still applies on
 top: an `enabled: false` config never dispatches regardless of
 key state.
 
-**Gemini**:
+**Gemini** (Google GenerateContent API):
 
-Google's GenerateContent API has its own request/response shape
-and does **not** route through the OpenAI-compatible HTTP backend
-yet. Setting `provider: gemini` today returns the keyless stub
-that produces a structured offline placeholder response. The
-config shape stays the same so a future provider-specific adapter
-slots in without re-plumbing.
+Gemini uses Google's GenerateContent API, which has its own
+request/response shape (URL contains the model in the path,
+`x-goog-api-key` header, `contents` array with `parts`,
+top-level `systemInstruction`, `generationConfig` block for
+`maxOutputTokens` / `temperature`, `usageMetadata` for token
+counts). The dedicated `GeminiGenerateContentBackend` adapter
+handles all of that; the config shape is the same as every
+other provider.
+
+```yaml
+modules:
+  ai:
+    enabled: true
+    provider: gemini                 # aliases `google` and `google_gemini` accepted
+    model: gemini-1.5-flash
+    api_base: "https://generativelanguage.googleapis.com"
+    api_key_env: "GOOGLE_AI_STUDIO_API_KEY"
+    fallback_provider: template
+    # max_tokens maps to generationConfig.maxOutputTokens.
+    # max_tokens: 4096
+
+ai_providers:
+  gemini:
+    # Optional: pin a different REST API segment. Default is
+    # "v1beta" if unset; valid values include "v1".
+    # api_version: "v1"
+    # Optional: vendor-specific request headers (project labels,
+    # billing tags, etc.).
+    # headers:
+    #   X-Goog-User-Project: "my-gcp-project-id"
+```
+
+Same gate semantics as the Anthropic adapter: the backend
+requires `enabled=true` AND non-empty `api_base` AND a non-empty
+`api_key` before issuing a network call. Empty key returns a
+clear `ProviderResponse(error="gemini api_key is required;
+set modules.ai.api_key_env (or ai_providers.gemini.api_key_env)
+to the env var holding the key")`. The auth header is
+`x-goog-api-key` (not Bearer); the `?key=...` query-string
+variant is intentionally avoided because it leaks credentials
+into server access logs.
 
 **MCP / connectors**: a future option, not a current requirement.
 Nothing in the shipped baseline depends on them.

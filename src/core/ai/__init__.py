@@ -1,6 +1,7 @@
 """AI package exports."""
 
 from .backends.anthropic import AnthropicMessagesBackend, register_anthropic_backend
+from .backends.gemini import GeminiGenerateContentBackend, register_gemini_backend
 from .backends.openai_compatible import (
     OpenAICompatibleHTTPBackend,
     register_default_backends,
@@ -26,11 +27,17 @@ register_default_backends()
 # ``api_base`` and resolved API key.
 register_anthropic_backend()
 
+# Register the Gemini GenerateContent adapter for the `gemini`
+# canonical name. Idempotent. Same default-False / opt-in contract
+# as the Anthropic adapter.
+register_gemini_backend()
+
 __all__ = [
     "AICopilot",
     "AIProvider",
     "AnthropicMessagesBackend",
     "FallbackChainProvider",
+    "GeminiGenerateContentBackend",
     "HTTPResponse",
     "HTTPTransport",
     "LLMProvider",
@@ -45,4 +52,5 @@ __all__ = [
     "mutate_technique",
     "register_anthropic_backend",
     "register_default_backends",
+    "register_gemini_backend",
 ]

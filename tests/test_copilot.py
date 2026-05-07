@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from src.core.ai.copilot import AICopilot
-from src.core.ai.providers import OpenAICompatibleProvider, TemplateProvider
+from src.core.ai.providers import TemplateProvider
 from src.core.config import ConfigManager
 
 
@@ -29,35 +29,38 @@ def test_copilot_offline_default_uses_template_provider(tmp_path: Path) -> None:
     assert copilot.enabled is False
 
 
-def test_copilot_consumes_resolved_ai_config_provider_settings_keyless_stub(
+def test_copilot_consumes_resolved_ai_config_provider_settings_anthropic_adapter(
     tmp_path: Path, monkeypatch
 ) -> None:
     """`ai_providers.<provider>` block flows through `get_ai_config`
-    into the keyless stub for canonical names that have no
-    HTTP-backed registration (gemini in this phase)."""
+    into the registered backend. After Phase 1/2 of the provider-
+    specific adapters, every canonical name has a real backend; this
+    test pins the flow-through against the Anthropic adapter."""
+    from src.core.ai.backends.anthropic import AnthropicMessagesBackend
+
     monkeypatch.setenv("BLUEFIRE_COPILOT_KEY", "sk-copilot-test")
     config = {
         "modules": {
             "ai": {
                 "enabled": True,
-                "provider": "gemini",
+                "provider": "anthropic",
                 "model": "vendor-m",
-                "api_base": "http://copilot.lab/v1",
+                "api_base": "https://api.anthropic.example",
                 "api_key_env": "BLUEFIRE_COPILOT_KEY",
             }
         },
         "ai_providers": {
-            "gemini": {
-                "organization": "org-copilot",
-                "api_base": "http://copilot.lab/v1",
+            "anthropic": {
+                "anthropic_version": "2024-09-01",
+                "headers": {"X-Operator": "lab"},
             }
         },
     }
     copilot = AICopilot(config, tmp_path)
-    assert isinstance(copilot.provider, OpenAICompatibleProvider)
+    assert isinstance(copilot.provider, AnthropicMessagesBackend)
     assert copilot.provider.api_key == "sk-copilot-test"
-    assert copilot.provider.endpoint == "http://copilot.lab/v1"
-    assert copilot.provider.provider_settings.get("organization") == "org-copilot"
+    assert copilot.provider.endpoint == "https://api.anthropic.example"
+    assert copilot.provider.provider_settings.get("anthropic_version") == "2024-09-01"
 
 
 def test_copilot_consumes_resolved_ai_config_provider_settings_http_backend(

@@ -512,14 +512,16 @@ def test_auto_registration_does_not_route_anthropic_to_http_backend() -> None:
 
 
 def test_auto_registration_does_not_route_gemini_to_http_backend() -> None:
-    """Gemini uses Google's GenerateContent shape; same reasoning."""
-    from src.core.ai.providers import OpenAICompatibleProvider
+    """Gemini uses Google's GenerateContent shape and MUST NOT be
+    silently bound to the OpenAI-compatible backend. It now routes
+    to the dedicated GeminiGenerateContentBackend."""
+    from src.core.ai.backends.gemini import GeminiGenerateContentBackend
 
     provider = ProviderFactory.from_ai_config(
         {"provider": "gemini", "model": "m", "api_base": "http://lab.example/v1"}
     )
     assert not isinstance(provider, OpenAICompatibleHTTPBackend)
-    assert isinstance(provider, OpenAICompatibleProvider)
+    assert isinstance(provider, GeminiGenerateContentBackend)
 
 
 # ---------------------------------------------------------------------------
