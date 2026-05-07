@@ -105,32 +105,21 @@ def test_from_ai_config_unknown_provider_falls_back_to_template() -> None:
     assert isinstance(provider, TemplateProvider)
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        # `anthropic` now has its own adapter; only gemini remains a
-        # keyless stub (Phase 2 is the gemini adapter).
-        "gemini",
-    ],
-)
-def test_from_ai_config_unmapped_remote_returns_keyless_stub(name: str) -> None:
-    """Canonical names that have NO registered backend still resolve
-    to the keyless ``OpenAICompatibleProvider`` stub. The local-first
-    invariant holds — no network call."""
-    provider = ProviderFactory.from_ai_config(
-        {
-            "provider": name,
-            "model": "model-x",
-            "api_base": "http://lab.example/v1",
-        }
-    )
-    assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider.name == name
-    assert provider.model == "model-x"
-    assert provider.endpoint == "http://lab.example/v1"
-    assert provider.api_key == ""
-    response = provider.complete("hello")
-    assert "Network completion is intentionally disabled by default" in response
+def test_no_canonical_remote_name_routes_to_keyless_stub_after_phase_2() -> None:
+    """After the Anthropic and Gemini adapters land, every canonical
+    remote name has a real backend. The ``OpenAICompatibleProvider``
+    keyless stub is no longer reachable via ``from_ai_config`` for
+    any documented canonical name — verifying this invariant
+    catches a future regression where a new canonical name is added
+    without a corresponding registered backend."""
+    for canonical in ProviderFactory._CANONICAL_REMOTE_NAMES:
+        provider = ProviderFactory.from_ai_config(
+            {"provider": canonical, "model": "m", "api_base": "http://lab.example/v1"}
+        )
+        assert not isinstance(provider, OpenAICompatibleProvider), (
+            f"canonical name {canonical!r} routed to the keyless stub — "
+            "every documented canonical name must have a registered backend"
+        )
 
 
 @pytest.mark.parametrize(
@@ -167,26 +156,6 @@ def test_from_ai_config_protocol_compatible_returns_http_backend(name: str) -> N
     assert provider.api_key == ""
 
 
-@pytest.mark.parametrize(
-    "alias,canonical",
-    [
-        ("google", "gemini"),
-        ("google_gemini", "gemini"),
-    ],
-)
-def test_from_ai_config_normalises_alias_to_canonical_keyless_stub(
-    alias: str, canonical: str
-) -> None:
-    """Alias resolution for canonical names that still use the
-    keyless stub (gemini today; anthropic / openai already have
-    real adapters)."""
-    provider = ProviderFactory.from_ai_config(
-        {"provider": alias, "model": "model-x"}
-    )
-    assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider.name == canonical
-
-
 def test_from_ai_config_normalises_claude_alias_to_anthropic_adapter() -> None:
     """``claude`` alias routes to the Anthropic Messages-API adapter
     (not the keyless stub) since Phase 1 of provider-specific
@@ -198,6 +167,28 @@ def test_from_ai_config_normalises_claude_alias_to_anthropic_adapter() -> None:
     )
     assert isinstance(provider, AnthropicMessagesBackend)
     assert provider.name == "anthropic"
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "google",
+        "google_gemini",
+    ],
+)
+def test_from_ai_config_normalises_google_aliases_to_gemini_adapter(
+    alias: str,
+) -> None:
+    """``google`` / ``google_gemini`` aliases route to the Gemini
+    GenerateContent adapter since Phase 2 of provider-specific
+    adapters."""
+    from src.core.ai.backends.gemini import GeminiGenerateContentBackend
+
+    provider = ProviderFactory.from_ai_config(
+        {"provider": alias, "model": "model-x"}
+    )
+    assert isinstance(provider, GeminiGenerateContentBackend)
+    assert provider.name == "gemini"
 
 
 @pytest.mark.parametrize(
@@ -237,48 +228,49 @@ def test_from_ai_config_normalises_case_and_whitespace() -> None:
 def test_from_ai_config_resolves_api_key_env(monkeypatch) -> None:
     """When `api_key_env` is set, the named env var is read into `api_key`.
 
-    Uses ``gemini`` (keyless-stub-backed in this phase) so the test
-    exercises the factory's api_key_env handling without depending on
-    the Phase 2 HTTP backend's class. The env-resolution behaviour is
-    shared across all backend paths."""
+    The env-resolution behaviour is shared across every backend path,
+    so this test uses ``anthropic`` (which has a registered adapter)
+    and asserts on the resolved ``api_key`` field rather than a
+    specific backend class."""
+    from src.core.ai.backends.anthropic import AnthropicMessagesBackend
+
     monkeypatch.setenv("BLUEFIRE_TEST_AI_KEY", "sk-test-resolved")
     provider = ProviderFactory.from_ai_config(
         {
-            "provider": "gemini",
+            "provider": "anthropic",
             "model": "m",
             "api_key_env": "BLUEFIRE_TEST_AI_KEY",
         }
     )
-    assert isinstance(provider, OpenAICompatibleProvider)
+    assert isinstance(provider, AnthropicMessagesBackend)
     assert provider.api_key == "sk-test-resolved"
 
 
 def test_from_ai_config_missing_env_var_yields_empty_api_key(monkeypatch) -> None:
     """Pointing at a missing env var becomes an empty api_key, not an error."""
+    from src.core.ai.backends.anthropic import AnthropicMessagesBackend
+
     monkeypatch.delenv("BLUEFIRE_DEFINITELY_UNSET_KEY", raising=False)
     provider = ProviderFactory.from_ai_config(
         {
-            "provider": "gemini",
+            "provider": "anthropic",
             "model": "m",
             "api_key_env": "BLUEFIRE_DEFINITELY_UNSET_KEY",
         }
     )
-    assert isinstance(provider, OpenAICompatibleProvider)
+    assert isinstance(provider, AnthropicMessagesBackend)
     assert provider.api_key == ""
 
 
 def test_from_ai_config_does_not_read_env_when_api_key_env_is_empty(monkeypatch) -> None:
-    """Empty `api_key_env` MUST yield an empty api_key without env reads.
+    """Empty `api_key_env` MUST yield an empty api_key without env reads."""
+    from src.core.ai.backends.anthropic import AnthropicMessagesBackend
 
-    Asserted indirectly by setting a sentinel env var with a name that
-    is *not* referenced — it must not leak into the provider — and by
-    verifying the empty-string `api_key_env` short-circuit.
-    """
     monkeypatch.setenv("BLUEFIRE_AMBIENT_KEY_THAT_SHOULD_NOT_LEAK", "leaked")
     provider = ProviderFactory.from_ai_config(
-        {"provider": "gemini", "model": "m", "api_key_env": ""}
+        {"provider": "anthropic", "model": "m", "api_key_env": ""}
     )
-    assert isinstance(provider, OpenAICompatibleProvider)
+    assert isinstance(provider, AnthropicMessagesBackend)
     assert provider.api_key == ""
 
 
@@ -299,23 +291,27 @@ def test_from_ai_config_resolves_api_key_env_for_http_backend(monkeypatch) -> No
     assert provider.api_key == "sk-http-resolved"
 
 
-def test_from_ai_config_forwards_provider_settings_to_keyless_stub() -> None:
+def test_from_ai_config_forwards_provider_settings_to_anthropic_adapter() -> None:
     """`provider_settings` (from `ai_providers.<name>`) flows to the
-    keyless stub for canonical names that do not yet have an
-    HTTP-backed registration (gemini in this phase)."""
-    settings = {"organization": "org-123", "region": "us-east"}
+    registered backend. After Phase 1/2 of the provider-specific
+    adapters, ``anthropic`` is one of the two backends with vendor-
+    specific settings (anthropic_version, headers); this test pins
+    the flow-through against that backend."""
+    from src.core.ai.backends.anthropic import AnthropicMessagesBackend
+
+    settings = {"anthropic_version": "2024-09-01", "headers": {"X-Title": "lab"}}
     provider = ProviderFactory.from_ai_config(
         {
-            "provider": "gemini",
+            "provider": "anthropic",
             "model": "m",
             "provider_settings": settings,
         }
     )
-    assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider.provider_settings == settings
+    assert isinstance(provider, AnthropicMessagesBackend)
+    assert provider.provider_settings["anthropic_version"] == "2024-09-01"
     # Defensive copy: mutating the returned dict must not affect the source.
-    provider.provider_settings["organization"] = "mutated"
-    assert settings["organization"] == "org-123"
+    provider.provider_settings["anthropic_version"] = "mutated"
+    assert settings["anthropic_version"] == "2024-09-01"
 
 
 def test_from_ai_config_forwards_provider_settings_to_http_backend() -> None:

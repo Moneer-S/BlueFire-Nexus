@@ -14,6 +14,7 @@ normal operation. **No vendor is privileged as the default.**
 | `src/core/ai/transport.py` | Injectable HTTP transport: `HTTPResponse` dataclass, `HTTPTransport` Protocol, `UrllibTransport` stdlib-only implementation. Rejects non-HTTP(S) URL schemes before issuing the request (B310 guard). | Yes (transport itself) |
 | `src/core/ai/backends/openai_compatible.py` | `OpenAICompatibleHTTPBackend` — speaks the OpenAI chat-completions request/response shape over the injectable transport. Auto-registers for `openai_compatible`, `openai`, `grok`, `ollama`, `llama.cpp`, `lm-studio`. Short-circuits to offline when `enabled=False` or `api_base` empty. | Yes (short-circuit) |
 | `src/core/ai/backends/anthropic.py` | `AnthropicMessagesBackend` — vendor-specific adapter for Anthropic's Messages API. Auto-registers for canonical `anthropic` (and `claude` alias). Short-circuits to offline when `enabled=False`, `api_base` empty, OR `api_key` empty (Anthropic has no local-server analog). Normalises Anthropic's `input_tokens` / `output_tokens` into the shared `prompt_tokens` / `completion_tokens` / `total_tokens` keys. | Yes (short-circuit) |
+| `src/core/ai/backends/gemini.py` | `GeminiGenerateContentBackend` — vendor-specific adapter for Google's GenerateContent API. Auto-registers for canonical `gemini` (and `google` / `google_gemini` aliases). Same triple-gate (`enabled` / `api_base` / `api_key`) as the Anthropic adapter. Auth via `x-goog-api-key` header (never the `?key=` query string). Normalises Gemini's `promptTokenCount` / `candidatesTokenCount` / `totalTokenCount` into the shared usage keys, and surfaces `safety_categories` + `block_reason` in metadata when applicable. | Yes (short-circuit) |
 | `src/core/ai/fallback.py` | `FallbackChainProvider` — wraps a primary provider with an optional fallback. Primary success passes through unchanged; primary error invokes the fallback and records `fallback_used` + attribution metadata. | Yes (when wrapping template) |
 | `src/core/ai/copilot.py` | Plan / narrate / detection-suggestion workflows. Every artifact carries a YAML-front-matter metadata header. Wraps the primary in a `FallbackChainProvider` when `modules.ai.fallback_provider` is set. | Yes (template fallback) |
 | `src/core/ai/rag.py` | TF-IDF retrieval over markdown / text / json / yaml files. Used by the copilot for context. No external dependencies. | Yes |
@@ -37,7 +38,7 @@ name).
 | `llama.cpp` | — | `OpenAICompatibleHTTPBackend` (HTTP) |
 | `lm-studio` | — | `OpenAICompatibleHTTPBackend` (HTTP) |
 | `anthropic` | `claude` | `AnthropicMessagesBackend` (HTTP — Messages API) |
-| `gemini` | `google`, `google_gemini` | `OpenAICompatibleProvider` (keyless stub — GenerateContent-API adapter pending) |
+| `gemini` | `google`, `google_gemini` | `GeminiGenerateContentBackend` (HTTP — GenerateContent API) |
 
 Backend dispatch goes through `ProviderFactory._REGISTRY`. Phase 2
 auto-registers the OpenAI-compatible HTTP backend at import time
@@ -298,13 +299,15 @@ iteration result records.
 
 ## Roadmap
 
-- **Provider-specific adapter for `gemini`** (Google's
-  GenerateContent API). Anthropic's Messages-API adapter has
-  landed; Gemini follows the same pattern (own backend module,
-  registered via `ProviderFactory.register_provider("gemini",
-  factory)`). The interface, registry, transport, and fallback
-  wrapper are already in place; the adapter will be additive
-  and will not require re-plumbing.
+- **Decide on Grok / OpenAI provider-specific changes**
+  (Mission Phase 3). Both currently work via the existing
+  OpenAI-compatible HTTP backend. A vendor-specific adapter is
+  only worth adding if a real interop gap surfaces (auth,
+  body shape, response field) that the generic adapter cannot
+  cover. Default judgement: stay with the generic adapter
+  unless evidence forces a change.
+- **MCP / connectors** as a future option. Not a current
+  requirement.
 - **MCP / connectors** as a future option. Not a current
   requirement; nothing in the shipped baseline depends on them.
 - **No remote observability / SIEM exporters.** The roadmap
