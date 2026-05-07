@@ -29,14 +29,46 @@ def test_copilot_offline_default_uses_template_provider(tmp_path: Path) -> None:
     assert copilot.enabled is False
 
 
-def test_copilot_consumes_resolved_ai_config_provider_settings(
+def test_copilot_consumes_resolved_ai_config_provider_settings_keyless_stub(
     tmp_path: Path, monkeypatch
 ) -> None:
     """`ai_providers.<provider>` block flows through `get_ai_config`
-    into the keyless stub so a future remote backend can read vendor-
-    specific settings without re-plumbing the copilot.
+    into the keyless stub for canonical names that have no
+    HTTP-backed registration (anthropic / gemini in Phase 2).
     """
     monkeypatch.setenv("BLUEFIRE_COPILOT_KEY", "sk-copilot-test")
+    config = {
+        "modules": {
+            "ai": {
+                "enabled": True,
+                "provider": "anthropic",
+                "model": "vendor-m",
+                "api_base": "http://copilot.lab/v1",
+                "api_key_env": "BLUEFIRE_COPILOT_KEY",
+            }
+        },
+        "ai_providers": {
+            "anthropic": {
+                "organization": "org-copilot",
+                "api_base": "http://copilot.lab/v1",
+            }
+        },
+    }
+    copilot = AICopilot(config, tmp_path)
+    assert isinstance(copilot.provider, OpenAICompatibleProvider)
+    assert copilot.provider.api_key == "sk-copilot-test"
+    assert copilot.provider.endpoint == "http://copilot.lab/v1"
+    assert copilot.provider.provider_settings.get("organization") == "org-copilot"
+
+
+def test_copilot_consumes_resolved_ai_config_provider_settings_http_backend(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Same flow-through reaches the Phase 2 HTTP backend for
+    OpenAI-protocol-compatible canonical names."""
+    from src.core.ai.backends.openai_compatible import OpenAICompatibleHTTPBackend
+
+    monkeypatch.setenv("BLUEFIRE_COPILOT_KEY_HTTP", "sk-http-copilot")
     config = {
         "modules": {
             "ai": {
@@ -44,7 +76,7 @@ def test_copilot_consumes_resolved_ai_config_provider_settings(
                 "provider": "openai_compatible",
                 "model": "vendor-m",
                 "api_base": "http://copilot.lab/v1",
-                "api_key_env": "BLUEFIRE_COPILOT_KEY",
+                "api_key_env": "BLUEFIRE_COPILOT_KEY_HTTP",
             }
         },
         "ai_providers": {
@@ -55,7 +87,7 @@ def test_copilot_consumes_resolved_ai_config_provider_settings(
         },
     }
     copilot = AICopilot(config, tmp_path)
-    assert isinstance(copilot.provider, OpenAICompatibleProvider)
-    assert copilot.provider.api_key == "sk-copilot-test"
+    assert isinstance(copilot.provider, OpenAICompatibleHTTPBackend)
+    assert copilot.provider.api_key == "sk-http-copilot"
     assert copilot.provider.endpoint == "http://copilot.lab/v1"
     assert copilot.provider.provider_settings.get("organization") == "org-copilot"
