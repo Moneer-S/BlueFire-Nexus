@@ -199,8 +199,100 @@ def find_run_dir(output_root: Path, run_id: str) -> Optional[Path]:
     return None
 
 
+_REQUIRED_DEMO_ARTIFACTS: tuple[str, ...] = (
+    "manifest.json",
+    "index.html",
+    "report.md",
+    "report.json",
+    "risk_summary.json",
+    "telemetry.jsonl",
+)
+
+
+def validate_run_bundle(run_dir: Path) -> Dict[str, Any]:
+    """Return a structured validation report for a single run.
+
+    Checks the run directory against the canonical demo bundle:
+    every required artifact is present, the manifest's
+    ``detections.total > 0`` implies a real ``detections/``
+    directory, and (when ``index.html`` is present) every
+    ``<a href>`` resolves to a real file or directory under the
+    run dir.
+
+    The return value is always a dict with stable keys
+    (``run_dir`` / ``ok`` / ``missing`` / ``broken_links`` /
+    ``warnings``) so the CLI / operator scripts can rely on the
+    shape regardless of which checks pass or fail. ``ok`` is
+    True only when ``missing`` is empty AND ``broken_links`` is
+    empty.
+
+    Local-only: the function reads files under ``run_dir`` and
+    never touches the network.
+    """
+    import json as _json
+    import re as _re
+
+    report: Dict[str, Any] = {
+        "run_dir": str(run_dir),
+        "ok": False,
+        "missing": [],
+        "broken_links": [],
+        "warnings": [],
+    }
+    if not run_dir.exists() or not run_dir.is_dir():
+        report["missing"] = list(_REQUIRED_DEMO_ARTIFACTS)
+        report["warnings"].append(f"run directory does not exist: {run_dir}")
+        return report
+
+    missing = [
+        name for name in _REQUIRED_DEMO_ARTIFACTS if not (run_dir / name).exists()
+    ]
+    report["missing"] = missing
+
+    # Detection-directory cross-check against the manifest.
+    manifest_path = run_dir / "manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = _json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, _json.JSONDecodeError) as exc:
+            report["warnings"].append(f"manifest unreadable: {exc}")
+            manifest = {}
+        if isinstance(manifest, dict):
+            detections = manifest.get("detections") or {}
+            total = int(detections.get("total") or 0)
+            detections_dir = run_dir / "detections"
+            if total > 0 and not detections_dir.is_dir():
+                report["warnings"].append(
+                    f"manifest claims {total} detection drafts but "
+                    f"{detections_dir} is missing"
+                )
+
+    # Walk every <a href> in index.html and confirm it resolves
+    # to a real path. Pure regex extraction so the viewer module
+    # does not need to import any HTML parser.
+    href_re = _re.compile(r'<a\s+[^>]*href=["\']([^"\']*)["\'][^>]*>', _re.IGNORECASE)
+    viewer_path = run_dir / "index.html"
+    if viewer_path.exists():
+        try:
+            html = viewer_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            report["warnings"].append(f"viewer unreadable: {exc}")
+            html = ""
+        broken: List[str] = []
+        for href in href_re.findall(html):
+            if not href or href.startswith("#"):
+                continue
+            if not (run_dir / href).resolve().exists():
+                broken.append(href)
+        report["broken_links"] = broken
+
+    report["ok"] = not missing and not report["broken_links"]
+    return report
+
+
 __all__ = [
     "find_run_dir",
     "latest_run",
     "list_runs",
+    "validate_run_bundle",
 ]
