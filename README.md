@@ -1,6 +1,6 @@
 # BlueFire Nexus
 
-[![tests](https://img.shields.io/badge/tests-1408%20passed-blue)](#development--tests)
+[![tests](https://img.shields.io/badge/tests-1436%20passed-blue)](#development--tests)
 [![security](https://img.shields.io/badge/security-bandit%20strict-green)](#development--tests)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](#quickstart)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -133,12 +133,12 @@ Every run writes a static, fully self-contained `index.html` next to the manifes
 The dashboard is read from `manifest.json` and contains, in order:
 
 1. **Header** — scenario name, run id, status badges, AI provider attribution.
-2. **KPI grid** — steps / techniques / detection drafts / telemetry events / blocked steps.
+2. **KPI grid** — steps / techniques / detection drafts / telemetry events / blocked steps, plus a "Module status" mini-chart (pure-CSS bars: success / blocked / error / skipped).
 3. **Risk summary** — totals + per-module severity badges (rendered above the timeline so triage starts with severity, not the procedural step list).
 4. **Scenario timeline** — ordered steps with module / status / ATT&CK techniques / a `notes` column for non-success rows.
 5. **Propagation graph** — `(from_step, to_step, kind)` rows for every `target_from_step` / `source_from_step` consumer pair.
 6. **ATT&CK coverage** — technique → emitting steps.
-7. **Telemetry summary** — count-only, by event type and by module.
+7. **Telemetry summary** — by event type and by module, rendered as deterministic horizontal bar charts (pure CSS, no JavaScript, widths clamped to 1–100%).
 8. **Detection drafts** — per-engine counts + per-step paths.
 9. **AI copilot** — provider, model, network state ("offline (template / no network)" by default), fallback marker, link to the artifact.
 10. **Artifact quick links** — report.md, report.json, risk_summary.json, telemetry.jsonl, manifest.json, detections/. Each renders as a clickable run-dir-relative link only when the file exists; missing artifacts surface as inert "not present" text.
@@ -284,7 +284,7 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ope
 
 ## Status snapshot
 
-- 1408 passing tests, 5 intentional skips, 0 failures (~190s full-suite wallclock).
+- 1436 passing tests, 5 intentional skips, 0 failures (~190s full-suite wallclock).
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
 - 31 modules registered (17 standard + 14 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
 - 10 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.
