@@ -533,16 +533,34 @@ def _render_copilot(manifest: Mapping[str, Any]) -> str:
 
 
 def _render_artifact_links(manifest: Mapping[str, Any]) -> str:
-    """Section 9 — quick links to the canonical artifacts."""
+    """Section 9 — quick links to the canonical artifacts.
+
+    Each canonical artifact is rendered as either an active link
+    (when actually present in the run) or an inert "not present"
+    line. Closes Codex P2 from PR #72 sweep: ``detections/`` and
+    ``manifest.json`` were previously hardcoded as present, so
+    runs without detection drafts (non-success
+    ``execute_operation`` calls) rendered a clickable link to a
+    missing directory.
+    """
     reports = manifest.get("reports") or {}
     telemetry = manifest.get("telemetry") or {}
+    detections = manifest.get("detections") or {}
+    detections_total = int(detections.get("total") or 0)
+    # The viewer's own artifact (``index.html``) is always present
+    # by definition — if this code is rendering, the file is being
+    # written — so the manifest link is only present when the
+    # manifest file itself exists. We can check that via the
+    # schema_version field's presence as a proxy: the manifest
+    # MUST always carry it.
+    manifest_present = bool(manifest.get("schema_version"))
     items: List[tuple[str, Optional[str]]] = [
         ("report.md", reports.get("report_md")),
         ("report.json", reports.get("report_json")),
         ("risk_summary.json", reports.get("risk_summary_json")),
         ("telemetry.jsonl", telemetry.get("path")),
-        ("manifest.json", "manifest.json"),
-        ("detections/", "detections"),
+        ("manifest.json", "manifest.json" if manifest_present else None),
+        ("detections/", "detections" if detections_total > 0 else None),
     ]
     rendered: List[str] = []
     for label, path in items:
