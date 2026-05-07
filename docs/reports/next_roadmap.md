@@ -18,6 +18,23 @@ adapters."
 
 The following gaps have been closed and are kept here for context.
 
+- **Top-level run index aggregator.** A static `output/index.html`
+  page now lists every run on disk newest-first with the same
+  self-contained constraints as the per-run viewer (no JS, no
+  external assets, no network). Each row carries scenario name,
+  status, severity (highest tier from the manifest's risk block),
+  start time, and quick links into that run's viewer / manifest /
+  report / risk summary. The orchestrator refreshes the
+  aggregator after every successful run; a new
+  `build-output-index` CLI command regenerates it on demand,
+  and `list-runs` / `latest-run` print a `file://` link to the
+  aggregator when one is present. Path-traversal guard rejects
+  rows whose `run_dir` resolves outside the output root. +26
+  tests pinning empty-state rendering, no external assets,
+  relative-only links, severity extraction, missing-manifest
+  graceful degradation, output-root respect, idempotence, and
+  CLI exit codes.
+
 - **Missing ATT&CK tactic modules.** Standard modules now exist for
   `credential_access`, `lateral_movement`, `privilege_escalation`,
   `impact`, and `collection`. Each uses a per-input profile catalog

@@ -1,6 +1,6 @@
 # BlueFire Nexus
 
-[![tests](https://img.shields.io/badge/tests-1376%20passed-blue)](#development--tests)
+[![tests](https://img.shields.io/badge/tests-1408%20passed-blue)](#development--tests)
 [![security](https://img.shields.io/badge/security-bandit%20strict-green)](#development--tests)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](#quickstart)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -47,7 +47,7 @@ BlueFire Nexus tries to bridge these:
 - **AI / copilot layer** with deterministic offline template fallback. Optional remote providers (OpenAI, Anthropic, Gemini, Grok, Ollama, llama.cpp, LM Studio) are equal opt-in targets; nothing is privileged as the default.
 - **Safety / mode controls** (`dry_run`, `simulate`, `emulate`, `lab_confirmation`, allowed subnets, max runtime).
 - **Mutation engine** for parameter variants (`--mutate <strategy>` on `python -m src.run_scenario`).
-- **CLI helpers** for working with prior runs: `list-runs`, `latest-run`, `show-run`, `build-report-view`, `validate-run`.
+- **CLI helpers** for working with prior runs: `list-runs`, `latest-run`, `show-run`, `build-report-view`, `build-output-index`, `validate-run`.
 
 ---
 
@@ -104,6 +104,9 @@ A broader command reference is in [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELIN
 ## Example output
 
 ```
+output/
+├── index.html                   # top-level aggregator listing every run on disk
+
 output/<run_id>/
 ├── manifest.json                # machine-readable index of every artifact below
 ├── index.html                   # static, browser-viewable run dashboard (no server)
@@ -140,17 +143,22 @@ The dashboard is read from `manifest.json` and contains, in order:
 9. **AI copilot** — provider, model, network state ("offline (template / no network)" by default), fallback marker, link to the artifact.
 10. **Artifact quick links** — report.md, report.json, risk_summary.json, telemetry.jsonl, manifest.json, detections/. Each renders as a clickable run-dir-relative link only when the file exists; missing artifacts surface as inert "not present" text.
 
-The CLI exposes five commands for working with runs locally:
+The CLI exposes six commands for working with runs locally:
 
 ```bash
-python -m src.core.cli list-runs                # newest first
-python -m src.core.cli latest-run               # most recent run detail
-python -m src.core.cli show-run <run_id>        # single-run detail
-python -m src.core.cli build-report-view <run_id>  # regenerate index.html
-python -m src.core.cli validate-run <run_id>    # gate-style bundle check
+python -m src.core.cli list-runs                   # newest first
+python -m src.core.cli latest-run                  # most recent run detail
+python -m src.core.cli show-run <run_id>           # single-run detail
+python -m src.core.cli build-report-view <run_id>  # regenerate per-run index.html
+python -m src.core.cli build-output-index          # regenerate top-level output/index.html
+python -m src.core.cli validate-run <run_id>       # gate-style bundle check
 ```
 
-All five honour `general.output_root` / `BLUEFIRE_OUTPUT_ROOT` and accept `--output-root <path>` for ad-hoc discovery. None starts a server. None auto-opens a browser. `validate-run` exits non-zero when the bundle is missing artifacts or has broken viewer links — useful as a CI gate before sharing a run output.
+All six honour `general.output_root` / `BLUEFIRE_OUTPUT_ROOT` and accept `--output-root <path>` for ad-hoc discovery. None starts a server. None auto-opens a browser. `validate-run` exits non-zero when the bundle is missing artifacts or has broken viewer links — useful as a CI gate before sharing a run output.
+
+### Top-level run index
+
+In addition to the per-run dashboard, every successful scenario also refreshes a top-level `output/index.html` aggregator listing every run on disk newest-first. Open it once and you see scenario name, status, severity, started timestamp, step count, and quick links into each run's viewer / manifest / report / risk summary. Same self-contained constraints — no JS, no external assets, no network. `list-runs` and `latest-run` print a `file://` link to the aggregator when one is present.
 
 ---
 
@@ -276,7 +284,7 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ope
 
 ## Status snapshot
 
-- 1376 passing tests, 5 intentional skips, 0 failures (~190s full-suite wallclock).
+- 1408 passing tests, 5 intentional skips, 0 failures (~190s full-suite wallclock).
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
 - 31 modules registered (17 standard + 14 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
 - 10 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.

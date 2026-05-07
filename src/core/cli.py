@@ -23,6 +23,7 @@ from .reporting import (
     latest_run as _latest_run,
     list_runs as _list_runs,
     validate_run_bundle as _validate_run_bundle,
+    write_output_index as _write_output_index,
     write_viewer_for_run,
 )
 from .legacy_controls import (
@@ -849,6 +850,11 @@ def list_runs_cmd(
         "[dim]Tip: `python -m src.core.cli show-run <run_id>` for details, "
         "or `latest-run` for a shortcut to the newest entry.[/]"
     )
+    aggregator = Path(root) / "index.html"
+    if aggregator.exists():
+        console.print(
+            f"[dim]Aggregate index:[/] {_file_uri(aggregator)}"
+        )
 
 
 @app.command("latest-run")
@@ -886,6 +892,11 @@ def latest_run_cmd(
         )
         return
     _render_run_detail(run)
+    aggregator = Path(root) / "index.html"
+    if aggregator.exists():
+        console.print(
+            f"[dim]Aggregate index:[/] {_file_uri(aggregator)}"
+        )
 
 
 @app.command("show-run")
@@ -987,6 +998,46 @@ def build_report_view_cmd(
         ) from exc
     console.print(
         f"[green]Wrote viewer:[/] {target}\n"
+        f"[cyan]Open in browser:[/] {_file_uri(target)}\n"
+        "[dim]No server required — the page is fully self-contained.[/]"
+    )
+
+
+@app.command("build-output-index")
+def build_output_index_cmd(
+    output_root: Path = typer.Option(  # noqa: B008
+        None,
+        "--output-root",
+        help=(
+            "Override BLUEFIRE_OUTPUT_ROOT / general.output_root. "
+            "Defaults to the runtime's resolved output root."
+        ),
+    ),
+) -> None:
+    """Generate / refresh the top-level ``index.html`` aggregator.
+
+    Writes a single static page at ``<output_root>/index.html``
+    listing every run on disk newest-first, with quick links into
+    each run's per-run viewer / manifest / report. Useful when
+    the orchestrator wrote individual runs but the aggregator
+    step failed, or after a manifest was edited manually.
+
+    The command never starts a server, never auto-opens a
+    browser, and never makes a network call. Output prints a
+    ``file://`` link the operator can copy into their browser.
+
+    Examples:
+
+        # Refresh aggregator for the default output root.
+        python -m src.core.cli build-output-index
+
+        # Pin a non-default output root.
+        python -m src.core.cli build-output-index --output-root /tmp/lab-output
+    """
+    root = output_root if output_root else resolve_output_root()
+    target = _write_output_index(Path(root))
+    console.print(
+        f"[green]Wrote aggregator:[/] {target}\n"
         f"[cyan]Open in browser:[/] {_file_uri(target)}\n"
         "[dim]No server required — the page is fully self-contained.[/]"
     )
