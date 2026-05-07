@@ -714,7 +714,7 @@ def legacy_apply_preset_cmd(
 
 
 def _render_run_table(runs: list[dict]) -> Table:
-    table = Table(title=f"BlueFire runs ({len(runs)} total)")
+    table = Table(title=f"BlueFire runs ({len(runs)} total — newest first)")
     table.add_column("run_id", overflow="fold")
     table.add_column("scenario")
     table.add_column("status")
@@ -733,8 +733,36 @@ def _render_run_table(runs: list[dict]) -> Table:
     return table
 
 
+def _next_steps_hint(run: dict) -> str:
+    """Return a one-line hint pointing the operator at next actions.
+
+    Shows the file:// path to the viewer when present, plus the
+    ``show-run`` / ``build-report-view`` commands so the user
+    learns the next step from the output rather than from docs.
+    """
+    run_dir = run.get("run_dir") or ""
+    if not run_dir:
+        return ""
+    viewer = Path(run_dir) / "index.html"
+    manifest = Path(run_dir) / "manifest.json"
+    bullets: list[str] = []
+    if viewer.exists():
+        # ``Path.as_uri`` returns ``file:///...`` so the operator
+        # can copy-paste it into a browser.
+        bullets.append(f"[green]Open viewer:[/] {viewer.as_uri()}")
+    elif manifest.exists():
+        run_id = run.get("run_id", "")
+        bullets.append(
+            "[yellow]Viewer missing[/] — regenerate it with:\n"
+            f"  python -m src.core.cli build-report-view {run_id}"
+        )
+    if manifest.exists():
+        bullets.append(f"[cyan]Manifest:[/] {manifest}")
+    return "\n".join(bullets)
+
+
 def _render_run_detail(run: dict) -> None:
-    """Print one run's metadata in human-readable form."""
+    """Print one run's metadata + a next-steps hint."""
     rows = [
         ("run_id", str(run.get("run_id", ""))),
         ("scenario_name", str(run.get("scenario_name") or "-")),
@@ -751,6 +779,9 @@ def _render_run_detail(run: dict) -> None:
     for key, value in rows:
         table.add_row(key, value)
     console.print(table)
+    hint = _next_steps_hint(run)
+    if hint:
+        console.print(hint)
 
 
 @app.command("list-runs")
@@ -758,37 +789,85 @@ def list_runs_cmd(
     output_root: Path = typer.Option(  # noqa: B008
         None,
         "--output-root",
-        help="Override BLUEFIRE_OUTPUT_ROOT / general.output_root for discovery.",
+        help=(
+            "Override BLUEFIRE_OUTPUT_ROOT / general.output_root for "
+            "discovery. Defaults to the runtime's resolved output root."
+        ),
     ),
     limit: int = typer.Option(  # noqa: B008
-        20, "--limit", min=1, max=500, help="Maximum number of runs to display."
+        20,
+        "--limit",
+        min=1,
+        max=500,
+        help="Maximum number of runs to display (newest first).",
     ),
 ) -> None:
     """List recent BlueFire runs in the configured output directory.
 
     Reads each run's ``manifest.json`` (when present) for the
-    metadata; runs without a manifest fall back to filesystem
-    ctime so partial / errored runs still surface. Newest first.
+    metadata. Runs without a manifest fall back to filesystem
+    ctime so partial / errored runs still surface.
+
+    Examples:
+
+        # List 20 newest runs in the default output root.
+        python -m src.core.cli list-runs
+
+        # Inspect a different output directory.
+        python -m src.core.cli list-runs --output-root /tmp/lab-output
+
+        # Show only the 5 newest runs.
+        python -m src.core.cli list-runs --limit 5
     """
     root = output_root if output_root else resolve_output_root()
     runs = _list_runs(Path(root))[:limit]
     if not runs:
-        console.print(f"[yellow]No runs found under[/] {root}")
+        console.print(
+            f"[yellow]No runs found under[/] {root}.\n"
+            "Run a scenario first, e.g.\n"
+            "  python -m src.run_scenario --profile apt29_credential_access"
+        )
         return
     console.print(_render_run_table(runs))
+    console.print(
+        "[dim]Tip: `python -m src.core.cli show-run <run_id>` for details, "
+        "or `latest-run` for a shortcut to the newest entry.[/]"
+    )
 
 
 @app.command("latest-run")
 def latest_run_cmd(
     output_root: Path = typer.Option(  # noqa: B008
-        None, "--output-root", help="Override BLUEFIRE_OUTPUT_ROOT / general.output_root."
+        None,
+        "--output-root",
+        help=(
+            "Override BLUEFIRE_OUTPUT_ROOT / general.output_root. "
+            "Defaults to the runtime's resolved output root."
+        ),
     ),
 ) -> None:
-    """Show the most recent BlueFire run in the configured output directory."""
+    """Show the most recent BlueFire run in the configured output directory.
+
+    Useful as a one-shot "what just happened" command after a
+    scenario run, especially right after the README's quickstart
+    invocation.
+
+    Examples:
+
+        # Show details + a file:// link to the viewer.
+        python -m src.core.cli latest-run
+
+        # Pin a non-default output root.
+        python -m src.core.cli latest-run --output-root /tmp/lab-output
+    """
     root = output_root if output_root else resolve_output_root()
     run = _latest_run(Path(root))
     if not run:
-        console.print(f"[yellow]No runs found under[/] {root}")
+        console.print(
+            f"[yellow]No runs found under[/] {root}.\n"
+            "Run a scenario first, e.g.\n"
+            "  python -m src.run_scenario --profile apt29_credential_access"
+        )
         return
     _render_run_detail(run)
 
@@ -797,20 +876,36 @@ def latest_run_cmd(
 def show_run_cmd(
     run_id: str = RUN_ID_ARG,
     output_root: Path = typer.Option(  # noqa: B008
-        None, "--output-root", help="Override BLUEFIRE_OUTPUT_ROOT / general.output_root."
+        None,
+        "--output-root",
+        help=(
+            "Override BLUEFIRE_OUTPUT_ROOT / general.output_root. "
+            "Defaults to the runtime's resolved output root."
+        ),
     ),
 ) -> None:
     """Show metadata for a single run by ``run_id``.
 
     Resolves first by directory name, then by manifest's
     ``run.run_id`` field (the directory name may be sanitised
-    differently from the original id).
+    differently from the original id). Prints a file:// link to
+    the static HTML viewer when one is available.
+
+    Examples:
+
+        # Look up a known run id.
+        python -m src.core.cli show-run run-20260507120000-abc123
+
+        # Inspect a run from an alternate output root.
+        python -m src.core.cli show-run my-run-id --output-root /tmp/lab-output
     """
     root = output_root if output_root else resolve_output_root()
     run_dir = _find_run_dir(Path(root), run_id)
     if not run_dir:
         raise typer.BadParameter(
-            f"Run not found: {run_id} (under {root})", param_hint="run_id"
+            f"Run not found: {run_id!r} (searched under {root}). "
+            "List available runs with `python -m src.core.cli list-runs`.",
+            param_hint="run_id",
         )
     # Re-resolve through list_runs so the rendered detail uses the
     # same shape as list-runs / latest-run.
@@ -829,29 +924,55 @@ def show_run_cmd(
 def build_report_view_cmd(
     run_id: str = RUN_ID_ARG,
     output_root: Path = typer.Option(  # noqa: B008
-        None, "--output-root", help="Override BLUEFIRE_OUTPUT_ROOT / general.output_root."
+        None,
+        "--output-root",
+        help=(
+            "Override BLUEFIRE_OUTPUT_ROOT / general.output_root. "
+            "Defaults to the runtime's resolved output root."
+        ),
     ),
 ) -> None:
     """Generate / refresh ``index.html`` for an existing run.
 
     Useful when the orchestrator wrote a manifest but the viewer
-    failed (or after manually editing a manifest). Reads
-    ``manifest.json`` and writes ``index.html`` next to it.
+    step failed, after a manifest was edited manually, or after
+    the viewer template (this code) changed and you want every
+    historical run rebuilt.
+
     The command never starts a server and never opens a browser.
+    Output prints a ``file://`` link the operator can copy into
+    their browser of choice.
+
+    Examples:
+
+        # Regenerate the viewer for the latest run id you got
+        # from `latest-run` or `list-runs`.
+        python -m src.core.cli build-report-view run-20260507120000-abc123
+
+        # Rebuild a viewer for a run sitting under an alternate
+        # output root.
+        python -m src.core.cli build-report-view my-run --output-root /tmp/lab-output
     """
     root = output_root if output_root else resolve_output_root()
     run_dir = _find_run_dir(Path(root), run_id)
     if not run_dir:
         raise typer.BadParameter(
-            f"Run not found: {run_id} (under {root})", param_hint="run_id"
+            f"Run not found: {run_id!r} (searched under {root}). "
+            "List available runs with `python -m src.core.cli list-runs`.",
+            param_hint="run_id",
         )
     try:
         target = write_viewer_for_run(run_dir)
     except FileNotFoundError as exc:
-        raise typer.BadParameter(str(exc), param_hint="run_id") from exc
+        raise typer.BadParameter(
+            f"{exc}. Run the scenario first, then re-run "
+            "`build-report-view <run_id>`.",
+            param_hint="run_id",
+        ) from exc
     console.print(
         f"[green]Wrote viewer:[/] {target}\n"
-        "Open it in a browser via file:// — no server required."
+        f"[cyan]Open in browser:[/] {target.as_uri()}\n"
+        "[dim]No server required — the page is fully self-contained.[/]"
     )
 
 
