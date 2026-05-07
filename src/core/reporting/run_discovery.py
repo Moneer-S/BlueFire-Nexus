@@ -139,21 +139,63 @@ def latest_run(output_root: Path) -> Optional[Dict[str, Any]]:
     return runs[0] if runs else None
 
 
+def _is_within(parent: Path, child: Path) -> bool:
+    """Return True iff ``child`` resolves to a descendant of ``parent``.
+
+    Handles ``..`` segments via :meth:`Path.resolve` so a ``run_id``
+    of ``../escape`` cannot point outside the output root. Returns
+    ``False`` when either path cannot be resolved (e.g. on a
+    different drive on Windows).
+    """
+    try:
+        parent_resolved = parent.resolve()
+        child_resolved = child.resolve()
+    except OSError:
+        return False
+    try:
+        child_resolved.relative_to(parent_resolved)
+    except ValueError:
+        return False
+    return True
+
+
 def find_run_dir(output_root: Path, run_id: str) -> Optional[Path]:
     """Resolve a ``run_id`` to a run directory under ``output_root``.
 
     Matches first by directory name, then by manifest's
     ``run.run_id`` field (since the directory name may be a
-    sanitised form). Returns ``None`` when no match is found.
+    sanitised form). Returns ``None`` when no match is found OR
+    when the requested ``run_id`` would resolve outside the
+    output root.
+
+    Path-traversal guard (Codex P1 from PR #73 sweep): a
+    ``run_id`` like ``../other-run`` or an absolute path like
+    ``/tmp/run`` previously slipped through ``output_root /
+    run_id`` because :class:`pathlib.Path` does not constrain
+    its joining behaviour. ``find_run_dir`` now rejects any
+    path-shaped ``run_id`` (one that contains a path separator
+    or that resolves outside the output root) before it ever
+    reaches the filesystem. Manifest-keyed lookup still works
+    for sanitised directory names.
     """
+    # Reject anything that looks like a path. Run ids in this
+    # project are short opaque strings (``run-<timestamp>-<hex>``);
+    # a separator means the operator is trying to traverse.
+    if not run_id or any(sep in run_id for sep in ("/", "\\")) or run_id in {"..", "."}:
+        return None
+
     candidate = output_root / run_id
-    if candidate.exists() and _is_run_dir(candidate):
+    if candidate.exists() and _is_run_dir(candidate) and _is_within(output_root, candidate):
         return candidate
     # Fall back to scanning manifests when the directory name does
-    # not equal the run_id field.
+    # not equal the run_id field. ``list_runs`` only enumerates
+    # children of ``output_root`` so the match is implicitly
+    # in-bounds; verify defensively anyway.
     for run in list_runs(output_root):
         if run["run_id"] == run_id:
-            return Path(run["run_dir"])
+            run_dir = Path(run["run_dir"])
+            if _is_within(output_root, run_dir):
+                return run_dir
     return None
 
 

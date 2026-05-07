@@ -209,8 +209,15 @@ class BlueFireNexus:
             risk_payload = (
                 build_risk_summary(module_results) if result.status == "success" else None
             )
+            # Track whether the manifest / viewer writes actually
+            # succeeded. Closes Codex P2 from PR #71 sweep: returning
+            # ``manifest_path``/``viewer_path`` on a failed write
+            # turned a handled I/O hiccup into a later, harder-to-
+            # diagnose "file not found" for downstream consumers.
+            manifest_written: Optional[Path] = None
+            viewer_written: Optional[Path] = None
             try:
-                write_run_manifest(
+                manifest_written = write_run_manifest(
                     run_id=context.run_id,
                     run_dir=context.output_dir,
                     scenario_name=module_name,
@@ -227,10 +234,11 @@ class BlueFireNexus:
                 )
             except OSError as manifest_exc:  # pragma: no cover - I/O safety net
                 self.logger.warning("manifest write failed: %s", manifest_exc)
-            try:
-                write_viewer_for_run(context.output_dir)
-            except (OSError, FileNotFoundError, ValueError) as viewer_exc:  # pragma: no cover - I/O safety net
-                self.logger.warning("viewer write failed: %s", viewer_exc)
+            if manifest_written is not None:
+                try:
+                    viewer_written = write_viewer_for_run(context.output_dir)
+                except (OSError, FileNotFoundError, ValueError) as viewer_exc:  # pragma: no cover - I/O safety net
+                    self.logger.warning("viewer write failed: %s", viewer_exc)
 
             return {
                 "status": result.status,
@@ -244,8 +252,8 @@ class BlueFireNexus:
                 "detection_artifacts": detection_paths,
                 "report_path": str(report_path) if report_path else None,
                 "risk_summary_path": str(risk_summary_path) if risk_summary_path else None,
-                "manifest_path": str(context.output_dir / "manifest.json"),
-                "viewer_path": str(context.output_dir / "index.html"),
+                "manifest_path": str(manifest_written) if manifest_written else None,
+                "viewer_path": str(viewer_written) if viewer_written else None,
                 "copilot": copilot_artifacts,
                 "legacy_controls": self.legacy_activation_summary(),
                 "timestamp": result.timestamp,
@@ -431,8 +439,14 @@ class BlueFireNexus:
                 context.run_id, run_summary=run_summary
             )
 
+            # Track whether the manifest / viewer writes actually
+            # succeeded; only return the path keys when the file
+            # is real on disk. See the matching guard in
+            # ``execute_operation``.
+            manifest_written: Optional[Path] = None
+            viewer_written: Optional[Path] = None
             try:
-                write_run_manifest(
+                manifest_written = write_run_manifest(
                     run_id=context.run_id,
                     run_dir=context.output_dir,
                     scenario_name=scenario.name,
@@ -452,10 +466,11 @@ class BlueFireNexus:
                 )
             except OSError as manifest_exc:  # pragma: no cover - I/O safety net
                 self.logger.warning("manifest write failed: %s", manifest_exc)
-            try:
-                write_viewer_for_run(context.output_dir)
-            except (OSError, FileNotFoundError, ValueError) as viewer_exc:  # pragma: no cover - I/O safety net
-                self.logger.warning("viewer write failed: %s", viewer_exc)
+            if manifest_written is not None:
+                try:
+                    viewer_written = write_viewer_for_run(context.output_dir)
+                except (OSError, FileNotFoundError, ValueError) as viewer_exc:  # pragma: no cover - I/O safety net
+                    self.logger.warning("viewer write failed: %s", viewer_exc)
 
             return {
                 "status": overall_status,
@@ -465,8 +480,8 @@ class BlueFireNexus:
                 "steps": steps_results,
                 "report_path": str(report_path),
                 "risk_summary_path": str(risk_summary_path),
-                "manifest_path": str(context.output_dir / "manifest.json"),
-                "viewer_path": str(context.output_dir / "index.html"),
+                "manifest_path": str(manifest_written) if manifest_written else None,
+                "viewer_path": str(viewer_written) if viewer_written else None,
                 "copilot": copilot_summary,
                 "legacy_controls": self.legacy_activation_summary(),
             }
