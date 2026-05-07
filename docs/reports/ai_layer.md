@@ -76,10 +76,22 @@ modules:
 
 - `template` / `none` — deterministic local fallback. No external
   dependencies, no API keys, suitable for air-gapped use.
-- HTTP-backed names (see catalogue) issue real requests when
-  `api_base` is set AND the backend is reached with a valid env-
-  resolved API key. With no `api_base`, the backend short-circuits
-  to `network_disabled=True` so the local-first invariant holds.
+- HTTP-backed names (see catalogue) issue real requests only when
+  BOTH gates are passed:
+  - `modules.ai.enabled: true` (the runtime gate; the backend
+    short-circuits to `network_disabled=True` whenever this is
+    false, regardless of `api_base`).
+  - `modules.ai.api_base` is a non-empty `http://` or `https://`
+    URL (`UrllibTransport` rejects anything else at the transport
+    boundary).
+  When either gate fails, the backend returns
+  `ProviderResponse(network_disabled=True, error=...)` and never
+  invokes the transport. `api_key_env` is NOT a gate — local
+  servers (Ollama, llama.cpp, LM Studio) typically need no auth
+  header and the backend omits it when the resolved key is empty;
+  vendors that require auth respond with `401`, which surfaces as
+  a structured `error="http 401: ..."` rather than crashing the
+  run.
 - Stub-backed names (`anthropic`, `gemini` today) always return a
   structured offline placeholder response — they will gain real
   backends through `register_provider(...)` without changing

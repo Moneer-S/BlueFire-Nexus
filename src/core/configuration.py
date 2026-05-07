@@ -259,7 +259,14 @@ def get_ai_config(config: Optional[Mapping[str, Any]] = None) -> dict:
         if isinstance(candidate, Mapping):
             provider_sub = dict(candidate)
 
-    for field in ("api_base", "model"):
+    # Per-provider blocks can override these string-typed fields when
+    # the top-level `modules.ai` value is unset. ``api_key_env`` is in
+    # the list so a per-vendor block can name a vendor-specific env
+    # var (e.g. ``ai_providers.anthropic.api_key_env: ANTHROPIC_API_KEY``)
+    # without forcing operators to flatten everything into
+    # ``modules.ai``. Explicit ``modules.ai.*`` values still win
+    # because Step 1 already captured them.
+    for field in ("api_base", "model", "api_key_env"):
         if (field not in raw or not str(raw.get(field, "")).strip()) and provider_sub.get(field):
             raw[field] = str(provider_sub[field])
 

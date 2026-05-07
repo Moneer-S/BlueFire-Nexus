@@ -23,6 +23,7 @@ imports, or otherwise activates content produced by a provider.
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
@@ -34,27 +35,79 @@ from .rag import RAGIndex
 from .types import ProviderResponse
 
 
-def _build_provider_chain(ai_cfg: Mapping[str, Any]) -> LLMProvider:
+def _build_provider_chain(config: Mapping[str, Any]) -> LLMProvider:
     """Build the primary provider, optionally wrapped with a fallback chain.
 
     Fallback is opt-in. It only fires when ``fallback_provider`` is
-    set to a known canonical name AND the name differs from the
-    primary provider (so configuring a fallback that points to the
-    primary is a no-op rather than an infinite loop). The fallback
-    provider is built with the same ``ai_config`` shape, with only
-    the ``provider`` key swapped — operators who need a fallback
-    with different credentials can express that via the
-    ``ai_providers.<name>`` block which is already merged into the
-    AI config by :func:`get_ai_config`.
+    set to a known canonical name AND the canonicalised name
+    differs from the canonicalised primary provider (so an alias
+    pair like ``provider: claude`` + ``fallback_provider:
+    anthropic`` is correctly recognised as a no-op rather than
+    wrapping a single backend in a self-fallback chain).
+
+    The fallback provider is rebuilt by re-running
+    :func:`get_ai_config` against a copy of the FULL config with
+    ``modules.ai.provider`` swapped to the fallback name. This
+    triggers the ``ai_providers.<fallback>`` block merge so the
+    fallback gets its own ``api_base``, ``model``, ``api_key_env``,
+    and ``provider_settings`` instead of inheriting the primary's.
+
+    Closes Codex P1 from PR #55: previous version cloned ``ai_cfg``
+    and only changed ``provider``, so a config like ``provider:
+    openai`` + ``fallback_provider: anthropic`` left the fallback
+    instance configured with OpenAI's ``api_base`` / ``model`` /
+    ``api_key`` instead of Anthropic's.
+
+    Closes Codex P2 from PR #55: the no-op guard now compares
+    canonical names, so alias pairs do not wrap an unnecessary
+    fallback chain that would mark every degraded run with
+    ``fallback_used`` for what is actually the same backend.
     """
-    primary = ProviderFactory.from_ai_config(ai_cfg)
-    fallback_name = str(ai_cfg.get("fallback_provider") or "").strip()
-    primary_name = str(ai_cfg.get("provider") or "template").strip()
-    if not fallback_name or fallback_name == primary_name:
+    primary_ai_cfg = get_ai_config(config)
+    primary = ProviderFactory.from_ai_config(primary_ai_cfg)
+
+    fallback_name = str(primary_ai_cfg.get("fallback_provider") or "").strip()
+    if not fallback_name:
         return primary
-    fallback_cfg = dict(ai_cfg)
-    fallback_cfg["provider"] = fallback_name
-    fallback = ProviderFactory.from_ai_config(fallback_cfg)
+
+    primary_canonical = ProviderFactory.normalise_name(primary_ai_cfg.get("provider"))
+    fallback_canonical = ProviderFactory.normalise_name(fallback_name)
+    if not fallback_canonical or fallback_canonical == primary_canonical:
+        return primary
+
+    # Re-resolve the fallback through get_ai_config so the
+    # `ai_providers.<fallback>` block is merged correctly. Working
+    # from a deep copy of the original config keeps the primary's
+    # resolved view untouched.
+    #
+    # Clear the primary-specific keys (`model` / `api_base` /
+    # `api_key_env`) on the rebuilt `modules.ai`. Otherwise
+    # `get_ai_config` would treat the primary's values as already-
+    # set and the `ai_providers.<fallback>` block would not be able
+    # to populate them — that was the original Codex P1 finding
+    # (PR #55): the fallback inherited the primary's endpoint /
+    # model / key instead of the fallback vendor's own settings.
+    base = copy.deepcopy(dict(config) if isinstance(config, Mapping) else {})
+    modules = base.setdefault("modules", {})
+    if not isinstance(modules, dict):
+        modules = {}
+        base["modules"] = modules
+    ai_section = modules.setdefault("ai", {})
+    if not isinstance(ai_section, dict):
+        ai_section = {}
+        modules["ai"] = ai_section
+    ai_section["provider"] = fallback_canonical
+    # Drop primary-vendor identifiers so the fallback's
+    # `ai_providers.<fallback>` block populates them.
+    for primary_specific_key in ("model", "api_base", "api_key_env"):
+        ai_section[primary_specific_key] = ""
+    # The fallback should not itself trigger another fallback —
+    # clear the field on the rebuilt config so a misconfigured
+    # cycle (fallback_provider pointing at a chain) cannot recurse.
+    ai_section["fallback_provider"] = ""
+
+    fallback_ai_cfg = get_ai_config(base)
+    fallback = ProviderFactory.from_ai_config(fallback_ai_cfg)
     return FallbackChainProvider(primary=primary, fallback=fallback)
 
 
@@ -103,18 +156,26 @@ def _build_artifact_dict(
     *,
     output_path: Path,
     response: ProviderResponse,
+    body: str,
     generated_at: str,
 ) -> Dict[str, Any]:
     """Return the dict shape published by every public copilot method.
 
     Keeps the legacy ``path`` / ``content`` keys (back-compat with
     callers that only consume those) and adds the per-response
-    metadata. ``content`` is the BODY of the artifact (no header)
-    so callers that wanted the raw model output keep getting it.
+    metadata. ``content`` is the BODY actually written to disk
+    (header excluded, but placeholder included when the provider
+    returned empty text), so API consumers see exactly what the
+    file contains without re-reading it.
+
+    Closes Codex P2 from PR #55: previous version returned
+    ``content=response.text`` (empty on failure) while the file
+    contained the operator-facing placeholder, hiding failure
+    details from callers that did not re-open the file.
     """
     return {
         "path": str(output_path),
-        "content": response.text,
+        "content": body,
         "provider": response.provider,
         "model": response.model,
         "generated_at": generated_at,
@@ -138,7 +199,10 @@ class AICopilot:
         ai_cfg = get_ai_config(config)
         self.ai_config: Dict[str, Any] = dict(ai_cfg)
         self.enabled = bool(ai_cfg.get("enabled", False))
-        self.provider: LLMProvider = _build_provider_chain(ai_cfg)
+        # Pass the FULL config (not just ai_cfg) so the fallback
+        # branch can re-resolve its own ai_providers.<fallback>
+        # block. See _build_provider_chain for details.
+        self.provider: LLMProvider = _build_provider_chain(config)
 
         project_root = Path.cwd()
         self.rag = RAGIndex(
@@ -172,9 +236,12 @@ class AICopilot:
             "[no content returned by provider; see header for details]"
         )
         output_path.write_text(header + body, encoding="utf-8")
+        # Pass `body` so the returned dict's `content` matches what is
+        # actually on disk (placeholder included on error paths).
         return _build_artifact_dict(
             output_path=output_path,
             response=response,
+            body=body,
             generated_at=generated_at,
         )
 
