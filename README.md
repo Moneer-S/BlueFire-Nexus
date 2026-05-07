@@ -62,6 +62,7 @@ BlueFire Nexus tries to bridge these:
 ## Quickstart
 
 ```bash
+# 1. Clone + install (Linux / macOS — see below for Windows)
 git clone https://github.com/Moneer-S/BlueFire-Nexus.git
 cd BlueFire-Nexus
 python -m venv .venv
@@ -71,10 +72,27 @@ pip install -r requirements-dev.txt
 pip install -e .
 cp .env.example .env
 
+# 2. Run a scenario (simulate-only, dry-run, no network)
 python -m src.run_scenario --profile apt29_credential_access --output-json
+
+# 3. Inspect the results
+python -m src.core.cli latest-run            # prints a file:// link to index.html
+python -m src.core.cli list-runs             # everything in output/
+python -m src.core.cli validate-run <run_id> # check the bundle is complete
+
+# 4. Open the static dashboard with file:// (no server required)
+#    Linux:   xdg-open output/<run_id>/index.html
+#    macOS:   open       output/<run_id>/index.html
+#    Windows: start       output\<run_id>\index.html
 ```
 
-Then look at `output/<run_id>/`. That is the entire surface area you need to get started.
+The full demo scenario is `enterprise_intrusion_chain` (12 standard modules, four step-to-step propagation pairs):
+
+```bash
+python -m src.run_scenario --profile enterprise_intrusion_chain --output-json
+```
+
+Every run writes `manifest.json` (machine-readable index of every artifact) and `index.html` (static dashboard) under `output/<run_id>/`. The dashboard renders the scenario timeline, propagation graph, ATT&CK coverage, telemetry counts, detection drafts, risk summary, and AI provider attribution from the manifest. No JavaScript, no external assets, no network calls — open with `file://` and read.
 
 A broader command reference is in [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELINES.md). The architecture, mode model, and ModuleResult contract live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -225,7 +243,7 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ope
 
 ## Status snapshot
 
-- 1299 passing tests, 5 intentional skips, 0 failures (~130s full-suite wallclock).
+- 1370 passing tests, 5 intentional skips, 0 failures (~150s full-suite wallclock).
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
 - 31 modules registered (17 standard + 14 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
 - 10 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.

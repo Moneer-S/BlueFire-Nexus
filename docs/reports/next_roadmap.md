@@ -182,6 +182,22 @@ The following gaps have been closed and are kept here for context.
   workflow; none starts a server or opens a browser
   automatically. Provided by PRs #71 (manifest), #72 (viewer),
   #73 (CLI), #74 (showcase).
+- **Demo-readiness pass (PRs #77 / #78 / #79 / #80).**
+  - `--output-json` produces JSON-only stdout for clean
+    `| jq` piping (PR #77; advisory output now goes to stderr).
+  - Viewer polish: risk summary moves above the timeline,
+    severity badges in the per-module risk table, timeline
+    notes column for non-success rows, dropped redundant
+    artifact-link path repetition (PR #78).
+  - CLI UX polish: friendly empty-state messages with the
+    canonical quickstart command, file:// links printed by
+    `latest-run` / `show-run`, error messages mention
+    `list-runs` for discovery, examples blocks in `--help`
+    (PR #79).
+  - `validate-run <run_id>` CLI command + 18 demo-bundle
+    regression tests (no broken viewer links, no external
+    schemes, no absolute paths, complete artifact set on both
+    flagship scenarios) (PR #80).
 
 ## Open items
 
