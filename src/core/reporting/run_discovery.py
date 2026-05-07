@@ -268,8 +268,16 @@ def validate_run_bundle(run_dir: Path) -> Dict[str, Any]:
                 )
 
     # Walk every <a href> in index.html and confirm it resolves
-    # to a real path. Pure regex extraction so the viewer module
-    # does not need to import any HTML parser.
+    # to a real path UNDER run_dir. Pure regex extraction so the
+    # viewer module does not need to import any HTML parser.
+    #
+    # Closes the Codex P1 from PR #80 sweep: the previous
+    # implementation accepted any href whose resolved path
+    # existed on the filesystem, including ``../shared/...`` or
+    # absolute paths outside the bundle. ``validate-run`` could
+    # therefore return ok=True even when the bundle was not
+    # self-contained — moving the run dir to another machine
+    # would then expose the broken links the validator missed.
     href_re = _re.compile(r'<a\s+[^>]*href=["\']([^"\']*)["\'][^>]*>', _re.IGNORECASE)
     viewer_path = run_dir / "index.html"
     if viewer_path.exists():
@@ -279,10 +287,20 @@ def validate_run_bundle(run_dir: Path) -> Dict[str, Any]:
             report["warnings"].append(f"viewer unreadable: {exc}")
             html = ""
         broken: List[str] = []
+        run_dir_resolved = run_dir.resolve()
         for href in href_re.findall(html):
             if not href or href.startswith("#"):
                 continue
-            if not (run_dir / href).resolve().exists():
+            target = (run_dir / href).resolve()
+            # Must exist AND must sit under the run dir. Either
+            # condition failing makes the link broken from the
+            # bundle's perspective.
+            if not target.exists():
+                broken.append(href)
+                continue
+            try:
+                target.relative_to(run_dir_resolved)
+            except ValueError:
                 broken.append(href)
         report["broken_links"] = broken
 

@@ -734,6 +734,20 @@ def _render_run_table(runs: list[dict]) -> Table:
     return table
 
 
+def _file_uri(path: Path) -> str:
+    """Return ``file://...`` for a path, resolving to absolute first.
+
+    ``Path.as_uri()`` raises ``ValueError`` on relative paths.
+    The default output root is ``Path("output")`` (a relative
+    path), so paths that originate from ``list_runs`` are
+    relative whenever the operator runs from the project
+    directory. Resolve to absolute before formatting so the
+    file:// URI is always valid. Closes the Codex P1 from
+    PR #79 sweep.
+    """
+    return path.resolve().as_uri()
+
+
 def _next_steps_hint(run: dict) -> str:
     """Return a one-line hint pointing the operator at next actions.
 
@@ -749,8 +763,9 @@ def _next_steps_hint(run: dict) -> str:
     bullets: list[str] = []
     if viewer.exists():
         # ``Path.as_uri`` returns ``file:///...`` so the operator
-        # can copy-paste it into a browser.
-        bullets.append(f"[green]Open viewer:[/] {viewer.as_uri()}")
+        # can copy-paste it into a browser. Resolve first because
+        # the path may be relative.
+        bullets.append(f"[green]Open viewer:[/] {_file_uri(viewer)}")
     elif manifest.exists():
         run_id = run.get("run_id", "")
         bullets.append(
@@ -972,7 +987,7 @@ def build_report_view_cmd(
         ) from exc
     console.print(
         f"[green]Wrote viewer:[/] {target}\n"
-        f"[cyan]Open in browser:[/] {target.as_uri()}\n"
+        f"[cyan]Open in browser:[/] {_file_uri(target)}\n"
         "[dim]No server required — the page is fully self-contained.[/]"
     )
 
