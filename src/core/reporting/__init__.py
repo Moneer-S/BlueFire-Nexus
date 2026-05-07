@@ -16,7 +16,12 @@ from .run_reports import (
     write_purple_report,
     write_risk_summary,
 )
-from .run_discovery import find_run_dir, latest_run, list_runs
+from .run_discovery import (
+    find_run_dir,
+    latest_run,
+    list_runs,
+    validate_run_bundle,
+)
 from .viewer import (
     VIEWER_INPUT_SCHEMA_VERSION,
     render_html,
@@ -36,6 +41,7 @@ __all__ = [
     "latest_run",
     "list_runs",
     "render_html",
+    "validate_run_bundle",
     "write_json_report",
     "write_manifest",
     "write_markdown_report",

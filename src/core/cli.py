@@ -22,6 +22,7 @@ from .reporting import (
     find_run_dir as _find_run_dir,
     latest_run as _latest_run,
     list_runs as _list_runs,
+    validate_run_bundle as _validate_run_bundle,
     write_viewer_for_run,
 )
 from .legacy_controls import (
@@ -974,6 +975,84 @@ def build_report_view_cmd(
         f"[cyan]Open in browser:[/] {target.as_uri()}\n"
         "[dim]No server required — the page is fully self-contained.[/]"
     )
+
+
+@app.command("validate-run")
+def validate_run_cmd(
+    run_id: str = RUN_ID_ARG,
+    output_root: Path = typer.Option(  # noqa: B008
+        None,
+        "--output-root",
+        help=(
+            "Override BLUEFIRE_OUTPUT_ROOT / general.output_root. "
+            "Defaults to the runtime's resolved output root."
+        ),
+    ),
+    json_output: bool = typer.Option(  # noqa: B008
+        False,
+        "--json",
+        help="Print the validation report as JSON instead of a rich table.",
+    ),
+) -> None:
+    """Validate that a run produced a complete demo bundle.
+
+    Checks the run directory against the canonical demo
+    artifact set (manifest.json / index.html / report.md /
+    report.json / risk_summary.json / telemetry.jsonl), confirms
+    the manifest's detection-draft count matches the on-disk
+    ``detections/`` directory, and walks every ``<a href>`` in
+    ``index.html`` to ensure each link resolves to a real file
+    or directory under the run dir. Useful before sharing a
+    run-output zip with someone else, or as a CI check after a
+    scenario refactor.
+
+    Exit code is non-zero when any required artifact is missing
+    OR any link in the viewer is broken.
+
+    Examples:
+
+        # Validate the latest run.
+        python -m src.core.cli validate-run "$(python -m src.core.cli latest-run | grep run_id | awk '{print $4}')"
+
+        # Or by explicit run_id.
+        python -m src.core.cli validate-run run-20260507120000-abc123
+
+        # Machine-readable form for CI / scripting.
+        python -m src.core.cli validate-run my-run --json
+    """
+    root = output_root if output_root else resolve_output_root()
+    run_dir = _find_run_dir(Path(root), run_id)
+    if not run_dir:
+        raise typer.BadParameter(
+            f"Run not found: {run_id!r} (searched under {root}). "
+            "List available runs with `python -m src.core.cli list-runs`.",
+            param_hint="run_id",
+        )
+    report = _validate_run_bundle(run_dir)
+    if json_output:
+        console.print_json(data=report)
+    else:
+        if report["ok"]:
+            console.print(
+                f"[green]OK[/]: run {run_id} bundle is complete "
+                "(no missing artifacts, no broken links)."
+            )
+        else:
+            console.print(f"[red]FAIL[/]: run {run_id} bundle has issues.")
+            if report["missing"]:
+                console.print("[red]Missing artifacts:[/]")
+                for artifact in report["missing"]:
+                    console.print(f"  - {artifact}")
+            if report["broken_links"]:
+                console.print("[red]Broken viewer links:[/]")
+                for link in report["broken_links"]:
+                    console.print(f"  - {link}")
+        if report["warnings"]:
+            console.print("[yellow]Warnings:[/]")
+            for warning in report["warnings"]:
+                console.print(f"  - {warning}")
+    if not report["ok"]:
+        raise typer.Exit(code=1)
 
 
 def main() -> None:
