@@ -63,6 +63,37 @@ def test_simple_preset_catalog_returns_deep_copy() -> None:
     assert catalog_b["local_safe"]["overrides"]["general.dry_run"] is True
 
 
+def test_simple_preset_catalog_nested_list_is_isolated() -> None:
+    """Nested mutable values (lists) must be deep-copied — closes
+    Codex P2 on PR #45 where shallow copy let callers silently
+    mutate the global preset definitions."""
+    catalog_a = simple_preset_catalog()
+    catalog_b = simple_preset_catalog()
+    # strict_local has a list value for allowed_subnets — mutate it
+    # in catalog_a and confirm catalog_b is untouched.
+    catalog_a["strict_local"]["overrides"][
+        "general.safeties.allowed_subnets"
+    ].append("0.0.0.0/0")
+    assert "0.0.0.0/0" not in catalog_b["strict_local"]["overrides"][
+        "general.safeties.allowed_subnets"
+    ]
+
+
+def test_simple_preset_overrides_nested_list_is_isolated_across_calls() -> None:
+    """Mutating a list returned by simple_preset_overrides must not
+    affect the next call. Closes Codex P2 on PR #45."""
+    overrides_a = simple_preset_overrides("strict_local")
+    overrides_a["general.safeties.allowed_subnets"].append("0.0.0.0/0")
+    overrides_a["general.safeties.allowed_domains"].append("attacker.example")
+    # Fresh fetch must NOT carry the leaked mutations.
+    overrides_b = simple_preset_overrides("strict_local")
+    assert overrides_b["general.safeties.allowed_subnets"] == [
+        "127.0.0.0/8",
+        "::1/128",
+    ]
+    assert overrides_b["general.safeties.allowed_domains"] == ["localhost"]
+
+
 def test_every_preset_has_description_and_overrides() -> None:
     catalog = simple_preset_catalog()
     for name, entry in catalog.items():
@@ -117,7 +148,13 @@ def test_ai_disabled_flips_enabled_bit_off() -> None:
 def test_strict_local_locks_safety_gates_to_loopback_only() -> None:
     overrides = simple_preset_overrides("strict_local")
     assert overrides["general.dry_run"] is True
-    assert overrides["general.safeties.allowed_subnets"] == []
+    # Loopback-only CIDRs (IPv4 + IPv6). Previously this preset set
+    # `[]` which the safety layer treated as "no restriction". The
+    # explicit loopback list makes the preset actually restrictive.
+    assert overrides["general.safeties.allowed_subnets"] == [
+        "127.0.0.0/8",
+        "::1/128",
+    ]
     assert overrides["general.safeties.allowed_domains"] == ["localhost"]
     assert overrides["modules.ai.enabled"] is False
     assert overrides["modules.legacy.enable_all_lab_capabilities"] is False
@@ -167,12 +204,12 @@ def test_applying_ai_enabled_keeps_provider_template(tmp_path: Path) -> None:
     assert is_offline_ai(config) is True
 
 
-def test_applying_strict_local_zeroes_safety_subnets(tmp_path: Path) -> None:
+def test_applying_strict_local_pins_safety_subnets_to_loopback(tmp_path: Path) -> None:
     cm = _fresh_manager(tmp_path)
     apply_simple_preset(cm, "strict_local")
     config = cm.to_dict()
     safety = get_safety_config(config)
-    assert safety["allowed_subnets"] == []
+    assert safety["allowed_subnets"] == ["127.0.0.0/8", "::1/128"]
     assert safety["allowed_domains"] == ["localhost"]
     assert is_offline_ai(config) is True
 

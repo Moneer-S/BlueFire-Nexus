@@ -104,6 +104,128 @@ def test_module_context_returns_defensive_copy(tmp_path: Path) -> None:
     assert "malicious" not in accumulator
 
 
+def test_module_context_deep_copies_nested_artifacts(tmp_path: Path) -> None:
+    """Closes Codex P1 on PR #39: ``dict(record)`` was a shallow copy
+    so nested ``artifacts`` / ``techniques`` were shared with the
+    runtime accumulator. A downstream module that mutated those
+    nested values in place would silently alter what later steps
+    saw, breaking the read-only contract.
+    """
+    nexus = _make_isolated_nexus(tmp_path)
+    run_context = nexus._make_run_context()
+    accumulator: Dict[str, Dict[str, Any]] = {
+        "step-1": {
+            "status": "success",
+            "module": "discovery",
+            "techniques": ["T1083"],
+            "artifacts": {
+                "targets": ["host-a", "host-b"],
+                "metadata": {"confidence": 0.9, "source": "lab-fixture"},
+            },
+        }
+    }
+    ctx = nexus._module_context(run_context, previous_step_results=accumulator)
+
+    # Mutate nested mutables through the module's view.
+    ctx["previous_step_results"]["step-1"]["artifacts"]["targets"].append(
+        "attacker-injected"
+    )
+    ctx["previous_step_results"]["step-1"]["artifacts"]["metadata"][
+        "confidence"
+    ] = 0.0
+    ctx["previous_step_results"]["step-1"]["techniques"].append("T9999")
+
+    # The accumulator must be untouched.
+    assert accumulator["step-1"]["artifacts"]["targets"] == ["host-a", "host-b"]
+    assert accumulator["step-1"]["artifacts"]["metadata"]["confidence"] == 0.9
+    assert accumulator["step-1"]["techniques"] == ["T1083"]
+
+
+def test_nested_mutation_does_not_leak_into_later_step(tmp_path: Path) -> None:
+    """End-to-end variant: a downstream module that mutates its view of an
+    upstream step's artifacts must not affect the view of the step
+    after it. Run a 3-step scenario, capture each step's view of
+    `previous_step_results` (deep-copied at capture time), then
+    verify a mutation in step 2 does not appear in step 3's view.
+    """
+    import copy as _copy
+
+    scenario_path = tmp_path / "three_step.yaml"
+    scenario_path.write_text(
+        "\n".join(
+            [
+                "id: deepcopy-prop",
+                "name: Deep-copy propagation scenario",
+                "objective: validate nested mutation isolation",
+                "attack_coverage: ['T1083', 'T1041', 'T1486']",
+                "fail_fast: false",
+                "steps:",
+                "  - id: discover-step",
+                "    name: File discovery",
+                "    module: discovery",
+                "    params:",
+                "      discovery_type: files",
+                "      targets: ['10.0.0.5']",
+                "      network_touch: false",
+                "  - id: middle-step",
+                "    name: Middle step",
+                "    module: exfiltration",
+                "    params:",
+                "      method: via_c2",
+                "      network_touch: false",
+                "  - id: tail-step",
+                "    name: Tail step",
+                "    module: exfiltration",
+                "    params:",
+                "      method: via_c2",
+                "      network_touch: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    nexus = _make_isolated_nexus(tmp_path)
+    captured_views: List[Dict[str, Any]] = []
+    exfil_module = nexus.modules["exfiltration"]
+    exfil_execute = exfil_module.execute
+
+    def _wrap(original):
+        def _captured(params, context):
+            views = context.get("previous_step_results") or {}
+            # Deep-snapshot before any mutation so the captured value
+            # is genuinely "what this step saw on entry".
+            captured_views.append(_copy.deepcopy(views))
+            # Middle-step mutates its view of discover-step's artifacts
+            # to inject something dangerous. With deep-copy in
+            # ``_module_context``, tail-step must not observe the
+            # mutation.
+            discover = views.get("discover-step")
+            if discover and isinstance(discover.get("artifacts"), dict):
+                targets = discover["artifacts"].get("targets")
+                if isinstance(targets, list):
+                    targets.append("attacker-injected")
+                discover["artifacts"]["malicious_marker"] = "leaked"
+            return original(params, context)
+
+        return _captured
+
+    exfil_module.execute = _wrap(exfil_execute)
+    try:
+        result = nexus.run_scenario_file(str(scenario_path))
+    finally:
+        exfil_module.execute = exfil_execute
+
+    assert result["status"] in {"success", "partial_success"}
+    # Two exfil steps captured a view; the second view must NOT
+    # contain the mutation injected by the first.
+    assert len(captured_views) == 2
+    second_view = captured_views[1]
+    assert "discover-step" in second_view
+    discover = second_view["discover-step"]
+    assert "malicious_marker" not in discover.get("artifacts", {})
+    targets = discover.get("artifacts", {}).get("targets") or []
+    assert "attacker-injected" not in targets
+
+
 # ---------------------------------------------------------------------------
 # End-to-end via run_scenario_file
 # ---------------------------------------------------------------------------

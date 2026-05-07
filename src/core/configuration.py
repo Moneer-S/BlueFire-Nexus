@@ -32,6 +32,7 @@ See ``docs/USAGE_GUIDELINES.md`` for the operator-facing description.
 
 from __future__ import annotations
 
+import copy
 import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Tuple
@@ -93,13 +94,27 @@ def resolve_output_root(config: Optional[Mapping[str, Any]] = None) -> Path:
 
     Reuses the same precedence as ``BlueFireNexus._output_root`` and
     is the single source of truth for "where does this run write to".
+
+    Type discipline (closes Codex P2 on PR #34): ``general.output_root``
+    must be a non-empty string to count as "set". ``None``, booleans,
+    ints, lists, and other non-string values are treated as **unset**
+    rather than being coerced via ``str(...)`` into surprising
+    directory names like ``"None"`` / ``"False"`` / ``"0"``. The
+    fallback chain (env -> default) then takes over so a YAML
+    misconfiguration like ``output_root: null`` does not silently
+    write to a directory literally named ``None``.
     """
     if isinstance(config, Mapping):
         general = config.get("general")
         if isinstance(general, Mapping):
-            configured = str(general.get("output_root", "")).strip()
-            if configured:
-                return Path(configured)
+            raw = general.get("output_root")
+            # Only honour explicit string values. Anything else (None,
+            # bool, int, list, dict, ...) is treated as unset so the
+            # fallback chain runs.
+            if isinstance(raw, str):
+                configured = raw.strip()
+                if configured:
+                    return Path(configured)
     env_root = os.environ.get("BLUEFIRE_OUTPUT_ROOT", "").strip()
     if env_root:
         return Path(env_root)
@@ -406,11 +421,21 @@ _SIMPLE_PRESETS: dict = {
     "strict_local": {
         "description": (
             "Hardest local-first posture. Dry-run enabled, no legacy, "
-            "no AI, safety gates restricted to loopback only."
+            "no AI, safety gates restricted to loopback only "
+            "(127.0.0.0/8 and ::1/128 for IPv4 / IPv6 loopback; "
+            "`localhost` for hostname targets)."
         ),
         "overrides": {
             "general.dry_run": True,
-            "general.safeties.allowed_subnets": [],
+            # Loopback-only IP targets. The runtime treats an empty
+            # `allowed_subnets` as "no IPs permitted" (per
+            # `ensure_target_allowed`), so this preset enumerates
+            # the loopback CIDRs explicitly so loopback IPs are
+            # genuinely allowed and everything else is genuinely
+            # blocked. Previous versions left this as `[]` which
+            # silently allowed any IP target via a short-circuit
+            # in the safety check.
+            "general.safeties.allowed_subnets": ["127.0.0.0/8", "::1/128"],
             "general.safeties.allowed_domains": ["localhost"],
             "modules.ai.enabled": False,
             "modules.ai.provider": "template",
@@ -429,13 +454,17 @@ def simple_preset_names() -> Tuple[str, ...]:
 
 
 def simple_preset_catalog() -> dict:
-    """Return a deep copy of the preset catalogue for CLI rendering."""
-    import copy
+    """Return a deep copy of the preset catalogue for CLI rendering.
 
+    Deep-copy is required because preset overrides may contain mutable
+    values (lists for ``allowed_subnets`` / ``allowed_domains``); a
+    shallow copy would let callers silently mutate the global preset
+    definition by editing those nested lists in place.
+    """
     return {
         name: {
             "description": entry["description"],
-            "overrides": dict(entry["overrides"]),
+            "overrides": copy.deepcopy(entry["overrides"]),
         }
         for name, entry in _SIMPLE_PRESETS.items()
     }
@@ -446,6 +475,10 @@ def simple_preset_overrides(name: str) -> dict:
 
     Raises ``ValueError`` for unknown preset names so CLI / programmatic
     callers fail loudly rather than silently applying nothing.
+
+    Returns a deep copy so callers that mutate nested values
+    (e.g. appending to a list) cannot leak that mutation back into
+    ``_SIMPLE_PRESETS`` and corrupt later calls in the same process.
     """
     canonical = str(name or "").strip().lower()
     if canonical not in _SIMPLE_PRESETS:
@@ -453,7 +486,7 @@ def simple_preset_overrides(name: str) -> dict:
         raise ValueError(
             f"Unknown simple-mode preset {name!r}. Expected one of: {allowed}"
         )
-    return dict(_SIMPLE_PRESETS[canonical]["overrides"])
+    return copy.deepcopy(_SIMPLE_PRESETS[canonical]["overrides"])
 
 
 def apply_simple_preset(config_manager: Any, name: str) -> dict:

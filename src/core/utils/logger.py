@@ -4,6 +4,7 @@ Provides centralized logging for all APT implementations
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -23,15 +24,23 @@ class Logger:
 
         Args:
             name: The name of the logger and log file
-            log_dir: The directory to store log files
+            log_dir: The directory to store log files (overridden by
+                ``BLUEFIRE_LOG_DIR`` env var when set, mirroring the
+                redirect used by ``src/core/logger.py``)
             log_level: The minimum log level to record
         """
         self.name = name
-        self.log_dir = Path(log_dir)
+        # Honour BLUEFIRE_LOG_DIR so tests / containers can redirect
+        # log output away from the project root. An explicit
+        # `log_dir=` argument is treated as a default that can still
+        # be overridden by the env var, since the env var represents
+        # the deployment-level decision.
+        env_dir = os.environ.get("BLUEFIRE_LOG_DIR", "").strip()
+        self.log_dir = Path(env_dir) if env_dir else Path(log_dir)
         self.log_level = log_level
 
         # Create log directory if it doesn't exist
-        self.log_dir.mkdir(exist_ok=True)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
 
         # Configure logger
         self.logger = logging.getLogger(name)

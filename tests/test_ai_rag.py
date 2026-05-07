@@ -133,16 +133,60 @@ def test_search_is_case_insensitive() -> None:
 
 
 def test_search_ranks_distinctive_token_above_common_token() -> None:
-    """A query for a token unique to one doc must surface that doc first."""
-    index = RAGIndex()
-    index.add_text("common-1", "shared shared shared shared")
-    index.add_text("common-2", "shared shared shared shared")
-    index.add_text("distinct", "shared distinctive payload")
+    """A query that matches every candidate doc must rank the doc with
+    the rarer query token highest.
 
-    results = index.search("distinctive")
-    assert results, "expected a result for a token present in one document"
-    assert results[0].startswith("distinct:"), (
-        f"expected distinctive doc first, got: {results}"
+    Closes the Codex P2 ranking-test gap on PR #46. Previously this
+    test queried a token that only one doc contained — the other
+    docs got score 0 and were dropped before sorting, so any
+    implementation that mishandled relative TF-IDF order among
+    multiple matching docs would still pass. The improved version
+    uses a query with a common token (matches every doc) plus a
+    rare token (matches only one), so all three docs survive the
+    score>0 filter and the ranking order is genuinely asserted.
+    """
+    index = RAGIndex()
+    # Every doc contains "shared" -> low IDF (common token).
+    index.add_text("common-1", "shared content one")
+    index.add_text("common-2", "shared content two")
+    # Only "distinct" also contains "distinctive" -> high IDF (rare token).
+    index.add_text("distinct", "shared distinctive content")
+
+    # Query both tokens. All three docs match on "shared" so all three
+    # have non-zero score; "distinct" must rank first because the rare
+    # token contributes much more to its TF-IDF score.
+    results = index.search("shared distinctive")
+    assert len(results) == 3, (
+        f"expected all three matching docs to be returned, got: {results}"
+    )
+    doc_ids = [snippet.split(": ", 1)[0] for snippet in results]
+    assert doc_ids[0] == "distinct", (
+        f"expected the doc with the rarer matching token ranked first, "
+        f"got order: {doc_ids}"
+    )
+    # The other two docs are tied on TF-IDF (same TF for "shared",
+    # same IDF, no other matches) — assert both are present after the
+    # distinctive doc, in either order.
+    assert set(doc_ids[1:]) == {"common-1", "common-2"}
+
+
+def test_search_ranks_higher_tf_above_lower_tf_for_same_token() -> None:
+    """Among docs that match the same single token, the doc with the
+    higher term frequency must rank above one with a lower term
+    frequency. Defends against a regression that drops the TF
+    component from the TF-IDF score.
+    """
+    index = RAGIndex()
+    # high-tf has 3/4 of its tokens matching the query.
+    index.add_text("high-tf", "needle needle needle filler")
+    # low-tf has 1/8 of its tokens matching.
+    index.add_text("low-tf", "needle filler filler filler filler filler filler filler")
+
+    results = index.search("needle")
+    assert len(results) == 2
+    doc_ids = [snippet.split(": ", 1)[0] for snippet in results]
+    assert doc_ids[0] == "high-tf", (
+        f"expected higher-TF doc ranked first, got: {doc_ids}"
     )
 
 
