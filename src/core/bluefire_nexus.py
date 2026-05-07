@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .ai import mutate_technique as ai_mutate_technique
-from .ai.copilot import AICopilot
+from .ai.copilot import AICopilot, summarise_run_state
 from .config import ConfigManager
 from .configuration import resolve_output_root
 from .detections import write_detection_artifacts
@@ -168,7 +168,14 @@ class BlueFireNexus:
                 )
                 write_json_report(context.output_dir, module_results)
                 risk_summary_path = write_risk_summary(context.output_dir, module_results)
-                copilot_artifacts = copilot.narrate(context.run_id)
+                run_summary = summarise_run_state(
+                    run_id=context.run_id,
+                    module_results=module_results,
+                    detection_summary=detection_summary,
+                )
+                copilot_artifacts = copilot.narrate(
+                    context.run_id, run_summary=run_summary
+                )
             else:
                 detection_paths = {}
                 report_path = None
@@ -361,7 +368,15 @@ class BlueFireNexus:
                 module_results,
                 scenario_name=scenario.name,
             )
-            copilot_summary = copilot.narrate(context.run_id)
+            run_summary = summarise_run_state(
+                run_id=context.run_id,
+                scenario_name=scenario.name,
+                module_results=module_results,
+                detection_summary=detection_summary,
+            )
+            copilot_summary = copilot.narrate(
+                context.run_id, run_summary=run_summary
+            )
 
             return {
                 "status": overall_status,

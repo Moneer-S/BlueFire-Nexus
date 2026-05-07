@@ -6,7 +6,7 @@ from .backends.openai_compatible import (
     OpenAICompatibleHTTPBackend,
     register_default_backends,
 )
-from .copilot import AICopilot
+from .copilot import AICopilot, summarise_run_state
 from .fallback import FallbackChainProvider
 from .legacy_compat import AIProvider, build_provider
 from .mutation import mutate_technique
@@ -53,4 +53,5 @@ __all__ = [
     "register_anthropic_backend",
     "register_default_backends",
     "register_gemini_backend",
+    "summarise_run_state",
 ]
