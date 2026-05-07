@@ -84,6 +84,8 @@ A broader command reference is in [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELIN
 
 ```
 output/<run_id>/
+├── manifest.json                # machine-readable index of every artifact below
+├── index.html                   # static, browser-viewable run dashboard (no server)
 ├── telemetry.jsonl              # one JSON event per module step
 ├── report.md                    # purple-team narrative
 ├── report.json                  # structured per-step result
@@ -99,6 +101,21 @@ output/<run_id>/
 ```
 
 Splunk SPL is generated as **local detection-rule output**. It is not a Splunk exporter or SIEM connector.
+
+### Local report viewer
+
+Every run writes a static, fully self-contained `index.html` next to the manifest. Open it with `file://` in any browser — no server, no external assets, no network calls. The viewer renders the scenario timeline, propagation graph, ATT&CK coverage, telemetry counts, detection drafts, risk summary, and AI provider attribution from `manifest.json`.
+
+The CLI exposes four commands for working with runs locally:
+
+```bash
+python -m src.core.cli list-runs               # newest first
+python -m src.core.cli latest-run              # most recent run detail
+python -m src.core.cli show-run <run_id>       # single-run detail
+python -m src.core.cli build-report-view <run_id>   # regenerate index.html
+```
+
+All four honour `general.output_root` / `BLUEFIRE_OUTPUT_ROOT` and accept `--output-root <path>` for ad-hoc discovery. None starts a server. None auto-opens a browser.
 
 ---
 
@@ -208,10 +225,11 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ope
 
 ## Status snapshot
 
-- 1219 passing tests, 5 intentional skips, 0 failures (~60s full-suite wallclock).
+- 1299 passing tests, 5 intentional skips, 0 failures (~130s full-suite wallclock).
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
 - 31 modules registered (17 standard + 14 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
 - 10 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.
+- Every run produces a complete local report bundle: `manifest.json` (machine-readable index), `index.html` (static browser viewer — no server, no external assets, no network), `report.md`, `report.json`, `risk_summary.json`, `telemetry.jsonl`, `detections/`, plus optional copilot artifacts.
 - Step-to-step artifact propagation: the runtime threads a read-only `previous_step_results` mapping into each step's context. The shipped `enterprise_intrusion_chain` scenario demonstrates four consumer pairs end-to-end (`discovery → credential_access`, `credential_access → lateral_movement` source, `collection → exfiltration`, `collection → impact`).
 - Cross-provider AI coherence: every documented canonical name (template, openai, anthropic, gemini, grok, ollama, llama.cpp, lm-studio, openai_compatible) routes to a registered backend. Default stays offline / template — no API keys required for normal use, no network calls without explicit `modules.ai.enabled: true` plus operator-supplied endpoint and (for vendor-specific backends) credentials.
 - Capability inventory: [docs/reports/capability_inventory.md](docs/reports/capability_inventory.md).

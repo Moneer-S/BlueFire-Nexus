@@ -636,11 +636,36 @@ summary = run_experiment_series("scenarios/apt29_credential_access.yaml", iterat
 
 ## 7. Monitoring a run
 
-- Inspect `output/<run_id>/telemetry.jsonl` for events emitted by each module step.
-- Inspect `output/<run_id>/report.md` for the purple-team narrative.
-- Inspect `output/<run_id>/detections/{sigma,yara_l,spl}/` for ATT&CK-mapped detection drafts.
-- Inspect `output/<run_id>/risk_summary.json` for the run risk posture.
-- Application logs default to `logs/bluefire.log` (path configurable in `config.yaml`).
+Every run writes a complete local bundle under `output/<run_id>/`. Pick the format that matches your workflow:
+
+- **Static HTML dashboard:** open `output/<run_id>/index.html` with `file://` in any browser. No server, no external assets, no network calls. Renders the scenario timeline, propagation graph, ATT&CK coverage, telemetry counts, detection drafts, risk summary, and AI provider attribution.
+- **Manifest:** `output/<run_id>/manifest.json` is the machine-readable index of every artifact below. External tooling can read it without walking the directory.
+- **Telemetry stream:** `output/<run_id>/telemetry.jsonl` for events emitted by each module step (one JSON object per line).
+- **Purple-team narrative:** `output/<run_id>/report.md` (also `report.json` for structured consumers).
+- **Detection drafts:** `output/<run_id>/detections/{sigma,yara_l,spl}/` for ATT&CK-mapped rule drafts.
+- **Risk posture:** `output/<run_id>/risk_summary.json`.
+- **Application logs:** default to `logs/bluefire.log` (path configurable in `config.yaml`).
+
+### CLI: list, inspect, and regenerate views for prior runs
+
+```bash
+# Newest first; honours general.output_root / BLUEFIRE_OUTPUT_ROOT.
+python -m src.core.cli list-runs
+
+# Single-run detail by run_id.
+python -m src.core.cli show-run <run_id>
+
+# Most recent run shortcut.
+python -m src.core.cli latest-run
+
+# Regenerate index.html from manifest.json (useful when the
+# manifest was edited or the orchestrator's viewer step failed).
+python -m src.core.cli build-report-view <run_id>
+```
+
+All four commands accept `--output-root <path>` to override discovery for ad-hoc inspection. None starts a server. None auto-opens a browser — operators choose how to open the static `index.html` via OS-native helpers (e.g. `open`, `xdg-open`, `start`).
+
+The viewer is fully self-contained: a single `<style>` block holds the entire CSS, every value is HTML-escaped before rendering, and every artifact link is run-dir-relative so the run directory can be moved without breaking the page.
 
 ## 8. ATT&CK mapping notes
 
