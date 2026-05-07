@@ -18,6 +18,20 @@ adapters."
 
 The following gaps have been closed and are kept here for context.
 
+- **Per-capability test depth for `legacy_stealth_research`.**
+  Mirrors the `tests/test_legacy_protocol_research.py` (PR #50)
+  pattern: each of the four supported capabilities
+  (`anti_forensic`, `anti_detection_legacy`, `anti_sandbox`,
+  `dynamic_api`) gets a dedicated assertion on its MITRE id,
+  action verb, and detection-hint discriminator
+  (cleanup-target list / target-process / sandbox-signal list /
+  dynamic-api hash + LoadLibrary-GetProcAddress signal). Also
+  pins the `anti_detection` alias normalisation, the unrecognised-
+  capability fallback to `anti_forensic`, the
+  emulate-without-acknowledgement block, the simulate vs.
+  emulate `runtime_outcome` shape, the `_platform_support`
+  rule, and the run-output-root contract. +19 tests, no
+  behaviour change.
 - **Pure-CSS mini-charts in the run viewer.** Telemetry counts
   by type and by module now render as deterministic horizontal
   bar charts (alphabetical key order, widths clamped to 1–100%
