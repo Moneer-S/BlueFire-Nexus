@@ -8,6 +8,16 @@ network_disabled / fallback_used) and the dict returned by
 downstream report renderers and operators can attribute output and
 spot degraded runs without re-parsing the file.
 
+Phase 4: prompt shaping. ``narrate`` and ``suggest_detections``
+optionally accept a ``run_summary`` mapping built by
+:func:`summarise_run_state` (or by the orchestrator) so the prompt
+carries scenario name, module-level status counts, technique
+totals, and detection-hint coverage. The summary is intentionally
+compact and field-typed (no free-form module ``message`` text) so
+it cannot be used as a prompt-injection vector by an upstream
+module's output. The same summary lands in the artifact metadata
+header so operators can see the run context at a glance.
+
 Fallback wiring: when ``modules.ai.fallback_provider`` is set to a
 known canonical name different from the primary provider, the
 copilot wraps the primary in a :class:`FallbackChainProvider` so a
@@ -24,9 +34,10 @@ imports, or otherwise activates content produced by a provider.
 from __future__ import annotations
 
 import copy
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 from ..configuration import get_ai_config
 from .fallback import FallbackChainProvider
@@ -120,12 +131,164 @@ def _utc_now_isoformat() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _format_artifact_header(response: ProviderResponse, *, generated_at: str) -> str:
+# ---------------------------------------------------------------------------
+# Run-state summary: builds a compact prompt-safe view of the run
+# ---------------------------------------------------------------------------
+
+
+# Header keys derived from a run summary that we surface in the
+# artifact frontmatter. Listed explicitly to keep the YAML header
+# stable and to avoid leaking arbitrary mapping keys into the file.
+_RUN_SUMMARY_HEADER_KEYS: tuple[str, ...] = (
+    "scenario_name",
+    "run_id",
+    "module_count",
+    "successful_steps",
+    "failed_steps",
+    "techniques_total",
+    "detection_hint_count",
+)
+
+
+def summarise_run_state(
+    *,
+    run_id: str,
+    scenario_name: Optional[str] = None,
+    module_results: Optional[Mapping[str, Any]] = None,
+    detection_summary: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a compact, prompt-safe summary of a completed run.
+
+    The orchestrator calls this with the post-run ``module_results``
+    dict (a mapping of step-key -> :class:`ModuleResult`-like object,
+    which has ``status`` / ``techniques`` / ``detection_hints``
+    attributes) and the rendered ``detection_summary`` mapping so the
+    copilot can shape better prompts than "run_id=<x>".
+
+    Intentional restrictions:
+
+    - **No free-form ``message`` text** — only field-typed status
+      counts and technique IDs land in the summary. A compromised /
+      malicious upstream module cannot inject prompt content via
+      its ``ModuleResult.message`` because that field is not read.
+    - **Counts, not contents** — detection-hint *count* per step
+      is included; the hint *content* is not. The point is to give
+      the copilot context, not to forward arbitrary upstream text.
+    - **Deterministic shape** — every key listed in
+      ``_RUN_SUMMARY_HEADER_KEYS`` is always present so artifact
+      metadata headers stay schema-stable.
+    """
+    statuses: Counter[str] = Counter()
+    techniques: list[str] = []
+    detection_hint_count = 0
+    module_status_pairs: list[tuple[str, str]] = []
+
+    for step_key, result in (module_results or {}).items():
+        status = str(getattr(result, "status", "unknown") or "unknown")
+        statuses[status] += 1
+        module_status_pairs.append((str(step_key), status))
+        for technique in (getattr(result, "techniques", []) or []):
+            if technique:
+                techniques.append(str(technique))
+        hints = getattr(result, "detection_hints", None) or {}
+        if isinstance(hints, Mapping):
+            detection_hint_count += sum(
+                len(value) if isinstance(value, (list, tuple, set)) else 1
+                for value in hints.values()
+            )
+
+    if detection_summary:
+        # ``detection_summary`` is a dict[step_key, dict[detection_kind, path]].
+        # Count distinct detection drafts (one per step+kind pair) so the
+        # prompt sees actual coverage rather than relying on each module's
+        # internal ``detection_hints``. This ensures the summary still
+        # reflects reality when modules emit hints but the report-renderer
+        # filters them.
+        for entry in detection_summary.values():
+            if isinstance(entry, Mapping):
+                detection_hint_count = max(detection_hint_count, len(entry))
+
+    successful_steps = statuses.get("success", 0)
+    failed_steps = sum(
+        statuses.get(state, 0)
+        for state in ("failure", "blocked", "error", "partial_success")
+    )
+
+    return {
+        "scenario_name": str(scenario_name) if scenario_name else "",
+        "run_id": str(run_id),
+        "module_count": len(module_status_pairs),
+        "module_statuses": [
+            {"step": step, "status": status}
+            for step, status in module_status_pairs
+        ],
+        "successful_steps": successful_steps,
+        "failed_steps": failed_steps,
+        "techniques_total": len(techniques),
+        # Sorted, de-duplicated, capped so a noisy step cannot dominate
+        # the prompt or the artifact header.
+        "techniques": sorted(set(techniques))[:32],
+        "detection_hint_count": detection_hint_count,
+    }
+
+
+def _format_run_summary_for_prompt(run_summary: Mapping[str, Any]) -> str:
+    """Render the summary as a compact text block for prompt inclusion.
+
+    Field-by-field rendering with stable line ordering so the
+    template provider's deterministic output stays stable across
+    runs with the same summary. The block stays small (counts, not
+    full content) so token budget is preserved for the actual
+    prompt.
+    """
+    lines: list[str] = ["[run summary]"]
+    scenario_name = run_summary.get("scenario_name") or ""
+    if scenario_name:
+        lines.append(f"  scenario: {scenario_name}")
+    run_id = run_summary.get("run_id") or ""
+    if run_id:
+        lines.append(f"  run_id: {run_id}")
+    module_count = run_summary.get("module_count")
+    if isinstance(module_count, int):
+        lines.append(f"  module_count: {module_count}")
+    successful_steps = run_summary.get("successful_steps")
+    failed_steps = run_summary.get("failed_steps")
+    if isinstance(successful_steps, int) or isinstance(failed_steps, int):
+        lines.append(
+            f"  steps: {successful_steps or 0} success / {failed_steps or 0} non-success"
+        )
+    techniques_total = run_summary.get("techniques_total")
+    if isinstance(techniques_total, int):
+        lines.append(f"  techniques_observed: {techniques_total}")
+    techniques = run_summary.get("techniques") or []
+    if isinstance(techniques, Iterable):
+        listed = ", ".join(str(t) for t in techniques if t)
+        if listed:
+            lines.append(f"  technique_ids: {listed}")
+    detection_count = run_summary.get("detection_hint_count")
+    if isinstance(detection_count, int):
+        lines.append(f"  detection_hints: {detection_count}")
+    return "\n".join(lines)
+
+
+def _format_artifact_header(
+    response: ProviderResponse,
+    *,
+    generated_at: str,
+    run_summary: Optional[Mapping[str, Any]] = None,
+) -> str:
     """Build the YAML-front-matter-style metadata header.
 
     Format is intentionally readable both as Markdown frontmatter
     and as a plain-text preamble so the same header works for
     ``.md`` and ``.txt`` artifacts without a per-format renderer.
+
+    When ``run_summary`` is supplied, a fixed subset of summary
+    keys (``_RUN_SUMMARY_HEADER_KEYS``) flows into the header so
+    operators can see scenario context at a glance without opening
+    ``report.md`` separately. The schema stays stable because only
+    the listed keys are emitted; arbitrary summary keys are
+    ignored.
     """
     lines = [
         "---",
@@ -147,6 +310,15 @@ def _format_artifact_header(response: ProviderResponse, *, generated_at: str) ->
         lines.append(f"error: {str(response.error).splitlines()[0][:200]}")
     if response.finish_reason:
         lines.append(f"finish_reason: {response.finish_reason}")
+    if isinstance(run_summary, Mapping):
+        for key in _RUN_SUMMARY_HEADER_KEYS:
+            value = run_summary.get(key)
+            if value is None or value == "":
+                continue
+            # Strip newlines so a string value cannot break out of
+            # the YAML front matter.
+            rendered = str(value).splitlines()[0][:200] if isinstance(value, str) else value
+            lines.append(f"{key}: {rendered}")
     lines.append("---")
     lines.append("")  # blank line separating header from body
     return "\n".join(lines)
@@ -158,6 +330,7 @@ def _build_artifact_dict(
     response: ProviderResponse,
     body: str,
     generated_at: str,
+    run_summary: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Return the dict shape published by every public copilot method.
 
@@ -168,12 +341,19 @@ def _build_artifact_dict(
     returned empty text), so API consumers see exactly what the
     file contains without re-reading it.
 
+    When ``run_summary`` is supplied, a copy is exposed under the
+    ``run_summary`` key so callers that consume the dict directly
+    (e.g. report renderers) can attribute output to scenario
+    context without re-reading the file. The copy is defensive so
+    downstream mutations cannot leak back into the orchestrator's
+    summary.
+
     Closes Codex P2 from PR #55: previous version returned
     ``content=response.text`` (empty on failure) while the file
     contained the operator-facing placeholder, hiding failure
     details from callers that did not re-open the file.
     """
-    return {
+    payload: Dict[str, Any] = {
         "path": str(output_path),
         "content": body,
         "provider": response.provider,
@@ -183,6 +363,12 @@ def _build_artifact_dict(
         "fallback_used": response.fallback_used,
         "error": response.error,
     }
+    if isinstance(run_summary, Mapping):
+        # Defensive deep-copy: the orchestrator's summary dict is
+        # mutable and may be re-used across calls. Copying keeps the
+        # returned payload independent of subsequent mutations.
+        payload["run_summary"] = copy.deepcopy(dict(run_summary))
+    return payload
 
 
 class AICopilot:
@@ -225,9 +411,17 @@ class AICopilot:
             context.extend(extra_context)
         return self.provider.generate(prompt, context=context)
 
-    def _write_artifact(self, response: ProviderResponse, output_path: Path) -> Dict[str, Any]:
+    def _write_artifact(
+        self,
+        response: ProviderResponse,
+        output_path: Path,
+        *,
+        run_summary: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
         generated_at = _utc_now_isoformat()
-        header = _format_artifact_header(response, generated_at=generated_at)
+        header = _format_artifact_header(
+            response, generated_at=generated_at, run_summary=run_summary
+        )
         # Body is the model text. When the provider returned an error
         # without text (e.g. transport failure with no fallback),
         # surface a clear placeholder so the artifact is still
@@ -243,39 +437,92 @@ class AICopilot:
             response=response,
             body=body,
             generated_at=generated_at,
+            run_summary=run_summary,
         )
 
-    def plan(self, goal: str) -> Dict[str, Any]:
-        """Generate scenario YAML from natural language goal."""
-        prompt = (
+    def _maybe_summary_block(
+        self, run_summary: Optional[Mapping[str, Any]]
+    ) -> Optional[str]:
+        """Return the formatted summary block when one is supplied.
+
+        Centralised so every public method shapes prompts the same
+        way: ``None`` means "no extra context"; a non-empty mapping
+        means "render and append".
+        """
+        if not isinstance(run_summary, Mapping) or not run_summary:
+            return None
+        return _format_run_summary_for_prompt(run_summary)
+
+    def plan(
+        self,
+        goal: str,
+        *,
+        run_summary: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Generate scenario YAML from natural language goal.
+
+        ``run_summary`` is optional; when set it lands both in the
+        prompt body and the artifact metadata header so the
+        generated plan can reference (or contrast against) the
+        currently-observed state of the project.
+        """
+        summary_block = self._maybe_summary_block(run_summary)
+        prompt_parts = [
             "Generate a concise BlueFire scenario YAML with fields: "
-            "id, objective, mitre, steps[]. "
-            f"Goal: {goal}"
-        )
+            "id, objective, mitre, steps[].",
+            f"Goal: {goal}",
+        ]
+        if summary_block:
+            prompt_parts.append(summary_block)
+        prompt = "\n".join(prompt_parts)
         response = self._ask(prompt)
         output_path = self.run_dir / "copilot_plan.txt"
-        return self._write_artifact(response, output_path)
+        return self._write_artifact(response, output_path, run_summary=run_summary)
 
-    def narrate(self, run_id: str) -> Dict[str, Any]:
-        """Generate SOC-style run narrative."""
-        prompt = (
+    def narrate(
+        self,
+        run_id: str,
+        *,
+        run_summary: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Generate SOC-style run narrative.
+
+        ``run_summary`` is optional but recommended; the orchestrator
+        in ``bluefire_nexus`` builds and passes it for every scenario
+        run so the narrative reflects the actual modules executed,
+        techniques observed, and detection coverage. Call sites that
+        do not have a summary in hand (e.g. ad-hoc tooling) can
+        continue to call ``narrate(run_id)`` and the prompt falls
+        back to the legacy minimal form.
+        """
+        summary_block = self._maybe_summary_block(run_summary)
+        prompt_parts = [
             "Write a SOC incident narrative with timeline, findings, and recommendations "
             f"for run_id={run_id}."
-        )
+        ]
+        if summary_block:
+            prompt_parts.append(summary_block)
+        prompt = "\n".join(prompt_parts)
         response = self._ask(prompt)
         output_path = self.run_dir / "copilot_narrative.md"
-        return self._write_artifact(response, output_path)
+        return self._write_artifact(response, output_path, run_summary=run_summary)
 
     def suggest_detections(
         self,
         run_id: str,
         metadata: Mapping[str, Any] | None = None,
+        *,
+        run_summary: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Generate detection strategy summary for current run."""
-        prompt = (
+        summary_block = self._maybe_summary_block(run_summary)
+        prompt_parts = [
             "Based on ATT&CK and emitted telemetry, provide concise detection suggestions "
             f"for run_id={run_id}, including Sigma, YARA-L, and SPL guidance."
-        )
+        ]
+        if summary_block:
+            prompt_parts.append(summary_block)
+        prompt = "\n".join(prompt_parts)
         response = self._ask(prompt, [f"metadata={dict(metadata or {})}"])
         output_path = self.run_dir / "copilot_detections.md"
-        return self._write_artifact(response, output_path)
+        return self._write_artifact(response, output_path, run_summary=run_summary)
