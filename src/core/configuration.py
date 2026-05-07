@@ -252,10 +252,25 @@ def get_ai_config(config: Optional[Mapping[str, Any]] = None) -> dict:
     # Explicit `modules.ai.*` values still win because Step 1 already
     # captured them.
     provider_name = str(raw.get("provider", _DEFAULT_AI_CONFIG["provider"]) or "template").lower().strip()
+    # Normalise alias names to their canonical equivalents BEFORE the
+    # `ai_providers.<name>` lookup so an operator who wrote
+    # `provider: claude` finds settings stashed under
+    # `ai_providers.anthropic`. The alias map is the single source of
+    # truth in `ProviderFactory._ALIASES`; importing lazily avoids
+    # any module-load-order issue (configuration.py is imported by
+    # ai.copilot, which is reachable from src.core.ai package init).
+    from .ai.providers import ProviderFactory  # local import — see above
+    canonical_provider = ProviderFactory.normalise_name(provider_name)
     provider_sub: dict = {}
     providers_block = config.get("ai_providers")
     if isinstance(providers_block, Mapping):
-        candidate = providers_block.get(provider_name)
+        # Prefer the canonical entry; fall back to the alias-keyed
+        # entry when the operator filed settings under the same
+        # name they wrote in `modules.ai.provider`. Both shapes are
+        # tolerated so neither convention is wrong.
+        candidate = providers_block.get(canonical_provider)
+        if not isinstance(candidate, Mapping) and canonical_provider != provider_name:
+            candidate = providers_block.get(provider_name)
         if isinstance(candidate, Mapping):
             provider_sub = dict(candidate)
 

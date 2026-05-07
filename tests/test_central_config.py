@@ -359,6 +359,96 @@ def test_get_ai_config_explicit_module_value_beats_provider_block() -> None:
     assert get_ai_config(config)["api_base"] == "http://explicit/v1"
 
 
+def test_get_ai_config_alias_provider_finds_canonical_ai_providers_block() -> None:
+    """Operator wrote ``provider: claude`` but stashed settings under
+    ``ai_providers.anthropic``. The settings still flow through.
+
+    Mirror of the docs in ``USAGE_GUIDELINES.md`` which file every
+    ``ai_providers.<name>`` block under canonical names while
+    accepting alias names in ``modules.ai.provider``. Without the
+    alias-aware lookup, ``provider_settings`` was silently lost
+    whenever an operator used a friendly alias — leading to
+    surprises like ``anthropic_version`` defaulting back even
+    though the operator had set it.
+    """
+    config = {
+        "modules": {
+            "ai": {
+                "enabled": True,
+                "provider": "claude",  # alias
+                "model": "m",
+                "api_base": "https://api.anthropic.com",
+            }
+        },
+        "ai_providers": {
+            # Settings filed under the canonical name.
+            "anthropic": {
+                "anthropic_version": "2024-09-01",
+                "headers": {"X-Title": "lab"},
+            },
+        },
+    }
+    cfg = get_ai_config(config)
+    assert cfg["provider_settings"]["anthropic_version"] == "2024-09-01"
+    assert cfg["provider_settings"]["headers"] == {"X-Title": "lab"}
+
+
+def test_get_ai_config_alias_provider_falls_back_to_alias_keyed_block() -> None:
+    """Operator filed settings under the alias too — still works.
+
+    Both conventions are tolerated: settings under the canonical
+    name (preferred) and settings under the same alias the
+    operator put in ``modules.ai.provider`` (less standard, but
+    the operator's intent is clear).
+    """
+    config = {
+        "modules": {
+            "ai": {
+                "enabled": True,
+                "provider": "claude",  # alias
+                "model": "m",
+                "api_base": "https://api.anthropic.com",
+            }
+        },
+        "ai_providers": {
+            "claude": {  # alias-keyed
+                "anthropic_version": "2024-09-01",
+            },
+        },
+    }
+    cfg = get_ai_config(config)
+    assert cfg["provider_settings"]["anthropic_version"] == "2024-09-01"
+
+
+def test_get_ai_config_canonical_block_wins_over_alias_block_on_conflict() -> None:
+    """When BOTH ``ai_providers.anthropic`` and ``ai_providers.claude``
+    are present, the canonical entry wins.
+
+    Pinning the precedence so docs (which always recommend the
+    canonical key) match runtime: the canonical entry is the
+    operator's deliberate filing, the alias entry is at best a
+    matching choice and at worst a leftover from an earlier
+    convention. Either way the canonical entry should be the
+    source of truth so docs and runtime agree.
+    """
+    config = {
+        "modules": {
+            "ai": {
+                "enabled": True,
+                "provider": "claude",
+                "model": "m",
+                "api_base": "https://api.anthropic.com",
+            }
+        },
+        "ai_providers": {
+            "anthropic": {"anthropic_version": "2024-09-01"},
+            "claude": {"anthropic_version": "2023-06-01"},
+        },
+    }
+    cfg = get_ai_config(config)
+    assert cfg["provider_settings"]["anthropic_version"] == "2024-09-01"
+
+
 def test_get_ai_config_handles_garbage_input_gracefully() -> None:
     """Non-mapping config returns documented defaults rather than crashing."""
     cfg = get_ai_config("not a dict")  # type: ignore[arg-type]
