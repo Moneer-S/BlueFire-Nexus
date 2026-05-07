@@ -18,6 +18,16 @@ adapters."
 
 The following gaps have been closed and are kept here for context.
 
+- **Pure-CSS mini-charts in the run viewer.** Telemetry counts
+  by type and by module now render as deterministic horizontal
+  bar charts (alphabetical key order, widths clamped to 1–100%
+  with an integer cast so a maliciously-shaped manifest cannot
+  inject CSS). The KPI grid grew a "Module status" card with
+  tier-coloured bars for success / blocked / error / skipped
+  step counts. Still pure HTML + inline CSS — no JavaScript, no
+  SVG, no canvas, no external assets. Helpers carry an
+  inline-style allowlist test so future additions stay within a
+  small known set. +28 tests.
 - **Top-level run index aggregator.** A static `output/index.html`
   page now lists every run on disk newest-first with the same
   self-contained constraints as the per-run viewer (no JS, no

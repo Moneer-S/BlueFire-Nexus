@@ -183,6 +183,54 @@ code, .mono {
   margin-bottom: 16px;
 }
 ul { padding-left: 20px; margin: 4px 0; }
+/* Pure-CSS bar chart for telemetry / status counters. The
+   coloured fill width is set inline via ``style="width: NN%"``;
+   render-time renderer clamps the value to [1, 100] and casts
+   through ``int`` so a maliciously-shaped manifest cannot inject
+   arbitrary CSS. */
+.bar-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.bar-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 180px) 1fr 32px;
+  align-items: center;
+  gap: 8px;
+}
+.bar-label {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: break-word;
+}
+.bar-track {
+  background: var(--bg-code);
+  border-radius: 2px;
+  height: 14px;
+  overflow: hidden;
+}
+.bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  min-width: 2px;
+}
+.bar-fill-success { background: var(--success); }
+.bar-fill-warning { background: var(--warning); }
+.bar-fill-danger  { background: var(--danger); }
+.bar-fill-muted   { background: var(--muted); }
+.bar-value {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+.bar-row-empty .bar-fill {
+  background: transparent;
+  border: 1px dashed var(--border);
+}
 .footnote {
   margin-top: 32px;
   padding-top: 16px;
@@ -285,7 +333,14 @@ def _render_header(manifest: Mapping[str, Any]) -> str:
 
 
 def _render_kpi_grid(manifest: Mapping[str, Any]) -> str:
-    """Top-line counters surface above the timeline so operators see at-a-glance state."""
+    """Top-line counters surface above the timeline so operators see at-a-glance state.
+
+    The headline numbers live in the KPI grid; immediately below
+    them sits a compact "module status" mini-chart that splits
+    the step total into success / blocked / error / skipped bars
+    so the operator can see the shape of the run without
+    scrolling to the timeline.
+    """
     run = manifest.get("run") or {}
     detections = manifest.get("detections") or {}
     telemetry = manifest.get("telemetry") or {}
@@ -305,7 +360,42 @@ def _render_kpi_grid(manifest: Mapping[str, Any]) -> str:
             f'<div class="kpi"><div class="kpi-label">{_esc(label)}</div>'
             f'<div class="kpi-value">{_esc(value)}</div></div>'
         )
-    return f'<div class="kpi-grid">{"".join(cells)}</div>'
+    grid = f'<div class="kpi-grid">{"".join(cells)}</div>'
+
+    status_counts = _module_status_counts(manifest)
+    if not any(status_counts.values()):
+        return grid
+    # Render each tier as its own bar-chart row with a tier-coloured
+    # fill so success / blocked / error read immediately.
+    max_count = max(status_counts.values()) or 0
+    tier_fill = {
+        "success": "bar-fill-success",
+        "blocked": "bar-fill-warning",
+        "error": "bar-fill-danger",
+        "skipped": "bar-fill-muted",
+    }
+    rows: List[str] = []
+    for tier in ("success", "blocked", "error", "skipped"):
+        value = status_counts[tier]
+        width = _bar_width_pct(value, max_count)
+        empty_cls = " bar-row-empty" if value == 0 else ""
+        rows.append(
+            f'<div class="bar-row{empty_cls}">'
+            f'<span class="bar-label"><code>{_esc(tier)}</code></span>'
+            f'<span class="bar-track" role="img" '
+            f'aria-label="{_esc(tier)}: {_esc(value)}">'
+            f'<span class="bar-fill {tier_fill[tier]}" '
+            f'style="width: {width}%;"></span></span>'
+            f'<span class="bar-value">{_esc(value)}</span>'
+            "</div>"
+        )
+    chart = (
+        '<div class="card" style="margin-top: 12px;">'
+        '<h3 style="margin-top: 0;">Module status</h3>'
+        f'<div class="bar-chart">{"".join(rows)}</div>'
+        "</div>"
+    )
+    return grid + chart
 
 
 def _render_timeline(manifest: Mapping[str, Any]) -> str:
@@ -415,6 +505,91 @@ def _render_attack_coverage(manifest: Mapping[str, Any]) -> str:
     )
 
 
+def _bar_width_pct(count: int, max_count: int) -> int:
+    """Return the bar fill width as an integer percentage in ``[1, 100]``.
+
+    The renderer drops the fill into ``style="width: NN%"`` and we
+    clamp to ``int`` to guarantee no exotic value can leak into the
+    style attribute. Zero counts still surface a 1% sliver so the
+    row's track is visually distinguishable from a missing row.
+    """
+    try:
+        max_val = int(max_count or 0)
+        value = int(count or 0)
+    except (TypeError, ValueError):
+        return 1
+    if max_val <= 0 or value <= 0:
+        return 1
+    pct = round(value / max_val * 100)
+    return max(1, min(int(pct), 100))
+
+
+def _render_bar_chart(
+    counts: Mapping[str, Any],
+    *,
+    fill_class: str = "",
+) -> str:
+    """Render a deterministic horizontal bar chart from a mapping.
+
+    Sorts keys alphabetically (matches the previous ``<ul>``
+    rendering so reviewers diffing the page see the same row
+    order). Skips entries whose count cannot be coerced to a
+    non-negative int. Empty mapping returns an empty string so
+    the caller can branch on truthiness.
+    """
+    if not counts:
+        return ""
+    pairs: List[tuple[str, int]] = []
+    for key in sorted(str(k) for k in counts.keys()):
+        raw = counts.get(key)
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value < 0:
+            continue
+        pairs.append((key, value))
+    if not pairs:
+        return ""
+    max_count = max((value for _, value in pairs), default=0)
+    fill_cls = f" {fill_class}" if fill_class else ""
+    rows: List[str] = []
+    for key, value in pairs:
+        width = _bar_width_pct(value, max_count)
+        empty_cls = " bar-row-empty" if value == 0 else ""
+        rows.append(
+            f'<div class="bar-row{empty_cls}">'
+            f'<span class="bar-label" title="{_esc(key)}"><code>{_esc(key)}</code></span>'
+            f'<span class="bar-track" role="img" '
+            f'aria-label="{_esc(key)}: {_esc(value)}">'
+            f'<span class="bar-fill{fill_cls}" style="width: {width}%;"></span></span>'
+            f'<span class="bar-value">{_esc(value)}</span>'
+            "</div>"
+        )
+    return f'<div class="bar-chart">{"".join(rows)}</div>'
+
+
+def _module_status_counts(manifest: Mapping[str, Any]) -> Dict[str, int]:
+    """Tally per-step status counts from a manifest."""
+    counts: Dict[str, int] = {"success": 0, "blocked": 0, "error": 0, "skipped": 0}
+    steps = manifest.get("steps")
+    if not isinstance(steps, list):
+        return counts
+    for step in steps:
+        if not isinstance(step, Mapping):
+            continue
+        status = str(step.get("status") or "").lower()
+        if status == "success":
+            counts["success"] += 1
+        elif status == "blocked":
+            counts["blocked"] += 1
+        elif status in {"error", "failure"}:
+            counts["error"] += 1
+        else:
+            counts["skipped"] += 1
+    return counts
+
+
 def _render_telemetry(manifest: Mapping[str, Any]) -> str:
     """Section 5 — telemetry summary."""
     telemetry = manifest.get("telemetry") or {}
@@ -436,22 +611,24 @@ def _render_telemetry(manifest: Mapping[str, Any]) -> str:
             '<div class="warning-banner">'
             f'{_esc(telemetry["error"])}</div>'
         )
-    if by_type or by_module:
+    by_type_chart = _render_bar_chart(by_type)
+    by_module_chart = _render_bar_chart(by_module)
+    if by_type_chart or by_module_chart:
         parts.append('<div style="display: flex; gap: 32px; flex-wrap: wrap;">')
-        if by_type:
-            parts.append("<div><h3>By type</h3><ul>")
-            for key in sorted(by_type):
-                parts.append(
-                    f"<li><code>{_esc(key)}</code> &middot; {_esc(by_type[key])}</li>"
-                )
-            parts.append("</ul></div>")
-        if by_module:
-            parts.append("<div><h3>By module</h3><ul>")
-            for key in sorted(by_module):
-                parts.append(
-                    f"<li><code>{_esc(key)}</code> &middot; {_esc(by_module[key])}</li>"
-                )
-            parts.append("</ul></div>")
+        if by_type_chart:
+            parts.append(
+                '<div style="flex: 1 1 320px; min-width: 280px;">'
+                "<h3>By type</h3>"
+                f"{by_type_chart}"
+                "</div>"
+            )
+        if by_module_chart:
+            parts.append(
+                '<div style="flex: 1 1 320px; min-width: 280px;">'
+                "<h3>By module</h3>"
+                f"{by_module_chart}"
+                "</div>"
+            )
         parts.append("</div>")
     parts.append("</section>")
     return "".join(parts)

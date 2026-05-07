@@ -34,6 +34,13 @@ This section captures changes since the last tagged release.
   external assets, no network). The orchestrator refreshes the
   aggregator after every run; `list-runs` / `latest-run`
   surface a `file://` link to it when present.
+- **Pure-CSS mini-charts in the run viewer.** Telemetry counts
+  by type and by module render as deterministic horizontal bar
+  charts (alphabetical key order, widths clamped to 1–100%);
+  the KPI grid gains a "Module status" card with tier-coloured
+  bars for success / blocked / error / skipped step counts.
+  Still pure HTML + inline CSS — no JavaScript, no SVG, no
+  external assets.
 - **Provider-agnostic AI layer.** `template` (offline default),
   `openai_compatible`, `openai`, `anthropic`, `gemini`, `grok`,
   `ollama`, `llama.cpp`, and `lm-studio` all route through a
