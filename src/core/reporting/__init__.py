@@ -16,6 +16,7 @@ from .run_reports import (
     write_purple_report,
     write_risk_summary,
 )
+from .run_discovery import find_run_dir, latest_run, list_runs
 from .viewer import (
     VIEWER_INPUT_SCHEMA_VERSION,
     render_html,
@@ -31,6 +32,9 @@ __all__ = [
     "VIEWER_INPUT_SCHEMA_VERSION",
     "build_manifest",
     "build_risk_summary",
+    "find_run_dir",
+    "latest_run",
+    "list_runs",
     "render_html",
     "write_json_report",
     "write_manifest",

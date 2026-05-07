@@ -18,6 +18,12 @@ from .configuration import (
     simple_preset_catalog,
     simple_preset_names,
 )
+from .reporting import (
+    find_run_dir as _find_run_dir,
+    latest_run as _latest_run,
+    list_runs as _list_runs,
+    write_viewer_for_run,
+)
 from .legacy_controls import (
     CAPABILITY_ALIASES,
     capability_aliases,
@@ -694,6 +700,159 @@ def legacy_apply_preset_cmd(
     action = "Previewed" if preview_only else "Applied and saved"
     console.print(f"[green]{action} legacy preset[/]: {canonical} ({config})")
     _render_legacy_activation(nexus)
+
+
+# ---------------------------------------------------------------------------
+# Local report viewer CLI
+# ---------------------------------------------------------------------------
+#
+# These commands operate on the local output directory only. No
+# server is started, no browser is auto-opened (operators can use
+# their OS's native ``open`` / ``xdg-open`` / ``start`` if they
+# want to). Output root resolution honours
+# ``general.output_root`` and ``BLUEFIRE_OUTPUT_ROOT``.
+
+
+def _render_run_table(runs: list[dict]) -> Table:
+    table = Table(title=f"BlueFire runs ({len(runs)} total)")
+    table.add_column("run_id", overflow="fold")
+    table.add_column("scenario")
+    table.add_column("status")
+    table.add_column("steps", justify="right")
+    table.add_column("started")
+    table.add_column("viewer")
+    for run in runs:
+        table.add_row(
+            run.get("run_id", ""),
+            run.get("scenario_name", "") or "-",
+            run.get("overall_status", "") or "-",
+            str(run.get("module_count", 0)),
+            run.get("started_at") or "-",
+            "yes" if run.get("has_viewer") else "no",
+        )
+    return table
+
+
+def _render_run_detail(run: dict) -> None:
+    """Print one run's metadata in human-readable form."""
+    rows = [
+        ("run_id", str(run.get("run_id", ""))),
+        ("scenario_name", str(run.get("scenario_name") or "-")),
+        ("overall_status", str(run.get("overall_status") or "-")),
+        ("started_at", str(run.get("started_at") or "-")),
+        ("module_count", str(run.get("module_count", 0))),
+        ("run_dir", str(run.get("run_dir", ""))),
+        ("has_manifest", "yes" if run.get("has_manifest") else "no"),
+        ("has_viewer", "yes" if run.get("has_viewer") else "no"),
+    ]
+    table = Table(title=f"Run detail: {run.get('run_id', '')}")
+    table.add_column("field")
+    table.add_column("value", overflow="fold")
+    for key, value in rows:
+        table.add_row(key, value)
+    console.print(table)
+
+
+@app.command("list-runs")
+def list_runs_cmd(
+    output_root: Path = typer.Option(  # noqa: B008
+        None,
+        "--output-root",
+        help="Override BLUEFIRE_OUTPUT_ROOT / general.output_root for discovery.",
+    ),
+    limit: int = typer.Option(  # noqa: B008
+        20, "--limit", min=1, max=500, help="Maximum number of runs to display."
+    ),
+) -> None:
+    """List recent BlueFire runs in the configured output directory.
+
+    Reads each run's ``manifest.json`` (when present) for the
+    metadata; runs without a manifest fall back to filesystem
+    ctime so partial / errored runs still surface. Newest first.
+    """
+    root = output_root if output_root else resolve_output_root()
+    runs = _list_runs(Path(root))[:limit]
+    if not runs:
+        console.print(f"[yellow]No runs found under[/] {root}")
+        return
+    console.print(_render_run_table(runs))
+
+
+@app.command("latest-run")
+def latest_run_cmd(
+    output_root: Path = typer.Option(  # noqa: B008
+        None, "--output-root", help="Override BLUEFIRE_OUTPUT_ROOT / general.output_root."
+    ),
+) -> None:
+    """Show the most recent BlueFire run in the configured output directory."""
+    root = output_root if output_root else resolve_output_root()
+    run = _latest_run(Path(root))
+    if not run:
+        console.print(f"[yellow]No runs found under[/] {root}")
+        return
+    _render_run_detail(run)
+
+
+@app.command("show-run")
+def show_run_cmd(
+    run_id: str = RUN_ID_ARG,
+    output_root: Path = typer.Option(  # noqa: B008
+        None, "--output-root", help="Override BLUEFIRE_OUTPUT_ROOT / general.output_root."
+    ),
+) -> None:
+    """Show metadata for a single run by ``run_id``.
+
+    Resolves first by directory name, then by manifest's
+    ``run.run_id`` field (the directory name may be sanitised
+    differently from the original id).
+    """
+    root = output_root if output_root else resolve_output_root()
+    run_dir = _find_run_dir(Path(root), run_id)
+    if not run_dir:
+        raise typer.BadParameter(
+            f"Run not found: {run_id} (under {root})", param_hint="run_id"
+        )
+    # Re-resolve through list_runs so the rendered detail uses the
+    # same shape as list-runs / latest-run.
+    matches = [r for r in _list_runs(Path(root)) if Path(r["run_dir"]) == run_dir]
+    if not matches:
+        # The run dir is partial (no manifest). Render a minimal entry.
+        console.print(
+            f"[yellow]Run directory {run_dir} has no manifest yet.[/] "
+            "Use `build-report-view` to render after the run finishes."
+        )
+        return
+    _render_run_detail(matches[0])
+
+
+@app.command("build-report-view")
+def build_report_view_cmd(
+    run_id: str = RUN_ID_ARG,
+    output_root: Path = typer.Option(  # noqa: B008
+        None, "--output-root", help="Override BLUEFIRE_OUTPUT_ROOT / general.output_root."
+    ),
+) -> None:
+    """Generate / refresh ``index.html`` for an existing run.
+
+    Useful when the orchestrator wrote a manifest but the viewer
+    failed (or after manually editing a manifest). Reads
+    ``manifest.json`` and writes ``index.html`` next to it.
+    The command never starts a server and never opens a browser.
+    """
+    root = output_root if output_root else resolve_output_root()
+    run_dir = _find_run_dir(Path(root), run_id)
+    if not run_dir:
+        raise typer.BadParameter(
+            f"Run not found: {run_id} (under {root})", param_hint="run_id"
+        )
+    try:
+        target = write_viewer_for_run(run_dir)
+    except FileNotFoundError as exc:
+        raise typer.BadParameter(str(exc), param_hint="run_id") from exc
+    console.print(
+        f"[green]Wrote viewer:[/] {target}\n"
+        "Open it in a browser via file:// — no server required."
+    )
 
 
 def main() -> None:
