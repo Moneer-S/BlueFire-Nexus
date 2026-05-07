@@ -69,6 +69,20 @@ class ConfigManager:
                     # Suggested completion-length cap. No effect on
                     # the offline template provider.
                     "max_tokens": 1024,
+                    # Sampling temperature. ``None`` means "use the
+                    # provider's own default"; the offline template
+                    # provider ignores this. Operators can set a
+                    # float (typically 0.0-2.0) when targeting a
+                    # backend that supports temperature.
+                    "temperature": None,
+                    # Optional fallback provider name. When set,
+                    # primary-provider failures route to the fallback
+                    # backend. Empty string means "no fallback" — a
+                    # primary failure surfaces as an error result.
+                    # Setting this to ``"template"`` is the safest
+                    # choice for "always degrade gracefully to
+                    # offline".
+                    "fallback_provider": "",
                 },
                 "legacy": {
                     "enable_all_lab_capabilities": False,
