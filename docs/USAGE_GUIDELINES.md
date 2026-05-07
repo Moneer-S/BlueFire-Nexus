@@ -55,7 +55,7 @@ resolved values for the most common reads:
 |---|---|
 | `resolve_output_root(config)` | `Path` for the runtime output root. |
 | `get_safety_config(config)` | `dict` with `dry_run`, `auto_wipe`, `max_runtime`, `allowed_subnets`, `allowed_domains`. |
-| `get_ai_config(config)` | `dict` with `enabled`, `provider`, `model`, `api_base`, `api_key_env`, `timeout`, `max_tokens`, `provider_settings`, `known_providers`. |
+| `get_ai_config(config)` | `dict` with `enabled`, `provider`, `model`, `api_base`, `api_key_env`, `timeout`, `max_tokens`, `temperature`, `fallback_provider`, `provider_settings`, `known_providers`. |
 | `get_mutation_config(config)` | `dict` with `enabled`, `default_strategy`, `allowed_strategies`. |
 | `is_legacy_capability_enabled(config, pack, capability)` | `bool`. Thin wrapper over `evaluate_legacy_capability`. |
 | `is_offline_ai(config)` | `bool` — `True` for the local-first baseline. |
@@ -64,41 +64,188 @@ resolved values for the most common reads:
 Helpers always return documented defaults when keys are absent and
 tolerate malformed (non-mapping) input rather than raising.
 
-### AI provider config shape (preparation only — local-first today)
+<a id="ai-provider-configuration"></a>
 
-The default AI layer remains the deterministic offline
-`TemplateProvider`. There is no remote provider implementation in the
-shipped baseline; the runtime never makes network calls under default
-config. The config shape below is documented so plug-and-play
-provider implementations can be wired in later without re-shaping
-config:
+### AI provider configuration
+
+The AI layer is **provider-agnostic and offline by default**. The
+shipped baseline ships a deterministic `TemplateProvider` that
+produces structured copilot artifacts without any network call or
+API key. **No vendor is privileged as the default**: `openai`,
+`anthropic`, `gemini`, `grok`, `ollama`, `openai_compatible`,
+`llama.cpp`, and `lm-studio` are equal optional opt-in targets.
+Aliases (`google → gemini`, `xai → grok`, `claude → anthropic`)
+are normalised at factory time so docs and configs can use
+vendor-friendly names without changing routing.
+
+**Default behaviour (no config changes required):**
 
 ```yaml
 modules:
   ai:
     enabled: false              # opt-in copilot artifacts
-    provider: template          # default: deterministic, offline
+    provider: template          # deterministic, offline, no network
     model: default
-    api_base: ""                # OpenAI-compatible endpoint URL
+    api_base: ""                # endpoint URL (when applicable)
     api_key_env: ""             # name of env var holding the API key
-    timeout: 30                 # seconds (no effect on template)
-    max_tokens: 1024            # length cap (no effect on template)
-
-ai_providers:
-  openai_compatible:
-    api_base: "{{ env OPENAI_COMPATIBLE_BASE_URL }}"
-    model: "model-name"
-  # other vendor-specific blocks are tolerated; the runtime does not
-  # dial out under any default config.
+    timeout: 30                 # per-request timeout in seconds
+    max_tokens: 1024            # length cap
+    temperature: null           # null = use the provider's default
+    fallback_provider: ""       # "" = no fallback; "template" = degrade to offline on error
 ```
 
-`get_ai_config` populates `modules.ai.api_base` / `model` from the
-matching `ai_providers.<provider>` block when the top-level value is
-empty, so operators can stash provider settings in one place. The
-default provider remains `template`. **Ollama is NOT a default**;
-it can be reached as an OpenAI-compatible endpoint by setting
-`provider: openai_compatible` and pointing `api_base` at the local
-Ollama server, but it is not privileged over any other provider.
+`get_ai_config` populates `modules.ai.api_base` / `model` from a
+matching `ai_providers.<provider>` block when the top-level value
+is empty, so operators can stash provider settings in one place
+without forcing every key into `modules.ai`.
+
+**API keys are read from environment variables only.** Set
+`api_key_env` to the env var that holds the key. The runtime
+never reads the key from disk and the key never appears in the
+config file. A missing env var becomes an empty `api_key` and the
+backend handles it gracefully (per-backend rules below) rather
+than raising.
+
+**HTTP transport security**: the shipped HTTP backend uses an
+injectable transport. The default `UrllibTransport` rejects any
+`api_base` whose scheme is not `http://` or `https://` *before*
+issuing the call, so a misconfigured `api_base: file:///etc/...`
+or `ftp://...` raises a `ValueError` at the transport boundary
+rather than touching the network or local filesystem.
+
+#### Example configs per provider target
+
+The OpenAI-compatible HTTP backend already serves these canonical
+names. All of them require setting both `api_base` AND
+`api_key_env` (with the named env var actually populated) before
+any outbound call happens. Each example assumes an explicit
+operator decision; nothing here is a default.
+
+**Generic OpenAI-compatible endpoint** (most flexible):
+
+```yaml
+modules:
+  ai:
+    enabled: true
+    provider: openai_compatible
+    model: my-vendor-model
+    api_base: "https://my-vendor.example/v1"
+    api_key_env: "MY_VENDOR_API_KEY"
+    fallback_provider: template
+```
+
+**OpenAI**:
+
+```yaml
+modules:
+  ai:
+    enabled: true
+    provider: openai
+    model: gpt-4o-mini
+    api_base: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    fallback_provider: template
+
+ai_providers:
+  openai:
+    headers:
+      OpenAI-Organization: "${OPENAI_ORG_ID}"
+```
+
+**xAI / Grok** (uses the OpenAI-compatible shape):
+
+```yaml
+modules:
+  ai:
+    enabled: true
+    provider: grok                 # alias `xai` also accepted
+    model: grok-2
+    api_base: "https://api.x.ai/v1"
+    api_key_env: "XAI_API_KEY"
+    fallback_provider: template
+```
+
+**Local Ollama** (OpenAI-compatible mount; runs entirely on your
+host with no API key needed):
+
+```yaml
+modules:
+  ai:
+    enabled: true
+    provider: ollama
+    model: llama3.1
+    api_base: "http://localhost:11434/v1"
+    api_key_env: ""                # Ollama needs no auth header
+    fallback_provider: template
+```
+
+**Local llama.cpp / LM Studio** (any OpenAI-compatible local
+server):
+
+```yaml
+modules:
+  ai:
+    enabled: true
+    provider: llama.cpp            # or `lm-studio`
+    model: my-local-model
+    api_base: "http://localhost:8080/v1"
+    api_key_env: ""
+    fallback_provider: template
+```
+
+**Anthropic / Gemini**:
+
+These vendors use different request/response shapes (Messages API
+and GenerateContent API respectively) and do **not** route through
+the OpenAI-compatible HTTP backend yet. Setting `provider:
+anthropic` or `provider: gemini` today returns the keyless stub
+that produces a structured offline placeholder response. The
+config shape stays the same so a future provider-specific adapter
+slots in without re-plumbing.
+
+**MCP / connectors**: a future option, not a current requirement.
+Nothing in the shipped baseline depends on them.
+
+#### Fallback chain
+
+`modules.ai.fallback_provider` opts into the
+`FallbackChainProvider` wrapper. When set to a known canonical
+name different from the primary, primary failures (transport
+errors, non-2xx responses, malformed payloads) transparently
+retry via the fallback. Setting `fallback_provider: template` is
+the safest choice — the template provider never fails and never
+makes network calls, so any primary outage degrades gracefully to
+deterministic offline output. The fallback marker
+(`fallback_used: true`, plus `primary_provider` / `primary_error`)
+appears in the artifact metadata header so operators can see when
+a degraded run happened.
+
+#### Artifact metadata header
+
+Every copilot artifact (`copilot_plan.txt`,
+`copilot_narrative.md`, `copilot_detections.md`) starts with a
+YAML-front-matter-style metadata block:
+
+```
+---
+provider: openai
+model: gpt-4o-mini
+generated_at: 2026-05-06T23:50:12Z
+network_disabled: false
+fallback_used: false
+finish_reason: stop
+---
+
+[the actual artifact content here]
+```
+
+When a fallback fired, the header also carries `primary_provider`
+and `primary_error`. When the primary failed and no fallback was
+configured, the header carries `error: ...` and the body contains
+a clear `[no content returned by provider; see header for
+details]` placeholder rather than being empty. The same metadata
+is exposed in the dict returned by every public copilot method
+(`plan`, `narrate`, `suggest_detections`).
 
 ### Simple-mode presets (cross-cutting)
 
