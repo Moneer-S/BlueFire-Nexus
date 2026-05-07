@@ -20,7 +20,21 @@ def _normalize_networks(networks: Iterable[str]) -> list[ipaddress._BaseNetwork]
 
 
 def ensure_target_allowed(target: str, allowed_subnets: Iterable[str]) -> None:
-    """Ensure IP target belongs to one of the allowed subnets."""
+    """Ensure IP target belongs to one of the allowed subnets.
+
+    Hostnames (anything that does not parse as an IP literal) are
+    permitted regardless of ``allowed_subnets`` — DNS resolution
+    happens at the module level under module-specific gates and the
+    safety layer cannot meaningfully bound it here.
+
+    For IP targets, an EMPTY ``allowed_subnets`` list is treated as
+    "no IP targets permitted" rather than "no restriction", which
+    keeps the semantic consistent with the network_touch guard
+    (``ensure_safe`` requires a non-empty ``allowed_subnets`` for
+    network_touch outside dry-run). This closes the strict_local
+    footgun where ``allowed_subnets: []`` previously allowed any IP
+    target through.
+    """
     if not target:
         return
     try:
@@ -29,7 +43,7 @@ def ensure_target_allowed(target: str, allowed_subnets: Iterable[str]) -> None:
         # Hostnames are allowed in dry-run scenarios.
         return
     allowed = _normalize_networks(allowed_subnets)
-    if allowed and not any(ip in network for network in allowed):
+    if not any(ip in network for network in allowed):
         raise SafetyViolation(f"target '{target}' is outside allowed_subnets")
 
 

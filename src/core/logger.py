@@ -1,8 +1,24 @@
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
 from rich.logging import RichHandler
+
+
+def _resolve_log_dir() -> Path:
+    """Resolve the directory the file handler writes to.
+
+    Honours the ``BLUEFIRE_LOG_DIR`` env var so tests (and containers
+    that mount a writable volume) can redirect logs away from the
+    project root. Mirrors the way ``BLUEFIRE_OUTPUT_ROOT`` redirects
+    the runtime output_root via ``core.configuration.resolve_output_root``.
+    Falls back to ``logs/`` under the current working directory when
+    the env var is unset, preserving the prior behaviour for normal
+    runtime use.
+    """
+    env_dir = os.environ.get("BLUEFIRE_LOG_DIR", "").strip()
+    return Path(env_dir) if env_dir else Path("logs")
 
 
 def setup_logger(name: str = "bluefire", log_level: str = "INFO") -> logging.Logger:
@@ -17,8 +33,8 @@ def setup_logger(name: str = "bluefire", log_level: str = "INFO") -> logging.Log
         logging.Logger: Configured logger instance
     """
     # Create logs directory if it doesn't exist
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+    log_dir = _resolve_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     # Create logger
     logger = logging.getLogger(name)

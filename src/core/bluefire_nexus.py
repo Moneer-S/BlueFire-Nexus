@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -99,8 +100,13 @@ class BlueFireNexus:
         present in the returned context (possibly empty) — modules that
         do not opt in simply ignore the key.
 
-        The mapping is a defensive copy to avoid downstream mutations
-        leaking back into the runtime's accumulator.
+        The mapping is a defensive **deep** copy: nested values like
+        ``artifacts``, ``techniques``, and any further-nested
+        dicts/lists must remain immune to in-place mutation by the
+        receiving module, otherwise downstream steps would see leaked
+        state from earlier steps. ``dict(record)`` (shallow copy) is
+        not enough — it leaves nested mutables shared with the
+        accumulator.
         """
         payload: Dict[str, Any] = {
             "run_context": run_context,
@@ -110,7 +116,7 @@ class BlueFireNexus:
             "max_runtime": run_context.max_runtime,
             "config": run_context.config,
             "previous_step_results": {
-                str(step_id): dict(record)
+                str(step_id): copy.deepcopy(record)
                 for step_id, record in (previous_step_results or {}).items()
             },
         }
@@ -269,11 +275,14 @@ class BlueFireNexus:
                     # Record this step's outcome for downstream steps.
                     # Modules that opt into chained inputs read this via
                     # ``context["previous_step_results"][<step_id>]``.
+                    # Deep-copy the artifacts so neither the accumulator
+                    # nor the receiving module can mutate them through
+                    # the ModuleResult instance held by `result`.
                     previous_step_results[step.step_id] = {
                         "status": result.status,
                         "module": step.module,
                         "techniques": list(result.techniques),
-                        "artifacts": dict(result.artifacts),
+                        "artifacts": copy.deepcopy(result.artifacts),
                     }
                     detection_paths = write_detection_artifacts(
                         context.output_dir,

@@ -134,6 +134,62 @@ def test_resolve_output_root_default_when_no_config_and_no_env(monkeypatch) -> N
 
 
 # ---------------------------------------------------------------------------
+# resolve_output_root — non-string values are treated as unset
+# (closes Codex P2 on PR #34)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "non_string_value",
+    [None, False, True, 0, 1, [], {}, ["valid-path"]],
+)
+def test_resolve_output_root_treats_non_string_value_as_unset(
+    monkeypatch, tmp_path, non_string_value
+) -> None:
+    """Anything that is not a string should fall through to env/default
+    rather than being coerced via str() into a literal directory name
+    like ``"None"`` / ``"False"`` / ``"0"``.
+    """
+    from pathlib import Path
+
+    monkeypatch.setenv("BLUEFIRE_OUTPUT_ROOT", str(tmp_path / "env"))
+    config = {"general": {"output_root": non_string_value}}
+    # Falls through to env, not Path("None") / Path("False") / Path("0").
+    assert resolve_output_root(config) == tmp_path / "env"
+
+
+def test_resolve_output_root_treats_empty_string_as_unset(monkeypatch, tmp_path) -> None:
+    """Empty string remains "unset" (existing behaviour preserved)."""
+    monkeypatch.setenv("BLUEFIRE_OUTPUT_ROOT", str(tmp_path / "env"))
+    assert resolve_output_root({"general": {"output_root": ""}}) == tmp_path / "env"
+    assert resolve_output_root({"general": {"output_root": "   "}}) == tmp_path / "env"
+
+
+def test_resolve_output_root_uses_explicit_string_value(monkeypatch, tmp_path) -> None:
+    """A real string value is honoured (sanity check for the type check)."""
+    monkeypatch.setenv("BLUEFIRE_OUTPUT_ROOT", str(tmp_path / "env"))
+    config = {"general": {"output_root": str(tmp_path / "explicit")}}
+    assert resolve_output_root(config) == tmp_path / "explicit"
+
+
+def test_resolve_output_root_does_not_coerce_none_into_directory_named_none(
+    monkeypatch,
+) -> None:
+    """Regression for the original Codex P2 footgun: ``output_root: null``
+    used to yield ``Path("None")`` (a literal directory). Must now
+    treat ``None`` as unset and fall back to the documented default.
+    """
+    from pathlib import Path
+
+    monkeypatch.delenv("BLUEFIRE_OUTPUT_ROOT", raising=False)
+    config = {"general": {"output_root": None}}
+    resolved = resolve_output_root(config)
+    assert resolved == Path("output")
+    assert str(resolved) != "None"
+    assert "None" not in resolved.parts
+
+
+# ---------------------------------------------------------------------------
 # get_ai_config — offline by default, no Ollama, no network
 # ---------------------------------------------------------------------------
 
