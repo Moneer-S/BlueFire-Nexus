@@ -173,6 +173,15 @@ The following gaps have been closed and are kept here for context.
   `docs/reports/orphan_files.md` for the decision report and
   `tests/test_orphan_files_smoke.py` for the import-safety smoke
   tests.
+- **Local report viewer (manifest + static HTML + CLI).** Every
+  run now writes a `manifest.json` index of all artifacts AND a
+  fully self-contained `index.html` dashboard. The viewer has
+  no JS, no external assets, no network calls — operators open
+  it with `file://`. Four CLI commands (`list-runs`, `latest-run`,
+  `show-run`, `build-report-view`) round out the local-only
+  workflow; none starts a server or opens a browser
+  automatically. Provided by PRs #71 (manifest), #72 (viewer),
+  #73 (CLI), #74 (showcase).
 
 ## Open items
 
