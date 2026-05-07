@@ -108,6 +108,10 @@ body {
   background: var(--bg);
   color: var(--fg);
 }
+/* Cap content width on very wide monitors so the dashboard stays
+   readable. Body itself fills the viewport for the dark/light
+   background; the wrapper inside main centres the content. */
+main { max-width: 1280px; margin: 0 auto; }
 h1, h2, h3 { margin: 0 0 8px 0; }
 h1 { font-size: 22px; }
 h2 { font-size: 18px; margin-top: 24px; }
@@ -120,6 +124,10 @@ section { margin-top: 24px; }
   padding: 16px;
   margin-bottom: 16px;
 }
+/* Wrap tables in a horizontal-scroll region so a wide table on a
+   narrow phone doesn't push the rest of the page sideways. The
+   table itself still fills the wrapper's width on desktop. */
+.card table { display: block; overflow-x: auto; max-width: 100%; }
 table { border-collapse: collapse; width: 100%; }
 th, td {
   text-align: left;
@@ -181,6 +189,13 @@ ul { padding-left: 20px; margin: 4px 0; }
   border-top: 1px solid var(--border);
   font-size: 12px;
   color: var(--muted);
+}
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 18px; }
+  h2 { font-size: 16px; }
+  .card { padding: 12px; }
+  .kpi-grid { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
 }
 """
 
@@ -679,6 +694,10 @@ def render_html(manifest: Mapping[str, Any]) -> str:
         '<div class="footnote">Generated locally by BlueFire Nexus. '
         f"No network calls. No external assets. {_esc(generated_at)}</div>"
     )
+    # Wrap the whole body in <main> so the CSS max-width caps
+    # readable column width on wide monitors without squeezing
+    # the dashboard on phones (the @media rule narrows padding
+    # at <= 600px). Footnote stays inside main for centring.
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en"><head><meta charset="utf-8">'
@@ -687,7 +706,7 @@ def render_html(manifest: Mapping[str, Any]) -> str:
         f"<title>BlueFire run: {_esc(title)}</title>"
         f"<style>{_VIEWER_CSS}</style>"
         "</head>"
-        f'<body>{body}{footnote}</body></html>\n'
+        f"<body><main>{body}{footnote}</main></body></html>\n"
     )
 
 
