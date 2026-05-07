@@ -646,13 +646,13 @@ Every run writes a complete local bundle under `output/<run_id>/`. Pick the form
 - **Risk posture:** `output/<run_id>/risk_summary.json`.
 - **Application logs:** default to `logs/bluefire.log` (path configurable in `config.yaml`).
 
-### CLI: list, inspect, and regenerate views for prior runs
+### CLI: list, inspect, validate, and regenerate views for prior runs
 
 ```bash
 # Newest first; honours general.output_root / BLUEFIRE_OUTPUT_ROOT.
 python -m src.core.cli list-runs
 
-# Single-run detail by run_id.
+# Single-run detail by run_id (prints a file:// link to the viewer).
 python -m src.core.cli show-run <run_id>
 
 # Most recent run shortcut.
@@ -661,9 +661,15 @@ python -m src.core.cli latest-run
 # Regenerate index.html from manifest.json (useful when the
 # manifest was edited or the orchestrator's viewer step failed).
 python -m src.core.cli build-report-view <run_id>
+
+# Validate that the run produced a complete demo bundle:
+# every required artifact present + no broken viewer links.
+# Exits non-zero on failure so CI / scripts can gate on it.
+python -m src.core.cli validate-run <run_id>
+python -m src.core.cli validate-run <run_id> --json   # machine-readable
 ```
 
-All four commands accept `--output-root <path>` to override discovery for ad-hoc inspection. None starts a server. None auto-opens a browser — operators choose how to open the static `index.html` via OS-native helpers (e.g. `open`, `xdg-open`, `start`).
+All five commands accept `--output-root <path>` to override discovery for ad-hoc inspection. None starts a server. None auto-opens a browser — operators choose how to open the static `index.html` via OS-native helpers (e.g. `open`, `xdg-open`, `start`).
 
 The viewer is fully self-contained: a single `<style>` block holds the entire CSS, every value is HTML-escaped before rendering, and every artifact link is run-dir-relative so the run directory can be moved without breaking the page.
 
