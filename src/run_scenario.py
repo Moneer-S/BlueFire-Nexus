@@ -188,6 +188,12 @@ def _apply_guided_preset_recommendation(
 
 
 def _print_summary(result: Dict[str, Any]) -> None:
+    """Render the human-readable run summary table on stdout.
+
+    Skipped when ``--output-json`` is set so the JSON payload
+    on stdout stays parseable. See ``main()`` for the
+    advisory-vs-stdout routing.
+    """
     console = Console()
     table = Table(title=f"BlueFire Run Summary ({result.get('run_id', 'unknown')})")
     table.add_column("Field")
@@ -290,6 +296,14 @@ def main() -> None:
     )
     logger = logging.getLogger(__name__)
 
+    # When --output-json is set, stdout MUST be the JSON payload alone
+    # so callers can pipe directly through `jq`. All progress / advisory
+    # rich output goes to stderr in that mode. The Console default
+    # writes to stdout, which previously mixed the activation summary
+    # and final summary table into the JSON stream.
+    rich_stream = sys.stderr if args.output_json else sys.stdout
+    advisory_console = Console(file=rich_stream)
+
     try:
         nexus = BlueFireNexus()
         if args.ai:
@@ -307,7 +321,7 @@ def main() -> None:
             )
             nexus.config = nexus.config_manager.to_dict()
             nexus._configure_modules()
-            Console().print(
+            advisory_console.print(
                 "[cyan]Applied guided preset recommendation[/]: "
                 f"{guided_recommendation['objective']} -> "
                 f"{guided_recommendation['recommended_preset']}"
@@ -320,7 +334,7 @@ def main() -> None:
             pack.get("enabled") or pack.get("enabled_capabilities")
             for pack in (legacy_summary.get("packs") or {}).values()
         ):
-            Console().print(
+            advisory_console.print(
                 "[yellow]Legacy capability activation[/]: "
                 + json.dumps(legacy_summary, indent=2)
             )
@@ -328,7 +342,7 @@ def main() -> None:
         step_overrides = None
         if args.mutate:
             step_overrides = _build_mutation_overrides(scenario_path, args.mutate)
-            Console().print(
+            advisory_console.print(
                 "[magenta]Applying AI mutation strategy[/]: "
                 f"{args.mutate} (lab opt-in implied by --mutate)"
             )
@@ -341,9 +355,11 @@ def main() -> None:
         if args.mutate:
             result["mutation_strategy"] = args.mutate
 
-        _print_summary(result)
         if args.output_json:
+            # JSON-only stdout — no rich table; the JSON IS the summary.
             print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            _print_summary(result)
 
         if result.get("status") in {"error", "blocked"}:
             sys.exit(1)
