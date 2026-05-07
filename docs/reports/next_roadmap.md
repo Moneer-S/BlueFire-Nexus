@@ -123,19 +123,71 @@ The following gaps have been closed and are kept here for context.
   was restructured to a session-scope canary plus per-test artifact-
   string validation, dropping wallclock from ~12 min to ~13s while
   preserving the discipline.
+- **Step-to-step propagation expanded to four consumer pairs.** The
+  shipped `enterprise_intrusion_chain` scenario now demonstrates
+  four `previous_step_results` consumer pairs end-to-end:
+  `discovery → credential_access` (target_from_step),
+  `credential_access → lateral_movement` (source_from_step),
+  `collection → exfiltration` (target_from_step), and
+  `collection → impact` (target_from_step). The standard `impact`
+  module is the latest opt-in; same `resolve_target_from_step`
+  helper as the other three pairs.
+- **Cross-provider AI coherence pinned.** A meta-test
+  (`tests/test_ai_provider_cross_provider_coherence.py`) asserts
+  every backend family (template / OpenAI-compatible / Anthropic
+  / Gemini) honours the same local-first short-circuit, alias
+  normalisation, per-call options propagation (system /
+  temperature / max_tokens / timeout — including explicit-zero
+  edge cases), usage-key normalisation, and error-path uniformity.
+  The provider catalogue is fully wired: every documented canonical
+  name has a registered backend.
+- **Copilot artifact quality pass.** The orchestrator now builds a
+  compact, prompt-safe `run_summary` (scenario name, module
+  status counts, technique totals, detection-hint coverage) and
+  threads it into every copilot call. The summary lands both in
+  the prompt body (so artifacts reflect actual scenario context)
+  and in the YAML-front-matter header (so operators can attribute
+  output without opening `report.md` separately). The summariser
+  explicitly does NOT read `ModuleResult.message` — the prompt-
+  injection guard for the upstream-module text channel.
+- **Cross-adapter parity audit for legacy_* modules.** A 77-test
+  meta-suite (`tests/test_legacy_adapter_parity.py`) asserts every
+  legacy_* adapter advertises exactly the canonical MITRE set its
+  dispatch produces, never surfaces deprecated MITRE IDs (T1145 /
+  T1086 / T1064) on its public surface, produces a consistent
+  result envelope shape across the seven tactic-level adapters,
+  and emits a working simulate-mode result for every dispatch
+  key.
+- **Enterprise-intrusion-chain quality invariants pinned.** Static
+  YAML invariants (unique step IDs, every step in dry mode,
+  forward-reference detection on propagation slots, all four
+  pairs demonstrated, every documented tactic phase represented)
+  AND runtime invariants (declared `attack_coverage` matches
+  emitted runtime techniques bidirectionally, single technique
+  per step, artifacts under output_dir, overall status success)
+  are now CI-gated.
+- **Preserved orphan files documented.** `src/core/bluefire.py`,
+  `src/legal_safeguards.py`, and `src/modules/evasion_techniques.py`
+  are intentionally kept in tree as a compatibility shim, defensive
+  helper, and gated research capability respectively. See
+  `docs/reports/orphan_files.md` for the decision report and
+  `tests/test_orphan_files_smoke.py` for the import-safety smoke
+  tests.
 
 ## Open items
 
-### 1. AI provider end-to-end implementation
-`OpenAICompatibleProvider` is wired to `ProviderFactory` and recognizes
-the major provider names, but the current implementation produces a
-structured stub response rather than calling out.
+### 1. Vendor-specific Grok / OpenAI adapters (decision)
+`openai`, `grok`, `ollama`, `llama.cpp`, and `lm-studio` all speak
+the OpenAI chat-completions shape and route through the existing
+`OpenAICompatibleHTTPBackend`. `anthropic` and `gemini` ship as
+vendor-specific adapters. A vendor-specific adapter for OpenAI or
+Grok is only worth adding if a real interop gap surfaces (function
+calling, JSON mode, streaming, vendor-specific auth header) that
+the generic adapter cannot cover.
 
-**Approach:** Pick one provider (Ollama is the obvious offline-first
-choice; OpenAI-compatible is the obvious BYOK choice) and implement
-`complete()` end-to-end. Cover with tests including the offline
-fallback path. Avoid multi-provider sprawl until at least one real
-backend is solid.
+**Default judgement:** stay with the generic adapter unless evidence
+forces a change. The `register_provider(...)` hook lets a future
+adapter slot in without touching the copilot code.
 
 ### 2. Future remote-observability story
 Out of scope for the local-first baseline. If/when added, would belong

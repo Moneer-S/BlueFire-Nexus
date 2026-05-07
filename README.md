@@ -161,7 +161,7 @@ Full enable/disable surface, preset profiles, and YAML examples: [docs/USAGE_GUI
 - **Gemini GenerateContent-API adapter ships** for the `gemini` canonical name (with `google` / `google_gemini` aliases). Vendor-specific request/response shape (`x-goog-api-key` header, model in URL path, `contents` array with `parts`, top-level `systemInstruction`, `generationConfig` block, `usageMetadata` normalised into the shared usage keys). Same triple-gate as the Anthropic adapter (`enabled` / `api_base` / `api_key`).
 - **API keys via env vars only.** `modules.ai.api_key_env` names the environment variable; the runtime never reads from disk and the key never appears in config files.
 - **Optional fallback chain.** `modules.ai.fallback_provider` (typically `template`) routes around primary failures so a remote outage degrades gracefully to deterministic offline output. The fallback marker (`fallback_used: true`, plus `primary_provider` / `primary_error` attribution) appears in every artifact's metadata header.
-- **Artifact metadata header.** Every copilot artifact (`copilot_plan.txt`, `copilot_narrative.md`, `copilot_detections.md`) starts with a YAML-front-matter block carrying `provider` / `model` / `generated_at` / `network_disabled` / `fallback_used` so report renderers and operators can attribute output and spot degraded runs without re-parsing the file.
+- **Artifact metadata header.** Every copilot artifact (`copilot_plan.txt`, `copilot_narrative.md`, `copilot_detections.md`) starts with a YAML-front-matter block carrying `provider` / `model` / `generated_at` / `network_disabled` / `fallback_used` so report renderers and operators can attribute output and spot degraded runs without re-parsing the file. When the orchestrator builds a run summary (scenario name, module status counts, technique totals, detection-hint coverage), those fields land in the same header so artifacts reflect actual scenario context — and in the prompt body, so the model sees what ran rather than just `run_id=<x>`. The summariser explicitly does not read `ModuleResult.message`, which is the prompt-injection guard for the upstream-module text channel.
 - **RAG retrieval.** A small TF-IDF index over `README.md`, `docs/ARCHITECTURE.md`, and the run report powers context for copilot prompts. No external dependencies.
 - **Mutation engine reachable from the CLI.** `python -m src.run_scenario --mutate <strategy>` applies a mutation strategy to every step's params before dispatch. Strategies: `low_noise`, `evasion-lite`, `protocol_shift`, `protocol-shift`. The mutation strategy is recorded in the run summary so mutation is never silent.
 - **Experiment harness.** `run_experiment_series` (`src/core/experiments.py`) supports repeated scenario runs with optional bounded jitter.
@@ -208,14 +208,16 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ope
 
 ## Status snapshot
 
-- 659 passing tests, 5 intentional skips, 0 failures (~44s full-suite wallclock).
+- 1219 passing tests, 5 intentional skips, 0 failures (~60s full-suite wallclock).
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
 - 31 modules registered (17 standard + 14 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
 - 10 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.
-- Step-to-step artifact propagation: the runtime threads a read-only `previous_step_results` mapping into each step's context so downstream modules can opt into reading prior outputs.
+- Step-to-step artifact propagation: the runtime threads a read-only `previous_step_results` mapping into each step's context. The shipped `enterprise_intrusion_chain` scenario demonstrates four consumer pairs end-to-end (`discovery → credential_access`, `credential_access → lateral_movement` source, `collection → exfiltration`, `collection → impact`).
+- Cross-provider AI coherence: every documented canonical name (template, openai, anthropic, gemini, grok, ollama, llama.cpp, lm-studio, openai_compatible) routes to a registered backend. Default stays offline / template — no API keys required for normal use, no network calls without explicit `modules.ai.enabled: true` plus operator-supplied endpoint and (for vendor-specific backends) credentials.
 - Capability inventory: [docs/reports/capability_inventory.md](docs/reports/capability_inventory.md).
 - Scenario coverage: [docs/reports/scenario_validation.md](docs/reports/scenario_validation.md).
 - Roadmap: [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md).
+- Preserved orphan files: [docs/reports/orphan_files.md](docs/reports/orphan_files.md).
 
 ---
 
