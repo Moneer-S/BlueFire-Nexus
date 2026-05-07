@@ -499,15 +499,16 @@ def test_auto_registration_routes_protocol_compatible_to_http_backend(name: str)
 
 
 def test_auto_registration_does_not_route_anthropic_to_http_backend() -> None:
-    """Anthropic uses a different request shape and must NOT be
-    silently bound to the OpenAI-compatible backend."""
-    from src.core.ai.providers import OpenAICompatibleProvider
+    """Anthropic uses a different request shape (Messages API) and
+    MUST NOT be silently bound to the OpenAI-compatible backend.
+    It now routes to the dedicated AnthropicMessagesBackend."""
+    from src.core.ai.backends.anthropic import AnthropicMessagesBackend
 
     provider = ProviderFactory.from_ai_config(
         {"provider": "anthropic", "model": "m", "api_base": "http://lab.example/v1"}
     )
     assert not isinstance(provider, OpenAICompatibleHTTPBackend)
-    assert isinstance(provider, OpenAICompatibleProvider)
+    assert isinstance(provider, AnthropicMessagesBackend)
 
 
 def test_auto_registration_does_not_route_gemini_to_http_backend() -> None:

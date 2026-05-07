@@ -1,5 +1,6 @@
 """AI package exports."""
 
+from .backends.anthropic import AnthropicMessagesBackend, register_anthropic_backend
 from .backends.openai_compatible import (
     OpenAICompatibleHTTPBackend,
     register_default_backends,
@@ -18,9 +19,17 @@ from .types import ProviderOptions, ProviderResponse
 # so the Phase 1 local-first guarantee is preserved.
 register_default_backends()
 
+# Register the Anthropic Messages-API adapter for the `anthropic`
+# canonical name. Idempotent. Defaults to ``enabled=False`` on the
+# backend itself, so no network call happens unless an operator
+# explicitly opts in via ``modules.ai.enabled: true`` plus a valid
+# ``api_base`` and resolved API key.
+register_anthropic_backend()
+
 __all__ = [
     "AICopilot",
     "AIProvider",
+    "AnthropicMessagesBackend",
     "FallbackChainProvider",
     "HTTPResponse",
     "HTTPTransport",
@@ -34,5 +43,6 @@ __all__ = [
     "UrllibTransport",
     "build_provider",
     "mutate_technique",
+    "register_anthropic_backend",
     "register_default_backends",
 ]

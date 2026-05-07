@@ -205,12 +205,58 @@ modules:
     fallback_provider: template
 ```
 
-**Anthropic / Gemini**:
+**Anthropic / Claude** (Messages API):
 
-These vendors use different request/response shapes (Messages API
-and GenerateContent API respectively) and do **not** route through
-the OpenAI-compatible HTTP backend yet. Setting `provider:
-anthropic` or `provider: gemini` today returns the keyless stub
+Anthropic uses the Messages API rather than the OpenAI chat-
+completions shape, so it has its own dedicated adapter (the
+`AnthropicMessagesBackend`). The config shape is the same as
+every other provider; the adapter handles the differences
+(`x-api-key` header, `anthropic-version` header, top-level
+`system` field, `content[].text` blocks, `input_tokens` /
+`output_tokens` normalised to the shared usage keys).
+
+```yaml
+modules:
+  ai:
+    enabled: true
+    provider: anthropic              # alias `claude` also accepted
+    model: claude-3-5-sonnet-20241022
+    api_base: "https://api.anthropic.com"
+    api_key_env: "ANTHROPIC_API_KEY"
+    fallback_provider: template
+    # max_tokens is REQUIRED by the Messages API. The adapter
+    # defaults to 1024 when neither config nor per-call options
+    # set a value; uncomment to override.
+    # max_tokens: 4096
+
+ai_providers:
+  anthropic:
+    # Optional: pin a specific Messages-API version. Default is
+    # "2023-06-01" if unset.
+    # anthropic_version: "2024-09-01"
+    # Optional: add vendor-specific headers (beta flags, etc.).
+    # headers:
+    #   anthropic-beta: "messages-2024-01-01"
+```
+
+Anthropic-specific gate: the adapter requires both `api_base`
+AND a non-empty `api_key` before issuing a network call. With
+no key the adapter returns a clear
+`ProviderResponse(error="anthropic api_key is required; set
+modules.ai.api_key_env (or ai_providers.anthropic.api_key_env)
+to the env var holding the key")` rather than dispatching and
+waiting for a 401. This is intentionally stricter than the
+OpenAI-compatible backend (which permits empty keys for local
+servers like Ollama / llama.cpp) because Anthropic has no
+local-server analog. The `enabled: true` gate still applies on
+top: an `enabled: false` config never dispatches regardless of
+key state.
+
+**Gemini**:
+
+Google's GenerateContent API has its own request/response shape
+and does **not** route through the OpenAI-compatible HTTP backend
+yet. Setting `provider: gemini` today returns the keyless stub
 that produces a structured offline placeholder response. The
 config shape stays the same so a future provider-specific adapter
 slots in without re-plumbing.
