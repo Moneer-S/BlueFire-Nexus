@@ -153,13 +153,18 @@ Full enable/disable surface, preset profiles, and YAML examples: [docs/USAGE_GUI
 
 ## AI / copilot layer
 
-- **Template / offline provider works.** A deterministic local provider produces copilot artifacts every run with no external dependencies and no API key required. This is the default and is suitable for air-gapped use.
-- **Remote provider scaffolding.** `ProviderFactory` recognizes `openai`, `anthropic`, `google`, `ollama`, `llama.cpp`, `lm-studio`, and `openai_compatible`. Real provider plumbing for any specific backend is planned but not active in the current baseline.
+- **Default is offline / template.** A deterministic local provider produces copilot artifacts every run with no external dependencies and no API key required. Air-gapped use works out of the box.
+- **Provider-agnostic interface.** Every provider implements the same `LLMProvider` Protocol (`complete()` text-only + `generate()` rich `ProviderResponse`). Adding or swapping a backend does not require touching the copilot code.
+- **No vendor is privileged as the default.** Canonical provider names (`openai`, `anthropic`, `gemini`, `grok`, `ollama`, `openai_compatible`, plus `llama.cpp` / `lm-studio`) are equal optional opt-in targets. Aliases (`google → gemini`, `xai → grok`, `claude → anthropic`) are normalised at factory time.
+- **OpenAI-compatible HTTP backend ships** for protocol-compatible names (`openai_compatible`, `openai`, `grok`, `ollama`, `llama.cpp`, `lm-studio`). It uses an injectable transport so tests never touch the network and short-circuits to offline when no `api_base` is configured. **Anthropic** and **Gemini** use different request shapes and remain on the keyless stub until provider-specific adapters land.
+- **API keys via env vars only.** `modules.ai.api_key_env` names the environment variable; the runtime never reads from disk and the key never appears in config files.
+- **Optional fallback chain.** `modules.ai.fallback_provider` (typically `template`) routes around primary failures so a remote outage degrades gracefully to deterministic offline output. The fallback marker (`fallback_used: true`, plus `primary_provider` / `primary_error` attribution) appears in every artifact's metadata header.
+- **Artifact metadata header.** Every copilot artifact (`copilot_plan.txt`, `copilot_narrative.md`, `copilot_detections.md`) starts with a YAML-front-matter block carrying `provider` / `model` / `generated_at` / `network_disabled` / `fallback_used` so report renderers and operators can attribute output and spot degraded runs without re-parsing the file.
 - **RAG retrieval.** A small TF-IDF index over `README.md`, `docs/ARCHITECTURE.md`, and the run report powers context for copilot prompts. No external dependencies.
 - **Mutation engine reachable from the CLI.** `python -m src.run_scenario --mutate <strategy>` applies a mutation strategy to every step's params before dispatch. Strategies: `low_noise`, `evasion-lite`, `protocol_shift`, `protocol-shift`. The mutation strategy is recorded in the run summary so mutation is never silent.
 - **Experiment harness.** `run_experiment_series` (`src/core/experiments.py`) supports repeated scenario runs with optional bounded jitter.
 
-Full reference: [docs/reports/ai_layer.md](docs/reports/ai_layer.md).
+Full reference: [docs/reports/ai_layer.md](docs/reports/ai_layer.md). Operator-facing config: [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELINES.md#ai-provider-configuration).
 
 ---
 
@@ -194,8 +199,7 @@ Bandit runs strict at `-ll` (medium and higher). Each expected dual-use offensiv
 
 Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top open items:
 
-- **AI provider end-to-end implementation.** Pick one (Ollama for offline-first, or OpenAI-compatible for BYOK) and wire it through `OpenAICompatibleProvider.complete()`. Until then, the local TemplateProvider remains the deterministic offline default.
-- **Step-to-step artifact propagation.** Scenario steps cannot read artifacts from earlier steps in the same chain; a `previous_step_results` mapping in the runtime context would let modules opt into chained inputs (e.g. discovery feeding credential_access target selection).
+- **Provider-specific AI adapters for Anthropic and Gemini.** The provider-agnostic interface, registry, OpenAI-compatible HTTP backend, and fallback chain are in place; Anthropic's Messages API and Gemini's GenerateContent API need their own request/response adapters before they can leave the keyless stub. Other vendors (`openai`, `grok`, `ollama`, `llama.cpp`, `lm-studio`) already work via the OpenAI-compatible HTTP backend — see [docs/reports/ai_layer.md](docs/reports/ai_layer.md).
 - **Future observed-telemetry correlation.** Roadmap only; not in current baseline. No remote SIEM exporters or external collectors today.
 
 ---
