@@ -108,18 +108,14 @@ def test_from_ai_config_unknown_provider_falls_back_to_template() -> None:
 @pytest.mark.parametrize(
     "name",
     [
-        "openai",
-        "anthropic",
-        "gemini",
-        "grok",
-        "ollama",
-        "llama.cpp",
-        "lm-studio",
-        "openai_compatible",
+        "anthropic",  # no protocol-compatible backend yet
+        "gemini",     # no protocol-compatible backend yet
     ],
 )
-def test_from_ai_config_remote_provider_returns_keyless_stub(name: str) -> None:
-    """Each canonical remote name returns the keyless stub with no outbound call."""
+def test_from_ai_config_unmapped_remote_returns_keyless_stub(name: str) -> None:
+    """Canonical names that have NO registered backend (anthropic /
+    gemini) still resolve to the keyless ``OpenAICompatibleProvider``
+    stub. The local-first invariant holds — no network call."""
     provider = ProviderFactory.from_ai_config(
         {
             "provider": name,
@@ -128,12 +124,46 @@ def test_from_ai_config_remote_provider_returns_keyless_stub(name: str) -> None:
         }
     )
     assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider.name == name  # canonical name preserved
+    assert provider.name == name
     assert provider.model == "model-x"
     assert provider.endpoint == "http://lab.example/v1"
-    assert provider.api_key == ""  # no api_key_env set -> empty key, never raised
+    assert provider.api_key == ""
     response = provider.complete("hello")
     assert "Network completion is intentionally disabled by default" in response
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "openai",
+        "grok",
+        "ollama",
+        "llama.cpp",
+        "lm-studio",
+        "openai_compatible",
+    ],
+)
+def test_from_ai_config_protocol_compatible_returns_http_backend(name: str) -> None:
+    """OpenAI-compatible-protocol canonical names route through the
+    Phase 2 HTTP backend. The backend itself stays offline when
+    ``api_base`` is set but the operator has not enabled network use
+    via a real key + endpoint combination — the local-first
+    invariant is verified by ``test_phase_1_default_is_offline_for_every_provider_name``
+    in the contract file."""
+    from src.core.ai.backends.openai_compatible import OpenAICompatibleHTTPBackend
+
+    provider = ProviderFactory.from_ai_config(
+        {
+            "provider": name,
+            "model": "model-x",
+            "api_base": "http://lab.example/v1",
+        }
+    )
+    assert isinstance(provider, OpenAICompatibleHTTPBackend)
+    assert provider.name == name
+    assert provider.model == "model-x"
+    assert provider.endpoint == "http://lab.example/v1"
+    assert provider.api_key == ""
 
 
 @pytest.mark.parametrize(
@@ -141,17 +171,14 @@ def test_from_ai_config_remote_provider_returns_keyless_stub(name: str) -> None:
     [
         ("google", "gemini"),
         ("google_gemini", "gemini"),
-        ("xai", "grok"),
-        ("x.ai", "grok"),
         ("claude", "anthropic"),
     ],
 )
-def test_from_ai_config_normalises_alias_to_canonical(
+def test_from_ai_config_normalises_alias_to_canonical_keyless_stub(
     alias: str, canonical: str
 ) -> None:
-    """Alias names route to their canonical entry. Closes the
-    Phase 1 product direction: docs and configs can use vendor-
-    friendly names without privileging any specific naming scheme."""
+    """Alias resolution for canonical names that still use the
+    keyless stub (anthropic / gemini)."""
     provider = ProviderFactory.from_ai_config(
         {"provider": alias, "model": "model-x"}
     )
@@ -159,21 +186,51 @@ def test_from_ai_config_normalises_alias_to_canonical(
     assert provider.name == canonical
 
 
+@pytest.mark.parametrize(
+    "alias,canonical",
+    [
+        ("xai", "grok"),
+        ("x.ai", "grok"),
+    ],
+)
+def test_from_ai_config_normalises_alias_to_canonical_http_backend(
+    alias: str, canonical: str
+) -> None:
+    """Alias resolution for canonical names backed by the Phase 2
+    HTTP backend (grok). The alias is normalised before dispatch
+    so the registered backend fires."""
+    from src.core.ai.backends.openai_compatible import OpenAICompatibleHTTPBackend
+
+    provider = ProviderFactory.from_ai_config(
+        {"provider": alias, "model": "model-x"}
+    )
+    assert isinstance(provider, OpenAICompatibleHTTPBackend)
+    assert provider.name == canonical
+
+
 def test_from_ai_config_normalises_case_and_whitespace() -> None:
-    """Provider name resolution lower-cases and strips whitespace."""
+    """Provider name resolution lower-cases and strips whitespace.
+    ``openai`` is HTTP-backed so the result is the HTTP backend."""
+    from src.core.ai.backends.openai_compatible import OpenAICompatibleHTTPBackend
+
     provider = ProviderFactory.from_ai_config(
         {"provider": "  OpenAI ", "model": "model-x"}
     )
-    assert isinstance(provider, OpenAICompatibleProvider)
+    assert isinstance(provider, OpenAICompatibleHTTPBackend)
     assert provider.name == "openai"
 
 
 def test_from_ai_config_resolves_api_key_env(monkeypatch) -> None:
-    """When `api_key_env` is set, the named env var is read into `api_key`."""
+    """When `api_key_env` is set, the named env var is read into `api_key`.
+
+    Uses ``anthropic`` (keyless-stub-backed) so the test exercises the
+    factory's api_key_env handling without depending on the Phase 2
+    HTTP backend's class. The env-resolution behaviour is shared
+    across both backend paths."""
     monkeypatch.setenv("BLUEFIRE_TEST_AI_KEY", "sk-test-resolved")
     provider = ProviderFactory.from_ai_config(
         {
-            "provider": "openai_compatible",
+            "provider": "anthropic",
             "model": "m",
             "api_key_env": "BLUEFIRE_TEST_AI_KEY",
         }
@@ -187,7 +244,7 @@ def test_from_ai_config_missing_env_var_yields_empty_api_key(monkeypatch) -> Non
     monkeypatch.delenv("BLUEFIRE_DEFINITELY_UNSET_KEY", raising=False)
     provider = ProviderFactory.from_ai_config(
         {
-            "provider": "openai_compatible",
+            "provider": "anthropic",
             "model": "m",
             "api_key_env": "BLUEFIRE_DEFINITELY_UNSET_KEY",
         }
@@ -205,18 +262,37 @@ def test_from_ai_config_does_not_read_env_when_api_key_env_is_empty(monkeypatch)
     """
     monkeypatch.setenv("BLUEFIRE_AMBIENT_KEY_THAT_SHOULD_NOT_LEAK", "leaked")
     provider = ProviderFactory.from_ai_config(
-        {"provider": "openai_compatible", "model": "m", "api_key_env": ""}
+        {"provider": "anthropic", "model": "m", "api_key_env": ""}
     )
     assert isinstance(provider, OpenAICompatibleProvider)
     assert provider.api_key == ""
 
 
-def test_from_ai_config_forwards_provider_settings() -> None:
-    """`provider_settings` (from `ai_providers.<name>`) flows to the stub."""
-    settings = {"organization": "org-123", "region": "us-east"}
+def test_from_ai_config_resolves_api_key_env_for_http_backend(monkeypatch) -> None:
+    """Same env-key resolution path works for HTTP-backed names too."""
+    from src.core.ai.backends.openai_compatible import OpenAICompatibleHTTPBackend
+
+    monkeypatch.setenv("BLUEFIRE_HTTP_BACKEND_KEY", "sk-http-resolved")
     provider = ProviderFactory.from_ai_config(
         {
             "provider": "openai_compatible",
+            "model": "m",
+            "api_key_env": "BLUEFIRE_HTTP_BACKEND_KEY",
+            "api_base": "http://lab.example/v1",
+        }
+    )
+    assert isinstance(provider, OpenAICompatibleHTTPBackend)
+    assert provider.api_key == "sk-http-resolved"
+
+
+def test_from_ai_config_forwards_provider_settings_to_keyless_stub() -> None:
+    """`provider_settings` (from `ai_providers.<name>`) flows to the
+    keyless stub for canonical names that do not yet have an
+    HTTP-backed registration (anthropic / gemini)."""
+    settings = {"organization": "org-123", "region": "us-east"}
+    provider = ProviderFactory.from_ai_config(
+        {
+            "provider": "anthropic",
             "model": "m",
             "provider_settings": settings,
         }
@@ -228,10 +304,36 @@ def test_from_ai_config_forwards_provider_settings() -> None:
     assert settings["organization"] == "org-123"
 
 
+def test_from_ai_config_forwards_provider_settings_to_http_backend() -> None:
+    """Same flow-through for HTTP-backed names: provider_settings
+    populates the backend so vendor-specific keys (organization,
+    headers) can be passed through to outbound requests."""
+    from src.core.ai.backends.openai_compatible import OpenAICompatibleHTTPBackend
+
+    settings = {"organization": "org-456", "headers": {"X-Title": "lab"}}
+    provider = ProviderFactory.from_ai_config(
+        {
+            "provider": "openai_compatible",
+            "model": "m",
+            "provider_settings": settings,
+        }
+    )
+    assert isinstance(provider, OpenAICompatibleHTTPBackend)
+    assert provider.provider_settings["organization"] == "org-456"
+    # Defensive copy: mutating the returned dict must not affect the source.
+    provider.provider_settings["organization"] = "mutated"
+    assert settings["organization"] == "org-456"
+
+
 def test_from_ai_config_full_resolved_config_round_trip(monkeypatch) -> None:
     """End-to-end: get_ai_config(...) -> from_ai_config(...) yields the
-    expected stub with env-resolved key + provider_settings flow-through.
+    HTTP backend (Phase 2) configured with env-resolved key + provider
+    settings + endpoint. The backend short-circuits to offline when
+    no api_base is given; here api_base IS set so this test verifies
+    the full configuration plumbing.
     """
+    from src.core.ai.backends.openai_compatible import OpenAICompatibleHTTPBackend
+
     monkeypatch.setenv("BLUEFIRE_VENDOR_KEY", "sk-vendor-9")
     config = {
         "modules": {
@@ -252,17 +354,12 @@ def test_from_ai_config_full_resolved_config_round_trip(monkeypatch) -> None:
     }
     resolved = get_ai_config(config)
     provider = ProviderFactory.from_ai_config(resolved)
-    assert isinstance(provider, OpenAICompatibleProvider)
+    assert isinstance(provider, OpenAICompatibleHTTPBackend)
     assert provider.name == "openai_compatible"
     assert provider.model == "vendor-model"
     assert provider.endpoint == "http://vendor.lab/v1"
     assert provider.api_key == "sk-vendor-9"
     assert provider.provider_settings.get("organization") == "org-abc"
-    # Still no outbound network call by default.
-    assert (
-        "Network completion is intentionally disabled by default"
-        in provider.complete("ping")
-    )
 
 
 def test_from_ai_config_template_provider_when_explicitly_offline() -> None:
