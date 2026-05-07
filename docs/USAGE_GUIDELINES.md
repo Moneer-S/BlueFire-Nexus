@@ -525,10 +525,13 @@ opt into reading from it by accepting a small set of `*_from_step`
 params.
 
 The standard modules that currently consume this are
-`credential_access`, `exfiltration`, and `lateral_movement`. All
-three use the same `target_from_step` opt-in;
-`lateral_movement` additionally exposes a `source_from_step` slot
-for the attacker pivot host:
+`credential_access`, `exfiltration`, `lateral_movement`, and
+`impact`. They use the same `target_from_step` opt-in;
+`lateral_movement` additionally exposes a `source_from_step`
+slot for the attacker pivot host. The `impact` module reads
+`target_from_step` so a downstream destruction / encryption
+step can target the same host an upstream collection step
+staged data on:
 
 ```yaml
 steps:
@@ -601,13 +604,14 @@ Resolution order (first non-empty wins, evaluated per axis):
    - exfiltration: `target` defaults to `lab-host`.
    - lateral_movement: `target` defaults to `lab-host`,
      `source` defaults to `lab-attacker`.
+   - impact: `target` defaults to `lab-host`.
 
 This is opt-in per module and per scenario step. The runtime never
 auto-injects values into params; modules that don't read
 `previous_step_results` are unaffected. See
-`scenarios/enterprise_intrusion_chain.yaml` for all three worked
-examples (`harvest-browser-creds`, `lateral-to-fileshare`, and
-`exfil-over-c2`).
+`scenarios/enterprise_intrusion_chain.yaml` for all four worked
+examples (`harvest-browser-creds`, `lateral-to-fileshare`,
+`exfil-over-c2`, and `ransomware-impact`).
 
 ## 6. Programmatic usage
 

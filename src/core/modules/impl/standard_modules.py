@@ -1973,21 +1973,35 @@ class ImpactModule(BaseModule):
             requested if requested in _IMPACT_PROFILES else "data_encryption"
         )
         profile = _IMPACT_PROFILES[profile_key]
-        target = str(params.get("target") or "lab-host")
 
-        details = {
+        # Step-to-step propagation (PR #64): impact pairs naturally
+        # with collection / staging steps. The collection module's
+        # artifacts carry ``target`` (the host where data was staged);
+        # an impact step that would simulate destruction / encryption
+        # on that same host can opt in via ``target_from_step``
+        # rather than re-declare the host name. Explicit ``target``
+        # always wins; falling back to the documented module default
+        # (``lab-host``) preserves prior behaviour for callers that
+        # don't opt in.
+        target, target_propagated_from = resolve_target_from_step(
+            params, context, fallback="lab-host"
+        )
+
+        details: Dict[str, Any] = {
             "technique": profile_key,
             "target": target,
             "mitre_technique": profile["mitre"],
             "selection_value": profile["selection_value"],
         }
+        if target_propagated_from:
+            details["target_propagated_from_step"] = target_propagated_from
 
         event = TelemetryEvent(
             event_type=profile["event_type"],
             module=self.name,
             details=details,
         )
-        hints = {
+        hints: Dict[str, Any] = {
             "title": f"{profile['title_prefix']} {target}",
             "logsource": dict(profile["logsource"]),
             "detection": {
@@ -2000,6 +2014,16 @@ class ImpactModule(BaseModule):
         }
         if requested != profile_key:
             hints["unrecognized_impact_technique"] = requested
+        if target_propagated_from:
+            hints["target_propagated_from_step"] = target_propagated_from
+
+        artifacts: Dict[str, Any] = {
+            "technique": profile_key,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+        }
+        if target_propagated_from:
+            artifacts["target_propagated_from_step"] = target_propagated_from
 
         return _result(
             self.name,
@@ -2008,11 +2032,7 @@ class ImpactModule(BaseModule):
             techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={
-                "technique": profile_key,
-                "target": target,
-                "mitre_technique": profile["mitre"],
-            },
+            artifacts=artifacts,
         )
 
 

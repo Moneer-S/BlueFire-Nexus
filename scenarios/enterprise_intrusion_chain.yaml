@@ -136,7 +136,18 @@ steps:
     module: impact
     params:
       technique: data_encryption
-      target: corp-fileshare
+      # Target host is propagated from the upstream
+      # `stage-collected-data` collection step rather than re-
+      # declared. Demonstrates a fourth `previous_step_results`
+      # consumer pair (collection -> impact) on top of:
+      #   - discovery -> credential_access (harvest-browser-creds)
+      #   - credential_access -> lateral_movement (lateral-to-fileshare source)
+      #   - collection -> exfiltration (exfil-over-c2)
+      # The chained semantics are: ransomware impacts the same host
+      # the collection step staged data on, which is the same host
+      # the lateral step pivoted to. Explicit `target:` would
+      # still win if added.
+      target_from_step: stage-collected-data
       network_touch: false
 
 expected_detections:
