@@ -5,6 +5,7 @@ from .backends.openai_compatible import (
     register_default_backends,
 )
 from .copilot import AICopilot
+from .fallback import FallbackChainProvider
 from .legacy_compat import AIProvider, build_provider
 from .mutation import mutate_technique
 from .providers import LLMProvider, OpenAICompatibleProvider, ProviderFactory, TemplateProvider
@@ -20,6 +21,7 @@ register_default_backends()
 __all__ = [
     "AICopilot",
     "AIProvider",
+    "FallbackChainProvider",
     "HTTPResponse",
     "HTTPTransport",
     "LLMProvider",
