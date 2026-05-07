@@ -116,10 +116,22 @@ rather than touching the network or local filesystem.
 #### Example configs per provider target
 
 The OpenAI-compatible HTTP backend already serves these canonical
-names. All of them require setting both `api_base` AND
-`api_key_env` (with the named env var actually populated) before
-any outbound call happens. Each example assumes an explicit
-operator decision; nothing here is a default.
+names. The actual gate before any outbound call is:
+
+1. `modules.ai.enabled: true` (the runtime gate; the backend
+   short-circuits to offline when this is false, regardless of
+   `api_base`).
+2. `modules.ai.api_base` set to a non-empty `http://` or
+   `https://` URL (the transport scheme guard rejects anything
+   else before dispatch).
+
+`api_key_env` is **not** required for an outbound call — local
+servers (Ollama, llama.cpp, LM Studio) typically run without an
+`Authorization` header, so the backend omits the header when the
+resolved key is empty rather than refusing to send. Vendors that
+require auth respond with `401`, which surfaces as a structured
+`ProviderResponse(error="http 401: ...")`. Each example below
+assumes an explicit operator decision; nothing here is a default.
 
 **Generic OpenAI-compatible endpoint** (most flexible):
 

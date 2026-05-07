@@ -135,12 +135,15 @@ def _ok_chat_response(
 
 
 def test_backend_offline_short_circuit_when_api_base_empty() -> None:
+    """Tests the api_base gate. Operator opted in (`enabled=True`)
+    but did not supply an endpoint — backend stays offline."""
     transport = _MockTransport()
     backend = OpenAICompatibleHTTPBackend(
         name="openai_compatible",
         model="m",
         endpoint="",  # nothing configured
         transport=transport,
+        enabled=True,
     )
     response = backend.generate("hello")
     assert isinstance(response, ProviderResponse)
@@ -152,7 +155,9 @@ def test_backend_offline_short_circuit_when_api_base_empty() -> None:
 
 
 def test_backend_offline_short_circuit_keeps_complete_callable() -> None:
-    backend = OpenAICompatibleHTTPBackend(name="openai", model="m", endpoint="")
+    backend = OpenAICompatibleHTTPBackend(
+        name="openai", model="m", endpoint="", enabled=True,
+    )
     # complete() routes through generate(); should NOT raise even
     # without a transport (no transport call happens anyway).
     text = backend.complete("hi")
@@ -172,6 +177,7 @@ def test_backend_appends_chat_completions_path_when_missing() -> None:
         endpoint="http://lab.example/v1",
         api_key="sk-test",
         transport=transport,
+        enabled=True,
     )
     backend.generate("hi")
     assert len(transport.calls) == 1
@@ -186,6 +192,7 @@ def test_backend_honours_explicit_chat_completions_suffix() -> None:
         endpoint="http://lab.example/v1/chat/completions",
         api_key="sk-test",
         transport=transport,
+        enabled=True,
     )
     backend.generate("hi")
     # Suffix not duplicated.
@@ -200,6 +207,7 @@ def test_backend_strips_trailing_slash_on_api_base() -> None:
         endpoint="http://lab.example/v1/",  # trailing slash
         api_key="sk-test",
         transport=transport,
+        enabled=True,
     )
     backend.generate("hi")
     assert transport.calls[0].url == "http://lab.example/v1/chat/completions"
@@ -213,6 +221,7 @@ def test_backend_includes_bearer_when_api_key_set() -> None:
         endpoint="http://lab.example/v1",
         api_key="sk-secret",
         transport=transport,
+        enabled=True,
     )
     backend.generate("hi")
     assert transport.calls[0].headers.get("Authorization") == "Bearer sk-secret"
@@ -227,6 +236,7 @@ def test_backend_omits_authorization_when_api_key_empty() -> None:
         endpoint="http://localhost:11434/v1",
         api_key="",  # explicitly empty
         transport=transport,
+        enabled=True,
     )
     backend.generate("hi")
     assert "Authorization" not in transport.calls[0].headers
@@ -241,6 +251,7 @@ def test_backend_provider_settings_headers_extend_request_headers() -> None:
         api_key="k",
         provider_settings={"headers": {"X-Title": "lab", "X-Trace": "t-1"}},
         transport=transport,
+        enabled=True,
     )
     backend.generate("hi")
     headers = transport.calls[0].headers
@@ -261,6 +272,7 @@ def test_backend_request_body_contains_user_prompt() -> None:
         model="gpt-x",
         endpoint="http://lab.example/v1",
         transport=transport,
+        enabled=True,
     )
     backend.generate("the prompt")
     body = transport.calls[0].body
@@ -275,6 +287,7 @@ def test_backend_request_body_includes_system_when_options_set() -> None:
         model="m",
         endpoint="http://lab.example/v1",
         transport=transport,
+        enabled=True,
     )
     backend.generate("hi", options=ProviderOptions(system="you are a defender"))
     messages = transport.calls[0].body["messages"]
@@ -289,6 +302,7 @@ def test_backend_request_body_includes_context_as_system_message() -> None:
         model="m",
         endpoint="http://lab.example/v1",
         transport=transport,
+        enabled=True,
     )
     backend.generate("question", context=["doc-a snippet", "doc-b snippet"])
     messages = transport.calls[0].body["messages"]
@@ -309,6 +323,7 @@ def test_backend_request_body_omits_max_tokens_temperature_when_unset() -> None:
         transport=transport,
         max_tokens=None,
         temperature=None,
+        enabled=True,
     )
     backend.generate("hi")
     body = transport.calls[0].body
@@ -325,6 +340,7 @@ def test_backend_options_override_instance_defaults() -> None:
         transport=transport,
         max_tokens=128,
         temperature=0.0,
+        enabled=True,
     )
     backend.generate(
         "hi",
@@ -345,6 +361,7 @@ def test_backend_uses_instance_timeout_when_options_omit_it() -> None:
         endpoint="http://lab.example/v1",
         timeout=42,
         transport=transport,
+        enabled=True,
     )
     backend.generate("hi")
     assert transport.calls[0].timeout == 42
@@ -370,6 +387,7 @@ def test_backend_happy_path_returns_text_usage_finish_reason() -> None:
         model="m",
         endpoint="http://lab.example/v1",
         transport=transport,
+        enabled=True,
     )
     response = backend.generate("hi")
     assert response.text == "answer body"
@@ -391,6 +409,7 @@ def test_backend_metadata_includes_response_id_when_present() -> None:
         model="m",
         endpoint="http://lab.example/v1",
         transport=transport,
+        enabled=True,
     )
     response = backend.generate("hi")
     assert response.metadata.get("response_id") == "resp-abc-123"
@@ -408,6 +427,7 @@ def test_backend_non_200_status_surfaces_as_error() -> None:
     )
     backend = OpenAICompatibleHTTPBackend(
         name="openai", model="m", endpoint="http://lab.example/v1", transport=transport,
+        enabled=True,
     )
     response = backend.generate("hi")
     assert response.text == ""
@@ -422,6 +442,7 @@ def test_backend_invalid_json_surfaces_as_error() -> None:
     )
     backend = OpenAICompatibleHTTPBackend(
         name="openai", model="m", endpoint="http://lab.example/v1", transport=transport,
+        enabled=True,
     )
     response = backend.generate("hi")
     assert response.text == ""
@@ -435,6 +456,7 @@ def test_backend_payload_without_choices_surfaces_as_error() -> None:
     )
     backend = OpenAICompatibleHTTPBackend(
         name="openai", model="m", endpoint="http://lab.example/v1", transport=transport,
+        enabled=True,
     )
     response = backend.generate("hi")
     assert response.text == ""
@@ -446,6 +468,7 @@ def test_backend_transport_exception_surfaces_as_error() -> None:
     transport = _MockTransport(raise_on_call=ConnectionError("network is down"))
     backend = OpenAICompatibleHTTPBackend(
         name="openai", model="m", endpoint="http://lab.example/v1", transport=transport,
+        enabled=True,
     )
     response = backend.generate("hi")
     assert response.text == ""

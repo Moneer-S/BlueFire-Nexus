@@ -77,6 +77,15 @@ class OpenAICompatibleHTTPBackend:
     timeout: int = 30
     max_tokens: Optional[int] = None
     temperature: Optional[float] = None
+    enabled: bool = False
+    """Mirrors ``modules.ai.enabled``. When ``False``, the backend
+    short-circuits to an offline response BEFORE issuing any HTTP
+    call. The factory passes the resolved value at construction
+    time, so a config with ``enabled: false`` but ``provider:
+    openai`` + ``api_base`` set never triggers outbound traffic.
+    Default is ``False`` to match the local-first baseline; any
+    caller that builds the backend by hand for a real outbound call
+    must opt in explicitly."""
     transport: HTTPTransport = field(default_factory=UrllibTransport)
 
     # ------------------------------------------------------------------
@@ -93,9 +102,24 @@ class OpenAICompatibleHTTPBackend:
         context: list[str] | None = None,
         options: ProviderOptions | None = None,
     ) -> ProviderResponse:
-        # Local-first short-circuit. An empty `api_base` means the
-        # operator selected this backend's name but did not supply
-        # an endpoint — treat as "not configured" and stay offline.
+        # Local-first gate #1: when the AI module is disabled at the
+        # config layer (`modules.ai.enabled: false`), the backend
+        # MUST NOT issue any outbound request even if `api_base` is
+        # configured. Closes the Codex P1 from PR #54: the prior
+        # version only checked `api_base`, so a config that intended
+        # to keep AI off but had api_base set as a placeholder would
+        # silently leak prompts to the network on any caller that
+        # bypassed the copilot's enabled check.
+        if not self.enabled:
+            return self._offline_response(
+                error=(
+                    "AI module is disabled (modules.ai.enabled=false); "
+                    "backend stays offline"
+                ),
+            )
+        # Local-first gate #2: an empty `api_base` means the operator
+        # selected this backend's name but did not supply an endpoint —
+        # treat as "not configured" and stay offline.
         if not self.endpoint:
             return self._offline_response(
                 error="api_base not configured; backend stays offline",
@@ -197,15 +221,21 @@ class OpenAICompatibleHTTPBackend:
         }
 
         # Per-call options take precedence over instance defaults.
+        # Closes Codex P2 from PR #54: ``ProviderOptions`` documents
+        # ``None`` as the "use default" sentinel, so an explicit
+        # ``max_tokens=0`` (or any non-None value) MUST be honoured —
+        # not dropped via a truthy check.
         max_tokens = (
-            options.max_tokens if options and options.max_tokens else self.max_tokens
+            options.max_tokens
+            if options is not None and options.max_tokens is not None
+            else self.max_tokens
         )
         if max_tokens is not None:
             body["max_tokens"] = int(max_tokens)
 
         temperature = (
             options.temperature
-            if options and options.temperature is not None
+            if options is not None and options.temperature is not None
             else self.temperature
         )
         if temperature is not None:
@@ -214,7 +244,11 @@ class OpenAICompatibleHTTPBackend:
         return body
 
     def _resolve_timeout(self, options: ProviderOptions | None) -> int:
-        if options is not None and options.timeout:
+        # Same is-not-None discipline as max_tokens / temperature so an
+        # explicit per-call ``timeout=0`` (the legitimate "no timeout"
+        # / "very short" sentinel) reaches the transport instead of
+        # silently falling back to the instance default.
+        if options is not None and options.timeout is not None:
             return int(options.timeout)
         return int(self.timeout)
 
@@ -327,6 +361,7 @@ def _backend_factory(
         timeout=timeout,
         max_tokens=max_tokens,
         temperature=temperature,
+        enabled=bool(ai_config.get("enabled", False)),
     )
 
 
