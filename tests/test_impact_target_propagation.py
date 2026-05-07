@@ -258,21 +258,19 @@ def test_enterprise_intrusion_chain_impact_step_picks_up_collection_target(
     ransomware-impact step will fail this test and surface the
     regression at the scenario level rather than only at the
     module-level test above.
-    """
-    config = ConfigManager().to_dict()
-    nexus = BlueFireNexus.__new__(BlueFireNexus)
-    nexus.__init__()  # type: ignore[misc]
-    # Pin output root inside the test temp dir so the scenario
-    # writes do not pollute the project ``output/`` tree. Mirrors
-    # the convention used by other end-to-end propagation tests.
-    nexus.config = dict(config)
-    nexus.config.setdefault("general", {})["output_root"] = str(tmp_path)
-    nexus.config_manager.set("general.output_root", str(tmp_path))
 
-    summary = nexus.run_scenario_file(
-        "scenarios/enterprise_intrusion_chain.yaml",
-        run_id="impact-prop-e2e",
-    )
+    Mirrors the construction pattern used by
+    ``test_lateral_movement_source_propagation.py``'s end-to-end
+    test (writes a temp config, instantiates ``BlueFireNexus`` from
+    that path) so output is scoped to ``tmp_path``.
+    """
+    cfg_path = tmp_path / "config.yaml"
+    cfg = ConfigManager(str(cfg_path))
+    cfg.set("general.output_root", str(tmp_path / "output"))
+    cfg.save()
+    nexus = BlueFireNexus(str(cfg_path))
+
+    summary = nexus.run_scenario_file("scenarios/enterprise_intrusion_chain.yaml")
     assert summary["status"] in {"success", "partial_success"}
 
     impact_step = next(
