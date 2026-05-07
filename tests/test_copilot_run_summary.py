@@ -142,6 +142,62 @@ def test_summarise_run_state_aggregates_detection_hints_safely() -> None:
     assert summary["detection_hint_count"] == 3
 
 
+def test_summarise_run_state_sums_detection_summary_across_steps() -> None:
+    """Cross-step detection_summary entries are summed, not maxed.
+
+    Closes the P2 from PR #62 sweep: an earlier version took
+    ``max(running_total, len(single_entry))`` against
+    ``detection_summary``, which underrepresented coverage when
+    many small per-step entries existed. Now the cumulative sum
+    across all steps is used so the prompt block reflects the full
+    rendered draft count.
+
+    Concretely, a 3-step scenario with 2 drafts each should report
+    6 hints when only ``detection_summary`` is populated — not 2
+    (max single-step) or 0 (the previous max-vs-zero short-circuit
+    when the running total was 0).
+    """
+    detection_summary = {
+        "step-a": {"sigma": "path-a.yml", "yara_l": "path-b.yaral"},
+        "step-b": {"sigma": "path-c.yml", "spl": "path-d.spl"},
+        "step-c": {"sigma": "path-e.yml", "yara_l": "path-f.yaral"},
+    }
+    summary = summarise_run_state(
+        run_id="r-1",
+        # No module_results means detection_hints starts at 0.
+        detection_summary=detection_summary,
+    )
+    # 2 + 2 + 2 = 6 distinct (step, kind) pairs.
+    assert summary["detection_hint_count"] == 6
+
+
+def test_summarise_run_state_takes_max_of_hint_and_summary_sources() -> None:
+    """When both signals are present, the larger total wins.
+
+    Modules can emit hints the report-renderer filters; the
+    renderer can include drafts the modules did not surface via
+    ``detection_hints``. Picking the larger of the two cumulative
+    counts avoids both kinds of undercount.
+    """
+    module_results = {
+        "step": _FakeResult(
+            status="success",
+            # Two hints from module side.
+            detection_hints={"sigma": ["a"], "yara_l": ["b"]},
+        ),
+    }
+    detection_summary = {
+        "step": {"sigma": "x", "yara_l": "y", "spl": "z"},  # 3 from renderer
+    }
+    summary = summarise_run_state(
+        run_id="r-1",
+        module_results=module_results,
+        detection_summary=detection_summary,
+    )
+    # Renderer's 3 wins over the module-side 2.
+    assert summary["detection_hint_count"] == 3
+
+
 def test_summarise_run_state_caps_technique_list_size() -> None:
     """A noisy module cannot dominate the prompt with hundreds of techniques.
 

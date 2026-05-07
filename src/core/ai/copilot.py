@@ -199,14 +199,21 @@ def summarise_run_state(
 
     if detection_summary:
         # ``detection_summary`` is a dict[step_key, dict[detection_kind, path]].
-        # Count distinct detection drafts (one per step+kind pair) so the
-        # prompt sees actual coverage rather than relying on each module's
-        # internal ``detection_hints``. This ensures the summary still
-        # reflects reality when modules emit hints but the report-renderer
-        # filters them.
-        for entry in detection_summary.values():
-            if isinstance(entry, Mapping):
-                detection_hint_count = max(detection_hint_count, len(entry))
+        # Count distinct detection drafts across every step + kind pair so
+        # the summary reflects actual report-rendered coverage, not just
+        # the largest single-step entry. Use ``max(running_total,
+        # cumulative_entries)`` against the running ``detection_hint_count``
+        # because either source can underrepresent the truth: modules can
+        # emit hints that the report-renderer filters, and the
+        # report-renderer can include drafts the modules did not surface
+        # via ``detection_hints``. Taking the larger of the two cumulative
+        # sums avoids both kinds of undercount.
+        cumulative_entries = sum(
+            len(entry)
+            for entry in detection_summary.values()
+            if isinstance(entry, Mapping)
+        )
+        detection_hint_count = max(detection_hint_count, cumulative_entries)
 
     successful_steps = statuses.get("success", 0)
     failed_steps = sum(
