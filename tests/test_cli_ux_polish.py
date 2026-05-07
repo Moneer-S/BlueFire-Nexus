@@ -27,12 +27,24 @@ Pinned invariants from the demo-readiness CLI-polish PR:
 
 6. **Existing CLI tests still pass.** No behaviour regression
    in command resolution, exit codes, or table content.
+
+Help-text checks invoke the CLI as a subprocess (via
+``python -m src.core.cli``) rather than through Typer's
+in-process ``CliRunner`` because rich's help formatter line-
+wraps differently when stdout is not a real tty: the in-
+process runner captures truncated output that hides the
+docstring body. The subprocess form lets us pin a wide
+``COLUMNS`` and observe the same help text an operator would
+see in their terminal.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +52,36 @@ import pytest
 from typer.testing import CliRunner
 
 from src.core.cli import app
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# Pattern that matches ANSI CSI sequences (colors, bold, etc.) so
+# tests can search the visible text without worrying about
+# escape codes injected by rich's help formatter.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def _help_text(command: str) -> str:
+    """Render ``--help`` for a command via subprocess + return ANSI-stripped text.
+
+    Uses a wide COLUMNS so rich does not wrap the docstring body
+    out of the visible region.
+    """
+    completed = subprocess.run(
+        [sys.executable, "-m", "src.core.cli", command, "--help"],
+        cwd=str(_PROJECT_ROOT),
+        env={**os.environ, "COLUMNS": "240", "TERM": "dumb", "NO_COLOR": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return _strip_ansi(completed.stdout + completed.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -252,20 +294,23 @@ def test_build_report_view_missing_manifest_error_suggests_running_scenario(
     "command",
     ["list-runs", "latest-run", "show-run", "build-report-view"],
 )
-def test_viewer_cli_help_contains_examples_section(
-    cli_runner: CliRunner, command: str
-) -> None:
-    """``--help`` for every viewer command shows at least one example."""
-    result = cli_runner.invoke(app, [command, "--help"], env={"COLUMNS": "200"})
-    assert result.exit_code == 0
-    body = result.stdout
+def test_viewer_cli_help_contains_examples_section(command: str) -> None:
+    """``--help`` for every viewer command shows at least one example.
+
+    Uses subprocess + wide COLUMNS + NO_COLOR so rich's help
+    formatter renders the full docstring without truncation.
+    """
+    body = _help_text(command)
     # Every viewer command's docstring includes the literal
     # "Examples:" header so ``--help`` rendering picks it up.
-    assert "Examples:" in body or "examples:" in body.lower()
+    assert "Examples:" in body or "examples:" in body.lower(), body[:500]
     # And at least one full ``python -m`` invocation appears in
     # the help output. (Typer wraps the docstring in the help
     # body so the example line surfaces verbatim.)
-    assert "python -m src.core.cli" in body or "python -m src.run_scenario" in body
+    assert (
+        "python -m src.core.cli" in body
+        or "python -m src.run_scenario" in body
+    ), body[:500]
 
 
 # ---------------------------------------------------------------------------
