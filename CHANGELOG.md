@@ -1,225 +1,86 @@
 # Changelog
 
-All notable changes to BlueFire-Nexus will be documented in this file.
+All notable changes to BlueFire-Nexus are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2024-03-20
+The detailed merged-PR history lives in
+[`docs/reports/next_roadmap.md`](docs/reports/next_roadmap.md).
+This file summarises the deltas at the version-tag granularity.
+
+## [Unreleased]
+
+This section captures changes since the last tagged release.
 
 ### Added
-- Initial release of BlueFire-Nexus
-- Core platform functionality
-- All major APT modules:
-  - Command and Control
-  - Initial Access
-  - Defense Evasion
-  - Anti-Detection
-  - Discovery
-  - Intelligence
-  - Network Obfuscation
-  - Resource Development
-  - Reconnaissance
-  - Exfiltration
-  - Persistence
-- Comprehensive documentation
-- Security features and policies
-- Development guidelines
-- Testing framework
-- Configuration system
-- Logging system
-- Monitoring capabilities
-- MITRE ATT&CK technique mapping
 
-### Features
-- **Command and Control Module**
-  - Proxy-based communication
-  - Protocol tunneling
-  - Encrypted channels
-  - Stealth mechanisms
+- **Local report viewer.** Every run now writes
+  `output/<run_id>/manifest.json` (machine-readable index of
+  every artifact) and `output/<run_id>/index.html` (a static,
+  fully self-contained dashboard — no JavaScript, no external
+  assets, no network calls). Viewer renders the scenario
+  timeline, propagation graph, ATT&CK coverage, telemetry
+  counts, detection drafts, risk summary, and AI provider
+  attribution.
+- **CLI commands for runs.** `list-runs`, `latest-run`,
+  `show-run`, `build-report-view`, and `validate-run` round
+  out the local-only workflow. None starts a server or
+  auto-opens a browser.
+- **Provider-agnostic AI layer.** `template` (offline default),
+  `openai_compatible`, `openai`, `anthropic`, `gemini`, `grok`,
+  `ollama`, `llama.cpp`, and `lm-studio` all route through a
+  shared `ProviderFactory`. Anthropic and Gemini have
+  vendor-specific adapters; the rest use the shared
+  OpenAI-compatible HTTP backend. Default is offline /
+  template — no API keys required.
+- **Step-to-step propagation.** Four consumer pairs are
+  demonstrated end-to-end in `enterprise_intrusion_chain`:
+  `discovery → credential_access`,
+  `credential_access → lateral_movement` (source axis),
+  `collection → exfiltration`, and `collection → impact`.
+- **Cross-cutting simple-mode presets.** `local_safe`,
+  `lab_legacy_enabled`, `ai_enabled`, `ai_disabled`, and
+  `strict_local` (loopback-only safety gates).
 
-- **Initial Access Module**
-  - Phishing campaigns
-  - Exploitation techniques
-  - Social engineering
-  - Zero-day capabilities
+### Changed
 
-- **Defense Evasion Module**
-  - Process evasion
-  - File evasion
-  - Network evasion
-  - Anti-detection mechanisms
-
-- **Anti-Detection Module**
-  - Process hiding
-  - Memory manipulation
-  - Anti-forensics
-  - Stealth techniques
-
-- **Discovery Module**
-  - Network scanning
-  - Service enumeration
-  - System reconnaissance
-  - Asset discovery
-
-- **Intelligence Module**
-  - APT intelligence gathering
-  - Threat intelligence
-  - Target profiling
-  - Infrastructure mapping
-
-- **Network Obfuscation Module**
-  - Traffic obfuscation
-  - Protocol manipulation
-  - Encryption
-  - Anti-detection
-
-- **Resource Development Module**
-  - Infrastructure setup
-  - Capability development
-  - Tool development
-  - Resource acquisition
-
-- **Reconnaissance Module**
-  - Active reconnaissance
-  - Passive reconnaissance
-  - Target profiling
-  - Infrastructure mapping
-
-- **Exfiltration Module**
-  - Data transfer
-  - Protocol exfiltration
-  - Stealth mechanisms
-  - Encryption
-
-- **Persistence Module**
-  - DHCP manipulation
-  - Proxy persistence
-  - System persistence
-  - Network persistence
+- `--output-json` now produces JSON-only stdout so the README
+  quickstart command pipes cleanly into `jq`. Advisory rich
+  output routes to stderr.
+- README quickstart is now a four-step end-to-end walkthrough
+  (clone+install / run / inspect / open) with platform
+  variants for `open` / `xdg-open` / `start`.
+- Static viewer renders risk summary above the scenario
+  timeline; per-module severity badges use the same colour
+  palette as the status badges; timeline carries a `notes`
+  column for non-success rows.
+- `find_run_dir` and `validate_run_bundle` reject path-shaped
+  run ids and out-of-bundle hrefs respectively, so neither
+  command can read or write outside the configured output
+  root.
 
 ### Security
-- Advanced encryption mechanisms
-- Stealth and anti-detection capabilities
-- Comprehensive logging
-- Error handling and recovery
-- Rate limiting and throttling
-- Anti-forensics capabilities
-- Security best practices
-- Compliance features
 
-### Documentation
-- Comprehensive README
-- API documentation
-- Module documentation
-- Security policy
-- Development guide
-- Configuration guide
-- Testing guide
-- Troubleshooting guide
+- Default `dry_run: true` enforced by registry-wide tests
+  (`tests/test_module_safety.py`). No module invokes
+  `subprocess` / `socket` / `requests` / `urllib` while
+  `dry_run` is on.
+- No SIEM exporters or remote observability anywhere on the
+  active path. Legacy `telemetry.sinks` config entries naming
+  removed remote types are warn-and-ignored at load time.
+- Provider calls require explicit `modules.ai.enabled: true`
+  plus an operator-supplied endpoint (and, for vendor-specific
+  backends, a credential resolved from an environment variable).
+- AI keys are read from environment variables only; never
+  bundled, never written to disk.
 
-### Development
-- Code style guidelines
-- Testing framework
-- Documentation system
-- Development tools
-- CI/CD pipeline
-- Release process
-- Contributing guidelines
+## [1.0.0] - 2024-03-20
 
-### Testing
-- Unit tests
-- Integration tests
-- Security tests
-- Performance tests
-- Documentation tests
-- Code coverage reporting
-- Test automation
-
-### Configuration
-- YAML-based configuration
-- Environment variables
-- Command-line options
-- Runtime configuration
-- Default settings
-- Custom settings
-
-### Monitoring
-- Activity monitoring
-- Performance monitoring
-- Security monitoring
-- Resource monitoring
-- Alert system
-- Logging system
-- Metrics collection
-
-### Dependencies
-- Core dependencies
-- Security dependencies
-- Testing dependencies
-- Documentation dependencies
-- Development dependencies
-- Optional dependencies
+Initial public release. Module framework, scenario runtime,
+local telemetry, ATT&CK-mapped detection drafts, purple-team
+reports, and gated legacy capability packs.
 
 ## [0.1.0] - 2024-03-01
 
-### Added
-- Initial development version
-- Basic project structure
-- Core module framework
-- Basic documentation
-- Development environment setup
-
-### Changed
-- Project structure improvements
-- Documentation updates
-- Code organization
-- Development workflow
-
-### Fixed
-- Initial bugs
-- Documentation issues
-- Code style issues
-- Development environment issues
-
-### Security
-- Initial security features
-- Basic encryption
-- Basic logging
-- Basic error handling
-
-### Documentation
-- Initial README
-- Basic API documentation
-- Basic module documentation
-- Basic development guide
-
-### Development
-- Initial development setup
-- Basic testing framework
-- Basic documentation system
-- Basic development tools
-
-### Testing
-- Initial test suite
-- Basic test framework
-- Basic test coverage
-- Basic test automation
-
-### Configuration
-- Initial configuration system
-- Basic settings
-- Basic environment variables
-- Basic command-line options
-
-### Monitoring
-- Initial monitoring system
-- Basic logging
-- Basic metrics
-- Basic alerts
-
-### Dependencies
-- Initial dependencies
-- Basic security packages
-- Basic testing packages
-- Basic documentation packages 
+Initial development release.

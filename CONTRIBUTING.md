@@ -1,202 +1,161 @@
 # Contributing to BlueFire-Nexus
 
-Thank you for your interest in contributing to BlueFire-Nexus! This document provides guidelines and instructions for contributing to the project.
+Thank you for your interest in contributing. This document covers
+the local development loop, the test gates every PR has to pass,
+and the code-style choices the project enforces.
+
+If you are reporting a security issue, please follow
+[`SECURITY.md`](SECURITY.md) instead — do not open a public issue.
 
 ## Code of Conduct
 
-By participating in this project, you agree to abide by our Code of Conduct. Please read it before contributing.
+By participating you agree to abide by
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
-## Development Setup
+## Development setup
 
-1. Fork the repository
-2. Clone your fork:
-   ```bash
-   git clone https://github.com/your-username/BlueFire-Nexus.git
-   ```
-3. Create a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-4. Install development dependencies:
-   ```bash
-   pip install -r requirements-dev.txt
-   ```
-
-## Development Guidelines
-
-### Code Style
-
-We follow PEP 8 guidelines and use Black for code formatting. Before submitting a pull request:
-
-1. Format your code:
-   ```bash
-   black src/
-   ```
-
-2. Check for style issues:
-   ```bash
-   flake8 src/
-   ```
-
-3. Type checking:
-   ```bash
-   mypy src/
-   ```
-
-### Testing
-
-We use pytest for testing. Before submitting a pull request:
-
-1. Run tests:
-   ```bash
-   pytest
-   ```
-
-2. Check test coverage:
-   ```bash
-   pytest --cov=src tests/
-   ```
-
-### Documentation
-
-We use Sphinx for documentation. When adding new features:
-
-1. Update relevant documentation files
-2. Add docstrings to new functions and classes
-3. Build documentation:
-   ```bash
-   cd docs
-   make html
-   ```
-
-## Pull Request Process
-
-1. Create a new branch for your feature:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-2. Make your changes and commit them:
-   ```bash
-   git add .
-   git commit -m "Description of your changes"
-   ```
-
-3. Push to your fork:
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-
-4. Create a Pull Request
-
-### Pull Request Guidelines
-
-1. Use a clear and descriptive title
-2. Provide a detailed description of your changes
-3. Include any relevant issue numbers
-4. Add tests for new features
-5. Update documentation as needed
-6. Ensure all tests pass
-7. Follow the code style guidelines
-
-## Module Development
-
-### Adding New Modules
-
-1. Create a new module directory in `src/core/`
-2. Create the module class file
-3. Implement required handlers
-4. Add tests
-5. Update documentation
-6. Add configuration options
-
-### Module Structure
-
-```python
-from typing import Dict, Any
-from datetime import datetime
-import logging
-
-class NewModule:
-    """Module description."""
-    
-    def __init__(self):
-        """Initialize the module."""
-        self.logger = logging.getLogger(__name__)
-        
-    def _handle_operation(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle specific operation."""
-        try:
-            # Implementation
-            pass
-        except Exception as e:
-            self._log_error(f"Error in operation: {str(e)}")
-            return {"status": "error", "message": str(e)}
+```bash
+git clone https://github.com/<your-fork>/BlueFire-Nexus.git
+cd BlueFire-Nexus
+python -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements-dev.txt
+pip install -e .
+cp .env.example .env
 ```
 
-## Security Considerations
+Run the canonical scenario to verify the install:
 
-1. Follow security best practices
-2. Implement proper error handling
-3. Use secure coding practices
-4. Add security tests
-5. Document security features
-6. Consider edge cases
+```bash
+python -m src.run_scenario --profile apt29_credential_access --output-json
+```
 
-## Testing Guidelines
+Output lands under `output/<run_id>/`; open `index.html` with
+`file://` to see the static dashboard.
 
-### Unit Tests
+## CI gates
 
-1. Test each function independently
-2. Use meaningful test names
-3. Test edge cases
-4. Mock external dependencies
-5. Use fixtures for common setup
+Every PR must pass these locally before review:
 
-### Integration Tests
+```bash
+python -m pytest tests/                  # 1300+ tests, ~3 min wallclock
+python -m bandit -r src -ll              # 0 medium / 0 high
+python -m compileall -q src tests        # clean
 
-1. Test module interactions
-2. Test configuration loading
-3. Test error handling
-4. Test security features
-5. Test performance
+# Lint + format
+ruff check src tests
+black --check src tests
+```
 
-## Documentation Guidelines
+Type-checking with `mypy` is configured in `pyproject.toml` but
+not yet a CI gate; running it locally is encouraged when changing
+public interfaces.
 
-### Code Documentation
+## Code style
 
-1. Use clear and concise docstrings
-2. Document parameters and return values
-3. Include examples where appropriate
-4. Document exceptions
-5. Follow Google style guide
+- **Formatter:** `black` (line length 100).
+- **Linter:** `ruff` (rules `E`, `F`, `I`, `W`, `B`).
+- **Comments / docstrings:** focus on *why* and on subtle
+  invariants. Don't restate what well-named identifiers already
+  say.
+- **No mass-formatting commits.** Reformat as part of the
+  change you are making.
+- **Bandit:** dual-use offensive code paths carry narrow
+  per-line `# nosec BXXX — <reason>` justifications. New
+  unjustified findings will fail review.
 
-### API Documentation
+## Testing
 
-1. Document all public methods
-2. Include usage examples
-3. Document configuration options
-4. Include security considerations
-5. Document error handling
+- New behaviour must come with tests. Pin invariants, not
+  implementation details.
+- Tests must not require network access, real API keys, or
+  external services. Provider tests use mocked HTTP transports.
+- Tests must not pollute the project's `output/` directory.
+  The pytest conftest scopes runs to a session tmp dir via
+  `BLUEFIRE_OUTPUT_ROOT`.
+- Three registry-wide tests run on every module:
+  - [`tests/test_module_contract.py`](tests/test_module_contract.py)
+    — every module returns a conformant `ModuleResult`.
+  - [`tests/test_module_safety.py`](tests/test_module_safety.py)
+    — no module invokes `subprocess` / `socket` / `requests` /
+    `urllib` while `dry_run=True`.
+  - [`tests/test_module_artifact_paths.py`](tests/test_module_artifact_paths.py)
+    — every module writes only under `context["output_dir"]`.
 
-## Release Process
+## Pull request workflow
 
-1. Update version number
-2. Update changelog
-3. Run tests
-4. Build documentation
-5. Create release tag
-6. Build distribution
-7. Deploy to PyPI
+```bash
+git checkout -b feat/<short-name>
+# ... commits ...
+git push -u origin feat/<short-name>
+gh pr create --title "..." --body "..."
+```
 
-## Getting Help
+PR guidelines:
 
-- Join our Discord server
-- Check the documentation
-- Open an issue
-- Contact the maintainers
+- One coherent change per PR. Easier to review, easier to revert.
+- Title format: `feat(<area>): ...`, `fix(<area>): ...`,
+  `chore: ...`, `docs: ...`, `test(<area>): ...`.
+- Update the relevant `docs/reports/*.md` snapshot if the change
+  shifts a documented invariant.
+- Don't touch `CHANGELOG.md` — it is updated at release-tag time.
+- Don't commit `.local/`, `.claude/`, or any private process
+  notes.
+
+## Adding a new standard module
+
+The standard module set lives in
+[`src/core/modules/impl/standard_modules.py`](src/core/modules/impl/standard_modules.py).
+A new module needs:
+
+1. A class subclassing `BaseModule` with a unique `name`,
+   advertised `attack_techniques`, and an `execute(params,
+   context)` returning a `ModuleResult`.
+2. A profile catalogue entry mapping operator-facing values to
+   MITRE techniques, logsources, and detection-selection fields.
+3. Registry entry in `src/core/modules/registry.py`.
+4. Per-module tests covering the technique surface, telemetry
+   shape, and detection-hint shape.
+5. Entry in [`docs/reports/capability_inventory.md`](docs/reports/capability_inventory.md).
+
+## Adding a new legacy adapter
+
+Mirror the pattern in
+[`src/core/modules/impl/legacy_packs.py`](src/core/modules/impl/legacy_packs.py):
+gate via `evaluate_legacy_capability` + `_ensure_allowed`, route
+through `safe_call`, and ship simulate-mode tradecraft notes that
+are meaningfully richer than the standard module's profile.
+
+Add a parametrised test file matching the sibling adapter style
+(`test_legacy_<tactic>.py`).
+
+## Release process
+
+Maintainers tag a release after an end-of-phase milestone:
+
+1. Refresh the `## [Unreleased]` section in `CHANGELOG.md` and
+   move it under a new `## [x.y.z] - YYYY-MM-DD` header.
+2. Bump `version` in `pyproject.toml`.
+3. `git tag vX.Y.Z` + push.
+4. GitHub Actions workflows run on the tag.
+
+External tooling (Sphinx docs, PyPI publish, Discord server
+links) referenced in older versions of this document is not
+currently set up; remove that expectation if you encountered it.
+
+## Getting help
+
+- Check [`docs/USAGE_GUIDELINES.md`](docs/USAGE_GUIDELINES.md)
+  first — it covers the operator-facing CLI surface.
+- Architecture, mode model, and the `ModuleResult` contract live
+  in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+- Reports under `docs/reports/` cover capability inventory,
+  scenario coverage, AI layer, and the project roadmap.
+- Open a GitHub issue for bugs and questions; use a security
+  advisory for security-sensitive reports.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the project's MIT License. 
+By contributing, you agree that your contributions will be
+licensed under the project's [MIT License](LICENSE).

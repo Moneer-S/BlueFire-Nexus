@@ -421,6 +421,13 @@ python -m src.core.cli legacy-apply-preset full-simulate --config config.yaml --
 
 # Inspect a previous run
 python -m src.core.cli show-risk-summary output/<run-id>/risk_summary.json --top 10
+
+# Static viewer + run discovery (covered in detail in section 7).
+python -m src.core.cli list-runs
+python -m src.core.cli latest-run
+python -m src.core.cli show-run <run-id>
+python -m src.core.cli build-report-view <run-id>
+python -m src.core.cli validate-run <run-id>
 ```
 
 Preset shorthand mappings (accepted by both `legacy-apply-preset` and `--legacy-preset`):
@@ -438,8 +445,9 @@ Aliases: `simulate-all` → `full-simulate`, `actor-sim` → `actor-simulate`, e
 
 ## 5. Legacy capability packs
 
-Three opt-in research packs preserve the offensive code paths. All ship
-**disabled by default**.
+Four opt-in research packs preserve the offensive code paths
+(`actor_pack`, `c2_pack`, `stealth_pack`, `tactic_pack`). All
+ship **disabled by default**.
 
 ### Master (global) lab toggle
 

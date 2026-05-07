@@ -1,61 +1,64 @@
 # BlueFire Nexus
 
-[![tests](https://img.shields.io/badge/tests-pytest-blue)](#development--tests)
+[![tests](https://img.shields.io/badge/tests-1376%20passed-blue)](#development--tests)
 [![security](https://img.shields.io/badge/security-bandit%20strict-green)](#development--tests)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](#quickstart)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
-> **BlueFire Nexus is a high-fidelity, AI-augmented adversary-emulation and purple-team research framework for modeling offensive tradecraft, generating local defensive artifacts, and validating detection logic in controlled environments.**
+> **A local-first adversary-emulation framework for purple-team validation. Every run produces structured telemetry, ATT&CK-mapped detection drafts, a risk summary, and a static HTML dashboard — without making a single network call.**
 
-It is built around four ideas that most security tooling treats as separate concerns:
+BlueFire Nexus runs ATT&CK-aligned scenarios end-to-end on a single machine. Each run lands a complete artifact bundle under `output/<run_id>/`: a JSON manifest, a self-contained `index.html` dashboard, structured telemetry, Sigma / YARA-L / SPL detection drafts, a risk summary, and (optional) AI-augmented narratives. Open `index.html` with `file://` and you get the full picture — no server, no SaaS, no telemetry shipped off the box.
 
-- **Offensive tradecraft realism.** Actor-inspired chains (APT29 / APT28 / APT32 / APT38 / APT41), C2 protocol research (DNS tunneling, TLS fast-flux, QUIC, RPC), stealth/evasion research, and exfiltration modeling — preserved, gated, and testable rather than sanitised away.
-- **Local defensive artifacts.** Every run writes structured telemetry, ATT&CK-mapped detection drafts (Sigma + YARA-L + SPL), purple-team reports, and a risk summary to the run output directory. Local-first by design; no external integrations required.
-- **AI-assisted operator analysis.** Optional copilot narratives and detection suggestions, with a deterministic offline fallback so the framework never requires an API key to function.
-- **Safe-by-default lab controls.** Dry-run on by default, lab confirmation required for live emulation, allowed-subnet and runtime caps, destructive-operation acknowledgments, registry-wide tests that prove no module can leak side effects in dry-run.
+The framework is **dual-use by design**: it preserves realistic offensive tradecraft (APT actor packs, C2 protocol research, stealth and evasion research) but gates that capability behind explicit configuration, lab confirmation, and registry-wide safety tests. The defaults are conservative (`dry_run=True`, all advanced packs disabled, AI offline). Anything that could plausibly leave the box requires an opt-in flag the operator types themselves.
+
+This repository is intended for **authorised purple-team work, detection-engineering research, and security education**. See [§ Limitations & scope](#limitations--scope) below for what it is *not*.
 
 ---
 
-## Why it exists
+## Why this exists
 
-Adversary-emulation tooling tends to fall into one of three traps:
+Most adversary-emulation tools land in one of three failure modes:
 
-- **Sanitised compliance simulators** that produce green dashboards but no realistic offensive telemetry.
-- **Fragmented script collections** that have offensive realism but no orchestration, no telemetry contract, and no safety story.
-- **Unsafe operator suites** that have realism and orchestration but no gating, no defensive output, and no clean way to run them in a controlled environment.
+- **Compliance simulators** with green dashboards and no realistic offensive telemetry.
+- **Fragmented script collections** with realism but no orchestration, no telemetry contract, and no safety story.
+- **Unsafe operator suites** with realism and orchestration but no gating, no defensive output, and no way to run them in a controlled environment.
 
 BlueFire Nexus tries to bridge these:
 
-- Offensive operator realism — preserved in legacy capability packs and modelled in standard modules.
-- Defensive validation — every run produces detection drafts and a risk summary that a SOC analyst can actually consume.
-- AI-assisted analysis — copilot artifacts that work offline by default and can be wired to a real provider per operator preference.
-- Structured local outputs — predictable artifact paths under `output/<run_id>/`.
-- Controlled lab execution — explicit `simulate` / `emulate` / `lab` modes; nothing dangerous happens unless the operator says so.
+- **Offensive realism, preserved.** Per-actor APT adapters, C2 protocol research, stealth and credential-access tradecraft — kept in tree, behind explicit gates.
+- **Defensive output, every run.** Sigma / YARA-L / SPL drafts, ATT&CK coverage maps, risk summary — readable by a SOC analyst, not a spreadsheet.
+- **Local-first.** No SIEM connectors, no remote observability, no required cloud account. Air-gapped use is supported by default.
+- **Reproducible.** Predictable artifact paths, a manifest schema, and a static dashboard that bytes the same output for the same input.
+- **Gated, not sanitised.** Dangerous behaviour ships disabled. The "scary" code paths are still in the repo so detection engineers can study them — but you have to choose to run them.
 
 ---
 
 ## What it does
 
 - **Adversary-emulation runtime** orchestrating ATT&CK-aligned scenarios from YAML.
-- **Module registry** with a single ModuleResult contract enforced by registry-wide tests.
-- **Actor / C2 / stealth legacy research packs** wired through gated adapters.
+- **Module registry** with a single `ModuleResult` contract enforced by three registry-wide tests (contract / safety / artifact-path).
+- **Step-to-step propagation.** Downstream modules can opt into reading prior steps' artifacts so chains feel like real intrusions, not isolated technique callouts.
+- **Actor / C2 / stealth / tactic legacy research packs**, each wired through gated adapters.
 - **Local telemetry** as JSON Lines per run.
-- **Detection draft generation** for Sigma rules, YARA-L rules, and Splunk SPL searches.
+- **Detection draft generation** for Sigma, YARA-L, and Splunk SPL rule files.
 - **Reports + risk summary** in Markdown and JSON.
-- **AI / copilot layer** with offline template fallback and a scaffold for provider-backed runs.
-- **Safety / mode controls** (`dry_run`, `simulate`, `emulate`, `lab` confirmation, allowed subnets, max runtime).
-- **Mutation engine** for parameter variant generation (`--mutate <strategy>` on `python -m src.run_scenario`; strategies include `low_noise`, `evasion-lite`, `protocol_shift`).
+- **Static HTML dashboard** per run — no JS, no external assets, no network. Open with `file://`.
+- **Run manifest** (`manifest.json`) — machine-readable index of every artifact for downstream tooling.
+- **AI / copilot layer** with deterministic offline template fallback. Optional remote providers (OpenAI, Anthropic, Gemini, Grok, Ollama, llama.cpp, LM Studio) are equal opt-in targets; nothing is privileged as the default.
+- **Safety / mode controls** (`dry_run`, `simulate`, `emulate`, `lab_confirmation`, allowed subnets, max runtime).
+- **Mutation engine** for parameter variants (`--mutate <strategy>` on `python -m src.run_scenario`).
+- **CLI helpers** for working with prior runs: `list-runs`, `latest-run`, `show-run`, `build-report-view`, `validate-run`.
 
 ---
 
 ## Current baseline
 
-- **Local-first.** Telemetry, reports, detections, and copilot artifacts all land under `output/<run_id>/`.
-- **No outbound SIEM exporters in the baseline.** Splunk HEC / OpenSearch / Elasticsearch / NGSIEM connectors were intentionally removed during stabilization. Legacy `telemetry.sinks` config entries naming those types are warned-and-ignored at load time so old configs do not crash and do not silently regain network egress.
-- **Dry-run is the default.** A registry-wide test asserts no module invokes `subprocess`, `socket`, `requests`, or `urllib` while `dry_run=True`.
-- **Mode model: `simulate` / `emulate` / `lab`.** `simulate` synthesises telemetry locally; `emulate` invokes the real research code paths; `lab` requires explicit `lab_confirmation: true`.
-- **Remote integrations are explicit opt-ins.** AI providers are user-configured. Any future remote observability work is roadmap, not current functionality.
-- **Advanced offensive modules are gated, not removed.** Actor packs, C2 protocol research, stealth research, and per-OS adapters all ship disabled by default and require either the master lab toggle or per-pack/per-capability enablement.
+- **Local-first.** Every artifact lives under `output/<run_id>/`.
+- **No outbound SIEM exporters.** Splunk HEC, OpenSearch, Elasticsearch, NGSIEM, and generic HTTP bulk connectors were removed in stabilization. Legacy `telemetry.sinks` config entries naming those types are warn-and-ignored at load time so old configs do not crash and do not silently regain network egress.
+- **No remote observability.** Not on the active path. The roadmap notes this as future-only work; nothing in the shipped baseline depends on it.
+- **Dry-run is the default.** A registry-wide test asserts no module invokes `subprocess` / `socket` / `requests` / `urllib` / `aiohttp` while `dry_run=True`.
+- **Mode model: `simulate` / `emulate` / `lab`.** `simulate` synthesises local telemetry; `emulate` invokes preserved research code paths; `lab` requires explicit `lab_confirmation: true`.
+- **Advanced offensive modules are gated, not removed.** Actor packs, C2 protocol research, stealth research, and per-OS adapters ship disabled by default.
 
 ---
 
@@ -122,18 +125,32 @@ Splunk SPL is generated as **local detection-rule output**. It is not a Splunk e
 
 ### Local report viewer
 
-Every run writes a static, fully self-contained `index.html` next to the manifest. Open it with `file://` in any browser — no server, no external assets, no network calls. The viewer renders the scenario timeline, propagation graph, ATT&CK coverage, telemetry counts, detection drafts, risk summary, and AI provider attribution from `manifest.json`.
+Every run writes a static, fully self-contained `index.html` next to the manifest. Open it with `file://` in any browser — no server, no external assets, no network calls. The page is one HTML file with an inline `<style>` block and zero JavaScript; every value is HTML-escaped before rendering, every artifact link is run-dir-relative, and the run directory can be moved without breaking the page.
 
-The CLI exposes four commands for working with runs locally:
+The dashboard is read from `manifest.json` and contains, in order:
+
+1. **Header** — scenario name, run id, status badges, AI provider attribution.
+2. **KPI grid** — steps / techniques / detection drafts / telemetry events / blocked steps.
+3. **Risk summary** — totals + per-module severity badges (rendered above the timeline so triage starts with severity, not the procedural step list).
+4. **Scenario timeline** — ordered steps with module / status / ATT&CK techniques / a `notes` column for non-success rows.
+5. **Propagation graph** — `(from_step, to_step, kind)` rows for every `target_from_step` / `source_from_step` consumer pair.
+6. **ATT&CK coverage** — technique → emitting steps.
+7. **Telemetry summary** — count-only, by event type and by module.
+8. **Detection drafts** — per-engine counts + per-step paths.
+9. **AI copilot** — provider, model, network state ("offline (template / no network)" by default), fallback marker, link to the artifact.
+10. **Artifact quick links** — report.md, report.json, risk_summary.json, telemetry.jsonl, manifest.json, detections/. Each renders as a clickable run-dir-relative link only when the file exists; missing artifacts surface as inert "not present" text.
+
+The CLI exposes five commands for working with runs locally:
 
 ```bash
-python -m src.core.cli list-runs               # newest first
-python -m src.core.cli latest-run              # most recent run detail
-python -m src.core.cli show-run <run_id>       # single-run detail
-python -m src.core.cli build-report-view <run_id>   # regenerate index.html
+python -m src.core.cli list-runs                # newest first
+python -m src.core.cli latest-run               # most recent run detail
+python -m src.core.cli show-run <run_id>        # single-run detail
+python -m src.core.cli build-report-view <run_id>  # regenerate index.html
+python -m src.core.cli validate-run <run_id>    # gate-style bundle check
 ```
 
-All four honour `general.output_root` / `BLUEFIRE_OUTPUT_ROOT` and accept `--output-root <path>` for ad-hoc discovery. None starts a server. None auto-opens a browser.
+All five honour `general.output_root` / `BLUEFIRE_OUTPUT_ROOT` and accept `--output-root <path>` for ad-hoc discovery. None starts a server. None auto-opens a browser. `validate-run` exits non-zero when the bundle is missing artifacts or has broken viewer links — useful as a CI gate before sharing a run output.
 
 ---
 
@@ -232,6 +249,22 @@ Bandit runs strict at `-ll` (medium and higher). Each expected dual-use offensiv
 
 ---
 
+## Limitations & scope
+
+This is a security-research and detection-engineering tool, not a production breach-and-attack platform.
+
+- **Single-host execution.** Scenarios run on the box you launch them on. There is no agent, no controller / agent split, no remote execution mesh.
+- **No live destructive behaviour by default.** `dry_run=True`, `simulate` mode, and `allow_real_execution=false` are all in effect on a fresh install. You have to flip multiple gates explicitly to invoke real research code.
+- **No outbound integrations in the baseline.** SIEM exporters, remote observability, hosted dashboards, telemetry shipping — none of those exist on the active path. Telemetry is local JSON Lines.
+- **AI providers are opt-in.** The default `template` provider is fully offline and deterministic. Remote providers (OpenAI, Anthropic, Gemini, Grok, Ollama, llama.cpp, LM Studio) require explicit `modules.ai.enabled: true` plus an operator-supplied endpoint and (for vendor-specific backends) an API key resolved from an environment variable. No keys are bundled or written to disk.
+- **`emulate` mode is gated.** Legacy adapter packs default to `simulate`. `emulate` requires `lab_confirmation: true` and runs preserved research code paths that synthesise local artifacts — they don't open real network sockets in dry-run.
+- **For authorised research only.** The framework is dual-use. Use it on systems you own or have written permission to test. See [`SECURITY.md`](SECURITY.md) for the full threat model.
+- **Static dashboard, not a live UI.** `output/<run_id>/index.html` re-generates on every run. There is no SPA, no auto-refresh, and no server to host. Re-run the scenario or re-run `build-report-view` for an updated view.
+
+If your use case requires distributed execution, live data shipping, or a hosted dashboard, BlueFire Nexus is not the right tool today.
+
+---
+
 ## Roadmap
 
 Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top open items:
@@ -243,7 +276,7 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ope
 
 ## Status snapshot
 
-- 1370 passing tests, 5 intentional skips, 0 failures (~150s full-suite wallclock).
+- 1376 passing tests, 5 intentional skips, 0 failures (~190s full-suite wallclock).
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
 - 31 modules registered (17 standard + 14 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
 - 10 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.
