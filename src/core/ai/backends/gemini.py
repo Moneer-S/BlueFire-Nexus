@@ -125,6 +125,23 @@ class GeminiGenerateContentBackend:
                     "var holding the key"
                 ),
             )
+        # Local-first gate #4: this adapter only speaks the non-
+        # streaming variant. An ``api_base`` ending in
+        # ``:streamGenerateContent`` would otherwise dispatch a
+        # streaming request that the JSON parse path could not
+        # handle (chunks vs single object), producing reliable
+        # parse errors against valid credentials. Closes the
+        # Codex P2 from PR #59.
+        if self.endpoint.rstrip("/").endswith(":streamGenerateContent"):
+            return self._offline_response(
+                error=(
+                    "gemini api_base targets the streaming endpoint "
+                    "(:streamGenerateContent), but this backend only "
+                    "speaks the non-streaming :generateContent shape; "
+                    "use the non-streaming endpoint or wait for a "
+                    "dedicated streaming adapter"
+                ),
+            )
 
         url = self._generate_content_url()
         headers = self._build_headers()
@@ -184,8 +201,11 @@ class GeminiGenerateContentBackend:
         base = self.endpoint.rstrip("/")
         # Honour an explicitly-built URL (operator already included
         # the model + ``:generateContent`` suffix) so advanced setups
-        # can pin a different model variant per call site.
-        if base.endswith(":generateContent") or base.endswith(":streamGenerateContent"):
+        # can pin a different model variant per call site. Streaming
+        # endpoints (``:streamGenerateContent``) are rejected upstream
+        # in ``generate()`` because this adapter only parses the
+        # non-streaming response shape — they never reach this method.
+        if base.endswith(":generateContent"):
             return base
         version = str(
             self.provider_settings.get("api_version") or self.api_version
