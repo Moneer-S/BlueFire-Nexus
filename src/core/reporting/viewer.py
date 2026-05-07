@@ -29,22 +29,26 @@ Design rules
   paths are not embedded.
 
 The viewer reads the manifest (already a stable JSON shape from
-PR #71) and renders nine sections:
+PR #71) and renders ten sections in a deliberate order:
 
 1. Header — scenario name, run id, status, mode/safety badges,
    provider/model attribution if AI artifacts exist.
-2. Scenario timeline — ordered steps with module name, status,
-   ATT&CK techniques, mode badge.
-3. Propagation graph (table) — source → target step, kind.
-4. ATT&CK coverage — technique → emitting steps.
-5. Telemetry summary — counts by type and module.
-6. Detection drafts — counts by engine + per-step paths.
-7. Risk summary — totals, average score, top per-step entries.
-8. Copilot — provider attribution, network/fallback flags, link
+2. KPI grid — top-line counts (steps / techniques / detection
+   drafts / telemetry events / blocked steps).
+3. **Risk summary** — surfaced early so operators triaging a run
+   see severity totals + top-module table without scrolling
+   past the timeline.
+4. Scenario timeline — ordered steps with module name, status,
+   ATT&CK techniques, message column for blocked / error steps.
+5. Propagation graph (table) — source → target step, kind.
+6. ATT&CK coverage — technique → emitting steps.
+7. Telemetry summary — counts by type and module.
+8. Detection drafts — counts by engine + per-step paths.
+9. Copilot — provider attribution, network/fallback flags, link
    to the artifact file (template/offline output is clearly
    labelled).
-9. Artifact links — quick links to report.md / report.json /
-   risk_summary.json / telemetry.jsonl / detections directory.
+10. Artifact links — quick links to report.md / report.json /
+    risk_summary.json / telemetry.jsonl / detections directory.
 """
 
 from __future__ import annotations
@@ -290,7 +294,16 @@ def _render_kpi_grid(manifest: Mapping[str, Any]) -> str:
 
 
 def _render_timeline(manifest: Mapping[str, Any]) -> str:
-    """Section 2 — ordered scenario timeline."""
+    """Section 4 — ordered scenario timeline.
+
+    Columns: # / step_id / module / name / status / techniques /
+    notes. The "notes" column carries the step's ``message`` when
+    it is non-empty AND meaningful — i.e. failure / blocked /
+    error states; success messages are usually boilerplate
+    ("Simulated X technique on Y") and would clutter the table.
+    Defenders triaging a problem run can see the explanation
+    inline instead of cross-referencing report.json.
+    """
     steps = manifest.get("steps") or []
     if not steps:
         return ""
@@ -298,13 +311,22 @@ def _render_timeline(manifest: Mapping[str, Any]) -> str:
     rows.append(
         "<thead><tr>"
         "<th>#</th><th>step_id</th><th>module</th><th>name</th>"
-        "<th>status</th><th>techniques</th>"
+        "<th>status</th><th>techniques</th><th>notes</th>"
         "</tr></thead>"
     )
     body: List[str] = []
     for index, step in enumerate(steps, start=1):
         techniques = step.get("techniques") or []
         techniques_html = ", ".join(f"<code>{_esc(t)}</code>" for t in techniques) or "&mdash;"
+        # Surface message text only on non-success rows so success
+        # boilerplate doesn't dominate the column. Truncated to one
+        # line + 200 chars to keep the table compact.
+        message = ""
+        status = str(step.get("status") or "").lower()
+        raw_message = step.get("message") or ""
+        if status in {"blocked", "error", "failure", "partial_success"} and raw_message:
+            message = str(raw_message).splitlines()[0][:200]
+        notes_html = _esc(message) if message else "&mdash;"
         body.append(
             "<tr>"
             f"<td>{index}</td>"
@@ -313,6 +335,7 @@ def _render_timeline(manifest: Mapping[str, Any]) -> str:
             f'<td>{_esc(step.get("name"))}</td>'
             f'<td>{_status_badge(str(step.get("status", "")))}</td>'
             f"<td>{techniques_html}</td>"
+            f"<td>{notes_html}</td>"
             "</tr>"
         )
     rows.append(f'<tbody>{"".join(body)}</tbody>')
@@ -458,8 +481,35 @@ def _render_detections(manifest: Mapping[str, Any]) -> str:
     return "".join(parts)
 
 
+def _severity_badge(severity: str) -> str:
+    """Render a per-module severity as a coloured badge.
+
+    Mirrors the status-badge palette so an operator can scan the
+    risk-summary table and the timeline together with consistent
+    cues. Unknown severities fall back to the muted skipped
+    style.
+    """
+    canonical = (severity or "").lower()
+    cls = "badge-skipped"
+    if canonical == "critical":
+        cls = "badge-error"
+    elif canonical == "high":
+        cls = "badge-error"
+    elif canonical == "medium":
+        cls = "badge-blocked"
+    elif canonical == "low":
+        cls = "badge-success"
+    return f'<span class="badge {cls}">{_esc(severity or "unknown")}</span>'
+
+
 def _render_risk(manifest: Mapping[str, Any]) -> str:
-    """Section 7 — risk summary."""
+    """Section 3 — risk summary (rendered before the timeline).
+
+    Operators triaging a problem run want severity totals + the
+    top-module table without scrolling past the timeline. The
+    severity column uses the coloured badge palette so the
+    visual hierarchy of failures is immediate.
+    """
     risk = manifest.get("risk")
     if not isinstance(risk, Mapping):
         return ""
@@ -483,7 +533,7 @@ def _render_risk(manifest: Mapping[str, Any]) -> str:
             parts.append(
                 "<tr>"
                 f'<td><code>{_esc(entry.get("module"))}</code></td>'
-                f'<td>{_esc(entry.get("severity"))}</td>'
+                f'<td>{_severity_badge(str(entry.get("severity") or ""))}</td>'
                 f'<td>{_esc(entry.get("score"))}</td>'
                 f'<td>{_esc(entry.get("mode"))}</td>'
                 "</tr>"
@@ -569,9 +619,12 @@ def _render_artifact_links(manifest: Mapping[str, Any]) -> str:
                 f'<li class="muted">{_esc(label)} &mdash; not present</li>'
             )
             continue
+        # Drop the trailing redundant ``(<code>path</code>)`` —
+        # when the link text and the path are the same, repeating
+        # the path adds noise without adding information. Show
+        # the path as a code-styled link directly.
         rendered.append(
-            f'<li><a href="{_esc(path)}">{_esc(label)}</a> '
-            f'(<code>{_esc(path)}</code>)</li>'
+            f'<li><a href="{_esc(path)}"><code>{_esc(label)}</code></a></li>'
         )
     return (
         '<section class="card"><h2>Artifacts</h2>'
@@ -600,16 +653,19 @@ def render_html(manifest: Mapping[str, Any]) -> str:
             "</div>"
         )
 
+    # Section order is deliberate: risk summary surfaces above
+    # the timeline so triage starts with severity, not with a
+    # 12-row procedural table.
     body_parts: List[str] = []
     body_parts.append(_render_header(manifest))
     body_parts.append(_render_kpi_grid(manifest))
     body_parts.append(schema_warning)
+    body_parts.append(_render_risk(manifest))
     body_parts.append(_render_timeline(manifest))
     body_parts.append(_render_propagation(manifest))
     body_parts.append(_render_attack_coverage(manifest))
     body_parts.append(_render_telemetry(manifest))
     body_parts.append(_render_detections(manifest))
-    body_parts.append(_render_risk(manifest))
     body_parts.append(_render_copilot(manifest))
     body_parts.append(_render_artifact_links(manifest))
 
