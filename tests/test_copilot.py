@@ -34,21 +34,20 @@ def test_copilot_consumes_resolved_ai_config_provider_settings_keyless_stub(
 ) -> None:
     """`ai_providers.<provider>` block flows through `get_ai_config`
     into the keyless stub for canonical names that have no
-    HTTP-backed registration (anthropic / gemini in Phase 2).
-    """
+    HTTP-backed registration (gemini in this phase)."""
     monkeypatch.setenv("BLUEFIRE_COPILOT_KEY", "sk-copilot-test")
     config = {
         "modules": {
             "ai": {
                 "enabled": True,
-                "provider": "anthropic",
+                "provider": "gemini",
                 "model": "vendor-m",
                 "api_base": "http://copilot.lab/v1",
                 "api_key_env": "BLUEFIRE_COPILOT_KEY",
             }
         },
         "ai_providers": {
-            "anthropic": {
+            "gemini": {
                 "organization": "org-copilot",
                 "api_base": "http://copilot.lab/v1",
             }

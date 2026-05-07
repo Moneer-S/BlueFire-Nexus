@@ -12,7 +12,8 @@ normal operation. **No vendor is privileged as the default.**
 | `src/core/ai/types.py` | `ProviderOptions` (per-call options: system, temperature, max_tokens, timeout, metadata) and `ProviderResponse` (structured result: text, provider, model, usage, finish_reason, fallback_used, network_disabled, error, metadata). | n/a (data shapes) |
 | `src/core/ai/providers.py` | `LLMProvider` Protocol exposing both `complete()` (legacy text) and `generate()` (rich response). `TemplateProvider` (deterministic offline default) and `OpenAICompatibleProvider` (vendor-neutral keyless stub for canonical names without an HTTP backend). `ProviderFactory` with alias normalisation and `register_provider(...)` hook for backends. | Yes (template / stub) |
 | `src/core/ai/transport.py` | Injectable HTTP transport: `HTTPResponse` dataclass, `HTTPTransport` Protocol, `UrllibTransport` stdlib-only implementation. Rejects non-HTTP(S) URL schemes before issuing the request (B310 guard). | Yes (transport itself) |
-| `src/core/ai/backends/openai_compatible.py` | `OpenAICompatibleHTTPBackend` — speaks the OpenAI chat-completions request/response shape over the injectable transport. Auto-registers for `openai_compatible`, `openai`, `grok`, `ollama`, `llama.cpp`, `lm-studio`. Short-circuits to offline when no `api_base` is set. | Yes (short-circuit) |
+| `src/core/ai/backends/openai_compatible.py` | `OpenAICompatibleHTTPBackend` — speaks the OpenAI chat-completions request/response shape over the injectable transport. Auto-registers for `openai_compatible`, `openai`, `grok`, `ollama`, `llama.cpp`, `lm-studio`. Short-circuits to offline when `enabled=False` or `api_base` empty. | Yes (short-circuit) |
+| `src/core/ai/backends/anthropic.py` | `AnthropicMessagesBackend` — vendor-specific adapter for Anthropic's Messages API. Auto-registers for canonical `anthropic` (and `claude` alias). Short-circuits to offline when `enabled=False`, `api_base` empty, OR `api_key` empty (Anthropic has no local-server analog). Normalises Anthropic's `input_tokens` / `output_tokens` into the shared `prompt_tokens` / `completion_tokens` / `total_tokens` keys. | Yes (short-circuit) |
 | `src/core/ai/fallback.py` | `FallbackChainProvider` — wraps a primary provider with an optional fallback. Primary success passes through unchanged; primary error invokes the fallback and records `fallback_used` + attribution metadata. | Yes (when wrapping template) |
 | `src/core/ai/copilot.py` | Plan / narrate / detection-suggestion workflows. Every artifact carries a YAML-front-matter metadata header. Wraps the primary in a `FallbackChainProvider` when `modules.ai.fallback_provider` is set. | Yes (template fallback) |
 | `src/core/ai/rag.py` | TF-IDF retrieval over markdown / text / json / yaml files. Used by the copilot for context. No external dependencies. | Yes |
@@ -35,7 +36,7 @@ name).
 | `ollama` | — | `OpenAICompatibleHTTPBackend` (HTTP) |
 | `llama.cpp` | — | `OpenAICompatibleHTTPBackend` (HTTP) |
 | `lm-studio` | — | `OpenAICompatibleHTTPBackend` (HTTP) |
-| `anthropic` | `claude` | `OpenAICompatibleProvider` (keyless stub — Messages-API adapter pending) |
+| `anthropic` | `claude` | `AnthropicMessagesBackend` (HTTP — Messages API) |
 | `gemini` | `google`, `google_gemini` | `OpenAICompatibleProvider` (keyless stub — GenerateContent-API adapter pending) |
 
 Backend dispatch goes through `ProviderFactory._REGISTRY`. Phase 2
@@ -297,13 +298,13 @@ iteration result records.
 
 ## Roadmap
 
-- **Provider-specific adapters** for `anthropic` (Messages API)
-  and `gemini` (GenerateContent API). Each adapter registers via
-  `ProviderFactory.register_provider("<canonical>", factory)` and
-  speaks the vendor's actual request/response shape. The
-  interface, registry, transport, and fallback wrapper are
-  already in place; the adapters are additive and do not require
-  re-plumbing.
+- **Provider-specific adapter for `gemini`** (Google's
+  GenerateContent API). Anthropic's Messages-API adapter has
+  landed; Gemini follows the same pattern (own backend module,
+  registered via `ProviderFactory.register_provider("gemini",
+  factory)`). The interface, registry, transport, and fallback
+  wrapper are already in place; the adapter will be additive
+  and will not require re-plumbing.
 - **MCP / connectors** as a future option. Not a current
   requirement; nothing in the shipped baseline depends on them.
 - **No remote observability / SIEM exporters.** The roadmap

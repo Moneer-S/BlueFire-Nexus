@@ -283,8 +283,15 @@ def test_codex_pr55_p1_fallback_provider_uses_its_own_ai_providers_block(
     monkeypatch,
 ) -> None:
     """`provider: openai` + `fallback_provider: anthropic` MUST give
-    the fallback its own api_base/model from
-    `ai_providers.anthropic.*` rather than inheriting OpenAI's."""
+    the fallback its own api_base/model/api_key from
+    `ai_providers.anthropic.*` rather than inheriting OpenAI's.
+
+    Anthropic now resolves to its dedicated Messages-API adapter
+    (Phase 1 of provider-specific backends); the fallback chain
+    must still route to it correctly with the per-provider config
+    properly merged."""
+    from src.core.ai.backends.anthropic import AnthropicMessagesBackend
+
     monkeypatch.setenv("BLUEFIRE_TEST_OPENAI_KEY", "sk-openai")
     monkeypatch.setenv("BLUEFIRE_TEST_ANTHROPIC_KEY", "sk-anthropic")
 
@@ -311,7 +318,7 @@ def test_codex_pr55_p1_fallback_provider_uses_its_own_ai_providers_block(
     assert isinstance(chain, FallbackChainProvider)
     fallback = chain.fallback
     # The fallback's identity comes from the anthropic block, not openai's.
-    assert isinstance(fallback, OpenAICompatibleProvider)  # anthropic = keyless stub today
+    assert isinstance(fallback, AnthropicMessagesBackend)
     assert fallback.name == "anthropic"
     assert fallback.model == "claude-3-opus"
     assert fallback.endpoint == "https://api.anthropic.example/v1"
@@ -323,6 +330,8 @@ def test_codex_pr55_p1_fallback_does_not_inherit_primary_api_key(monkeypatch) ->
     block omits `api_key_env`, the fallback MUST NOT carry the
     primary's resolved key — that would leak credentials across
     vendors."""
+    from src.core.ai.backends.anthropic import AnthropicMessagesBackend
+
     monkeypatch.setenv("BLUEFIRE_TEST_OPENAI_KEY", "sk-openai-secret")
 
     config = {
@@ -345,7 +354,7 @@ def test_codex_pr55_p1_fallback_does_not_inherit_primary_api_key(monkeypatch) ->
     chain = _build_provider_chain(config)
     assert isinstance(chain, FallbackChainProvider)
     fallback = chain.fallback
-    assert isinstance(fallback, OpenAICompatibleProvider)
+    assert isinstance(fallback, AnthropicMessagesBackend)
     assert fallback.api_key == ""
     assert fallback.api_key != "sk-openai-secret"
 
