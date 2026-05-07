@@ -203,6 +203,10 @@ def test_get_ai_config_returns_offline_template_default() -> None:
     assert cfg["model"] == "default"
     assert cfg["timeout"] == 30
     assert cfg["max_tokens"] == 1024
+    # Phase 1 additions: temperature unset by default (provider's
+    # own default), fallback_provider unset (no fallback).
+    assert cfg["temperature"] is None
+    assert cfg["fallback_provider"] == ""
 
 
 def test_get_ai_config_default_is_not_ollama() -> None:
@@ -217,6 +221,80 @@ def test_get_ai_config_known_providers_includes_openai_compatible_and_ollama() -
     assert "openai_compatible" in cfg["known_providers"]
     assert "ollama" in cfg["known_providers"]
     assert "template" in cfg["known_providers"]
+
+
+def test_get_ai_config_known_providers_includes_phase_1_additions() -> None:
+    """Catalogue must list every Phase 1 canonical name (no vendor
+    privileged as default — all are equal optional targets)."""
+    cfg = get_ai_config(None)
+    for canonical in (
+        "openai",
+        "anthropic",
+        "gemini",
+        "grok",
+        "ollama",
+        "openai_compatible",
+        "llama.cpp",
+        "lm-studio",
+    ):
+        assert canonical in cfg["known_providers"], (
+            f"{canonical!r} missing from known_providers catalogue"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 additions: temperature + fallback_provider
+# ---------------------------------------------------------------------------
+
+
+def test_get_ai_config_parses_temperature_as_float() -> None:
+    cfg = get_ai_config({"modules": {"ai": {"temperature": "0.7"}}})
+    assert cfg["temperature"] == 0.7
+    cfg = get_ai_config({"modules": {"ai": {"temperature": 1.2}}})
+    assert cfg["temperature"] == 1.2
+
+
+def test_get_ai_config_temperature_invalid_value_falls_back_to_none() -> None:
+    """A YAML typo (e.g. ``temperature: hot``) must not silently bias
+    generation; it falls back to ``None`` (provider default)."""
+    cfg = get_ai_config({"modules": {"ai": {"temperature": "not-a-number"}}})
+    assert cfg["temperature"] is None
+    cfg = get_ai_config({"modules": {"ai": {"temperature": []}}})
+    assert cfg["temperature"] is None
+
+
+def test_get_ai_config_temperature_explicit_none_or_empty_string() -> None:
+    cfg = get_ai_config({"modules": {"ai": {"temperature": None}}})
+    assert cfg["temperature"] is None
+    cfg = get_ai_config({"modules": {"ai": {"temperature": ""}}})
+    assert cfg["temperature"] is None
+
+
+def test_get_ai_config_fallback_provider_accepts_known_canonical() -> None:
+    cfg = get_ai_config({"modules": {"ai": {"fallback_provider": "template"}}})
+    assert cfg["fallback_provider"] == "template"
+    cfg = get_ai_config({"modules": {"ai": {"fallback_provider": "openai"}}})
+    assert cfg["fallback_provider"] == "openai"
+
+
+def test_get_ai_config_fallback_provider_normalises_case() -> None:
+    cfg = get_ai_config({"modules": {"ai": {"fallback_provider": "  OpenAI "}}})
+    assert cfg["fallback_provider"] == "openai"
+
+
+def test_get_ai_config_fallback_provider_unknown_treated_as_unset() -> None:
+    """An unknown / typo'd fallback name silently routes to "no fallback"
+    rather than introducing surprise behaviour. Tested separately
+    from `temperature` because the failure mode is different — the
+    fallback_provider validation matches against ``known_providers``.
+    """
+    cfg = get_ai_config({"modules": {"ai": {"fallback_provider": "definitely-not-a-provider"}}})
+    assert cfg["fallback_provider"] == ""
+
+
+def test_get_ai_config_fallback_provider_default_is_empty() -> None:
+    cfg = get_ai_config(None)
+    assert cfg["fallback_provider"] == ""
 
 
 def test_get_ai_config_parses_openai_compatible_without_network() -> None:

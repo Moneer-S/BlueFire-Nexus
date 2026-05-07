@@ -110,7 +110,8 @@ def test_from_ai_config_unknown_provider_falls_back_to_template() -> None:
     [
         "openai",
         "anthropic",
-        "google",
+        "gemini",
+        "grok",
         "ollama",
         "llama.cpp",
         "lm-studio",
@@ -118,7 +119,7 @@ def test_from_ai_config_unknown_provider_falls_back_to_template() -> None:
     ],
 )
 def test_from_ai_config_remote_provider_returns_keyless_stub(name: str) -> None:
-    """Each known remote name returns the keyless stub with no outbound call."""
+    """Each canonical remote name returns the keyless stub with no outbound call."""
     provider = ProviderFactory.from_ai_config(
         {
             "provider": name,
@@ -127,12 +128,44 @@ def test_from_ai_config_remote_provider_returns_keyless_stub(name: str) -> None:
         }
     )
     assert isinstance(provider, OpenAICompatibleProvider)
-    assert provider.name == name
+    assert provider.name == name  # canonical name preserved
     assert provider.model == "model-x"
     assert provider.endpoint == "http://lab.example/v1"
     assert provider.api_key == ""  # no api_key_env set -> empty key, never raised
     response = provider.complete("hello")
     assert "Network completion is intentionally disabled by default" in response
+
+
+@pytest.mark.parametrize(
+    "alias,canonical",
+    [
+        ("google", "gemini"),
+        ("google_gemini", "gemini"),
+        ("xai", "grok"),
+        ("x.ai", "grok"),
+        ("claude", "anthropic"),
+    ],
+)
+def test_from_ai_config_normalises_alias_to_canonical(
+    alias: str, canonical: str
+) -> None:
+    """Alias names route to their canonical entry. Closes the
+    Phase 1 product direction: docs and configs can use vendor-
+    friendly names without privileging any specific naming scheme."""
+    provider = ProviderFactory.from_ai_config(
+        {"provider": alias, "model": "model-x"}
+    )
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider.name == canonical
+
+
+def test_from_ai_config_normalises_case_and_whitespace() -> None:
+    """Provider name resolution lower-cases and strips whitespace."""
+    provider = ProviderFactory.from_ai_config(
+        {"provider": "  OpenAI ", "model": "model-x"}
+    )
+    assert isinstance(provider, OpenAICompatibleProvider)
+    assert provider.name == "openai"
 
 
 def test_from_ai_config_resolves_api_key_env(monkeypatch) -> None:

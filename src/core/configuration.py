@@ -166,6 +166,17 @@ def get_safety_config(config: Optional[Mapping[str, Any]] = None) -> dict:
 
 # Default AI config keys. Local-first: no network calls, no API keys
 # required, template provider supplies deterministic offline output.
+#
+# `temperature`: None means "use the provider's own default" so the
+# offline template provider (which has no notion of temperature) is
+# unaffected; remote backends apply this as their sampling temperature
+# when they exist.
+#
+# `fallback_provider`: empty string means "no fallback configured" —
+# a primary provider failure surfaces as an error result. Setting this
+# to ``"template"`` is the safest choice for "always degrade
+# gracefully to the offline path". The fallback execution wrapper is
+# Phase 2; Phase 1 only carries the config field.
 _DEFAULT_AI_CONFIG = {
     "enabled": False,
     "provider": "template",
@@ -174,20 +185,26 @@ _DEFAULT_AI_CONFIG = {
     "api_key_env": "",
     "timeout": 30,
     "max_tokens": 1024,
+    "temperature": None,
+    "fallback_provider": "",
 }
 
 # The shapes of the supported provider configs are documented here so
 # operators can reason about plug-and-play providers. The runtime does
 # NOT default to any of these — `provider: template` remains the
-# offline default.
+# offline default. Aliases (``google -> gemini``, ``xai -> grok``,
+# ``claude -> anthropic``) are normalised at provider-construction
+# time by ``ProviderFactory.normalise_name``; the catalogue lists
+# canonical names.
 _KNOWN_PROVIDERS: Tuple[str, ...] = (
     "template",
     "none",
     "openai",
     "anthropic",
-    "google",
-    "openai_compatible",
+    "gemini",
+    "grok",
     "ollama",
+    "openai_compatible",
     "llama.cpp",
     "lm-studio",
 )
@@ -262,6 +279,30 @@ def get_ai_config(config: Optional[Mapping[str, Any]] = None) -> dict:
         resolved["max_tokens"] = int(resolved["max_tokens"])
     except (TypeError, ValueError):
         resolved["max_tokens"] = _DEFAULT_AI_CONFIG["max_tokens"]
+
+    # `temperature`: None means "let the provider decide". Operators can
+    # set a float (typically 0.0-2.0); anything that does not parse as a
+    # float falls back to None rather than an arbitrary number, so a
+    # YAML typo cannot silently bias generation.
+    raw_temperature = resolved.get("temperature", _DEFAULT_AI_CONFIG["temperature"])
+    if raw_temperature is None or raw_temperature == "":
+        resolved["temperature"] = None
+    else:
+        try:
+            resolved["temperature"] = float(raw_temperature)
+        except (TypeError, ValueError):
+            resolved["temperature"] = None
+
+    # `fallback_provider`: normalise to a string and validate against
+    # known names so an obvious typo (e.g. ``ollam``) surfaces as
+    # "fallback disabled" rather than silently routing to template
+    # without warning. An empty string means "no fallback".
+    raw_fallback = str(resolved.get("fallback_provider") or "").lower().strip()
+    if raw_fallback and raw_fallback not in _KNOWN_PROVIDERS:
+        # Operator chose a name that is not in the canonical catalogue.
+        # Treat as unset (no fallback) to avoid surprise routing.
+        raw_fallback = ""
+    resolved["fallback_provider"] = raw_fallback
 
     resolved["provider_settings"] = provider_sub
     resolved["known_providers"] = list(_KNOWN_PROVIDERS)
