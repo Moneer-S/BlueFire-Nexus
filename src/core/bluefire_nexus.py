@@ -23,6 +23,7 @@ from .reporting import (
     write_markdown_report,
     write_risk_summary,
     write_run_manifest,
+    write_viewer_for_run,
 )
 from .safety import SafetyGate, SafetyViolation
 from .scenario import load_scenario
@@ -226,6 +227,10 @@ class BlueFireNexus:
                 )
             except OSError as manifest_exc:  # pragma: no cover - I/O safety net
                 self.logger.warning("manifest write failed: %s", manifest_exc)
+            try:
+                write_viewer_for_run(context.output_dir)
+            except (OSError, FileNotFoundError, ValueError) as viewer_exc:  # pragma: no cover - I/O safety net
+                self.logger.warning("viewer write failed: %s", viewer_exc)
 
             return {
                 "status": result.status,
@@ -240,6 +245,7 @@ class BlueFireNexus:
                 "report_path": str(report_path) if report_path else None,
                 "risk_summary_path": str(risk_summary_path) if risk_summary_path else None,
                 "manifest_path": str(context.output_dir / "manifest.json"),
+                "viewer_path": str(context.output_dir / "index.html"),
                 "copilot": copilot_artifacts,
                 "legacy_controls": self.legacy_activation_summary(),
                 "timestamp": result.timestamp,
@@ -446,6 +452,10 @@ class BlueFireNexus:
                 )
             except OSError as manifest_exc:  # pragma: no cover - I/O safety net
                 self.logger.warning("manifest write failed: %s", manifest_exc)
+            try:
+                write_viewer_for_run(context.output_dir)
+            except (OSError, FileNotFoundError, ValueError) as viewer_exc:  # pragma: no cover - I/O safety net
+                self.logger.warning("viewer write failed: %s", viewer_exc)
 
             return {
                 "status": overall_status,
@@ -456,6 +466,7 @@ class BlueFireNexus:
                 "report_path": str(report_path),
                 "risk_summary_path": str(risk_summary_path),
                 "manifest_path": str(context.output_dir / "manifest.json"),
+                "viewer_path": str(context.output_dir / "index.html"),
                 "copilot": copilot_summary,
                 "legacy_controls": self.legacy_activation_summary(),
             }
