@@ -17,7 +17,13 @@ from .detections import write_detection_artifacts
 from .legacy_controls import build_legacy_summary
 from .models import ModuleResult, RunContext
 from .modules.registry import build_runtime_modules
-from .reporting import write_json_report, write_markdown_report, write_risk_summary
+from .reporting import (
+    build_risk_summary,
+    write_json_report,
+    write_markdown_report,
+    write_risk_summary,
+    write_run_manifest,
+)
 from .safety import SafetyGate, SafetyViolation
 from .scenario import load_scenario
 from .telemetry import TelemetryBus
@@ -130,6 +136,7 @@ class BlueFireNexus:
         operation_data: Mapping[str, Any],
     ) -> Dict[str, Any]:
         context = self._make_run_context()
+        started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         telemetry = TelemetryBus(self.config, context.output_dir)
         safety = SafetyGate(context)
         copilot = AICopilot(context.config, context.output_dir)
@@ -148,6 +155,7 @@ class BlueFireNexus:
             result: ModuleResult = module.execute(operation_data, self._module_context(context))
             telemetry.emit_many(result.telemetry)
 
+            module_results: Dict[str, ModuleResult] = {}
             if result.status == "success":
                 module_results = {module_name: result}
                 detection_paths = write_detection_artifacts(
@@ -182,6 +190,43 @@ class BlueFireNexus:
                 risk_summary_path = None
                 copilot_artifacts = {}
 
+            # Manifest is written for every run that reaches this point —
+            # success or otherwise — so the static viewer always has a
+            # consistent shape to render.
+            manifest_steps: list[Dict[str, Any]] = [
+                {
+                    "step_id": module_name,
+                    "module": module_name,
+                    "name": module_name,
+                    "status": result.status,
+                    "message": result.message,
+                    "techniques": list(result.techniques or []),
+                    "artifacts": dict(result.artifacts or {}),
+                    "detections": dict(detection_paths or {}),
+                }
+            ]
+            risk_payload = (
+                build_risk_summary(module_results) if result.status == "success" else None
+            )
+            try:
+                write_run_manifest(
+                    run_id=context.run_id,
+                    run_dir=context.output_dir,
+                    scenario_name=module_name,
+                    overall_status=result.status,
+                    started_at=started_at,
+                    config=self.config,
+                    steps=manifest_steps,
+                    module_results=module_results if result.status == "success" else None,
+                    report_path=report_path,
+                    risk_summary_path=risk_summary_path,
+                    risk_summary_payload=risk_payload,
+                    copilot=copilot_artifacts if isinstance(copilot_artifacts, Mapping) else None,
+                    legacy_controls=self.legacy_activation_summary(),
+                )
+            except OSError as manifest_exc:  # pragma: no cover - I/O safety net
+                self.logger.warning("manifest write failed: %s", manifest_exc)
+
             return {
                 "status": result.status,
                 "module": module_name,
@@ -194,6 +239,7 @@ class BlueFireNexus:
                 "detection_artifacts": detection_paths,
                 "report_path": str(report_path) if report_path else None,
                 "risk_summary_path": str(risk_summary_path) if risk_summary_path else None,
+                "manifest_path": str(context.output_dir / "manifest.json"),
                 "copilot": copilot_artifacts,
                 "legacy_controls": self.legacy_activation_summary(),
                 "timestamp": result.timestamp,
@@ -226,6 +272,7 @@ class BlueFireNexus:
         step_param_overrides: Optional[Mapping[str, Mapping[str, Any]]] = None,
     ) -> Dict[str, Any]:
         context = self._make_run_context(run_id=run_id)
+        started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         telemetry = TelemetryBus(self.config, context.output_dir)
         safety = SafetyGate(context)
         copilot = AICopilot(context.config, context.output_dir)
@@ -378,6 +425,28 @@ class BlueFireNexus:
                 context.run_id, run_summary=run_summary
             )
 
+            try:
+                write_run_manifest(
+                    run_id=context.run_id,
+                    run_dir=context.output_dir,
+                    scenario_name=scenario.name,
+                    scenario_path=str(scenario_path),
+                    overall_status=overall_status,
+                    started_at=started_at,
+                    config=self.config,
+                    steps=steps_results,
+                    module_results=module_results,
+                    report_path=report_path,
+                    risk_summary_path=risk_summary_path,
+                    risk_summary_payload=build_risk_summary(
+                        module_results, scenario_name=scenario.name
+                    ),
+                    copilot=copilot_summary,
+                    legacy_controls=self.legacy_activation_summary(),
+                )
+            except OSError as manifest_exc:  # pragma: no cover - I/O safety net
+                self.logger.warning("manifest write failed: %s", manifest_exc)
+
             return {
                 "status": overall_status,
                 "scenario": scenario.name,
@@ -386,6 +455,7 @@ class BlueFireNexus:
                 "steps": steps_results,
                 "report_path": str(report_path),
                 "risk_summary_path": str(risk_summary_path),
+                "manifest_path": str(context.output_dir / "manifest.json"),
                 "copilot": copilot_summary,
                 "legacy_controls": self.legacy_activation_summary(),
             }
