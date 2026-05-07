@@ -21,6 +21,7 @@ from .reporting import (
     build_risk_summary,
     write_json_report,
     write_markdown_report,
+    write_output_index,
     write_risk_summary,
     write_run_manifest,
     write_viewer_for_run,
@@ -239,6 +240,16 @@ class BlueFireNexus:
                     viewer_written = write_viewer_for_run(context.output_dir)
                 except (OSError, FileNotFoundError, ValueError) as viewer_exc:  # pragma: no cover - I/O safety net
                     self.logger.warning("viewer write failed: %s", viewer_exc)
+                # Refresh the top-level run aggregator so the operator
+                # gets a current ``output/index.html`` listing every
+                # run on disk. A failure here is non-fatal — per-run
+                # artifacts are already written by this point.
+                try:
+                    write_output_index(self._output_root())
+                except OSError as index_exc:  # pragma: no cover - I/O safety net
+                    self.logger.warning(
+                        "output index aggregator write failed: %s", index_exc
+                    )
 
             return {
                 "status": result.status,
@@ -471,6 +482,16 @@ class BlueFireNexus:
                     viewer_written = write_viewer_for_run(context.output_dir)
                 except (OSError, FileNotFoundError, ValueError) as viewer_exc:  # pragma: no cover - I/O safety net
                     self.logger.warning("viewer write failed: %s", viewer_exc)
+                # Refresh the top-level run aggregator so the operator
+                # gets a current ``output/index.html`` listing every
+                # run on disk. A failure here is non-fatal — per-run
+                # artifacts are already written by this point.
+                try:
+                    write_output_index(self._output_root())
+                except OSError as index_exc:  # pragma: no cover - I/O safety net
+                    self.logger.warning(
+                        "output index aggregator write failed: %s", index_exc
+                    )
 
             return {
                 "status": overall_status,

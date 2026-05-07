@@ -24,9 +24,16 @@ This section captures changes since the last tagged release.
   counts, detection drafts, risk summary, and AI provider
   attribution.
 - **CLI commands for runs.** `list-runs`, `latest-run`,
-  `show-run`, `build-report-view`, and `validate-run` round
-  out the local-only workflow. None starts a server or
-  auto-opens a browser.
+  `show-run`, `build-report-view`, `build-output-index`, and
+  `validate-run` round out the local-only workflow. None starts
+  a server or auto-opens a browser.
+- **Top-level run index aggregator.** A static `output/index.html`
+  page lists every run newest-first with quick links into each
+  run's viewer / manifest / report / risk summary. Same
+  self-contained constraints as the per-run viewer (no JS, no
+  external assets, no network). The orchestrator refreshes the
+  aggregator after every run; `list-runs` / `latest-run`
+  surface a `file://` link to it when present.
 - **Provider-agnostic AI layer.** `template` (offline default),
   `openai_compatible`, `openai`, `anthropic`, `gemini`, `grok`,
   `ollama`, `llama.cpp`, and `lm-studio` all route through a

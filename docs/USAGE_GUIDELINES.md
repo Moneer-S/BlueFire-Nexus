@@ -670,6 +670,12 @@ python -m src.core.cli latest-run
 # manifest was edited or the orchestrator's viewer step failed).
 python -m src.core.cli build-report-view <run_id>
 
+# Regenerate the top-level output/index.html aggregator listing
+# every run newest-first with quick links into each run's
+# viewer / manifest / report. Same self-contained constraints
+# as build-report-view (no server, no JS, no external assets).
+python -m src.core.cli build-output-index
+
 # Validate that the run produced a complete demo bundle:
 # every required artifact present + no broken viewer links.
 # Exits non-zero on failure so CI / scripts can gate on it.
@@ -677,9 +683,9 @@ python -m src.core.cli validate-run <run_id>
 python -m src.core.cli validate-run <run_id> --json   # machine-readable
 ```
 
-All five commands accept `--output-root <path>` to override discovery for ad-hoc inspection. None starts a server. None auto-opens a browser — operators choose how to open the static `index.html` via OS-native helpers (e.g. `open`, `xdg-open`, `start`).
+All six commands accept `--output-root <path>` to override discovery for ad-hoc inspection. None starts a server. None auto-opens a browser — operators choose how to open the static `index.html` via OS-native helpers (e.g. `open`, `xdg-open`, `start`).
 
-The viewer is fully self-contained: a single `<style>` block holds the entire CSS, every value is HTML-escaped before rendering, and every artifact link is run-dir-relative so the run directory can be moved without breaking the page.
+The viewer is fully self-contained: a single `<style>` block holds the entire CSS, every value is HTML-escaped before rendering, and every artifact link is run-dir-relative so the run directory can be moved without breaking the page. The same constraints apply to the top-level `output/index.html` aggregator — it lives one level above the run dirs and links into each via relative `<run_id>/index.html` paths, so the entire `output/` tree can be moved or zipped without breaking links.
 
 ## 8. ATT&CK mapping notes
 
