@@ -671,11 +671,19 @@ def test_anthropic_failure_falls_back_to_template() -> None:
     assert response.model == "safe-template"
 
 
-def test_anthropic_offline_short_circuit_does_not_trigger_fallback() -> None:
+def test_anthropic_offline_short_circuit_routes_through_fallback_chain() -> None:
     """A backend short-circuit (enabled=False / api_base empty /
     api_key empty) returns an error response, so the fallback
-    chain DOES fire — verifying that the offline marker still
-    routes through the wrapper correctly."""
+    chain DOES fire when one is configured. The transport is still
+    never called — the fallback wrapper acts on the structured
+    error from the primary's offline path, not on a real network
+    failure.
+
+    Renamed from ``...does_not_trigger_fallback`` to remove the
+    misleading negative phrasing flagged by Cursor Bugbot on
+    PR #58: the original name claimed the opposite of what the
+    test actually verifies.
+    """
     transport = _MockTransport()
     primary = AnthropicMessagesBackend(
         endpoint="https://api.anthropic.example",

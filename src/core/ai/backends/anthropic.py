@@ -192,9 +192,26 @@ class AnthropicMessagesBackend:
     # ------------------------------------------------------------------
 
     def _messages_url(self) -> str:
+        """Build the Messages API URL from ``endpoint``.
+
+        Tolerates three common operator-supplied shapes so a config
+        like ``api_base: https://api.anthropic.com/v1`` (a natural
+        copy-paste from OpenAI-style configs) does not silently
+        produce ``.../v1/v1/messages`` and 404. Closes the Codex P2
+        from PR #58.
+
+        Order:
+        1. Already a full Messages URL (``...endpoint/v1/messages``)
+           -> use as-is.
+        2. Already version-prefixed (``...endpoint/v1``) -> append
+           only ``/messages``.
+        3. Bare host (``...endpoint``) -> append ``/v1/messages``.
+        """
         base = self.endpoint.rstrip("/")
         if base.endswith("/v1/messages"):
             return base
+        if base.endswith("/v1"):
+            return f"{base}/messages"
         return f"{base}/v1/messages"
 
     def _build_headers(self) -> Dict[str, str]:
