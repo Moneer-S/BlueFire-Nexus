@@ -61,11 +61,17 @@ def _make_run_dir(
     module_count: int = 0,
     write_manifest: bool = True,
     write_viewer: bool = False,
+    risk_summary: Dict[str, int] | None = None,
 ) -> Path:
     """Create a run directory with the given metadata.
 
     Useful for table-driven tests that exercise list_runs ordering
     / metadata extraction without spinning up the orchestrator.
+
+    ``risk_summary`` lets tests seed the manifest's risk block
+    (e.g. ``{"critical": 1, "high": 0, "medium": 0, "low": 0}``)
+    so the discovery layer's ``highest_risk_tier`` lookup can be
+    pinned without running the orchestrator.
     """
     run_dir = output_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -73,7 +79,7 @@ def _make_run_dir(
     # returns True even when no manifest is present.
     (run_dir / "report.md").write_text("# fake", encoding="utf-8")
     if write_manifest:
-        manifest = {
+        manifest: Dict[str, Any] = {
             "schema_version": 1,
             "run": {
                 "run_id": run_id,
@@ -84,6 +90,11 @@ def _make_run_dir(
                 "step_status_counts": {},
             },
         }
+        if risk_summary is not None:
+            manifest["risk"] = {
+                "risk_summary": dict(risk_summary),
+                "modules": [],
+            }
         (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     if write_viewer:
         (run_dir / "index.html").write_text("<html></html>", encoding="utf-8")
@@ -127,6 +138,60 @@ def test_list_runs_extracts_metadata_from_manifest(tmp_path: Path) -> None:
     assert row["module_count"] == 12
     assert row["has_manifest"] is True
     assert row["has_viewer"] is True
+    # ``highest_severity`` is always present on the row dict; the
+    # field is empty when the manifest carries no risk block.
+    assert "highest_severity" in row
+    assert row["highest_severity"] == ""
+
+
+def test_list_runs_surfaces_highest_severity_from_manifest_risk(
+    tmp_path: Path,
+) -> None:
+    """Discovery rows carry ``highest_severity`` from the manifest's risk block.
+
+    Mirrors PR #136's CLI run-summary surface: a defender skimming
+    ``list-runs`` / ``latest-run`` / ``show-run`` sees the same
+    severity tier the dashboard header badge renders, without
+    opening each dashboard separately.
+    """
+    output_root = tmp_path / "output"
+    _make_run_dir(
+        output_root,
+        run_id="run-critical",
+        risk_summary={"critical": 1, "high": 0, "medium": 0, "low": 0},
+    )
+    _make_run_dir(
+        output_root,
+        run_id="run-medium",
+        risk_summary={"critical": 0, "high": 0, "medium": 2, "low": 1},
+    )
+    _make_run_dir(
+        output_root,
+        run_id="run-empty",
+        risk_summary={"critical": 0, "high": 0, "medium": 0, "low": 0},
+    )
+    by_id = {row["run_id"]: row for row in list_runs(output_root)}
+    assert by_id["run-critical"]["highest_severity"] == "critical"
+    assert by_id["run-medium"]["highest_severity"] == "medium"
+    # All-zero counts produce an empty severity, not a literal "low".
+    assert by_id["run-empty"]["highest_severity"] == ""
+
+
+def test_list_runs_partial_runs_have_empty_severity(tmp_path: Path) -> None:
+    """A run without a manifest still has the ``highest_severity`` key,
+    set to the empty string so the CLI renders an em-dash rather
+    than crashing on missing key.
+    """
+    output_root = tmp_path / "output"
+    _make_run_dir(
+        output_root,
+        run_id="run-partial",
+        write_manifest=False,
+    )
+    runs = list_runs(output_root)
+    partial = next(row for row in runs if row["run_id"] == "run-partial")
+    assert partial["has_manifest"] is False
+    assert partial["highest_severity"] == ""
 
 
 def test_list_runs_orders_newest_first_by_started_at(tmp_path: Path) -> None:

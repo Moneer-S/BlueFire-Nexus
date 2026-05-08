@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .manifest import highest_risk_tier
+
 
 # The orchestrator names runs ``run-YYYYMMDDHHMMSS-<short-uuid>``.
 # We do not pin the exact format here — any directory under the
@@ -99,12 +101,20 @@ def list_runs(output_root: Path) -> List[Dict[str, Any]]:
         manifest = _read_manifest(child)
         if isinstance(manifest, dict):
             run_block = manifest.get("run") if isinstance(manifest.get("run"), dict) else {}
+            # Read the highest non-zero severity tier from the
+            # manifest's risk block so the run-detail CLI commands
+            # (latest-run / show-run / list-runs) can render it
+            # alongside overall_status — same severity tier the
+            # dashboard header badge surfaces. Empty string when
+            # the manifest has no scored module.
+            severity = highest_risk_tier(manifest)
             rows.append(
                 {
                     "run_id": str(run_block.get("run_id") or child.name),
                     "run_dir": str(child),
                     "scenario_name": str(run_block.get("scenario_name") or ""),
                     "overall_status": str(run_block.get("overall_status") or ""),
+                    "highest_severity": severity,
                     "started_at": run_block.get("started_at") or _stat_started_at(child),
                     "module_count": int(run_block.get("module_count") or 0),
                     "has_manifest": True,
@@ -118,6 +128,7 @@ def list_runs(output_root: Path) -> List[Dict[str, Any]]:
                     "run_dir": str(child),
                     "scenario_name": "",
                     "overall_status": "",
+                    "highest_severity": "",
                     "started_at": _stat_started_at(child),
                     "module_count": 0,
                     "has_manifest": False,
