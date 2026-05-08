@@ -345,16 +345,8 @@ _PERSISTENCE_PROFILES: Dict[str, Dict[str, Any]] = {
 
 class PersistenceModule(BaseModule):
     name = "persistence"
-    attack_techniques = (
-        "T1053.005",
-        "T1053.003",
-        "T1547.001",
-        "T1543.003",
-        "T1543.001",
-        "T1543.004",
-        "T1546.003",
-        "T1546.004",
-        "T1542.003",
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _PERSISTENCE_PROFILES.values()})
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -475,15 +467,8 @@ _DEFENSE_EVASION_PROFILES: Dict[str, Dict[str, Any]] = {
 
 class DefenseEvasionModule(BaseModule):
     name = "defense_evasion"
-    attack_techniques = (
-        "T1564.010",
-        "T1036",
-        "T1070.006",
-        "T1070.001",
-        "T1564.001",
-        "T1218",
-        "T1027",
-        "T1562.001",
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _DEFENSE_EVASION_PROFILES.values()})
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -617,7 +602,9 @@ _DISCOVERY_PROFILES: Dict[str, Dict[str, Any]] = {
 
 class DiscoveryModule(BaseModule):
     name = "discovery"
-    attack_techniques = ("T1046", "T1018", "T1082", "T1057", "T1007", "T1087", "T1069", "T1083")
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _DISCOVERY_PROFILES.values()})
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         targets_raw = params.get("targets") or context.get("allowed_subnets", [])
@@ -1038,7 +1025,9 @@ _COMMAND_CONTROL_PROFILES: Dict[str, Dict[str, Any]] = {
 
 class CommandControlModule(BaseModule):
     name = "command_control"
-    attack_techniques = ("T1071.001", "T1071.003", "T1071.004", "T1095", "T1102")
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _COMMAND_CONTROL_PROFILES.values()})
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         requested = str(params.get("channel") or "http").lower()
@@ -1402,14 +1391,8 @@ _INTELLIGENCE_PROFILES: Dict[str, Dict[str, Any]] = {
 
 class IntelligenceModule(BaseModule):
     name = "intelligence"
-    attack_techniques = (
-        "T1591",
-        "T1591.002",
-        "T1592.002",
-        "T1588.006",
-        "T1589.001",
-        "T1590",
-        "T1590.005",
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _INTELLIGENCE_PROFILES.values()})
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -1533,13 +1516,8 @@ _NETWORK_OBFUSCATOR_PROFILES: Dict[str, Dict[str, Any]] = {
 
 class NetworkObfuscatorModule(BaseModule):
     name = "network_obfuscator"
-    attack_techniques = (
-        "T1572",
-        "T1090.001",
-        "T1090.002",
-        "T1090.003",
-        "T1090.004",
-        "T1001.003",
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _NETWORK_OBFUSCATOR_PROFILES.values()})
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -1663,17 +1641,8 @@ _RESOURCE_DEVELOPMENT_PROFILES: Dict[str, Dict[str, Any]] = {
 
 class ResourceDevelopmentModule(BaseModule):
     name = "resource_development"
-    attack_techniques = (
-        "T1583.001",
-        "T1583.003",
-        "T1583.006",
-        "T1585.001",
-        "T1585.002",
-        "T1588.001",
-        "T1588.003",
-        "T1588.005",
-        "T1588.006",
-        "T1584.001",
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _RESOURCE_DEVELOPMENT_PROFILES.values()})
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -1817,16 +1786,8 @@ _RECONNAISSANCE_PROFILES: Dict[str, Dict[str, Any]] = {
 
 class ReconnaissanceModule(BaseModule):
     name = "reconnaissance"
-    attack_techniques = (
-        "T1593",
-        "T1593.001",
-        "T1593.002",
-        "T1593.003",
-        "T1590.001",
-        "T1590.002",
-        "T1589.002",
-        "T1595.001",
-        "T1595.002",
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _RECONNAISSANCE_PROFILES.values()})
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -1971,16 +1932,8 @@ class CredentialAccessModule(BaseModule):
     """
 
     name = "credential_access"
-    attack_techniques = (
-        "T1003.001",
-        "T1003.002",
-        "T1003.003",
-        "T1555.003",
-        "T1555.001",
-        "T1552.004",
-        "T1056.001",
-        "T1115",
-        "T1113",
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _CREDENTIAL_ACCESS_PROFILES.values()})
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -2137,13 +2090,8 @@ class LateralMovementModule(BaseModule):
     """
 
     name = "lateral_movement"
-    attack_techniques = (
-        "T1021.002",
-        "T1047",
-        "T1021.006",
-        "T1021.004",
-        "T1570",
-        "T1543.003",
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _LATERAL_MOVEMENT_PROFILES.values()})
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -2329,14 +2277,8 @@ class PrivilegeEscalationModule(BaseModule):
     """
 
     name = "privilege_escalation"
-    attack_techniques = (
-        "T1134.001",
-        "T1134.003",
-        "T1055.012",
-        "T1055",
-        "T1036.005",
-        "T1543.003",
-        "T1548.002",
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _PRIVILEGE_ESCALATION_PROFILES.values()})
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -2492,14 +2434,8 @@ class ImpactModule(BaseModule):
     """
 
     name = "impact"
-    attack_techniques = (
-        "T1486",
-        "T1485",
-        "T1565",
-        "T1489",
-        "T1529",
-        "T1499",
-        "T1496",
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _IMPACT_PROFILES.values()})
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -2672,16 +2608,8 @@ class CollectionModule(BaseModule):
     """
 
     name = "collection"
-    attack_techniques = (
-        "T1074.001",
-        "T1560",
-        "T1560.001",
-        "T1560.002",
-        "T1056.001",
-        "T1115",
-        "T1113",
-        "T1123",
-        "T1114.001",
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _COLLECTION_PROFILES.values()})
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
