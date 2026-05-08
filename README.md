@@ -1,6 +1,6 @@
 # BlueFire Nexus
 
-[![tests](https://img.shields.io/badge/tests-1634%20passed-blue)](#development--tests)
+[![tests](https://img.shields.io/badge/tests-1698%20passed-blue)](#development--tests)
 [![security](https://img.shields.io/badge/security-bandit%20strict-green)](#development--tests)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](#quickstart)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -143,7 +143,7 @@ Splunk SPL is generated as **local detection-rule output**. It is not a Splunk e
 The three engines are not equally mature. Generated drafts are starting points for a detection engineer, not finished detections to deploy verbatim:
 
 - **Sigma (most mature).** Full document with `title` / `id` / `logsource` / `detection.selection` / `detection.condition` / `tags` / `level` / `x_bluefire_risk`. Per-module `detection_hints` populate the selection block with technique-specific field/value pairs. Most directly reusable in a SIEM pipeline.
-- **YARA-L (medium).** Per-rule meta with `technique` / `run_id` / `risk_score` / `risk_severity`, plus an `events` block tied to a process-launch metadata event and a `target.process.file.full_path` substring match. Use as a Chronicle / Google SecOps starting point; the `events` block typically needs hand-tuning per environment.
+- **YARA-L (medium-mature).** Per-rule meta with `technique` / `run_id` / `risk_score` / `risk_severity` plus optional `logsource_product` / `logsource_category` for analyst review. The `events:` block now derives from the same Sigma `logsource` + `detection.selection` as the Sigma rule next to it: `metadata.event_type` is mapped from the logsource category (`PROCESS_LAUNCH` / `FILE_MODIFICATION` / `REGISTRY_MODIFICATION` / `PROCESS_OPEN` / `PROCESS_MODULE_LOAD` / `NETWORK_CONNECTION` / `NETWORK_DNS`), and Sigma fields like `Image|endswith` / `CommandLine|contains` / `TargetFilename|endswith` / `TargetObject|contains` / `CallTrace|contains` lower into the matching UDM event field paths. Use as a Chronicle / Google SecOps starting point; you may still need to confirm dataset coverage and parser field names for your environment before deploying.
 - **SPL (draft / starter).** Each `.spl` file is a Splunk starter search, **not a deployable saved search**. Body uses the Sigma logsource block to map onto common Splunk sourcetypes (`WinEventLog:Security`, `Sysmon`, `linux_audit`, `stream:dns`, etc.) and surfaces the Sigma selection clause as `where` filters; a leading multi-line backtick comment header (`-- DRAFT detection search ... Adjust index= / sourcetype= for your environment ...`) makes the draft status explicit. When a hint has no logsource, the renderer falls back to a metadata-echo `| makeresults | eval` shape so existing tooling that consumed the prior format keeps working.
 
 The dashboard's "Detection drafts" KPI counts every file written across all three engines. Treat the count as scope ("how many techniques fired?") rather than maturity ("how many production detections do I have?"). The `coverage_<run_id>.json` manifest sibling enumerates each draft's module / technique / engine paths if you need a programmatic readout.
@@ -306,7 +306,7 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ope
 
 ## Status snapshot
 
-- 1634 passing tests, 5 intentional skips, 0 failures (~95-110s full-suite wallclock).
+- 1698 passing tests, 5 intentional skips, 0 failures (~95-110s full-suite wallclock).
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
 - 31 modules registered (17 standard + 14 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
 - 10 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.
