@@ -301,6 +301,77 @@ def test_impact_outscores_exfiltration_outscores_discovery() -> None:
     assert impact["severity"] == "critical"
 
 
+def test_standard_module_rationale_carries_matters_because() -> None:
+    """Standard modules surface a defender-facing 'why this matters' line.
+
+    The audit lens is "risk rationale should mention why the step
+    matters." ``tactic_base=<tactic>`` says what tactic produced
+    the score; ``matters_because=<text>`` says why a defender
+    should care, in chain-position language a reader without
+    MITRE ATT&CK fluency understands.
+    """
+    impact = score_module_result(_tactic_result("impact"))
+    assert "matters_because=destructive endgame" in impact["rationale"]
+
+    exfil = score_module_result(_tactic_result("exfiltration"))
+    assert "matters_because=data leaves perimeter" in exfil["rationale"]
+
+    cred = score_module_result(_tactic_result("credential_access"))
+    assert "matters_because=enables lateral expansion" in cred["rationale"]
+
+    recon = score_module_result(_tactic_result("reconnaissance"))
+    assert "matters_because=pre-foothold target scoping" in recon["rationale"]
+
+
+def test_unknown_standard_module_rationale_omits_matters_because() -> None:
+    """An out-of-tree module (no tactic_base entry) gets no synthesised reason.
+
+    Stable shape: the rationale always carries ``standard-module``
+    for unknown modules; the ``matters_because`` line only surfaces
+    when the module name maps to a documented tactic. Out-of-tree
+    callers don't suddenly get a fabricated reason.
+    """
+    result = ModuleResult(
+        status="success",
+        module="unknown_module_xyz",
+        message="",
+        techniques=["T1234"],
+        artifacts={},
+        detection_hints={},
+        telemetry=[],
+    )
+    risk = score_module_result(result)
+    assert "standard-module" in risk["rationale"]
+    assert not any(r.startswith("matters_because=") for r in risk["rationale"])
+
+
+def test_legacy_tactic_pack_rationale_carries_matters_because() -> None:
+    """The tactic_pack legacy path surfaces ``matters_because`` too.
+
+    Pin the same defender-facing rationale on the legacy adapter
+    branch so a defender triaging a legacy_impact emulate run sees
+    the same chain-position context as the standard impact run.
+    """
+    result = ModuleResult(
+        status="success",
+        module="legacy_impact",
+        message="",
+        techniques=["T1486"],
+        artifacts={
+            "legacy": {
+                "pack": "tactic_pack",
+                "capability": "impact",
+                "mode": "emulate",
+            }
+        },
+        detection_hints={},
+        telemetry=[],
+    )
+    risk = score_module_result(result)
+    assert "tactic_base=impact" in risk["rationale"]
+    assert "matters_because=destructive endgame" in risk["rationale"]
+
+
 def test_blocked_impact_step_does_not_score_critical() -> None:
     """A blocked / failed step is not the same as a successful one;
     the status delta must dampen the tactic base so a defender
