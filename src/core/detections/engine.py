@@ -108,7 +108,7 @@ def write_detection_artifacts(
         sigma_path.write_text(_sigma_doc_to_yaml(sigma_rule), encoding="utf-8")
         generated["sigma"].append(str(sigma_path))
 
-        yaral = generate_yara_l(module_name, technique, hint)
+        yaral = generate_yara_l(module_name, technique, hint, run_id=run_id)
         yaral_path = yaral_dir / f"{stem}.yaral"
         yaral_path.write_text(yaral, encoding="utf-8")
         generated["yara_l"].append(str(yaral_path))

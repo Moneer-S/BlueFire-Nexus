@@ -38,8 +38,24 @@ def build_yara_l_rule(run_id: str, module: str, hint: Dict[str, Any]) -> str:
     )
 
 
-def generate_yara_l(name: str, technique_id: str, metadata: Dict[str, Any]) -> str:
-    """Backward-compatible helper used by the detection engine."""
+def generate_yara_l(
+    name: str,
+    technique_id: str,
+    metadata: Dict[str, Any],
+    *,
+    run_id: str = "manual",
+) -> str:
+    """Render a YARA-L rule for a single detection hint.
+
+    The earlier signature hardcoded ``run_id="manual"`` for the
+    detection engine's call site, leaving every generated YARA-L
+    rule with a stale ``meta.run_id = "manual"`` even when the
+    Sigma rule next to it carried the real run id. The keyword-
+    only ``run_id`` parameter restores parity with the Sigma path
+    while keeping older callers (``run_id`` defaults to
+    ``"manual"`` to preserve the historical behaviour for any
+    out-of-tree caller that does not pass one).
+    """
     hint: Dict[str, Any] = dict(metadata or {})
     hint.setdefault("mitre_technique_id", technique_id or "T0000")
-    return build_yara_l_rule("manual", name, hint)
+    return build_yara_l_rule(run_id, name, hint)
