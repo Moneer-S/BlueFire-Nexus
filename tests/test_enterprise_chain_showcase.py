@@ -269,6 +269,39 @@ def test_showcase_viewer_propagation_table_carries_narrative_for_every_edge(
         assert narrative in html, f"missing narrative line: {narrative!r}"
 
 
+def test_showcase_viewer_timeline_carries_severity_arc(
+    showcase_run: Dict[str, Any],
+) -> None:
+    """Flagship timeline shows the chain's severity arc inline.
+
+    The 12-step kill chain spans pre-foothold (recon /
+    resource_development → low) through end-of-chain destructive
+    (impact → critical). The dashboard timeline surfaces each
+    step's severity badge so an operator scanning top-to-bottom
+    sees the risk arc without cross-referencing the
+    risk-summary card. This test pins:
+
+    1. The severity column header is present.
+    2. The rendered viewer contains every documented tier
+       (``low``, ``medium``, ``high``, ``critical``) — the
+       flagship spans the full risk spectrum so a regression
+       collapsing the tactic_base map would surface here.
+    """
+    html = Path(showcase_run["run_dir"], "index.html").read_text(encoding="utf-8")
+    # Column header advertises the new column.
+    assert "<th>severity</th>" in html
+    # Locate the Scenario timeline section so we assert tier
+    # badges surface INSIDE it (rather than only matching the
+    # risk-summary card above).
+    timeline_idx = html.index("Scenario timeline")
+    timeline_section = html[timeline_idx:]
+    for tier in ("low", "medium", "high", "critical"):
+        assert tier in timeline_section, (
+            f"timeline missing severity tier {tier!r}; the flagship's "
+            "chain should span the full risk arc"
+        )
+
+
 def test_showcase_viewer_renders_scenario_objective_in_header(
     showcase_run: Dict[str, Any],
 ) -> None:

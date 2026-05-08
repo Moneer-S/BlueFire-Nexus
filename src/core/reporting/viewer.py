@@ -471,25 +471,61 @@ def _render_kpi_grid(manifest: Mapping[str, Any]) -> str:
     return grid + chart
 
 
+def _step_severity_index(manifest: Mapping[str, Any]) -> Dict[str, str]:
+    """Map ``"<module>:<step_id>"`` -> severity string.
+
+    The risk block stores per-module entries keyed by
+    ``module: "<runtime_module>:<step_id>"`` (e.g.
+    ``discovery:enumerate-files``). The timeline carries
+    ``module`` and ``step_id`` as separate fields. Rebuilding the
+    same key here lets the timeline surface a severity column
+    without changing the risk-summary contract.
+
+    Returns an empty dict when ``risk.modules`` is absent or
+    malformed; the timeline degrades to an em-dash in the
+    severity column for unmatched steps.
+    """
+    index: Dict[str, str] = {}
+    risk = manifest.get("risk")
+    if not isinstance(risk, Mapping):
+        return index
+    modules = risk.get("modules")
+    if not isinstance(modules, list):
+        return index
+    for entry in modules:
+        if not isinstance(entry, Mapping):
+            continue
+        key = str(entry.get("module") or "").strip()
+        severity = str(entry.get("severity") or "").strip().lower()
+        if key and severity:
+            index[key] = severity
+    return index
+
+
 def _render_timeline(manifest: Mapping[str, Any]) -> str:
     """Section 4 — ordered scenario timeline.
 
-    Columns: # / step_id / module / name / status / techniques /
-    notes. The "notes" column carries the step's ``message`` when
-    it is non-empty AND meaningful — i.e. failure / blocked /
-    error states; success messages are usually boilerplate
-    ("Simulated X technique on Y") and would clutter the table.
-    Defenders triaging a problem run can see the explanation
-    inline instead of cross-referencing report.json.
+    Columns: # / step_id / module / name / status / severity /
+    techniques / notes. The "severity" column surfaces the same
+    risk tier the risk-summary table shows, so an operator
+    scanning the timeline top-to-bottom sees the chain's
+    severity arc inline — pre-foothold steps low / mid-chain
+    medium / end-of-chain high or critical — without
+    cross-referencing the risk-summary card. The "notes" column
+    carries the step's ``message`` when it is non-empty AND
+    meaningful (failure / blocked / error / partial_success
+    states); success messages are usually boilerplate and would
+    clutter the table.
     """
     steps = manifest.get("steps") or []
     if not steps:
         return ""
+    severity_by_key = _step_severity_index(manifest)
     rows: List[str] = []
     rows.append(
         "<thead><tr>"
         "<th>#</th><th>step_id</th><th>module</th><th>name</th>"
-        "<th>status</th><th>techniques</th><th>notes</th>"
+        "<th>status</th><th>severity</th><th>techniques</th><th>notes</th>"
         "</tr></thead>"
     )
     body: List[str] = []
@@ -505,6 +541,15 @@ def _render_timeline(manifest: Mapping[str, Any]) -> str:
         if status in {"blocked", "error", "failure", "partial_success"} and raw_message:
             message = str(raw_message).splitlines()[0][:200]
         notes_html = _esc(message) if message else "&mdash;"
+        # Compose the same key the risk block uses
+        # (``"<module>:<step_id>"``) so the timeline surfaces the
+        # tier the risk-summary table assigned. Steps that didn't
+        # land in the risk block (blocked / error before scoring)
+        # render an em-dash rather than the literal "unknown"
+        # badge.
+        step_key = f"{step.get('module','')}:{step.get('step_id','')}"
+        severity = severity_by_key.get(step_key, "")
+        severity_html = _severity_badge(severity) if severity else "&mdash;"
         body.append(
             "<tr>"
             f"<td>{index}</td>"
@@ -512,6 +557,7 @@ def _render_timeline(manifest: Mapping[str, Any]) -> str:
             f'<td><code>{_esc(step.get("module"))}</code></td>'
             f'<td>{_esc(step.get("name"))}</td>'
             f'<td>{_status_badge(str(step.get("status", "")))}</td>'
+            f"<td>{severity_html}</td>"
             f"<td>{techniques_html}</td>"
             f"<td>{notes_html}</td>"
             "</tr>"
