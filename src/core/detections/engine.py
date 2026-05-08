@@ -15,6 +15,38 @@ from .spl import render_spl
 from .yara_l import generate_yara_l
 
 
+# Characters that are invalid (or troublesome) in NTFS filenames.
+# ``:`` is the worst offender — Windows interprets it as the
+# Alternate Data Stream separator, so ``foo:bar.yml`` writes to
+# the ``bar.yml`` ADS of the file ``foo``, leaving an empty
+# main-stream file behind. The orchestrator builds module-result
+# dict keys as ``f"{module}:{step_id}"`` to disambiguate steps
+# that reuse the same module; that worked on POSIX but broke
+# detection writes on Windows. Sanitise *only* the filename
+# component — manifest / coverage records keep the original
+# colon-separated key so report tooling can still parse it.
+_FILENAME_UNSAFE_CHARS = ':*?"<>|/\\'
+
+
+def _safe_filename_component(value: str) -> str:
+    """Return a filename-safe form of ``value``.
+
+    Replaces every NTFS-unsafe character with ``__`` (double
+    underscore — distinct from the single underscore the engine
+    uses to glue ``module`` and ``run_id`` so a reader can still
+    decode the original ``module:step_id`` -> ``module__step_id``
+    swap visually). Trailing whitespace and dots are stripped
+    too because Windows resolves ``foo.`` and ``foo `` to ``foo``,
+    creating subtle collisions.
+    """
+    if not value:
+        return ""
+    result = value
+    for ch in _FILENAME_UNSAFE_CHARS:
+        result = result.replace(ch, "__")
+    return result.rstrip(" .")
+
+
 def _merge_legacy_hint(result: ModuleResult) -> Dict[str, Any]:
     """Augment detection hint with normalized legacy metadata."""
     hint: Dict[str, Any] = dict(result.detection_hints or {})
@@ -101,7 +133,17 @@ def write_detection_artifacts(
             or (result.techniques[0] if result.techniques else "T0000")
         )
 
-        stem = f"{module_name}_{run_id}"
+        # ``module_name`` is the orchestrator's module-result dict
+        # key. For scenario steps that's ``f"{module}:{step_id}"``,
+        # which contains a colon — invalid in NTFS filenames and
+        # interpreted as an ADS separator. Sanitise for the
+        # filesystem path while preserving the original
+        # colon-separated form for the rule body / Sigma id /
+        # YARA-L meta so tooling that parses those still gets the
+        # canonical key.
+        safe_module = _safe_filename_component(module_name)
+        safe_run_id = _safe_filename_component(run_id)
+        stem = f"{safe_module}_{safe_run_id}"
 
         sigma_rule = build_sigma_rule(run_id, module_name, hint)
         sigma_path = sigma_dir / f"{stem}.yml"
@@ -135,7 +177,11 @@ def write_detection_artifacts(
         )
 
     if telemetry_summary_rows:
-        summary_path = detections_dir / f"coverage_{run_id}.json"
+        # Same sanitisation applies to the coverage filename — the
+        # default run-id format ``run-YYYYMMDDHHMMSS-<hex>`` has no
+        # unsafe chars but a future operator-chosen ``run_id``
+        # could.
+        summary_path = detections_dir / f"coverage_{_safe_filename_component(run_id)}.json"
         summary_path.write_text(
             json.dumps({"detections": telemetry_summary_rows}, indent=2),
             encoding="utf-8",
