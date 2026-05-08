@@ -13,6 +13,16 @@ This file summarises the deltas at the version-tag granularity.
 
 ### Changed
 
+- `LegacyWrappedModule` now emits a properly-shaped detection hint
+  with an explicitly-labeled `legacy_wrapped/bluefire` logsource +
+  `event.module: <name>` selection + `needs_operator_review: True`
+  marker, instead of the previous hint of just
+  `{"mitre_technique": "T0000"}` which silently fell back to the
+  default `process_creation/windows` logsource and mis-labeled
+  every wrapped legacy module's Sigma / YARA-L draft as a Windows
+  process-creation rule. Generated rules from this adapter now
+  surface as "needs operator review" rather than masquerading as
+  Sysmon-shaped detections.
 - `anti_detection` standard module now selects from a 12-entry
   technique profile catalog (`memory_evasion`, `code_obfuscation`,
   `anti_debug`, `anti_sandbox`, `anti_vm`, `timestomp`, `log_clear`,
@@ -31,6 +41,17 @@ This file summarises the deltas at the version-tag granularity.
 
 ### Tests
 
+- New `tests/test_logsource_coverage_invariant.py` (+32): runs
+  every registered runtime module with minimal valid params and
+  asserts the resulting detection hint includes a non-empty
+  `logsource` block (with both `category` and `product` keys).
+  Catches future regressions where a new module ships without
+  setting logsource — the Sigma / YARA-L generators would
+  otherwise silently default to `process_creation/windows`,
+  mis-labeling the technique. Modules that intentionally emit no
+  hints (e.g. `legacy_capability_summary`) are tracked in an
+  exemption set and pinned to actually emit empty hints, so a
+  future change there also surfaces.
 - New `tests/test_anti_detection_module.py` (+24): per-method
   MITRE/event-type fan-out, distinct event types per profile,
   logsource diversity assertion, real-Sysmon-field invariant,
