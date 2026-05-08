@@ -41,10 +41,13 @@ Pinned invariants:
    *earlier* in the step list (forward references would never
    resolve in the linear runtime).
 
-6. **All four propagation pairs are demonstrated end-to-end**:
+6. **All five propagation pairs are demonstrated end-to-end**:
    discovery -> credential_access, credential_access ->
-   lateral_movement (source), collection -> exfiltration, and
-   collection -> impact (added in PR #64).
+   lateral_movement (source), collection -> exfiltration,
+   collection -> impact, and resource_development ->
+   command_control endpoint axis (the c2_endpoint_from_step
+   slot wires the resource_development step's registered
+   domain into the command_control step's c2_url).
 
 7. **Output stays under the runtime output directory** — every
    step's artifacts/detections land under `output_dir`; nothing
@@ -109,8 +112,16 @@ def test_every_step_runs_in_safe_dry_mode() -> None:
         )
 
 
+_PROPAGATION_KEYS = (
+    "target_from_step",
+    "source_from_step",
+    "c2_endpoint_from_step",
+)
+
+
 def test_propagation_references_resolve_to_earlier_steps() -> None:
-    """`target_from_step` / `source_from_step` must point at a prior step.
+    """`target_from_step` / `source_from_step` / `c2_endpoint_from_step`
+    must point at a prior step.
 
     The runtime walks steps in order; a forward reference
     (`step-b` referring to `step-c` that runs after it) would
@@ -122,7 +133,7 @@ def test_propagation_references_resolve_to_earlier_steps() -> None:
     seen: List[str] = []
     for step in scenario.steps:
         params = step.params or {}
-        for key in ("target_from_step", "source_from_step"):
+        for key in _PROPAGATION_KEYS:
             referenced = params.get(key)
             if referenced:
                 assert referenced in seen, (
@@ -132,8 +143,8 @@ def test_propagation_references_resolve_to_earlier_steps() -> None:
         seen.append(step.step_id)
 
 
-def test_all_four_propagation_pairs_are_demonstrated() -> None:
-    """The shipped chain demonstrates four `previous_step_results` pairs.
+def test_all_five_propagation_pairs_are_demonstrated() -> None:
+    """The shipped chain demonstrates five `previous_step_results` pairs.
 
     Pinning the matrix here so a future "simplification" that
     drops one of the demos surfaces here rather than only being
@@ -146,11 +157,12 @@ def test_all_four_propagation_pairs_are_demonstrated() -> None:
         "lateral-to-fileshare": ("harvest-browser-creds", "source_from_step"),
         "exfil-over-c2": ("stage-collected-data", "target_from_step"),
         "ransomware-impact": ("stage-collected-data", "target_from_step"),
+        "c2-channel": ("stage-infrastructure", "c2_endpoint_from_step"),
     }
     found: Dict[str, tuple[str, str]] = {}
     for step in scenario.steps:
         params = step.params or {}
-        for key in ("target_from_step", "source_from_step"):
+        for key in _PROPAGATION_KEYS:
             ref = params.get(key)
             if ref:
                 found[step.step_id] = (str(ref), key)

@@ -114,7 +114,15 @@ steps:
     module: command_control
     params:
       channel: https
-      c2_url: https://invoice-portal.example.lab/c2
+      # C2 endpoint is propagated from the upstream
+      # `stage-infrastructure` resource_development step rather than
+      # re-declared here. The upstream step registered the domain
+      # `invoice-portal.example.lab` as `artifacts.target`; the
+      # command_control module reads it via `c2_endpoint_from_step`
+      # and shapes it into `https://<host>/c2`. Demonstrates a fifth
+      # `previous_step_results` consumer pair
+      # (resource_development -> command_control endpoint axis).
+      c2_endpoint_from_step: stage-infrastructure
       network_touch: false
 
   - id: exfil-over-c2

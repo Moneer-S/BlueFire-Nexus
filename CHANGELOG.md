@@ -11,6 +11,25 @@ This file summarises the deltas at the version-tag granularity.
 
 ## [Unreleased]
 
+### Added
+
+- Fifth `previous_step_results` consumer pair plumbed into the
+  shipped `enterprise_intrusion_chain` scenario:
+  `resource_development → command_control` endpoint axis. The
+  `command_control` module gained an optional
+  `c2_endpoint_from_step` step param that picks up the upstream
+  step's `artifacts.target` (or first entry of `artifacts.targets`)
+  and shapes it into a c2_url (`https://<host>/c2` for hostnames;
+  upstream values that already include a scheme are used verbatim).
+  Explicit `c2_url` always wins. The scenario's `c2-channel` step
+  now propagates from `stage-infrastructure` rather than hardcoding
+  the C2 URL, modelling how an attacker-owned domain registered in
+  resource_development becomes the C2 endpoint a few steps later.
+- `ResourceDevelopmentModule.artifacts` now surfaces the registered
+  `target` (e.g. the registered domain / vps / cert) so downstream
+  propagation consumers can read it. Previously the param value
+  was only in step config and not visible in the artifact dict.
+
 ### Changed
 
 - `LegacyWrappedModule` now emits a properly-shaped detection hint
