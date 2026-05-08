@@ -96,6 +96,40 @@ def test_risk_summary_cli_renders_rationale_column(
     assert "mode=emulate" in result.stdout
 
 
+def test_risk_summary_cli_renders_matters_because_entry(
+    tmp_path: Path, cli_env: CliRunner
+) -> None:
+    """The CLI Why column surfaces the ``matters_because=<text>`` entry.
+
+    PR #129 added the chain-position rationale line; this test
+    pins that the CLI renders it through verbatim so an operator
+    triaging from a terminal sees why a step matters in the
+    chain (e.g. ``destructive endgame``,
+    ``data leaves perimeter``) without opening the dashboard.
+    """
+    risk_path = tmp_path / "risk_summary.json"
+    _write_risk_summary(
+        risk_path,
+        [
+            {
+                "module": "impact:ransomware",
+                "severity": "critical",
+                "score": 95,
+                "pack": "",
+                "capability": "",
+                "mode": "simulate",
+                "rationale": [
+                    "tactic_base=impact",
+                    "matters_because=destructive endgame",
+                ],
+            }
+        ],
+    )
+    result = cli_env.invoke(app, ["risk-summary", str(risk_path), "--top", "1"])
+    assert result.exit_code == 0, result.stdout
+    assert "matters_because=destructive endgame" in result.stdout
+
+
 def test_risk_summary_cli_handles_missing_rationale(
     tmp_path: Path, cli_env: CliRunner
 ) -> None:
