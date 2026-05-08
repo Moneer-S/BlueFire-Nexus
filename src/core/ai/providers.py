@@ -116,6 +116,13 @@ def _parse_run_summary_block(prompt: str) -> Dict[str, Any]:
         value = value.strip()
         if key == "scenario":
             summary["scenario_name"] = value
+        elif key == "objective":
+            # The orchestrator collapses multi-paragraph YAML
+            # objectives into a single line before formatting them
+            # into the prompt block, so we can read it back as one
+            # field. The narrative renderer uses this to ground
+            # the rendered prose in the chain story.
+            summary["scenario_objective"] = value
         elif key == "run_id":
             summary["run_id"] = value
         elif key == "module_count":
@@ -189,6 +196,7 @@ def _format_blocked_steps(summary: Mapping[str, Any]) -> list[str]:
 def _render_template_narrative(summary: Mapping[str, Any], model: str) -> str:
     """Plain-English SOC narrative from a parsed run summary."""
     scenario = summary.get("scenario_name") or "(unspecified scenario)"
+    objective = str(summary.get("scenario_objective") or "").strip()
     run_id = summary.get("run_id") or "(unknown run id)"
     module_count = summary.get("module_count")
     successful = summary.get("successful_steps", 0)
@@ -206,8 +214,15 @@ def _render_template_narrative(summary: Mapping[str, Any], model: str) -> str:
         "",
         "# Run summary",
         f"- scenario: {scenario}",
-        f"- run_id: {run_id}",
     ]
+    if objective:
+        # Surface the operator-authored chain narrative immediately
+        # below the scenario name so a defender reading the
+        # offline copilot artifact sees the chain story before the
+        # technical detail. Same wording the dashboard header and
+        # markdown report's "Scenario objective" section use.
+        lines.append(f"- objective: {objective}")
+    lines.append(f"- run_id: {run_id}")
     if isinstance(module_count, int):
         lines.append(
             f"- modules: {module_count} "

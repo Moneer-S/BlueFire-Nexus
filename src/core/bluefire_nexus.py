@@ -453,6 +453,7 @@ class BlueFireNexus:
             run_summary = summarise_run_state(
                 run_id=context.run_id,
                 scenario_name=scenario.name,
+                scenario_objective=scenario.objective,
                 module_results=module_results,
                 detection_summary=detection_summary,
             )
