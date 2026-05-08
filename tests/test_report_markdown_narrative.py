@@ -268,6 +268,31 @@ def test_flagship_report_md_carries_propagation_narrative(
         assert narrative in body, f"missing narrative in report.md: {narrative!r}"
 
 
+def test_flagship_report_md_carries_per_step_rationale(
+    _flagship_run: Dict[str, Any],
+) -> None:
+    """Each module-results section surfaces the same rationale the
+    dashboard's "Why" column shows.
+
+    Closes the same surface-consistency gap the scenario objective
+    + propagation narrative work closed: the markdown report,
+    static dashboard, and offline copilot artifact should all
+    show the same defender-facing chain context. Pin the
+    rendered "Why:" line for the impact + exfiltration modules
+    end-to-end so a regression in either the rationale generator
+    or the markdown writer surfaces here.
+    """
+    body = (_flagship_run["run_dir"] / "report.md").read_text(encoding="utf-8")
+    # Format: ``- Why: \`tactic_base=impact\`, \`matters_because=destructive endgame\``
+    # Match a stable substring so test stays robust to comma /
+    # whitespace cosmetics.
+    assert "- Why:" in body
+    assert "tactic_base=impact" in body
+    assert "matters_because=destructive endgame" in body
+    assert "tactic_base=exfiltration" in body
+    assert "matters_because=data leaves perimeter" in body
+
+
 def test_flagship_report_md_section_order_tells_story_first(
     _flagship_run: Dict[str, Any],
 ) -> None:
