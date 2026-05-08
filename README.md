@@ -73,7 +73,6 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 python -m pip install --upgrade pip
 pip install -r requirements-dev.txt
 pip install -e .
-cp .env.example .env
 
 # 2. Run a scenario (simulate-only, dry-run, no network)
 python -m src.run_scenario --profile apt29_credential_access --output-json
@@ -88,6 +87,17 @@ python -m src.core.cli validate-run <run_id> # check the bundle is complete
 #    macOS:   open       output/<run_id>/index.html
 #    Windows: start       output\<run_id>\index.html
 ```
+
+The default flow is **fully offline** — no `.env` file, no API key, no network call. The framework ships with a deterministic template AI provider that produces copilot artifacts without any external dependency, and `dry_run=True` is the registry-wide default for every module.
+
+If you want to enable a remote AI provider (OpenAI, Anthropic, Gemini, Grok, Ollama, etc.) for richer copilot output, **then** copy the env template and fill in the relevant key:
+
+```bash
+cp .env.example .env
+# edit .env — see docs/USAGE_GUIDELINES.md § AI provider configuration
+```
+
+The remote-AI step is genuinely optional. The README quickstart above was validated end-to-end on a fresh clone without ever touching `.env`.
 
 The full demo scenario is `enterprise_intrusion_chain` (12 standard modules, four step-to-step propagation pairs):
 
