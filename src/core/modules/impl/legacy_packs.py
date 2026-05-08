@@ -192,6 +192,13 @@ class LegacyApt29ResearchModule(LegacyAdapterBase):
         )
         technique = str(params.get("technique", "phishing")).lower()
         target = str(params.get("target", "lab-user"))
+        # Three named techniques drive distinct telemetry shapes
+        # (phishing, powershell, process_hollowing); anything else
+        # falls through to the DNS-C2 research fallback. Track
+        # whether we hit the fallback so the detection draft can
+        # surface a marker for the operator.
+        _KNOWN_APT29_TECHNIQUES = {"phishing", "powershell", "process_hollowing"}
+        unrecognized_technique = technique not in _KNOWN_APT29_TECHNIQUES
 
         details: Dict[str, Any]
         hints: Dict[str, Any]
@@ -292,6 +299,15 @@ class LegacyApt29ResearchModule(LegacyAdapterBase):
             selection["legacy.actor_signature"] = self.actor_signature
         if self.aka:
             selection["legacy.actor_aka"] = list(self.aka)
+
+        # Surface the unknown-technique marker on the resulting hint
+        # so an operator can see they fell through to the DNS-C2
+        # fallback rather than hitting one of the three named
+        # techniques.
+        if unrecognized_technique:
+            hints["unrecognized_legacy_technique"] = technique
+            hints["needs_operator_review"] = True
+            details["unrecognized_legacy_technique"] = technique
 
         if mode == "emulate":
             runtime = safe_call(
@@ -417,7 +433,22 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
             "target": target,
             "mode": mode,
         }
-        mitre = self._TACTIC_TO_TECHNIQUE.get(tactic, "T1589")
+        # Tactic dispatch: when the tactic isn't in the per-actor
+        # ``_TACTIC_TO_TECHNIQUE`` map the legacy adapter previously
+        # fell back to T1589 (Gather Victim Identity Information)
+        # silently, leaving operators with a recon-coded artifact for
+        # what was actually an unrecognised tactic. Fall back to
+        # ``T0000`` (the project-wide "no canonical technique"
+        # placeholder used by ``LegacyWrappedModule``) AND surface
+        # the fact in the detection hints so the operator can see
+        # why their requested tactic produced this result.
+        if tactic in self._TACTIC_TO_TECHNIQUE:
+            mitre = self._TACTIC_TO_TECHNIQUE[tactic]
+            unrecognized_tactic = False
+        else:
+            mitre = "T0000"
+            unrecognized_tactic = True
+            details["unrecognized_legacy_tactic"] = tactic
 
         if mode == "emulate":
             runtime = safe_call(
@@ -472,6 +503,9 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
             },
             "mitre_technique": mitre,
         }
+        if unrecognized_tactic:
+            hints["unrecognized_legacy_tactic"] = tactic
+            hints["needs_operator_review"] = True
         artifacts = _capability_artifacts(
             context,
             self.pack_name,
