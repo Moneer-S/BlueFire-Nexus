@@ -483,7 +483,7 @@ def test_enterprise_intrusion_chain_writes_manifest_with_five_propagation_edges(
         "T1583.001",
         "T1593",
         "T1566",
-        "T1059",
+        "T1059.001",
         "T1036",
         "T1083",
         "T1555.003",

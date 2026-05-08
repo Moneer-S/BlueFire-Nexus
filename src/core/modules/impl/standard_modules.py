@@ -100,15 +100,72 @@ class InitialAccessModule(BaseModule):
         )
 
 
+# Execution interpreter sub-technique catalog.
+#
+# Maps the basename of a command's first token (case-insensitive,
+# trailing ``.exe`` stripped) to its specific Command and Scripting
+# Interpreter sub-technique. Was historically pinned to bare T1059
+# regardless of interpreter, which left the showcase scenario's
+# ``powershell -enc ...`` step claiming the parent technique even
+# though every detection vendor maps PowerShell-specific telemetry
+# to T1059.001. The parent T1059 is reserved as the fallback when
+# no interpreter is recognised.
+_EXECUTION_INTERPRETER_PROFILES: Dict[str, Dict[str, str]] = {
+    "powershell": {"mitre": "T1059.001", "interpreter": "powershell"},
+    "pwsh": {"mitre": "T1059.001", "interpreter": "powershell"},
+    "osascript": {"mitre": "T1059.002", "interpreter": "applescript"},
+    "cmd": {"mitre": "T1059.003", "interpreter": "windows_cmd"},
+    "bash": {"mitre": "T1059.004", "interpreter": "unix_shell"},
+    "sh": {"mitre": "T1059.004", "interpreter": "unix_shell"},
+    "zsh": {"mitre": "T1059.004", "interpreter": "unix_shell"},
+    "ksh": {"mitre": "T1059.004", "interpreter": "unix_shell"},
+    "dash": {"mitre": "T1059.004", "interpreter": "unix_shell"},
+    "fish": {"mitre": "T1059.004", "interpreter": "unix_shell"},
+    "cscript": {"mitre": "T1059.005", "interpreter": "vbscript"},
+    "wscript": {"mitre": "T1059.005", "interpreter": "vbscript"},
+    "python": {"mitre": "T1059.006", "interpreter": "python"},
+    "python3": {"mitre": "T1059.006", "interpreter": "python"},
+    "py": {"mitre": "T1059.006", "interpreter": "python"},
+    "node": {"mitre": "T1059.007", "interpreter": "javascript"},
+    "deno": {"mitre": "T1059.007", "interpreter": "javascript"},
+    "jsc": {"mitre": "T1059.007", "interpreter": "javascript"},
+}
+
+
+def _resolve_execution_profile(command: str) -> Dict[str, str]:
+    """Return ``{mitre, interpreter}`` for a command, falling back to T1059.
+
+    Examines the basename of the first whitespace-separated token of
+    the command, lower-cased and with ``.exe`` stripped, against the
+    interpreter catalog. ``powershell.exe -nop ...`` and
+    ``c:\\windows\\system32\\cmd.exe /c ...`` both resolve correctly.
+    """
+    if not command.strip():
+        return {"mitre": "T1059", "interpreter": "unknown"}
+    first_token = command.strip().split(maxsplit=1)[0]
+    # Strip Windows-style path; basename is what matters.
+    basename = first_token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if basename.endswith(".exe"):
+        basename = basename[:-4]
+    profile = _EXECUTION_INTERPRETER_PROFILES.get(basename)
+    if profile is None:
+        return {"mitre": "T1059", "interpreter": "unknown"}
+    return dict(profile)
+
+
 class ExecutionModule(BaseModule):
     name = "execution"
-    attack_techniques = ("T1059",)
+    attack_techniques = tuple(
+        sorted({"T1059", *(profile["mitre"] for profile in _EXECUTION_INTERPRETER_PROFILES.values())})
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         command = str(params.get("command") or params.get("cmd") or "echo simulated-execution")
         allow_real = bool(self._config.get("allow_real_execution", False))
         dry_run = bool(context.get("dry_run", True))
         timeout = int(self._config.get("timeout_seconds", 10))
+        interpreter_profile = _resolve_execution_profile(command)
+        mitre = interpreter_profile["mitre"]
 
         if dry_run or not allow_real:
             output = f"[dry-run] would execute: {command}"
@@ -133,7 +190,7 @@ class ExecutionModule(BaseModule):
                     self.name,
                     "failure",
                     "Execution failed.",
-                    techniques=["T1059"],
+                    techniques=[mitre],
                     error=str(exc),
                 )
 
@@ -145,6 +202,8 @@ class ExecutionModule(BaseModule):
                 "command": command,
                 "return_code": rc,
                 "target_os": target_os,
+                "interpreter": interpreter_profile["interpreter"],
+                "mitre_technique": mitre,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         )
@@ -155,15 +214,16 @@ class ExecutionModule(BaseModule):
                 "selection": {"process.command_line|contains": command.split(" ")[0]},
                 "condition": "selection",
             },
-            "mitre_technique": "T1059",
+            "mitre_technique": mitre,
             "process_command_line": command,
             "target_os": target_os,
+            "interpreter": interpreter_profile["interpreter"],
         }
         return _result(
             self.name,
             status,
             message,
-            techniques=["T1059"],
+            techniques=[mitre],
             telemetry=[event],
             hints=hints,
             artifacts={
@@ -171,6 +231,8 @@ class ExecutionModule(BaseModule):
                 "stdout": output,
                 "return_code": rc,
                 "target_os": target_os,
+                "interpreter": interpreter_profile["interpreter"],
+                "mitre_technique": mitre,
             },
         )
 
