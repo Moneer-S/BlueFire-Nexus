@@ -11,7 +11,22 @@ This file summarises the deltas at the version-tag granularity.
 
 ## [Unreleased]
 
-No changes since `[3.0.0-rc1]`.
+### Tests
+
+- New `tests/test_scenario_quality_invariants.py` (+90):
+  parametrized over every shipped scenario, asserts step-id
+  uniqueness, explicit step ids, propagation references resolve
+  to earlier steps, every step specifies a module, runtime
+  overall status is success, every step reaches success at
+  runtime, every detection artifact path stays under the
+  configured output_root, every success step emits at least one
+  ATT&CK technique (excluding the `legacy_capability_summary`
+  metadata-only module), and declared `attack_coverage` is
+  fully exercised by runtime emissions. Previously these
+  invariants were pinned only for the flagship
+  `enterprise_intrusion_chain`; the other nine shipped scenarios
+  could drift along any of these axes without surfacing in tests
+  until an operator hit the regression in production.
 
 ## [3.0.0-rc1] - 2026-05-07
 
