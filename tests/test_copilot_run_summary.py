@@ -275,6 +275,83 @@ def test_prompt_block_omits_empty_scenario() -> None:
     assert "run_id: r-1" in rendered
 
 
+def test_summary_carries_scenario_objective_when_provided() -> None:
+    """The objective is stored stripped + flattened to a single line.
+
+    The summariser is the same place the markdown report and
+    viewer get their narrative text from, so the offline copilot
+    sees the same chain story the dashboard surfaces.
+    """
+    objective = (
+        "  An attacker registers a domain and phishes a finance analyst.\n"
+        "  Every step is simulate-only with network_touch=false.  "
+    )
+    summary = summarise_run_state(
+        run_id="r-obj",
+        scenario_name="demo",
+        scenario_objective=objective,
+    )
+    # Always present (default-empty when not supplied).
+    assert "scenario_objective" in summary
+    # Stripped + collapsed to a single line.
+    objective_value = summary["scenario_objective"]
+    assert objective_value.startswith("An attacker registers a domain")
+    assert "\n" not in objective_value
+    # Multiple internal whitespace runs collapse to single spaces.
+    assert "  " not in objective_value
+
+
+def test_summary_omits_objective_when_not_provided() -> None:
+    """Default-None / empty objective produces an empty-string field.
+
+    Stable shape: the key is always present so downstream code
+    can rely on it, but the value is empty so callers don't
+    surface a stray ``objective:`` line.
+    """
+    summary = summarise_run_state(run_id="r-empty", scenario_name="demo")
+    assert summary["scenario_objective"] == ""
+
+
+def test_summary_caps_pathologically_long_objective() -> None:
+    """An objective longer than the budget cap suffix-truncates with an ellipsis.
+
+    Operator-authored objectives can be long; the prompt budget
+    cap keeps the prompt safe from someone pasting an entire
+    incident report into ``objective:`` while still showing the
+    model "more than what fits" via the trailing ellipsis.
+    """
+    huge = "A" * 5000
+    summary = summarise_run_state(
+        run_id="r-huge", scenario_name="demo", scenario_objective=huge
+    )
+    value = summary["scenario_objective"]
+    assert len(value) <= 1000
+    assert value.endswith("…")
+
+
+def test_prompt_block_renders_objective_line_when_present() -> None:
+    """``_format_run_summary_for_prompt`` surfaces an ``objective:`` line.
+
+    The orchestrator's prompt body now grounds the model in the
+    chain story, not just step-status counts. Pin the rendered
+    line shape so a future refactor can't silently drop it.
+    """
+    summary = summarise_run_state(
+        run_id="r-narrate",
+        scenario_name="enterprise_intrusion_chain",
+        scenario_objective="Attacker phishes the analyst and runs ransomware.",
+    )
+    rendered = _format_run_summary_for_prompt(summary)
+    assert "objective: Attacker phishes the analyst" in rendered
+
+
+def test_prompt_block_omits_objective_line_when_empty() -> None:
+    """No objective => no ``objective:`` line in the prompt block."""
+    summary = summarise_run_state(run_id="r-noop", scenario_name="x")
+    rendered = _format_run_summary_for_prompt(summary)
+    assert "objective:" not in rendered
+
+
 # ---------------------------------------------------------------------------
 # 3. AICopilot back-compat: legacy callers work without run_summary
 # ---------------------------------------------------------------------------
@@ -328,6 +405,7 @@ def test_narrate_with_summary_includes_documented_keys_in_header(tmp_path: Path)
     summary = summarise_run_state(
         run_id="r-narrate",
         scenario_name="enterprise_intrusion_chain",
+        scenario_objective="Attacker phishes the analyst and runs ransomware.",
         module_results={
             "discovery:enumerate": _FakeResult(
                 status="success", techniques=["T1083", "T1087"]
@@ -339,6 +417,7 @@ def test_narrate_with_summary_includes_documented_keys_in_header(tmp_path: Path)
     header = _read_header(result["path"])
 
     assert "scenario_name: enterprise_intrusion_chain" in header
+    assert "scenario_objective: Attacker phishes the analyst" in header
     assert "run_id: r-narrate" in header
     assert "module_count: 2" in header
     assert "successful_steps: 1" in header

@@ -139,8 +139,17 @@ def _utc_now_isoformat() -> str:
 # Header keys derived from a run summary that we surface in the
 # artifact frontmatter. Listed explicitly to keep the YAML header
 # stable and to avoid leaking arbitrary mapping keys into the file.
+#
+# ``scenario_objective`` is the YAML scenario's narrative summary
+# (PR #118 polish; PR #119 plumbed it through the manifest). The
+# offline copilot's narrative artifact reads it from the run
+# summary so the rendered prose is grounded in the chain story
+# rather than just step-status counts. Empty when the scenario
+# has no objective, so the artifact header degrades cleanly for
+# legacy / single-module runs.
 _RUN_SUMMARY_HEADER_KEYS: tuple[str, ...] = (
     "scenario_name",
+    "scenario_objective",
     "run_id",
     "module_count",
     "successful_steps",
@@ -154,6 +163,7 @@ def summarise_run_state(
     *,
     run_id: str,
     scenario_name: Optional[str] = None,
+    scenario_objective: Optional[str] = None,
     module_results: Optional[Mapping[str, Any]] = None,
     detection_summary: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -164,6 +174,17 @@ def summarise_run_state(
     which has ``status`` / ``techniques`` / ``detection_hints``
     attributes) and the rendered ``detection_summary`` mapping so the
     copilot can shape better prompts than "run_id=<x>".
+
+    The optional ``scenario_objective`` (PR #118 / #119 / #120
+    chain) is the scenario YAML's narrative summary — the same
+    text the dashboard surfaces in its header and the markdown
+    report renders as the "Scenario objective" section. Including
+    it here grounds the offline copilot's narrative artifact in
+    the chain story rather than just step-status counts. The
+    summariser stores it stripped (no leading/trailing whitespace)
+    and capped at 1000 chars to keep prompt budget bounded; longer
+    objectives suffix-truncate with an ellipsis so the model still
+    sees "this is more than what fits".
 
     Intentional restrictions:
 
@@ -177,6 +198,10 @@ def summarise_run_state(
     - **Deterministic shape** — every key listed in
       ``_RUN_SUMMARY_HEADER_KEYS`` is always present so artifact
       metadata headers stay schema-stable.
+    - **Scenario objective is a TRUSTED field** — it comes from the
+      scenario YAML the operator authored, not from a module's
+      runtime output, so the prompt-injection guard that excludes
+      ``ModuleResult.message`` does not apply to it.
     """
     statuses: Counter[str] = Counter()
     techniques: list[str] = []
@@ -223,6 +248,7 @@ def summarise_run_state(
 
     return {
         "scenario_name": str(scenario_name) if scenario_name else "",
+        "scenario_objective": _normalise_objective(scenario_objective),
         "run_id": str(run_id),
         "module_count": len(module_status_pairs),
         "module_statuses": [
@@ -239,6 +265,36 @@ def summarise_run_state(
     }
 
 
+# Maximum scenario_objective length surfaced to the prompt /
+# artifact header. Objective is operator-authored YAML, so this
+# is a budget cap, not a security guard. Long objectives
+# suffix-truncate with an ellipsis so the prompt sees "more than
+# what fits" rather than silently losing the tail.
+_MAX_OBJECTIVE_CHARS: int = 1000
+
+
+def _normalise_objective(scenario_objective: Optional[str]) -> str:
+    """Render the scenario objective for prompt / header inclusion.
+
+    Mirrors the markdown report's paragraph normalisation: collapses
+    multi-line YAML literal blocks into single-line prose by
+    replacing newlines with spaces and squeezing repeated
+    whitespace, then strips leading/trailing whitespace and caps
+    the length at ``_MAX_OBJECTIVE_CHARS`` with an ellipsis suffix.
+    """
+    if not scenario_objective:
+        return ""
+    raw = str(scenario_objective).strip()
+    if not raw:
+        return ""
+    # Collapse all whitespace runs (incl. newlines) into single
+    # spaces so the rendered single-line prose flows.
+    collapsed = " ".join(raw.split())
+    if len(collapsed) <= _MAX_OBJECTIVE_CHARS:
+        return collapsed
+    return collapsed[: _MAX_OBJECTIVE_CHARS - 1].rstrip() + "…"
+
+
 def _format_run_summary_for_prompt(run_summary: Mapping[str, Any]) -> str:
     """Render the summary as a compact text block for prompt inclusion.
 
@@ -252,6 +308,15 @@ def _format_run_summary_for_prompt(run_summary: Mapping[str, Any]) -> str:
     scenario_name = run_summary.get("scenario_name") or ""
     if scenario_name:
         lines.append(f"  scenario: {scenario_name}")
+    scenario_objective = run_summary.get("scenario_objective") or ""
+    if scenario_objective:
+        # The objective is single-line by construction (the
+        # summariser collapses multi-paragraph YAML literals into
+        # one line), so it lands cleanly under the indented summary
+        # block. The template provider's ``narrate`` intent reads
+        # this line to ground the rendered narrative in the chain
+        # story.
+        lines.append(f"  objective: {scenario_objective}")
     run_id = run_summary.get("run_id") or ""
     if run_id:
         lines.append(f"  run_id: {run_id}")

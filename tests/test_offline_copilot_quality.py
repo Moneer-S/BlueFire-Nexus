@@ -90,6 +90,10 @@ def _full_summary() -> Dict[str, Any]:
     return summarise_run_state(
         run_id="run-2026-05-08-rich",
         scenario_name="enterprise_intrusion_chain",
+        scenario_objective=(
+            "An attacker registers a domain, phishes a finance analyst, "
+            "runs an encoded PowerShell loader, and ends with ransomware."
+        ),
         module_results={
             "execution:loader-execution": _FakeResult(
                 status="success",
@@ -239,6 +243,34 @@ def test_narrate_template_surfaces_scenario_and_techniques() -> None:
     # Successful + non-success counts surface.
     assert "2 success" in body
     assert "2 non-success" in body
+
+
+def test_narrate_template_grounds_in_scenario_objective() -> None:
+    """The chain narrative leads with the scenario objective when present.
+
+    Same chain story the dashboard header and report.md surface;
+    grounding the offline AI narrative in it ensures the AI
+    artifact reads as a SOC summary, not a step-status dump.
+    """
+    summary = _full_summary()
+    body = TemplateProvider().generate(_narrate_prompt(summary)).text
+    assert "objective:" in body
+    assert "An attacker registers a domain" in body
+
+
+def test_narrate_template_omits_objective_line_when_summary_lacks_one() -> None:
+    """Default-empty objective leaves no ``objective:`` line in the output."""
+    summary = summarise_run_state(
+        run_id="r-noop",
+        scenario_name="enterprise_intrusion_chain",
+        module_results={
+            "execution:loader-execution": _FakeResult(
+                status="success", techniques=["T1059"]
+            ),
+        },
+    )
+    body = TemplateProvider().generate(_narrate_prompt(summary)).text
+    assert "objective:" not in body
 
 
 def test_narrate_template_renders_step_timeline() -> None:
