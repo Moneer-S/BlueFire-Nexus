@@ -349,12 +349,25 @@ def _render_risk_summary_payload(payload: Mapping[str, Any], *, title: str, top:
     detail_table.add_column("Pack")
     detail_table.add_column("Capability")
     detail_table.add_column("Mode")
+    # Mirrors the static viewer's ``why`` column added in PR #114.
+    # ``rationale`` is a list of short markers (``pack=tactic_pack``,
+    # ``tactic_base=impact``, ``mode=emulate``, ...) explaining why
+    # the score landed where it did. Surface it in the CLI so an
+    # operator triaging from a terminal doesn't need to open
+    # risk_summary.json to see the reasoning.
+    detail_table.add_column("Why")
     ordered_modules = sorted(
         modules,
         key=lambda item: int(item.get("score", 0)),
         reverse=True,
     )
     for item in ordered_modules[:top]:
+        rationale = item.get("rationale") or []
+        why = (
+            ", ".join(str(r) for r in rationale)
+            if isinstance(rationale, (list, tuple))
+            else ""
+        )
         detail_table.add_row(
             str(item.get("module", "")),
             str(item.get("severity", "")),
@@ -362,6 +375,7 @@ def _render_risk_summary_payload(payload: Mapping[str, Any], *, title: str, top:
             str(item.get("pack", "")),
             str(item.get("capability", "")),
             str(item.get("mode", "")),
+            why,
         )
     console.print(detail_table)
 
