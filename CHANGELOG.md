@@ -13,6 +13,19 @@ This file summarises the deltas at the version-tag granularity.
 
 ### Changed
 
+- Risk scoring (`src/core/risk.py`) now uses a tactic-aware base
+  score for standard modules so end-of-chain destructive tactics
+  (e.g. `impact` -> 85 base, `exfiltration` -> 75 base) surface
+  as `critical` / `high` severity, while pre-foothold tactics
+  (`reconnaissance` / `resource_development` -> 25 base) stay
+  `low`. Previously every standard-module result landed at score
+  35-55 ("low" / "medium") regardless of tactic — a successful
+  ransomware-impact step scored the same as a benign file-discovery
+  step. Modules whose `name` is not in the new
+  `_TACTIC_BASE_SCORES` map keep the historic default base (35),
+  preserving behaviour for out-of-tree callers. Legacy adapter
+  scoring is unchanged (the legacy branch still wins via `pack`
+  presence in artifacts).
 - `anti_detection` standard module now selects from a 12-entry
   technique profile catalog (`memory_evasion`, `code_obfuscation`,
   `anti_debug`, `anti_sandbox`, `anti_vm`, `timestomp`, `log_clear`,
@@ -36,6 +49,12 @@ This file summarises the deltas at the version-tag granularity.
   logsource diversity assertion, real-Sysmon-field invariant,
   target propagation via `target_from_step`, no-regression to
   the `anti_detection.method` synthetic field.
+- `tests/test_risk.py` extended (+12) with tactic-aware
+  invariants: impact -> critical, exfiltration -> high,
+  discovery -> low, ordering across recon -> initial_access ->
+  credential_access -> exfiltration -> impact, blocked-impact
+  dampener, errored-recon floor, unknown-module fallback,
+  legacy-branch precedence preservation.
 - `tests/test_fanout_batch.py` parametrization extended to cover
   `AntiDetectionModule` (+5 tests via the existing 5 fan-out
   invariants × the new module).

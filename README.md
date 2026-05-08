@@ -1,6 +1,6 @@
 # BlueFire Nexus
 
-[![tests](https://img.shields.io/badge/tests-1602%20passed-blue)](#development--tests)
+[![tests](https://img.shields.io/badge/tests-1614%20passed-blue)](#development--tests)
 [![security](https://img.shields.io/badge/security-bandit%20strict-green)](#development--tests)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](#quickstart)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -306,7 +306,7 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ope
 
 ## Status snapshot
 
-- 1602 passing tests, 5 intentional skips, 0 failures (~92-110s full-suite wallclock).
+- 1614 passing tests, 5 intentional skips, 0 failures (~100-110s full-suite wallclock).
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
 - 31 modules registered (17 standard + 14 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
 - 10 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.
