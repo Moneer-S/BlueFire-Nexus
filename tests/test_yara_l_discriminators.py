@@ -230,13 +230,15 @@ def test_no_modifier_uses_string_equality() -> None:
     )
 
 
-def test_in_modifier_with_list_renders_alternation_regex() -> None:
+def test_in_modifier_with_list_renders_anchored_alternation_regex() -> None:
+    """``|in`` lists render as ``^(...)$`` to preserve list-membership
+    semantics; an unanchored regex would match substrings (Codex P2)."""
     rule = build_yara_l_rule(
         "run-1",
         "execution",
         _hint_with_selection({"CommandLine|in": ["foo", "bar", "baz"]}),
     )
-    assert "/(foo|bar|baz)/ nocase" in rule
+    assert "/^(foo|bar|baz)$/ nocase" in rule
 
 
 def test_numeric_value_with_no_modifier_emits_unquoted() -> None:
@@ -457,3 +459,146 @@ def test_engine_yaral_legacy_fallback_when_hint_has_no_selection(tmp_path: Path)
     yaral_path = Path(artifacts["yara_l"][0])
     body = yaral_path.read_text(encoding="utf-8")
     assert "$e.target.process.file.full_path" in body
+
+
+# ---------------------------------------------------------------------------
+# 8. Codex-found regressions: category-aware unmapped-field fallback
+#    + anchored ``|in`` regex semantics
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "category,expected_udm",
+    [
+        ("file_event", "$e.target.file.full_path"),
+        ("registry_event", "$e.target.registry.registry_key"),
+        ("process_creation", "$e.principal.process.command_line"),
+        ("process_access", "$e.principal.process.api_calls"),
+        ("image_load", "$e.target.process.file.full_path"),
+        ("network_connection", "$e.target.hostname"),
+        ("dns", "$e.network.dns.questions.name"),
+        ("email", "$e.network.email.to"),
+    ],
+)
+def test_unmapped_field_falls_back_to_category_appropriate_udm(
+    category: str, expected_udm: str
+) -> None:
+    """An unmapped Sigma field must NOT silently land on
+    ``principal.process.command_line`` for non-process categories.
+
+    Codex P1 finding: the previous fallback rewrote every unmapped
+    selection key to ``principal.process.command_line``, which was
+    nonsense inside a NETWORK_CONNECTION / FILE_MODIFICATION /
+    REGISTRY_MODIFICATION rule. The fallback now picks a UDM path
+    in the same telemetry family as the rule's logsource category.
+    """
+    rule = build_yara_l_rule(
+        "run-1",
+        "test_module",
+        _hint_with_selection(
+            {"completely_unknown_field|contains": "foo"},
+            category=category,
+        ),
+    )
+    assert expected_udm in rule, (
+        f"unmapped field in {category} rule should fall back to "
+        f"{expected_udm}, got:\n{rule}"
+    )
+
+
+@pytest.mark.parametrize(
+    "shipped_field,expected_udm",
+    [
+        ("network.dst_host|in", "$e.target.hostname"),
+        ("network.dst_host|contains", "$e.target.hostname"),
+        ("network.banner_grab", "$e.network.received_bytes"),
+        ("network.protocol", "$e.network.application_protocol"),
+        ("network.tool", "$e.principal.process.file.full_path"),
+        ("network.url|contains", "$e.target.url"),
+        ("network.target|in", "$e.target.hostname"),
+        ("file.extension|in", "$e.target.file.full_path"),
+        ("file.action", "$e.metadata.event_subtype"),
+        ("file.operation", "$e.metadata.event_subtype"),
+        ("file.attributes|contains", "$e.target.file.attribute"),
+        ("service.name|contains", "$e.target.resource.name"),
+        ("service.image_path|contains", "$e.target.process.file.full_path"),
+        ("service.action", "$e.metadata.event_subtype"),
+        ("resource.kind", "$e.target.resource.resource_type"),
+        ("email.recipient|contains", "$e.network.email.to"),
+        ("process.image|endswith", "$e.principal.process.file.full_path"),
+    ],
+)
+def test_shipped_module_selection_fields_have_explicit_udm_mapping(
+    shipped_field: str, expected_udm: str
+) -> None:
+    """Every Sigma selection key actually used by a shipped standard module
+    must have an explicit (not category-fallback) UDM mapping. Adding a
+    new ``selection_field`` to a profile without a matching UDM entry
+    silently degrades the resulting YARA-L rule into the fallback path."""
+    rule = build_yara_l_rule(
+        "run-1",
+        "test_module",
+        _hint_with_selection(
+            {shipped_field: ["v1", "v2"] if shipped_field.endswith("|in") else "v"},
+            category="network_connection",
+        ),
+    )
+    assert expected_udm in rule, (
+        f"shipped field '{shipped_field}' should map to {expected_udm}"
+    )
+
+
+def test_in_modifier_regex_is_anchored_to_prevent_substring_overmatch() -> None:
+    """``|in: [evil.com, github.com]`` must NOT match ``notgithub.com``.
+
+    Codex P2 finding: list-valued predicates were rendered as
+    unanchored regex alternation (``/(a|b|c)/``), which turns
+    ``|in`` into substring matching. A rule meant for an exact
+    domain list would overmatch on any host containing one of the
+    list values as a substring. Anchoring with ``^...$`` restores
+    list-membership semantics.
+    """
+    rule = build_yara_l_rule(
+        "run-1",
+        "exfiltration",
+        _hint_with_selection(
+            {"network.dst_host|in": ["github.com", "evil.com"]},
+            category="network_connection",
+        ),
+    )
+    assert "/^(github\\.com|evil\\.com)$/ nocase" in rule, (
+        f"|in regex must be anchored, got:\n{rule}"
+    )
+    # Explicitly NOT the unanchored shape that would substring-match
+    assert "/(github\\.com|evil\\.com)/ nocase" not in rule
+
+
+def test_in_modifier_with_single_value_still_anchored() -> None:
+    """A single-value ``|in`` list is still rendered as an anchored
+    regex so callers cannot accidentally rely on substring matching
+    by passing a one-element list."""
+    rule = build_yara_l_rule(
+        "run-1",
+        "exfiltration",
+        _hint_with_selection(
+            {"network.dst_host|in": ["evil.com"]},
+            category="network_connection",
+        ),
+    )
+    assert "/^(evil\\.com)$/ nocase" in rule
+
+
+def test_in_with_dns_record_types_anchors_on_short_values() -> None:
+    """Short ``|in`` values (e.g. DNS record-type codes) are
+    especially prone to substring overmatch (``A`` matching
+    ``AAAA`` / ``ANY`` / ``ALIAS``); the anchored regex prevents
+    this."""
+    rule = build_yara_l_rule(
+        "run-1",
+        "command_control",
+        _hint_with_selection(
+            {"dns.record_type|in": ["A", "AAAA", "TXT"]},
+            category="dns",
+        ),
+    )
+    assert "/^(A|AAAA|TXT)$/ nocase" in rule
