@@ -1,12 +1,15 @@
 id: enterprise_intrusion_chain
 name: Enterprise intrusion kill chain
 objective: |
-  Simulate a multi-stage adversary intrusion against a financial-services
-  lab from initial reconnaissance through ransomware-impact simulation.
-  Exercises 12 standard modules end-to-end so purple-team validation
-  covers a realistic adversary chain rather than isolated technique
-  callouts. All steps run in simulate mode by default; no destructive
-  payloads are written under any input.
+  An attacker-owned domain is staged, then a finance analyst is
+  spearphished into running an encoded PowerShell loader that
+  masquerades as svchost. The loader enumerates files, harvests
+  browser credentials, pivots over PsExec to the corporate
+  fileshare, stages data, beacons HTTPS to the staged domain,
+  exfiltrates over the C2, and finally encrypts the fileshare.
+  Twelve standard modules run end-to-end; every step is
+  simulate-only with `network_touch: false`, so no destructive
+  payload or live traffic leaves the host under any input.
 attack_coverage:
   - T1583.001
   - T1593
@@ -23,7 +26,7 @@ attack_coverage:
 fail_fast: false
 steps:
   - id: stage-infrastructure
-    name: Adversary stages attacker-controlled domain
+    name: Adversary registers attacker-owned phishing domain
     module: resource_development
     params:
       resource_type: domain
@@ -31,7 +34,7 @@ steps:
       network_touch: false
 
   - id: target-recon
-    name: OSINT enumeration of victim org
+    name: OSINT reconnaissance against victim organisation
     module: reconnaissance
     params:
       source: osint
@@ -39,7 +42,7 @@ steps:
       network_touch: false
 
   - id: phish-delivery
-    name: Spearphishing email delivers loader
+    name: Spearphishing email delivers loader to finance analyst
     module: initial_access
     params:
       vector: phishing_email
@@ -47,14 +50,14 @@ steps:
       network_touch: false
 
   - id: loader-execution
-    name: Loader execution on victim host
+    name: Encoded PowerShell loader executes on finance-analyst host
     module: execution
     params:
       command: powershell -nop -w hidden -enc UwB0AGEAcgB0AC0AUAByAG8AYwBlAHMAcwA=
       network_touch: false
 
   - id: masquerade
-    name: Loader masquerades as svchost.exe
+    name: Loader masquerades as svchost.exe to evade EDR
     module: defense_evasion
     params:
       technique: masquerading
@@ -62,7 +65,7 @@ steps:
       network_touch: false
 
   - id: enumerate-files
-    name: Enumerate sensitive files on victim host
+    name: Enumerate sensitive files on finance-analyst host
     module: discovery
     params:
       discovery_type: files
@@ -71,7 +74,7 @@ steps:
       network_touch: false
 
   - id: harvest-browser-creds
-    name: Harvest stored browser credentials
+    name: Harvest browser credentials from enumerated host
     module: credential_access
     params:
       technique: browser_credentials
@@ -87,7 +90,7 @@ steps:
       network_touch: false
 
   - id: lateral-to-fileshare
-    name: Lateral movement to fileshare via PsExec
+    name: Pivot from compromised host to corporate fileshare via PsExec
     module: lateral_movement
     params:
       technique: psexec
@@ -102,7 +105,7 @@ steps:
       network_touch: false
 
   - id: stage-collected-data
-    name: Stage collected files for exfiltration
+    name: Stage sensitive files on fileshare for exfiltration
     module: collection
     params:
       technique: file_staging
@@ -110,51 +113,56 @@ steps:
       network_touch: false
 
   - id: c2-channel
-    name: Establish HTTPS C2 channel
+    name: Beacon HTTPS to staged attacker domain (C2)
     module: command_control
     params:
       channel: https
       # C2 endpoint is propagated from the upstream
-      # `stage-infrastructure` resource_development step rather than
-      # re-declared here. The upstream step registered the domain
-      # `invoice-portal.example.lab` as `artifacts.target`; the
-      # command_control module reads it via `c2_endpoint_from_step`
-      # and shapes it into `https://<host>/c2`. Demonstrates a fifth
-      # `previous_step_results` consumer pair
-      # (resource_development -> command_control endpoint axis).
+      # `stage-infrastructure` resource_development step. The
+      # upstream step registered `invoice-portal.example.lab` as
+      # `artifacts.target`; the command_control module reads it
+      # via `c2_endpoint_from_step` and shapes it into
+      # `https://<host>/c2`. The narrative: the freshly-registered
+      # attacker-owned domain from step 1 IS the C2 endpoint the
+      # loader beacons to a few steps later. This is the highest-
+      # value detection-correlation hint in the chain — defenders
+      # who watched domain registration in step 1 can pivot
+      # straight to this destination.
       c2_endpoint_from_step: stage-infrastructure
       network_touch: false
 
   - id: exfil-over-c2
-    name: Exfiltrate staged data over C2
+    name: Exfiltrate staged data over established C2 channel
     module: exfiltration
     params:
       method: via_c2
       # Source host is propagated from the upstream
       # `stage-collected-data` collection step rather than re-
-      # declared here. This demonstrates a second
-      # `previous_step_results` consumer pair (collection ->
-      # exfiltration) on top of the existing discovery ->
-      # credential_access pair earlier in this scenario.
+      # declared here. The narrative: exfil pulls the same host
+      # the collection step staged data on. Defenders correlate
+      # this against the c2-channel step for a "stage -> egress"
+      # high-fidelity precursor.
       target_from_step: stage-collected-data
       network_touch: false
 
   - id: ransomware-impact
-    name: Simulate ransomware encryption-impact
+    name: Ransomware encrypts staged-data fileshare
     module: impact
     params:
       technique: data_encryption
       # Target host is propagated from the upstream
       # `stage-collected-data` collection step rather than re-
-      # declared. Demonstrates a fourth `previous_step_results`
-      # consumer pair (collection -> impact) on top of:
-      #   - discovery -> credential_access (harvest-browser-creds)
-      #   - credential_access -> lateral_movement (lateral-to-fileshare source)
-      #   - collection -> exfiltration (exfil-over-c2)
-      # The chained semantics are: ransomware impacts the same host
+      # declared. The narrative: ransomware encrypts the same host
       # the collection step staged data on, which is the same host
-      # the lateral step pivoted to. Explicit `target:` would
-      # still win if added.
+      # the lateral step pivoted to. Five `previous_step_results`
+      # consumer pairs are demonstrated end-to-end across this
+      # scenario:
+      #   1. enumerate-files       -> harvest-browser-creds   (target)
+      #   2. harvest-browser-creds -> lateral-to-fileshare    (source)
+      #   3. stage-infrastructure  -> c2-channel              (c2_endpoint)
+      #   4. stage-collected-data  -> exfil-over-c2           (target)
+      #   5. stage-collected-data  -> ransomware-impact       (target, this step)
+      # Explicit `target:` would still win if added.
       target_from_step: stage-collected-data
       network_touch: false
 

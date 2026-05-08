@@ -197,6 +197,80 @@ def test_every_documented_tactic_phase_has_at_least_one_step() -> None:
     assert missing == set(), f"missing tactic modules: {missing}"
 
 
+def test_every_step_has_a_narrative_name() -> None:
+    """Step names must be defender-facing prose, not the step id repeated.
+
+    The flagship scenario is the project's storytelling surface for
+    SOC analysts and recruiters. A step whose ``name`` field
+    is empty (or just echoes its ``id``) shows up in the dashboard
+    timeline as a procedural label, not a chain narrative beat.
+    Each name must be a short sentence-style description of what
+    the step does — not just a slug.
+
+    Concrete contract:
+
+    - ``name`` is non-empty and stripped.
+    - ``name`` is not equal to ``step_id`` (id is a slug; name is prose).
+    - ``name`` is at least 12 characters (rules out terse one-word labels).
+    - ``name`` contains a space (rules out a single token).
+
+    This is a narrative-quality invariant, not just a length check.
+    Catching a regression here means a future "simplification" PR
+    that strips story polish from the showcase fails this test
+    rather than landing silently.
+    """
+    scenario = _scenario()
+    failures: List[str] = []
+    for step in scenario.steps:
+        name = (step.name or "").strip()
+        if not name:
+            failures.append(f"{step.step_id}: empty name")
+            continue
+        if name == step.step_id:
+            failures.append(
+                f"{step.step_id}: name equals step_id "
+                f"(slugs are not narrative — use prose)"
+            )
+            continue
+        if len(name) < 12:
+            failures.append(
+                f"{step.step_id}: name {name!r} is shorter than 12 chars"
+            )
+            continue
+        if " " not in name:
+            failures.append(
+                f"{step.step_id}: name {name!r} is a single token (need prose)"
+            )
+    assert failures == [], "narrative step names regressed: " + "; ".join(failures)
+
+
+def test_scenario_objective_reads_as_story_not_label() -> None:
+    """The scenario-level ``objective`` must read as a chain narrative.
+
+    The objective is the SOC analyst's single-paragraph summary of
+    what this run is supposed to look like. We assert it is:
+
+    - non-empty and stripped (a missing objective would surface as
+      an empty card in the dashboard once the viewer renders it),
+    - long enough to be a real description (at least 200 chars),
+    - mentions ``simulate`` / ``network_touch`` so the operator
+      sees the safe-by-default contract on the first read.
+    """
+    scenario = _scenario()
+    objective = (scenario.objective or "").strip()
+    assert objective, "scenario.objective is missing"
+    assert len(objective) >= 200, (
+        f"objective is too short to convey the chain narrative "
+        f"(was {len(objective)} chars): {objective!r}"
+    )
+    lower = objective.lower()
+    assert "simulate" in lower or "network_touch" in lower, (
+        "objective should call out the safe-by-default contract "
+        "(mention 'simulate' or 'network_touch' so a defender knows "
+        "no live traffic leaves the host)"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Runtime invariants (executes the scenario)
 # ---------------------------------------------------------------------------
