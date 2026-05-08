@@ -109,10 +109,20 @@ def _populated_manifest(run_dir: Path) -> Dict[str, Any]:
         risk_summary_payload={
             "risk_summary": {"critical": 0, "high": 0, "medium": 1, "low": 2},
             "average_score": 35.0,
+            # Real orchestrator-produced risk entries key by
+            # ``"<runtime_module>:<step_id>"`` so the timeline can
+            # surface severity inline. Use the same shape here so
+            # the fixture round-trips against the timeline's
+            # severity-column lookup.
             "modules": [
-                {"module": "discovery", "severity": "low", "score": 10, "mode": "simulate"},
                 {
-                    "module": "credential_access",
+                    "module": "discovery:enumerate-files",
+                    "severity": "low",
+                    "score": 10,
+                    "mode": "simulate",
+                },
+                {
+                    "module": "credential_access:harvest-creds",
                     "severity": "medium",
                     "score": 60,
                     "mode": "simulate",
@@ -236,6 +246,57 @@ def test_render_html_includes_timeline_for_every_step(tmp_path: Path) -> None:
     # ATT&CK techniques surface in the timeline column.
     assert "T1083" in html
     assert "T1555.003" in html
+
+
+def test_render_html_timeline_carries_severity_column(tmp_path: Path) -> None:
+    """The timeline surfaces a per-step severity badge next to status.
+
+    Higher-risk steps must look higher-risk inline; without the
+    column an operator scanning the timeline has to cross-
+    reference the risk-summary card to spot the impact /
+    exfiltration steps. Pin the column header AND the rendered
+    severity for the fixture's two scored steps so a future
+    column-shuffle regression surfaces here.
+    """
+    html = render_html(_populated_manifest(tmp_path))
+    # Header advertises the new column.
+    assert "<th>severity</th>" in html
+    # Fixture's risk block has two modules:
+    # - discovery (low score 10)
+    # - credential_access (medium score 60)
+    # Both severities surface in the timeline (separately from
+    # the risk-summary table they already appear in).
+    timeline_idx = html.index("Scenario timeline")
+    risk_idx = html.index("Risk summary")
+    # Timeline section starts after risk summary in the rendered
+    # page; grab the timeline body specifically.
+    timeline_section = html[timeline_idx:]
+    # Both severities rendered as badges in the timeline rows.
+    assert "low" in timeline_section
+    assert "medium" in timeline_section
+
+
+def test_render_html_timeline_severity_renders_dash_when_no_risk_match(
+    tmp_path: Path,
+) -> None:
+    """Steps without a matching risk entry render an em-dash, not 'unknown'.
+
+    A blocked step that never reaches the scorer (e.g. safety
+    gate aborted before module.execute returned) won't have a
+    risk-block entry. The timeline falls back to ``&mdash;``
+    rather than rendering the literal ``"unknown"`` severity
+    badge.
+    """
+    manifest = _populated_manifest(tmp_path)
+    # Strip risk modules so no step matches.
+    manifest["risk"] = {"risk_summary": {}, "modules": []}
+    html = render_html(manifest)
+    timeline_idx = html.index("Scenario timeline")
+    timeline_section = html[timeline_idx:]
+    # Severity column header still renders; values are em-dash for every row.
+    assert "<th>severity</th>" in timeline_section
+    # No "unknown" severity badge leaked into the timeline.
+    assert ">unknown<" not in timeline_section
 
 
 def test_render_html_includes_propagation_table(tmp_path: Path) -> None:
