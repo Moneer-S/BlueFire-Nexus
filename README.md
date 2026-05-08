@@ -1,6 +1,6 @@
 # BlueFire Nexus
 
-[![tests](https://img.shields.io/badge/tests-2137%20passed-blue)](#development--tests)
+[![tests](https://img.shields.io/badge/tests-2140%20passed-blue)](#development--tests)
 [![security](https://img.shields.io/badge/security-bandit%20strict-green)](#development--tests)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](#quickstart)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -306,13 +306,13 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ope
 
 ## Status snapshot
 
-- 2137 passing tests, 5 intentional skips, 0 failures (~145-155s full-suite wallclock).
+- 2140 passing tests, 5 intentional skips, 0 failures (~120-155s full-suite wallclock).
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
 - 31 modules registered (17 standard + 14 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
 - 10 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.
 - Every run produces a complete local report bundle: `manifest.json` (machine-readable index), `index.html` (static browser viewer — no server, no external assets, no network), `report.md`, `report.json`, `risk_summary.json`, `telemetry.jsonl`, `detections/`, plus optional copilot artifacts.
 - Step-to-step artifact propagation: the runtime threads a read-only `previous_step_results` mapping into each step's context. The shipped `enterprise_intrusion_chain` scenario demonstrates five consumer pairs end-to-end (`discovery → credential_access`, `credential_access → lateral_movement` source, `collection → exfiltration`, `collection → impact`, `resource_development → command_control` endpoint axis).
-- Chain narrative is surfaced consistently across every output surface: the scenario-level `objective:` block lands in the static dashboard header, the `## Scenario objective` section of `report.md`, and the offline copilot's `copilot_narrative.md` — same chain story whether you read the dashboard, the markdown, or the AI artifact. Each propagation edge carries a defender-facing prose line ("`credential_access targets the host produced by the discovery step 'enumerate-files'`") so the propagation table reads as a chain story, not a graph.
+- Chain narrative is surfaced consistently across every output surface: the scenario-level `objective:` block lands in the static dashboard header, the `## Scenario objective` section of `report.md`, and the offline copilot's `copilot_narrative.md` — same chain story whether you read the dashboard, the markdown, or the AI artifact. Each propagation edge carries a defender-facing prose line ("`credential_access targets the host produced by the discovery step 'enumerate-files'`") so the propagation table reads as a chain story, not a graph. The dashboard timeline also surfaces a per-step severity column inline, so an operator scanning top-to-bottom sees the chain's risk arc (low → medium → high → critical) without cross-referencing the risk-summary card.
 - Cross-provider AI coherence: every documented canonical name (template, openai, anthropic, gemini, grok, ollama, llama.cpp, lm-studio, openai_compatible) routes to a registered backend. Default stays offline / template — no API keys required for normal use, no network calls without explicit `modules.ai.enabled: true` plus operator-supplied endpoint and (for vendor-specific backends) credentials.
 - Capability inventory: [docs/reports/capability_inventory.md](docs/reports/capability_inventory.md).
 - Scenario coverage: [docs/reports/scenario_validation.md](docs/reports/scenario_validation.md).
