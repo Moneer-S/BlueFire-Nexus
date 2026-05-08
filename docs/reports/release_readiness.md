@@ -8,6 +8,13 @@ maintainer would need to make before tagging a release, but it
 deliberately does not create any tag — tagging is a maintainer
 decision, not an automated one.
 
+> **Status**: `v3.0.0-rc1` was published as a GitHub prerelease
+> on 2026-05-07. The stale draft `v3.0.0` release was deleted.
+> The audit body below reflects the **pre-rc1 cut** snapshot at
+> commit `511bd5c`; § 8 ("Post-rc1 status & path to v3.0.0")
+> below tracks what's happened since and what would trigger an
+> rc2 vs. a bare `v3.0.0`.
+
 ## 1. Snapshot at audit time
 
 | Field | Value |
@@ -19,6 +26,7 @@ decision, not an automated one.
 | Bandit | 0 medium, 0 high |
 | compileall | clean |
 | Python required | `>=3.10` (pyproject.toml line 18) |
+| **Post-rc1 status** | See § 8 for current main / test count / open items. |
 
 ## 2. Package metadata (pyproject.toml)
 
@@ -196,5 +204,136 @@ prior backlog. They are now all merged.
 
 ---
 
-The audit was generated against `511bd5c`. Re-run before any
-tag-cutting session to make sure the snapshot is still current.
+The audit body above was generated against `511bd5c`. The
+post-rc1 status block below is appended on every meaningful
+update; re-read both before any new tag-cutting session.
+
+## 8. Post-rc1 status & path to v3.0.0
+
+### 8.1 What was published
+
+| Field | Value |
+|---|---|
+| Tag | `v3.0.0-rc1` (annotated) |
+| Tagged commit | `0fa8d72` |
+| Annotated tag SHA | `53508898` |
+| GitHub release | Prerelease at <https://github.com/Moneer-S/BlueFire-Nexus/releases/tag/v3.0.0-rc1> |
+| GitHub "Latest" label | `v2.8.0` (a prerelease does not displace a published Latest) |
+| Stale `v3.0.0` draft | **Deleted** (had 2025-04-01 notes referencing removed Splunk/Elastic features) |
+
+### 8.2 What was validated at the rc1 cut
+
+- Full pytest sweep: green at every commit.
+- `bandit -r src -ll`: 0 medium / 0 high across every PR.
+- `compileall -q src tests`: clean.
+- End-to-end smoke against `apt29_credential_access`: zero
+  filenames with `:`, YARA-L meta carries real run id, SPL
+  carries `DRAFT detection search` header (not metadata-echo
+  only), `validate-run --json` returns `ok=true`, CLI output
+  free of replacement char `?`, `file://` URI on a standalone
+  line, copilot narrative carries scenario name + step-by-step
+  timeline + run-specific paths under `output/<run_id>/`.
+
+### 8.3 Pre-rc1 polish PRs (in order of merge)
+
+| PR | Title | Merge SHA |
+|---|---|---|
+| #92 | docs(readme): make .env copy step optional in quickstart | `2c32a91` |
+| #91 | fix(cli): Windows polish — em-dash mojibake + URL on own line | `6c58e11` |
+| #93 | feat(ai): enrich TemplateProvider with intent-aware run-summary rendering | `5cf386a` |
+| #89 | fix(detections): YARA-L run_id + upgrade SPL from metadata echo | `33e5ead` |
+| #94 | fix(detections): cross-platform-safe filenames (`:` → `__`) | `2c8c068` |
+| #88 | release(v3.0.0-rc1): version bump + CHANGELOG release-candidate cut | `0fa8d72` |
+
+### 8.4 Post-rc1 hardening PRs (post-tag, in order of merge)
+
+Tracks any change merged AFTER the `v3.0.0-rc1` tag but BEFORE
+the next release tag. Each row should list the PR + its merge
+SHA + a one-line rationale.
+
+| PR | Title | Merge SHA | Rationale |
+|---|---|---|---|
+| #95 | docs: post-rc1 consistency audit — README rc1 callout + CHANGELOG cleanup | `3efed73` | Surface rc1 release at the top of the README; remove a stale "53 PRs" reference. |
+| #96 | feat(release): maintainer-facing rc smoke script + pytest regression wrapper | `f30ca88` | `scripts/smoke_release_candidate.py` runs the canonical operator path end-to-end and re-asserts every rc1-polish invariant; pytest wrapper makes the same checks part of regular CI. |
+| #97 | feat(reporting): static dashboard quality polish (header severity, draft maturity, local-only promise) | `e60e91a` | Header severity badge, detection-drafts maturity caveat, "static page" promise inline in the header card of both viewer and aggregator. |
+| #98 | test(detections): end-to-end detection-output regression invariants | `e3c1fb3` | Walks the entire generated artifact tree to assert cross-engine consistency, NTFS filename safety, no manual run_id leak, no metadata-echo SPL, manifest <-> on-disk consistency. |
+
+### 8.5 What would trigger an rc2 (vs. wait)
+
+Cut **rc2** when ANY of the following lands after rc1:
+
+- A real P1 / P2 bug surfaced by external operators against the
+  rc1 build (e.g. fresh-clone smoke fails on a documented OS,
+  data leak, regression in a documented contract).
+- A behaviour change that adds public surface (new CLI command,
+  new manifest field, new artifact type, new safety gate) — the
+  rebuilt baseline is at major-version 3, so additive surface
+  should ride a new `-rcN` rather than a silent main-branch
+  shift.
+- A capability addition the maintainer wants soaked-tested by
+  external operators before final.
+- A breaking-change fix (rare; rc1 already broke compat with
+  v2.8.0, but a *further* break vs. rc1 would force rc2).
+
+**Do NOT** cut rc2 for:
+
+- Pure docs touch-ups that don't change anyone's mental model.
+- Internal test additions (no behaviour change).
+- Refactors with identical observable behaviour.
+
+### 8.6 What would block a final v3.0.0
+
+The maintainer should not cut bare `v3.0.0` until:
+
+- ✅ rc1 has soaked for **at least one realistic external user
+  pass** (fresh clone on a target OS, run the canonical
+  scenario, exercise the CLI, open the dashboard).
+- ✅ All rc1-polish PRs (#89/#91/#92/#93/#94) merged into main
+  (done at `0fa8d72`).
+- ✅ Public release notes match the actual release shape (CHANGELOG
+  `[3.0.0-rc1]` block consolidated; rc2 would need the same
+  treatment).
+- 🟡 Codex / Bugbot review on every release-candidate PR
+  surfaces no real P1 / P2 finding the maintainer hasn't
+  acknowledged in writing.
+- 🟡 No open GitHub issues labelled `rc-blocker` / `release-
+  blocker` (none currently; this is a forward guard).
+
+### 8.7 Recommended cut sequence (when ready)
+
+For an `-rcN` (rc2 / rc3 / ...):
+
+1. Merge any pending rc-polish PRs into main.
+2. Run `python scripts/smoke_release_candidate.py` (added in
+   PR #96). Expect 16/16 checks pass.
+3. Run the full validation gate:
+   ```
+   python -m pytest tests/
+   python -m bandit -r src -ll
+   python -m compileall -q src tests
+   ```
+4. Bump `pyproject.toml` `version` to `3.0.0rcN`.
+5. Move CHANGELOG `[Unreleased]` content under `## [3.0.0-rcN] -
+   YYYY-MM-DD` (or extend the existing `[3.0.0-rc1]` block with
+   a "Pre-rc2 changes" subsection — pick one shape and stay
+   consistent).
+6. Open the version-bump PR; request `@codex review`.
+7. After merge: tag and push.
+   ```
+   git tag -a v3.0.0-rcN -m "v3.0.0-rcN: ..."
+   git push origin v3.0.0-rcN
+   gh release create v3.0.0-rcN --prerelease --notes-file <notes>
+   ```
+
+For the bare `v3.0.0` (final):
+
+1-3. Same gates as the rcN cut, plus § 8.6 acceptance.
+4. Bump `pyproject.toml` `version` to `3.0.0`.
+5. Move the latest `[3.0.0-rcN]` CHANGELOG block under
+   `## [3.0.0] - YYYY-MM-DD` (collapse rc-only intermediate
+   blocks if the maintainer wants).
+6. Open the cut PR.
+7. After merge: tag, push, and create a NON-prerelease GitHub
+   release (`gh release create v3.0.0 --notes-file <notes>` —
+   note no `--prerelease`). This will displace `v2.8.0` as
+   "Latest".
