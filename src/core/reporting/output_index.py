@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
+from .manifest import highest_risk_tier
 from .run_discovery import list_runs
 
 
@@ -226,28 +227,17 @@ def _read_manifest(run_dir: Path) -> Optional[Dict[str, Any]]:
 
 
 def _highest_severity(manifest: Optional[Mapping[str, Any]]) -> str:
-    """Return the highest non-zero severity tier from a manifest's risk block.
+    """Thin wrapper around the public ``highest_risk_tier`` helper.
 
-    Returns one of ``critical`` / ``high`` / ``medium`` / ``low``,
-    or an empty string when no risk block is present or all
-    counters are zero.
+    The aggregator, the per-run viewer, and the run-discovery
+    layer all converge on the same "severity arc highest point"
+    answer for a given run via this single helper. Kept as a
+    private alias here for backwards compatibility with internal
+    callers in this module.
     """
-    if not isinstance(manifest, Mapping):
+    if manifest is None:
         return ""
-    risk = manifest.get("risk")
-    if not isinstance(risk, Mapping):
-        return ""
-    summary = risk.get("risk_summary")
-    if not isinstance(summary, Mapping):
-        return ""
-    for tier in ("critical", "high", "medium", "low"):
-        try:
-            count = int(summary.get(tier, 0) or 0)
-        except (TypeError, ValueError):
-            count = 0
-        if count > 0:
-            return tier
-    return ""
+    return highest_risk_tier(manifest)
 
 
 def _is_within(parent: Path, child: Path) -> bool:
