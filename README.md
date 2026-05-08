@@ -7,6 +7,8 @@
 
 > **A local-first adversary-emulation framework for purple-team validation. Every run produces structured telemetry, ATT&CK-mapped detection drafts, a risk summary, and a static HTML dashboard — without making a single network call.**
 
+> **Current release**: [`v3.0.0-rc1`](https://github.com/Moneer-S/BlueFire-Nexus/releases/tag/v3.0.0-rc1) (release candidate / prerelease). The previous published release `v2.8.0` predates the rebuilt artifact contract and is not API-compatible — see [§ Notes for operators upgrading from v2.8.0](CHANGELOG.md#notes-for-operators-upgrading-from-v280) in the changelog.
+
 BlueFire Nexus runs ATT&CK-aligned scenarios end-to-end on a single machine. Each run lands a complete artifact bundle under `output/<run_id>/`: a JSON manifest, a self-contained `index.html` dashboard, structured telemetry, Sigma / YARA-L / SPL detection drafts, a risk summary, and (optional) AI-augmented narratives. Open `index.html` with `file://` and you get the full picture — no server, no SaaS, no telemetry shipped off the box.
 
 The framework is **dual-use by design**: it preserves realistic offensive tradecraft (APT actor packs, C2 protocol research, stealth and evasion research) but gates that capability behind explicit configuration, lab confirmation, and registry-wide safety tests. The defaults are conservative (`dry_run=True`, all advanced packs disabled, AI offline). Anything that could plausibly leave the box requires an opt-in flag the operator types themselves.
