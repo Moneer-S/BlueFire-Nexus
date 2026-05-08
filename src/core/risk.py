@@ -91,6 +91,42 @@ _TACTIC_BASE_SCORES: Dict[str, int] = {
 }
 
 
+# Defender-facing one-line description of why each tactic matters
+# in a kill-chain context. Surfaces alongside ``tactic_base=<name>``
+# in the rationale list as ``matters_because=<text>`` so a defender
+# scanning the viewer's "Why" column or CLI risk-summary doesn't
+# need MITRE ATT&CK fluency to understand why a step's score
+# landed where it did. Keys match ``_TACTIC_BASE_SCORES`` so every
+# tactic with a base score also has a rationale line.
+#
+# The text is intentionally short (≤40 chars) and uses chain-
+# position language ("pre-foothold", "foothold gained",
+# "expands access", "data leaves perimeter", "destructive
+# endgame") so the rationale reads consistently across multiple
+# tactics. Short labels keep the rationale list readable in the
+# viewer table cell — long sentences would wrap awkwardly on
+# narrow viewports.
+_TACTIC_MATTERS_BECAUSE: Dict[str, str] = {
+    "reconnaissance": "pre-foothold target scoping",
+    "resource_development": "pre-foothold infrastructure prep",
+    "intelligence": "pre-foothold intel collection",
+    "discovery": "early-chain enumeration",
+    "execution": "foothold-stage payload run",
+    "initial_access": "foothold gained on target",
+    "defense_evasion": "defender controls bypassed",
+    "anti_detection": "detection bypass attempt",
+    "network_obfuscator": "egress traffic masking",
+    "collection": "data prep for exfil",
+    "command_control": "ongoing attacker control channel",
+    "persistence": "ongoing access guarantee",
+    "lateral_movement": "expands attacker access",
+    "credential_access": "enables lateral expansion",
+    "privilege_escalation": "elevated control gained",
+    "exfiltration": "data leaves perimeter",
+    "impact": "destructive endgame",
+}
+
+
 def _clamp(score: int) -> int:
     return max(0, min(100, score))
 
@@ -158,6 +194,9 @@ def score_module_result(result: ModuleResult) -> Dict[str, Any]:
             score = tactic_base
             rationale.append(f"pack={pack}")
             rationale.append(f"tactic_base={capability}")
+            matters = _TACTIC_MATTERS_BECAUSE.get(capability)
+            if matters:
+                rationale.append(f"matters_because={matters}")
         else:
             score = _PACK_BASE_SCORES.get(pack, 55)
             rationale.append(f"pack={pack}")
@@ -175,6 +214,9 @@ def score_module_result(result: ModuleResult) -> Dict[str, Any]:
         if tactic_base is not None:
             score = tactic_base + min(20, len(result.techniques) * 5)
             rationale.append(f"tactic_base={module_name}")
+            matters = _TACTIC_MATTERS_BECAUSE.get(module_name)
+            if matters:
+                rationale.append(f"matters_because={matters}")
         else:
             score = 35 + min(20, len(result.techniques) * 5)
             rationale.append("standard-module")
