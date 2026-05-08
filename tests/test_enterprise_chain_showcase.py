@@ -10,7 +10,7 @@ no extra steps.
 
 This file pins the bundle's shape end-to-end: every documented
 artifact lands in the run directory, the manifest references
-each one, and the viewer surfaces the four propagation pairs as
+each one, and the viewer surfaces the five propagation pairs as
 clickable / readable rows.
 
 Pinned invariants:
@@ -23,8 +23,8 @@ Pinned invariants:
 2. **Manifest cross-references everything.** The run dict from
    ``run_scenario_file`` AND the manifest agree on the file
    layout — neither leaks an absolute path nor omits a section.
-3. **Static viewer surfaces all four propagation pairs.**
-   ``index.html`` contains the four (from_step, to_step, kind)
+3. **Static viewer surfaces all five propagation pairs.**
+   ``index.html`` contains the five (from_step, to_step, kind)
    tuples and the modules they wire together.
 4. **Declared ATT&CK coverage matches emitted runtime techniques.**
    The bidirectional check from PR #66 already pins this for the
@@ -151,14 +151,20 @@ def test_showcase_manifest_points_at_every_artifact_via_relative_paths(
         assert (run_dir / relative).exists()
 
 
-def test_showcase_manifest_has_four_propagation_edges(
+def test_showcase_manifest_has_five_propagation_edges(
     showcase_run: Dict[str, Any],
 ) -> None:
-    """All four shipped consumer pairs surface as edges in the manifest.
+    """All five shipped consumer pairs surface as edges in the manifest.
 
     Pin the matrix at the manifest layer (not just the scenario
     YAML) so a regression in the manifest builder or the
-    underlying artifacts surfaces here.
+    underlying artifacts surfaces here. Codex P2 follow-up on
+    PR #106: `_propagation_edges` was previously not walking the
+    `c2_endpoint_propagated_from_step` artifact key, so the
+    resource_development -> command_control linkage was invisible
+    in the manifest's propagation_edges. The fifth edge is pinned
+    here so a regression in either the manifest builder or the
+    artifact contract surfaces immediately.
     """
     manifest = json.loads(
         Path(showcase_run["run_dir"], "manifest.json").read_text(encoding="utf-8")
@@ -170,6 +176,7 @@ def test_showcase_manifest_has_four_propagation_edges(
         ("harvest-browser-creds", "lateral-to-fileshare", "source_from_step"),
         ("stage-collected-data", "exfil-over-c2", "target_from_step"),
         ("stage-collected-data", "ransomware-impact", "target_from_step"),
+        ("stage-infrastructure", "c2-channel", "c2_endpoint_from_step"),
     }
     assert expected <= signatures, f"missing edges: {expected - signatures}"
 

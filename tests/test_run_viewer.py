@@ -425,10 +425,11 @@ def test_enterprise_intrusion_chain_writes_viewer_with_propagation_pairs(
         "ransomware-impact",
     ):
         assert step_id in html, f"missing step_id {step_id} in rendered HTML"
-    # All four propagation edges land in the propagation table — the
+    # All five propagation edges land in the propagation table — the
     # downstream step ids appear next to upstream ones.
     assert "target_from_step" in html
     assert "source_from_step" in html
+    assert "c2_endpoint_from_step" in html
     # ATT&CK coverage section: at least the headline impact + collection IDs.
     for technique in ("T1486", "T1074.001", "T1083", "T1555.003"):
         assert technique in html
