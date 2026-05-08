@@ -180,12 +180,39 @@ _INITIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
     },
     "external_remote_services": {
         "mitre": "T1133",
+        "logsource": {"category": "authentication", "product": "generic"},
+        "selection_field": "event.action",
+        "selection_value": "remote_service_access",
+        "event_type": "initial_access_external_remote_services",
+        "title_prefix": "External-remote-service access to",
+        "details": {"vector_class": "remote_service"},
+    },
+    "external_rdp": {
+        "mitre": "T1133",
         "logsource": {"category": "network_connection", "product": "host"},
         "selection_field": "network.dst_port",
         "selection_value": 3389,
-        "event_type": "initial_access_external_remote_services",
-        "title_prefix": "External-remote-service access to",
-        "details": {"vector_class": "remote_service", "service": "rdp"},
+        "event_type": "initial_access_external_rdp",
+        "title_prefix": "External RDP access to",
+        "details": {"vector_class": "remote_service", "service": "rdp", "port": 3389},
+    },
+    "external_ssh": {
+        "mitre": "T1133",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 22,
+        "event_type": "initial_access_external_ssh",
+        "title_prefix": "External SSH access to",
+        "details": {"vector_class": "remote_service", "service": "ssh", "port": 22},
+    },
+    "external_vpn": {
+        "mitre": "T1133",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 1194,
+        "event_type": "initial_access_external_vpn",
+        "title_prefix": "External VPN access to",
+        "details": {"vector_class": "remote_service", "service": "vpn", "port": 1194},
     },
     "trusted_relationship": {
         "mitre": "T1199",
@@ -251,9 +278,15 @@ _INITIAL_ACCESS_ALIASES: Dict[str, str] = {
     "exploit_public_facing_application": "exploit_public_app",
     "exploit": "exploit_public_app",
     "remote_services": "external_remote_services",
-    "vpn": "external_remote_services",
-    "rdp": "external_remote_services",
-    "ssh": "external_remote_services",
+    # Each service-specific shortcut targets its own profile so the
+    # generated detection draft uses the correct port + service.
+    # Codex P2 finding on PR #110: routing all three to the generic
+    # ``external_remote_services`` profile (port 3389 / service rdp)
+    # produced misleading drafts for ``vector: ssh`` and
+    # ``vector: vpn``.
+    "vpn": "external_vpn",
+    "rdp": "external_rdp",
+    "ssh": "external_ssh",
     "supply_chain_compromise": "supply_chain",
     "replication_through_removable_media": "removable_media",
     "usb_drop": "removable_media",
