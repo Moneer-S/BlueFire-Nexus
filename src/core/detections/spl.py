@@ -42,6 +42,7 @@ def _quote(value: str) -> str:
 # falls back to ``sourcetype=*`` plus a comment for the operator
 # to fill in.
 _LOGSOURCE_TO_SPL: dict[Tuple[str, str], Tuple[str, str]] = {
+    # ---- Process family ----
     ("windows", "process_creation"): (
         '(sourcetype="WinEventLog:Security" OR sourcetype="Sysmon" '
         'OR sourcetype="WinEventLog:Microsoft-Windows-Sysmon/Operational")',
@@ -51,11 +52,35 @@ _LOGSOURCE_TO_SPL: dict[Tuple[str, str], Tuple[str, str]] = {
         '(sourcetype="linux_audit" OR sourcetype="auditd")',
         "type=EXECVE",
     ),
+    ("macos", "process_creation"): (
+        '(sourcetype="osquery:results" OR sourcetype="osquery:processes")',
+        "",
+    ),
     ("host", "process_creation"): (
         '(sourcetype="WinEventLog:Security" OR sourcetype="Sysmon" '
         'OR sourcetype="linux_audit")',
         "",
     ),
+    ("windows", "process_access"): (
+        '(sourcetype="Sysmon" OR '
+        'sourcetype="WinEventLog:Microsoft-Windows-Sysmon/Operational")',
+        "EventCode=10",
+    ),
+    ("windows", "image_load"): (
+        '(sourcetype="Sysmon" OR '
+        'sourcetype="WinEventLog:Microsoft-Windows-Sysmon/Operational")',
+        "EventCode=7",
+    ),
+    # ---- Service family ----
+    ("windows", "service_creation"): (
+        '(sourcetype="WinEventLog:System" OR sourcetype="WinEventLog:Security")',
+        "EventCode=7045",
+    ),
+    ("windows", "service_modification"): (
+        '(sourcetype="WinEventLog:System" OR sourcetype="WinEventLog:Security")',
+        "(EventCode=7040 OR EventCode=4697)",
+    ),
+    # ---- Network family ----
     ("windows", "network_connection"): (
         '(sourcetype="Sysmon" OR '
         'sourcetype="WinEventLog:Microsoft-Windows-Sysmon/Operational")',
@@ -65,6 +90,11 @@ _LOGSOURCE_TO_SPL: dict[Tuple[str, str], Tuple[str, str]] = {
         '(sourcetype="linux_audit" OR sourcetype="auditd")',
         "",
     ),
+    ("host", "network_connection"): (
+        '(sourcetype="Sysmon" OR sourcetype="linux_audit" OR sourcetype="stream:tcp")',
+        "",
+    ),
+    # ---- DNS family ----
     ("windows", "dns_query"): (
         '(sourcetype="Sysmon" OR '
         'sourcetype="WinEventLog:Microsoft-Windows-Sysmon/Operational")',
@@ -74,15 +104,177 @@ _LOGSOURCE_TO_SPL: dict[Tuple[str, str], Tuple[str, str]] = {
         '(sourcetype="stream:dns" OR sourcetype="dns")',
         "",
     ),
+    # ``logsource: { category: dns, product: network }`` is the
+    # exfiltration / command_control DNS-family default; map it to
+    # the same sourcetype family as ``(dns, dns_query)``.
+    ("network", "dns"): (
+        '(sourcetype="stream:dns" OR sourcetype="dns")',
+        "",
+    ),
+    ("dns", "dns"): (
+        '(sourcetype="stream:dns" OR sourcetype="dns")',
+        "",
+    ),
+    # ---- File family ----
     ("windows", "file_event"): (
         '(sourcetype="Sysmon" OR '
         'sourcetype="WinEventLog:Microsoft-Windows-Sysmon/Operational")',
         "(EventCode=11 OR EventCode=2)",
     ),
+    ("linux", "file_event"): (
+        '(sourcetype="linux_audit" OR sourcetype="auditd")',
+        "(type=PATH OR type=CREATE)",
+    ),
+    ("macos", "file_event"): (
+        '(sourcetype="osquery:results" OR sourcetype="osquery:fim")',
+        "",
+    ),
+    ("host", "file_event"): (
+        '(sourcetype="Sysmon" OR sourcetype="linux_audit" OR sourcetype="osquery:fim")',
+        "",
+    ),
+    # ---- Registry family ----
     ("windows", "registry_event"): (
         '(sourcetype="Sysmon" OR '
         'sourcetype="WinEventLog:Microsoft-Windows-Sysmon/Operational")',
         "(EventCode=12 OR EventCode=13 OR EventCode=14)",
+    ),
+    # ---- Auth family ----
+    ("windows", "authentication"): (
+        'sourcetype="WinEventLog:Security"',
+        "(EventCode=4624 OR EventCode=4625 OR EventCode=4648)",
+    ),
+    ("linux", "authentication"): (
+        '(sourcetype="linux_secure" OR sourcetype="auditd")',
+        "(type=USER_AUTH OR type=USER_LOGIN)",
+    ),
+    ("generic", "authentication"): (
+        '(sourcetype="WinEventLog:Security" OR sourcetype="linux_secure" '
+        'OR sourcetype="auditd")',
+        "",
+    ),
+    ("host", "authentication"): (
+        '(sourcetype="WinEventLog:Security" OR sourcetype="linux_secure")',
+        "",
+    ),
+    # ---- Cloud audit family ----
+    ("generic", "cloud_audit"): (
+        '(sourcetype="aws:cloudtrail" OR sourcetype="google:gcp:audit" '
+        'OR sourcetype="azure:audit")',
+        "",
+    ),
+    # ---- Web / proxy family ----
+    ("generic", "webserver"): (
+        '(sourcetype="access_combined" OR sourcetype="apache:access" '
+        'OR sourcetype="iis")',
+        "",
+    ),
+    ("generic", "proxy"): (
+        '(sourcetype="stream:http" OR sourcetype="proxy" OR sourcetype="bluecoat")',
+        "",
+    ),
+    # ---- Email family ----
+    ("generic", "email"): (
+        '(sourcetype="ms:o365:reporting:messagetrace" OR sourcetype="email" '
+        'OR sourcetype="exchange:message_tracking")',
+        "",
+    ),
+    ("host", "email"): (
+        '(sourcetype="ms:o365:reporting:messagetrace" OR sourcetype="email")',
+        "",
+    ),
+    # ---- Device family (USB / hardware additions) ----
+    ("windows", "device_event"): (
+        'sourcetype="WinEventLog:System"',
+        "(EventCode=20001 OR EventCode=20003 OR EventCode=24576)",
+    ),
+    # ---- Threat-intel family. No host-side telemetry; the closest
+    # Splunk story is the standard threat-intel sourcetypes that
+    # operators ingest from CTI feeds (Splunk Enterprise Security
+    # threatlists, OpenCTI / MISP exports, passive-DNS feeds, etc.).
+    # Mapping to those keeps the rule syntactically valid and routes
+    # the operator toward the correct telemetry instead of the
+    # metadata-echo / placeholder-sourcetype fallback. ----
+    ("vendor", "threat_intelligence"): (
+        '(sourcetype="threatlist" OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("generic", "threat_intelligence"): (
+        '(sourcetype="threatlist" OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("ioc_feed", "threat_intelligence"): (
+        '(sourcetype="threatlist" OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("leak_feed", "threat_intelligence"): (
+        '(sourcetype="threatlist" OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("vuln_feed", "threat_intelligence"): (
+        '(sourcetype="threatlist" OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("passive_dns", "threat_intelligence"): (
+        '(sourcetype="passive_dns" OR sourcetype="threatlist")',
+        "",
+    ),
+    ("asn_feed", "threat_intelligence"): (
+        '(sourcetype="cim:threatintel" OR sourcetype="bgp:asn")',
+        "",
+    ),
+    # ---- Resource-development pre-foothold families. The
+    # ``resource_development`` tactic represents attacker planning
+    # (domain registration / VPS provisioning / cert acquisition /
+    # compromised infrastructure / SaaS account provisioning /
+    # marketplace tool acquisition). There is no canonical host-
+    # side Splunk sourcetype for "attacker registered a domain";
+    # the closest defensive telemetry is the threat-intel family
+    # plus passive-DNS / certificate-transparency / marketplace
+    # leak feeds. Mapping these pairs keeps generated SPL searches
+    # rooted in a real sourcetype an operator could ingest, and
+    # the leading DRAFT header reminds them to swap the index/
+    # sourcetype for whatever feed their environment actually
+    # carries. ----
+    ("registrar", "infrastructure_provisioning"): (
+        '(sourcetype="passive_dns" OR sourcetype="threatlist" '
+        'OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("cloud", "infrastructure_provisioning"): (
+        '(sourcetype="aws:cloudtrail" OR sourcetype="google:gcp:audit" '
+        'OR sourcetype="azure:audit")',
+        "",
+    ),
+    ("saas", "infrastructure_provisioning"): (
+        '(sourcetype="cim:threatintel" OR sourcetype="ms:o365:management")',
+        "",
+    ),
+    ("compromised", "infrastructure_provisioning"): (
+        '(sourcetype="threatlist" OR sourcetype="passive_dns" '
+        'OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("saas", "account_provisioning"): (
+        '(sourcetype="ms:o365:management" OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("ca", "certificate_acquisition"): (
+        '(sourcetype="cert_transparency" OR sourcetype="cim:certificate" '
+        'OR sourcetype="threatlist")',
+        "",
+    ),
+    ("marketplace", "tooling_acquisition"): (
+        '(sourcetype="threatlist" OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    # ---- Legacy-wrapped (PR #105). ``logsource: legacy_wrapped/bluefire``
+    # explicitly does not have a real Splunk sourcetype; emit a clearly-
+    # placeholder filter so the rule still parses but the operator sees
+    # the placeholder and replaces it. ----
+    ("bluefire", "legacy_wrapped"): (
+        'sourcetype="bluefire:legacy_wrapped"',
+        "",
     ),
 }
 
