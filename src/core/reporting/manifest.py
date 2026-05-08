@@ -127,6 +127,65 @@ def _module_status_summary(steps: Iterable[Mapping[str, Any]]) -> Dict[str, int]
     return counts
 
 
+_PROPAGATION_NARRATIVE_TEMPLATES: Dict[str, str] = {
+    # Each template is rendered against four substitution slots:
+    #   {to_module}    — downstream module name (e.g. ``credential_access``)
+    #   {from_module}  — upstream module name (or ``"upstream"`` if unknown)
+    #   {to_step}      — downstream step id
+    #   {from_step}    — upstream step id
+    # Templates are written in defender-facing prose. The verb
+    # patterns ("targets" / "pivots from" / "beacons to") are
+    # specific to each propagation kind so a defender can tell the
+    # axes apart at a glance; the upstream verb is the
+    # module-agnostic ``"produced by"`` so the prose reads
+    # correctly whether the upstream step was discovery
+    # (enumerated targets), collection (staged data), or
+    # resource_development (registered domain). The viewer
+    # surfaces the rendered string as a story column so the
+    # propagation table reads as a chain narrative, not a graph.
+    "target_from_step": (
+        "{to_module} targets the host produced by the "
+        "{from_module} step '{from_step}'"
+    ),
+    "source_from_step": (
+        "{to_module} pivots from the host produced by the "
+        "{from_module} step '{from_step}'"
+    ),
+    "c2_endpoint_from_step": (
+        "{to_module} beacons to the endpoint produced by the "
+        "{from_module} step '{from_step}'"
+    ),
+}
+
+
+def _render_propagation_narrative(
+    *,
+    kind: str,
+    from_step: str,
+    from_module: str,
+    to_step: str,
+    to_module: str,
+) -> str:
+    """Render a one-sentence prose description for a propagation edge.
+
+    Returns a defender-facing line such as ``"credential_access
+    targets the host the discovery step 'enumerate-files'
+    enumerated"``. The kind drives the template; missing module
+    names degrade to empty strings rather than ``None`` so the
+    rendered text never carries the literal ``None``.
+    """
+    template = _PROPAGATION_NARRATIVE_TEMPLATES.get(kind)
+    if not template:
+        return ""
+    return template.format(
+        kind=kind,
+        from_step=from_step or "",
+        from_module=from_module or "upstream",
+        to_step=to_step or "",
+        to_module=to_module or "downstream",
+    )
+
+
 def _propagation_edges(steps: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any]]:
     """Extract the propagation graph from per-step artifacts.
 
@@ -152,14 +211,36 @@ def _propagation_edges(steps: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any
     ``tests/test_enterprise_intrusion_chain_quality.py`` AND
     in the viewer's propagation-section legend, so the new
     axis surfaces at every layer (manifest, viewer, tests).
+
+    Each edge dict carries five fields:
+
+    - ``kind`` — the propagation slot name.
+    - ``from_step`` / ``to_step`` — step ids.
+    - ``from_module`` / ``to_module`` — module names. ``from_module``
+      is resolved by looking the upstream step up in the same
+      ``steps`` iterable (single forward pass keeps complexity
+      O(n)). When the upstream step is missing from the iterable
+      ``from_module`` is the empty string.
+    - ``narrative`` — a one-sentence defender-facing description of
+      what flowed between the two steps, derived from
+      ``_PROPAGATION_NARRATIVE_TEMPLATES``. The viewer renders this
+      as a story column; consumers that don't care about prose can
+      ignore the field.
     """
+    steps_list = list(steps)
+    module_by_step: Dict[str, str] = {}
+    for step in steps_list:
+        step_id = str(step.get("step_id") or "")
+        if step_id:
+            module_by_step[step_id] = str(step.get("module") or "")
+
     edges: List[Dict[str, Any]] = []
-    for step in steps:
+    for step in steps_list:
         artifacts = step.get("artifacts") or {}
         if not isinstance(artifacts, Mapping):
             continue
-        downstream_id = step.get("step_id") or ""
-        downstream_module = step.get("module") or ""
+        downstream_id = str(step.get("step_id") or "")
+        downstream_module = str(step.get("module") or "")
         for kind, key in (
             ("target_from_step", "target_propagated_from_step"),
             ("source_from_step", "source_propagated_from_step"),
@@ -168,12 +249,22 @@ def _propagation_edges(steps: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any
             upstream = artifacts.get(key)
             if not upstream:
                 continue
+            upstream_id = str(upstream)
+            upstream_module = module_by_step.get(upstream_id, "")
             edges.append(
                 {
                     "kind": kind,
-                    "from_step": str(upstream),
-                    "to_step": str(downstream_id),
-                    "to_module": str(downstream_module),
+                    "from_step": upstream_id,
+                    "to_step": downstream_id,
+                    "from_module": upstream_module,
+                    "to_module": downstream_module,
+                    "narrative": _render_propagation_narrative(
+                        kind=kind,
+                        from_step=upstream_id,
+                        from_module=upstream_module,
+                        to_step=downstream_id,
+                        to_module=downstream_module,
+                    ),
                 }
             )
     return edges
@@ -376,6 +467,7 @@ def build_manifest(
     run_dir: Path,
     scenario_name: str = "",
     scenario_path: str = "",
+    scenario_objective: str = "",
     overall_status: str = "",
     started_at: Optional[str] = None,
     finished_at: Optional[str] = None,
@@ -409,6 +501,7 @@ def build_manifest(
             "run_id": str(run_id),
             "scenario_name": str(scenario_name or ""),
             "scenario_path": str(scenario_path or ""),
+            "scenario_objective": str(scenario_objective or "").strip(),
             "started_at": started_at,
             "finished_at": finished_at or _utc_now_isoformat(),
             "overall_status": str(overall_status or ""),
@@ -495,6 +588,7 @@ def write_run_manifest(
     run_dir: Path,
     scenario_name: str = "",
     scenario_path: str = "",
+    scenario_objective: str = "",
     overall_status: str = "",
     started_at: Optional[str] = None,
     finished_at: Optional[str] = None,
@@ -520,6 +614,7 @@ def write_run_manifest(
         run_dir=run_dir,
         scenario_name=scenario_name,
         scenario_path=scenario_path,
+        scenario_objective=scenario_objective,
         overall_status=overall_status,
         started_at=started_at,
         finished_at=finished_at,

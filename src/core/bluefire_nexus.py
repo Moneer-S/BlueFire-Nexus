@@ -462,6 +462,7 @@ class BlueFireNexus:
                     run_dir=context.output_dir,
                     scenario_name=scenario.name,
                     scenario_path=str(scenario_path),
+                    scenario_objective=scenario.objective,
                     overall_status=overall_status,
                     started_at=started_at,
                     config=self.config,

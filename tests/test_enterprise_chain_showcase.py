@@ -246,6 +246,56 @@ def test_showcase_viewer_renders_propagation_table_with_all_kinds(
     assert "source_from_step" in html
 
 
+def test_showcase_viewer_propagation_table_carries_narrative_for_every_edge(
+    showcase_run: Dict[str, Any],
+) -> None:
+    """Every flagship propagation edge surfaces its defender-facing narrative.
+
+    The narrative column makes the chain story legible without
+    cross-referencing scenario YAML. Five edges => five
+    narratives, each naming the upstream module + step id.
+    """
+    html = Path(showcase_run["run_dir"], "index.html").read_text(encoding="utf-8")
+    # Each propagation pair surfaces a specific narrative line that
+    # names both modules and the upstream step id.
+    expected_narratives = [
+        "credential_access targets the host produced by the discovery step",
+        "lateral_movement pivots from the host produced by the credential_access step",
+        "exfiltration targets the host produced by the collection step",
+        "impact targets the host produced by the collection step",
+        "command_control beacons to the endpoint produced by the resource_development step",
+    ]
+    for narrative in expected_narratives:
+        assert narrative in html, f"missing narrative line: {narrative!r}"
+
+
+def test_showcase_viewer_renders_scenario_objective_in_header(
+    showcase_run: Dict[str, Any],
+) -> None:
+    """The flagship scenario's ``objective:`` field surfaces in the dashboard header.
+
+    A SOC analyst opening the dashboard should see the chain
+    narrative on first read, not just the scenario name and badges.
+    The objective is rendered as one or more ``<p>`` blocks inside
+    a ``scenario-objective`` div.
+    """
+    html = Path(showcase_run["run_dir"], "index.html").read_text(encoding="utf-8")
+    assert 'class="scenario-objective"' in html
+    # The current objective mentions either the previous "Simulate
+    # a multi-stage adversary intrusion" phrasing or the
+    # narrative-polished "An attacker-owned domain is staged"
+    # phrasing — both are valid showcase objective shapes. Pinning
+    # one of those substrings catches accidental empty-objective
+    # regressions without coupling this test to the exact wording.
+    objective_signals = [
+        "multi-stage adversary intrusion",  # pre-narrative-polish wording
+        "attacker-owned domain is staged",  # post-narrative-polish wording
+    ]
+    assert any(signal in html for signal in objective_signals), (
+        "scenario objective body missing from viewer header"
+    )
+
+
 def test_showcase_viewer_attack_coverage_section_lists_every_technique(
     showcase_run: Dict[str, Any],
 ) -> None:

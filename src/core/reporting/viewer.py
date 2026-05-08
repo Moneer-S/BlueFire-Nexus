@@ -333,6 +333,34 @@ def _render_header(manifest: Mapping[str, Any]) -> str:
         parts.append(f' &middot; finished {_esc(finished)}')
     parts.append("</div>")
     parts.append(f'<div style="margin-top: 8px;">{"".join(badges)}</div>')
+    # Surface the scenario-level objective just below the badges so a
+    # SOC analyst opening the dashboard sees the chain narrative
+    # before the per-step timeline. The YAML carries this as a
+    # multi-paragraph block; we normalise blank lines into <p>
+    # tags so paragraph breaks survive (otherwise the whole block
+    # collapses into a single wall of text). Empty / missing
+    # objective is silently dropped — older runs predating the
+    # ``run.scenario_objective`` field stay valid.
+    objective = str(run.get("scenario_objective") or "").strip()
+    if objective:
+        # Split on blank lines; ``str.split("\n\n")`` would miss
+        # paragraphs separated by ``\r\n\r\n`` on Windows YAML
+        # editors, so normalise newlines first.
+        normalised = objective.replace("\r\n", "\n").replace("\r", "\n")
+        paragraphs = [p.strip() for p in normalised.split("\n\n") if p.strip()]
+        if not paragraphs:
+            paragraphs = [normalised]
+        # Within a paragraph, single newlines are line wraps from
+        # the YAML literal block — collapse them to spaces so the
+        # rendered prose flows.
+        rendered_paragraphs = "".join(
+            f"<p>{_esc(' '.join(p.split()))}</p>" for p in paragraphs
+        )
+        parts.append(
+            '<div class="scenario-objective" style="margin-top: 12px;">'
+            f"{rendered_paragraphs}"
+            "</div>"
+        )
     if blocked:
         parts.append(
             '<div class="warning-banner">'
@@ -496,7 +524,13 @@ def _render_timeline(manifest: Mapping[str, Any]) -> str:
 
 
 def _render_propagation(manifest: Mapping[str, Any]) -> str:
-    """Section 3 — propagation graph (table)."""
+    """Section 3 — propagation graph (table).
+
+    Adds a ``narrative`` column so the table reads as a chain story
+    rather than a graph. The narrative comes from the manifest
+    layer (``_render_propagation_narrative``) so the renderer stays
+    purely a string formatter — no story logic lives here.
+    """
     edges = manifest.get("propagation_edges") or []
     if not edges:
         return (
@@ -505,16 +539,26 @@ def _render_propagation(manifest: Mapping[str, Any]) -> str:
             "</section>"
         )
     rows: List[str] = [
-        "<thead><tr><th>from step</th><th>to step</th><th>module</th><th>kind</th></tr></thead>"
+        "<thead><tr>"
+        "<th>from step</th><th>to step</th><th>module</th>"
+        "<th>kind</th><th>narrative</th>"
+        "</tr></thead>"
     ]
     body: List[str] = []
     for edge in edges:
+        narrative = str(edge.get("narrative") or "").strip()
+        narrative_html = (
+            f'<span class="muted">{_esc(narrative)}</span>'
+            if narrative
+            else "&mdash;"
+        )
         body.append(
             "<tr>"
             f'<td><code>{_esc(edge.get("from_step"))}</code></td>'
             f'<td><code>{_esc(edge.get("to_step"))}</code></td>'
             f'<td><code>{_esc(edge.get("to_module"))}</code></td>'
             f'<td><code>{_esc(edge.get("kind"))}</code></td>'
+            f'<td>{narrative_html}</td>'
             "</tr>"
         )
     rows.append(f'<tbody>{"".join(body)}</tbody>')
