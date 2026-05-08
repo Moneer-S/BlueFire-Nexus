@@ -439,6 +439,16 @@ def render_output_index_html(rows: List[Dict[str, Any]]) -> str:
         "</div>"
     )
     body_parts.append(_render_kpi_grid(rows))
+    # Same local-only contract reminder as the per-run viewer:
+    # an operator opening this page from `file://` immediately
+    # sees the no-server / no-JS / no-network promise.
+    body_parts.append(
+        '<div class="muted" style="margin-top: 8px; font-size: 12px;">'
+        "Static page &middot; no server, no JavaScript, no external "
+        "assets, no network calls. Move the entire <code>output/</code> "
+        "directory and links keep resolving (links are relative)."
+        "</div>"
+    )
     body_parts.append("</header>")
     body_parts.append(_render_runs_table(rows))
 
