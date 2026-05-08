@@ -13,28 +13,30 @@ This file summarises the deltas at the version-tag granularity.
 
 ### Changed
 
-- Risk scoring (`src/core/risk.py`) now uses a tactic-aware base
-  score for standard modules so end-of-chain destructive tactics
-  (e.g. `impact` -> 85 base, `exfiltration` -> 75 base) surface
-  as `critical` / `high` severity, while pre-foothold tactics
-  (`reconnaissance` / `resource_development` -> 25 base) stay
-  `low`. Previously every standard-module result landed at score
-  35-55 ("low" / "medium") regardless of tactic — a successful
-  ransomware-impact step scored the same as a benign file-discovery
-  step. Modules whose `name` is not in the new
-  `_TACTIC_BASE_SCORES` map keep the historic default base (35),
-  preserving behaviour for out-of-tree callers. Legacy adapter
-  scoring is unchanged (the legacy branch still wins via `pack`
-  presence in artifacts).
+- `LegacyWrappedModule` now emits a properly-shaped detection hint
+  with an explicitly-labeled `legacy_wrapped/bluefire` logsource +
+  `event.module: <name>` selection + `needs_operator_review: True`
+  marker, instead of the previous hint of just
+  `{"mitre_technique": "T0000"}` which silently fell back to the
+  default `process_creation/windows` logsource and mis-labeled
+  every wrapped legacy module's Sigma / YARA-L draft as a Windows
+  process-creation rule. Generated rules from this adapter now
+  surface as "needs operator review" rather than masquerading as
+  Sysmon-shaped detections.
 
 ### Tests
 
-- `tests/test_risk.py` extended (+12) with tactic-aware
-  invariants: impact -> critical, exfiltration -> high,
-  discovery -> low, ordering across recon -> initial_access ->
-  credential_access -> exfiltration -> impact, blocked-impact
-  dampener, errored-recon floor, unknown-module fallback,
-  legacy-branch precedence preservation.
+- New `tests/test_logsource_coverage_invariant.py` (+32): runs
+  every registered runtime module with minimal valid params and
+  asserts the resulting detection hint includes a non-empty
+  `logsource` block (with both `category` and `product` keys).
+  Catches future regressions where a new module ships without
+  setting logsource — the Sigma / YARA-L generators would
+  otherwise silently default to `process_creation/windows`,
+  mis-labeling the technique. Modules that intentionally emit no
+  hints (e.g. `legacy_capability_summary`) are tracked in an
+  exemption set and pinned to actually emit empty hints, so a
+  future change there also surfaces.
 
 ## [3.0.0-rc1] - 2026-05-07
 

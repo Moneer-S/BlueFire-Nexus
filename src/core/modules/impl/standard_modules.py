@@ -2423,7 +2423,26 @@ class LegacyWrappedModule(BaseModule):
                 },
             )
         ]
-        hints = {"mitre_technique": "T0000"}
+        # The wrapped module's behaviour is opaque to this adapter; we
+        # cannot map it to a Sysmon-shaped logsource (process_creation /
+        # file_event / registry_event / etc.) without inspecting the
+        # legacy class. Emit an explicitly-labeled `legacy_wrapped`
+        # logsource + selection so any Sigma / YARA-L / SPL draft built
+        # from this hint surfaces as "needs operator review" rather than
+        # silently falling back to ``process_creation/windows`` (which
+        # would mis-label every wrapped legacy module as a Windows
+        # process-creation rule).
+        hints = {
+            "title": f"Wrapped legacy module activity ({self.name})",
+            "mitre_technique": "T0000",
+            "logsource": {"category": "legacy_wrapped", "product": "bluefire"},
+            "detection": {
+                "selection": {"event.module": self.name},
+                "condition": "selection",
+            },
+            "wrapped_module": self.name,
+            "needs_operator_review": True,
+        }
         return _result(
             self.name,
             "success" if status in {"success", "partial_success"} else "failure",
