@@ -260,3 +260,67 @@ def test_every_profile_carries_per_method_telemetry_details(tmp_path: Path) -> N
             assert details.get(key) == value, (
                 f"{method}: telemetry details missing per-method key '{key}'"
             )
+
+
+def test_no_profile_detail_overrides_canonical_artifact_target(tmp_path: Path) -> None:
+    """Regression for: a profile detail key shadowing the canonical
+    ``target`` artifact field would break downstream
+    ``target_from_step`` propagation, since
+    ``resolve_target_from_step`` reads ``artifacts["target"]`` from
+    the upstream step.
+
+    The merge order in :class:`AntiDetectionModule` is profile
+    details first, canonical fields last - so any profile that
+    accidentally reuses ``target`` as a per-method label still
+    produces a host-shaped artifact ``target``.
+    """
+    mod = AntiDetectionModule()
+    for method in _ANTI_DETECTION_PROFILES:
+        result = mod.execute(
+            {"method": method, "target": "operator-supplied-host"},
+            _ctx(tmp_path),
+        )
+        assert result.artifacts["target"] == "operator-supplied-host", (
+            f"{method}: profile details overwrote canonical target -> "
+            f"{result.artifacts.get('target')!r}"
+        )
+        # Canonical fields stay canonical even when the profile
+        # would have shadowed them.
+        assert result.artifacts["method"] == method
+        assert result.artifacts["mitre_technique"] == _ANTI_DETECTION_PROFILES[method]["mitre"]
+
+
+def test_no_profile_detail_uses_reserved_canonical_keys() -> None:
+    """Static guard against future contributors reusing canonical keys.
+
+    The merge discipline above protects runtime, but a profile
+    detail named ``target`` / ``method`` / ``mitre_technique`` is
+    a smell regardless: it implies the contributor was trying to
+    set the canonical field rather than emit a per-method label.
+    Reject it at definition time so the contributor picks a
+    namespaced key instead (e.g. ``target_file`` for timestomp).
+    """
+    reserved = {"target", "method", "mitre_technique"}
+    for name, profile in _ANTI_DETECTION_PROFILES.items():
+        clashes = reserved & set(profile["details"].keys())
+        assert not clashes, (
+            f"{name}: profile details reuses reserved canonical keys "
+            f"{sorted(clashes)} - rename to a namespaced form "
+            f"(e.g. target -> target_file / target_process)"
+        )
+
+
+def test_timestomp_target_file_surfaces_under_namespaced_key(tmp_path: Path) -> None:
+    """The timestomp profile's per-method file target lands as
+    ``target_file`` (namespaced) - not ``target``, which is
+    reserved for the host the operator is acting on.
+    """
+    mod = AntiDetectionModule()
+    result = mod.execute(
+        {"method": "timestomp", "target": "host-7"}, _ctx(tmp_path)
+    )
+    assert result.artifacts["target"] == "host-7"
+    assert (
+        result.artifacts.get("target_file")
+        == "C:\\Windows\\System32\\drivers\\etc\\hosts"
+    )

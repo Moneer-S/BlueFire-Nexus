@@ -856,7 +856,7 @@ _ANTI_DETECTION_PROFILES: Dict[str, Dict[str, Any]] = {
         "selection_value": "\\drivers\\etc\\hosts",
         "event_type": "anti_detection_timestomp",
         "title_prefix": "Timestamp manipulation",
-        "details": {"target": "C:\\Windows\\System32\\drivers\\etc\\hosts", "modified_attr": "MFT"},
+        "details": {"target_file": "C:\\Windows\\System32\\drivers\\etc\\hosts", "modified_attr": "MFT"},
     },
     "log_clear": {
         "mitre": "T1070.001",
@@ -943,13 +943,23 @@ class AntiDetectionModule(BaseModule):
             params, context, fallback="lab-host"
         )
 
-        details: Dict[str, Any] = {
-            "method": profile_key,
-            "target": target,
-            "mitre_technique": profile["mitre"],
-            "selection_value": profile["selection_value"],
-        }
-        details.update(profile["details"])
+        # Profile details first so the canonical fields below
+        # (``method`` / ``target`` / ``mitre_technique`` /
+        # ``selection_value``) always win — even if a future profile
+        # contributor reuses one of those keys for a per-method
+        # detail. ``target`` in particular is canonical here (the
+        # host being acted on); a profile that meant a per-method
+        # file path / process name should namespace its own key
+        # (e.g. ``target_file`` for ``timestomp``).
+        details: Dict[str, Any] = dict(profile["details"])
+        details.update(
+            {
+                "method": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+                "selection_value": profile["selection_value"],
+            }
+        )
         if propagated_from:
             details["target_propagated_from_step"] = propagated_from
 
@@ -975,12 +985,16 @@ class AntiDetectionModule(BaseModule):
         if propagated_from:
             hints["target_propagated_from_step"] = propagated_from
 
-        artifacts: Dict[str, Any] = {
-            "method": profile_key,
-            "target": target,
-            "mitre_technique": profile["mitre"],
-        }
-        artifacts.update(profile["details"])
+        # Same merge discipline as ``details``: canonical fields
+        # last so they cannot be overwritten by profile detail keys.
+        artifacts: Dict[str, Any] = dict(profile["details"])
+        artifacts.update(
+            {
+                "method": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            }
+        )
         if propagated_from:
             artifacts["target_propagated_from_step"] = propagated_from
 
