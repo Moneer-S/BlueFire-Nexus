@@ -107,7 +107,7 @@ The full demo scenario is `enterprise_intrusion_chain` (12 standard modules, fou
 python -m src.run_scenario --profile enterprise_intrusion_chain --output-json
 ```
 
-Every run writes `manifest.json` (machine-readable index of every artifact) and `index.html` (static dashboard) under `output/<run_id>/`. The dashboard renders the scenario timeline, propagation graph, ATT&CK coverage, telemetry counts, detection drafts, risk summary, and AI provider attribution from the manifest. No JavaScript, no external assets, no network calls — open with `file://` and read.
+Every run writes `manifest.json` (machine-readable index of every artifact) and `index.html` (static dashboard) under `output/<run_id>/`. The dashboard renders the scenario's `objective:` block as a header paragraph; an ordered scenario timeline with per-step **severity column** so the chain's risk arc reads inline; a propagation graph with a defender-facing **narrative column** (`credential_access targets the host produced by the discovery step 'enumerate-files'`); ATT&CK coverage; telemetry counts (pure-CSS bar charts); detection drafts; risk summary with per-module rationale (`tactic_base=<tactic>`, `matters_because=<chain-position text>`); and AI provider attribution. No JavaScript, no external assets, no network calls — open with `file://` and read.
 
 A broader command reference is in [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELINES.md). The architecture, mode model, and ModuleResult contract live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
