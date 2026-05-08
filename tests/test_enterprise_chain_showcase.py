@@ -350,6 +350,42 @@ def test_showcase_viewer_attack_coverage_section_lists_every_technique(
         assert technique in html, f"technique {technique!r} missing from viewer"
 
 
+def test_showcase_copilot_narrative_body_carries_scenario_objective(
+    showcase_run: Dict[str, Any],
+) -> None:
+    """The offline copilot's narrative artifact leads with the chain story.
+
+    End-to-end pin: scenario.objective → manifest.run.scenario_objective →
+    run_summary.scenario_objective → prompt body objective: line →
+    narrative artifact body. PR #121 added the threading at every
+    layer with unit-level tests against fixture summaries, but the
+    full orchestrator-driven chain wasn't pinned end-to-end on the
+    flagship. Catching a regression here means a future refactor
+    that drops the threading at any layer (summariser /
+    formatter / parser / renderer) surfaces in the showcase.
+    """
+    body = (
+        showcase_run["run_dir"] / "copilot_narrative.md"
+    ).read_text(encoding="utf-8")
+    # The rendered body has a "Run summary" block; PR #121 emits an
+    # ``- objective: ...`` bullet just below the scenario name.
+    assert "objective:" in body, (
+        f"copilot_narrative.md missing objective: line; first 400 chars:\n"
+        f"{body[:400]!r}"
+    )
+    # The objective body itself should mention the chain (an
+    # attacker-owned domain or a finance analyst — both stable
+    # phrases in the post-#118 flagship objective).
+    assert (
+        "attacker-owned domain" in body
+        or "finance analyst" in body
+        or "ransomware" in body.lower()
+    ), (
+        "copilot_narrative.md objective: line lost the chain story; "
+        f"first 400 chars: {body[:400]!r}"
+    )
+
+
 def test_showcase_viewer_clearly_labels_offline_copilot_output(
     showcase_run: Dict[str, Any],
 ) -> None:
