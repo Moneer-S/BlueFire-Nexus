@@ -13,55 +13,28 @@ This file summarises the deltas at the version-tag granularity.
 
 ### Changed
 
-- YARA-L draft generator now derives the `events:` block from the
-  hint's Sigma `logsource.category` and `detection.selection`
-  rather than emitting a single hardcoded
-  `target.process.file.full_path contains <process_name>`
-  predicate regardless of technique. Sigma logsource categories
-  map to UDM event types (`process_creation` -> `PROCESS_LAUNCH`,
-  `file_event` -> `FILE_MODIFICATION`, `registry_event` ->
-  `REGISTRY_MODIFICATION`, `process_access` -> `PROCESS_OPEN`,
-  `image_load` -> `PROCESS_MODULE_LOAD`, `network_connection` ->
-  `NETWORK_CONNECTION`, `dns` -> `NETWORK_DNS`); Sigma fields map
-  to UDM event field paths (`Image|endswith` ->
-  `principal.process.file.full_path`, `CommandLine|contains` ->
-  `principal.process.command_line`, `TargetFilename|endswith` ->
-  `target.file.full_path`, `TargetObject|contains` ->
-  `target.registry.registry_key`, `CallTrace|contains` ->
-  `principal.process.api_calls`, `ImageLoaded|endswith` ->
-  `target.process.file.full_path`, etc.); Sigma operators
-  (`|contains` / `|endswith` / `|startswith` / `|in` / no-modifier
-  exact / numeric) lower into the appropriate YARA-L regex
-  literals or string-equality predicates with proper escaping of
-  regex metacharacters.
-- The `meta:` block now also carries `logsource_product` /
-  `logsource_category` for analyst review when the hint supplies
-  a logsource block.
+- Risk scoring (`src/core/risk.py`) now uses a tactic-aware base
+  score for standard modules so end-of-chain destructive tactics
+  (e.g. `impact` -> 85 base, `exfiltration` -> 75 base) surface
+  as `critical` / `high` severity, while pre-foothold tactics
+  (`reconnaissance` / `resource_development` -> 25 base) stay
+  `low`. Previously every standard-module result landed at score
+  35-55 ("low" / "medium") regardless of tactic — a successful
+  ransomware-impact step scored the same as a benign file-discovery
+  step. Modules whose `name` is not in the new
+  `_TACTIC_BASE_SCORES` map keep the historic default base (35),
+  preserving behaviour for out-of-tree callers. Legacy adapter
+  scoring is unchanged (the legacy branch still wins via `pack`
+  presence in artifacts).
 
 ### Tests
 
-- New `tests/test_yara_l_discriminators.py` (+36): logsource ->
-  event_type mapping, per-Sigma-field UDM paths, operator
-  semantics (contains/endswith/startswith/in/contains_any/contains_all/exact/numeric),
-  regex-metacharacter escaping (dots, slashes), anchored vs
-  unanchored alternation per modifier, backwards-compat fallback
-  when hint has no logsource/selection, end-to-end through the
-  engine, and a regression case against the shipped legacy_packs
-  hint shape.
-- New `tests/test_scenario_quality_invariants.py` (+90):
-  parametrized over every shipped scenario, asserts step-id
-  uniqueness, explicit step ids, propagation references resolve
-  to earlier steps, every step specifies a module, runtime
-  overall status is success, every step reaches success at
-  runtime, every detection artifact path stays under the
-  configured output_root, every success step emits at least one
-  ATT&CK technique (excluding the `legacy_capability_summary`
-  metadata-only module), and declared `attack_coverage` is
-  fully exercised by runtime emissions. Previously these
-  invariants were pinned only for the flagship
-  `enterprise_intrusion_chain`; the other nine shipped scenarios
-  could drift along any of these axes without surfacing in tests
-  until an operator hit the regression in production.
+- `tests/test_risk.py` extended (+12) with tactic-aware
+  invariants: impact -> critical, exfiltration -> high,
+  discovery -> low, ordering across recon -> initial_access ->
+  credential_access -> exfiltration -> impact, blocked-impact
+  dampener, errored-recon floor, unknown-module fallback,
+  legacy-branch precedence preservation.
 
 ## [3.0.0-rc1] - 2026-05-07
 
