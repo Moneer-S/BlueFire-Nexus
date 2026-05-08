@@ -3,7 +3,7 @@ name: Insider DNS Exfiltration
 objective: Simulate insider-driven DNS-based data exfiltration from a restricted lab subnet.
 mitre:
   - T1083
-  - T1041
+  - T1048.003
   - T1071.004
   - T1572
 fail_fast: true
