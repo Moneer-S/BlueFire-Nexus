@@ -134,7 +134,18 @@ _SIGMA_FIELD_TO_UDM: Dict[str, str] = {
     "event.action": "security_result.action",
     "event.logon_type": "extensions.auth.mechanism",
     "user.name": "target.user.userid",
-    "user.domain": "target.user.windows_sid",
+    # Windows AD/NetBIOS domain string (e.g., "EXAMPLE") goes into
+    # ``target.user.windows_domain`` per Chronicle UDM, NOT
+    # ``target.user.windows_sid`` (which holds SID strings of the
+    # form ``S-1-5-21-...``). The earlier mapping made
+    # `domain_accounts` detections effectively unmatchable because
+    # ``user.domain|contains: EXAMPLE`` would search SID values for
+    # "EXAMPLE" — Codex P2 finding on PR #110.
+    "user.domain": "target.user.windows_domain",
+    # Convenience aliases for callers that already use the
+    # canonical UDM-style keys directly.
+    "user.windows_domain": "target.user.windows_domain",
+    "user.windows_sid": "target.user.windows_sid",
     "user.oauth_provider": "target.user.attribute.labels",
     # Telephony fallback.
     "call.callee.user": "target.user.userid",

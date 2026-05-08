@@ -285,12 +285,18 @@ def test_yara_l_renderer_maps_auth_centric_sigma_fields() -> None:
 
     assert _SIGMA_FIELD_TO_UDM["event.action"] == "security_result.action"
     assert _SIGMA_FIELD_TO_UDM["user.name"] == "target.user.userid"
-    assert _SIGMA_FIELD_TO_UDM["user.domain"] == "target.user.windows_sid"
+    # Codex P2 follow-up: `user.domain` -> `target.user.windows_domain`,
+    # NOT `target.user.windows_sid`. SIDs are different identifiers
+    # ("S-1-5-21-..."); a domain-string `|contains` against a SID
+    # field would never match real auth telemetry.
+    assert _SIGMA_FIELD_TO_UDM["user.domain"] == "target.user.windows_domain"
+    assert _SIGMA_FIELD_TO_UDM["user.windows_domain"] == "target.user.windows_domain"
+    assert _SIGMA_FIELD_TO_UDM["user.windows_sid"] == "target.user.windows_sid"
     assert _SIGMA_FIELD_TO_UDM["user.oauth_provider"] == "target.user.attribute.labels"
     assert _SIGMA_FIELD_TO_UDM["event.logon_type"] == "extensions.auth.mechanism"
     # Modifier suffix is stripped before lookup.
     assert _udm_field("user.name|contains", category="authentication") == "target.user.userid"
-    assert _udm_field("user.domain|contains", category="authentication") == "target.user.windows_sid"
+    assert _udm_field("user.domain|contains", category="authentication") == "target.user.windows_domain"
 
 
 def test_yara_l_renderer_maps_email_subfields() -> None:
