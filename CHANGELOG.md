@@ -11,7 +11,24 @@ This file summarises the deltas at the version-tag granularity.
 
 ## [Unreleased]
 
-This section captures changes since the last tagged release.
+No changes since `[3.0.0-rc1]`.
+
+## [3.0.0-rc1] - 2026-05-07
+
+First release-candidate of the rebuilt local-first adversary-
+emulation baseline. Major-version bump from `v2.8.0` reflects
+that the artifact contract, module registry, AI layer, and
+safety model have all been re-architected since the prior
+release lineage; existing `v2.x` integrations should treat this
+as a breaking change and re-validate against the new module
+registry and manifest schema.
+
+This is a **release candidate**: the maintainer may publish
+`-rc2`, `-rc3`, etc. in response to operator feedback before
+cutting the bare `v3.0.0` tag.
+
+Headline story (full set of 53 PRs lives in
+[`docs/reports/next_roadmap.md`](docs/reports/next_roadmap.md)):
 
 ### Added
 
@@ -89,12 +106,133 @@ This section captures changes since the last tagged release.
 - AI keys are read from environment variables only; never
   bundled, never written to disk.
 
+### Tests
+
+- Cross-adapter parity audit across the seven `legacy_*`
+  modules (77 parametrised tests) plus per-capability depth
+  tests for `legacy_protocol_research` and
+  `legacy_stealth_research`.
+- 10-test enterprise-chain quality invariant suite (unique
+  step ids, every step in dry-mode, forward-reference detection
+  on propagation slots, all four pairs demonstrated, declared
+  ATT&CK coverage matches runtime emitted coverage).
+- 18-test demo-bundle validator suite (no broken viewer links,
+  no external schemes, no absolute paths, complete artifact
+  set on both flagship scenarios).
+- 10-test quickstart smoke harness exercising the full README
+  end-to-end via subprocess.
+- Final baseline at the rc1 cut: **1525 passed, 5 skipped, 0
+  failed** (~98-110s wallclock).
+
+### Pre-rc1 polish fixes
+
+Five focused PRs landed between the original rc1 cut and the
+current rc1 baseline, each surfaced by a fresh-clone Windows
+smoke run and pinned by tests so they cannot regress:
+
+- **YARA-L `meta.run_id` correlation parity** (PR #89). The
+  detection engine wrote real run ids into Sigma rules but
+  hardcoded `run_id = "manual"` in YARA-L. A defender
+  correlating Sigma <-> YARA-L drafts on `run_id` could not.
+  Fixed: `generate_yara_l` now accepts a keyword-only `run_id`
+  and the engine threads the real value through.
+- **SPL upgrade from metadata echo to real draft** (PR #89).
+  The previous renderer emitted `| makeresults | eval ...`
+  only — round-tripped run metadata, never touched any data
+  source. New shape maps the Sigma `logsource` block onto
+  common Splunk sourcetypes (`WinEventLog:Security`, `Sysmon`,
+  `linux_audit`, `stream:dns`, etc.), surfaces the Sigma
+  `selection` clause as `where` filters, attributes the search
+  to the run via `eval`, aggregates with `stats`, and carries
+  a leading multi-line backtick `DRAFT detection search`
+  comment header so the dashboard cannot oversell maturity.
+  Honest README framing in the new "Detection draft maturity"
+  section spells out: Sigma most mature, YARA-L medium, SPL
+  draft / starter.
+- **Cross-platform-safe filenames** (PR #94). The orchestrator
+  builds module-result keys as `f"{module}:{step_id}"` to
+  disambiguate steps that reuse the same module. That colon
+  flowed straight into the detection-artifact filename. On
+  NTFS, Windows interprets `:` as the Alternate Data Stream
+  separator; the visible filename truncated and the rule body
+  was silently lost into an ADS, leaving 0-byte detection
+  files behind. Fixed: a `_safe_filename_component` helper
+  replaces unsafe characters (`: * ? " < > | / \`) with `__`;
+  the manifest / coverage records still carry the original
+  colon-separated key.
+- **Windows CLI mojibake + `file://` URL on its own line**
+  (PR #91). Em-dash (U+2014) in user-facing CLI strings
+  rendered as `?` on Windows non-UTF-8 terminals. `file://`
+  viewer URLs printed inline could be wrapped by rich's word
+  wrap, breaking copy-paste. Fixed: every em-dash in
+  `src/core/cli.py` replaced with ASCII (source-level invariant
+  pinned by test); URLs now print on a standalone line via
+  `console.print(uri, no_wrap=True, overflow="ignore")`.
+- **README `.env` quickstart drift** (PR #92). The prior
+  `cp .env.example .env` step in the canonical quickstart was
+  misleading — the default offline / template AI flow does not
+  need `.env` at all. Moved out of the canonical block; framed
+  as "only needed when enabling a remote AI provider" in a
+  follow-up paragraph that points to USAGE_GUIDELINES.
+- **Offline TemplateProvider artifact quality** (PR #93). The
+  template provider previously returned a generic 5-line stub
+  for every prompt. New behaviour parses the orchestrator's
+  `[run summary]` block out of the prompt and renders an
+  intent-aware artifact: SOC narrative for `narrate` (with
+  step-by-step timeline replay, blocked-step callouts,
+  run-specific next-validation paths under `output/<run_id>/`);
+  detection-strategy summary for `suggest_detections`
+  (per-technique pointers + honest maturity framing);
+  scenario YAML skeleton for `plan`. Stays deterministic, no
+  network, no API key required.
+
+### Removed
+
+- SIEM exporters and remote observability connectors (Splunk
+  HEC, OpenSearch, Elasticsearch, NGSIEM, generic HTTP bulk).
+  Legacy `telemetry.sinks` config entries naming removed
+  remote types are warn-and-ignored at load time so old configs
+  do not crash and do not silently regain network egress.
+
+### Notes for operators upgrading from `v2.8.0`
+
+- The artifact contract has changed. Every run now produces a
+  `manifest.json` with a stable schema (see
+  `src/core/reporting/manifest.py`) and a self-contained
+  `index.html` viewer. Downstream tooling that previously
+  parsed `report.json` directly should migrate to reading
+  `manifest.json` first.
+- The module registry has been re-architected. Standard tactic
+  modules are simulate-first and never auto-route through
+  legacy code paths; scenarios that need legacy behaviour must
+  use an explicit `module: legacy_<tactic>` adapter. The
+  `enable_all_lab_capabilities` master toggle, per-pack mode
+  flags, and per-capability `lab_confirmation` gates are
+  unchanged in shape but the dispatch surface they govern has
+  been re-grouped.
+- The AI layer is provider-agnostic. The default has remained
+  offline / template — no network calls, no API keys required
+  for default use. Operator-facing config keys (`modules.ai.*`
+  + `ai_providers.<name>.*`) are documented in
+  `docs/USAGE_GUIDELINES.md` § AI provider configuration.
+
+## [2.8.0] - 2025-02-23
+
+Last published release of the prior lineage. Predates the
+artifact-contract / module-registry / AI-layer rebuild. Kept on
+GitHub Releases for historical reference; operators on `v2.8.0`
+should treat `v3.0.0-rc1` as a breaking-change upgrade and
+re-validate against the new manifest / viewer contract.
+
 ## [1.0.0] - 2024-03-20
 
-Initial public release. Module framework, scenario runtime,
-local telemetry, ATT&CK-mapped detection drafts, purple-team
-reports, and gated legacy capability packs.
+Pre-`v2.8.0` historical entry. Initial public release of the
+earlier lineage. Module framework, scenario runtime, local
+telemetry, ATT&CK-mapped detection drafts, purple-team reports,
+and gated legacy capability packs. Predates the `v2.8.0`
+published release and the `v3.0.0-rc1` rebuild; kept here for
+context only.
 
 ## [0.1.0] - 2024-03-01
 
-Initial development release.
+Pre-`v2.8.0` historical entry. Initial development release.

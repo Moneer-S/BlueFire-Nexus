@@ -12,7 +12,7 @@ include = ["src*"]
 
 [project]
 name = "bluefire-nexus"
-version = "2.0.0"
+version = "3.0.0rc1"
 description = "Config-driven purple-team adversary emulation platform"
 readme = "README.md"
 requires-python = ">=3.10"
