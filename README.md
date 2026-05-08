@@ -40,7 +40,7 @@ BlueFire Nexus tries to bridge these:
 - **Step-to-step propagation.** Downstream modules can opt into reading prior steps' artifacts so chains feel like real intrusions, not isolated technique callouts.
 - **Actor / C2 / stealth / tactic legacy research packs**, each wired through gated adapters.
 - **Local telemetry** as JSON Lines per run.
-- **Detection draft generation** for Sigma, YARA-L, and Splunk SPL rule files.
+- **Detection draft generation** for Sigma, YARA-L, and Splunk SPL rule files. *Drafts*, not finished detections — see [§ Detection draft maturity](#detection-draft-maturity) for what's wired.
 - **Reports + risk summary** in Markdown and JSON.
 - **Static HTML dashboard** per run — no JS, no external assets, no network. Open with `file://`.
 - **Run manifest** (`manifest.json`) — machine-readable index of every artifact for downstream tooling.
@@ -135,6 +135,16 @@ output/<run_id>/
 ```
 
 Splunk SPL is generated as **local detection-rule output**. It is not a Splunk exporter or SIEM connector.
+
+### Detection draft maturity
+
+The three engines are not equally mature. Generated drafts are starting points for a detection engineer, not finished detections to deploy verbatim:
+
+- **Sigma (most mature).** Full document with `title` / `id` / `logsource` / `detection.selection` / `detection.condition` / `tags` / `level` / `x_bluefire_risk`. Per-module `detection_hints` populate the selection block with technique-specific field/value pairs. Most directly reusable in a SIEM pipeline.
+- **YARA-L (medium).** Per-rule meta with `technique` / `run_id` / `risk_score` / `risk_severity`, plus an `events` block tied to a process-launch metadata event and a `target.process.file.full_path` substring match. Use as a Chronicle / Google SecOps starting point; the `events` block typically needs hand-tuning per environment.
+- **SPL (draft / starter).** Each `.spl` file is a Splunk starter search, **not a deployable saved search**. Body uses the Sigma logsource block to map onto common Splunk sourcetypes (`WinEventLog:Security`, `Sysmon`, `linux_audit`, `stream:dns`, etc.) and surfaces the Sigma selection clause as `where` filters; a leading multi-line backtick comment header (`-- DRAFT detection search ... Adjust index= / sourcetype= for your environment ...`) makes the draft status explicit. When a hint has no logsource, the renderer falls back to a metadata-echo `| makeresults | eval` shape so existing tooling that consumed the prior format keeps working.
+
+The dashboard's "Detection drafts" KPI counts every file written across all three engines. Treat the count as scope ("how many techniques fired?") rather than maturity ("how many production detections do I have?"). The `coverage_<run_id>.json` manifest sibling enumerates each draft's module / technique / engine paths if you need a programmatic readout.
 
 ### Local report viewer
 
