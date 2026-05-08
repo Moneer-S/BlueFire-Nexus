@@ -140,6 +140,66 @@ def test_resolve_execution_profile_strips_posix_path_prefix() -> None:
     assert profile["interpreter"] == "python"
 
 
+def test_quoted_path_with_spaces_resolves_correctly() -> None:
+    """Codex P2: quoted Windows path with spaces must not truncate.
+
+    Naive ``str.split`` truncated
+    ``"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -c ...`` to
+    ``"C:\\Program``, falling back to T1059 / unknown. The fix
+    routes the first-token extraction through ``shlex.split`` with
+    ``posix=False`` so the quoted token stays intact.
+    """
+    profile = _resolve_execution_profile(
+        '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -c "Get-Process"'
+    )
+    assert profile["mitre"] == "T1059.001"
+    assert profile["interpreter"] == "powershell"
+
+
+def test_quoted_posix_path_with_spaces_resolves_correctly() -> None:
+    """Quoted POSIX path with spaces (e.g., ``/Users/test user/bin``)
+    also resolves to the right sub-technique."""
+    profile = _resolve_execution_profile('"/Users/test user/bin/python3" script.py')
+    assert profile["mitre"] == "T1059.006"
+    assert profile["interpreter"] == "python"
+
+
+def test_single_quoted_path_resolves_correctly() -> None:
+    """Single-quoted POSIX path resolves cleanly too."""
+    profile = _resolve_execution_profile("'/usr/bin/bash' -lc 'id'")
+    assert profile["mitre"] == "T1059.004"
+    assert profile["interpreter"] == "unix_shell"
+
+
+def test_quoted_path_in_full_module_run_records_subtechnique(tmp_path: Path) -> None:
+    """Module-level: quoted-path command surfaces the resolved
+    sub-technique in artifacts / hints / telemetry, not bare T1059.
+    """
+    mod = ExecutionModule()
+    result = mod.execute(
+        {"command": '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -c "Get-Process"'},
+        _ctx(tmp_path),
+    )
+    assert result.techniques == ["T1059.001"]
+    assert result.detection_hints["mitre_technique"] == "T1059.001"
+    assert result.detection_hints["interpreter"] == "powershell"
+    assert result.artifacts["mitre_technique"] == "T1059.001"
+
+
+def test_unbalanced_quote_falls_back_to_whitespace_split() -> None:
+    """``shlex.split`` raises ``ValueError`` on unbalanced quotes.
+
+    The fallback path uses whitespace split, which preserves the
+    historic behaviour of getting the first whitespace-delimited
+    token. Recognised interpreter names without surrounding quotes
+    still resolve correctly even when the rest of the command is
+    malformed.
+    """
+    profile = _resolve_execution_profile('powershell "unmatched-quote -c x')
+    assert profile["mitre"] == "T1059.001"
+    assert profile["interpreter"] == "powershell"
+
+
 def test_failure_path_carries_resolved_mitre(tmp_path: Path) -> None:
     """When subprocess.run raises, the failure record reflects the
     resolved sub-technique (was historically pinned to T1059)."""

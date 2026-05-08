@@ -135,14 +135,35 @@ _EXECUTION_INTERPRETER_PROFILES: Dict[str, Dict[str, str]] = {
 def _resolve_execution_profile(command: str) -> Dict[str, str]:
     """Return ``{mitre, interpreter}`` for a command, falling back to T1059.
 
-    Examines the basename of the first whitespace-separated token of
-    the command, lower-cased and with ``.exe`` stripped, against the
-    interpreter catalog. ``powershell.exe -nop ...`` and
-    ``c:\\windows\\system32\\cmd.exe /c ...`` both resolve correctly.
+    Examines the basename of the first token of the command, lower-
+    cased and with ``.exe`` stripped, against the interpreter
+    catalog. The first token is extracted with ``shlex.split`` so
+    quoted executables containing spaces resolve correctly:
+    ``"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -c ...`` extracts
+    ``pwsh`` rather than truncating at the space inside the quoted
+    path. If ``shlex.split`` raises (e.g. unbalanced quotes), the
+    fallback splits on whitespace.
+
+    Both ``powershell.exe -nop ...`` and
+    ``C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -nop``
+    resolve to ``T1059.001`` / ``powershell``.
     """
     if not command.strip():
         return {"mitre": "T1059", "interpreter": "unknown"}
-    first_token = command.strip().split(maxsplit=1)[0]
+    try:
+        # ``posix=False`` keeps Windows-style backslash paths intact
+        # while still handling double-quoted tokens with spaces. The
+        # first token from this lex is the executable.
+        tokens = shlex.split(command, posix=False)
+        first_token = tokens[0] if tokens else ""
+        # Strip surviving surrounding quotes (``posix=False`` keeps
+        # them attached to the token).
+        if len(first_token) >= 2 and first_token[0] == first_token[-1] and first_token[0] in {'"', "'"}:
+            first_token = first_token[1:-1]
+    except ValueError:
+        first_token = command.strip().split(maxsplit=1)[0]
+    if not first_token:
+        return {"mitre": "T1059", "interpreter": "unknown"}
     # Strip Windows-style path; basename is what matters.
     basename = first_token.replace("\\", "/").rsplit("/", 1)[-1].lower()
     if basename.endswith(".exe"):
