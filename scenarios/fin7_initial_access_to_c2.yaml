@@ -1,6 +1,11 @@
 id: fin7_initial_access_to_c2
 name: FIN7 Initial Access to C2
-objective: Simulate a FIN7-like chain from initial access through command-and-control.
+objective: |
+  Simulate a FIN7-like three-step chain from spearphishing-attachment
+  delivery through encoded PowerShell loader execution to HTTPS C2
+  beaconing. Modeled after FIN7's documented restaurant / hospitality
+  intrusions; runs simulate-only with `network_touch: false`, so no
+  destructive payload or live traffic leaves the host under any input.
 attack_coverage:
   - T1566
   - T1059
@@ -8,19 +13,19 @@ attack_coverage:
 fail_fast: true
 steps:
   - id: step_01
-    name: Initial Access
+    name: Spearphishing attachment delivered to finance user
     module: initial_access
     params:
       vector: spearphishing_attachment
       target: finance-user
   - id: step_02
-    name: Loader Execution
+    name: Encoded PowerShell loader executes from attachment
     module: execution
     params:
       command: "powershell -nop -w hidden -enc UwB0AGEAcgB0AC0AUAByAG8AYwBlAHMAcwA="
       network_touch: false
   - id: step_03
-    name: C2 Beacon
+    name: Loader beacons HTTPS to attacker-controlled C2
     module: command_control
     params:
       channel: http
