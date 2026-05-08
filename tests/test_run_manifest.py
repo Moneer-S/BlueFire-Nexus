@@ -157,7 +157,7 @@ def test_build_manifest_run_section_carries_canonical_metadata(tmp_path: Path) -
 
 
 def test_build_manifest_extracts_propagation_edges(tmp_path: Path) -> None:
-    """Edges are built from artifacts.target_propagated_from_step / source_..."""
+    """Edges are built from artifacts.target_propagated_from_step / source_... / c2_endpoint_..."""
     steps = _basic_steps()
     # Add a lateral_movement step using source_from_step propagation.
     steps.append(
@@ -177,6 +177,24 @@ def test_build_manifest_extracts_propagation_edges(tmp_path: Path) -> None:
             "detections": {},
         }
     )
+    # Add a command_control step using c2_endpoint_from_step propagation
+    # (resource_development -> command_control endpoint axis added in PR #106).
+    steps.append(
+        {
+            "step_id": "c2",
+            "module": "command_control",
+            "name": "HTTPS C2",
+            "status": "success",
+            "message": "ok",
+            "techniques": ["T1071.001"],
+            "artifacts": {
+                "channel": "https",
+                "c2_url": "https://invoice-portal.example.lab/c2",
+                "c2_endpoint_propagated_from_step": "stage-infrastructure",
+            },
+            "detections": {},
+        }
+    )
     manifest = build_manifest(
         run_id="run-prop",
         run_dir=tmp_path,
@@ -184,10 +202,16 @@ def test_build_manifest_extracts_propagation_edges(tmp_path: Path) -> None:
         steps=steps,
     )
     edges = manifest["propagation_edges"]
-    # discovery -> credential_access (target) AND credential_access -> lateral (source)
     edge_kinds = sorted((edge["from_step"], edge["to_step"], edge["kind"]) for edge in edges)
     assert ("enumerate-files", "harvest-creds", "target_from_step") in edge_kinds
     assert ("harvest-creds", "lateral", "source_from_step") in edge_kinds
+    # c2_endpoint axis must surface in the manifest so the viewer
+    # can render it. Codex P2 follow-up on PR #106: the new
+    # c2_endpoint_propagated_from_step artifact key was previously
+    # ignored by `_propagation_edges`, leaving the new
+    # resource_development -> command_control linkage invisible in
+    # the report's propagation graph.
+    assert ("stage-infrastructure", "c2", "c2_endpoint_from_step") in edge_kinds
 
 
 def test_build_manifest_attack_coverage_is_sorted_and_deduped(tmp_path: Path) -> None:
@@ -417,14 +441,17 @@ def test_write_run_manifest_round_trips_through_json_loads(tmp_path: Path) -> No
 # ---------------------------------------------------------------------------
 
 
-def test_enterprise_intrusion_chain_writes_manifest_with_four_propagation_edges(
+def test_enterprise_intrusion_chain_writes_manifest_with_five_propagation_edges(
     tmp_path: Path,
 ) -> None:
     """End-to-end shape against the project's flagship scenario.
 
     A regression that drops a propagation pair (or a manifest
     section) surfaces here at the project level rather than only
-    at the unit-test level.
+    at the unit-test level. Pinned at five edges since PR #106
+    added the c2_endpoint_from_step axis (resource_development ->
+    command_control); Codex P2 follow-up on that PR exposed that
+    `_propagation_edges` was not walking the new artifact key.
     """
     cfg_path = tmp_path / "config.yaml"
     cfg = ConfigManager(str(cfg_path))
@@ -442,13 +469,14 @@ def test_enterprise_intrusion_chain_writes_manifest_with_four_propagation_edges(
     assert manifest["run"]["overall_status"] == "success"
     assert manifest["run"]["module_count"] == 12
 
-    # Four propagation edges (the four documented pairs).
+    # Five propagation edges (the five documented pairs).
     edges = manifest["propagation_edges"]
     edge_signatures = {(e["from_step"], e["to_step"], e["kind"]) for e in edges}
     assert ("enumerate-files", "harvest-browser-creds", "target_from_step") in edge_signatures
     assert ("harvest-browser-creds", "lateral-to-fileshare", "source_from_step") in edge_signatures
     assert ("stage-collected-data", "exfil-over-c2", "target_from_step") in edge_signatures
     assert ("stage-collected-data", "ransomware-impact", "target_from_step") in edge_signatures
+    assert ("stage-infrastructure", "c2-channel", "c2_endpoint_from_step") in edge_signatures
 
     # ATT&CK coverage matches what the scenario declares.
     declared = {

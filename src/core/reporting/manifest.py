@@ -131,7 +131,7 @@ def _propagation_edges(steps: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any
     """Extract the propagation graph from per-step artifacts.
 
     Modules that consume ``previous_step_results`` record the
-    upstream step under one of two keys in their result's
+    upstream step under one of three keys in their result's
     ``artifacts``:
 
     - ``target_propagated_from_step`` for the standard
@@ -140,10 +140,18 @@ def _propagation_edges(steps: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any
       destination, ...).
     - ``source_propagated_from_step`` for the lateral_movement
       ``source_from_step`` slot.
+    - ``c2_endpoint_propagated_from_step`` for the
+      ``command_control`` ``c2_endpoint_from_step`` slot
+      (resource_development → command_control endpoint axis).
 
     The viewer renders these as edges in a propagation graph
     so operators can see how data flowed between steps without
-    cross-referencing scenario YAML.
+    cross-referencing scenario YAML. Adding a new propagation
+    axis means adding the slot here AND in
+    ``_PROPAGATION_KEYS`` of
+    ``tests/test_enterprise_intrusion_chain_quality.py`` AND
+    in the viewer's propagation-section legend, so the new
+    axis surfaces at every layer (manifest, viewer, tests).
     """
     edges: List[Dict[str, Any]] = []
     for step in steps:
@@ -155,6 +163,7 @@ def _propagation_edges(steps: Iterable[Mapping[str, Any]]) -> List[Dict[str, Any
         for kind, key in (
             ("target_from_step", "target_propagated_from_step"),
             ("source_from_step", "source_propagated_from_step"),
+            ("c2_endpoint_from_step", "c2_endpoint_propagated_from_step"),
         ):
             upstream = artifacts.get(key)
             if not upstream:
