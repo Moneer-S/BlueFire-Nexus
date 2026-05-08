@@ -602,3 +602,103 @@ def test_in_with_dns_record_types_anchors_on_short_values() -> None:
         ),
     )
     assert "/^(A|AAAA|TXT)$/ nocase" in rule
+
+
+# ---------------------------------------------------------------------------
+# 9. |contains_any / |contains_all modifier semantics (Codex P1 follow-up)
+# ---------------------------------------------------------------------------
+
+
+def test_contains_any_with_list_renders_unanchored_alternation_regex() -> None:
+    """``|contains_any: [a, b, c]`` is substring-OR semantics, NOT
+    exact membership. The shipped legacy_packs.py hint
+    ``process.command_line|contains_any: ["-enc", "-nop"]`` would
+    be unsatisfiable when paired with a sibling
+    ``|contains: "powershell"`` predicate if the list became
+    ``= /^(-enc|-nop)$/`` - the full command line cannot be both
+    exactly ``-enc`` AND contain ``powershell``.
+
+    Codex P1 follow-up: ``|contains_any`` lists must render as
+    unanchored alternation regex so each value is checked as a
+    substring of the field, not the whole value.
+    """
+    rule = build_yara_l_rule(
+        "run-1",
+        "execution",
+        _hint_with_selection(
+            {"process.command_line|contains_any": ["-enc", "-nop"]}
+        ),
+    )
+    # Unanchored alternation
+    assert "/(\\-enc|\\-nop)/ nocase" in rule, (
+        f"|contains_any list should be unanchored alternation, got:\n{rule}"
+    )
+    # Explicitly NOT the anchored shape (would be unsatisfiable
+    # when paired with another contains predicate)
+    assert "/^(\\-enc|\\-nop)$/ nocase" not in rule
+
+
+def test_contains_any_with_single_value_renders_substring_regex() -> None:
+    """A single-value ``|contains_any`` collapses to substring
+    match rather than exact equality."""
+    rule = build_yara_l_rule(
+        "run-1",
+        "execution",
+        _hint_with_selection({"CommandLine|contains_any": "Invoke-Expression"}),
+    )
+    assert "/.*Invoke\\-Expression.*/ nocase" in rule
+
+
+def test_contains_all_renders_separate_predicates_for_each_value() -> None:
+    """``|contains_all: [a, b]`` must mean each substring is
+    present (AND semantics). Render as separate predicates so the
+    YARA-L engine ANDs them naturally.
+    """
+    rule = build_yara_l_rule(
+        "run-1",
+        "execution",
+        _hint_with_selection(
+            {"CommandLine|contains_all": ["powershell", "-EncodedCommand"]}
+        ),
+    )
+    assert "/.*powershell.*/ nocase" in rule
+    assert "/.*\\-EncodedCommand.*/ nocase" in rule
+
+
+def test_legacy_packs_contains_any_hint_round_trips_without_overmatch(tmp_path: Path) -> None:
+    """End-to-end regression: the shipped ``legacy_packs.py``
+    `process.command_line|contains_any: ["-enc", "-nop"]` hint must
+    produce a YARA-L rule that is satisfiable when combined with a
+    sibling ``|contains: "powershell"`` predicate (the rule the
+    legacy_packs adapter actually emits).
+    """
+    result = ModuleResult(
+        status="success",
+        module="legacy_actor_profile",
+        message="Legacy actor profile prepared.",
+        techniques=["T1059.001"],
+        artifacts={},
+        detection_hints={
+            "title": "Suspicious PowerShell command line",
+            "mitre_technique": "T1059.001",
+            "logsource": {"category": "process_creation", "product": "windows"},
+            "detection": {
+                "selection": {
+                    "process.command_line|contains": "powershell",
+                    "process.command_line|contains_any": ["-enc", "-nop"],
+                },
+                "condition": "selection",
+            },
+        },
+        telemetry=[],
+    )
+    artifacts = write_detection_artifacts(
+        tmp_path, "run-legacy-contains-any", {"legacy_actor_profile": result}
+    )
+    body = Path(artifacts["yara_l"][0]).read_text(encoding="utf-8")
+    # |contains: "powershell" -> substring regex
+    assert "/.*powershell.*/ nocase" in body
+    # |contains_any: ["-enc", "-nop"] -> unanchored alternation
+    assert "/(\\-enc|\\-nop)/ nocase" in body
+    # Anchoring would have made the rule unsatisfiable here.
+    assert "/^(\\-enc|\\-nop)$/ nocase" not in body

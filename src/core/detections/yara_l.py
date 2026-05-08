@@ -241,17 +241,45 @@ def _selection_predicates(
         udm = _udm_field(key, category=category)
         modifier = _modifier(key)
 
-        # Lists become anchored regex alternation under ``|in``
-        # semantics. Anchoring with ``^...$`` prevents substring
-        # overmatches like ``github.com`` matching a rule meant
-        # for an exact-domain list (without anchors,
-        # ``/(github.com|evil.com)/`` would also match
-        # ``notgithub.com``).
+        # List handling depends on the Sigma modifier:
+        #
+        # * ``|in`` (exact list membership) -> anchored regex
+        #   ``/^(a|b|c)$/`` so a value like ``A`` does not also
+        #   match ``AAAA`` / ``ANY``.
+        # * ``|contains_any`` (substring-OR) -> unanchored regex
+        #   ``/(a|b|c)/`` so ``-enc`` matches inside a longer
+        #   command line. This is the legacy_packs.py shipped use
+        #   case for ``process.command_line|contains_any:
+        #   ["-enc", "-nop"]``; anchoring would make the rule
+        #   unsatisfiable when paired with a sibling
+        #   ``|contains: "powershell"`` predicate.
+        # * ``|contains_all`` (substring-AND) -> separate predicate
+        #   per value (each substring must appear), capped against
+        #   ``_MAX_SELECTION_CLAUSES``.
+        # * No modifier with a list -> default to ``|in``-style
+        #   exact membership, since YAML authors who mean
+        #   "any of these" usually pick ``|in`` or
+        #   ``|contains_any`` explicitly.
         if isinstance(raw_value, (list, tuple)) and raw_value:
-            joined = "|".join(
-                re.escape(str(v)).replace("/", r"\/") for v in raw_value
-            )
-            predicates.append(f"$e.{udm} = /^({joined})$/ nocase")
+            if modifier == "contains_any":
+                joined = "|".join(
+                    re.escape(str(v)).replace("/", r"\/") for v in raw_value
+                )
+                predicates.append(f"$e.{udm} = /({joined})/ nocase")
+            elif modifier == "contains_all":
+                for value in raw_value:
+                    if len(predicates) >= _MAX_SELECTION_CLAUSES:
+                        break
+                    predicates.append(
+                        f"$e.{udm} = "
+                        f"{_yaral_regex_literal('contains', str(value))}"
+                    )
+            else:
+                # ``|in`` or no modifier -> anchored exact membership.
+                joined = "|".join(
+                    re.escape(str(v)).replace("/", r"\/") for v in raw_value
+                )
+                predicates.append(f"$e.{udm} = /^({joined})$/ nocase")
         elif isinstance(raw_value, bool):
             # Bools land as numeric 0/1 in UDM-like predicates.
             predicates.append(f"$e.{udm} = {1 if raw_value else 0}")
@@ -262,6 +290,11 @@ def _selection_predicates(
             if modifier in ("contains", "endswith", "startswith"):
                 predicates.append(
                     f"$e.{udm} = {_yaral_regex_literal(modifier, value_str)}"
+                )
+            elif modifier == "contains_any":
+                # Single-value ``|contains_any`` collapses to substring match.
+                predicates.append(
+                    f"$e.{udm} = {_yaral_regex_literal('contains', value_str)}"
                 )
             elif modifier == "in":
                 # Single-value ``|in`` collapses to exact match.
