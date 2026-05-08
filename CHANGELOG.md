@@ -29,6 +29,51 @@ This file summarises the deltas at the version-tag granularity.
   `target` (e.g. the registered domain / vps / cert) so downstream
   propagation consumers can read it. Previously the param value
   was only in step config and not visible in the artifact dict.
+- **Loop F — flagship scenario realism + chain narrative
+  coherence** (PRs #118-#124). The scenario's `objective:` block
+  is now surfaced consistently across every output surface — the
+  static dashboard header (paragraph-aware), `report.md`'s new
+  `## Scenario objective` section, and the offline copilot's
+  `copilot_narrative.md` body and YAML metadata header — so a
+  defender opening any one of those gets the same chain story
+  rather than just step-status counts.
+- Each propagation edge in the manifest now carries
+  `from_module` and a defender-facing `narrative` field
+  (`credential_access targets the host produced by the discovery
+  step 'enumerate-files'`); the viewer renders it as a story
+  column on the propagation table, and `report.md` renders it as
+  a `## Propagation narrative` bullet list above the per-step
+  module results, so the propagation table reads as a chain
+  story rather than a (from, to, kind) graph.
+- New public helper `compute_propagation_edges` exported from
+  `src.core.reporting`. Wraps the existing manifest-side edge
+  extractor so external tooling and the report writer can
+  consume the same canonical edge list — including the
+  `narrative` field — without reaching into a private name.
+- `summarise_run_state` accepts a new `scenario_objective` kwarg
+  (capped at 1000 chars to bound prompt budget; whitespace-
+  normalised to single-line prose). The prompt body and
+  artifact metadata header both surface it, so the offline
+  copilot's narrative artifact leads with the chain story.
+  `_RUN_SUMMARY_HEADER_KEYS` extended with `scenario_objective`
+  so the YAML frontmatter contract stays schema-stable.
+- Flagship `enterprise_intrusion_chain` step names rewritten as
+  defender-facing chain narrative beats (e.g.
+  `Loader execution on victim host` →
+  `Encoded PowerShell loader executes on finance-analyst host`;
+  `Simulate ransomware encryption-impact` →
+  `Ransomware encrypts staged-data fileshare`). Step IDs and
+  propagation matrix unchanged — only narrative-quality fields
+  move. Scenario `objective:` rewritten as a multi-paragraph
+  chain summary that explicitly calls out the simulate-only
+  contract.
+- FIN7 scenario step names tightened from terse labels
+  (`Initial Access`, `Loader Execution`, `C2 Beacon`) to
+  chain-narrative phrasing
+  (`Spearphishing attachment delivered to finance user`, etc.);
+  FIN7 `objective:` rewritten as a multi-line literal block
+  describing the chain and calling out the
+  `network_touch: false` simulate-only contract.
 
 ### Changed
 
@@ -42,6 +87,11 @@ This file summarises the deltas at the version-tag granularity.
   process-creation rule. Generated rules from this adapter now
   surface as "needs operator review" rather than masquerading as
   Sysmon-shaped detections.
+- Manifest schema extended additively (no schema_version bump):
+  `manifest.run.scenario_objective` (string, default empty);
+  each entry of `manifest.propagation_edges` gains
+  `from_module` and `narrative`. Legacy consumers reading
+  existing keys are unaffected.
 
 ### Tests
 
@@ -56,6 +106,26 @@ This file summarises the deltas at the version-tag granularity.
   hints (e.g. `legacy_capability_summary`) are tracked in an
   exemption set and pinned to actually emit empty hints, so a
   future change there also surfaces.
+- Loop F narrative-quality regression tests:
+  - `test_every_step_has_a_narrative_name` (flagship + every
+    shipped scenario): every step's `name` is non-empty,
+    distinct from `step_id`, ≥12 chars, contains a space.
+  - `test_scenario_objective_reads_as_story_not_label` (flagship):
+    objective is non-empty, ≥200 chars, mentions `simulate` /
+    `network_touch` so the safe-by-default contract is visible.
+  - Manifest tests for `run.scenario_objective` plumbing,
+    propagation edge `from_module` resolution, and narrative
+    rendering across all three propagation kinds (with the
+    missing-upstream fallback to `"upstream"` placeholder).
+  - Viewer tests for objective rendering (paragraph-aware,
+    HTML-escaped against script injection), propagation
+    narrative column, empty-state handling.
+  - Markdown report tests pinning section order (`title →
+    objective → coverage → propagation → modules`) and
+    paragraph normalisation.
+  - Offline copilot tests pinning the `objective:` line in the
+    rendered narrative + YAML header, and the
+    pathologically-long-objective truncation contract.
 
 ## [3.0.0-rc1] - 2026-05-07
 
