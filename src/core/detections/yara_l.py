@@ -56,6 +56,22 @@ _LOGSOURCE_CATEGORY_TO_EVENT_TYPE: Dict[str, str] = {
     "dns_query": "NETWORK_DNS",
     "threat_intelligence": "GENERIC_EVENT",
     "email": "EMAIL_TRANSACTION",
+    # Auth-centric categories used by the initial_access vector
+    # catalog (valid_accounts / domain_accounts / cloud_accounts /
+    # trusted_relationship). USER_LOGIN is the documented Chronicle
+    # UDM event_type for successful auth telemetry.
+    "authentication": "USER_LOGIN",
+    "cloud_audit": "USER_LOGIN",
+    # Web/proxy categories used by initial_access
+    # (exploit_public_app / drive_by_compromise).
+    "webserver": "NETWORK_HTTP",
+    "proxy": "NETWORK_HTTP",
+    # Device-events for hardware_additions (USB device-class hits).
+    "device_event": "RESOURCE_CREATION",
+    # VoIP for spearphishing_voice. Chronicle has no canonical
+    # voice/telephony event_type, so GENERIC_EVENT keeps the rule
+    # buildable without claiming a specific UDM family.
+    "voip": "GENERIC_EVENT",
 }
 
 
@@ -109,6 +125,36 @@ _SIGMA_FIELD_TO_UDM: Dict[str, str] = {
     "resource.kind": "target.resource.resource_type",
     # Email family
     "email.recipient": "network.email.to",
+    "email.subject": "network.email.subject",
+    "email.url": "network.http.referral_url",
+    "email.attachment.extension": "target.file.full_path",
+    "email.sender.service": "principal.user.attribute.labels",
+    # Auth family (used by initial_access valid_accounts variants
+    # and by lateral_movement / credential_access auth telemetry).
+    "event.action": "security_result.action",
+    "event.logon_type": "extensions.auth.mechanism",
+    "user.name": "target.user.userid",
+    # Windows AD/NetBIOS domain string (e.g., "EXAMPLE") goes into
+    # ``target.user.windows_domain`` per Chronicle UDM, NOT
+    # ``target.user.windows_sid`` (which holds SID strings of the
+    # form ``S-1-5-21-...``). The earlier mapping made
+    # `domain_accounts` detections effectively unmatchable because
+    # ``user.domain|contains: EXAMPLE`` would search SID values for
+    # "EXAMPLE" — Codex P2 finding on PR #110.
+    "user.domain": "target.user.windows_domain",
+    # Convenience aliases for callers that already use the
+    # canonical UDM-style keys directly.
+    "user.windows_domain": "target.user.windows_domain",
+    "user.windows_sid": "target.user.windows_sid",
+    "user.oauth_provider": "target.user.attribute.labels",
+    # Telephony fallback.
+    "call.callee.user": "target.user.userid",
+    # HTTP / proxy family.
+    "http.url": "target.url",
+    "http.user_agent": "network.http.user_agent",
+    "http.method": "network.http.method",
+    # Device-event family (hardware_additions / removable_media).
+    "device.class": "target.resource.resource_type",
     # Legacy lowercase form
     "target.process.name": "target.process.file.full_path",
     # Network family
@@ -162,6 +208,17 @@ _CATEGORY_FALLBACK_UDM: Dict[str, str] = {
     "dns_query": "network.dns.questions.name",
     "email": "network.email.to",
     "threat_intelligence": "metadata.event_metadata.threat_actor",
+    # Auth: a USER_LOGIN rule with an unmapped key falls back to
+    # ``target.user.userid`` rather than command_line.
+    "authentication": "target.user.userid",
+    "cloud_audit": "target.user.userid",
+    # Web/proxy: HTTP rules fall back to the URL.
+    "webserver": "target.url",
+    "proxy": "target.url",
+    # VoIP: telephony rules fall back to the called user.
+    "voip": "target.user.userid",
+    # Device events: fall back to the resource type.
+    "device_event": "target.resource.resource_type",
 }
 _FALLBACK_UDM = "principal.process.command_line"
 _FALLBACK_EVENT_TYPE = "GENERIC_EVENT"
