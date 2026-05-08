@@ -50,6 +50,7 @@ from src.core.config import ConfigManager
 from src.core.reporting.manifest import (
     MANIFEST_SCHEMA_VERSION,
     build_manifest,
+    compute_propagation_edges,
     write_run_manifest,
 )
 
@@ -378,6 +379,48 @@ def test_build_manifest_propagation_narrative_handles_missing_upstream(
     assert edge["narrative"]  # still rendered, not empty
     assert "None" not in edge["narrative"]
     assert "upstream" in edge["narrative"]  # placeholder for unknown module
+
+
+def test_compute_propagation_edges_public_helper_matches_manifest() -> None:
+    """The public extractor returns the same edge list ``build_manifest`` carries.
+
+    PR3 of the Loop F batch added the public alias so the report
+    writer can surface a "Propagation narrative" section without
+    re-implementing the artifact walk. Pin the contract so a
+    future refactor that diverges the two paths surfaces here.
+    """
+    steps = [
+        {
+            "step_id": "enumerate-files",
+            "module": "discovery",
+            "name": "files",
+            "status": "success",
+            "techniques": ["T1083"],
+            "artifacts": {"targets": ["lab-host"]},
+            "detections": {},
+        },
+        {
+            "step_id": "harvest-creds",
+            "module": "credential_access",
+            "name": "creds",
+            "status": "success",
+            "techniques": ["T1555.003"],
+            "artifacts": {
+                "target": "lab-host",
+                "target_propagated_from_step": "enumerate-files",
+            },
+            "detections": {},
+        },
+    ]
+    direct = compute_propagation_edges(steps)
+    assert len(direct) == 1
+    edge = direct[0]
+    assert edge["kind"] == "target_from_step"
+    assert edge["from_step"] == "enumerate-files"
+    assert edge["from_module"] == "discovery"
+    assert edge["to_step"] == "harvest-creds"
+    assert edge["to_module"] == "credential_access"
+    assert "narrative" in edge and edge["narrative"]
 
 
 def test_build_manifest_attack_coverage_is_sorted_and_deduped(tmp_path: Path) -> None:
