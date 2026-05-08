@@ -15,9 +15,10 @@ Pinned invariants:
    see "this run had a critical finding".
 2. **Detection drafts maturity caveat.** The Detection drafts
    section header carries an explicit maturity caveat (Sigma
-   most mature, YARA-L medium, SPL draft / starter) so the
-   per-run dashboard cannot be read as "production detections
-   ready to deploy".
+   and YARA-L derive technique-specific selection from the
+   module hint, SPL stays draft / starter) so the per-run
+   dashboard cannot be read as "production detections ready
+   to deploy".
 3. **Local-only contract reminder.** Both the per-run viewer's
    header card AND the top-level aggregator's header card
    surface the "no server, no JavaScript, no external assets,

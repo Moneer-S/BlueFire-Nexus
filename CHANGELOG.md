@@ -26,38 +26,15 @@ This file summarises the deltas at the version-tag granularity.
   preserving behaviour for out-of-tree callers. Legacy adapter
   scoring is unchanged (the legacy branch still wins via `pack`
   presence in artifacts).
-- `anti_detection` standard module now selects from a 12-entry
-  technique profile catalog (`memory_evasion`, `code_obfuscation`,
-  `anti_debug`, `anti_sandbox`, `anti_vm`, `timestomp`, `log_clear`,
-  `dynamic_api`, `reflective_loading`, `process_hollowing`,
-  `string_encryption`, `api_unhooking`). Each entry maps to a
-  real defense-evasion ATT&CK sub-technique and emits a Sigma-style
-  draft using Sysmon-recognisable Windows event field names
-  (`ParentImage`, `CommandLine`, `TargetFilename`, `TargetObject`,
-  `CallTrace`, `ImageLoaded`). The previous behaviour was a single
-  hardcoded handler that always emitted T1027 with the synthetic
-  `anti_detection.method` field as the detection key — Sigma rules
-  generated from that could not fire on any real telemetry.
-- `scenarios/apt29_credential_access.yaml` `attack_coverage` swap
-  T1027 → T1055 to match the upgraded `memory_evasion` profile
-  (which is properly Process Injection, not Obfuscated Files).
 
 ### Tests
 
-- New `tests/test_anti_detection_module.py` (+24): per-method
-  MITRE/event-type fan-out, distinct event types per profile,
-  logsource diversity assertion, real-Sysmon-field invariant,
-  target propagation via `target_from_step`, no-regression to
-  the `anti_detection.method` synthetic field.
 - `tests/test_risk.py` extended (+12) with tactic-aware
   invariants: impact -> critical, exfiltration -> high,
   discovery -> low, ordering across recon -> initial_access ->
   credential_access -> exfiltration -> impact, blocked-impact
   dampener, errored-recon floor, unknown-module fallback,
   legacy-branch precedence preservation.
-- `tests/test_fanout_batch.py` parametrization extended to cover
-  `AntiDetectionModule` (+5 tests via the existing 5 fan-out
-  invariants × the new module).
 
 ## [3.0.0-rc1] - 2026-05-07
 
