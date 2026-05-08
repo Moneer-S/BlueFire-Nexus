@@ -18,6 +18,52 @@ adapters."
 
 The following gaps have been closed and are kept here for context.
 
+- **Loop F — flagship scenario realism + chain narrative coherence.**
+  Four-PR batch (#118 / #119 / #120 / #121) that audited the
+  flagship `enterprise_intrusion_chain` from the perspective of
+  a SOC analyst, a purple-team operator, a recruiter scanning the
+  repo, and a future maintainer. The chain story now reads
+  coherently across every output surface:
+  - **#118** sharpened every step's defender-facing `name` so the
+    timeline reads as a chain narrative (e.g.
+    `Loader execution on victim host` → `Encoded PowerShell
+    loader executes on finance-analyst host`); rewrote the
+    scenario `objective:` paragraph as a chain summary;
+    tightened propagation comments. Step IDs and propagation
+    matrix unchanged — only narrative-quality fields move.
+  - **#119** plumbed the scenario objective through the manifest
+    as `run.scenario_objective` and surfaced it in the static
+    dashboard header. Each propagation edge gained a
+    defender-facing `narrative` field; the viewer renders it as
+    a story column on the propagation table.
+  - **#120** carried the same chain narrative into `report.md`
+    via a new `## Scenario objective` section (above the pack
+    summary) and a `## Propagation narrative` bullet list (above
+    Module Results). Order is deliberate: defenders read the
+    story before the per-step technical detail. New public
+    helper `compute_propagation_edges` so the report writer
+    consumes the same canonical edge list the manifest builder
+    produces.
+  - **#121** grounded the offline copilot's narrative artifact
+    in the same objective. `summarise_run_state` now accepts
+    `scenario_objective` (capped at 1000 chars to bound prompt
+    budget); `_format_run_summary_for_prompt` emits an
+    `objective:` line; `_render_template_narrative` surfaces it
+    as the second bullet of the rendered "Run summary" block.
+    The YAML frontmatter header gains `scenario_objective:` so
+    external tooling reading just the header sees the same
+    context.
+  - New regression tests pin the chain-narrative invariants at
+    every layer: every step has prose-style name (≥12 chars,
+    not equal to slug, contains a space); the scenario
+    objective is non-empty and ≥200 chars and mentions
+    `simulate`/`network_touch`; every propagation edge carries
+    a non-empty narrative; the markdown report's section order
+    is `objective → coverage → propagation → modules`.
+  - +33 tests landed across the batch (2094 → 2127); CI green
+    on every PR; no SIEM scope, no remote observability, no
+    schema break (additive fields only).
+
 - **Per-capability test depth for `legacy_stealth_research`.**
   Mirrors the `tests/test_legacy_protocol_research.py` (PR #50)
   pattern: each of the four supported capabilities
