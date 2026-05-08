@@ -330,6 +330,19 @@ def write_markdown_report(
             f"- Risk score: `{risk.get('score')}` "
             f"(severity: `{risk.get('severity')}`)"
         )
+        # Surface the defender-facing rationale list so a SOC
+        # analyst reading report.md sees the same chain-position
+        # reasoning the dashboard's "Why" column (PR #114) and
+        # CLI's risk-summary (PR #116) render. Empty / missing
+        # rationale drops the line entirely so legacy callers
+        # that score outside the helper don't suddenly emit a
+        # stray "Why: " marker.
+        rationale = risk.get("rationale") or []
+        why_line = ""
+        if isinstance(rationale, (list, tuple)) and rationale:
+            why_line = "- Why: " + ", ".join(
+                f"`{str(entry)}`" for entry in rationale
+            )
         if isinstance(legacy, dict):
             safety_line = (
                 f"- Capability Pack: `{legacy.get('pack')}` / `{legacy.get('capability')}` "
@@ -361,6 +374,7 @@ def write_markdown_report(
                 f"- Techniques: {', '.join(result.techniques) if result.techniques else 'n/a'}",
                 mode_line,
                 risk_line,
+                why_line,
                 safety_line,
                 warning_line,
                 "",
