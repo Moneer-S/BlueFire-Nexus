@@ -9,32 +9,32 @@ attack_coverage:
 fail_fast: false
 steps:
   - id: step1
-    name: Phishing attachment delivery simulation
+    name: Phishing attachment delivered to hospital analyst
     module: initial_access
     params:
       vector: phishing_attachment
       target: hospital-analyst
       network_touch: false
   - id: step2
-    name: Script execution simulation
+    name: Hidden PowerShell script runs from attachment
     module: execution
     params:
       command: powershell -nop -w hidden Write-Output "simulated ransomware prep"
       network_touch: false
   - id: step3
-    name: Persistence simulation
+    name: Scheduled-task persistence drops on victim host
     module: persistence
     params:
       technique: scheduled_task
       network_touch: false
   - id: step4
-    name: Data staging and exfil simulation
+    name: Data staged and exfiltrated over C2 channel
     module: exfiltration
     params:
       method: via_c2
       network_touch: false
   - id: step5
-    name: Ransomware encryption-impact simulation
+    name: Ransomware encrypts hospital fileshare
     module: impact
     params:
       technique: data_encryption
