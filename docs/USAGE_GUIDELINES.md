@@ -646,13 +646,25 @@ summary = run_experiment_series("scenarios/apt29_credential_access.yaml", iterat
 
 Every run writes a complete local bundle under `output/<run_id>/`. Pick the format that matches your workflow:
 
-- **Static HTML dashboard:** open `output/<run_id>/index.html` with `file://` in any browser. No server, no external assets, no network calls. Renders the scenario timeline, propagation graph, ATT&CK coverage, telemetry counts, detection drafts, risk summary, and AI provider attribution.
-- **Manifest:** `output/<run_id>/manifest.json` is the machine-readable index of every artifact below. External tooling can read it without walking the directory.
+- **Static HTML dashboard:** open `output/<run_id>/index.html` with `file://` in any browser. No server, no external assets, no network calls. The dashboard renders:
+  - **Header**: scenario name, severity badge, status / dry-run / AI-mode badges, the scenario's `objective:` block as readable prose paragraphs.
+  - **Risk summary**: per-tier counts (critical / high / medium / low) plus a per-module table with severity badge + score + mode + rationale (`tactic_base=<tactic>` and `matters_because=<chain-position text>`).
+  - **Scenario timeline**: ordered step list with status badge, **per-step severity column** (so the chain's risk arc reads inline), ATT&CK techniques, and a notes column for non-success rows.
+  - **Propagation table**: from / to / module / kind, plus a defender-facing **narrative column** (`credential_access targets the host produced by the discovery step 'enumerate-files'`).
+  - **ATT&CK coverage**: technique → emitting steps map.
+  - **Telemetry**: count-only summaries by event type and module (rendered as pure-CSS bar charts).
+  - **Detection drafts**: counts per engine + per-step links.
+  - **AI copilot**: provider / model / network state attribution + link to the artifact body.
+  - **Artifact links**: relative-path quick links into every other file in the run directory.
+- **Manifest:** `output/<run_id>/manifest.json` is the machine-readable index of every artifact below. External tooling can read it without walking the directory. Carries `run.scenario_objective`, per-edge `narrative`, per-step `rationale` with `matters_because`, and the same severity tiers the dashboard renders.
 - **Telemetry stream:** `output/<run_id>/telemetry.jsonl` for events emitted by each module step (one JSON object per line).
-- **Purple-team narrative:** `output/<run_id>/report.md` (also `report.json` for structured consumers).
+- **Purple-team narrative:** `output/<run_id>/report.md` opens with the scenario's `objective:` block, walks the chain via `## Propagation narrative`, and surfaces each module's risk score + severity + `Why:` rationale line for triage from the markdown alone (`report.json` for structured consumers).
 - **Detection drafts:** `output/<run_id>/detections/{sigma,yara_l,spl}/` for ATT&CK-mapped rule drafts.
-- **Risk posture:** `output/<run_id>/risk_summary.json`.
+- **Risk posture:** `output/<run_id>/risk_summary.json` (per-module score, severity, rationale list including `matters_because`; aggregate by tier).
+- **AI copilot artifacts:** `output/<run_id>/copilot_narrative.md` / `copilot_plan.txt` / `copilot_detections.md` (when AI is enabled). Each file leads with a YAML metadata header carrying `provider` / `model` / `network_disabled` / `scenario_objective` so artifact attribution survives without re-parsing the body.
 - **Application logs:** default to `logs/bluefire.log` (path configurable in `config.yaml`).
+
+The chain narrative is surfaced consistently across the dashboard, `report.md`, and `copilot_narrative.md` so a defender opening any one of those gets the same chain story (scenario objective + per-edge propagation narrative + per-step severity arc + chain-position rationale).
 
 ### CLI: list, inspect, validate, and regenerate views for prior runs
 
