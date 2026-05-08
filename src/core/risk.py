@@ -10,6 +10,17 @@ _PACK_BASE_SCORES = {
     "actor_pack": 55,
     "c2_pack": 62,
     "stealth_pack": 68,
+    # ``tactic_pack`` is the family for the per-tactic legacy
+    # adapters (``legacy_credential_access`` / ``legacy_lateral_movement`` /
+    # ``legacy_privilege_escalation`` / ``legacy_impact`` /
+    # ``legacy_collection``). The fallback base only fires when the
+    # capability is not a recognised tactic name; the normal path
+    # (in ``score_module_result``) overrides this base with the
+    # corresponding ``_TACTIC_BASE_SCORES`` entry so a successful
+    # ``legacy_impact`` step (T1486 ransomware) scores as critically
+    # as a successful standard ``impact`` step rather than collapsing
+    # back to the historic actor-pack base of 55.
+    "tactic_pack": 60,
 }
 _MODE_BONUS = {
     "simulate": 0,
@@ -126,11 +137,33 @@ def score_module_result(result: ModuleResult) -> Dict[str, Any]:
 
     rationale: list[str] = []
     if pack:
-        score = _PACK_BASE_SCORES.get(pack, 55)
-        rationale.append(f"pack={pack}")
+        # tactic_pack adapters cover end-of-chain destructive
+        # tactics (impact / privilege_escalation / lateral_movement /
+        # credential_access / collection). The fixed pack base of
+        # 55-60 is too low for those tactics — a successful
+        # ``legacy_impact`` step is in the same severity class as a
+        # standard ``impact`` step (~85, "critical"). Use the
+        # tactic-aware base when ``capability`` matches a known
+        # tactic name; otherwise fall back to the historic pack
+        # base. The legacy mode bonus (+18 for emulate) and
+        # capability bonus stack on top in both branches so the
+        # legacy emulate path remains higher than the standard
+        # simulate path.
+        tactic_base = (
+            _TACTIC_BASE_SCORES.get(capability)
+            if pack == "tactic_pack"
+            else None
+        )
+        if tactic_base is not None:
+            score = tactic_base
+            rationale.append(f"pack={pack}")
+            rationale.append(f"tactic_base={capability}")
+        else:
+            score = _PACK_BASE_SCORES.get(pack, 55)
+            rationale.append(f"pack={pack}")
+            if capability:
+                rationale.append(f"capability={capability}")
         score += _CAPABILITY_BONUS.get(capability, 6)
-        if capability:
-            rationale.append(f"capability={capability}")
         score += _MODE_BONUS.get(mode, 0)
         rationale.append(f"mode={mode}")
     else:
