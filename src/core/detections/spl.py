@@ -188,14 +188,83 @@ _LOGSOURCE_TO_SPL: dict[Tuple[str, str], Tuple[str, str]] = {
         'sourcetype="WinEventLog:System"',
         "(EventCode=20001 OR EventCode=20003 OR EventCode=24576)",
     ),
-    # ---- Threat-intel family (BlueFire-internal). No real Splunk
-    # sourcetype; index-by-source so the search is at least syntactically
-    # valid rather than falling through to the metadata-echo path. ----
+    # ---- Threat-intel family. No host-side telemetry; the closest
+    # Splunk story is the standard threat-intel sourcetypes that
+    # operators ingest from CTI feeds (Splunk Enterprise Security
+    # threatlists, OpenCTI / MISP exports, passive-DNS feeds, etc.).
+    # Mapping to those keeps the rule syntactically valid and routes
+    # the operator toward the correct telemetry instead of the
+    # metadata-echo / placeholder-sourcetype fallback. ----
     ("vendor", "threat_intelligence"): (
         '(sourcetype="threatlist" OR sourcetype="cim:threatintel")',
         "",
     ),
     ("generic", "threat_intelligence"): (
+        '(sourcetype="threatlist" OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("ioc_feed", "threat_intelligence"): (
+        '(sourcetype="threatlist" OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("leak_feed", "threat_intelligence"): (
+        '(sourcetype="threatlist" OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("vuln_feed", "threat_intelligence"): (
+        '(sourcetype="threatlist" OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("passive_dns", "threat_intelligence"): (
+        '(sourcetype="passive_dns" OR sourcetype="threatlist")',
+        "",
+    ),
+    ("asn_feed", "threat_intelligence"): (
+        '(sourcetype="cim:threatintel" OR sourcetype="bgp:asn")',
+        "",
+    ),
+    # ---- Resource-development pre-foothold families. The
+    # ``resource_development`` tactic represents attacker planning
+    # (domain registration / VPS provisioning / cert acquisition /
+    # compromised infrastructure / SaaS account provisioning /
+    # marketplace tool acquisition). There is no canonical host-
+    # side Splunk sourcetype for "attacker registered a domain";
+    # the closest defensive telemetry is the threat-intel family
+    # plus passive-DNS / certificate-transparency / marketplace
+    # leak feeds. Mapping these pairs keeps generated SPL searches
+    # rooted in a real sourcetype an operator could ingest, and
+    # the leading DRAFT header reminds them to swap the index/
+    # sourcetype for whatever feed their environment actually
+    # carries. ----
+    ("registrar", "infrastructure_provisioning"): (
+        '(sourcetype="passive_dns" OR sourcetype="threatlist" '
+        'OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("cloud", "infrastructure_provisioning"): (
+        '(sourcetype="aws:cloudtrail" OR sourcetype="google:gcp:audit" '
+        'OR sourcetype="azure:audit")',
+        "",
+    ),
+    ("saas", "infrastructure_provisioning"): (
+        '(sourcetype="cim:threatintel" OR sourcetype="ms:o365:management")',
+        "",
+    ),
+    ("compromised", "infrastructure_provisioning"): (
+        '(sourcetype="threatlist" OR sourcetype="passive_dns" '
+        'OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("saas", "account_provisioning"): (
+        '(sourcetype="ms:o365:management" OR sourcetype="cim:threatintel")',
+        "",
+    ),
+    ("ca", "certificate_acquisition"): (
+        '(sourcetype="cert_transparency" OR sourcetype="cim:certificate" '
+        'OR sourcetype="threatlist")',
+        "",
+    ),
+    ("marketplace", "tooling_acquisition"): (
         '(sourcetype="threatlist" OR sourcetype="cim:threatintel")',
         "",
     ),

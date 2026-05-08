@@ -74,6 +74,18 @@ _NEW_PAIRS = (
     ("windows", "device_event"),
     ("vendor", "threat_intelligence"),
     ("generic", "threat_intelligence"),
+    ("ioc_feed", "threat_intelligence"),
+    ("leak_feed", "threat_intelligence"),
+    ("vuln_feed", "threat_intelligence"),
+    ("passive_dns", "threat_intelligence"),
+    ("asn_feed", "threat_intelligence"),
+    ("registrar", "infrastructure_provisioning"),
+    ("cloud", "infrastructure_provisioning"),
+    ("saas", "infrastructure_provisioning"),
+    ("compromised", "infrastructure_provisioning"),
+    ("saas", "account_provisioning"),
+    ("ca", "certificate_acquisition"),
+    ("marketplace", "tooling_acquisition"),
     ("bluefire", "legacy_wrapped"),
     ("macos", "process_creation"),
 )
@@ -175,16 +187,23 @@ def test_event_code_clauses_specific_to_telemetry_family(
     assert expected_event_substring in eventcode, (pair, eventcode)
 
 
-def test_no_standard_module_default_falls_back_to_metadata_echo() -> None:
+def test_no_standard_module_default_falls_back_to_placeholder_or_metadata() -> None:
     """End-to-end: the default profile of every standard module
-    produces an SPL search rooted in a real sourcetype (not the
-    placeholder + warning fallback shape).
+    produces an SPL search rooted in a real sourcetype.
 
-    Catches a regression where a future module ships with a
-    logsource pair that's not in ``_LOGSOURCE_TO_SPL`` — the
-    weak-fallback path is preferable to the metadata-echo path,
-    but neither should fire for the default profile of any
-    standard module that already declares a logsource.
+    Codex P1 follow-up on PR #112: the previous version of this
+    test only rejected the ``| makeresults`` metadata-echo path.
+    But ``render_spl`` has TWO weak fallbacks:
+
+    1. Unmapped (product, category) + selection clauses ->
+       ``index=* sourcetype=*`` + warning comment.
+    2. Unmapped (product, category) + no selection ->
+       ``| makeresults | eval ...`` metadata echo.
+
+    Reject BOTH — a default module profile must drive a real
+    Splunk sourcetype. This is the regression this file is meant
+    to catch (a future module ships with a logsource pair not in
+    ``_LOGSOURCE_TO_SPL``).
     """
     from src.core.modules.registry import build_runtime_modules
 
@@ -211,9 +230,17 @@ def test_no_standard_module_default_falls_back_to_metadata_echo() -> None:
         if not result.detection_hints.get("logsource"):
             continue  # No logsource declared -> render decision is module's call.
         spl = render_spl(result, "run-spl-default")
-        # Either a real sourcetype OR the explicit placeholder warning
-        # is acceptable, but the metadata-echo `| makeresults |` path
-        # is NOT.
+        # Reject metadata-echo path.
         assert "| makeresults" not in spl, (
             f"{name} default profile fell back to metadata-echo SPL: {spl}"
+        )
+        # Reject placeholder-sourcetype path. Mapped logsource pairs
+        # produce concrete ``sourcetype="..."`` filters; the
+        # placeholder ``sourcetype=*`` only fires when the
+        # (product, category) pair is missing from
+        # ``_LOGSOURCE_TO_SPL``.
+        assert "sourcetype=*" not in spl, (
+            f"{name} default profile fell back to placeholder "
+            f"sourcetype=* path. Module logsource may need adding "
+            f"to _LOGSOURCE_TO_SPL. SPL output:\n{spl}"
         )
