@@ -38,6 +38,47 @@ _STATUS_DELTA = {
     "error": -15,
 }
 
+# Tactic-aware base score for **standard** modules. Keys are the
+# module ``name`` attribute (which equals the ATT&CK tactic name).
+# Modules whose name is NOT in this map fall back to the historic
+# default base (35) so out-of-tree modules keep the old behaviour.
+#
+# Ordering reflects defender-impact severity: a successful
+# `impact` (e.g. T1486 ransomware encryption) is far more severe
+# than a successful `discovery` (e.g. T1083 file enumeration). The
+# previous formula had every standard module result land at score
+# 35-55 ("low" / "medium") regardless of tactic — a critical-impact
+# step ended up scoring the same as a benign reconnaissance step.
+#
+# These values are deliberate but inevitably opinionated; the
+# rationale lands in `risk["rationale"]` as `tactic_base=<name>`
+# so a defender reviewing the report knows *why* the score is
+# what it is.
+_TACTIC_BASE_SCORES: Dict[str, int] = {
+    # Pre-foothold tactics (planning, no host activity yet)
+    "reconnaissance": 25,
+    "resource_development": 25,
+    "intelligence": 30,
+    # Initial activity on the target host
+    "discovery": 35,
+    "execution": 45,
+    "initial_access": 50,
+    # Active evasion / interference with controls
+    "defense_evasion": 50,
+    "anti_detection": 50,
+    "network_obfuscator": 55,
+    # Mid-chain expansion
+    "collection": 55,
+    "command_control": 60,
+    "persistence": 60,
+    "lateral_movement": 65,
+    "credential_access": 65,
+    "privilege_escalation": 70,
+    # End-of-chain destructive / data-loss tactics
+    "exfiltration": 75,
+    "impact": 85,
+}
+
 
 def _clamp(score: int) -> int:
     return max(0, min(100, score))
@@ -93,8 +134,17 @@ def score_module_result(result: ModuleResult) -> Dict[str, Any]:
         score += _MODE_BONUS.get(mode, 0)
         rationale.append(f"mode={mode}")
     else:
-        score = 35 + min(20, len(result.techniques) * 5)
-        rationale.append("standard-module")
+        # Tactic-aware base for known standard module names; the
+        # historic default (35) for unknown modules so out-of-tree
+        # callers keep the old behaviour.
+        module_name = (result.module or "").lower()
+        tactic_base = _TACTIC_BASE_SCORES.get(module_name)
+        if tactic_base is not None:
+            score = tactic_base + min(20, len(result.techniques) * 5)
+            rationale.append(f"tactic_base={module_name}")
+        else:
+            score = 35 + min(20, len(result.techniques) * 5)
+            rationale.append("standard-module")
 
     if runtime_warning:
         score += 10
