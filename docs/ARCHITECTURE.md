@@ -119,12 +119,42 @@ such as `network_protocol`, `network_url`, `process_command_line`.
 
 Every run produces the following local artifacts under `output/<run_id>/`:
 
-- `telemetry.jsonl` — append-only event log via the JSONL sink
-- `report.md` and `report.json` — purple-team run report
-- `risk_summary.json` — per-run risk posture
-- `detections/{sigma,yara_l,spl}/*` — detection drafts
-- `copilot/*` — optional AI copilot artifacts (template fallback when no
-  provider is configured)
+- `manifest.json` — single machine-readable index of every artifact below.
+  Stable schema (versioned via `MANIFEST_SCHEMA_VERSION`); paths
+  inside the manifest are run-dir-relative so the directory can be
+  zipped/moved without breaking references. Carries the run identity,
+  per-step status + techniques, propagation graph (with each edge's
+  `narrative` line), ATT&CK coverage, telemetry counts, detection
+  counts, risk summary (with per-step `rationale` including
+  `matters_because=<chain-position text>`), copilot attribution,
+  and the scenario's `objective:` block under `run.scenario_objective`.
+- `index.html` — static HTML dashboard renderer (no JS, no external
+  assets, no network calls). Renders the same data as the manifest
+  with a header / KPI grid / risk summary / scenario timeline (with
+  per-step severity column) / propagation table (with narrative
+  column) / ATT&CK coverage / telemetry / detection drafts / copilot
+  attribution / artifact links. Open with `file://` from the run
+  directory.
+- `telemetry.jsonl` — append-only event log via the JSONL sink.
+- `report.md` and `report.json` — purple-team run report. The
+  markdown form opens with the scenario's `objective:` block, walks
+  the chain via `## Propagation narrative`, and surfaces each
+  module's risk score + severity + `Why:` rationale line for
+  defender triage from the markdown alone.
+- `risk_summary.json` — per-run risk posture (per-module score,
+  severity, rationale; aggregate by tier).
+- `detections/{sigma,yara_l,spl}/*` — detection drafts.
+- `copilot_narrative.md` / `copilot_plan.txt` / `copilot_detections.md`
+  — optional AI copilot artifacts (deterministic template fallback
+  when no remote provider is configured). Each file leads with a
+  YAML metadata header carrying `provider` / `model` /
+  `network_disabled` / `scenario_objective` so artifact attribution
+  survives without re-parsing the body.
+
+In addition, the orchestrator refreshes a top-level
+`output/index.html` aggregator listing every run with quick links
+into per-run artifacts. Same self-contained constraints — no JS,
+no external assets, no network calls.
 
 Nothing in the baseline pushes these artifacts out of the run directory.
 
