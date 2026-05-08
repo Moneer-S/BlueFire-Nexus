@@ -54,9 +54,364 @@ class LLMProvider(Protocol):
         ...
 
 
+def _parse_run_summary_block(prompt: str) -> Dict[str, Any]:
+    """Extract structured fields from the ``[run summary]`` prompt block.
+
+    The orchestrator builds a deterministic ``[run summary]`` block
+    via ``copilot._format_run_summary_for_prompt``. Parsing it back
+    out lets the offline template render a useful run-specific
+    artifact (scenario name, technique ids, per-step timeline,
+    detection counts) instead of the generic stub.
+
+    The parser is intentionally tolerant: lines that don't match
+    the documented shape are skipped, missing fields fall back to
+    sensible defaults, and the ``module_statuses`` sub-block is
+    only consumed when explicitly indented under its key. Returns
+    an empty dict when no ``[run summary]`` block is present.
+    """
+    if "[run summary]" not in prompt:
+        return {}
+    summary: Dict[str, Any] = {}
+    techniques: list[str] = []
+    statuses: list[Dict[str, str]] = []
+    in_summary = False
+    in_statuses = False
+    for raw_line in prompt.splitlines():
+        if raw_line.strip() == "[run summary]":
+            in_summary = True
+            continue
+        if not in_summary:
+            continue
+        if not raw_line.startswith(" "):
+            # Block ends at the first non-indented line after
+            # ``[run summary]`` — keeps stray prompt continuation
+            # text from leaking into parsed values.
+            break
+        if in_statuses:
+            stripped = raw_line.lstrip()
+            if not stripped.startswith("-"):
+                # End of the statuses sub-block (any non-list line
+                # at the same indent terminates it).
+                in_statuses = False
+            else:
+                # Shape: ``- step_id: status``. ``step_id`` can
+                # itself contain a colon (orchestrator key
+                # ``module:step_id``), so partition on the LAST
+                # colon to keep the full step string intact.
+                payload = stripped.lstrip("-").strip()
+                if ":" in payload:
+                    step, _, status = payload.rpartition(":")
+                    statuses.append(
+                        {"step": step.strip(), "status": status.strip()}
+                    )
+                continue
+        line = raw_line.strip()
+        if line.startswith("module_statuses"):
+            in_statuses = True
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if key == "scenario":
+            summary["scenario_name"] = value
+        elif key == "run_id":
+            summary["run_id"] = value
+        elif key == "module_count":
+            try:
+                summary["module_count"] = int(value)
+            except ValueError:
+                pass
+        elif key == "steps":
+            # Shape: "X success / Y non-success".
+            summary["steps_summary"] = value
+            try:
+                parts = value.split("/")
+                summary["successful_steps"] = int(parts[0].split()[0])
+                summary["failed_steps"] = int(parts[1].split()[0])
+            except (IndexError, ValueError):
+                pass
+        elif key == "techniques_observed":
+            try:
+                summary["techniques_total"] = int(value)
+            except ValueError:
+                pass
+        elif key == "technique_ids":
+            techniques = [t.strip() for t in value.split(",") if t.strip()]
+        elif key == "detection_hints":
+            try:
+                summary["detection_hint_count"] = int(value)
+            except ValueError:
+                pass
+    if techniques:
+        summary["techniques"] = techniques
+    if statuses:
+        summary["module_statuses"] = statuses
+    return summary
+
+
+def _detect_prompt_intent(prompt: str) -> str:
+    """Return ``plan`` / ``narrate`` / ``suggest_detections`` / ``""``.
+
+    The copilot's three public methods build distinct prompt
+    prefixes — detect them so the template renders an appropriate
+    structure rather than a generic blob.
+    """
+    head = prompt[:240].lower()
+    if "scenario yaml" in head or "generate a concise bluefire scenario" in head:
+        return "plan"
+    if "soc incident narrative" in head or "soc-style run narrative" in head:
+        return "narrate"
+    if "detection suggestions" in head or "detection guidance" in head:
+        return "suggest_detections"
+    return ""
+
+
+def _format_blocked_steps(summary: Mapping[str, Any]) -> list[str]:
+    """List the step ids whose status is non-success, capped at 8."""
+    statuses = summary.get("module_statuses") or []
+    if not isinstance(statuses, list):
+        return []
+    blocked: list[str] = []
+    for entry in statuses:
+        if not isinstance(entry, Mapping):
+            continue
+        status = str(entry.get("status", "")).lower()
+        if status in {"success", ""}:
+            continue
+        step = str(entry.get("step", ""))
+        if step:
+            blocked.append(f"{step} ({status})")
+    return blocked[:8]
+
+
+def _render_template_narrative(summary: Mapping[str, Any], model: str) -> str:
+    """Plain-English SOC narrative from a parsed run summary."""
+    scenario = summary.get("scenario_name") or "(unspecified scenario)"
+    run_id = summary.get("run_id") or "(unknown run id)"
+    module_count = summary.get("module_count")
+    successful = summary.get("successful_steps", 0)
+    failed = summary.get("failed_steps", 0)
+    technique_ids = summary.get("techniques") or []
+    techniques_total = summary.get("techniques_total", len(technique_ids))
+    detection_hint_count = summary.get("detection_hint_count", 0)
+    statuses = summary.get("module_statuses") or []
+    blocked = _format_blocked_steps(summary)
+
+    lines: list[str] = [
+        "TemplateProvider response",
+        f"- model: {model}",
+        "- mode: offline (deterministic template, no network)",
+        "",
+        "# Run summary",
+        f"- scenario: {scenario}",
+        f"- run_id: {run_id}",
+    ]
+    if isinstance(module_count, int):
+        lines.append(
+            f"- modules: {module_count} "
+            f"({successful} success / {failed} non-success)"
+        )
+    if technique_ids:
+        listed = ", ".join(technique_ids[:24])
+        more = "" if len(technique_ids) <= 24 else f" (+{len(technique_ids) - 24} more)"
+        lines.append(f"- techniques observed ({techniques_total}): {listed}{more}")
+    elif isinstance(techniques_total, int) and techniques_total:
+        lines.append(f"- techniques observed: {techniques_total}")
+    lines.append(f"- detection drafts: {detection_hint_count}")
+
+    if statuses:
+        lines.append("")
+        lines.append("## Step-by-step timeline")
+        for index, entry in enumerate(statuses[:16], start=1):
+            if not isinstance(entry, Mapping):
+                continue
+            step = entry.get("step", "")
+            status = entry.get("status", "")
+            lines.append(f"{index}. {step} -> {status}")
+        if len(statuses) > 16:
+            lines.append(f"... (+{len(statuses) - 16} more steps not shown)")
+
+    lines.append("")
+    lines.append("## Findings")
+    if isinstance(successful, int):
+        lines.append(f"- {successful} step(s) completed successfully.")
+    if blocked:
+        lines.append(
+            f"- {len(blocked)} step(s) blocked or errored: "
+            + ", ".join(blocked)
+        )
+    elif isinstance(failed, int) and failed == 0:
+        lines.append("- 0 step(s) blocked or errored.")
+    if technique_ids:
+        lines.append(
+            f"- ATT&CK coverage: {', '.join(technique_ids[:8])}"
+            + ("..." if len(technique_ids) > 8 else "")
+        )
+    if isinstance(detection_hint_count, int) and detection_hint_count > 0:
+        lines.append(
+            f"- {detection_hint_count} detection draft(s) emitted across "
+            "Sigma / YARA-L / SPL."
+        )
+
+    lines.append("")
+    lines.append("## Suggested next validations")
+    if blocked:
+        lines.append(
+            f"- Re-run with `show-run {run_id}` and inspect message text "
+            "for each blocked step."
+        )
+    lines.append(
+        f"- Run `validate-run {run_id}` to confirm bundle completeness."
+    )
+    lines.append(
+        f"- Open output/{run_id}/index.html to review the run dashboard."
+    )
+    lines.append(
+        f"- Inspect output/{run_id}/detections/ for per-engine drafts; "
+        "Sigma is most mature, YARA-L medium, SPL draft."
+    )
+    if technique_ids:
+        lines.append(
+            "- For each technique observed, confirm at least one detection "
+            "draft fires on representative production telemetry."
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _render_template_detections(summary: Mapping[str, Any], model: str) -> str:
+    """Detection-strategy summary from a parsed run summary."""
+    scenario = summary.get("scenario_name") or "(unspecified scenario)"
+    run_id = summary.get("run_id") or "(unknown run id)"
+    technique_ids = summary.get("techniques") or []
+    techniques_total = summary.get("techniques_total", len(technique_ids))
+    detection_hint_count = summary.get("detection_hint_count", 0)
+
+    lines: list[str] = [
+        "TemplateProvider response",
+        f"- model: {model}",
+        "- mode: offline (deterministic template, no network)",
+        "",
+        f"# Detection guidance for run {run_id}",
+        f"- scenario: {scenario}",
+        f"- techniques observed: {techniques_total}",
+        f"- detection drafts: {detection_hint_count}",
+        "- detection draft maturity:"
+        " Sigma (most mature), YARA-L (medium), SPL (draft / starter).",
+    ]
+    if technique_ids:
+        lines.append("")
+        lines.append("## Per-technique pointers")
+        for technique in technique_ids[:12]:
+            lines.append(
+                f"- {technique}: review the Sigma rule's logsource block; "
+                "tune the SPL `where` clauses for your environment "
+                "(default sourcetype mapping is in the rule's leading "
+                "DRAFT comment)."
+            )
+        if len(technique_ids) > 12:
+            lines.append(
+                f"... (+{len(technique_ids) - 12} more techniques not shown)"
+            )
+    lines.append("")
+    lines.append("## Operator next steps")
+    lines.append(
+        f"- Open output/{run_id}/detections/ to inspect per-technique drafts."
+    )
+    lines.append(
+        "- Treat Sigma drafts as the most reusable starting point; "
+        "YARA-L and SPL drafts typically need per-environment field tuning."
+    )
+    lines.append(
+        "- Validate every draft against representative production telemetry "
+        "before deploying as a production detection."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _render_template_plan(summary: Mapping[str, Any], goal: str, model: str) -> str:
+    """Scenario-skeleton plan from a parsed run summary."""
+    technique_ids = summary.get("techniques") or []
+    scenario = summary.get("scenario_name") or "planned-scenario"
+
+    lines: list[str] = [
+        "TemplateProvider response",
+        f"- model: {model}",
+        "- mode: offline (deterministic template, no network)",
+        "",
+        f"# Plan goal: {goal[:200]}",
+        "",
+        "# Suggested scenario skeleton (review before deploying)",
+        "id: planned-scenario",
+        f"name: {scenario}",
+        "objective: |",
+        f"  Generated by the offline template provider for goal: {goal[:120]}.",
+        "  Refine objective, scope, and module composition before running.",
+        "attack_coverage:",
+    ]
+    if technique_ids:
+        for technique in technique_ids[:16]:
+            lines.append(f"  - {technique}")
+    else:
+        lines.append("  - T0000  # add observed or target techniques")
+    lines.append("steps:")
+    lines.append("  - id: step-1")
+    lines.append("    name: First scenario step")
+    lines.append("    module: discovery  # adapt module to the technique")
+    lines.append("    params:")
+    lines.append("      network_touch: false")
+    lines.append("")
+    lines.append("# Notes")
+    lines.append(
+        "- This skeleton is intentionally conservative (network_touch=false, "
+        "no remote AI). Adjust per-step params for the technique you want to emulate."
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _render_template_generic(prompt: str, context_preview: str, model: str) -> str:
+    """Legacy generic stub — preserved for prompts without a run summary."""
+    scrubbed = prompt.replace("[REDACTED]", "***").replace("\n", " ").strip()
+    return (
+        "TemplateProvider response\n"
+        f"- model: {model}\n"
+        f"- prompt_summary: {scrubbed[:220]}\n"
+        f"- context_preview: {context_preview or 'none'}\n"
+        "- recommendation: refine scenario steps, review detection coverage,"
+        " validate telemetry\n"
+    )
+
+
 @dataclass
 class TemplateProvider:
-    """Deterministic fallback provider for offline and CI."""
+    """Deterministic, no-network offline provider.
+
+    The template provider intentionally accepts ``options`` for
+    interface parity with the remote backends but ignores fields
+    like ``temperature`` and ``max_tokens`` that have no meaning
+    for a deterministic local renderer. ``options.metadata`` is
+    forwarded onto the response so per-call tags survive.
+
+    Output strategy:
+
+    - When the prompt carries a ``[run summary]`` block (the
+      orchestrator's :func:`copilot._format_run_summary_for_prompt`
+      injects one for every scenario run), the provider parses
+      out scenario name / run id / step count / techniques /
+      detection counts / per-step status and renders an
+      intent-aware artifact (SOC narrative for ``narrate``,
+      detection-strategy summary for ``suggest_detections``,
+      scenario skeleton for ``plan``).
+    - When no summary is present, the legacy generic stub
+      (``prompt_summary`` + ``context_preview`` + a one-line
+      recommendation) is returned, so out-of-tree callers that
+      only feed bare prompts keep working.
+
+    Output remains deterministic: the same input prompt produces
+    the same body, byte for byte, so unit tests and report
+    rendering can rely on it.
+    """
 
     model: str = "template-default"
     name: str = "template"
@@ -71,20 +426,30 @@ class TemplateProvider:
         context: list[str] | None = None,
         options: ProviderOptions | None = None,
     ) -> ProviderResponse:
-        # The template provider intentionally ignores options:
-        # temperature / max_tokens / timeout have no meaning for the
-        # deterministic fallback, but the option is accepted so
-        # callers can pass a single ``options=...`` to any provider.
-        scrubbed = prompt.replace("[REDACTED]", "***").replace("\n", " ").strip()
         context_preview = " | ".join((context or [])[:2])[:220]
-        text = (
-            "TemplateProvider response\n"
-            f"- model: {self.model}\n"
-            f"- prompt_summary: {scrubbed[:220]}\n"
-            f"- context_preview: {context_preview or 'none'}\n"
-            "- recommendation: refine scenario steps, review detection coverage,"
-            " validate telemetry\n"
-        )
+        summary = _parse_run_summary_block(prompt)
+        if summary:
+            intent = _detect_prompt_intent(prompt)
+            if intent == "narrate":
+                text = _render_template_narrative(summary, self.model)
+            elif intent == "suggest_detections":
+                text = _render_template_detections(summary, self.model)
+            elif intent == "plan":
+                # The plan-intent prompt's first line carries the goal.
+                goal_line = ""
+                for line in prompt.splitlines():
+                    stripped = line.strip()
+                    if stripped.lower().startswith("goal:"):
+                        goal_line = stripped[5:].strip()
+                        break
+                text = _render_template_plan(summary, goal_line, self.model)
+            else:
+                # Run summary present but intent is unknown — render
+                # narrative as the safest default since it surfaces
+                # all the structured fields.
+                text = _render_template_narrative(summary, self.model)
+        else:
+            text = _render_template_generic(prompt, context_preview, self.model)
         metadata: Dict[str, Any] = {}
         if options is not None and options.metadata:
             metadata.update(options.metadata)

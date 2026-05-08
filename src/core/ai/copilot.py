@@ -275,6 +275,25 @@ def _format_run_summary_for_prompt(run_summary: Mapping[str, Any]) -> str:
     detection_count = run_summary.get("detection_hint_count")
     if isinstance(detection_count, int):
         lines.append(f"  detection_hints: {detection_count}")
+    # Per-step status block — capped so a long scenario cannot
+    # dominate the prompt. The deterministic offline template
+    # parses this block to render a plain-English timeline replay
+    # without needing access to the structured summary directly.
+    module_statuses = run_summary.get("module_statuses") or []
+    if isinstance(module_statuses, list) and module_statuses:
+        capped = module_statuses[:16]
+        lines.append("  module_statuses:")
+        for entry in capped:
+            if not isinstance(entry, Mapping):
+                continue
+            step = str(entry.get("step", "")).splitlines()[0][:120]
+            status = str(entry.get("status", "")).splitlines()[0][:32]
+            if step:
+                lines.append(f"    - {step}: {status}")
+        if len(module_statuses) > 16:
+            lines.append(
+                f"    ... (+{len(module_statuses) - 16} more steps not shown)"
+            )
     return "\n".join(lines)
 
 
