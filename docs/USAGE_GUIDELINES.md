@@ -687,6 +687,18 @@ All six commands accept `--output-root <path>` to override discovery for ad-hoc 
 
 The viewer is fully self-contained: a single `<style>` block holds the entire CSS, every value is HTML-escaped before rendering, and every artifact link is run-dir-relative so the run directory can be moved without breaking the page. The same constraints apply to the top-level `output/index.html` aggregator — it lives one level above the run dirs and links into each via relative `<run_id>/index.html` paths, so the entire `output/` tree can be moved or zipped without breaking links.
 
+### Maintainer-facing release-candidate smoke
+
+`scripts/smoke_release_candidate.py` is a maintainer-facing script that runs the canonical fresh-clone operator path end-to-end and re-asserts every release-candidate polish invariant the rc1 cut introduced. Use it before publishing an `-rcN` tag:
+
+```bash
+python scripts/smoke_release_candidate.py
+python scripts/smoke_release_candidate.py --keep-output      # leave the tmp output dir on disk
+python scripts/smoke_release_candidate.py --scenario enterprise_intrusion_chain
+```
+
+Exit code is the number of failed checks (`0` on full pass). Each check is local-only — no network calls, no real API calls, no shared state across runs. The pytest wrapper (`tests/test_release_candidate_smoke.py`) exercises the same invariants on every CI run so a regression is caught immediately rather than only at the next release cut.
+
 ## 8. ATT&CK mapping notes
 
 BlueFire emulates techniques mapped to MITRE ATT&CK. Examples currently
