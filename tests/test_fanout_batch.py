@@ -22,6 +22,7 @@ import pytest
 from src.core.models import TelemetryEvent
 from src.core.modules.base import BaseModule
 from src.core.modules.impl.standard_modules import (
+    AntiDetectionModule,
     CommandControlModule,
     DefenseEvasionModule,
     IntelligenceModule,
@@ -29,6 +30,7 @@ from src.core.modules.impl.standard_modules import (
     PersistenceModule,
     ReconnaissanceModule,
     ResourceDevelopmentModule,
+    _ANTI_DETECTION_PROFILES,
     _COMMAND_CONTROL_PROFILES,
     _DEFENSE_EVASION_PROFILES,
     _INTELLIGENCE_PROFILES,
@@ -60,6 +62,7 @@ _MODULES: Tuple[Tuple[Type[BaseModule], Dict[str, Dict[str, Any]], str, str, Dic
     (IntelligenceModule, _INTELLIGENCE_PROFILES, "intelligence_type", "actor_research", {"focus": "apt29"}),
     (ReconnaissanceModule, _RECONNAISSANCE_PROFILES, "source", "osint", {}),
     (ResourceDevelopmentModule, _RESOURCE_DEVELOPMENT_PROFILES, "resource_type", "domain", {}),
+    (AntiDetectionModule, _ANTI_DETECTION_PROFILES, "method", "memory_evasion", {"target": "lab"}),
 )
 
 

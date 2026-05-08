@@ -789,31 +789,223 @@ class CommandControlModule(BaseModule):
         )
 
 
+# Anti-detection profile catalog.
+#
+# Each entry maps a high-level operator method (`memory_evasion`,
+# `code_obfuscation`, ...) to a real defense-evasion ATT&CK sub-technique
+# AND a Sigma-style detection draft that uses sourcetype-appropriate
+# Windows / Sysmon field names. Without this catalog the module emitted
+# a single generic hint with the BlueFire field `anti_detection.method`
+# as the discriminator, which is not a real telemetry field anywhere.
+#
+# `selection_field` / `selection_value` should be picked so that the
+# resulting Sigma rule could plausibly fire against real Sysmon
+# telemetry for the technique. The values are deliberately simulate-
+# safe (no live commands invoked) but represent the kind of indicator
+# a defender would actually look for.
+_ANTI_DETECTION_PROFILES: Dict[str, Dict[str, Any]] = {
+    "memory_evasion": {
+        "mitre": "T1055",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "ParentImage|endswith",
+        "selection_value": "\\explorer.exe",
+        "event_type": "anti_detection_memory_evasion",
+        "title_prefix": "In-memory execution / process injection",
+        "details": {"injection_target": "lsass.exe", "alloc_protect": "PAGE_EXECUTE_READWRITE"},
+    },
+    "code_obfuscation": {
+        "mitre": "T1027",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "TargetFilename|endswith",
+        "selection_value": ".enc",
+        "event_type": "anti_detection_code_obfuscation",
+        "title_prefix": "Obfuscated/encoded payload artefact",
+        "details": {"payload_entropy": 7.8, "packer_signature": "upx"},
+    },
+    "anti_debug": {
+        "mitre": "T1622",
+        "logsource": {"category": "process_access", "product": "windows"},
+        "selection_field": "CallTrace|contains",
+        "selection_value": "IsDebuggerPresent",
+        "event_type": "anti_detection_anti_debug",
+        "title_prefix": "Anti-debug API probe",
+        "details": {"api": "IsDebuggerPresent", "method_hint": "PEB_BeingDebugged"},
+    },
+    "anti_sandbox": {
+        "mitre": "T1497.001",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "CommandLine|contains",
+        "selection_value": "wmic computersystem get model",
+        "event_type": "anti_detection_anti_sandbox",
+        "title_prefix": "Sandbox/VM environment probe",
+        "details": {"probe_command": "wmic computersystem get model", "indicator": "VirtualBox"},
+    },
+    "anti_vm": {
+        "mitre": "T1497.001",
+        "logsource": {"category": "registry_event", "product": "windows"},
+        "selection_field": "TargetObject|contains",
+        "selection_value": "\\SYSTEM\\CurrentControlSet\\Services\\VBoxService",
+        "event_type": "anti_detection_anti_vm",
+        "title_prefix": "VM artefact registry lookup",
+        "details": {"registry_key": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\VBoxService"},
+    },
+    "timestomp": {
+        "mitre": "T1070.006",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "TargetFilename|endswith",
+        "selection_value": "\\drivers\\etc\\hosts",
+        "event_type": "anti_detection_timestomp",
+        "title_prefix": "Timestamp manipulation",
+        "details": {"target_file": "C:\\Windows\\System32\\drivers\\etc\\hosts", "modified_attr": "MFT"},
+    },
+    "log_clear": {
+        "mitre": "T1070.001",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "CommandLine|contains",
+        "selection_value": "wevtutil cl",
+        "event_type": "anti_detection_log_clear",
+        "title_prefix": "Windows event-log clearing",
+        "details": {"target_log": "Security", "tool": "wevtutil.exe"},
+    },
+    "dynamic_api": {
+        "mitre": "T1027.007",
+        "logsource": {"category": "process_access", "product": "windows"},
+        "selection_field": "CallTrace|contains",
+        "selection_value": "GetProcAddress",
+        "event_type": "anti_detection_dynamic_api",
+        "title_prefix": "Dynamic API resolution",
+        "details": {"resolver": "GetProcAddress", "target_api": "VirtualAlloc"},
+    },
+    "reflective_loading": {
+        "mitre": "T1620",
+        "logsource": {"category": "image_load", "product": "windows"},
+        "selection_field": "ImageLoaded|endswith",
+        "selection_value": "\\unsigned_module.dll",
+        "event_type": "anti_detection_reflective_loading",
+        "title_prefix": "Reflective code loading",
+        "details": {"loader": "manual_dll_mapping", "target_process": "lsass.exe"},
+    },
+    "process_hollowing": {
+        "mitre": "T1055.012",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "ParentCommandLine|contains",
+        "selection_value": "svchost.exe -k",
+        "event_type": "anti_detection_process_hollowing",
+        "title_prefix": "Process hollowing",
+        "details": {"target_process": "svchost.exe", "image_replaced": True},
+    },
+    "string_encryption": {
+        "mitre": "T1027.013",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "TargetFilename|endswith",
+        "selection_value": ".bin",
+        "event_type": "anti_detection_string_encryption",
+        "title_prefix": "Encrypted string payload",
+        "details": {"cipher": "AES-256-CBC", "payload_entropy": 7.9},
+    },
+    "api_unhooking": {
+        "mitre": "T1562.001",
+        "logsource": {"category": "process_access", "product": "windows"},
+        "selection_field": "CallTrace|contains",
+        "selection_value": "ntdll.dll+",
+        "event_type": "anti_detection_api_unhooking",
+        "title_prefix": "EDR API unhooking",
+        "details": {"target_dll": "ntdll.dll", "method_hint": "fresh_image_overwrite"},
+    },
+}
+
+
+_ANTI_DETECTION_DEFAULT = "memory_evasion"
+
+
 class AntiDetectionModule(BaseModule):
+    """Standard adapter for the anti-detection / defense-evasion tactic.
+
+    Produces simulate-mode telemetry, ATT&CK-aligned detection hints, and
+    structured artifacts for twelve evasion methods. The legacy stealth
+    pack at `src/core/anti_detection/` is preserved as the source of
+    research-grade behaviour; emulate-mode wiring is gated behind the
+    explicit `legacy_stealth_research` adapter.
+    """
+
     name = "anti_detection"
-    attack_techniques = ("T1027",)
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _ANTI_DETECTION_PROFILES.values()})
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        method = str(params.get("method", "memory_evasion"))
-        event = TelemetryEvent(
-            event_type="anti_detection_simulated",
-            module=self.name,
-            details={"method": method},
+        requested = str(params.get("method") or _ANTI_DETECTION_DEFAULT).lower()
+        profile_key = (
+            requested if requested in _ANTI_DETECTION_PROFILES else _ANTI_DETECTION_DEFAULT
         )
-        hints = {
-            "title": "Obfuscated data or anti-detection behavior",
-            "logsource": {"category": "process_creation", "product": "linux"},
-            "detection": {"selection": {"anti_detection.method": method}, "condition": "selection"},
-            "mitre_technique": "T1027",
+        profile = _ANTI_DETECTION_PROFILES[profile_key]
+        target, propagated_from = resolve_target_from_step(
+            params, context, fallback="lab-host"
+        )
+
+        # Profile details first so the canonical fields below
+        # (``method`` / ``target`` / ``mitre_technique`` /
+        # ``selection_value``) always win — even if a future profile
+        # contributor reuses one of those keys for a per-method
+        # detail. ``target`` in particular is canonical here (the
+        # host being acted on); a profile that meant a per-method
+        # file path / process name should namespace its own key
+        # (e.g. ``target_file`` for ``timestomp``).
+        details: Dict[str, Any] = dict(profile["details"])
+        details.update(
+            {
+                "method": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+                "selection_value": profile["selection_value"],
+            }
+        )
+        if propagated_from:
+            details["target_propagated_from_step"] = propagated_from
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details=dict(details),
+        )
+
+        hints: Dict[str, Any] = {
+            "title": f"{profile['title_prefix']} on {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: profile["selection_value"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "anti_detection_method": profile_key,
+            "target_host": target,
         }
+        if requested != profile_key:
+            hints["unrecognized_anti_detection_method"] = requested
+        if propagated_from:
+            hints["target_propagated_from_step"] = propagated_from
+
+        # Same merge discipline as ``details``: canonical fields
+        # last so they cannot be overwritten by profile detail keys.
+        artifacts: Dict[str, Any] = dict(profile["details"])
+        artifacts.update(
+            {
+                "method": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            }
+        )
+        if propagated_from:
+            artifacts["target_propagated_from_step"] = propagated_from
+
         return _result(
             self.name,
             "success",
-            f"Simulated anti-detection method {method}.",
-            techniques=["T1027"],
+            f"Simulated anti-detection method '{profile_key}' on {target}.",
+            techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={"method": method},
+            artifacts=artifacts,
         )
 
 
