@@ -154,6 +154,41 @@ def test_build_manifest_run_section_carries_canonical_metadata(tmp_path: Path) -
     assert run["overall_status"] == "success"
     assert run["module_count"] == 2
     assert run["step_status_counts"] == {"success": 2}
+    # The objective is optional but the key must always be present
+    # so consumers (viewer, downstream tools) can rely on a stable
+    # shape. Default-empty stripped string when the caller did not
+    # pass one.
+    assert run["scenario_objective"] == ""
+
+
+def test_build_manifest_surfaces_scenario_objective_when_provided(tmp_path: Path) -> None:
+    """The ``scenario_objective`` plumbs through to ``run.scenario_objective``.
+
+    The orchestrator passes ``scenario.objective`` (a multi-paragraph
+    YAML literal block) into ``write_run_manifest``; the viewer
+    surfaces it as the dashboard's narrative summary. Whitespace
+    must be preserved (the viewer normalises into paragraphs at
+    render time) but leading/trailing whitespace is stripped at
+    the manifest layer so the field is always the canonical body.
+    """
+    objective = (
+        "  An attacker registers a domain, phishes a finance analyst,\n"
+        "  runs an encoded PowerShell loader, and ends with ransomware.\n"
+        "\n"
+        "  Every step is simulate-only with network_touch=false.  "
+    )
+    manifest = build_manifest(
+        run_id="run-obj",
+        run_dir=tmp_path,
+        scenario_name="objective-test",
+        scenario_objective=objective,
+        steps=_basic_steps(),
+    )
+    surfaced = manifest["run"]["scenario_objective"]
+    assert surfaced.startswith("An attacker registers")
+    assert surfaced.endswith("network_touch=false.")
+    # Internal newlines preserved (viewer collapses them per paragraph).
+    assert "\n\n" in surfaced
 
 
 def test_build_manifest_extracts_propagation_edges(tmp_path: Path) -> None:
@@ -212,6 +247,137 @@ def test_build_manifest_extracts_propagation_edges(tmp_path: Path) -> None:
     # resource_development -> command_control linkage invisible in
     # the report's propagation graph.
     assert ("stage-infrastructure", "c2", "c2_endpoint_from_step") in edge_kinds
+
+
+def test_build_manifest_propagation_edges_include_from_module(tmp_path: Path) -> None:
+    """Each edge carries the upstream module name so the viewer can render it.
+
+    Pre-narrative the edge dict only carried ``to_module``; the
+    upstream side was just a step id. The viewer's narrative
+    column needs both module names to render a complete sentence
+    (``credential_access targets the host produced by the
+    discovery step 'enumerate-files'``). This pin makes sure the
+    field stays present and resolves correctly when the upstream
+    step is in the same iterable.
+    """
+    steps = _basic_steps()
+    manifest = build_manifest(
+        run_id="run-from",
+        run_dir=tmp_path,
+        scenario_name="from-module",
+        steps=steps,
+    )
+    edges = manifest["propagation_edges"]
+    # The basic fixture has one edge: enumerate-files -> harvest-creds.
+    target_edge = next(e for e in edges if e["kind"] == "target_from_step")
+    assert target_edge["from_module"] == "discovery"
+    assert target_edge["to_module"] == "credential_access"
+
+
+def test_build_manifest_propagation_edges_include_narrative(tmp_path: Path) -> None:
+    """Each edge carries a defender-facing narrative line.
+
+    The narrative is generated deterministically from the (kind,
+    from_module, to_module, from_step) tuple. Pin the rendered
+    text shape so a future template edit doesn't silently drop
+    a field reference and ship ``""`` to the dashboard.
+    """
+    steps = _basic_steps()
+    # Add a c2 endpoint propagation so all three kinds are exercised.
+    steps.append(
+        {
+            "step_id": "c2",
+            "module": "command_control",
+            "name": "HTTPS C2",
+            "status": "success",
+            "message": "ok",
+            "techniques": ["T1071.001"],
+            "artifacts": {
+                "channel": "https",
+                "c2_endpoint_propagated_from_step": "enumerate-files",
+            },
+            "detections": {},
+        }
+    )
+    # Add a lateral_movement step so source_from_step is exercised.
+    steps.append(
+        {
+            "step_id": "lateral",
+            "module": "lateral_movement",
+            "name": "PsExec",
+            "status": "success",
+            "techniques": ["T1021.002"],
+            "artifacts": {
+                "source_propagated_from_step": "harvest-creds",
+            },
+            "detections": {},
+        }
+    )
+    manifest = build_manifest(
+        run_id="run-narr",
+        run_dir=tmp_path,
+        scenario_name="narrative",
+        steps=steps,
+    )
+    by_kind = {e["kind"]: e for e in manifest["propagation_edges"]}
+
+    target = by_kind["target_from_step"]
+    assert "credential_access" in target["narrative"]
+    assert "discovery" in target["narrative"]
+    assert "enumerate-files" in target["narrative"]
+    assert "targets" in target["narrative"]
+
+    source = by_kind["source_from_step"]
+    assert "lateral_movement" in source["narrative"]
+    assert "credential_access" in source["narrative"]
+    assert "harvest-creds" in source["narrative"]
+    assert "pivots from" in source["narrative"]
+
+    c2 = by_kind["c2_endpoint_from_step"]
+    assert "command_control" in c2["narrative"]
+    assert "discovery" in c2["narrative"]
+    assert "enumerate-files" in c2["narrative"]
+    assert "beacons to" in c2["narrative"]
+
+
+def test_build_manifest_propagation_narrative_handles_missing_upstream(
+    tmp_path: Path,
+) -> None:
+    """An upstream step id that doesn't appear in the steps iterable still renders.
+
+    If a downstream step records ``target_propagated_from_step``
+    pointing at a step that was filtered out of the manifest's
+    steps list (e.g. due to fail-fast aborting before the
+    downstream step's artifact recording landed), the narrative
+    must still produce a readable line — fallback to the
+    ``"upstream"`` placeholder rather than the literal ``None`` /
+    empty string.
+    """
+    steps = [
+        {
+            "step_id": "harvest-creds",
+            "module": "credential_access",
+            "name": "Harvest creds",
+            "status": "success",
+            "techniques": ["T1555.003"],
+            "artifacts": {
+                "target": "finance-analyst-laptop",
+                "target_propagated_from_step": "missing-upstream-step",
+            },
+            "detections": {},
+        }
+    ]
+    manifest = build_manifest(
+        run_id="run-missing",
+        run_dir=tmp_path,
+        scenario_name="missing",
+        steps=steps,
+    )
+    edge = manifest["propagation_edges"][0]
+    assert edge["from_module"] == ""  # not resolvable
+    assert edge["narrative"]  # still rendered, not empty
+    assert "None" not in edge["narrative"]
+    assert "upstream" in edge["narrative"]  # placeholder for unknown module
 
 
 def test_build_manifest_attack_coverage_is_sorted_and_deduped(tmp_path: Path) -> None:

@@ -247,6 +247,76 @@ def test_render_html_includes_propagation_table(tmp_path: Path) -> None:
     assert "target_from_step" in html
 
 
+def test_render_html_propagation_table_shows_narrative_column(
+    tmp_path: Path,
+) -> None:
+    """The propagation table renders a defender-facing narrative column.
+
+    The column reads as a chain story rather than a graph, so a
+    SOC analyst opening the dashboard understands what flowed
+    between the two steps without cross-referencing the YAML.
+    """
+    html = render_html(_populated_manifest(tmp_path))
+    # The table header advertises the new column.
+    assert ">narrative<" in html
+    # The rendered narrative for the fixture's
+    # discovery -> credential_access edge mentions both modules and
+    # the upstream step id.
+    assert "credential_access targets the host produced by the discovery step" in html
+
+
+def test_render_html_renders_scenario_objective_when_present(
+    tmp_path: Path,
+) -> None:
+    """The scenario objective surfaces in the header as readable prose.
+
+    Multi-paragraph YAML literals collapse into ``<p>`` blocks so
+    paragraph breaks survive into the rendered page. Single
+    newlines within a paragraph collapse into spaces.
+    """
+    manifest = _populated_manifest(tmp_path)
+    manifest["run"]["scenario_objective"] = (
+        "An attacker registers a domain and phishes a finance analyst.\n\n"
+        "Every step is simulate-only with network_touch=false."
+    )
+    html = render_html(manifest)
+    assert "scenario-objective" in html
+    assert "An attacker registers a domain" in html
+    assert "Every step is simulate-only" in html
+    # Paragraph break preserved as separate <p> tags.
+    assert html.count("<p>") >= 2
+
+
+def test_render_html_omits_objective_section_when_missing(
+    tmp_path: Path,
+) -> None:
+    """No scenario objective means no empty card on the page.
+
+    Older runs predating ``run.scenario_objective`` still load
+    cleanly; the renderer silently drops the block when the
+    manifest field is empty.
+    """
+    manifest = _populated_manifest(tmp_path)
+    manifest["run"]["scenario_objective"] = ""
+    html = render_html(manifest)
+    assert "scenario-objective" not in html
+
+
+def test_render_html_escapes_hostile_objective(tmp_path: Path) -> None:
+    """A scenario objective containing HTML is escaped before reaching the page.
+
+    A scenario YAML written with ``objective: <script>alert(1)</script>``
+    would otherwise inject a literal script tag into the dashboard.
+    Pin escape discipline so future renderer edits can't regress
+    the contract.
+    """
+    manifest = _populated_manifest(tmp_path)
+    manifest["run"]["scenario_objective"] = "<script>alert(1)</script>"
+    html = render_html(manifest)
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
 def test_render_html_includes_attack_coverage(tmp_path: Path) -> None:
     html = render_html(_populated_manifest(tmp_path))
     assert "ATT&amp;CK coverage" in html
