@@ -610,20 +610,208 @@ class DiscoveryModule(BaseModule):
         )
 
 
+# Exfiltration profile catalog.
+#
+# Each entry maps a high-level operator method (`via_c2`,
+# `dns_tunneling`, `https_to_cloud_storage`, ...) to a real
+# exfiltration ATT&CK technique AND a Sigma-style detection draft
+# that uses telemetry-shaped fields a defender would actually look
+# for. Without this catalog the module emitted a single generic
+# T1041 hint with the BlueFire field `exfil.method` as the
+# discriminator, which is not a real telemetry field anywhere.
+_EXFILTRATION_PROFILES: Dict[str, Dict[str, Any]] = {
+    "via_c2": {
+        "mitre": "T1041",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_hostname|contains",
+        "selection_value": "c2.example.invalid",
+        "event_type": "exfiltration_via_c2",
+        "title_prefix": "Data exfiltration over C2 channel from",
+        "details": {"protocol": "https", "encoding": "base64", "channel_reuse": True},
+    },
+    "dns_tunneling": {
+        "mitre": "T1048.003",
+        "logsource": {"category": "dns", "product": "network"},
+        "selection_field": "dns.question.name|contains",
+        "selection_value": ".tunnel.example.invalid",
+        "event_type": "exfiltration_dns_tunneling",
+        "title_prefix": "Data exfiltration over DNS tunnel from",
+        "details": {"record_type": "TXT", "label_length": 63, "carrier_domain": "tunnel.example.invalid"},
+    },
+    "https_to_cloud_storage": {
+        "mitre": "T1567.002",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_hostname|endswith",
+        "selection_value": ".s3.amazonaws.com",
+        "event_type": "exfiltration_cloud_storage",
+        "title_prefix": "Data exfiltration to cloud storage from",
+        "details": {"service": "s3", "method": "PUT", "bucket": "lab-exfil-bucket"},
+    },
+    "https_to_code_repo": {
+        "mitre": "T1567.001",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_hostname|endswith",
+        "selection_value": "github.com",
+        "event_type": "exfiltration_code_repository",
+        "title_prefix": "Data exfiltration to code repository from",
+        "details": {"service": "github", "method": "push", "repo": "lab-exfil-repo"},
+    },
+    "https_to_web_service": {
+        "mitre": "T1567",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_hostname|contains",
+        "selection_value": "pastebin.com",
+        "event_type": "exfiltration_web_service",
+        "title_prefix": "Data exfiltration to public web service from",
+        "details": {"service": "pastebin", "method": "POST"},
+    },
+    "email_smtp": {
+        "mitre": "T1048.003",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 25,
+        "event_type": "exfiltration_email_smtp",
+        "title_prefix": "Data exfiltration over SMTP from",
+        "details": {"protocol": "smtp", "port": 25, "smtp_relay": "mail.example.invalid"},
+    },
+    "ftp_to_remote": {
+        "mitre": "T1048.003",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 21,
+        "event_type": "exfiltration_ftp",
+        "title_prefix": "Data exfiltration over FTP from",
+        "details": {"protocol": "ftp", "port": 21, "remote": "ftp.example.invalid"},
+    },
+    "alt_protocol_unencrypted": {
+        "mitre": "T1048.003",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 8080,
+        "event_type": "exfiltration_alt_protocol_unencrypted",
+        "title_prefix": "Data exfiltration over unencrypted non-C2 protocol from",
+        "details": {"protocol": "http", "port": 8080, "encryption": "none"},
+    },
+    "alt_protocol_symmetric": {
+        "mitre": "T1048.001",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 4443,
+        "event_type": "exfiltration_alt_protocol_symmetric",
+        "title_prefix": "Data exfiltration over symmetrically-encrypted non-C2 protocol from",
+        "details": {"protocol": "custom-tls", "port": 4443, "encryption": "AES-256-GCM"},
+    },
+    "alt_protocol_asymmetric": {
+        "mitre": "T1048.002",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 443,
+        "event_type": "exfiltration_alt_protocol_asymmetric",
+        "title_prefix": "Data exfiltration over asymmetrically-encrypted non-C2 protocol from",
+        "details": {"protocol": "tls", "port": 443, "encryption": "TLSv1.3"},
+    },
+    "scheduled_transfer": {
+        "mitre": "T1029",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_hostname|contains",
+        "selection_value": "scheduled.example.invalid",
+        "event_type": "exfiltration_scheduled",
+        "title_prefix": "Scheduled data exfiltration from",
+        "details": {"window": "02:00-03:00", "interval_seconds": 3600},
+    },
+    "usb_removable_media": {
+        "mitre": "T1052.001",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "TargetFilename|contains",
+        "selection_value": "\\Device\\USB",
+        "event_type": "exfiltration_usb",
+        "title_prefix": "Data exfiltration to removable USB media from",
+        "details": {"medium": "usb", "device_class": "removable_storage"},
+    },
+    "bluetooth": {
+        "mitre": "T1011.001",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.protocol",
+        "selection_value": "bluetooth",
+        "event_type": "exfiltration_bluetooth",
+        "title_prefix": "Data exfiltration over Bluetooth from",
+        "details": {"medium": "bluetooth", "profile": "OBEX"},
+    },
+    "traffic_duplication": {
+        "mitre": "T1020.001",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.flow.duplicate",
+        "selection_value": True,
+        "event_type": "exfiltration_traffic_duplication",
+        "title_prefix": "Data exfiltration via traffic duplication from",
+        "details": {"mirror_target": "tap.example.invalid", "duplicate_ratio": 1.0},
+    },
+}
+
+
+_EXFILTRATION_DEFAULT = "via_c2"
+
+
+# Common operator shortcuts -> canonical catalog key.
+# Aliases preserve historic call sites (`method: via_c2` already
+# matches the canonical key, but `method: c2` / `method: dns` /
+# `method: cloud` / `method: usb` are friendlier shortcuts).
+_EXFILTRATION_ALIASES: Dict[str, str] = {
+    "c2": "via_c2",
+    "over_c2": "via_c2",
+    "dns": "dns_tunneling",
+    "dns_tunnel": "dns_tunneling",
+    "cloud": "https_to_cloud_storage",
+    "cloud_storage": "https_to_cloud_storage",
+    "s3": "https_to_cloud_storage",
+    "code_repo": "https_to_code_repo",
+    "github": "https_to_code_repo",
+    "web_service": "https_to_web_service",
+    "pastebin": "https_to_web_service",
+    "email": "email_smtp",
+    "smtp": "email_smtp",
+    "ftp": "ftp_to_remote",
+    "usb": "usb_removable_media",
+    "removable_media": "usb_removable_media",
+    "scheduled": "scheduled_transfer",
+    "mirror": "traffic_duplication",
+}
+
+
+def _resolve_exfiltration_method(requested: str) -> tuple[str, bool]:
+    """Return (canonical_key, recognised) for an operator-supplied method."""
+    lowered = requested.lower()
+    if lowered in _EXFILTRATION_PROFILES:
+        return lowered, True
+    if lowered in _EXFILTRATION_ALIASES:
+        return _EXFILTRATION_ALIASES[lowered], True
+    return _EXFILTRATION_DEFAULT, False
+
+
 class ExfiltrationModule(BaseModule):
     name = "exfiltration"
-    attack_techniques = ("T1041",)
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _EXFILTRATION_PROFILES.values()})
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        method = str(params.get("method", "via_c2"))
+        requested = str(params.get("method") or _EXFILTRATION_DEFAULT)
+        profile_key, recognised = _resolve_exfiltration_method(requested)
+        profile = _EXFILTRATION_PROFILES[profile_key]
+
+        # Destructive-guard runs BEFORE propagation/profile resolution
+        # so a destructive request without lab-ack cannot read upstream
+        # results or emit telemetry. Use the resolved canonical mitre
+        # for the failure record (was historically pinned to T1041).
         if params.get("destructive", False) and not params.get("i_understand_this_is_a_lab", False):
             return _result(
                 self.name,
                 "failure",
                 "Destructive exfiltration simulation requires explicit lab acknowledgment.",
-                techniques=["T1041"],
+                techniques=[profile["mitre"]],
                 error="missing_lab_acknowledgment",
             )
+
         # Optional step-to-step propagation: when the scenario step
         # sets `target_from_step: <step_id>` and does NOT pass an
         # explicit `target`, pick up the upstream step's
@@ -636,40 +824,64 @@ class ExfiltrationModule(BaseModule):
             params, context, fallback="lab-host"
         )
         artifact_name = f"exfil_{context['run_id']}.txt"
-        details: Dict[str, Any] = {
-            "method": method,
-            "target": target,
-            "artifact": artifact_name,
-        }
+
+        # Profile details first so canonical fields below
+        # (``method`` / ``target`` / ``mitre_technique`` / ``artifact``)
+        # always win — even if a future profile contributor reuses
+        # one of those keys for a per-method detail.
+        details: Dict[str, Any] = dict(profile["details"])
+        details.update(
+            {
+                "method": profile_key,
+                "target": target,
+                "artifact": artifact_name,
+                "mitre_technique": profile["mitre"],
+            }
+        )
         if propagated_from:
             details["target_propagated_from_step"] = propagated_from
+
         event = TelemetryEvent(
-            event_type="exfiltration_simulated",
+            event_type=profile["event_type"],
             module=self.name,
-            details=details,
+            details=dict(details),
         )
+
         hints: Dict[str, Any] = {
-            "title": f"Potential data exfiltration from {target}",
-            "logsource": {"category": "network_connection", "product": "windows"},
-            "detection": {"selection": {"exfil.method": method}, "condition": "selection"},
-            "mitre_technique": "T1041",
-            "network_method": method,
+            "title": f"{profile['title_prefix']} {target}",
+            "logsource": dict(profile["logsource"]),
+            "detection": {
+                "selection": {profile["selection_field"]: profile["selection_value"]},
+                "condition": "selection",
+            },
+            "mitre_technique": profile["mitre"],
+            "exfiltration_method": profile_key,
             "source_host": target,
         }
+        if not recognised:
+            hints["unrecognized_exfiltration_method"] = requested
         if propagated_from:
             hints["target_propagated_from_step"] = propagated_from
-        artifacts: Dict[str, Any] = {
-            "method": method,
-            "target": target,
-            "artifact_name": artifact_name,
-        }
+
+        # Same merge discipline as ``details``: canonical fields
+        # last so they cannot be overwritten by profile detail keys.
+        artifacts: Dict[str, Any] = dict(profile["details"])
+        artifacts.update(
+            {
+                "method": profile_key,
+                "target": target,
+                "artifact_name": artifact_name,
+                "mitre_technique": profile["mitre"],
+            }
+        )
         if propagated_from:
             artifacts["target_propagated_from_step"] = propagated_from
+
         return _result(
             self.name,
             "success",
-            f"Simulated exfiltration via {method} from {target}.",
-            techniques=["T1041"],
+            f"Simulated exfiltration via {profile_key} from {target}.",
+            techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
             artifacts=artifacts,
