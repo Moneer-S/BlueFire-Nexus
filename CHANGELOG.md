@@ -13,32 +13,41 @@ This file summarises the deltas at the version-tag granularity.
 
 ### Changed
 
-- `anti_detection` standard module now selects from a 12-entry
-  technique profile catalog (`memory_evasion`, `code_obfuscation`,
-  `anti_debug`, `anti_sandbox`, `anti_vm`, `timestomp`, `log_clear`,
-  `dynamic_api`, `reflective_loading`, `process_hollowing`,
-  `string_encryption`, `api_unhooking`). Each entry maps to a
-  real defense-evasion ATT&CK sub-technique and emits a Sigma-style
-  draft using Sysmon-recognisable Windows event field names
-  (`ParentImage`, `CommandLine`, `TargetFilename`, `TargetObject`,
-  `CallTrace`, `ImageLoaded`). The previous behaviour was a single
-  hardcoded handler that always emitted T1027 with the synthetic
-  `anti_detection.method` field as the detection key — Sigma rules
-  generated from that could not fire on any real telemetry.
-- `scenarios/apt29_credential_access.yaml` `attack_coverage` swap
-  T1027 → T1055 to match the upgraded `memory_evasion` profile
-  (which is properly Process Injection, not Obfuscated Files).
+- YARA-L draft generator now derives the `events:` block from the
+  hint's Sigma `logsource.category` and `detection.selection`
+  rather than emitting a single hardcoded
+  `target.process.file.full_path contains <process_name>`
+  predicate regardless of technique. Sigma logsource categories
+  map to UDM event types (`process_creation` -> `PROCESS_LAUNCH`,
+  `file_event` -> `FILE_MODIFICATION`, `registry_event` ->
+  `REGISTRY_MODIFICATION`, `process_access` -> `PROCESS_OPEN`,
+  `image_load` -> `PROCESS_MODULE_LOAD`, `network_connection` ->
+  `NETWORK_CONNECTION`, `dns` -> `NETWORK_DNS`); Sigma fields map
+  to UDM event field paths (`Image|endswith` ->
+  `principal.process.file.full_path`, `CommandLine|contains` ->
+  `principal.process.command_line`, `TargetFilename|endswith` ->
+  `target.file.full_path`, `TargetObject|contains` ->
+  `target.registry.registry_key`, `CallTrace|contains` ->
+  `principal.process.api_calls`, `ImageLoaded|endswith` ->
+  `target.process.file.full_path`, etc.); Sigma operators
+  (`|contains` / `|endswith` / `|startswith` / `|in` / no-modifier
+  exact / numeric) lower into the appropriate YARA-L regex
+  literals or string-equality predicates with proper escaping of
+  regex metacharacters.
+- The `meta:` block now also carries `logsource_product` /
+  `logsource_category` for analyst review when the hint supplies
+  a logsource block.
 
 ### Tests
 
-- New `tests/test_anti_detection_module.py` (+24): per-method
-  MITRE/event-type fan-out, distinct event types per profile,
-  logsource diversity assertion, real-Sysmon-field invariant,
-  target propagation via `target_from_step`, no-regression to
-  the `anti_detection.method` synthetic field.
-- `tests/test_fanout_batch.py` parametrization extended to cover
-  `AntiDetectionModule` (+5 tests via the existing 5 fan-out
-  invariants × the new module).
+- New `tests/test_yara_l_discriminators.py` (+36): logsource ->
+  event_type mapping, per-Sigma-field UDM paths, operator
+  semantics (contains/endswith/startswith/in/contains_any/contains_all/exact/numeric),
+  regex-metacharacter escaping (dots, slashes), anchored vs
+  unanchored alternation per modifier, backwards-compat fallback
+  when hint has no logsource/selection, end-to-end through the
+  engine, and a regression case against the shipped legacy_packs
+  hint shape.
 
 ## [3.0.0-rc1] - 2026-05-07
 

@@ -270,7 +270,8 @@ def _render_template_narrative(summary: Mapping[str, Any], model: str) -> str:
     )
     lines.append(
         f"- Inspect output/{run_id}/detections/ for per-engine drafts; "
-        "Sigma is most mature, YARA-L medium, SPL draft."
+        "Sigma and YARA-L derive technique-specific discriminators from "
+        "the module hint, SPL stays draft / starter."
     )
     if technique_ids:
         lines.append(
