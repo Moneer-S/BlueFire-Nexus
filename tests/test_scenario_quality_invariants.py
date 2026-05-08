@@ -158,6 +158,60 @@ def test_every_step_specifies_a_module(scenario_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize("scenario_path", SCENARIO_PATHS, ids=lambda p: p.stem)
+def test_every_step_has_a_narrative_name(scenario_path: Path) -> None:
+    """Every shipped scenario must satisfy the chain-narrative bar.
+
+    The flagship's narrative-quality invariants (PR #118) have a
+    single-scenario equivalent in
+    ``test_enterprise_intrusion_chain_quality.test_every_step_has_a_narrative_name``.
+    This case extends the same bar across **every** shipped scenario
+    so a future contribution can't ship a step labelled ``"step_01"``
+    or ``"C2"`` and still pass review. The flagship's polished
+    narrative is the floor, not the ceiling, for the rest of the
+    catalog.
+
+    Concrete contract (mirrors the flagship test):
+
+    - ``name`` is non-empty after stripping.
+    - ``name`` is not equal to ``step_id`` (id is a slug; name is
+      prose).
+    - ``name`` is at least 12 characters (rules out terse one-word
+      labels like ``"C2 Beacon"``).
+    - ``name`` contains a space (rules out a single token).
+
+    Failure aggregates per-scenario so a single regression surfaces
+    every offending step in one diagnostic, not one assertion at a
+    time.
+    """
+    scenario = load_scenario(scenario_path)
+    failures: List[str] = []
+    for step in scenario.steps:
+        name = (step.name or "").strip()
+        if not name:
+            failures.append(f"{step.step_id}: empty name")
+            continue
+        if name == step.step_id:
+            failures.append(
+                f"{step.step_id}: name equals step_id "
+                f"(slugs are not narrative — use prose)"
+            )
+            continue
+        if len(name) < 12:
+            failures.append(
+                f"{step.step_id}: name {name!r} is shorter than 12 chars"
+            )
+            continue
+        if " " not in name:
+            failures.append(
+                f"{step.step_id}: name {name!r} is a single token (need prose)"
+            )
+    assert failures == [], (
+        f"{scenario_path.name}: narrative step names regressed: "
+        + "; ".join(failures)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Runtime invariants
 # ---------------------------------------------------------------------------
