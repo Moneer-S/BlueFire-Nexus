@@ -787,14 +787,22 @@ def _render_risk(manifest: Mapping[str, Any]) -> str:
     if modules:
         parts.append("<table><thead><tr>"
                      "<th>module</th><th>severity</th><th>score</th><th>mode</th>"
+                     "<th>why</th>"
                      "</tr></thead><tbody>")
         for entry in modules:
+            rationale = entry.get("rationale") or []
+            why = (
+                ", ".join(_esc(str(r)) for r in rationale)
+                if isinstance(rationale, (list, tuple))
+                else ""
+            )
             parts.append(
                 "<tr>"
                 f'<td><code>{_esc(entry.get("module"))}</code></td>'
                 f'<td>{_severity_badge(str(entry.get("severity") or ""))}</td>'
                 f'<td>{_esc(entry.get("score"))}</td>'
                 f'<td>{_esc(entry.get("mode"))}</td>'
+                f'<td class="muted">{why}</td>'
                 "</tr>"
             )
         parts.append("</tbody></table>")
