@@ -211,3 +211,166 @@ def test_legacy_pack_falls_back_to_detection_hints() -> None:
     assert risk["score"] == 72
     assert risk["pack"] == "c2_pack"
     assert risk["capability"] == "dns_tunneling"
+
+
+# ---------------------------------------------------------------------------
+# Tactic-aware base score (risk scoring v2)
+# ---------------------------------------------------------------------------
+#
+# Pre-v2 behaviour: every standard-module result landed at score
+# 35-55 ("low" / "medium") regardless of tactic. A successful
+# `impact` step (T1486 ransomware encryption) scored the same as
+# a successful `discovery` step (T1083 file enumeration). The
+# tactic-aware base elevates end-of-chain destructive tactics so
+# the risk_summary / dashboard reflects defender-impact severity.
+
+
+def _tactic_result(module: str, *, status: str = "success", techniques: int = 1):
+    return ModuleResult(
+        status=status,
+        module=module,
+        message="",
+        techniques=[f"T100{i}" for i in range(techniques)],
+        artifacts={},
+        detection_hints={},
+        telemetry=[],
+    )
+
+
+def test_impact_module_scores_critical_severity() -> None:
+    """A successful `impact` step (e.g. ransomware) must surface
+    as `critical`, not `low`."""
+    risk = score_module_result(_tactic_result("impact"))
+    # tactic_base 85 + 5 (1 technique) + 0 (success) = 90 -> critical
+    assert risk["score"] == 90
+    assert risk["severity"] == "critical"
+    assert "tactic_base=impact" in risk["rationale"]
+
+
+def test_exfiltration_module_scores_high_severity() -> None:
+    """A successful `exfiltration` step must surface as `high`."""
+    risk = score_module_result(_tactic_result("exfiltration"))
+    # tactic_base 75 + 5 (1 technique) + 0 (success) = 80 -> high
+    assert risk["score"] == 80
+    assert risk["severity"] == "high"
+    assert "tactic_base=exfiltration" in risk["rationale"]
+
+
+def test_discovery_module_scores_low_severity() -> None:
+    """A successful `discovery` step (low defender impact) stays low."""
+    risk = score_module_result(_tactic_result("discovery"))
+    # tactic_base 35 + 5 (1 technique) + 0 (success) = 40 -> low
+    assert risk["score"] == 40
+    assert risk["severity"] == "low"
+    assert "tactic_base=discovery" in risk["rationale"]
+
+
+def test_reconnaissance_module_scores_lower_than_initial_access() -> None:
+    """Pre-foothold tactics must score below post-foothold tactics."""
+    recon = score_module_result(_tactic_result("reconnaissance"))
+    initial = score_module_result(_tactic_result("initial_access"))
+    assert recon["score"] < initial["score"]
+    assert recon["severity"] == "low"
+    assert initial["severity"] == "medium"
+
+
+def test_credential_access_scores_higher_than_discovery() -> None:
+    """Credential access enables lateral movement; weighted higher."""
+    discovery = score_module_result(_tactic_result("discovery"))
+    cred = score_module_result(_tactic_result("credential_access"))
+    assert discovery["score"] < cred["score"]
+
+
+def test_privilege_escalation_scores_higher_than_persistence() -> None:
+    """Privilege elevation is a higher-impact step than persistence
+    establishment (privilege grants persistence access too)."""
+    persistence = score_module_result(_tactic_result("persistence"))
+    priv_esc = score_module_result(_tactic_result("privilege_escalation"))
+    assert persistence["score"] < priv_esc["score"]
+
+
+def test_impact_outscores_exfiltration_outscores_discovery() -> None:
+    """The full end-to-end ordering operators rely on for
+    'this run had a critical step' triage."""
+    discovery = score_module_result(_tactic_result("discovery"))
+    exfil = score_module_result(_tactic_result("exfiltration"))
+    impact = score_module_result(_tactic_result("impact"))
+    assert discovery["score"] < exfil["score"] < impact["score"]
+    assert discovery["severity"] == "low"
+    assert exfil["severity"] == "high"
+    assert impact["severity"] == "critical"
+
+
+def test_blocked_impact_step_does_not_score_critical() -> None:
+    """A blocked / failed step is not the same as a successful one;
+    the status delta must dampen the tactic base so a defender
+    triaging the report does not see a blocked-but-attempted impact
+    as a successful encryption."""
+    blocked = score_module_result(_tactic_result("impact", status="blocked"))
+    success = score_module_result(_tactic_result("impact", status="success"))
+    # blocked subtracts 12 from the tactic-aware base
+    assert blocked["score"] == success["score"] - 12
+    # Even with the dampener, impact stays in critical band — it
+    # was attempted, just blocked. A defender should still treat
+    # the blocked attempt as serious.
+    assert blocked["severity"] in ("high", "critical")
+
+
+def test_errored_recon_step_drops_to_low_severity() -> None:
+    """A pre-foothold tactic + error status floors the score so
+    failed reconnaissance does not pollute the risk_summary."""
+    risk = score_module_result(_tactic_result("reconnaissance", status="error"))
+    # tactic_base 25 + 5 (1 technique) - 15 (error) = 15 -> low
+    assert risk["score"] == 15
+    assert risk["severity"] == "low"
+
+
+def test_unknown_module_name_falls_back_to_historic_default() -> None:
+    """A module name not in the tactic map keeps the historic 35
+    default base, preserving behaviour for out-of-tree callers."""
+    risk = score_module_result(_tactic_result("totally_custom_module"))
+    # 35 (default) + 5 (1 technique) + 0 (success) = 40
+    assert risk["score"] == 40
+    assert "standard-module" in risk["rationale"]
+    # And no `tactic_base=` rationale because no match
+    assert not any(r.startswith("tactic_base=") for r in risk["rationale"])
+
+
+def test_legacy_module_branch_unchanged_by_tactic_base() -> None:
+    """A legacy module result whose `module` field happens to match
+    a tactic name (e.g. `legacy_credential_access`) must NOT trigger
+    the tactic-aware path because the legacy branch is selected by
+    `pack` presence in artifacts. Verify the pack branch still wins."""
+    risk = score_module_result(
+        ModuleResult(
+            status="success",
+            module="legacy_credential_access",  # would match tactic if path didn't gate
+            message="",
+            techniques=["T1003.001"],
+            artifacts={
+                "legacy": {
+                    "pack": "actor_pack",
+                    "capability": "apt29",
+                    "mode": "simulate",
+                    "payload": {},
+                }
+            },
+            detection_hints={},
+            telemetry=[],
+        )
+    )
+    # Pack branch: 55 + 8 + 0 = 63
+    assert risk["score"] == 63
+    assert "pack=actor_pack" in risk["rationale"]
+    # tactic_base must NOT appear; legacy path took precedence
+    assert not any(r.startswith("tactic_base=") for r in risk["rationale"])
+
+
+def test_techniques_bonus_caps_at_four_for_tactic_base_path() -> None:
+    """The +5-per-technique bonus stays capped at 20 (4 techniques)
+    for tactic-aware results too, so a module emitting 8 techniques
+    does not silently drift to score 105."""
+    risk = score_module_result(_tactic_result("discovery", techniques=8))
+    # tactic_base 35 + min(20, 8*5)=20 = 55 -> medium
+    assert risk["score"] == 55
+    assert risk["severity"] == "medium"

@@ -32,41 +32,30 @@ This file summarises the deltas at the version-tag granularity.
 
 ### Changed
 
-- YARA-L draft generator now derives the `events:` block from the
-  hint's Sigma `logsource.category` and `detection.selection`
-  rather than emitting a single hardcoded
-  `target.process.file.full_path contains <process_name>`
-  predicate regardless of technique. Sigma logsource categories
-  map to UDM event types (`process_creation` -> `PROCESS_LAUNCH`,
-  `file_event` -> `FILE_MODIFICATION`, `registry_event` ->
-  `REGISTRY_MODIFICATION`, `process_access` -> `PROCESS_OPEN`,
-  `image_load` -> `PROCESS_MODULE_LOAD`, `network_connection` ->
-  `NETWORK_CONNECTION`, `dns` -> `NETWORK_DNS`); Sigma fields map
-  to UDM event field paths (`Image|endswith` ->
-  `principal.process.file.full_path`, `CommandLine|contains` ->
-  `principal.process.command_line`, `TargetFilename|endswith` ->
-  `target.file.full_path`, `TargetObject|contains` ->
-  `target.registry.registry_key`, `CallTrace|contains` ->
-  `principal.process.api_calls`, `ImageLoaded|endswith` ->
-  `target.process.file.full_path`, etc.); Sigma operators
-  (`|contains` / `|endswith` / `|startswith` / `|in` / no-modifier
-  exact / numeric) lower into the appropriate YARA-L regex
-  literals or string-equality predicates with proper escaping of
-  regex metacharacters.
-- The `meta:` block now also carries `logsource_product` /
-  `logsource_category` for analyst review when the hint supplies
-  a logsource block.
+- `LegacyWrappedModule` now emits a properly-shaped detection hint
+  with an explicitly-labeled `legacy_wrapped/bluefire` logsource +
+  `event.module: <name>` selection + `needs_operator_review: True`
+  marker, instead of the previous hint of just
+  `{"mitre_technique": "T0000"}` which silently fell back to the
+  default `process_creation/windows` logsource and mis-labeled
+  every wrapped legacy module's Sigma / YARA-L draft as a Windows
+  process-creation rule. Generated rules from this adapter now
+  surface as "needs operator review" rather than masquerading as
+  Sysmon-shaped detections.
 
 ### Tests
 
-- New `tests/test_yara_l_discriminators.py` (+36): logsource ->
-  event_type mapping, per-Sigma-field UDM paths, operator
-  semantics (contains/endswith/startswith/in/contains_any/contains_all/exact/numeric),
-  regex-metacharacter escaping (dots, slashes), anchored vs
-  unanchored alternation per modifier, backwards-compat fallback
-  when hint has no logsource/selection, end-to-end through the
-  engine, and a regression case against the shipped legacy_packs
-  hint shape.
+- New `tests/test_logsource_coverage_invariant.py` (+32): runs
+  every registered runtime module with minimal valid params and
+  asserts the resulting detection hint includes a non-empty
+  `logsource` block (with both `category` and `product` keys).
+  Catches future regressions where a new module ships without
+  setting logsource — the Sigma / YARA-L generators would
+  otherwise silently default to `process_creation/windows`,
+  mis-labeling the technique. Modules that intentionally emit no
+  hints (e.g. `legacy_capability_summary`) are tracked in an
+  exemption set and pinned to actually emit empty hints, so a
+  future change there also surfaces.
 
 ## [3.0.0-rc1] - 2026-05-07
 
