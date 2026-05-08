@@ -68,35 +68,274 @@ def _result(
     )
 
 
+# Initial-access vector catalog.
+#
+# Each entry maps an operator-facing vector (`phishing_attachment`,
+# `valid_accounts`, `exploit_public_app`, ...) to a real
+# initial-access ATT&CK technique AND a Sigma-style detection draft
+# that uses sourcetype-appropriate fields a defender would actually
+# look for. Without this catalog the module emitted a single
+# generic T1566 (phishing parent) hint with the synthetic
+# `vector` field as the only discriminator, which is not a real
+# telemetry field anywhere.
+_INITIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
+    "phishing_email": {
+        "mitre": "T1566",
+        "logsource": {"category": "email", "product": "generic"},
+        "selection_field": "email.subject|contains",
+        "selection_value": "Action Required",
+        "event_type": "initial_access_phishing_email",
+        "title_prefix": "Suspicious phishing email targeting",
+        "details": {"vector_class": "phishing", "delivery": "email"},
+    },
+    "phishing_attachment": {
+        "mitre": "T1566.001",
+        "logsource": {"category": "email", "product": "generic"},
+        "selection_field": "email.attachment.extension|contains",
+        "selection_value": "lnk",
+        "event_type": "initial_access_phishing_attachment",
+        "title_prefix": "Phishing attachment delivered to",
+        "details": {"vector_class": "phishing", "delivery": "attachment"},
+    },
+    "phishing_link": {
+        "mitre": "T1566.002",
+        "logsource": {"category": "email", "product": "generic"},
+        "selection_field": "email.url|contains",
+        "selection_value": "http",
+        "event_type": "initial_access_phishing_link",
+        "title_prefix": "Phishing link delivered to",
+        "details": {"vector_class": "phishing", "delivery": "link"},
+    },
+    "spearphishing_via_service": {
+        "mitre": "T1566.003",
+        "logsource": {"category": "email", "product": "generic"},
+        "selection_field": "email.sender.service|contains",
+        "selection_value": "linkedin",
+        "event_type": "initial_access_phishing_via_service",
+        "title_prefix": "Spearphishing-via-service delivered to",
+        "details": {"vector_class": "phishing", "delivery": "third_party_service"},
+    },
+    "spearphishing_voice": {
+        "mitre": "T1566.004",
+        "logsource": {"category": "voip", "product": "generic"},
+        "selection_field": "call.callee.user|contains",
+        "selection_value": "@example.invalid",
+        "event_type": "initial_access_phishing_voice",
+        "title_prefix": "Voice-phishing call to",
+        "details": {"vector_class": "phishing", "delivery": "voice_call"},
+    },
+    "valid_accounts": {
+        "mitre": "T1078",
+        "logsource": {"category": "authentication", "product": "generic"},
+        "selection_field": "event.action",
+        "selection_value": "logon_success",
+        "event_type": "initial_access_valid_accounts",
+        "title_prefix": "Authenticated initial access via valid credentials to",
+        "details": {"vector_class": "valid_accounts"},
+    },
+    "default_accounts": {
+        "mitre": "T1078.001",
+        "logsource": {"category": "authentication", "product": "generic"},
+        "selection_field": "user.name|contains",
+        "selection_value": "admin",
+        "event_type": "initial_access_default_accounts",
+        "title_prefix": "Default-account logon to",
+        "details": {"vector_class": "valid_accounts", "account_class": "default"},
+    },
+    "domain_accounts": {
+        "mitre": "T1078.002",
+        "logsource": {"category": "authentication", "product": "windows"},
+        "selection_field": "user.domain|contains",
+        "selection_value": "EXAMPLE",
+        "event_type": "initial_access_domain_accounts",
+        "title_prefix": "Domain-account logon to",
+        "details": {"vector_class": "valid_accounts", "account_class": "domain"},
+    },
+    "local_accounts": {
+        "mitre": "T1078.003",
+        "logsource": {"category": "authentication", "product": "generic"},
+        "selection_field": "event.logon_type",
+        "selection_value": 2,
+        "event_type": "initial_access_local_accounts",
+        "title_prefix": "Local-account logon to",
+        "details": {"vector_class": "valid_accounts", "account_class": "local"},
+    },
+    "cloud_accounts": {
+        "mitre": "T1078.004",
+        "logsource": {"category": "cloud_audit", "product": "generic"},
+        "selection_field": "user.oauth_provider|contains",
+        "selection_value": "azure",
+        "event_type": "initial_access_cloud_accounts",
+        "title_prefix": "Cloud-account logon to",
+        "details": {"vector_class": "valid_accounts", "account_class": "cloud"},
+    },
+    "exploit_public_app": {
+        "mitre": "T1190",
+        "logsource": {"category": "webserver", "product": "generic"},
+        "selection_field": "http.url|contains",
+        "selection_value": "/admin",
+        "event_type": "initial_access_exploit_public_app",
+        "title_prefix": "Public-application exploitation against",
+        "details": {"vector_class": "exploit", "exposure": "public_facing"},
+    },
+    "external_remote_services": {
+        "mitre": "T1133",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "network.dst_port",
+        "selection_value": 3389,
+        "event_type": "initial_access_external_remote_services",
+        "title_prefix": "External-remote-service access to",
+        "details": {"vector_class": "remote_service", "service": "rdp"},
+    },
+    "trusted_relationship": {
+        "mitre": "T1199",
+        "logsource": {"category": "authentication", "product": "generic"},
+        "selection_field": "user.name|contains",
+        "selection_value": "contractor",
+        "event_type": "initial_access_trusted_relationship",
+        "title_prefix": "Trusted-relationship abuse against",
+        "details": {"vector_class": "trusted_relationship"},
+    },
+    "hardware_additions": {
+        "mitre": "T1200",
+        "logsource": {"category": "device_event", "product": "windows"},
+        "selection_field": "device.class|contains",
+        "selection_value": "USB",
+        "event_type": "initial_access_hardware_additions",
+        "title_prefix": "Hardware-addition initial access to",
+        "details": {"vector_class": "hardware_addition", "device_class": "usb"},
+    },
+    "removable_media": {
+        "mitre": "T1091",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "TargetFilename|contains",
+        "selection_value": "\\Device\\USB",
+        "event_type": "initial_access_removable_media",
+        "title_prefix": "Removable-media replication to",
+        "details": {"vector_class": "removable_media"},
+    },
+    "drive_by_compromise": {
+        "mitre": "T1189",
+        "logsource": {"category": "proxy", "product": "generic"},
+        "selection_field": "http.url|contains",
+        "selection_value": "/exploit-kit/",
+        "event_type": "initial_access_drive_by_compromise",
+        "title_prefix": "Drive-by browser compromise of",
+        "details": {"vector_class": "drive_by"},
+    },
+    "supply_chain": {
+        "mitre": "T1195",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "selection_value": "site-packages",
+        "event_type": "initial_access_supply_chain",
+        "title_prefix": "Supply-chain compromise affecting",
+        "details": {"vector_class": "supply_chain"},
+    },
+}
+
+
+_INITIAL_ACCESS_DEFAULT = "phishing_email"
+
+
+# Common operator shortcuts -> canonical catalog key.
+# Aliases preserve historic call sites — existing scenario YAMLs
+# that say `vector: spearphishing_attachment` or
+# `vector: phishing_attachment` resolve to T1566.001 cleanly.
+_INITIAL_ACCESS_ALIASES: Dict[str, str] = {
+    "spearphishing_attachment": "phishing_attachment",
+    "spearphishing_link": "phishing_link",
+    "spearphishing_service": "spearphishing_via_service",
+    "vishing": "spearphishing_voice",
+    "voice_phishing": "spearphishing_voice",
+    "exploit_public_facing_application": "exploit_public_app",
+    "exploit": "exploit_public_app",
+    "remote_services": "external_remote_services",
+    "vpn": "external_remote_services",
+    "rdp": "external_remote_services",
+    "ssh": "external_remote_services",
+    "supply_chain_compromise": "supply_chain",
+    "replication_through_removable_media": "removable_media",
+    "usb_drop": "removable_media",
+    "driveby": "drive_by_compromise",
+}
+
+
+def _resolve_initial_access_vector(requested: str) -> tuple[str, bool]:
+    """Return (canonical_key, recognised) for an operator-supplied vector."""
+    lowered = requested.lower()
+    if lowered in _INITIAL_ACCESS_PROFILES:
+        return lowered, True
+    if lowered in _INITIAL_ACCESS_ALIASES:
+        return _INITIAL_ACCESS_ALIASES[lowered], True
+    return _INITIAL_ACCESS_DEFAULT, False
+
+
 class InitialAccessModule(BaseModule):
     name = "initial_access"
-    attack_techniques = ("T1566",)
+    attack_techniques = tuple(
+        sorted({profile["mitre"] for profile in _INITIAL_ACCESS_PROFILES.values()})
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
-        vector = params.get("vector", "phishing_email")
-        target = params.get("target", "lab-user")
-        event = TelemetryEvent(
-            event_type="initial_access_simulated",
-            module=self.name,
-            details={"vector": vector, "target": target, "run_id": context["run_id"]},
+        requested = str(params.get("vector") or _INITIAL_ACCESS_DEFAULT)
+        profile_key, recognised = _resolve_initial_access_vector(requested)
+        profile = _INITIAL_ACCESS_PROFILES[profile_key]
+        target = str(params.get("target") or "lab-user")
+
+        # Profile details first so canonical fields below
+        # (``vector`` / ``target`` / ``mitre_technique``) always win
+        # — even if a future profile contributor reuses one of those
+        # keys for a per-vector detail.
+        details: Dict[str, Any] = dict(profile["details"])
+        details.update(
+            {
+                "vector": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+                "run_id": context["run_id"],
+            }
         )
-        hints = {
-            "title": f"Suspicious initial access vector: {vector}",
-            "logsource": {"category": "email", "product": "generic"},
+
+        event = TelemetryEvent(
+            event_type=profile["event_type"],
+            module=self.name,
+            details=dict(details),
+        )
+
+        hints: Dict[str, Any] = {
+            "title": f"{profile['title_prefix']} {target}",
+            "logsource": dict(profile["logsource"]),
             "detection": {
-                "selection": {"target.user": target, "vector": vector},
+                "selection": {profile["selection_field"]: profile["selection_value"]},
                 "condition": "selection",
             },
-            "mitre_technique": "T1566",
+            "mitre_technique": profile["mitre"],
+            "initial_access_vector": profile_key,
+            "target_user": target,
         }
+        if not recognised:
+            hints["unrecognized_initial_access_vector"] = requested
+
+        # Same merge discipline as ``details``: canonical fields
+        # last so they cannot be overwritten by profile detail keys.
+        artifacts: Dict[str, Any] = dict(profile["details"])
+        artifacts.update(
+            {
+                "vector": profile_key,
+                "target": target,
+                "mitre_technique": profile["mitre"],
+            }
+        )
+
         return _result(
             self.name,
             "success",
-            f"Simulated initial access via {vector}",
-            techniques=["T1566"],
+            f"Simulated initial access via {profile_key} against {target}.",
+            techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={"target": target, "vector": vector},
+            artifacts=artifacts,
         )
 
 

@@ -26,6 +26,7 @@ from src.core.modules.impl.standard_modules import (
     CommandControlModule,
     DefenseEvasionModule,
     ExfiltrationModule,
+    InitialAccessModule,
     IntelligenceModule,
     NetworkObfuscatorModule,
     PersistenceModule,
@@ -35,6 +36,7 @@ from src.core.modules.impl.standard_modules import (
     _COMMAND_CONTROL_PROFILES,
     _DEFENSE_EVASION_PROFILES,
     _EXFILTRATION_PROFILES,
+    _INITIAL_ACCESS_PROFILES,
     _INTELLIGENCE_PROFILES,
     _NETWORK_OBFUSCATOR_PROFILES,
     _PERSISTENCE_PROFILES,
@@ -66,6 +68,7 @@ _MODULES: Tuple[Tuple[Type[BaseModule], Dict[str, Dict[str, Any]], str, str, Dic
     (ResourceDevelopmentModule, _RESOURCE_DEVELOPMENT_PROFILES, "resource_type", "domain", {}),
     (AntiDetectionModule, _ANTI_DETECTION_PROFILES, "method", "memory_evasion", {"target": "lab"}),
     (ExfiltrationModule, _EXFILTRATION_PROFILES, "method", "via_c2", {"target": "lab"}),
+    (InitialAccessModule, _INITIAL_ACCESS_PROFILES, "vector", "phishing_email", {"target": "user@example.invalid"}),
 )
 
 
