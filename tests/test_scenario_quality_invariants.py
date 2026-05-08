@@ -46,10 +46,24 @@ from pathlib import Path
 from typing import Any, Dict, List, Set
 
 import pytest
+import yaml
 
 from src.core.bluefire_nexus import BlueFireNexus
 from src.core.config import ConfigManager
 from src.core.scenario import load_scenario
+
+
+def _raw_step_entries(scenario_path: Path) -> List[Dict[str, Any]]:
+    """Load the raw YAML steps list (pre-loader-defaults).
+
+    ``load_scenario`` auto-fills ``step_id`` with ``step-<n>`` if
+    YAML omits ``id``, so checking ``Scenario.steps[i].step_id``
+    cannot tell us whether the YAML file actually had an explicit
+    id. The static-id invariant has to read raw YAML.
+    """
+    raw = yaml.safe_load(scenario_path.read_text(encoding="utf-8")) or {}
+    steps = raw.get("steps") or []
+    return [step for step in steps if isinstance(step, dict)]
 
 
 SCENARIO_PATHS = sorted(Path("scenarios").glob("*.yaml"))
@@ -85,14 +99,26 @@ def test_step_ids_are_unique(scenario_path: Path) -> None:
 
 @pytest.mark.parametrize("scenario_path", SCENARIO_PATHS, ids=lambda p: p.stem)
 def test_every_step_has_explicit_id(scenario_path: Path) -> None:
-    """A step without an explicit `id` falls back to a generated
-    name that breaks `target_from_step` references and makes the
-    timeline harder to read."""
-    scenario = load_scenario(scenario_path)
-    for step in scenario.steps:
-        assert step.step_id and isinstance(step.step_id, str), (
-            f"{scenario_path.name}: step {step!r} has no explicit id"
-        )
+    """A step without an explicit `id` in the YAML falls back to
+    `step-<n>` in the loader, which breaks `target_from_step`
+    references and makes the timeline harder to read.
+
+    Codex P2 follow-up: the loader auto-fills ``step_id`` with
+    ``step-<n>`` when YAML omits ``id``, so checking
+    ``Scenario.steps[i].step_id`` would silently let a YAML omit
+    ``id``. Read the raw YAML so this invariant actually pins
+    the YAML-shaped contract.
+    """
+    raw_steps = _raw_step_entries(scenario_path)
+    missing: List[int] = []
+    for index, step in enumerate(raw_steps):
+        step_id = step.get("id")
+        if not (isinstance(step_id, str) and step_id.strip()):
+            missing.append(index)
+    assert missing == [], (
+        f"{scenario_path.name}: step entries (zero-indexed) {missing} have "
+        f"no explicit YAML `id` field"
+    )
 
 
 @pytest.mark.parametrize("scenario_path", SCENARIO_PATHS, ids=lambda p: p.stem)
@@ -200,6 +226,11 @@ def test_runtime_artifact_paths_stay_under_output_root(
     path emitted by a step sits under the runtime output_root. A
     path-handling regression in any module surfaces here before it
     can pollute shared filesystem state.
+
+    Codex P2 follow-up: containment uses ``Path.relative_to``
+    rather than ``str.startswith`` so a sibling path with the
+    same prefix (e.g. ``/tmp/out_evil`` vs ``/tmp/out``) cannot
+    masquerade as inside the output root.
     """
     output_root = (tmp_path / "output").resolve()
     summary = _runtime_factory(scenario_path)
@@ -210,10 +241,14 @@ def test_runtime_artifact_paths_stay_under_output_root(
                 continue
             for path in paths if isinstance(paths, list) else [paths]:
                 resolved = Path(path).resolve()
-                assert str(resolved).startswith(str(output_root)), (
-                    f"{scenario_path.name}: step {step.get('step_id')!r} "
-                    f"{kind} path leaked outside output_root: {resolved}"
-                )
+                try:
+                    resolved.relative_to(output_root)
+                except ValueError:
+                    pytest.fail(
+                        f"{scenario_path.name}: step {step.get('step_id')!r} "
+                        f"{kind} path leaked outside output_root: "
+                        f"{resolved} (root: {output_root})"
+                    )
 
 
 def _collect_emitted_techniques(steps: List[Dict[str, Any]]) -> Set[str]:
