@@ -166,10 +166,17 @@ def test_manifest_per_step_paths_resolve_to_real_files(
 def test_coverage_sidecar_references_real_files(
     detection_run: dict,
 ) -> None:
-    """``coverage_<run_id>.json`` references real files."""
+    """``coverage_<run_id>.json`` references real files.
+
+    PR #99 (post this PR's original authoring) made coverage
+    paths run-dir-relative. Anchor the resolution to ``run_dir``
+    so the test handles both shapes: an absolute path resolves
+    against itself; a relative path resolves against the run dir.
+    """
     detections_dir = detection_run["run_dir"] / "detections"
     coverage_files = list(detections_dir.glob("coverage_*.json"))
     assert coverage_files, "coverage_<run_id>.json missing"
+    run_dir: Path = detection_run["run_dir"]
     for cov in coverage_files:
         payload = json.loads(cov.read_text(encoding="utf-8"))
         for entry in payload.get("detections", []):
@@ -177,11 +184,15 @@ def test_coverage_sidecar_references_real_files(
                 path = entry.get(engine)
                 if not path:
                     continue
-                p = Path(path)
-                assert p.exists(), (
+                # Anchor to run_dir so a relative-path reference
+                # resolves correctly. ``Path("/abs") / "rel"`` is
+                # POSIX-compatible: an absolute right-hand-side
+                # discards the left.
+                candidate = run_dir / path
+                assert candidate.exists(), (
                     f"coverage references missing file: {path}"
                 )
-                assert p.stat().st_size > 0, (
+                assert candidate.stat().st_size > 0, (
                     f"coverage references empty file: {path}"
                 )
 

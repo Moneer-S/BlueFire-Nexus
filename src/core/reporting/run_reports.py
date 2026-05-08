@@ -283,10 +283,42 @@ def write_markdown_report(
     for module_name, outputs in detections.items():
         lines.append(f"- **{module_name}**")
         for output_type, output_path in outputs.items():
-            lines.append(f"  - {output_type}: `{output_path}`")
+            # Normalise to a run-dir-relative path when possible so
+            # the markdown report stays portable: a defender can
+            # zip / move the output bundle and the report's
+            # detection links continue to point at the right files.
+            # Falls back to the original string when the path is
+            # already relative or lives outside the run dir.
+            display_path = _relative_to_run_dir(output_path, run_dir)
+            lines.append(f"  - {output_type}: `{display_path}`")
     lines.append("")
     report_path.write_text("\n".join(line for line in lines if line), encoding="utf-8")
     return report_path
+
+
+def _relative_to_run_dir(raw_path: Any, run_dir: Path) -> str:
+    """Render ``raw_path`` as a run-dir-relative POSIX-style string.
+
+    Returns the original string when the path is already relative
+    or cannot be resolved under the run dir (e.g. it lives on a
+    different drive or under a symlink that escapes). The fallback
+    keeps backwards compatibility with any callers that emit
+    paths the run dir does not own.
+    """
+    if not raw_path:
+        return ""
+    try:
+        candidate = Path(str(raw_path))
+    except (TypeError, ValueError):
+        return str(raw_path)
+    if not candidate.is_absolute():
+        return candidate.as_posix()
+    try:
+        run_resolved = run_dir.resolve()
+        candidate_resolved = candidate.resolve()
+        return candidate_resolved.relative_to(run_resolved).as_posix()
+    except (OSError, ValueError):
+        return str(raw_path)
 
 
 def build_risk_summary(
