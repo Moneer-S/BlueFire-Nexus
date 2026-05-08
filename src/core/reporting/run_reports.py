@@ -117,13 +117,93 @@ def write_purple_report(
     return report_path
 
 
+def _objective_paragraphs(scenario_objective: str) -> list[str]:
+    """Split a YAML literal-block objective into report-ready paragraphs.
+
+    Returns an empty list when the objective is missing / empty so
+    the report omits the section entirely rather than rendering
+    an empty header. Single newlines within a paragraph collapse
+    to spaces (the YAML literal block wraps long sentences); blank
+    lines become paragraph breaks. Mirrors the viewer's
+    ``_render_header`` paragraph normalisation so the markdown and
+    HTML surfaces stay in lockstep.
+    """
+    if not scenario_objective:
+        return []
+    body = scenario_objective.strip()
+    if not body:
+        return []
+    normalised = body.replace("\r\n", "\n").replace("\r", "\n")
+    paragraphs = [p.strip() for p in normalised.split("\n\n") if p.strip()]
+    if not paragraphs:
+        paragraphs = [normalised]
+    # Collapse single newlines within a paragraph into spaces so the
+    # rendered markdown has flowing prose instead of hard wraps that
+    # render as line breaks in markdown viewers.
+    return [" ".join(paragraph.split()) for paragraph in paragraphs]
+
+
+def _propagation_narrative_lines(propagation_edges: Any) -> list[str]:
+    """Render a propagation edge list as a markdown bullet list.
+
+    Accepts the same edge shape produced by
+    :func:`src.core.reporting.manifest._propagation_edges`:
+    each edge is expected to carry ``from_step`` / ``to_step`` /
+    ``kind`` and (when the manifest builder produced it) a
+    ``narrative`` prose line.
+
+    Each rendered line reads as
+    ``- credential_access targets the host produced by the discovery step 'enumerate-files' (target_from_step)``
+    so a defender can read the chain story without
+    cross-referencing the YAML or the dashboard. Edges without a
+    rendered narrative fall back to a structural
+    ``from_step -> to_step`` line so the section never silently
+    swallows propagation linkage.
+    """
+    if not isinstance(propagation_edges, list) or not propagation_edges:
+        return []
+    out: list[str] = []
+    for edge in propagation_edges:
+        if not isinstance(edge, Mapping):
+            continue
+        narrative = str(edge.get("narrative") or "").strip()
+        kind = str(edge.get("kind") or "").strip()
+        from_step = str(edge.get("from_step") or "").strip()
+        to_step = str(edge.get("to_step") or "").strip()
+        if narrative:
+            tail = f" (`{kind}`)" if kind else ""
+            out.append(f"- {narrative}{tail}")
+        elif from_step or to_step:
+            kind_text = f" (`{kind}`)" if kind else ""
+            out.append(f"- `{from_step}` -> `{to_step}`{kind_text}")
+    return out
+
+
 def write_markdown_report(
     run_dir: Path,
     scenario_name: str,
     results: Dict[str, ModuleResult],
     detections: Dict[str, Dict[str, str]],
+    *,
+    scenario_objective: str = "",
+    propagation_edges: Any = None,
 ) -> Path:
-    """Write a human-readable purple-team report."""
+    """Write a human-readable purple-team report.
+
+    Optional narrative inputs (orchestrator only — single-module
+    operator paths leave them empty so the legacy report shape is
+    unchanged):
+
+    - ``scenario_objective``: the YAML scenario's ``objective:``
+      block, rendered as a paragraph between the title and the
+      pack summary so a defender opening the markdown gets the
+      same chain narrative the dashboard surfaces.
+    - ``propagation_edges``: list of edge dicts (as produced by
+      :func:`src.core.reporting.manifest._propagation_edges`) with
+      ``narrative`` text. Surfaces as a "Propagation narrative"
+      section so reading the markdown alone (without the
+      dashboard) tells the story of how steps fed each other.
+    """
     report_path = run_dir / "report.md"
     pack_stats = {
         "actor_pack": {"count": 0, "simulate": 0, "emulate": 0},
@@ -141,9 +221,20 @@ def write_markdown_report(
     lines = [
         f"# BlueFire Run Report: {scenario_name}",
         "",
-        "## Legacy Capability Pack Summary",
-        "",
     ]
+    objective_paragraphs = _objective_paragraphs(scenario_objective)
+    if objective_paragraphs:
+        lines.append("## Scenario objective")
+        lines.append("")
+        for paragraph in objective_paragraphs:
+            lines.append(paragraph)
+            lines.append("")
+    lines.extend(
+        [
+            "## Legacy Capability Pack Summary",
+            "",
+        ]
+    )
     for result in results.values():
         if result.techniques:
             attack_coverage.update(result.techniques)
@@ -212,6 +303,16 @@ def write_markdown_report(
         for tech in sorted(technique_to_steps):
             covering = ", ".join(f"`{step_key}`" for step_key in technique_to_steps[tech])
             lines.append(f"- {tech} — {covering}")
+    narrative_lines = _propagation_narrative_lines(propagation_edges)
+    if narrative_lines:
+        lines.extend(
+            [
+                "",
+                "## Propagation narrative",
+                "",
+            ]
+        )
+        lines.extend(narrative_lines)
     lines.extend(
         [
             "",

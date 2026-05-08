@@ -6,6 +6,7 @@ from .apt_reporting import APTReporting
 from .manifest import (
     MANIFEST_SCHEMA_VERSION,
     build_manifest,
+    compute_propagation_edges,
     write_manifest,
     write_run_manifest,
 )
@@ -45,6 +46,7 @@ __all__ = [
     "build_index_rows",
     "build_manifest",
     "build_risk_summary",
+    "compute_propagation_edges",
     "find_run_dir",
     "latest_run",
     "list_runs",

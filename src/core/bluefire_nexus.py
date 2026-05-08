@@ -19,6 +19,7 @@ from .models import ModuleResult, RunContext
 from .modules.registry import build_runtime_modules
 from .reporting import (
     build_risk_summary,
+    compute_propagation_edges,
     write_json_report,
     write_markdown_report,
     write_output_index,
@@ -428,11 +429,20 @@ class BlueFireNexus:
                     }
                     detection_summary[step_key] = summarized
 
+            # Compute propagation edges from the per-step results
+            # before writing the markdown report so the report's
+            # new "Propagation narrative" section reads from the
+            # same canonical edge list the manifest builder will
+            # surface a moment later. Same shape (kind / from_step
+            # / to_step / from_module / to_module / narrative).
+            scenario_propagation_edges = compute_propagation_edges(steps_results)
             report_path = write_markdown_report(
                 context.output_dir,
                 scenario.name,
                 module_results,
                 detection_summary,
+                scenario_objective=scenario.objective,
+                propagation_edges=scenario_propagation_edges,
             )
             write_json_report(context.output_dir, module_results)
             risk_summary_path = write_risk_summary(

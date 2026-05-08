@@ -637,9 +637,25 @@ def _serialise_module_result(result: ModuleResult) -> Dict[str, Any]:
     return asdict(result)
 
 
+def compute_propagation_edges(
+    steps: Iterable[Mapping[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Public wrapper around the propagation-edge extractor.
+
+    The orchestrator (and any external tooling) needs the same
+    edge list the manifest carries — including the ``narrative``
+    field — so the report writer can surface a "Propagation
+    narrative" section without re-implementing the walk. Exposing
+    a public alias keeps the underscore-prefixed implementation
+    free to evolve while still pinning the contract via tests.
+    """
+    return _propagation_edges(steps)
+
+
 __all__ = [
     "MANIFEST_SCHEMA_VERSION",
     "build_manifest",
+    "compute_propagation_edges",
     "write_manifest",
     "write_run_manifest",
 ]
