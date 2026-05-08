@@ -716,7 +716,11 @@ def legacy_apply_preset_cmd(
 
 
 def _render_run_table(runs: list[dict]) -> Table:
-    table = Table(title=f"BlueFire runs ({len(runs)} total — newest first)")
+    # Plain ASCII separator. Em-dash (U+2014) renders as the
+    # Unicode replacement glyph on Windows terminals using cp1252
+    # / cp437, which surfaced as garbled output in fresh-clone
+    # smoke runs.
+    table = Table(title=f"BlueFire runs ({len(runs)} total - newest first)")
     table.add_column("run_id", overflow="fold")
     table.add_column("scenario")
     table.add_column("status")
@@ -749,12 +753,40 @@ def _file_uri(path: Path) -> str:
     return path.resolve().as_uri()
 
 
-def _next_steps_hint(run: dict) -> str:
-    """Return a one-line hint pointing the operator at next actions.
+def _print_next_steps_hint(run: dict) -> None:
+    """Print next-step hints to stdout, file:// URI on its own line.
 
-    Shows the file:// path to the viewer when present, plus the
-    ``show-run`` / ``build-report-view`` commands so the user
-    learns the next step from the output rather than from docs.
+    The viewer URL prints on its own line so an operator can copy
+    or click it without rich wrapping the URL across two terminal
+    rows (which breaks copy-paste). The label sits above the URL
+    line so the structure is "label, then standalone URL". Em-dash
+    avoided in messages since Windows non-UTF-8 terminals render
+    it as a Unicode replacement glyph.
+    """
+    run_dir = run.get("run_dir") or ""
+    if not run_dir:
+        return
+    viewer = Path(run_dir) / "index.html"
+    manifest = Path(run_dir) / "manifest.json"
+    if viewer.exists():
+        # ``Path.as_uri`` returns ``file:///...`` so the operator
+        # can copy or click it. Resolve first because the path may
+        # be relative.
+        console.print("[green]Open viewer (copy or click below):[/]")
+        console.print(_file_uri(viewer), no_wrap=True, overflow="ignore")
+    elif manifest.exists():
+        run_id = run.get("run_id", "")
+        console.print("[yellow]Viewer missing - regenerate it with:[/]")
+        console.print(f"  python -m src.core.cli build-report-view {run_id}")
+    if manifest.exists():
+        console.print(f"[cyan]Manifest:[/] {manifest}")
+
+
+def _next_steps_hint(run: dict) -> str:
+    """Backwards-compatible string form for callers that captured the
+    string return value. Newer call sites should call
+    :func:`_print_next_steps_hint` directly so URLs land on their own
+    line with ``no_wrap=True``.
     """
     run_dir = run.get("run_dir") or ""
     if not run_dir:
@@ -763,14 +795,14 @@ def _next_steps_hint(run: dict) -> str:
     manifest = Path(run_dir) / "manifest.json"
     bullets: list[str] = []
     if viewer.exists():
-        # ``Path.as_uri`` returns ``file:///...`` so the operator
-        # can copy-paste it into a browser. Resolve first because
-        # the path may be relative.
-        bullets.append(f"[green]Open viewer:[/] {_file_uri(viewer)}")
+        bullets.append(
+            "[green]Open viewer (copy or click below):[/]\n"
+            f"{_file_uri(viewer)}"
+        )
     elif manifest.exists():
         run_id = run.get("run_id", "")
         bullets.append(
-            "[yellow]Viewer missing[/] — regenerate it with:\n"
+            "[yellow]Viewer missing - regenerate it with:[/]\n"
             f"  python -m src.core.cli build-report-view {run_id}"
         )
     if manifest.exists():
@@ -796,9 +828,9 @@ def _render_run_detail(run: dict) -> None:
     for key, value in rows:
         table.add_row(key, value)
     console.print(table)
-    hint = _next_steps_hint(run)
-    if hint:
-        console.print(hint)
+    # Direct-print path keeps the file:// URI on its own line with
+    # ``no_wrap=True`` so terminals don't break it across rows.
+    _print_next_steps_hint(run)
 
 
 @app.command("list-runs")
@@ -996,10 +1028,14 @@ def build_report_view_cmd(
             "`build-report-view <run_id>`.",
             param_hint="run_id",
         ) from exc
+    console.print(f"[green]Wrote viewer:[/] {target}")
+    console.print("[cyan]Open in browser (copy or click below):[/]")
+    # URI on its own line with ``no_wrap=True`` so terminals don't
+    # break it. ASCII separator below; em-dash renders as a
+    # Unicode replacement glyph on Windows non-UTF-8 terminals.
+    console.print(_file_uri(target), no_wrap=True, overflow="ignore")
     console.print(
-        f"[green]Wrote viewer:[/] {target}\n"
-        f"[cyan]Open in browser:[/] {_file_uri(target)}\n"
-        "[dim]No server required — the page is fully self-contained.[/]"
+        "[dim]No server required - the page is fully self-contained.[/]"
     )
 
 
@@ -1036,10 +1072,11 @@ def build_output_index_cmd(
     """
     root = output_root if output_root else resolve_output_root()
     target = _write_output_index(Path(root))
+    console.print(f"[green]Wrote aggregator:[/] {target}")
+    console.print("[cyan]Open in browser (copy or click below):[/]")
+    console.print(_file_uri(target), no_wrap=True, overflow="ignore")
     console.print(
-        f"[green]Wrote aggregator:[/] {target}\n"
-        f"[cyan]Open in browser:[/] {_file_uri(target)}\n"
-        "[dim]No server required — the page is fully self-contained.[/]"
+        "[dim]No server required - the page is fully self-contained.[/]"
     )
 
 
