@@ -738,6 +738,11 @@ def _render_run_table(runs: list[dict]) -> Table:
     table.add_column("run_id", overflow="fold")
     table.add_column("scenario")
     table.add_column("status")
+    # Same severity tier the dashboard header badge surfaces;
+    # rendered inline so a defender skimming ``list-runs`` sees
+    # which prior runs ended at critical without opening each
+    # dashboard separately.
+    table.add_column("severity")
     table.add_column("steps", justify="right")
     table.add_column("started")
     table.add_column("viewer")
@@ -746,6 +751,7 @@ def _render_run_table(runs: list[dict]) -> Table:
             run.get("run_id", ""),
             run.get("scenario_name", "") or "-",
             run.get("overall_status", "") or "-",
+            run.get("highest_severity") or "-",
             str(run.get("module_count", 0)),
             run.get("started_at") or "-",
             "yes" if run.get("has_viewer") else "no",
@@ -830,6 +836,12 @@ def _render_run_detail(run: dict) -> None:
         ("run_id", str(run.get("run_id", ""))),
         ("scenario_name", str(run.get("scenario_name") or "-")),
         ("overall_status", str(run.get("overall_status") or "-")),
+        # Same severity tier the dashboard header badge renders;
+        # rendered inline so a defender running ``latest-run`` /
+        # ``show-run`` after the fact sees whether that run ended
+        # at low or critical without opening the dashboard. Empty
+        # string falls through as a dash.
+        ("highest_severity", str(run.get("highest_severity") or "-")),
         ("started_at", str(run.get("started_at") or "-")),
         ("module_count", str(run.get("module_count", 0))),
         ("run_dir", str(run.get("run_dir", ""))),
