@@ -110,6 +110,36 @@ def test_highest_risk_tier_handles_non_int_values() -> None:
     assert _highest_risk_tier(manifest) == "high"
 
 
+def test_public_highest_risk_tier_accepts_manifest_shape() -> None:
+    """Public ``highest_risk_tier`` reads ``manifest['risk']['risk_summary']``."""
+    from src.core.reporting import highest_risk_tier as public_helper
+
+    manifest = _manifest_with_risk({"critical": 0, "high": 0, "medium": 2})
+    assert public_helper(manifest) == "medium"
+
+
+def test_public_highest_risk_tier_accepts_risk_summary_shape() -> None:
+    """Public ``highest_risk_tier`` also reads
+    ``build_risk_summary``-shaped input directly."""
+    from src.core.reporting import highest_risk_tier as public_helper
+
+    risk_payload = {
+        "risk_summary": {"critical": 1, "high": 0, "medium": 0, "low": 0},
+        "average_score": 90,
+        "modules": [],
+    }
+    assert public_helper(risk_payload) == "critical"
+
+
+def test_public_highest_risk_tier_handles_garbage_input() -> None:
+    """Non-mapping / empty input returns the empty string."""
+    from src.core.reporting import highest_risk_tier as public_helper
+
+    assert public_helper(None) == ""  # type: ignore[arg-type]
+    assert public_helper({}) == ""
+    assert public_helper({"risk": "not a mapping"}) == ""
+
+
 # ---------------------------------------------------------------------------
 # 2. Header severity badge
 # ---------------------------------------------------------------------------

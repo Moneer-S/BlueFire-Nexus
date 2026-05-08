@@ -652,10 +652,51 @@ def compute_propagation_edges(
     return _propagation_edges(steps)
 
 
+def highest_risk_tier(manifest_or_risk_summary: Mapping[str, Any]) -> str:
+    """Return the highest non-zero severity tier in a manifest / risk block.
+
+    Accepts either:
+
+    - a full manifest dict (the function looks up
+      ``manifest["risk"]["risk_summary"]``), OR
+    - a risk-summary dict built by ``build_risk_summary`` (the
+      function looks up the ``risk_summary`` sub-key directly).
+
+    Returns one of ``"critical"`` / ``"high"`` / ``"medium"`` /
+    ``"low"`` or empty when the input carries no risk data or
+    every tier is zero. Surfaces the same single tier the static
+    dashboard renders as a top-level header badge so the CLI
+    summary, manifest consumers, and dashboard agree on the
+    "severity arc highest point" answer for a given run.
+    """
+    if not isinstance(manifest_or_risk_summary, Mapping):
+        return ""
+    # Try manifest shape first ({risk: {risk_summary: {...}}}).
+    risk = manifest_or_risk_summary.get("risk")
+    summary: Mapping[str, Any]
+    if isinstance(risk, Mapping):
+        candidate = risk.get("risk_summary")
+        summary = candidate if isinstance(candidate, Mapping) else {}
+    else:
+        # Fall back to the build_risk_summary shape ({risk_summary: {...}, ...}).
+        candidate = manifest_or_risk_summary.get("risk_summary")
+        summary = candidate if isinstance(candidate, Mapping) else {}
+
+    for tier in ("critical", "high", "medium", "low"):
+        try:
+            count = int(summary.get(tier, 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count > 0:
+            return tier
+    return ""
+
+
 __all__ = [
     "MANIFEST_SCHEMA_VERSION",
     "build_manifest",
     "compute_propagation_edges",
+    "highest_risk_tier",
     "write_manifest",
     "write_run_manifest",
 ]

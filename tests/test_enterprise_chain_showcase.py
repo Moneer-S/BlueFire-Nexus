@@ -376,6 +376,22 @@ def test_showcase_run_overall_status_is_success(showcase_run: Dict[str, Any]) ->
     assert showcase_run["summary"]["status"] == "success"
 
 
+def test_showcase_run_summary_carries_highest_severity_critical(
+    showcase_run: Dict[str, Any],
+) -> None:
+    """The orchestrator surfaces ``highest_severity`` in the result dict.
+
+    Pin the flagship's value so the same severity tier the
+    dashboard header badge renders is also accessible to CLI
+    consumers and external tooling reading the result dict.
+    The flagship's chain ends in a successful impact step
+    (T1486 ransomware encryption), which scores critical.
+    """
+    summary = showcase_run["summary"]
+    assert "highest_severity" in summary
+    assert summary["highest_severity"] == "critical"
+
+
 def test_showcase_run_no_steps_opted_into_real_network(
     showcase_run: Dict[str, Any],
 ) -> None:

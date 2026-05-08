@@ -7,6 +7,7 @@ from .manifest import (
     MANIFEST_SCHEMA_VERSION,
     build_manifest,
     compute_propagation_edges,
+    highest_risk_tier,
     write_manifest,
     write_run_manifest,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "build_manifest",
     "build_risk_summary",
     "compute_propagation_edges",
+    "highest_risk_tier",
     "find_run_dir",
     "latest_run",
     "list_runs",

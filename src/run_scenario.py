@@ -200,6 +200,13 @@ def _print_summary(result: Dict[str, Any]) -> None:
     table.add_column("Value")
     table.add_row("Status", str(result.get("status")))
     table.add_row("Scenario", str(result.get("scenario")))
+    # Highest non-zero severity reached by any module in the run
+    # (mirrors the dashboard header's severity badge). Skipped when
+    # the run produced no scored module — keeps the summary table
+    # tight on the all-blocked / single-failure path.
+    highest_severity = str(result.get("highest_severity") or "").strip()
+    if highest_severity:
+        table.add_row("Highest severity", highest_severity)
     table.add_row("Output", str(result.get("output_dir")))
     table.add_row("Report", str(result.get("report_path")))
     if result.get("risk_summary_path"):
