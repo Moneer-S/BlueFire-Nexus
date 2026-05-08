@@ -74,6 +74,40 @@ This file summarises the deltas at the version-tag granularity.
   FIN7 `objective:` rewritten as a multi-line literal block
   describing the chain and calling out the
   `network_touch: false` simulate-only contract.
+- `apt29_credential_access` and `healthcare_ransomware` step
+  names harmonised with the flagship + FIN7 voice — the
+  redundant `Simulate` / `simulation` prefix / suffix dropped
+  on every step that previously carried it (PR #126). After
+  this change every shipped *standard* scenario reads with
+  consistent voice; the simulate-only contract is asserted at
+  YAML / runtime level only, not redundantly inside step
+  titles.
+- **Timeline severity column** (PR #127). The static dashboard's
+  scenario timeline now carries a per-step severity badge
+  inline so a SOC analyst scanning the timeline top-to-bottom
+  sees the chain's risk arc (low → medium → high → critical)
+  without cross-referencing the risk-summary card. Steps that
+  didn't reach the risk scorer (blocked / errored before
+  scoring) render an em-dash, not a fake `unknown` badge.
+- **Risk rationale `matters_because` line** (PR #129). The
+  rationale list now carries a defender-facing
+  `matters_because=<short text>` entry alongside
+  `tactic_base=<tactic>`. Phrased in chain-position language
+  (`destructive endgame`, `data leaves perimeter`,
+  `enables lateral expansion`) so a reader without MITRE
+  ATT&CK fluency understands why a step's score landed where
+  it did. Both the standard-module path AND the tactic_pack
+  legacy path emit the line; out-of-tree modules with no
+  documented tactic get no synthesised reason. Surfaces in
+  the dashboard "Why" column (PR #114), CLI risk-summary
+  "Why" column (PR #116), and `report.md` per-module section
+  (PR #131).
+- **`report.md` "Why" line** (PR #131). The markdown report's
+  per-module section now renders the same defender-facing
+  rationale the dashboard's "Why" column shows. Closes the
+  surface-consistency gap left after PR #129; legacy callers
+  that don't pass a rationale list still produce a clean
+  report (line dropped entirely when rationale is empty).
 
 ### Changed
 
