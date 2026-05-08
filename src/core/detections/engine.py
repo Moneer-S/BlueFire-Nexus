@@ -159,6 +159,14 @@ def write_detection_artifacts(
         spl_path.write_text(render_spl(result, run_id, hint_override=hint), encoding="utf-8")
         generated["spl"].append(str(spl_path))
 
+        # Record paths as run-dir-relative POSIX strings so the
+        # ``coverage_<run_id>.json`` sidecar stays portable: a
+        # defender can zip the run dir, move it to another host,
+        # and the references continue to point at the correct
+        # files. Absolute paths leaked machine-specific temp
+        # prefixes (e.g. ``C:\Users\<...>\AppData\Local\Temp\...``)
+        # into a public-shareable artifact, breaking portability
+        # AND leaking host-identifying information.
         telemetry_summary_rows.append(
             {
                 "module": module_name,
@@ -170,9 +178,9 @@ def write_detection_artifacts(
                 "risk_score": risk.get("score"),
                 "risk_severity": risk.get("severity"),
                 "risk_rationale": list(risk.get("rationale", [])),
-                "sigma": str(sigma_path),
-                "yara_l": str(yaral_path),
-                "spl": str(spl_path),
+                "sigma": sigma_path.relative_to(output_dir).as_posix(),
+                "yara_l": yaral_path.relative_to(output_dir).as_posix(),
+                "spl": spl_path.relative_to(output_dir).as_posix(),
             }
         )
 
