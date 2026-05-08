@@ -749,18 +749,51 @@ class CommandControlModule(BaseModule):
         requested = str(params.get("channel") or "http").lower()
         profile_key = requested if requested in _COMMAND_CONTROL_PROFILES else "http"
         profile = _COMMAND_CONTROL_PROFILES[profile_key]
-        c2_url = str(params.get("c2_url") or "https://example.invalid/c2")
+
+        # Optional step-to-step propagation: when the scenario step
+        # sets `c2_endpoint_from_step: <step_id>` and does NOT pass an
+        # explicit `c2_url`, pick up the upstream step's
+        # `artifacts.target` (single-target upstream like a recon /
+        # resource_development step that registered a domain) or the
+        # first entry of `artifacts.targets` (multi-target upstream)
+        # and shape it into a c2_url. Explicit `c2_url` always wins.
+        explicit_url = str(params.get("c2_url") or "").strip()
+        propagated_from: str | None = None
+        if explicit_url:
+            c2_url = explicit_url
+        else:
+            upstream_target, propagated_from = resolve_target_from_step(
+                params,
+                context,
+                fallback="",
+                param_key="c2_url",
+                step_param_key="c2_endpoint_from_step",
+            )
+            if upstream_target:
+                # If the upstream value already looks like a URL (has
+                # a scheme), use it verbatim. Otherwise treat it as a
+                # hostname and wrap into a default C2 URL shape.
+                if "://" in upstream_target:
+                    c2_url = upstream_target
+                else:
+                    c2_url = f"https://{upstream_target}/c2"
+            else:
+                c2_url = "https://example.invalid/c2"
+
+        details: Dict[str, Any] = {
+            "channel": profile_key,
+            "c2_url": c2_url,
+            "mitre_technique": profile["mitre"],
+        }
+        if propagated_from:
+            details["c2_endpoint_propagated_from_step"] = propagated_from
 
         event = TelemetryEvent(
             event_type=profile["event_type"],
             module=self.name,
-            details={
-                "channel": profile_key,
-                "c2_url": c2_url,
-                "mitre_technique": profile["mitre"],
-            },
+            details=details,
         )
-        hints = {
+        hints: Dict[str, Any] = {
             "title": f"{profile['title_prefix']} {c2_url}",
             "logsource": dict(profile["logsource"]),
             "detection": {
@@ -773,6 +806,16 @@ class CommandControlModule(BaseModule):
         }
         if requested != profile_key:
             hints["unrecognized_c2_channel"] = requested
+        if propagated_from:
+            hints["c2_endpoint_propagated_from_step"] = propagated_from
+
+        artifacts: Dict[str, Any] = {
+            "channel": profile_key,
+            "c2_url": c2_url,
+            "mitre_technique": profile["mitre"],
+        }
+        if propagated_from:
+            artifacts["c2_endpoint_propagated_from_step"] = propagated_from
 
         return _result(
             self.name,
@@ -781,11 +824,7 @@ class CommandControlModule(BaseModule):
             techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={
-                "channel": profile_key,
-                "c2_url": c2_url,
-                "mitre_technique": profile["mitre"],
-            },
+            artifacts=artifacts,
         )
 
 
@@ -1347,6 +1386,12 @@ class ResourceDevelopmentModule(BaseModule):
         profile_key = (
             requested if requested in _RESOURCE_DEVELOPMENT_PROFILES else "domain"
         )
+        # `target` for resource_development means "the domain / vps /
+        # cert / etc. being registered". Surface it into artifacts so
+        # downstream propagation consumers (e.g. command_control's
+        # `c2_endpoint_from_step`) can pick up the registered
+        # infrastructure as the C2 endpoint.
+        target = str(params.get("target") or "").strip()
         # Backwards-compat: legacy default "infrastructure" -> map to "vps".
         if requested == "infrastructure":
             profile_key = "vps"
@@ -1373,6 +1418,12 @@ class ResourceDevelopmentModule(BaseModule):
         if requested not in _RESOURCE_DEVELOPMENT_PROFILES and requested != "infrastructure":
             hints["unrecognized_resource_type"] = requested
 
+        artifacts: Dict[str, Any] = {
+            "resource_type": profile_key,
+            "mitre_technique": profile["mitre"],
+        }
+        if target:
+            artifacts["target"] = target
         return _result(
             self.name,
             "success",
@@ -1380,10 +1431,7 @@ class ResourceDevelopmentModule(BaseModule):
             techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={
-                "resource_type": profile_key,
-                "mitre_technique": profile["mitre"],
-            },
+            artifacts=artifacts,
         )
 
 

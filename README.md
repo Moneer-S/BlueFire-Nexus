@@ -1,6 +1,6 @@
 # BlueFire Nexus
 
-[![tests](https://img.shields.io/badge/tests-1666%20passed-blue)](#development--tests)
+[![tests](https://img.shields.io/badge/tests-1674%20passed-blue)](#development--tests)
 [![security](https://img.shields.io/badge/security-bandit%20strict-green)](#development--tests)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](#quickstart)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -306,12 +306,12 @@ Tracked in [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md). Top ope
 
 ## Status snapshot
 
-- 1666 passing tests, 5 intentional skips, 0 failures (~98-110s full-suite wallclock).
+- 1674 passing tests, 5 intentional skips, 0 failures (~98-110s full-suite wallclock).
 - Bandit strict; every dual-use offensive pattern carries a narrow per-line `nosec` justification with rationale.
 - 31 modules registered (17 standard + 14 legacy adapters), spanning 100+ MITRE ATT&CK techniques.
 - 10 shipped scenarios, all passing dry-run; CI gate enforces both static (`declared ⊆ module-can-emit`) and runtime (`declared ⊆ actually-emitted`) ATT&CK alignment.
 - Every run produces a complete local report bundle: `manifest.json` (machine-readable index), `index.html` (static browser viewer — no server, no external assets, no network), `report.md`, `report.json`, `risk_summary.json`, `telemetry.jsonl`, `detections/`, plus optional copilot artifacts.
-- Step-to-step artifact propagation: the runtime threads a read-only `previous_step_results` mapping into each step's context. The shipped `enterprise_intrusion_chain` scenario demonstrates four consumer pairs end-to-end (`discovery → credential_access`, `credential_access → lateral_movement` source, `collection → exfiltration`, `collection → impact`).
+- Step-to-step artifact propagation: the runtime threads a read-only `previous_step_results` mapping into each step's context. The shipped `enterprise_intrusion_chain` scenario demonstrates five consumer pairs end-to-end (`discovery → credential_access`, `credential_access → lateral_movement` source, `collection → exfiltration`, `collection → impact`, `resource_development → command_control` endpoint axis).
 - Cross-provider AI coherence: every documented canonical name (template, openai, anthropic, gemini, grok, ollama, llama.cpp, lm-studio, openai_compatible) routes to a registered backend. Default stays offline / template — no API keys required for normal use, no network calls without explicit `modules.ai.enabled: true` plus operator-supplied endpoint and (for vendor-specific backends) credentials.
 - Capability inventory: [docs/reports/capability_inventory.md](docs/reports/capability_inventory.md).
 - Scenario coverage: [docs/reports/scenario_validation.md](docs/reports/scenario_validation.md).
