@@ -27,7 +27,7 @@ This is a **release candidate**: the maintainer may publish
 `-rc2`, `-rc3`, etc. in response to operator feedback before
 cutting the bare `v3.0.0` tag.
 
-Headline story (full set of 53 PRs lives in
+Headline story (full per-PR history lives in
 [`docs/reports/next_roadmap.md`](docs/reports/next_roadmap.md)):
 
 ### Added
