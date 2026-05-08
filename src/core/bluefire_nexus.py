@@ -20,6 +20,7 @@ from .modules.registry import build_runtime_modules
 from .reporting import (
     build_risk_summary,
     compute_propagation_edges,
+    highest_risk_tier,
     write_json_report,
     write_markdown_report,
     write_output_index,
@@ -505,6 +506,17 @@ class BlueFireNexus:
                         "output index aggregator write failed: %s", index_exc
                     )
 
+            # Compute the highest non-zero severity tier from the
+            # same risk-summary payload the manifest carries so the
+            # CLI summary table, dashboard header badge, and any
+            # external tooling reading the result dict converge on
+            # the same "severity arc highest point" answer. Empty
+            # string when no tier has any non-zero count (e.g. a
+            # blocked-only run with no scored module).
+            risk_summary_payload_for_tier = build_risk_summary(
+                module_results, scenario_name=scenario.name
+            )
+            highest_severity = highest_risk_tier(risk_summary_payload_for_tier)
             return {
                 "status": overall_status,
                 "scenario": scenario.name,
@@ -515,6 +527,7 @@ class BlueFireNexus:
                 "risk_summary_path": str(risk_summary_path),
                 "manifest_path": str(manifest_written) if manifest_written else None,
                 "viewer_path": str(viewer_written) if viewer_written else None,
+                "highest_severity": highest_severity,
                 "copilot": copilot_summary,
                 "legacy_controls": self.legacy_activation_summary(),
             }

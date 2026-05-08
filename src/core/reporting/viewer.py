@@ -60,6 +60,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .manifest import highest_risk_tier
+
 
 # Schema version of the viewer's input. Should track the manifest
 # schema_version so an unexpected version surfaces as a visible
@@ -271,26 +273,13 @@ def _status_badge(status: str) -> str:
 def _highest_risk_tier(manifest: Mapping[str, Any]) -> str:
     """Return the highest non-zero severity tier from the risk block.
 
-    Returns one of ``"critical"`` / ``"high"`` / ``"medium"`` /
-    ``"low"`` or empty when the manifest carries no risk block or
-    every tier is zero. Keeps the header concise: a top-level
-    severity badge only fires when the risk-summary table below
-    actually has something to say.
+    Thin wrapper around the public ``highest_risk_tier`` helper
+    in ``manifest.py`` so the viewer, CLI summary, and external
+    tooling all converge on the same "severity arc highest point"
+    answer for a given run. Kept as a private alias here for
+    backwards compatibility with callers in this module.
     """
-    risk = manifest.get("risk")
-    if not isinstance(risk, Mapping):
-        return ""
-    summary = risk.get("risk_summary")
-    if not isinstance(summary, Mapping):
-        return ""
-    for tier in ("critical", "high", "medium", "low"):
-        try:
-            count = int(summary.get(tier, 0) or 0)
-        except (TypeError, ValueError):
-            count = 0
-        if count > 0:
-            return tier
-    return ""
+    return highest_risk_tier(manifest)
 
 
 def _render_header(manifest: Mapping[str, Any]) -> str:
