@@ -339,4 +339,10 @@ def test_render_html_inline_style_only_uses_safe_keys() -> None:
                 "min-width",
                 "flex",
                 "margin-top",
+                # ``font-size`` joined the allowlist when the
+                # dashboard quality polish (PR-4) added a small-
+                # type local-only contract reminder under the
+                # header. No security concern — font-size has no
+                # external resource fetch, no script vector.
+                "font-size",
             }, f"unexpected inline-style key {key!r} in: {s}"

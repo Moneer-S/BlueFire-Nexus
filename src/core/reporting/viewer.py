@@ -268,8 +268,33 @@ def _status_badge(status: str) -> str:
     return f'<span class="badge {cls}">{_esc(status or "unknown")}</span>'
 
 
+def _highest_risk_tier(manifest: Mapping[str, Any]) -> str:
+    """Return the highest non-zero severity tier from the risk block.
+
+    Returns one of ``"critical"`` / ``"high"`` / ``"medium"`` /
+    ``"low"`` or empty when the manifest carries no risk block or
+    every tier is zero. Keeps the header concise: a top-level
+    severity badge only fires when the risk-summary table below
+    actually has something to say.
+    """
+    risk = manifest.get("risk")
+    if not isinstance(risk, Mapping):
+        return ""
+    summary = risk.get("risk_summary")
+    if not isinstance(summary, Mapping):
+        return ""
+    for tier in ("critical", "high", "medium", "low"):
+        try:
+            count = int(summary.get(tier, 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count > 0:
+            return tier
+    return ""
+
+
 def _render_header(manifest: Mapping[str, Any]) -> str:
-    """Section 1 — header with scenario / run id / status badges."""
+    """Section 1 — header with scenario / run id / status / severity badges."""
     run = manifest.get("run") or {}
     safety = manifest.get("safety") or {}
     copilot = manifest.get("copilot") or {}
@@ -277,6 +302,13 @@ def _render_header(manifest: Mapping[str, Any]) -> str:
     errors = manifest.get("errors") or []
 
     badges: List[str] = [_status_badge(str(run.get("overall_status", "")))]
+    # Surface the highest non-zero risk tier as a top-level badge so
+    # an operator scanning the header sees severity at the same
+    # weight as overall_status. The detailed breakdown still lives
+    # in the risk-summary card below.
+    severity = _highest_risk_tier(manifest)
+    if severity:
+        badges.append(_severity_badge(severity))
     if safety.get("dry_run"):
         badges.append('<span class="badge badge-mode">dry_run</span>')
     if copilot.get("present"):
@@ -328,6 +360,19 @@ def _render_header(manifest: Mapping[str, Any]) -> str:
                 f'<code>{_esc(copilot.get("provider"))}</code>)'
             )
         parts.append("</div>")
+    # Promote the local-only contract into the header so an operator
+    # opening this page from `file://` immediately sees "no server,
+    # no external assets, no network calls" without scrolling to the
+    # footnote. Identical wording to the README's dashboard
+    # description so the two pages reinforce each other.
+    parts.append(
+        '<div class="muted" style="margin-top: 8px; font-size: 12px;">'
+        "Static page &middot; no server, no JavaScript, no external "
+        "assets, no network calls. Open with <code>file://</code>; "
+        "the run directory can be moved or zipped without breaking "
+        "internal links."
+        "</div>"
+    )
     parts.append("</header>")
     return "".join(parts)
 
@@ -635,7 +680,17 @@ def _render_telemetry(manifest: Mapping[str, Any]) -> str:
 
 
 def _render_detections(manifest: Mapping[str, Any]) -> str:
-    """Section 6 — detection drafts."""
+    """Section 6 — detection drafts.
+
+    The header carries a maturity caveat so an operator reading
+    the dashboard does not mistake the count for "production
+    detections ready to deploy". Sigma is the most mature
+    engine; YARA-L is medium; SPL is draft / starter (the
+    rendered ``.spl`` files carry their own ``DRAFT`` comment
+    header). The README's "Detection draft maturity" section
+    spells this out in detail; the dashboard caveat keeps the
+    framing visible at scan time.
+    """
     detections = manifest.get("detections") or {}
     total = detections.get("total", 0)
     counts = detections.get("engine_counts") or {}
@@ -651,6 +706,14 @@ def _render_detections(manifest: Mapping[str, Any]) -> str:
     )
     parts.append(
         f'<p class="muted">{_esc(total)} total &middot; {summary}</p>'
+    )
+    parts.append(
+        '<p class="muted" style="font-size: 12px; margin-top: -4px;">'
+        "Drafts &mdash; not production detections. Sigma is the most "
+        "mature engine, YARA-L is medium, SPL is draft / starter. "
+        "Each draft is a starting point; tune the selection clauses "
+        "and sourcetype mapping for your environment before deploying."
+        "</p>"
     )
     if per_step:
         parts.append("<table><thead><tr><th>step</th><th>engine</th><th>paths</th></tr></thead><tbody>")
