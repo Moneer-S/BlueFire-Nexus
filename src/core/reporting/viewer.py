@@ -709,10 +709,14 @@ def _render_detections(manifest: Mapping[str, Any]) -> str:
     )
     parts.append(
         '<p class="muted" style="font-size: 12px; margin-top: -4px;">'
-        "Drafts &mdash; not production detections. Sigma is the most "
-        "mature engine, YARA-L is medium, SPL is draft / starter. "
-        "Each draft is a starting point; tune the selection clauses "
-        "and sourcetype mapping for your environment before deploying."
+        "Drafts &mdash; not production detections. Sigma and YARA-L "
+        "now derive their selection / events block from the per-"
+        "technique hint the module emits (real Sysmon-style fields "
+        "for Sigma, mapped UDM event field paths for YARA-L). SPL "
+        "is draft / starter (the rendered .spl files carry their "
+        "own DRAFT comment header). Each draft is a starting point; "
+        "tune the selection clauses and sourcetype / dataset mapping "
+        "for your environment before deploying."
         "</p>"
     )
     if per_step:

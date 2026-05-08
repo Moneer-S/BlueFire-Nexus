@@ -11,7 +11,41 @@ This file summarises the deltas at the version-tag granularity.
 
 ## [Unreleased]
 
-No changes since `[3.0.0-rc1]`.
+### Changed
+
+- YARA-L draft generator now derives the `events:` block from the
+  hint's Sigma `logsource.category` and `detection.selection`
+  rather than emitting a single hardcoded
+  `target.process.file.full_path contains <process_name>`
+  predicate regardless of technique. Sigma logsource categories
+  map to UDM event types (`process_creation` -> `PROCESS_LAUNCH`,
+  `file_event` -> `FILE_MODIFICATION`, `registry_event` ->
+  `REGISTRY_MODIFICATION`, `process_access` -> `PROCESS_OPEN`,
+  `image_load` -> `PROCESS_MODULE_LOAD`, `network_connection` ->
+  `NETWORK_CONNECTION`, `dns` -> `NETWORK_DNS`); Sigma fields map
+  to UDM event field paths (`Image|endswith` ->
+  `principal.process.file.full_path`, `CommandLine|contains` ->
+  `principal.process.command_line`, `TargetFilename|endswith` ->
+  `target.file.full_path`, `TargetObject|contains` ->
+  `target.registry.registry_key`, `CallTrace|contains` ->
+  `principal.process.api_calls`, `ImageLoaded|endswith` ->
+  `target.process.file.full_path`, etc.); Sigma operators
+  (`|contains` / `|endswith` / `|startswith` / `|in` / no-modifier
+  exact / numeric) lower into the appropriate YARA-L regex
+  literals or string-equality predicates with proper escaping of
+  regex metacharacters.
+- The `meta:` block now also carries `logsource_product` /
+  `logsource_category` for analyst review when the hint supplies
+  a logsource block.
+
+### Tests
+
+- New `tests/test_yara_l_discriminators.py` (+32): logsource ->
+  event_type mapping, per-Sigma-field UDM paths, operator
+  semantics (contains/endswith/startswith/in/exact/numeric),
+  regex-metacharacter escaping (dots, slashes), backwards-compat
+  fallback when hint has no logsource/selection, end-to-end
+  through the engine.
 
 ## [3.0.0-rc1] - 2026-05-07
 
