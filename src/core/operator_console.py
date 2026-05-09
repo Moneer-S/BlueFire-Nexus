@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .chain_graph import ChainGraph, build_scenario_graph
 from .modules import build_runtime_modules
 from .modules.contracts import (
     ARTIFACT_TYPES,
@@ -34,6 +35,7 @@ from .modules.contracts import (
     is_meaningful_contract,
 )
 from .mutations import MUTATION_CATALOG, TARGET_OS_VALUES
+from .scenario import load_scenario
 
 
 _CONSOLE_CSS = """
@@ -117,6 +119,16 @@ th { color: var(--fg-muted); font-weight: 500; font-size: 12px; }
 .scenario-row { padding: 6px 0; }
 .scenario-name { font-weight: 600; }
 .scenario-objective { color: var(--fg-muted); font-size: 12px; }
+.scenario-graph { margin: 14px 0 6px; }
+.scenario-graph-svg { width: 100%; max-width: 100%; height: auto; display: block; background: var(--bg-code); border: 1px solid var(--border); border-radius: 4px; padding: 6px; }
+.scenario-graph-legend { font-size: 11px; color: var(--fg-muted); margin: 6px 0 0; }
+.scenario-graph-legend .swatch { display: inline-block; width: 18px; height: 2px; vertical-align: middle; margin: 0 4px 2px 0; }
+.scenario-graph-warning { font-size: 12px; padding: 4px 0; }
+.scenario-graph-warning .severity { font-family: "SF Mono", Menlo, Consolas, monospace; padding: 1px 6px; border-radius: 4px; font-size: 10px; margin-right: 6px; }
+.severity-missing_required { background: rgba(192,72,72,0.18); color: #e07c7c; }
+.severity-high_value_unused { background: rgba(230,162,60,0.18); color: var(--warn); }
+.severity-unused_emission { background: rgba(140,150,170,0.14); color: var(--fg-muted); }
+.scenario-graph-empty { color: var(--fg-muted); font-size: 12px; font-style: italic; }
 .footer { color: var(--fg-muted); font-size: 12px; margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--border); }
 """.strip()
 
@@ -144,12 +156,15 @@ def build_operator_console(
 
     registry = build_runtime_modules()
     chain_pairs = _compute_chain_pairs(registry)
-    scenarios = _list_scenarios(scenarios_dir or _autodiscover_scenarios_dir())
+    resolved_scenarios_dir = scenarios_dir or _autodiscover_scenarios_dir()
+    scenarios = _list_scenarios(resolved_scenarios_dir)
+    scenario_graphs = _build_scenario_graphs(resolved_scenarios_dir, registry)
 
     html_text = _render_console_html(
         registry=registry,
         chain_pairs=chain_pairs,
         scenarios=scenarios,
+        scenario_graphs=scenario_graphs,
     )
     out_path.write_text(html_text, encoding="utf-8")
     return out_path
@@ -211,6 +226,56 @@ def _compute_chain_pairs(
                         }
                     )
     return edges
+
+
+def _build_scenario_graphs(
+    scenarios_dir: Optional[Path],
+    registry: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    """Load every shipped scenario and compute its static chain graph.
+
+    Each entry carries the scenario's filename, its parsed name and
+    objective, and either a :class:`ChainGraph` (when the YAML loads
+    cleanly) or an error string (when ``load_scenario`` raises). The
+    operator console renders graphs inline next to the modules /
+    chain-pairs sections; callers that just want the metadata should
+    keep using :func:`_list_scenarios` to avoid the full YAML parse.
+
+    Returns an empty list when ``scenarios_dir`` is missing or empty.
+    """
+
+    if scenarios_dir is None or not scenarios_dir.is_dir():
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    for path in sorted(scenarios_dir.glob("*.yaml")):
+        entry: Dict[str, Any] = {
+            "filename": path.name,
+            "name": "",
+            "objective": "",
+            "graph": None,
+            "error": None,
+        }
+        try:
+            scenario = load_scenario(path)
+        except Exception as exc:
+            # ``load_scenario`` raises on malformed YAML; treat the
+            # malformed scenario as a partial entry so the rest of the
+            # scenarios still render. The console surfaces the error
+            # text inline so the operator sees what failed.
+            entry["error"] = f"failed to load: {exc.__class__.__name__}"
+            rows.append(entry)
+            continue
+        entry["name"] = scenario.name or scenario.id or path.stem
+        entry["objective"] = (scenario.objective or "").strip()
+        try:
+            entry["graph"] = build_scenario_graph(
+                scenario.steps, registry=registry
+            )
+        except Exception as exc:  # pragma: no cover - graph builder is robust
+            entry["error"] = f"graph build failed: {exc.__class__.__name__}"
+        rows.append(entry)
+    return rows
 
 
 def _list_scenarios(scenarios_dir: Optional[Path]) -> List[Dict[str, Any]]:
@@ -337,9 +402,11 @@ def _render_console_html(
     registry: Mapping[str, Any],
     chain_pairs: List[Dict[str, Any]],
     scenarios: List[Dict[str, Any]],
+    scenario_graphs: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Stitch every section together into the single static page."""
 
+    scenario_graphs = scenario_graphs or []
     parts: List[str] = []
     parts.append("<!DOCTYPE html>")
     parts.append("<html lang='en'><head>")
@@ -350,11 +417,12 @@ def _render_console_html(
     parts.append("</head><body>")
 
     parts.append(_render_header(registry, chain_pairs, scenarios))
-    parts.append(_render_kpis(registry, chain_pairs, scenarios))
+    parts.append(_render_kpis(registry, chain_pairs, scenarios, scenario_graphs))
     parts.append(_render_modules_section(registry))
     parts.append(_render_chain_section(chain_pairs))
     parts.append(_render_mutations_section())
     parts.append(_render_scenarios_section(scenarios))
+    parts.append(_render_scenario_graphs_section(scenario_graphs))
     parts.append(_render_footer())
 
     parts.append("</body></html>")
@@ -383,7 +451,9 @@ def _render_kpis(
     registry: Mapping[str, Any],
     chain_pairs: List[Dict[str, Any]],
     scenarios: List[Dict[str, Any]],
+    scenario_graphs: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
+    scenario_graphs = scenario_graphs or []
     standard_count = sum(1 for name in registry if not name.startswith("legacy_"))
     legacy_count = sum(1 for name in registry if name.startswith("legacy_"))
     artifact_types = sorted(
@@ -405,6 +475,20 @@ def _render_kpis(
     mutation_candidate_total = sum(len(v) for v in MUTATION_CATALOG.values()) + len(
         TARGET_OS_VALUES
     )
+    # Scenario-graph KPIs: explicit-edge count + warning count summed
+    # across every shipped scenario. Lets the operator see at a glance
+    # how much typed propagation the catalog of scenarios actually
+    # demonstrates AND how many coverage gaps the static analyser
+    # surfaced. Ignores rows where the graph build failed (entry has
+    # ``error`` set instead of a ``ChainGraph``).
+    explicit_edges_total = 0
+    warnings_total = 0
+    for entry in scenario_graphs:
+        graph = entry.get("graph")
+        if graph is None:
+            continue
+        explicit_edges_total += sum(1 for edge in graph.edges if edge.explicit)
+        warnings_total += len(graph.warnings)
     return textwrap.dedent(
         f"""
         <div class='kpis'>
@@ -414,6 +498,8 @@ def _render_kpis(
           <div class='kpi'><b>{len(scenarios)}</b><span>shipped scenarios</span></div>
           <div class='kpi'><b>{len(artifact_types)} / {len(ARTIFACT_TYPES)}</b><span>artifact types in use</span></div>
           <div class='kpi'><b>{mutation_candidate_total}</b><span>mutation candidates</span></div>
+          <div class='kpi'><b>{explicit_edges_total}</b><span>scenario explicit edges</span></div>
+          <div class='kpi'><b>{warnings_total}</b><span>scenario chain warnings</span></div>
         </div>
         """
     ).strip()
@@ -675,6 +761,316 @@ def _render_scenarios_section(scenarios: List[Dict[str, Any]]) -> str:
         )
     parts.append("</div>")
     return "\n".join(parts)
+
+
+def _render_scenario_graphs_section(
+    scenario_graphs: List[Dict[str, Any]],
+) -> str:
+    """Render one chain-graph card per shipped scenario.
+
+    Each card shows:
+
+    - the scenario name + objective preview;
+    - a per-scenario KPI strip (steps / explicit edges / implicit
+      edges / warnings);
+    - an inline SVG flowchart with one box per step plus typed arcs
+      for every chain edge (explicit edges in accent colour, implicit
+      edges in the muted colour);
+    - an edge table that surfaces every (source, type, target) row
+      so an operator can correlate the SVG against the YAML;
+    - the warnings list (``missing_required`` / ``high_value_unused``
+      / ``unused_emission``) when any are present.
+
+    The SVG is fully inline (``<svg>`` element with no external
+    references), uses inline ``fill`` / ``stroke`` attributes (not
+    external CSS classes), and never includes ``<script>`` or
+    ``<foreignObject>``. Safe for a fully-offline static page.
+    """
+
+    parts: List[str] = ["<h2>Scenario chain graphs</h2>"]
+    parts.append(
+        "<p class='section-note'>Static chain graph for each shipped "
+        "scenario, computed from the YAML alone (no execution). Nodes "
+        "are scenario steps; edges are typed propagation between a "
+        "producing step and a consuming step. <b>Explicit</b> edges "
+        "come from <span class='code'>*_from_step</span> references "
+        "in the scenario; <b>implicit</b> edges are inferred from the "
+        "consumer's IO contract when an earlier producer matches the "
+        "consumed type. Coverage gaps surface as warnings under each "
+        "graph.</p>"
+    )
+    if not scenario_graphs:
+        parts.append(
+            "<p class='muted'>No scenario graphs available — pass "
+            "<span class='code'>--scenarios</span> to "
+            "<span class='code'>operator-console</span> to point at a "
+            "scenarios directory.</p>"
+        )
+        return "\n".join(parts)
+
+    parts.append("<div class='grid'>")
+    for entry in scenario_graphs:
+        parts.append(_render_scenario_graph_card(entry))
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
+def _render_scenario_graph_card(entry: Mapping[str, Any]) -> str:
+    """Render a single per-scenario chain-graph card."""
+
+    filename = str(entry.get("filename") or "")
+    name = str(entry.get("name") or filename)
+    objective = str(entry.get("objective") or "")
+    error = entry.get("error")
+    graph: Optional[ChainGraph] = entry.get("graph")
+
+    pieces: List[str] = []
+    pieces.append("<div class='card scenario-graph'>")
+    pieces.append(
+        f"<div class='scenario-name'>{html.escape(name)}</div>"
+        f"<div class='code muted'>{html.escape(filename)}</div>"
+    )
+    if objective:
+        # Trim long objectives for the card preview but keep enough
+        # context to identify the scenario at a glance.
+        preview = objective if len(objective) <= 320 else objective[:317] + "..."
+        pieces.append(
+            f"<div class='scenario-objective'>{html.escape(preview)}</div>"
+        )
+
+    if error or graph is None:
+        pieces.append(
+            "<p class='scenario-graph-empty'>Chain graph unavailable: "
+            f"{html.escape(str(error or 'load_scenario returned no steps'))}</p>"
+        )
+        pieces.append("</div>")
+        return "\n".join(pieces)
+
+    explicit_count = sum(1 for edge in graph.edges if edge.explicit)
+    implicit_count = sum(1 for edge in graph.edges if not edge.explicit)
+    pieces.append(
+        "<div class='kpis'>"
+        f"<div class='kpi'><b>{len(graph.nodes)}</b><span>steps</span></div>"
+        f"<div class='kpi'><b>{explicit_count}</b><span>explicit edges</span></div>"
+        f"<div class='kpi'><b>{implicit_count}</b><span>implicit edges</span></div>"
+        f"<div class='kpi'><b>{len(graph.warnings)}</b><span>warnings</span></div>"
+        "</div>"
+    )
+    pieces.append(_render_scenario_graph_svg(graph))
+    pieces.append(
+        "<p class='scenario-graph-legend'>"
+        "<span class='swatch' style='background:#4f8df7'></span>explicit "
+        "(<span class='code'>*_from_step</span>) "
+        "&nbsp;&nbsp;"
+        "<span class='swatch' style='background:#8aa1bb'></span>implicit "
+        "(contract-derived)"
+        "</p>"
+    )
+    pieces.append(_render_scenario_graph_edges_table(graph))
+    if graph.warnings:
+        pieces.append(_render_scenario_graph_warnings(graph))
+    pieces.append("</div>")
+    return "\n".join(pieces)
+
+
+# Layout constants for the scenario graph SVG. Picked so a 12-step
+# scenario (the enterprise chain) fits in roughly 1500px wide which
+# the surrounding ``.scenario-graph-svg`` rule then scales to the
+# card width via ``width: 100%; height: auto`` — the SVG retains its
+# aspect ratio whether the card is 360px wide or 800px.
+_SVG_NODE_WIDTH = 110
+_SVG_NODE_HEIGHT = 50
+_SVG_NODE_GAP = 30
+_SVG_NODE_TOP = 90  # Y of node-rect top; arcs above span y=10..90.
+_SVG_PADDING = 10
+_SVG_LABEL_AREA = 70  # Y space below the node row for labels.
+_SVG_EXPLICIT_COLOR = "#4f8df7"
+_SVG_IMPLICIT_COLOR = "#8aa1bb"
+_SVG_NODE_FILL = "#1f3e6e"
+_SVG_NODE_STROKE = "#233140"
+_SVG_TEXT_COLOR = "#d6e0ec"
+_SVG_TEXT_MUTED = "#8aa1bb"
+
+
+def _render_scenario_graph_svg(graph: ChainGraph) -> str:
+    """Render the scenario chain graph as an inline static SVG flowchart.
+
+    Layout: every step is a labelled rectangle in a single horizontal
+    row. Every edge is an arc above the row, source-center-top to
+    target-center-top, with the artifact-type label centred above the
+    arc apex. The arc apex height scales with the source-to-target
+    span so adjacent edges have shallow arcs and long-range edges
+    bow higher (no overlap when the arc heights differ). Returns
+    ``""`` when the graph has no nodes.
+
+    The SVG is self-contained: no external assets, no ``<script>``,
+    no CSS class names — every fill / stroke / font-size lives inline
+    so the output is portable to any HTML renderer.
+    """
+
+    if not graph.nodes:
+        return ""
+    node_count = len(graph.nodes)
+    stride = _SVG_NODE_WIDTH + _SVG_NODE_GAP
+    width = _SVG_PADDING * 2 + stride * node_count - _SVG_NODE_GAP
+    height = _SVG_NODE_TOP + _SVG_NODE_HEIGHT + _SVG_LABEL_AREA + _SVG_PADDING
+
+    # Layout: x position for each step's bounding box.
+    node_x: Dict[str, int] = {}
+    for index, node in enumerate(graph.nodes):
+        node_x[node.step_id] = _SVG_PADDING + stride * index
+
+    parts: List[str] = []
+    parts.append(
+        f"<svg class='scenario-graph-svg' role='img' aria-label='scenario chain graph' "
+        f"viewBox='0 0 {width} {height}' xmlns='http://www.w3.org/2000/svg'>"
+    )
+    # <defs> with arrow markers for each edge colour. Defining markers
+    # once and referencing them keeps the SVG compact even when the
+    # scenario has many edges.
+    parts.append(
+        "<defs>"
+        + _svg_arrow_marker("arrow-explicit", _SVG_EXPLICIT_COLOR)
+        + _svg_arrow_marker("arrow-implicit", _SVG_IMPLICIT_COLOR)
+        + "</defs>"
+    )
+
+    # Draw edges first so node rectangles render on top of arc tails.
+    for edge in graph.edges:
+        src_x = node_x.get(edge.source_step_id)
+        tgt_x = node_x.get(edge.target_step_id)
+        if src_x is None or tgt_x is None:
+            continue
+        parts.append(_svg_edge_arc(edge, src_x, tgt_x))
+
+    # Draw node rectangles + step-id label + module label.
+    for node in graph.nodes:
+        x = node_x[node.step_id]
+        parts.append(_svg_node_rect(node, x))
+
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def _svg_arrow_marker(marker_id: str, colour: str) -> str:
+    """Return a tiny ``<marker>`` element for an arrowhead at the line end."""
+
+    return (
+        f"<marker id='{marker_id}' viewBox='0 0 8 8' refX='7' refY='4' "
+        f"markerWidth='6' markerHeight='6' orient='auto'>"
+        f"<path d='M0,0 L8,4 L0,8 z' fill='{colour}'/>"
+        f"</marker>"
+    )
+
+
+def _svg_node_rect(node: Any, x: int) -> str:
+    """Return SVG for a single step rectangle with step_id + module label."""
+
+    width = _SVG_NODE_WIDTH
+    height = _SVG_NODE_HEIGHT
+    centre_x = x + width // 2
+    text_y_id = _SVG_NODE_TOP + 22
+    text_y_module = _SVG_NODE_TOP + 38
+    label_y = _SVG_NODE_TOP + height + 18
+    return (
+        f"<rect x='{x}' y='{_SVG_NODE_TOP}' width='{width}' height='{height}' "
+        f"rx='6' ry='6' fill='{_SVG_NODE_FILL}' stroke='{_SVG_NODE_STROKE}'/>"
+        f"<text x='{centre_x}' y='{text_y_id}' text-anchor='middle' "
+        f"font-size='11' font-family='monospace' fill='{_SVG_TEXT_COLOR}'>"
+        f"{html.escape(_clip_label(str(node.step_id), 16))}</text>"
+        f"<text x='{centre_x}' y='{text_y_module}' text-anchor='middle' "
+        f"font-size='10' fill='{_SVG_TEXT_MUTED}'>"
+        f"{html.escape(_clip_label(str(node.module), 16))}</text>"
+        f"<text x='{centre_x}' y='{label_y}' text-anchor='middle' "
+        f"font-size='9' fill='{_SVG_TEXT_MUTED}'>step {node.step_index + 1}</text>"
+    )
+
+
+def _svg_edge_arc(edge: Any, src_x: int, tgt_x: int) -> str:
+    """Return SVG for a single edge arc + label.
+
+    The arc bows upward; its apex height grows with the source-target
+    span so long-range edges sit visually above shorter ones and the
+    label is reachable for every edge regardless of length.
+    """
+
+    src_centre = src_x + _SVG_NODE_WIDTH // 2
+    tgt_centre = tgt_x + _SVG_NODE_WIDTH // 2
+    # Arc apex y: lower (smaller y) means higher up. Adjacent edges arc
+    # at y=60 (just above the node top of 90); a 5-step span arcs at
+    # y=15 (near the SVG top edge); clamp to the SVG padding.
+    span = abs(tgt_centre - src_centre)
+    apex_y = max(_SVG_PADDING + 5, _SVG_NODE_TOP - 25 - span // 12)
+    mid_x = (src_centre + tgt_centre) // 2
+    colour = _SVG_EXPLICIT_COLOR if edge.explicit else _SVG_IMPLICIT_COLOR
+    marker_id = "arrow-explicit" if edge.explicit else "arrow-implicit"
+    label = html.escape(str(edge.artifact_type))
+    label_y = max(_SVG_PADDING, apex_y - 6)
+    return (
+        f"<path d='M{src_centre} {_SVG_NODE_TOP} "
+        f"Q{mid_x} {apex_y} {tgt_centre} {_SVG_NODE_TOP}' "
+        f"stroke='{colour}' stroke-width='1.5' fill='none' "
+        f"marker-end='url(#{marker_id})'/>"
+        f"<text x='{mid_x}' y='{label_y}' text-anchor='middle' "
+        f"font-size='9' fill='{colour}'>{label}</text>"
+    )
+
+
+def _clip_label(text: str, limit: int) -> str:
+    """Trim a label to ``limit`` characters with an ellipsis when too long."""
+
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
+def _render_scenario_graph_edges_table(graph: ChainGraph) -> str:
+    """Render the per-scenario edge list as a compact HTML table."""
+
+    if not graph.edges:
+        return (
+            "<p class='muted scenario-graph-empty'>"
+            "No typed propagation between steps in this scenario.</p>"
+        )
+    rows: List[str] = ["<table>"]
+    rows.append(
+        "<thead><tr>"
+        "<th>Source</th><th>Type</th><th>Target</th><th>Edge</th>"
+        "</tr></thead><tbody>"
+    )
+    for edge in graph.edges:
+        edge_label = (
+            "<span class='tag'>explicit</span>"
+            if edge.explicit
+            else "<span class='tag legacy'>implicit</span>"
+        )
+        rows.append(
+            "<tr>"
+            f"<td class='code'>{html.escape(edge.source_step_id)}</td>"
+            f"<td><span class='tag produce'>{html.escape(edge.artifact_type)}</span></td>"
+            f"<td class='code'>{html.escape(edge.target_step_id)}</td>"
+            f"<td>{edge_label}</td>"
+            "</tr>"
+        )
+    rows.append("</tbody></table>")
+    return "\n".join(rows)
+
+
+def _render_scenario_graph_warnings(graph: ChainGraph) -> str:
+    """Render the per-scenario warnings list."""
+
+    rows: List[str] = ["<h3>Coverage warnings</h3>"]
+    for warning in graph.warnings:
+        css_class = f"severity-{warning.severity}"
+        rows.append(
+            "<div class='scenario-graph-warning'>"
+            f"<span class='severity {css_class}'>{html.escape(warning.severity)}</span>"
+            f"<span class='code'>{html.escape(warning.step_id)}</span> "
+            f"<span class='tag warn'>{html.escape(warning.artifact_type)}</span> "
+            f"<span class='muted'>{html.escape(warning.message)}</span>"
+            "</div>"
+        )
+    return "\n".join(rows)
 
 
 def _render_footer() -> str:

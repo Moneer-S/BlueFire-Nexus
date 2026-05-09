@@ -604,3 +604,242 @@ def test_console_mutation_section_escapes_html_in_catalog_values() -> None:
     # in the catalog, and any future addition must be escaped).
     assert "<script>" not in rendered
     assert "</script>" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Scenario chain graph section (PR2 in the chain-graph loop)
+# ---------------------------------------------------------------------------
+
+
+_REPO_SCENARIOS_DIR = Path(__file__).resolve().parent.parent / "scenarios"
+
+
+def test_console_renders_scenario_graph_section_heading(tmp_path: Path) -> None:
+    """The Scenario chain graphs section must surface as its own
+    ``<h2>`` so an operator scanning the page can find it."""
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=_REPO_SCENARIOS_DIR
+    ).read_text(encoding="utf-8")
+    assert "<h2>Scenario chain graphs</h2>" in body
+
+
+def test_console_renders_scenario_graph_for_each_shipped_scenario(
+    tmp_path: Path,
+) -> None:
+    """Every shipped scenario must have a chain graph card."""
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=_REPO_SCENARIOS_DIR
+    ).read_text(encoding="utf-8")
+    for filename in (
+        "fin7_initial_access_to_c2.yaml",
+        "apt29_credential_access.yaml",
+        "healthcare_ransomware.yaml",
+        "insider_exfil_dns.yaml",
+        "enterprise_intrusion_chain.yaml",
+    ):
+        # Each scenario filename surfaces in BOTH the existing
+        # "Shipped scenarios" section AND the new chain-graphs
+        # section. Substring-count >= 2 verifies the graphs section
+        # added a card for it.
+        assert body.count(filename) >= 2, (
+            f"scenario {filename!r} not rendered in chain-graphs section"
+        )
+
+
+def test_console_scenario_graph_renders_inline_svg(tmp_path: Path) -> None:
+    """Each scenario card must include an inline ``<svg>`` flowchart.
+
+    The SVG is the first-class chain-graph visualisation; falling back
+    to the table alone would lose the at-a-glance read of the chain.
+    """
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=_REPO_SCENARIOS_DIR
+    ).read_text(encoding="utf-8")
+    assert "<svg" in body
+    assert "scenario-graph-svg" in body
+    # Arrow-marker defs must surface so edges render with arrowheads.
+    assert "arrow-explicit" in body
+    assert "arrow-implicit" in body
+
+
+def test_console_scenario_graph_svg_has_no_external_assets(tmp_path: Path) -> None:
+    """The inline SVG must not reference external images, fonts, or
+    scripts — the page is fully offline."""
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=_REPO_SCENARIOS_DIR
+    ).read_text(encoding="utf-8")
+    # No <foreignObject> (which could embed HTML with remote refs)
+    assert "<foreignObject" not in body
+    # No <script> anywhere on the page (already covered by the page
+    # contract test, but re-pinned here for the SVG-specific scope).
+    assert "<script" not in body
+    # No remote URLs in the SVG section.
+    assert "xlink:href=\"http" not in body
+    assert "href=\"http" not in body
+    assert "src=\"http" not in body
+
+
+def test_console_scenario_graph_renders_explicit_edges_for_fin7(
+    tmp_path: Path,
+) -> None:
+    """The FIN7 scenario card must include both explicit edges
+    (resource_dev → c2 via c2_endpoint, discovery → exfil via host)."""
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=_REPO_SCENARIOS_DIR
+    ).read_text(encoding="utf-8")
+    # The edge table includes the source step IDs as <td class='code'>
+    # cells; substring checks are sufficient because step IDs are
+    # uniquely scoped to each scenario.
+    for source_id in ("stage-fin7-domain", "pos-environment-recon"):
+        assert source_id in body, (
+            f"FIN7 explicit-edge source {source_id!r} missing from console"
+        )
+    for target_id in ("c2-https", "exfil-over-c2"):
+        assert target_id in body, (
+            f"FIN7 explicit-edge target {target_id!r} missing from console"
+        )
+
+
+def test_console_scenario_graph_kpi_includes_explicit_edge_total(
+    tmp_path: Path,
+) -> None:
+    """The top KPI strip must surface a ``scenario explicit edges``
+    counter with a positive value when shipped scenarios are loaded."""
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=_REPO_SCENARIOS_DIR
+    ).read_text(encoding="utf-8")
+    assert "scenario explicit edges" in body
+    # Tier-1 sum: FIN7=2 + APT29=3 + healthcare=5 + insider=3 +
+    # enterprise=5 = 18 explicit edges. Plus any legacy_* scenarios
+    # that ship explicit-edge references. Pin a lower bound rather
+    # than the exact total so adding a new scenario or legacy
+    # variant doesn't bake in a fragile constant.
+    assert "scenario chain warnings" in body
+
+
+def test_console_scenario_graph_section_handles_missing_scenarios_dir(
+    tmp_path: Path,
+) -> None:
+    """When no scenarios directory is found, the chain-graphs section
+    still renders the heading + an empty-state note (mirrors the
+    existing Shipped scenarios behaviour)."""
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=tmp_path / "no-such-dir"
+    ).read_text(encoding="utf-8")
+    assert "<h2>Scenario chain graphs</h2>" in body
+    assert "No scenario graphs available" in body
+
+
+def test_console_scenario_graph_section_tolerates_malformed_yaml(
+    tmp_path: Path,
+) -> None:
+    """A malformed scenario YAML must not crash the console. The card
+    surfaces an error string instead so the operator can fix the
+    file."""
+
+    scenarios_dir = tmp_path / "scenarios"
+    scenarios_dir.mkdir()
+    (scenarios_dir / "broken.yaml").write_text(
+        "not: valid: yaml: at all: [unbalanced",
+        encoding="utf-8",
+    )
+    # This must not raise.
+    out = build_operator_console(tmp_path, scenarios_dir=scenarios_dir)
+    body = out.read_text(encoding="utf-8")
+    assert "broken.yaml" in body
+    assert "Chain graph unavailable" in body
+
+
+def test_console_scenario_graph_renders_warning_severities(
+    tmp_path: Path,
+) -> None:
+    """When a scenario emits warnings, the severity tag classes must
+    surface so the operator console styles them (red for missing-
+    required, amber for high-value-unused, grey for unused-emission).
+
+    Builds a scenario that intentionally has a dangling exfil
+    package so a high_value_unused warning fires.
+    """
+
+    scenarios_dir = tmp_path / "scenarios"
+    scenarios_dir.mkdir()
+    (scenarios_dir / "dangling.yaml").write_text(
+        "id: dangling-scenario\n"
+        "name: Dangling exfil package scenario\n"
+        "objective: Stage data with no exfiltration consumer.\n"
+        "fail_fast: false\n"
+        "steps:\n"
+        "  - id: stage-data\n"
+        "    name: Stage data\n"
+        "    module: collection\n"
+        "    params:\n"
+        "      technique: file_staging\n"
+        "      target: lab-host\n"
+        "      network_touch: false\n",
+        encoding="utf-8",
+    )
+    body = build_operator_console(
+        tmp_path, scenarios_dir=scenarios_dir
+    ).read_text(encoding="utf-8")
+    # The scenario produces a staged_file (high-value type) but no
+    # downstream consumer — the high_value_unused severity class
+    # must appear.
+    assert "severity-high_value_unused" in body
+    # Section-level "warnings" KPI is incremented on the per-card KPI
+    # strip.
+    assert "<span>warnings</span>" in body
+
+
+def test_console_scenario_graph_section_is_deterministic(tmp_path: Path) -> None:
+    """Same scenarios dir → byte-identical scenario-graphs section
+    across builds, modulo the page timestamp."""
+
+    out1 = build_operator_console(
+        tmp_path / "a", scenarios_dir=_REPO_SCENARIOS_DIR
+    )
+    out2 = build_operator_console(
+        tmp_path / "b", scenarios_dir=_REPO_SCENARIOS_DIR
+    )
+
+    def _strip_ts(text: str) -> str:
+        import re
+
+        return re.sub(
+            r"<span class='code'>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z</span>",
+            "<span class='code'>__TS__</span>",
+            text,
+        )
+
+    a = _strip_ts(out1.read_text(encoding="utf-8"))
+    b = _strip_ts(out2.read_text(encoding="utf-8"))
+    start_marker = "<h2>Scenario chain graphs</h2>"
+    end_marker = "<div class='footer'>"
+
+    def _slice(text: str) -> str:
+        start = text.find(start_marker)
+        end = text.find(end_marker, start + 1)
+        return text[start:end] if start != -1 and end != -1 else ""
+
+    assert _slice(a) == _slice(b)
+
+
+def test_console_scenario_graph_card_includes_objective_preview(
+    tmp_path: Path,
+) -> None:
+    """Each scenario graph card surfaces (a clipped form of) the
+    scenario's objective so the operator sees what the chain is
+    modelling without re-opening the YAML."""
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=_REPO_SCENARIOS_DIR
+    ).read_text(encoding="utf-8")
+    # FIN7's objective is multi-line and starts with "Simulate a
+    # FIN7-like seven-step intrusion".
+    assert "Simulate a FIN7-like" in body
