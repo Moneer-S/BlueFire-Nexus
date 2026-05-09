@@ -73,7 +73,7 @@ from src.core.models import ModuleResult
         ("registry.key.path", "registry_path"),
         # Endpoint.Services
         ("service.name", "service"),
-        ("service.image_path", "file_path"),
+        ("service.image_path", "service_path"),
         ("service.action", "action"),
         # Authentication.Authentication
         ("user.name", "user"),
@@ -88,7 +88,7 @@ from src.core.models import ModuleResult
         ("network.dst_country", "dest_country"),
         ("network.target", "dest"),
         ("network.transport", "transport"),
-        ("network.protocol", "app"),
+        ("network.protocol", "transport"),
         ("network.url", "url"),
         # Network_Resolution.DNS
         ("dns.question.name", "query"),
@@ -182,6 +182,66 @@ def test_file_extension_maps_to_cim_file_extension() -> None:
     assert '| where file_extension IN (".locked", ".enc", ".crypt")' in spl
     # The previous (wrong) mapping must NOT survive.
     assert "file_name IN " not in spl
+
+
+def test_service_image_path_routes_to_service_path_not_file_path() -> None:
+    """``service.image_path`` -> CIM ``service_path`` (Endpoint.Services).
+
+    The previous draft mapped onto Endpoint.Filesystem's ``file_path``,
+    routing service-create / -modify detections to the wrong CIM
+    datamodel. ``service_path`` keeps the rule under
+    Endpoint.Services where the persistence / privesc service
+    profiles belong.
+    """
+    assert _cim_field("service.image_path") == "service_path"
+    spl = render_spl(
+        _result(
+            {"service.image_path|contains": "svchost.exe"},
+            category="service_creation",
+        ),
+        "run-svc-1",
+    )
+    assert '| where service_path="*svchost.exe*"' in spl
+    # Ensure the rule did NOT silently route through file_path.
+    assert "file_path=" not in spl
+
+
+def test_user_windows_sid_falls_through_unmapped() -> None:
+    """``user.windows_sid`` carries SIDs, not usernames — leave unmapped.
+
+    CIM Authentication ``user`` is a username field (e.g. ``alice``);
+    SID strings (``S-1-5-21-...``) belong to a different namespace.
+    Mapping onto ``user`` would silently widen the search to match
+    SIDs against username extractions. Verbatim pass-through is the
+    honest answer.
+    """
+    assert _cim_field("user.windows_sid") == "user.windows_sid"
+    assert "user.windows_sid" not in _SIGMA_FIELD_TO_CIM
+
+
+def test_network_protocol_routes_to_transport_not_app() -> None:
+    """``network.protocol`` carries transport / link-layer values, not app labels.
+
+    The standard / legacy module catalogs use ``network.protocol``
+    for ``"quic"`` / ``"icmp"`` / ``"bluetooth"`` (transport / link
+    layer), NOT application-protocol labels (``http`` / ``ftp``).
+    CIM ``app`` is reserved for application labels; routing
+    ``network.protocol`` onto ``app`` silently moves transport-y
+    values into a field where they would not be discovered by any
+    realistic Splunk query. Map onto ``transport`` instead so the
+    rule matches what BlueFire actually emits.
+    """
+    assert _cim_field("network.protocol") == "transport"
+    spl = render_spl(
+        _result(
+            {"network.protocol": "quic"},
+            category="network_connection",
+        ),
+        "run-proto-1",
+    )
+    assert '| where transport="quic"' in spl
+    # Reject the previous (wrong) routing onto CIM ``app``.
+    assert '| where app="quic"' not in spl
 
 
 # ---------------------------------------------------------------------------

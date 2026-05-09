@@ -351,13 +351,24 @@ _SIGMA_FIELD_TO_CIM: dict[str, str] = {
     "registry.key.path": "registry_path",
     # ---- Endpoint.Services ----
     "service.name": "service",
-    "service.image_path": "file_path",
+    # ``service.image_path`` is the full path to the service binary —
+    # CIM Endpoint.Services 5.x canonical field is ``service_path``.
+    # The earlier draft mapped onto Endpoint.Filesystem's ``file_path``,
+    # routing the rule to the wrong datamodel. ``service_path`` keeps
+    # the rule under Endpoint.Services where service-create / -modify
+    # detections belong.
+    "service.image_path": "service_path",
     "service.action": "action",
     # ---- Authentication.Authentication ----
     "user.name": "user",
     "user.domain": "dest_nt_domain",
     "user.windows_domain": "dest_nt_domain",
-    "user.windows_sid": "user",
+    # ``user.windows_sid`` carries SID strings (``S-1-5-21-...``),
+    # not usernames. CIM Authentication has no canonical SID-only
+    # field; mapping onto ``user`` (a username field) silently
+    # widens the search to match SIDs against username extractions.
+    # Leave unmapped — verbatim pass-through is honest and lets the
+    # operator choose the correct field for their environment.
     "event.action": "action",
     # ---- Network_Traffic.All_Traffic ----
     "network.dst_port": "dest_port",
@@ -367,7 +378,13 @@ _SIGMA_FIELD_TO_CIM: dict[str, str] = {
     "network.dst_country": "dest_country",
     "network.target": "dest",
     "network.transport": "transport",
-    "network.protocol": "app",
+    # The standard / legacy module catalogs use ``network.protocol``
+    # for transport / link-layer values like ``"icmp"``, ``"quic"``,
+    # ``"bluetooth"`` — not application-layer labels. CIM
+    # Network_Traffic ``app`` is reserved for application protocol
+    # labels (``http`` / ``ftp`` / ``smtp``), so map ``network.protocol``
+    # onto CIM ``transport`` to match the values BlueFire actually emits.
+    "network.protocol": "transport",
     "network.url": "url",
     "network.encapsulation": "transport",
     # ---- Network_Resolution.DNS ----
