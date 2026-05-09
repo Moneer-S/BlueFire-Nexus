@@ -16,6 +16,7 @@ from .configuration import resolve_output_root
 from .detections import write_detection_artifacts
 from .legacy_controls import build_legacy_summary
 from .models import ModuleResult, RunContext
+from .modules.chain import ChainContext
 from .modules.registry import build_runtime_modules
 from .reporting import (
     build_risk_summary,
@@ -100,6 +101,7 @@ class BlueFireNexus:
         run_context: RunContext,
         step: Optional[Mapping[str, Any]] = None,
         previous_step_results: Optional[Mapping[str, Mapping[str, Any]]] = None,
+        chain: Optional[ChainContext] = None,
     ) -> Dict[str, Any]:
         """Build the per-step runtime context dict passed to ``module.execute``.
 
@@ -109,6 +111,14 @@ class BlueFireNexus:
         consuming a discovery step's host list). The mapping is always
         present in the returned context (possibly empty) — modules that
         do not opt in simply ignore the key.
+
+        The optional ``chain`` argument is the typed view over the
+        accumulated chain artifacts (PR for chaining engine v2). When
+        present, its serialisable snapshot lands under
+        ``context["chain"]`` so consumers can ask "give me the latest
+        credential" / "do we have a host?" without hard-coding the
+        upstream step_id. Modules that don't opt in keep using
+        ``previous_step_results``; the chain view is additive.
 
         The mapping is a defensive **deep** copy: nested values like
         ``artifacts``, ``techniques``, and any further-nested
@@ -128,6 +138,14 @@ class BlueFireNexus:
             "previous_step_results": {
                 str(step_id): copy.deepcopy(record)
                 for step_id, record in (previous_step_results or {}).items()
+            },
+            # Always include a chain snapshot so consumers don't need
+            # to defensively check for the key. An empty chain has empty
+            # by-type / by-step / warnings sub-mappings.
+            "chain": chain.snapshot() if chain is not None else {
+                "artifacts_by_type": {},
+                "artifacts_by_step": {},
+                "warnings": [],
             },
         }
         if step is not None:
@@ -316,6 +334,13 @@ class BlueFireNexus:
         # subsequent steps' module.execute via _module_context. Modules
         # that don't opt in simply ignore the context key.
         previous_step_results: Dict[str, Dict[str, Any]] = {}
+        # Typed view over the chain (PR for chaining engine v2). Indexes
+        # every upstream step's artifacts by canonical artifact type and
+        # by step_id so consumers can ask "give me the latest credential"
+        # without hard-coding the upstream step_id. Built incrementally
+        # alongside ``previous_step_results``; both views are passed
+        # into the per-step context.
+        chain = ChainContext()
         overall_status = "success"
 
         try:
@@ -348,12 +373,24 @@ class BlueFireNexus:
                     if validation_error:
                         raise ValueError(validation_error)
 
+                    # Record consumer warnings before execution so the
+                    # warning timeline reflects "the chain knew this step
+                    # was missing X" rather than "the step ran and then
+                    # we noticed". Warnings are advisory only - the step
+                    # still runs against the consumer's documented
+                    # default for the optional / missing slot.
+                    chain.record_consumer_warning(
+                        step_id=step.step_id,
+                        module=step.module,
+                        contract=getattr(module, "io_contract", None),
+                    )
                     result = module.execute(
                         step_params,
                         self._module_context(
                             context,
                             step=step,
                             previous_step_results=previous_step_results,
+                            chain=chain,
                         ),
                     )
                     # Annotate each telemetry event with the scenario
@@ -382,6 +419,18 @@ class BlueFireNexus:
                         "techniques": list(result.techniques),
                         "artifacts": copy.deepcopy(result.artifacts),
                     }
+                    # Index the step's typed emissions into the chain so
+                    # downstream steps can ask "latest credential / host
+                    # / staged_file" without hard-coding upstream ids.
+                    # Skipped when the result is non-success: a failed
+                    # step's artifacts are not authoritative chain input.
+                    if result.status == "success":
+                        chain.record_step(
+                            step_id=step.step_id,
+                            module=step.module,
+                            contract=getattr(module, "io_contract", None),
+                            artifacts=result.artifacts or {},
+                        )
                     detection_paths = write_detection_artifacts(
                         context.output_dir,
                         context.run_id,
