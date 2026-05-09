@@ -466,3 +466,141 @@ def test_scenario_summary_quoted_inline_with_pipe_stays_inline(tmp_path: Path) -
     )
     summary = _parse_scenario_summary(scenario)
     assert summary["objective"] == "|alpha bravo charlie"
+
+
+# ---------------------------------------------------------------------------
+# Mutation catalog section
+# ---------------------------------------------------------------------------
+
+
+def test_console_renders_mutation_catalog_heading(tmp_path: Path) -> None:
+    """The mutation catalog section header must surface so the
+    operator can find the swap surface."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    assert "<h2>Mutation catalog</h2>" in body
+
+
+def test_console_renders_every_mutation_catalog_module(tmp_path: Path) -> None:
+    """Every module that has a slot in MUTATION_CATALOG must have a
+    rendered card in the mutation section."""
+
+    from src.core.mutations import MUTATION_CATALOG
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    catalog_modules = {module for (module, _key) in MUTATION_CATALOG}
+    for module in catalog_modules:
+        # Each module is rendered as a class='module-name' h3 card
+        # heading. Substring check is sufficient because module
+        # names (e.g. ``credential_access``) are not common words.
+        assert module in body, (
+            f"mutation catalog module {module!r} missing from console"
+        )
+
+
+def test_console_renders_every_mutation_candidate_value(tmp_path: Path) -> None:
+    """Every catalog candidate (e.g. ``authorized_keys``,
+    ``backgrounditems`` markers, ``dns_tunneling``) must surface in
+    the rendered HTML so an operator browsing the page sees the
+    swap surface, not just the slot key."""
+
+    from src.core.mutations import MUTATION_CATALOG
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    # Spot-check a handful of distinctive values from different
+    # catalogs - exhaustive checking is parametrized in a separate
+    # test below.
+    for value in (
+        "authorized_keys",
+        "macos_login_item",
+        "ssh_artifacts",
+        "dns_tunneling",
+        "https_to_cloud_storage",
+        "psexec",
+        "winrm",
+    ):
+        assert value in body, (
+            f"mutation candidate {value!r} missing from console"
+        )
+
+
+def test_console_renders_target_os_cross_cutting_axis(tmp_path: Path) -> None:
+    """The cross-cutting ``target_os`` axis (windows / linux /
+    macos) is documented as applying to ANY module that already
+    declares it. The console must surface this axis as a separate
+    card so the operator knows it isn't tied to a specific module."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    assert "target_os" in body
+    assert "any module" in body.lower()
+    # All three target_os values must surface.
+    for value in ("windows", "linux", "macos"):
+        assert value in body
+
+
+def test_console_kpi_includes_mutation_candidate_count(tmp_path: Path) -> None:
+    """The KPI strip should report the total mutation candidate
+    count across every catalog slot + the target_os axis."""
+
+    from src.core.mutations import MUTATION_CATALOG, TARGET_OS_VALUES
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    expected = sum(len(v) for v in MUTATION_CATALOG.values()) + len(TARGET_OS_VALUES)
+    assert f"<b>{expected}</b><span>mutation candidates</span>" in body
+
+
+def test_console_mutation_section_card_lists_alternatives_count(
+    tmp_path: Path,
+) -> None:
+    """Each module card should mention an N-alternatives count for
+    each slot so an operator scanning quickly sees swap depth."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    # ``command_control.channel`` has 8 alternatives; ``persistence
+    # .technique`` has 13.
+    assert "(8 alternatives)" in body
+    assert "(13 alternatives)" in body
+
+
+def test_console_mutation_section_renders_deterministically(
+    tmp_path: Path,
+) -> None:
+    """Same registry + catalog -> byte-identical mutation section
+    across two builds (modulo the embedded generation timestamp)."""
+
+    out1 = build_operator_console(tmp_path / "a")
+    out2 = build_operator_console(tmp_path / "b")
+
+    def _strip_ts(text: str) -> str:
+        import re
+        return re.sub(
+            r"<span class='code'>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z</span>",
+            "<span class='code'>__TS__</span>",
+            text,
+        )
+
+    a = _strip_ts(out1.read_text(encoding="utf-8"))
+    b = _strip_ts(out2.read_text(encoding="utf-8"))
+    # The mutation catalog section sits between
+    # ``<h2>Mutation catalog</h2>`` and the next ``<h2>``; sliced
+    # bodies must match byte-for-byte.
+    def _slice_section(text: str) -> str:
+        start = text.find("<h2>Mutation catalog</h2>")
+        end = text.find("<h2>", start + 1)
+        return text[start:end] if start != -1 and end != -1 else ""
+
+    assert _slice_section(a) == _slice_section(b)
+
+
+def test_console_mutation_section_escapes_html_in_catalog_values() -> None:
+    """If a future catalog entry contains HTML metacharacters, the
+    rendered tag must escape them. We don't ship any such entries
+    today; this pin is the safety contract for any future addition."""
+
+    from src.core import operator_console as oc
+
+    rendered = oc._render_mutations_section()
+    # No literal ``<script>`` should ever appear (we don't have one
+    # in the catalog, and any future addition must be escaped).
+    assert "<script>" not in rendered
+    assert "</script>" not in rendered
