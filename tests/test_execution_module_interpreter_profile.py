@@ -108,8 +108,20 @@ def test_default_command_resolves_to_parent(tmp_path: Path) -> None:
 
 
 def test_attack_techniques_class_attr_covers_every_interpreter() -> None:
+    """Class attr unions interpreter sub-techniques + signed-binary proxy profiles.
+
+    Was historically scoped to only the interpreter catalog; the
+    Windows-first depth pass (mshta / rundll32 / regsvr32 / msiexec /
+    installutil / certutil / bitsadmin) added the T1218 family + T1140
+    + T1197 to the same module, so the contract test must union both.
+    """
+    from src.core.modules.impl.standard_modules import _PROXY_EXECUTION_PROFILES
     declared = set(ExecutionModule.attack_techniques)
-    expected = {"T1059", *(p["mitre"] for p in _EXECUTION_INTERPRETER_PROFILES.values())}
+    expected = {
+        "T1059",
+        *(p["mitre"] for p in _EXECUTION_INTERPRETER_PROFILES.values()),
+        *(p["mitre"] for p in _PROXY_EXECUTION_PROFILES.values()),
+    }
     assert declared == expected
 
 

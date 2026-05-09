@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import platform
 import shlex
 import subprocess  # nosec B404
 from datetime import datetime, timezone
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 from ...models import ModuleResult, TelemetryEvent
 from ..base import BaseModule, resolve_target_from_step
@@ -480,10 +482,234 @@ def _resolve_execution_profile(command: str) -> Dict[str, str]:
     return dict(profile)
 
 
+# Windows signed-binary proxy execution catalog (T1218).
+#
+# Each entry models a real Windows tradecraft pattern where adversaries
+# launch attacker-controlled code through a Microsoft-signed binary so
+# the spawning process is "trusted" from an EDR perspective. These are
+# Windows-only by definition; the catalog feeds detection drafts that
+# match on the `process.image` (or `Image` in Sysmon EID 1 vocabulary)
+# of the proxy binary.
+_PROXY_EXECUTION_PROFILES: Dict[str, Dict[str, Any]] = {
+    "mshta": {
+        "mitre": "T1218.005",
+        "interpreter": "mshta",
+        "default_image": "C:\\Windows\\System32\\mshta.exe",
+        "title_suffix": "mshta.exe HTML application execution",
+    },
+    "rundll32": {
+        "mitre": "T1218.011",
+        "interpreter": "rundll32",
+        "default_image": "C:\\Windows\\System32\\rundll32.exe",
+        "title_suffix": "rundll32.exe DLL load",
+    },
+    "regsvr32": {
+        "mitre": "T1218.010",
+        "interpreter": "regsvr32",
+        "default_image": "C:\\Windows\\System32\\regsvr32.exe",
+        "title_suffix": "regsvr32.exe COM object load",
+    },
+    "msiexec": {
+        "mitre": "T1218.007",
+        "interpreter": "msiexec",
+        "default_image": "C:\\Windows\\System32\\msiexec.exe",
+        "title_suffix": "msiexec.exe MSI installation",
+    },
+    "installutil": {
+        "mitre": "T1218.004",
+        "interpreter": "installutil",
+        "default_image": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\InstallUtil.exe",
+        "title_suffix": "InstallUtil.exe .NET assembly load",
+    },
+    "certutil": {
+        "mitre": "T1140",  # Deobfuscate/decode files or information
+        "interpreter": "certutil",
+        "default_image": "C:\\Windows\\System32\\certutil.exe",
+        "title_suffix": "certutil.exe payload decoding",
+    },
+    "bitsadmin": {
+        "mitre": "T1197",  # BITS Jobs
+        "interpreter": "bitsadmin",
+        "default_image": "C:\\Windows\\System32\\bitsadmin.exe",
+        "title_suffix": "bitsadmin.exe BITS-job execution",
+    },
+}
+
+
+def _resolve_proxy_profile(command: str) -> Optional[Dict[str, Any]]:
+    """Return the matching :data:`_PROXY_EXECUTION_PROFILES` entry, if any.
+
+    Mirrors :func:`_resolve_execution_profile` but for the system-binary
+    proxy catalog. Returns ``None`` when the first command token does
+    not match any known proxy binary.
+    """
+
+    if not command.strip():
+        return None
+    try:
+        tokens = shlex.split(command, posix=False)
+        first_token = tokens[0] if tokens else ""
+        if (
+            len(first_token) >= 2
+            and first_token[0] == first_token[-1]
+            and first_token[0] in {'"', "'"}
+        ):
+            first_token = first_token[1:-1]
+    except ValueError:
+        first_token = command.strip().split(maxsplit=1)[0]
+    if not first_token:
+        return None
+    basename = first_token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if basename.endswith(".exe"):
+        basename = basename[:-4]
+    profile = _PROXY_EXECUTION_PROFILES.get(basename)
+    if profile is None:
+        return None
+    return dict(profile)
+
+
+def _command_basename(command: str) -> str:
+    """Return the basename of the first token of ``command``.
+
+    Centralises the "what's the executable name?" extraction so the
+    detection draft, telemetry, and artifact paths agree. Unlike
+    ``command.split(" ")[0]``, this honours quoted Windows paths with
+    spaces (``"C:\\Program Files\\PowerShell\\7\\pwsh.exe"`` →
+    ``pwsh.exe``).
+    """
+
+    if not command.strip():
+        return ""
+    try:
+        tokens = shlex.split(command, posix=False)
+        first_token = tokens[0] if tokens else ""
+        if (
+            len(first_token) >= 2
+            and first_token[0] == first_token[-1]
+            and first_token[0] in {'"', "'"}
+        ):
+            first_token = first_token[1:-1]
+    except ValueError:
+        first_token = command.strip().split(maxsplit=1)[0]
+    return first_token.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+# Flag spellings PowerShell accepts for ``-EncodedCommand``. Matched
+# case-insensitively by walking command tokens and looking for a flag
+# that begins with the dash-stripped form.
+_POWERSHELL_ENC_FLAGS: Tuple[str, ...] = (
+    "encodedcommand",
+    "encoded",
+    "encode",
+    "enc",
+    "ec",
+)
+
+
+def _decode_powershell_encoded_command(command: str) -> Optional[str]:
+    """Return the decoded payload of a PowerShell ``-EncodedCommand``, or None.
+
+    PowerShell accepts ``-EncodedCommand <base64>`` (and abbreviated
+    forms like ``-enc``, ``-ec``). The base64-encoded value is the
+    UTF-16 LE bytes of the script. EDR vendors decode this on the way
+    in; defenders authoring detection drafts want to see the decoded
+    payload so they can match strings or patterns inside it.
+
+    Returns ``None`` when the command does not use ``-EncodedCommand``,
+    when the next token after the flag is not valid base64, or when
+    the decoded bytes do not look like UTF-16 LE text. Never raises.
+    """
+
+    if not command.strip():
+        return None
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        return None
+    for index, token in enumerate(tokens[:-1]):
+        normalised = token.lstrip("-/").lower()
+        if normalised not in _POWERSHELL_ENC_FLAGS:
+            continue
+        candidate = tokens[index + 1]
+        # Surrounding quotes survive ``posix=False`` lexing; strip them.
+        if (
+            len(candidate) >= 2
+            and candidate[0] == candidate[-1]
+            and candidate[0] in {'"', "'"}
+        ):
+            candidate = candidate[1:-1]
+        try:
+            raw = base64.b64decode(candidate, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+        # PowerShell -EncodedCommand uses UTF-16 LE per the documented
+        # contract. Decode strictly so a mis-encoded payload (e.g. a
+        # base64 blob that happens to decode to ASCII) does not return
+        # a misleading "decoded" string.
+        try:
+            return raw.decode("utf-16-le")
+        except UnicodeDecodeError:
+            return None
+    return None
+
+
+def _extract_proxy_target(command: str, interpreter: str) -> Optional[str]:
+    """Extract the proxy binary's payload target (URL / DLL / .ocx / .msi).
+
+    For mshta the target is the script URL or HTA path; for rundll32
+    it's ``DLL,Function``; for regsvr32 it's a COM object path / URL;
+    for msiexec it's the .msi path / URL. Best-effort: returns the
+    first non-flag token after the proxy binary, or ``None`` when no
+    such token is present.
+    """
+
+    if not command.strip():
+        return None
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        tokens = command.strip().split()
+    if len(tokens) < 2:
+        return None
+    # Skip the leading executable + any flag tokens (start with ``-``
+    # or ``/``). The first remaining token is the payload target.
+    for token in tokens[1:]:
+        if token.startswith("-") or token.startswith("/"):
+            continue
+        candidate = token
+        if (
+            len(candidate) >= 2
+            and candidate[0] == candidate[-1]
+            and candidate[0] in {'"', "'"}
+        ):
+            candidate = candidate[1:-1]
+        if candidate:
+            return candidate
+    # rundll32 callers commonly pass the DLL,Function pair as a single
+    # token after a flag — fall through to returning the second-to-last
+    # token when nothing un-flagged was found.
+    if interpreter == "rundll32" and len(tokens) >= 2:
+        candidate = tokens[1]
+        if (
+            len(candidate) >= 2
+            and candidate[0] == candidate[-1]
+            and candidate[0] in {'"', "'"}
+        ):
+            candidate = candidate[1:-1]
+        return candidate or None
+    return None
+
+
 class ExecutionModule(BaseModule):
     name = "execution"
     attack_techniques = tuple(
-        sorted({"T1059", *(profile["mitre"] for profile in _EXECUTION_INTERPRETER_PROFILES.values())})
+        sorted(
+            {
+                "T1059",
+                *(p["mitre"] for p in _EXECUTION_INTERPRETER_PROFILES.values()),
+                *(p["mitre"] for p in _PROXY_EXECUTION_PROFILES.values()),
+            }
+        )
     )
     # Execution drops a process on the target host; persistence /
     # defense_evasion / credential_access can chain off the spawned
@@ -503,8 +729,19 @@ class ExecutionModule(BaseModule):
         allow_real = bool(self._config.get("allow_real_execution", False))
         dry_run = bool(context.get("dry_run", True))
         timeout = int(self._config.get("timeout_seconds", 10))
-        interpreter_profile = _resolve_execution_profile(command)
+
+        # Prefer a Windows signed-binary proxy profile (T1218 family)
+        # when the operator's command is launched via mshta /
+        # rundll32 / regsvr32 / msiexec / installutil / certutil /
+        # bitsadmin. The interpreter catalog still resolves a
+        # T1059.x sub-technique for the rest (powershell / cmd /
+        # wscript / python / etc.).
+        proxy_profile = _resolve_proxy_profile(command)
+        interpreter_profile = (
+            proxy_profile if proxy_profile is not None else _resolve_execution_profile(command)
+        )
         mitre = interpreter_profile["mitre"]
+        interpreter = interpreter_profile["interpreter"]
 
         if dry_run or not allow_real:
             output = f"[dry-run] would execute: {command}"
@@ -534,30 +771,135 @@ class ExecutionModule(BaseModule):
                 )
 
         target_os = _resolve_target_os(params)
+        # Defender-relevant context that EDR / Sysmon EID 1 captures
+        # natively. Operators can override the parent via param when
+        # modelling a chained spawn (powershell.exe -> rundll32.exe);
+        # otherwise we default to a generic shell parent so the
+        # detection draft has a non-empty ParentCommandLine to fire on.
+        parent_command_line = str(params.get("parent_command_line") or "").strip()
+        if not parent_command_line:
+            parent_command_line = (
+                "explorer.exe" if target_os == "windows" else "/bin/bash"
+            )
+        image_basename = _command_basename(command)
+        # PowerShell payload decoding: when the operator launches a
+        # ``-EncodedCommand`` (the canonical APT loader pattern), surface
+        # the decoded UTF-16 LE script so detection drafts can match on
+        # the actual payload contents instead of the opaque base64 blob.
+        decoded_command: Optional[str] = None
+        if interpreter == "powershell":
+            decoded_command = _decode_powershell_encoded_command(command)
+        # Proxy binary payload target — the URL / DLL / .ocx / .msi
+        # operands EDR vendors flag for T1218 detection.
+        proxy_target: Optional[str] = (
+            _extract_proxy_target(command, interpreter)
+            if proxy_profile is not None
+            else None
+        )
+
+        telemetry_details: Dict[str, Any] = {
+            "command": command,
+            "return_code": rc,
+            "target_os": target_os,
+            "interpreter": interpreter,
+            "mitre_technique": mitre,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "image_basename": image_basename,
+            "parent_command_line": parent_command_line,
+        }
+        if decoded_command is not None:
+            telemetry_details["decoded_command"] = decoded_command
+        if proxy_target is not None:
+            telemetry_details["proxy_target"] = proxy_target
+        if proxy_profile is not None:
+            telemetry_details["proxy_profile"] = interpreter
+
         event = TelemetryEvent(
             event_type="execution",
             module=self.name,
-            details={
-                "command": command,
-                "return_code": rc,
-                "target_os": target_os,
-                "interpreter": interpreter_profile["interpreter"],
-                "mitre_technique": mitre,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            },
+            details=telemetry_details,
         )
-        hints = {
-            "title": f"Suspicious command execution ({target_os})",
-            "logsource": _execution_logsource(target_os),
+        # Detection draft uses the existing Sigma vocabulary the
+        # downstream pipeline already understands (process.image,
+        # process.command_line, process.parent_command_line - the
+        # CIM/UDM translator at draft time maps these to vendor-
+        # specific fields). Always pin Image / ParentCommandLine so
+        # the draft fires reliably; widen with command_line|contains
+        # only for content that's actually defender-relevant.
+        if proxy_profile is not None:
+            title = f"Signed-binary proxy execution: {proxy_profile['title_suffix']}"
+            logsource = {"category": "process_creation", "product": "windows"}
+            # Always pin against the canonical Windows binary name (e.g.
+            # ``mshta.exe`` even if the operator typed ``mshta``); EDR
+            # captures process.image with the full filename so the
+            # detection draft must match the same shape.
+            canonical_image = (
+                proxy_profile["default_image"].rsplit("\\", 1)[-1]
+            )
+            selection: Dict[str, Any] = {
+                "process.image|endswith": f"\\{canonical_image}",
+                "process.parent_command_line|contains": parent_command_line.split()[0]
+                if parent_command_line.split()
+                else parent_command_line,
+            }
+            if proxy_target is not None:
+                selection["process.command_line|contains"] = proxy_target
+        elif decoded_command is not None:
+            title = f"PowerShell EncodedCommand execution ({target_os})"
+            logsource = {"category": "process_creation", "product": "windows"}
+            selection = {
+                "process.image|endswith": "\\powershell.exe",
+                "process.command_line|contains_all": ["-enc"],
+            }
+        else:
+            title = f"Suspicious command execution ({target_os})"
+            logsource = _execution_logsource(target_os)
+            selection = {
+                "process.image|endswith": (
+                    f"\\{image_basename}" if image_basename else command.split(" ")[0]
+                ),
+                "process.command_line|contains": image_basename or command.split(" ")[0],
+            }
+
+        hints: Dict[str, Any] = {
+            "title": title,
+            "logsource": logsource,
             "detection": {
-                "selection": {"process.command_line|contains": command.split(" ")[0]},
+                "selection": selection,
                 "condition": "selection",
             },
             "mitre_technique": mitre,
             "process_command_line": command,
+            "process_image": image_basename,
+            "process_parent_command_line": parent_command_line,
             "target_os": target_os,
-            "interpreter": interpreter_profile["interpreter"],
+            "interpreter": interpreter,
         }
+        if decoded_command is not None:
+            hints["decoded_command"] = decoded_command
+        if proxy_target is not None:
+            hints["proxy_target"] = proxy_target
+        if proxy_profile is not None:
+            hints["proxy_profile"] = interpreter
+            hints["proxy_default_image"] = proxy_profile["default_image"]
+
+        artifacts: Dict[str, Any] = {
+            "command": command,
+            "stdout": output,
+            "return_code": rc,
+            "target_os": target_os,
+            "interpreter": interpreter,
+            "mitre_technique": mitre,
+            "image_basename": image_basename,
+            "parent_command_line": parent_command_line,
+        }
+        if decoded_command is not None:
+            artifacts["decoded_command"] = decoded_command
+        if proxy_target is not None:
+            artifacts["proxy_target"] = proxy_target
+        if proxy_profile is not None:
+            artifacts["proxy_profile"] = interpreter
+
         return _result(
             self.name,
             status,
@@ -565,14 +907,7 @@ class ExecutionModule(BaseModule):
             techniques=[mitre],
             telemetry=[event],
             hints=hints,
-            artifacts={
-                "command": command,
-                "stdout": output,
-                "return_code": rc,
-                "target_os": target_os,
-                "interpreter": interpreter_profile["interpreter"],
-                "mitre_technique": mitre,
-            },
+            artifacts=artifacts,
         )
 
 
