@@ -324,6 +324,27 @@ def test_execution_parent_command_line_default_is_explorer_on_windows(
     assert result.artifacts["parent_command_line"] == "explorer.exe"
 
 
+def test_execution_parent_command_line_default_is_bare_basename_on_linux(
+    tmp_path: Path,
+) -> None:
+    """Default parent on non-Windows is the bare ``bash`` basename.
+
+    The lab-safety canary in tests/test_module_artifact_paths.py
+    resolves every string in ModuleResult.artifacts that names a
+    real on-disk file and asserts it lives under output_dir.
+    ``/bin/bash`` exists on Linux CI runners and would silently
+    flip the canary; the bare basename preserves the detection
+    draft's ParentCommandLine intent while staying canary-clean.
+    """
+
+    mod = ExecutionModule()
+    mod.update_config({})
+    result = mod.execute(
+        {"command": "echo hi", "target_os": "linux"}, _ctx(tmp_path)
+    )
+    assert result.artifacts["parent_command_line"] == "bash"
+
+
 def test_execution_detection_uses_basename_not_naive_split(tmp_path: Path) -> None:
     """``"C:\\Program Files\\..\\pwsh.exe" -c X`` would naively split at
     the space inside the quotes; the draft must use the basename helper."""

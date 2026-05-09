@@ -776,10 +776,16 @@ class ExecutionModule(BaseModule):
         # modelling a chained spawn (powershell.exe -> rundll32.exe);
         # otherwise we default to a generic shell parent so the
         # detection draft has a non-empty ParentCommandLine to fire on.
+        # Use bare binary names (not absolute paths) so the lab
+        # safety canary - which resolves any artifact string that
+        # names a real on-disk file - cannot accidentally flag the
+        # default. Real EDR vendors capture ParentCommandLine in
+        # vendor-specific shape; the binary name is the part the
+        # detection draft fires on regardless.
         parent_command_line = str(params.get("parent_command_line") or "").strip()
         if not parent_command_line:
             parent_command_line = (
-                "explorer.exe" if target_os == "windows" else "/bin/bash"
+                "explorer.exe" if target_os == "windows" else "bash"
             )
         image_basename = _command_basename(command)
         # PowerShell payload decoding: when the operator launches a
