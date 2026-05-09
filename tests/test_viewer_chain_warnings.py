@@ -128,6 +128,32 @@ def test_render_chain_warnings_skips_malformed_warning_rows() -> None:
     assert "not a mapping" not in rendered
 
 
+def test_render_chain_warnings_suppresses_section_when_only_malformed_rows() -> None:
+    """Codex P2 (PR #160): when ``warnings`` is non-empty but every
+    entry is malformed (e.g. legacy / external manifests carrying
+    a list of strings), the renderer must suppress the section
+    entirely - rendering a header with an empty table below would
+    imply warnings exist without showing any actionable rows. The
+    fix returns "" when the post-filter body has no rows."""
+
+    rendered = _render_chain_warnings(
+        {
+            "chain": {
+                "warnings": [
+                    "not a mapping",
+                    None,
+                    42,
+                    ["nested", "list"],
+                ],
+            },
+        },
+    )
+    assert rendered == "", (
+        "expected the section to be suppressed when no valid rows "
+        f"survive filtering; got: {rendered!r}"
+    )
+
+
 def test_render_chain_warnings_escapes_html_metacharacters() -> None:
     """A future warning row carrying HTML metacharacters in any field
     must be escaped on the way out."""

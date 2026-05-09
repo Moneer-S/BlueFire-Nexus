@@ -601,12 +601,6 @@ def _render_chain_warnings(manifest: Mapping[str, Any]) -> str:
         # don't need a "no chain warnings" placeholder competing for
         # attention with the propagation graph.
         return ""
-    rows: List[str] = [
-        "<thead><tr>"
-        "<th>step id</th><th>consumer module</th>"
-        "<th>missing type</th><th>missing slot</th>"
-        "</tr></thead>"
-    ]
     body: List[str] = []
     for warning in warnings:
         if not isinstance(warning, Mapping):
@@ -619,7 +613,22 @@ def _render_chain_warnings(manifest: Mapping[str, Any]) -> str:
             f'<td><code>{_esc(warning.get("missing_key"))}</code></td>'
             "</tr>"
         )
-    rows.append(f'<tbody>{"".join(body)}</tbody>')
+    if not body:
+        # Codex P2 (PR #160): when ``warnings`` is non-empty but
+        # every entry is malformed (e.g. a list of strings from a
+        # legacy / external manifest), the loop skips every item.
+        # Without this guard we'd render a section header with an
+        # empty table below - implying warnings exist without
+        # showing any actionable rows. Treat "no valid rows" as
+        # the same suppression case as "no warnings".
+        return ""
+    rows: List[str] = [
+        "<thead><tr>"
+        "<th>step id</th><th>consumer module</th>"
+        "<th>missing type</th><th>missing slot</th>"
+        "</tr></thead>",
+        f'<tbody>{"".join(body)}</tbody>',
+    ]
     intro = (
         '<div class="muted" style="margin-bottom:8px;">'
         "Each row is a consumer step that ran without an upstream "
