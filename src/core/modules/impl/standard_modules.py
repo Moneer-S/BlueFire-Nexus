@@ -2620,9 +2620,15 @@ class ResourceDevelopmentModule(BaseModule):
     # rest of the chain consumes: domain / VPS / web service /
     # email account / code-signing cert / etc. The natural pairing is
     # resource_development -> command_control / exfiltration.
+    #
+    # ``key="target"`` matches the artifacts-dict key the runtime
+    # actually emits (the registered domain / VPS / cert path);
+    # the prior ``key="kind"`` referenced no real artifact key
+    # so the chain context never indexed a c2_endpoint emission
+    # even when resource_development ran.
     io_contract = CapabilityIOContract(
         produces=produces(
-            ArtifactSpec(type=C2_ENDPOINT, key="kind", description="provisioned C2-bearing infrastructure (domain / VPS / web service)"),
+            ArtifactSpec(type=C2_ENDPOINT, key="target", description="provisioned C2-bearing infrastructure (domain / VPS / web service)"),
         ),
     )
 
