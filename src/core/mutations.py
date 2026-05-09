@@ -268,6 +268,206 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
 TARGET_OS_VALUES: Tuple[str, ...] = ("windows", "linux", "macos")
 
 
+# Interpreter-prefix rewrite catalog for ExecutionModule's
+# free-form ``command`` slot. Each entry models a canonical
+# command-line shape: a one-token executable + a one-line payload
+# flag + the payload itself. The mutation engine extracts the
+# payload from a current command, identifies which interpreter
+# was used, and re-renders the command with each alternative
+# interpreter's prefix.
+#
+# Kept narrow on purpose: only the four interpreters that are
+# unambiguously cross-platform with a one-line payload flag.
+# ``-EncodedCommand`` powershell payloads are intentionally
+# excluded - swapping interpreters loses the encoded-command
+# semantic, and re-encoding the payload for a different
+# interpreter is operator-supplied content rather than a
+# catalog-driven swap.
+_INTERPRETER_PREFIX_REWRITES: Tuple[Dict[str, str], ...] = (
+    {
+        "name": "powershell",
+        "binaries": "powershell|pwsh",
+        "prefix": "powershell -nop -c",
+        "payload_flag": "-c",
+    },
+    {
+        "name": "cmd",
+        "binaries": "cmd",
+        "prefix": "cmd /c",
+        "payload_flag": "/c",
+    },
+    {
+        "name": "bash",
+        "binaries": "bash|sh|zsh",
+        "prefix": "bash -c",
+        "payload_flag": "-c",
+    },
+    {
+        "name": "python",
+        "binaries": "python|python3|py",
+        "prefix": "python -c",
+        "payload_flag": "-c",
+    },
+)
+
+
+def _identify_interpreter(command: str) -> Optional[Dict[str, str]]:
+    """Return the matching :data:`_INTERPRETER_PREFIX_REWRITES` entry.
+
+    Looks at the basename of the first token, lowercased and with
+    a trailing ``.exe`` stripped. ``None`` when no entry recognises
+    the command (the swap surface is defined for a small canonical
+    set, not every possible exotic interpreter).
+    """
+
+    if not command.strip():
+        return None
+    try:
+        import shlex
+
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    first = tokens[0]
+    if (
+        len(first) >= 2
+        and first[0] == first[-1]
+        and first[0] in {'"', "'"}
+    ):
+        first = first[1:-1]
+    basename = first.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if basename.endswith(".exe"):
+        basename = basename[:-4]
+    for entry in _INTERPRETER_PREFIX_REWRITES:
+        if basename in set(entry["binaries"].split("|")):
+            return entry
+    return None
+
+
+def _extract_payload_after_flag(command: str, payload_flag: str) -> Optional[str]:
+    """Pull the payload that follows a known one-line flag.
+
+    Returns the literal substring after the flag (whitespace-trimmed).
+    ``None`` when the flag is not present in the command. Quoted
+    payloads keep their surrounding quotes so the rewrite preserves
+    operator-supplied quoting verbatim.
+    """
+
+    if not command.strip() or not payload_flag:
+        return None
+    try:
+        import shlex
+
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        return None
+    for index, token in enumerate(tokens):
+        # Match ``flag`` exactly (case-insensitive) or ``/flag`` /
+        # ``-flag`` permutations that map to the same payload-flag
+        # semantic. Don't accept partial matches.
+        if token.lower() == payload_flag.lower():
+            payload_tokens = tokens[index + 1:]
+            if not payload_tokens:
+                return None
+            return " ".join(payload_tokens).strip()
+    return None
+
+
+def _command_has_encoded_command_flag(command: str) -> bool:
+    """Detect ``-EncodedCommand`` / ``-enc`` / ``-ec`` style flags.
+
+    Interpreter swap is skipped for encoded commands because the
+    payload semantics don't translate (re-encoding a base64+UTF-16
+    payload for cmd / bash / python is operator content, not a
+    catalog swap).
+    """
+
+    if not command.strip():
+        return False
+    try:
+        import shlex
+
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        return False
+    enc_flags = {
+        "encodedcommand",
+        "encoded",
+        "encode",
+        "enc",
+        "ec",
+    }
+    for token in tokens:
+        normalised = token.lstrip("-/").lower()
+        if normalised in enc_flags:
+            return True
+    return False
+
+
+def propose_command_interpreter_swaps(
+    step: Mapping[str, Any],
+) -> List[StepMutation]:
+    """Return interpreter-prefix swap mutations for an execution step.
+
+    Recognises a small canonical set of cross-platform interpreters
+    (powershell / cmd / bash / python). When the current command
+    uses one of them, returns one :class:`StepMutation` per
+    alternative interpreter, with ``param_key="command"`` and
+    ``to_value`` set to the rewritten command.
+
+    Returns an empty list when:
+
+    - the step is not an execution module step;
+    - the step's ``params.command`` (or ``cmd``) is missing or empty;
+    - the command's interpreter is not in the canonical rewrite set;
+    - the command uses ``-EncodedCommand`` (encoded payloads are
+      operator content, not a catalog swap surface).
+    """
+
+    if str(step.get("module") or "").strip() != "execution":
+        return []
+    params = step.get("params") or {}
+    if not isinstance(params, Mapping):
+        return []
+    command_key = "command" if "command" in params else (
+        "cmd" if "cmd" in params else None
+    )
+    if command_key is None:
+        return []
+    command = str(params.get(command_key) or "").strip()
+    if not command:
+        return []
+    if _command_has_encoded_command_flag(command):
+        return []
+    current = _identify_interpreter(command)
+    if current is None:
+        return []
+    payload = _extract_payload_after_flag(command, current["payload_flag"])
+    if payload is None or not payload:
+        return []
+    proposals: List[StepMutation] = []
+    for alternative in _INTERPRETER_PREFIX_REWRITES:
+        if alternative["name"] == current["name"]:
+            continue
+        rewritten = f"{alternative['prefix']} {payload}".strip()
+        proposals.append(
+            StepMutation(
+                module="execution",
+                param_key=command_key,
+                from_value=command,
+                to_value=rewritten,
+                rationale=(
+                    f"rewrite execution.{command_key} interpreter from "
+                    f"{current['name']!r} to {alternative['name']!r}; "
+                    f"payload preserved verbatim"
+                ),
+            )
+        )
+    return proposals
+
+
 def propose_mutations(step: Mapping[str, Any]) -> List[StepMutation]:
     """Return every catalog-driven swap available for the step.
 
@@ -325,6 +525,13 @@ def propose_mutations(step: Mapping[str, Any]) -> List[StepMutation]:
                     rationale=f"swap {module}.target_os from {current_os!r} to {candidate!r}",
                 )
             )
+    # Execution module: ``params.command`` is a free-form string the
+    # runtime resolves to an interpreter at runtime. Catalog-keyed
+    # swaps don't apply, but a content-aware interpreter rewrite
+    # (powershell -> cmd / bash / python) gives the mutation engine
+    # a real swap surface for execution steps too.
+    if module == "execution":
+        proposals.extend(propose_command_interpreter_swaps(step))
     return proposals
 
 
@@ -390,6 +597,7 @@ __all__ = [
     "StepMutation",
     "TARGET_OS_VALUES",
     "apply_mutation",
+    "propose_command_interpreter_swaps",
     "propose_mutations",
     "random_mutation",
 ]

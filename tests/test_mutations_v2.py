@@ -467,3 +467,210 @@ def test_mutated_persistence_step_runs_under_module(tmp_path) -> None:
     result = pm.execute(mutated["params"], ctx)
     assert result.status == "success"
     assert "T1098.004" in result.techniques
+
+
+# ---------------------------------------------------------------------------
+# Execution interpreter swap (content-aware command rewrite)
+# ---------------------------------------------------------------------------
+
+
+def test_propose_command_interpreter_swaps_powershell_to_cmd_bash_python() -> None:
+    """A canonical ``powershell -nop -c <payload>`` step should yield
+    rewrite mutations to cmd / bash / python."""
+
+    from src.core.mutations import propose_command_interpreter_swaps
+
+    step = {
+        "module": "execution",
+        "params": {"command": "powershell -nop -c Get-Date"},
+    }
+    swaps = propose_command_interpreter_swaps(step)
+    rewritten = {s.to_value for s in swaps}
+    assert "cmd /c Get-Date" in rewritten
+    assert "bash -c Get-Date" in rewritten
+    assert "python -c Get-Date" in rewritten
+    # Should NOT propose a swap to itself.
+    assert all("powershell" not in s.to_value for s in swaps)
+
+
+def test_propose_command_interpreter_swaps_returns_empty_for_unknown_interpreter() -> None:
+    """A command using an interpreter outside the catalog (e.g.
+    ``rundll32.exe``) yields no rewrite mutations."""
+
+    from src.core.mutations import propose_command_interpreter_swaps
+
+    step = {
+        "module": "execution",
+        "params": {"command": "rundll32.exe shell32.dll,Control_RunDLL"},
+    }
+    assert propose_command_interpreter_swaps(step) == []
+
+
+def test_propose_command_interpreter_swaps_skips_encoded_commands() -> None:
+    """``-EncodedCommand`` payloads are operator content, not catalog
+    swaps - encoding semantics don't translate across interpreters."""
+
+    from src.core.mutations import propose_command_interpreter_swaps
+
+    encoded_step = {
+        "module": "execution",
+        "params": {"command": "powershell -nop -w hidden -enc UwB0AGEAcgB0AC0AUAByAG8AYwBlAHMAcwA="},
+    }
+    assert propose_command_interpreter_swaps(encoded_step) == []
+
+
+def test_propose_command_interpreter_swaps_rejects_non_execution_step() -> None:
+    """Only execution steps get interpreter rewrites - a
+    persistence step with a coincidental ``command`` param yields
+    nothing."""
+
+    from src.core.mutations import propose_command_interpreter_swaps
+
+    step = {
+        "module": "persistence",
+        "params": {"command": "powershell -nop -c X"},
+    }
+    assert propose_command_interpreter_swaps(step) == []
+
+
+def test_propose_command_interpreter_swaps_handles_quoted_path() -> None:
+    """A quoted-path PowerShell invocation (``"C:\\Program Files
+    \\PowerShell\\7\\pwsh.exe" -nop -c X``) should still resolve
+    to the powershell entry."""
+
+    from src.core.mutations import propose_command_interpreter_swaps
+
+    step = {
+        "module": "execution",
+        "params": {
+            "command": '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -nop -c "Get-Date"'
+        },
+    }
+    swaps = propose_command_interpreter_swaps(step)
+    rewritten = {s.to_value for s in swaps}
+    assert "cmd /c \"Get-Date\"" in rewritten
+    assert "bash -c \"Get-Date\"" in rewritten
+
+
+def test_propose_command_interpreter_swaps_recognises_cmd_bash_python() -> None:
+    """Each canonical interpreter starting point should yield swaps
+    to the other three."""
+
+    from src.core.mutations import propose_command_interpreter_swaps
+
+    for current_command, expected_prefix in [
+        ("cmd /c whoami", "powershell -nop -c"),
+        ("bash -c id", "cmd /c"),
+        ("python -c print", "powershell -nop -c"),
+    ]:
+        step = {
+            "module": "execution",
+            "params": {"command": current_command},
+        }
+        swaps = propose_command_interpreter_swaps(step)
+        rewritten = {s.to_value for s in swaps}
+        # At least one of the three alternative prefixes must appear.
+        assert any(
+            expected_prefix in candidate
+            for candidate in rewritten
+        ), (
+            f"expected prefix {expected_prefix!r} for command "
+            f"{current_command!r}; got {rewritten}"
+        )
+
+
+def test_propose_mutations_includes_interpreter_swaps_for_execution_step() -> None:
+    """The top-level ``propose_mutations`` should fold interpreter
+    rewrites into the result for execution steps so callers don't
+    need to know about the second helper."""
+
+    from src.core.mutations import propose_mutations
+
+    step = {
+        "module": "execution",
+        "params": {"command": "powershell -nop -c Get-Date"},
+    }
+    proposals = propose_mutations(step)
+    rewritten_commands = {
+        m.to_value for m in proposals if m.param_key == "command"
+    }
+    assert "cmd /c Get-Date" in rewritten_commands
+    assert "bash -c Get-Date" in rewritten_commands
+    assert "python -c Get-Date" in rewritten_commands
+
+
+def test_apply_mutation_with_interpreter_swap_sets_command_and_history() -> None:
+    """An interpreter swap mutation applied via ``apply_mutation``
+    should overwrite ``params.command`` and append the rewrite
+    rationale to ``mutation_history``."""
+
+    from src.core.mutations import (
+        apply_mutation,
+        propose_command_interpreter_swaps,
+    )
+
+    step = {
+        "step_id": "exec-1",
+        "module": "execution",
+        "params": {"command": "powershell -nop -c Get-Date"},
+    }
+    mutation = next(
+        s for s in propose_command_interpreter_swaps(step)
+        if s.to_value.startswith("cmd /c")
+    )
+    out = apply_mutation(step, mutation)
+    assert out["params"]["command"] == "cmd /c Get-Date"
+    history = out["params"]["mutation_history"]
+    assert len(history) == 1
+    assert "powershell" in history[0]["rationale"]
+    assert "cmd" in history[0]["rationale"]
+
+
+def test_propose_command_interpreter_swaps_handles_cmd_alias() -> None:
+    """The ``cmd`` interpreter doesn't have a payload-flag conflict;
+    extracting payload after ``/c`` should preserve the entire
+    remaining command line."""
+
+    from src.core.mutations import propose_command_interpreter_swaps
+
+    step = {
+        "module": "execution",
+        "params": {"command": "cmd /c \"echo hello world\""},
+    }
+    swaps = propose_command_interpreter_swaps(step)
+    # The payload "echo hello world" (with quotes) should appear in
+    # every alternative.
+    for s in swaps:
+        assert "hello world" in s.to_value
+
+
+def test_propose_command_interpreter_swaps_returns_empty_for_empty_params() -> None:
+    """A step with no command field yields no swaps."""
+
+    from src.core.mutations import propose_command_interpreter_swaps
+
+    assert propose_command_interpreter_swaps(
+        {"module": "execution", "params": {}}
+    ) == []
+    assert propose_command_interpreter_swaps(
+        {"module": "execution"}
+    ) == []
+    assert propose_command_interpreter_swaps(
+        {"module": "execution", "params": {"command": ""}}
+    ) == []
+
+
+def test_propose_command_interpreter_swaps_recognises_cmd_param_alias() -> None:
+    """The runtime accepts ``params.cmd`` as an alias for ``command``;
+    the interpreter rewrite should support both."""
+
+    from src.core.mutations import propose_command_interpreter_swaps
+
+    step = {
+        "module": "execution",
+        "params": {"cmd": "powershell -nop -c Get-Date"},
+    }
+    swaps = propose_command_interpreter_swaps(step)
+    assert swaps
+    # The mutation should target the ``cmd`` key, not ``command``.
+    assert all(s.param_key == "cmd" for s in swaps)
