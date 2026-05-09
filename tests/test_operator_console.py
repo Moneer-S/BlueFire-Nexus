@@ -281,3 +281,108 @@ def test_console_compute_chain_pairs_skips_self_edges() -> None:
     assert self_edges == [], (
         f"chain pair table includes self-edges: {self_edges}"
     )
+
+
+def test_scenario_summary_parses_block_scalar_objective(tmp_path: Path) -> None:
+    """Codex P2 fix: ``objective: |`` (multi-line block scalar) must
+    yield the joined body text, not the literal ``|`` placeholder.
+
+    Shipped scenarios like ``enterprise_intrusion_chain.yaml`` and
+    ``fin7_initial_access_to_c2.yaml`` use the multi-line literal
+    block form. Without this fix the operator console rendered them
+    with a literal ``|`` instead of meaningful text.
+    """
+
+    from src.core.operator_console import _parse_scenario_summary
+
+    scenario = tmp_path / "block.yaml"
+    scenario.write_text(
+        "id: block-test\n"
+        "name: Block-scalar test scenario\n"
+        "objective: |\n"
+        "  First line of multi-line objective.\n"
+        "  Second line continues here.\n"
+        "  Third line ends the body.\n"
+        "fail_fast: false\n"
+        "steps: []\n",
+        encoding="utf-8",
+    )
+    summary = _parse_scenario_summary(scenario)
+    assert summary["name"] == "Block-scalar test scenario"
+    # The multi-line body must be joined - never a bare ``|``.
+    assert summary["objective"] != "|"
+    assert "First line of multi-line objective." in summary["objective"]
+    assert "Second line continues here." in summary["objective"]
+    assert "Third line ends the body." in summary["objective"]
+
+
+def test_scenario_summary_parses_folded_block_scalar(tmp_path: Path) -> None:
+    """``objective: >`` (folded block scalar) must be handled the same
+    way as ``|`` (literal block scalar)."""
+
+    from src.core.operator_console import _parse_scenario_summary
+
+    scenario = tmp_path / "folded.yaml"
+    scenario.write_text(
+        "id: folded-test\n"
+        "name: Folded scenario\n"
+        "objective: >\n"
+        "  Stand up the lookalike domain that will both deliver the\n"
+        "  phish and host the C2 endpoint.\n"
+        "fail_fast: false\n"
+        "steps: []\n",
+        encoding="utf-8",
+    )
+    summary = _parse_scenario_summary(scenario)
+    assert summary["objective"] != ">"
+    assert "lookalike domain" in summary["objective"]
+    assert "C2 endpoint" in summary["objective"]
+
+
+def test_scenario_summary_inline_scalar_still_works(tmp_path: Path) -> None:
+    """The inline ``key: value`` form must keep working alongside the
+    new block-scalar branch."""
+
+    from src.core.operator_console import _parse_scenario_summary
+
+    scenario = tmp_path / "inline.yaml"
+    scenario.write_text(
+        "id: inline-test\n"
+        "name: Inline scenario\n"
+        'objective: "A single inline objective string."\n'
+        "fail_fast: false\n"
+        "steps: []\n",
+        encoding="utf-8",
+    )
+    summary = _parse_scenario_summary(scenario)
+    assert summary["name"] == "Inline scenario"
+    assert summary["objective"] == "A single inline objective string."
+
+
+def test_scenario_summary_block_scalar_body_renders_in_console(tmp_path: Path) -> None:
+    """End-to-end pin: a scenario file with a multi-line block-scalar
+    objective surfaces the joined body text in the operator console
+    HTML, not a literal ``|`` placeholder."""
+
+    scenarios_dir = tmp_path / "scenarios"
+    scenarios_dir.mkdir()
+    (scenarios_dir / "block.yaml").write_text(
+        "id: block-scenario\n"
+        "name: Block-scalar smoke scenario\n"
+        "objective: |\n"
+        "  This is the multi-line objective body. Defenders should\n"
+        "  see the actual text in the console, never a bare pipe.\n"
+        "fail_fast: false\n"
+        "steps: []\n",
+        encoding="utf-8",
+    )
+    body = build_operator_console(tmp_path, scenarios_dir=scenarios_dir).read_text(
+        encoding="utf-8"
+    )
+    assert "Block-scalar smoke scenario" in body
+    assert "multi-line objective body" in body
+    # The bare-pipe regression marker must NOT appear in the rendered
+    # scenarios card. ``|`` is a common HTML / CSS char so we anchor
+    # the check on the scenarios-card class to scope the negative.
+    assert "scenario-objective'>|" not in body
+    assert 'scenario-objective">|' not in body

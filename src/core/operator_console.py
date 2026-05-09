@@ -234,10 +234,23 @@ def _list_scenarios(scenarios_dir: Optional[Path]) -> List[Dict[str, Any]]:
 def _parse_scenario_summary(path: Path) -> Dict[str, Any]:
     """Tiny line-based YAML scrape for scenario top-level metadata.
 
-    Reads at most the first 30 lines, looks for ``name:`` /
-    ``description:`` / ``objective:`` keys at column 0. Doesn't try to
-    parse nested structures or YAML literal blocks; used only for a
-    summary preview.
+    Reads at most the first 60 lines and looks for ``name:`` /
+    ``description:`` / ``objective:`` keys at column 0. Handles two
+    real-world value shapes:
+
+    1. **Inline scalar**: ``objective: Text on the same line.`` -
+       captured directly with surrounding quotes stripped.
+    2. **Literal / folded block scalar**: ``objective: |`` (or
+       ``>``) - continuation lines are gathered as long as they are
+       more indented than the key, then joined with a single space
+       for the preview. Without this branch, shipped scenarios that
+       use ``objective: |`` would render with a literal ``|``
+       placeholder in the operator console (caught by Codex on PR
+       #152: shipped scenarios like ``enterprise_intrusion_chain``
+       and ``fin7_initial_access_to_c2`` use the multi-line form).
+
+    Nested structures other than block scalars (e.g. mapping bodies)
+    are not parsed; the scrape is intentionally narrow.
     """
 
     summary: Dict[str, Any] = {
@@ -246,21 +259,54 @@ def _parse_scenario_summary(path: Path) -> Dict[str, Any]:
         "description": "",
         "objective": "",
     }
+    keys = ("name", "description", "objective")
+    block_scalar_indicators = {"|", ">", "|-", ">-", "|+", ">+"}
     try:
         with path.open(encoding="utf-8", errors="replace") as fh:
-            for index, raw in enumerate(fh):
-                if index >= 30:
-                    break
-                line = raw.rstrip("\n")
-                if not line or line[0] not in ("n", "d", "o"):
-                    continue
-                for key in ("name", "description", "objective"):
-                    prefix = f"{key}:"
-                    if line.startswith(prefix) and not summary[key]:
-                        summary[key] = line[len(prefix):].strip().strip('"').strip("'")
-                        break
+            lines = [raw.rstrip("\n") for raw in fh]
     except OSError:
-        pass
+        return summary
+
+    # Cap how far we scan; top-level metadata always lives near the
+    # head of the file, even when block-scalar bodies are multi-line.
+    cap = min(len(lines), 60)
+    index = 0
+    while index < cap:
+        line = lines[index]
+        if not line or line[0] not in ("n", "d", "o"):
+            index += 1
+            continue
+        next_index = index + 1
+        for key in keys:
+            prefix = f"{key}:"
+            if not line.startswith(prefix) or summary[key]:
+                continue
+            raw_value = line[len(prefix):].strip()
+            if raw_value and raw_value not in block_scalar_indicators:
+                # Inline scalar form: ``key: value``.
+                summary[key] = raw_value.strip('"').strip("'")
+                break
+            # Block-scalar form: ``key: |`` (literal) or ``key: >``
+            # (folded), with optional ``-`` / ``+`` chomping
+            # indicator. Gather continuation lines that are more
+            # indented than the key column (key sits at column 0, so
+            # any leading-whitespace line is a continuation; a line
+            # that starts at column 0 marks the end of the block).
+            collected: List[str] = []
+            j = index + 1
+            while j < len(lines):
+                next_line = lines[j]
+                if not next_line.strip():
+                    j += 1
+                    continue
+                if next_line[0] not in (" ", "\t"):
+                    break
+                collected.append(next_line.strip())
+                j += 1
+            summary[key] = " ".join(part for part in collected if part)
+            next_index = j
+            break
+        index = next_index
     return summary
 
 
