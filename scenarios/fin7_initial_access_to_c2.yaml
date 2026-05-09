@@ -1,41 +1,159 @@
 id: fin7_initial_access_to_c2
-name: FIN7 Initial Access to C2
+name: FIN7 initial access to C2
 objective: |
-  Simulate a FIN7-like three-step chain from spearphishing-attachment
-  delivery through encoded PowerShell loader execution to HTTPS C2
-  beaconing. Modeled after FIN7's documented restaurant / hospitality
-  intrusions; runs simulate-only with `network_touch: false`, so no
-  destructive payload or live traffic leaves the host under any input.
+  Simulate a FIN7-like seven-step intrusion against a hospitality
+  finance host: stand up an attacker-owned domain, spearphish a finance
+  analyst with a macro-laden invoice, run an encoded PowerShell loader
+  parented by WINWORD.EXE, masquerade the loader, beacon HTTPS to the
+  staged domain, enumerate the POS environment, and exfiltrate over the
+  established C2 channel. The chain is modeled after FIN7's documented
+  hospitality-sector tradecraft (macro-bearing Office lures, encoded
+  PowerShell loaders, HTTPS C2 to attacker-staged infrastructure).
+  Every step is simulate-only with `network_touch: false`; no real
+  process spawn, registry write, or live network call occurs under any
+  input. Five chain consumer pairs are demonstrated end-to-end so
+  defenders can correlate the typed propagation graph against their
+  own telemetry.
 attack_coverage:
-  - T1566
-  - T1059
+  - T1583.001
+  - T1566.001
+  - T1059.001
+  - T1036
   - T1071.001
-fail_fast: true
+  - T1083
+  - T1041
+fail_fast: false
 steps:
-  - id: step_01
-    name: Spearphishing attachment delivered to finance user
+  - id: stage-fin7-domain
+    name: Adversary registers FIN7-style hospitality-themed domain
+    objective: >-
+      Stand up the lookalike domain that will both deliver the macro
+      lure and host the HTTPS C2 endpoint. Defenders pivot from
+      registrar-intelligence on this step to the later C2 destination.
+    module: resource_development
+    params:
+      resource_type: domain
+      target: invoice-mailer.example.lab
+      network_touch: false
+
+  - id: phish-attachment
+    name: Spearphishing attachment delivered to hospitality finance user
+    objective: >-
+      Deliver the macro-bearing invoice to a finance analyst's mailbox
+      from the lookalike domain. The first defender signal is the
+      precursor email + attachment pair; second-order signals are
+      attachment opens.
     module: initial_access
     params:
-      vector: spearphishing_attachment
-      target: finance-user
-  - id: step_02
-    name: Encoded PowerShell loader executes from attachment
+      vector: phishing_attachment
+      target: finance-analyst@example.lab
+      network_touch: false
+
+  - id: loader-execution
+    name: Encoded PowerShell loader spawned by WINWORD.EXE macro
+    objective: >-
+      Execute the encoded PowerShell loader from the macro inside the
+      delivered invoice. The strongest defender signal is the
+      WINWORD.EXE -> powershell.exe parent/child chain with an
+      `-EncodedCommand` payload.
     module: execution
     params:
       command: "powershell -nop -w hidden -enc UwB0AGEAcgB0AC0AUAByAG8AYwBlAHMAcwA="
+      target_os: windows
+      # Parent process is the documented FIN7 macro tradecraft: the
+      # loader spawns from a Word document the analyst opens. The
+      # WINWORD.EXE -> powershell.exe chain is the highest-fidelity
+      # signal in the run; pin it explicitly so the detection draft
+      # fires on `process.parent_command_line|contains WINWORD`.
+      parent_command_line: WINWORD.EXE
       network_touch: false
-  - id: step_03
-    name: Loader beacons HTTPS to attacker-controlled C2
+
+  - id: loader-masquerade
+    name: Loader masquerades as svchost.exe to evade EDR
+    objective: >-
+      Rename the loader to svchost.exe so a naive process-name allowlist
+      misses it; the masquerade-vs-real-svchost mismatch is the
+      detection opportunity for the masquerading step.
+    module: defense_evasion
+    params:
+      technique: masquerading
+      target: finance-analyst-laptop
+      network_touch: false
+
+  - id: c2-https
+    name: Beacon HTTPS to staged FIN7 attacker domain
+    objective: >-
+      Beacon to the freshly-registered attacker domain over HTTPS so
+      defenders see the registration -> C2 destination link they would
+      not catch from C2 telemetry alone. C2 endpoint is propagated
+      from the upstream stage-fin7-domain step.
     module: command_control
     params:
-      channel: http
-      c2_url: "https://example.lab/c2"
+      channel: https
+      # C2 endpoint is propagated from the upstream
+      # `stage-fin7-domain` resource_development step. Defender
+      # narrative: registrar intel on the domain registration in
+      # step 1 is the same destination the loader beacons to here.
+      c2_endpoint_from_step: stage-fin7-domain
       network_touch: false
+
+  - id: pos-environment-recon
+    name: Enumerate POS-environment files on finance host
+    objective: >-
+      Walk the finance host for POS-system invoice / merchant
+      transaction artefacts; FIN7's hospitality intrusions consistently
+      pivot from foothold to filesystem enumeration before staging.
+    module: discovery
+    params:
+      discovery_type: files
+      targets:
+        - finance-analyst-laptop
+      network_touch: false
+
+  - id: exfil-over-c2
+    name: Exfiltrate POS-environment data over established C2
+    objective: >-
+      Push the enumerated POS data out over the same HTTPS C2 channel
+      established in the c2-https step; the host -> egress correlation
+      against the staged domain is the headline exfiltration signal.
+    module: exfiltration
+    params:
+      method: via_c2
+      # Source host is propagated from the upstream
+      # `pos-environment-recon` discovery step rather than re-
+      # declared. Defenders correlate the same host the recon step
+      # ran against with the egress event here.
+      target_from_step: pos-environment-recon
+      network_touch: false
+
 expected_detections:
-  - Suspicious office process spawning script interpreter
-  - Encoded command line execution
-  - Beacon-like outbound application traffic
+  - Adversary domain provisioning correlated with later HTTPS C2 destination
+  - Spearphishing precursor (macro-bearing attachment from lookalike domain)
+  - WINWORD.EXE -> powershell.exe parent/child chain with -EncodedCommand
+  - Process-name masquerading on a finance host (image vs parent mismatch)
+  - HTTPS beaconing to a freshly-registered hospitality-themed domain
+  - Bulk POS-environment file enumeration immediately before egress
+  - Outbound application traffic carrying enumerated host artefacts
+
 blue_team_guidance:
-  - Correlate parent-child process chains from office apps to script engines.
-  - Alert on high-entropy or encoded command lines.
-  - Baseline and detect unusual periodic outbound connections.
+  - Tune detection rules to fire on registrar intel from
+    hospitality-themed domains — FIN7's documented tradecraft favours
+    invoice / catering / merchant-services lookalikes; the
+    stage-fin7-domain step pins the seed for that correlation.
+  - Office-app -> script-engine parent/child chains with encoded
+    command lines are the canonical FIN7 macro signal; the
+    loader-execution step's explicit WINWORD.EXE parent is the test
+    case for that detection.
+  - Image-name masquerading detections benefit from comparing the
+    spawning parent against a known set of legitimate svchost.exe
+    parents; this scenario's loader-masquerade step models the
+    rename-to-svchost pattern.
+  - File-enumeration spikes on a finance host immediately before
+    HTTPS egress to a freshly-staged attacker domain are a high-
+    fidelity precursor; this scenario sequences pos-environment-recon
+    and exfil-over-c2 deliberately to test that detection.
+  - The five chain consumer pairs (resource_development -> C2,
+    discovery -> exfiltration, plus the implicit phish -> execution,
+    execution -> masquerade, c2 -> exfiltration narrative edges) are
+    the typed propagation graph defenders should pivot through when
+    triaging this scenario's bundle.
