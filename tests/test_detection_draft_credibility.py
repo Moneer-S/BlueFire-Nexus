@@ -190,12 +190,26 @@ def test_spl_carries_draft_header_so_dashboard_cannot_oversell() -> None:
 
 
 def test_spl_renders_selection_clauses_from_sigma_detection_block() -> None:
-    """Sigma ``Image|endswith: powershell.exe`` becomes SPL ``| where Image="*powershell.exe"``."""
+    """Sigma selection becomes SPL ``where`` clauses against CIM field names.
+
+    Previously the renderer emitted the raw Sigma field name as the
+    SPL ``where`` field (``| where Image="*powershell.exe"``) which
+    fired only on raw Sysmon EventCode=1 events. After PR #143 the
+    renderer translates Sigma fields onto Splunk CIM canonical names
+    (``Image|endswith`` -> ``process_path``, ``CommandLine|contains``
+    -> ``process``) so the same generated rule fires across every
+    CIM-normalised Endpoint sourcetype (Sysmon-after-CIM-extractions,
+    CrowdStrike Falcon, Carbon Black, defender-for-endpoint, etc.).
+    """
     spl = render_spl(_result_with_logsource(), "run-spl-3")
-    # endswith -> leading wildcard
-    assert '| where Image="*powershell.exe"' in spl
-    # contains -> wildcards both sides
-    assert '| where CommandLine="*-EncodedCommand*"' in spl
+    # Sigma ``Image|endswith`` -> CIM ``process_path``, leading wildcard preserved.
+    assert '| where process_path="*powershell.exe"' in spl
+    # Sigma ``CommandLine|contains`` -> CIM ``process``, both wildcards preserved.
+    assert '| where process="*-EncodedCommand*"' in spl
+    # The raw Sigma field names must NOT survive the CIM translation —
+    # otherwise CIM-only environments (Splunk ES) would not match the rule.
+    assert '| where Image=' not in spl
+    assert '| where CommandLine=' not in spl
 
 
 def test_spl_emits_run_attribution_evals() -> None:
