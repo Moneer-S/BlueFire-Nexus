@@ -10,6 +10,30 @@ from typing import Any, Dict, Mapping
 
 from ...models import ModuleResult, TelemetryEvent
 from ..base import BaseModule, resolve_target_from_step
+from ..contracts import (
+    ArtifactSpec,
+    CapabilityIOContract,
+    consumes,
+    produces,
+)
+from ..contracts import (
+    C2_ENDPOINT,
+    COLLECTED_DATA,
+    CREDENTIAL,
+    DETECTION_CONTEXT,
+    DISCOVERY_RESULT,
+    EXFIL_PACKAGE,
+    FILE,
+    HOST,
+    IMPACT_TARGET,
+    PERSISTENCE_MARKER,
+    PROCESS,
+    SERVICE,
+    SHARE,
+    STAGED_FILE,
+    TOKEN,
+    USER,
+)
 
 
 # Operator-facing target_os values map to a sigma-style logsource.
@@ -309,6 +333,16 @@ class InitialAccessModule(BaseModule):
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _INITIAL_ACCESS_PROFILES.values()})
     )
+    # Initial access is a chain entry point: it lands on a target user/host
+    # and produces the "we are in" signal downstream stages key off. It does
+    # not need to consume anything from a prior step (the operator-supplied
+    # ``target`` is the entry).
+    io_contract = CapabilityIOContract(
+        produces=produces(
+            ArtifactSpec(type=USER, key="target", description="user or host receiving the initial-access vector"),
+            ArtifactSpec(type=HOST, key="target", description="alternate host/landing target", required=False),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         requested = str(params.get("vector") or _INITIAL_ACCESS_DEFAULT)
@@ -450,6 +484,18 @@ class ExecutionModule(BaseModule):
     name = "execution"
     attack_techniques = tuple(
         sorted({"T1059", *(profile["mitre"] for profile in _EXECUTION_INTERPRETER_PROFILES.values())})
+    )
+    # Execution drops a process on the target host; persistence /
+    # defense_evasion / credential_access can chain off the spawned
+    # process. The host is operator-supplied (or implicit lab-local) so
+    # there is no required upstream consumer here.
+    io_contract = CapabilityIOContract(
+        produces=produces(
+            ArtifactSpec(type=PROCESS, key="command", description="command line of the spawned process"),
+        ),
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="optional host the command targets", required=False),
+        ),
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -620,6 +666,20 @@ class PersistenceModule(BaseModule):
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _PERSISTENCE_PROFILES.values()})
     )
+    # Persistence anchors itself to a host, optionally a service or
+    # process, and emits a marker that defense_evasion can hide and
+    # reporting can correlate against.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="host receiving the persistence anchor"),
+            ArtifactSpec(type=USER, key="user", description="user/service account the anchor runs as", required=False),
+            ArtifactSpec(type=SERVICE, key="service", description="service the persistence is attached to", required=False),
+            ArtifactSpec(type=PROCESS, key="process", description="process the persistence references", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=PERSISTENCE_MARKER, key="technique", description="technique-keyed anchor (registry path, task name, service name)"),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         requested = str(params.get("technique") or "scheduled_task").lower()
@@ -741,6 +801,20 @@ class DefenseEvasionModule(BaseModule):
     name = "defense_evasion"
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _DEFENSE_EVASION_PROFILES.values()})
+    )
+    # Defense evasion runs against an existing host/process/file.
+    # Useful chains: persistence -> defense_evasion (hide the marker),
+    # execution -> defense_evasion (mask the spawned process).
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="host the evasion runs on"),
+            ArtifactSpec(type=PROCESS, key="process", description="process to mask / spoof / inject", required=False),
+            ArtifactSpec(type=FILE, key="file", description="file to timestomp / hide", required=False),
+            ArtifactSpec(type=PERSISTENCE_MARKER, key="persistence_marker", description="anchor to hide", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=DETECTION_CONTEXT, key="evasion_technique", description="technique label for detection drafts"),
+        ),
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -876,6 +950,25 @@ class DiscoveryModule(BaseModule):
     name = "discovery"
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _DISCOVERY_PROFILES.values()})
+    )
+    # Discovery is the canonical chain producer: it enumerates hosts /
+    # services / shares / users / files and seeds the rest of the
+    # offensive chain. The downstream tactics declare host/share/etc.
+    # consumption to match.
+    io_contract = CapabilityIOContract(
+        produces=produces(
+            ArtifactSpec(type=DISCOVERY_RESULT, key="discovered", description="list of discovered targets/services/users"),
+            ArtifactSpec(type=HOST, key="targets", description="enumerated hosts (when discovery_type yields hosts)", required=False),
+            ArtifactSpec(type=SERVICE, key="targets", description="enumerated services (when discovery_type targets services)", required=False),
+            ArtifactSpec(type=SHARE, key="targets", description="enumerated shares (when discovery_type targets shares)", required=False),
+            ArtifactSpec(type=USER, key="targets", description="enumerated users (when discovery_type targets accounts)", required=False),
+            ArtifactSpec(type=FILE, key="targets", description="enumerated file paths (when discovery_type=files)", required=False),
+            # Any of the above can also serve as an impact_target downstream;
+            # surface the abstract type so the chaining engine + impact
+            # module's contract align without forcing the operator to
+            # rewire params.
+            ArtifactSpec(type=IMPACT_TARGET, key="targets", description="enumerated impact targets (host/service/share view)", required=False),
+        ),
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -1135,6 +1228,21 @@ class ExfiltrationModule(BaseModule):
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _EXFILTRATION_PROFILES.values()})
     )
+    # Exfiltration consumes either a staged file / collected data set,
+    # plus the source host the data came from. It produces an
+    # exfil_package artifact + a detection_context the report can
+    # surface.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="source host the data is exfiltrated from"),
+            ArtifactSpec(type=COLLECTED_DATA, key="collected_data", description="aggregated records to exfiltrate", required=False),
+            ArtifactSpec(type=STAGED_FILE, key="staged_file", description="staged file to exfiltrate", required=False),
+            ArtifactSpec(type=C2_ENDPOINT, key="c2_endpoint", description="optional channel for via_c2 method", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=EXFIL_PACKAGE, key="artifact_name", description="name of the exfiltrated bundle"),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         requested = str(params.get("method") or _EXFILTRATION_DEFAULT)
@@ -1299,6 +1407,16 @@ class CommandControlModule(BaseModule):
     name = "command_control"
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _COMMAND_CONTROL_PROFILES.values()})
+    )
+    # C2 publishes an endpoint and may consume a previously-provisioned
+    # endpoint from resource_development (domain / VPS / web service).
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=C2_ENDPOINT, key="endpoint", description="provisioned endpoint from resource_development", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=C2_ENDPOINT, key="channel", description="active C2 channel keyed by protocol"),
+        ),
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -1527,6 +1645,19 @@ class AntiDetectionModule(BaseModule):
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _ANTI_DETECTION_PROFILES.values()})
     )
+    # Anti-detection runs against an existing host and optionally
+    # references the process / file / persistence-marker it is hiding.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="host the evasion runs on"),
+            ArtifactSpec(type=PROCESS, key="process", description="process to mask / inject", required=False),
+            ArtifactSpec(type=FILE, key="file", description="file to hide / timestomp", required=False),
+            ArtifactSpec(type=PERSISTENCE_MARKER, key="persistence_marker", description="anchor to hide from defenders", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=DETECTION_CONTEXT, key="anti_detection_method", description="evasion method label for reporting"),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         requested = str(params.get("method") or _ANTI_DETECTION_DEFAULT).lower()
@@ -1666,6 +1797,14 @@ class IntelligenceModule(BaseModule):
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _INTELLIGENCE_PROFILES.values()})
     )
+    # Intelligence is a research surface that emits defender-side
+    # context (actor / TTP / IoC / vuln research). It does not branch
+    # the offensive chain, so the only consumer is the report layer.
+    io_contract = CapabilityIOContract(
+        produces=produces(
+            ArtifactSpec(type=DETECTION_CONTEXT, key="intelligence_type", description="research category for reporting"),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         # Backwards compat: prior callers used `focus` only. New callers may
@@ -1791,6 +1930,18 @@ class NetworkObfuscatorModule(BaseModule):
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _NETWORK_OBFUSCATOR_PROFILES.values()})
     )
+    # Network obfuscator wraps a C2 endpoint with an obfuscation
+    # protocol; the chain pair is resource_development /
+    # command_control -> network_obfuscator (then exfiltration uses
+    # the wrapped endpoint).
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=C2_ENDPOINT, key="endpoint", description="endpoint to wrap with the obfuscation protocol", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=C2_ENDPOINT, key="protocol", description="wrapped C2 channel keyed by obfuscation protocol"),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         requested = str(params.get("protocol") or "dns").lower()
@@ -1915,6 +2066,15 @@ class ResourceDevelopmentModule(BaseModule):
     name = "resource_development"
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _RESOURCE_DEVELOPMENT_PROFILES.values()})
+    )
+    # Resource development produces adversary infrastructure that the
+    # rest of the chain consumes: domain / VPS / web service /
+    # email account / code-signing cert / etc. The natural pairing is
+    # resource_development -> command_control / exfiltration.
+    io_contract = CapabilityIOContract(
+        produces=produces(
+            ArtifactSpec(type=C2_ENDPOINT, key="kind", description="provisioned C2-bearing infrastructure (domain / VPS / web service)"),
+        ),
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -2061,6 +2221,14 @@ class ReconnaissanceModule(BaseModule):
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _RECONNAISSANCE_PROFILES.values()})
     )
+    # Reconnaissance gathers external-only intel (OSINT, passive DNS,
+    # cert transparency). It does not feed offensive stages directly;
+    # its output is detection_context for reporting.
+    io_contract = CapabilityIOContract(
+        produces=produces(
+            ArtifactSpec(type=DETECTION_CONTEXT, key="source", description="recon source for reporting"),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         requested = str(params.get("source") or "osint").lower()
@@ -2206,6 +2374,19 @@ class CredentialAccessModule(BaseModule):
     name = "credential_access"
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _CREDENTIAL_ACCESS_PROFILES.values()})
+    )
+    # Credential access typically runs against a discovered host
+    # (discovery -> credential_access) and emits credential / token
+    # evidence for lateral_movement and collection to consume.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="host the credential extraction runs against"),
+            ArtifactSpec(type=USER, key="user", description="user/account whose credential is targeted", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=CREDENTIAL, key="technique", description="credential evidence keyed by technique"),
+            ArtifactSpec(type=TOKEN, key="technique", description="forged/extracted token (when applicable)", required=False),
+        ),
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -2364,6 +2545,21 @@ class LateralMovementModule(BaseModule):
     name = "lateral_movement"
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _LATERAL_MOVEMENT_PROFILES.values()})
+    )
+    # Lateral movement consumes a destination host (where the attacker
+    # pivots TO) plus the source host and the credential it presents.
+    # Pairs naturally with discovery (target) and credential_access
+    # (source + credential).
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="destination host the pivot lands on"),
+            ArtifactSpec(type=HOST, key="source", description="source host the pivot originates from", required=False),
+            ArtifactSpec(type=CREDENTIAL, key="credential", description="credential presented to the destination", required=False),
+            ArtifactSpec(type=TOKEN, key="token", description="token presented to the destination", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=HOST, key="target", description="newly-controlled destination host"),
+        ),
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -2552,6 +2748,20 @@ class PrivilegeEscalationModule(BaseModule):
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _PRIVILEGE_ESCALATION_PROFILES.values()})
     )
+    # Privilege escalation runs against a host and optionally
+    # consumes the credential / token it leverages. Produces a token
+    # downstream stages can present.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="host the privesc runs on"),
+            ArtifactSpec(type=CREDENTIAL, key="credential", description="credential the privesc leverages", required=False),
+            ArtifactSpec(type=TOKEN, key="token", description="token the privesc duplicates / impersonates", required=False),
+            ArtifactSpec(type=PROCESS, key="process", description="process to inject / hollow", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=TOKEN, key="technique", description="elevated token / privilege artefact"),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         requested = str(params.get("technique") or "token_impersonation").lower()
@@ -2708,6 +2918,21 @@ class ImpactModule(BaseModule):
     name = "impact"
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _IMPACT_PROFILES.values()})
+    )
+    # Impact runs against a host or impact target (a service, dataset,
+    # or staged file). Collection -> impact (encrypt the staged data)
+    # and discovery -> impact (target an enumerated host) are the
+    # canonical chain pairings.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=IMPACT_TARGET, key="target", description="resource to act on (host / service / dataset)"),
+            ArtifactSpec(type=HOST, key="target", description="alternate: bare host as the impact target", required=False),
+            ArtifactSpec(type=STAGED_FILE, key="staged_file", description="staged file to encrypt / destroy", required=False),
+            ArtifactSpec(type=SERVICE, key="service", description="service to stop / disable / delete", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=DETECTION_CONTEXT, key="technique", description="impact technique label for reporting"),
+        ),
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -2882,6 +3107,21 @@ class CollectionModule(BaseModule):
     name = "collection"
     attack_techniques = tuple(
         sorted({profile["mitre"] for profile in _COLLECTION_PROFILES.values()})
+    )
+    # Collection runs against a host or share, optionally guided by a
+    # credential, and emits collected_data + a staged_file the
+    # exfiltration / impact stages can consume.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="host or share to harvest from"),
+            ArtifactSpec(type=SHARE, key="share", description="specific share to harvest", required=False),
+            ArtifactSpec(type=CREDENTIAL, key="credential", description="credential guiding what to target", required=False),
+            ArtifactSpec(type=USER, key="user", description="user whose data to focus on", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=COLLECTED_DATA, key="technique", description="aggregated records keyed by collection technique"),
+            ArtifactSpec(type=STAGED_FILE, key="technique", description="staged file ready for exfiltration / impact", required=False),
+        ),
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:

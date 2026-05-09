@@ -12,6 +12,24 @@ from ...legacy_controls import (
 )
 from ...models import ModuleResult, TelemetryEvent
 from ..base import BaseModule
+from ..contracts import (
+    ArtifactSpec,
+    CapabilityIOContract,
+    consumes,
+    produces,
+)
+from ..contracts import (
+    C2_ENDPOINT,
+    COLLECTED_DATA,
+    CREDENTIAL,
+    DETECTION_CONTEXT,
+    HOST,
+    PROCESS,
+    SHARE,
+    STAGED_FILE,
+    TOKEN,
+    USER,
+)
 from .legacy_base import LegacyAdapterBase, _result
 from .legacy_runtime import (
     COLLECTION_TECHNIQUE_KEYS,
@@ -68,6 +86,15 @@ class LegacyPackSummaryModule(BaseModule):
 
     name = "legacy_capability_summary"
     attack_techniques = ()
+    # Diagnostic-only module: exposes legacy enablement state, never
+    # branches the offensive chain. Explicit not-applicable opt-out.
+    io_contract = CapabilityIOContract(
+        not_applicable=True,
+        not_applicable_reason=(
+            "Diagnostic adapter that surfaces legacy enablement summary; "
+            "does not produce or consume offensive-chain artifacts."
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         summary = build_legacy_summary(context.get("config", {}))
@@ -90,6 +117,13 @@ class LegacyActorProfileModule(LegacyAdapterBase):
     attack_techniques = ("T1589", "T1591")
     pack_name = "actor_pack"
     capability_name = "actor_profile"
+    # Actor profile emits research / threat-intel context for reporting,
+    # not a chain artifact. The downstream consumer is the report layer.
+    io_contract = CapabilityIOContract(
+        produces=produces(
+            ArtifactSpec(type=DETECTION_CONTEXT, key="actor", description="threat-actor reference for reporting"),
+        ),
+    )
 
     _PROFILE_MAP = {
         "apt29": {"name": "APT29", "aliases": ["Cozy Bear"], "focus": "credential_access"},
@@ -175,6 +209,19 @@ class LegacyApt29ResearchModule(LegacyAdapterBase):
     capability_name = "apt29"
     actor_signature = "cozy_bear_dukes"
     aka = ("Cozy Bear", "The Dukes", "Nobelium", "Midnight Blizzard")
+    # APT29 research adapter walks four named techniques (phishing /
+    # powershell / process_hollowing / dns C2). Phishing keys off a
+    # target user; powershell drops a process; the rest emit research
+    # context the report consumes.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=USER, key="target", description="target user for the phishing technique", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=PROCESS, key="command", description="powershell command spawned (powershell technique)", required=False),
+            ArtifactSpec(type=DETECTION_CONTEXT, key="technique", description="actor-specific research context for reporting"),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         decision = evaluate_legacy_capability(
@@ -387,6 +434,17 @@ class LegacyGenericActorTechniqueModule(LegacyAdapterBase):
     attack_techniques = ("T1589", "T1059", "T1071")
     pack_name = "actor_pack"
     capability_name = "apt28"
+    # All per-actor adapters emit research context for the report; the
+    # contract is inherited by the per-actor subclasses below.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=USER, key="target", description="target user for techniques that key off a user", required=False),
+            ArtifactSpec(type=HOST, key="target", description="target host for techniques that key off a host", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=DETECTION_CONTEXT, key="technique", description="actor-specific research context for reporting"),
+        ),
+    )
     actor_name = "APT28"
     actor_signature: str = ""
     aka: tuple[str, ...] = ()
@@ -774,6 +832,18 @@ class LegacyCredentialAccessModule(LegacyAdapterBase):
         "T1115",
         "T1113",
     )
+    # Mirrors the standard credential_access contract: consume host
+    # (and optionally user), emit credential / token evidence.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="host the legacy credential extraction runs against"),
+            ArtifactSpec(type=USER, key="user", description="user/account whose credential is targeted", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=CREDENTIAL, key="technique", description="legacy credential evidence keyed by technique"),
+            ArtifactSpec(type=TOKEN, key="technique", description="legacy forged/extracted token (when applicable)", required=False),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         decision = self._ensure_allowed(context)
@@ -1019,6 +1089,18 @@ class LegacyLateralMovementModule(LegacyAdapterBase):
         "T1489",
         "T1570",
     )
+    # Mirrors the standard lateral_movement contract.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="destination host the legacy pivot lands on"),
+            ArtifactSpec(type=HOST, key="source", description="source host the legacy pivot originates from", required=False),
+            ArtifactSpec(type=CREDENTIAL, key="credential", description="credential presented to the destination", required=False),
+            ArtifactSpec(type=TOKEN, key="token", description="token presented to the destination", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=HOST, key="target", description="newly-controlled destination host"),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         decision = self._ensure_allowed(context)
@@ -1243,6 +1325,18 @@ class LegacyPrivilegeEscalationModule(LegacyAdapterBase):
         "T1036.005",
         "T1543.003",
         "T1489",
+    )
+    # Mirrors the standard privilege_escalation contract.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="host the legacy privesc runs on"),
+            ArtifactSpec(type=CREDENTIAL, key="credential", description="credential the legacy privesc leverages", required=False),
+            ArtifactSpec(type=TOKEN, key="token", description="token the legacy privesc duplicates / impersonates", required=False),
+            ArtifactSpec(type=PROCESS, key="process", description="process to inject / hollow", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=TOKEN, key="technique", description="elevated token / privilege artefact"),
+        ),
     )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
@@ -1469,6 +1563,16 @@ class LegacyImpactModule(LegacyAdapterBase):
         "T1543.003",
         "T1565",
     )
+    # Mirrors the standard impact contract.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="host the legacy impact acts on"),
+            ArtifactSpec(type=STAGED_FILE, key="staged_file", description="staged file to encrypt / destroy", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=DETECTION_CONTEXT, key="technique", description="legacy impact technique label for reporting"),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         decision = self._ensure_allowed(context)
@@ -1694,6 +1798,18 @@ class LegacyCollectionModule(LegacyAdapterBase):
         "T1560",
         "T1560.001",
     )
+    # Mirrors the standard collection contract.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=HOST, key="target", description="host the legacy collection runs against"),
+            ArtifactSpec(type=SHARE, key="share", description="specific share to harvest", required=False),
+            ArtifactSpec(type=USER, key="user", description="user whose data to focus on", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=COLLECTED_DATA, key="technique", description="aggregated records keyed by collection technique"),
+            ArtifactSpec(type=STAGED_FILE, key="technique", description="staged file ready for exfiltration / impact", required=False),
+        ),
+    )
 
     def execute(self, params: Mapping[str, Any], context: Mapping[str, Any]) -> ModuleResult:
         decision = self._ensure_allowed(context)
@@ -1786,6 +1902,14 @@ class LegacyProtocolResearchModule(LegacyAdapterBase):
     attack_techniques = ("T1071.004", "T1572", "T1090")
     pack_name = "c2_pack"
     capability_name = "dns_tunneling"
+    # Protocol-research adapter prepares legacy C2 channels (dns
+    # tunneling, TLS fast-flux, websocket/QUIC, solana RPC). The
+    # primary chain emission is a ready-to-use C2 endpoint.
+    io_contract = CapabilityIOContract(
+        produces=produces(
+            ArtifactSpec(type=C2_ENDPOINT, key="endpoint", description="prepared legacy C2 channel endpoint"),
+        ),
+    )
 
     _SUPPORTED = {
         "dns_tunneling": ("T1071.004", "dns"),
@@ -2001,6 +2125,17 @@ class LegacyStealthResearchModule(LegacyAdapterBase):
     attack_techniques = ("T1497", "T1562", "T1070", "T1027")
     pack_name = "stealth_pack"
     capability_name = "anti_forensic"
+    # Stealth research walks anti-forensic / anti-sandbox / dynamic API
+    # capabilities. The primary chain consumer is the report layer; it
+    # may operate on an existing process when the operator targets one.
+    io_contract = CapabilityIOContract(
+        consumes=consumes(
+            ArtifactSpec(type=PROCESS, key="target", description="process the stealth research targets", required=False),
+        ),
+        produces=produces(
+            ArtifactSpec(type=DETECTION_CONTEXT, key="capability", description="stealth research capability label for reporting"),
+        ),
+    )
 
     _SUPPORTED = {
         "anti_forensic": ("T1070", "cleanup"),
