@@ -386,3 +386,83 @@ def test_scenario_summary_block_scalar_body_renders_in_console(tmp_path: Path) -
     # the check on the scenarios-card class to scope the negative.
     assert "scenario-objective'>|" not in body
     assert 'scenario-objective">|' not in body
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "|2",
+        "|-",
+        "|+",
+        "|2-",
+        "|2+",
+        "|+2",
+        ">2",
+        ">-",
+        ">+",
+        ">2-",
+        ">+2",
+    ],
+)
+def test_scenario_summary_handles_indented_block_scalar_headers(
+    header: str,
+    tmp_path: Path,
+) -> None:
+    """Codex follow-up P2: YAML allows the block-scalar header to
+    carry a chomping (``+`` / ``-``) AND/OR an indentation indicator
+    (``1`` - ``9``) in either order, e.g. ``|2``, ``|-``, ``>+``,
+    ``|2-``, ``>+1``. The previous fix only matched a bare set of
+    six common forms (``|``, ``>``, ``|-``, ``|+``, ``>-``, ``>+``);
+    indented variants regressed back to the literal-marker preview.
+
+    The fix is to treat any unquoted value starting with ``|`` or
+    ``>`` after the colon as a block-scalar header, regardless of
+    chomping / indentation suffix.
+    """
+
+    from src.core.operator_console import _parse_scenario_summary
+
+    safe_name = (
+        header.replace("|", "pipe")
+        .replace(">", "gt")
+        .replace("-", "dash")
+        .replace("+", "plus")
+    )
+    scenario = tmp_path / f"indent_{safe_name}.yaml"
+    scenario.write_text(
+        "id: indent-test\n"
+        "name: Indent header test\n"
+        f"objective: {header}\n"
+        "  Body text on continuation lines.\n"
+        "  Second body line.\n"
+        "fail_fast: false\n"
+        "steps: []\n",
+        encoding="utf-8",
+    )
+    summary = _parse_scenario_summary(scenario)
+    assert summary["objective"] != header, (
+        f"header {header!r} regressed to a literal-marker preview"
+    )
+    assert "Body text on continuation lines." in summary["objective"]
+    assert "Second body line." in summary["objective"]
+
+
+def test_scenario_summary_quoted_inline_with_pipe_stays_inline(tmp_path: Path) -> None:
+    """A quoted inline scalar that legitimately begins with ``|`` or
+    ``>`` must NOT trigger the block-scalar branch - quoted values
+    are inline by YAML grammar, and the leading quote keeps the
+    inline branch alive."""
+
+    from src.core.operator_console import _parse_scenario_summary
+
+    scenario = tmp_path / "quoted.yaml"
+    scenario.write_text(
+        "id: quoted-test\n"
+        "name: Quoted scenario\n"
+        'objective: "|alpha bravo charlie"\n'
+        "fail_fast: false\n"
+        "steps: []\n",
+        encoding="utf-8",
+    )
+    summary = _parse_scenario_summary(scenario)
+    assert summary["objective"] == "|alpha bravo charlie"

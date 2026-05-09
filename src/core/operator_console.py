@@ -260,7 +260,6 @@ def _parse_scenario_summary(path: Path) -> Dict[str, Any]:
         "objective": "",
     }
     keys = ("name", "description", "objective")
-    block_scalar_indicators = {"|", ">", "|-", ">-", "|+", ">+"}
     try:
         with path.open(encoding="utf-8", errors="replace") as fh:
             lines = [raw.rstrip("\n") for raw in fh]
@@ -282,16 +281,34 @@ def _parse_scenario_summary(path: Path) -> Dict[str, Any]:
             if not line.startswith(prefix) or summary[key]:
                 continue
             raw_value = line[len(prefix):].strip()
-            if raw_value and raw_value not in block_scalar_indicators:
+            # Distinguish between an inline scalar (``key: value``)
+            # and a block-scalar header (``key: |``, ``key: >``,
+            # plus chomping/indentation suffixes such as ``|-``,
+            # ``>+``, ``|2``, ``>+1``, ``|2-`` etc.). YAML's block-
+            # scalar grammar is ``|`` / ``>`` + optional chomping
+            # (``-`` / ``+``) + optional indentation indicator
+            # (``1`` - ``9``) in either order, so any unquoted
+            # value starting with ``|`` or ``>`` is a header. An
+            # *inline* scalar that legitimately begins with ``|``
+            # or ``>`` would be quoted (``"|x"``), and a leading
+            # quote falls into the inline branch unchanged.
+            looks_like_block = (
+                not raw_value or raw_value[0] in ("|", ">")
+            )
+            if not looks_like_block:
                 # Inline scalar form: ``key: value``.
                 summary[key] = raw_value.strip('"').strip("'")
                 break
-            # Block-scalar form: ``key: |`` (literal) or ``key: >``
-            # (folded), with optional ``-`` / ``+`` chomping
-            # indicator. Gather continuation lines that are more
-            # indented than the key column (key sits at column 0, so
-            # any leading-whitespace line is a continuation; a line
-            # that starts at column 0 marks the end of the block).
+            # Block-scalar form. Gather continuation lines that are
+            # more indented than the key column (key sits at column
+            # 0, so any leading-whitespace line is a continuation;
+            # a line that starts at column 0 marks the end of the
+            # block). The chomping / indent indicators on the
+            # header line are intentionally ignored - the operator
+            # console preview joins the body with single spaces,
+            # so YAML-spec details about leading-whitespace
+            # preservation and trailing-newline handling don't
+            # change the rendered preview.
             collected: List[str] = []
             j = index + 1
             while j < len(lines):
