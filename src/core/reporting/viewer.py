@@ -575,6 +575,74 @@ def _render_timeline(manifest: Mapping[str, Any]) -> str:
     )
 
 
+def _render_chain_warnings(manifest: Mapping[str, Any]) -> str:
+    """Surface ``manifest.chain.warnings`` so a defender opening a run
+    bundle can see consumer steps that ran without an upstream
+    emission for a required slot.
+
+    The chain context (PR #150) records a warning whenever a
+    consumer's ``required`` slot has no upstream emission in the
+    typed propagation graph. The runtime persists the warning list
+    in ``manifest.chain.warnings`` (PR #157). Rendering it next to
+    the propagation graph gives defenders a "what's missing" view
+    alongside the existing "what propagated" view.
+
+    Returns an empty string when there is no chain data and no
+    warnings - the section is self-suppressing for runs that
+    don't carry a typed chain.
+    """
+
+    chain = manifest.get("chain")
+    if not isinstance(chain, Mapping):
+        return ""
+    warnings = chain.get("warnings") or []
+    if not warnings:
+        # Suppress the section entirely on a clean run; defenders
+        # don't need a "no chain warnings" placeholder competing for
+        # attention with the propagation graph.
+        return ""
+    body: List[str] = []
+    for warning in warnings:
+        if not isinstance(warning, Mapping):
+            continue
+        body.append(
+            "<tr>"
+            f'<td><code>{_esc(warning.get("step_id"))}</code></td>'
+            f'<td><code>{_esc(warning.get("module"))}</code></td>'
+            f'<td><code>{_esc(warning.get("missing_type"))}</code></td>'
+            f'<td><code>{_esc(warning.get("missing_key"))}</code></td>'
+            "</tr>"
+        )
+    if not body:
+        # Codex P2 (PR #160): when ``warnings`` is non-empty but
+        # every entry is malformed (e.g. a list of strings from a
+        # legacy / external manifest), the loop skips every item.
+        # Without this guard we'd render a section header with an
+        # empty table below - implying warnings exist without
+        # showing any actionable rows. Treat "no valid rows" as
+        # the same suppression case as "no warnings".
+        return ""
+    rows: List[str] = [
+        "<thead><tr>"
+        "<th>step id</th><th>consumer module</th>"
+        "<th>missing type</th><th>missing slot</th>"
+        "</tr></thead>",
+        f'<tbody>{"".join(body)}</tbody>',
+    ]
+    intro = (
+        '<div class="muted" style="margin-bottom:8px;">'
+        "Each row is a consumer step that ran without an upstream "
+        "emission for a required slot. The runtime fell back to the "
+        "consumer's documented default; defenders should treat each "
+        "warning as a potential coverage gap in the chain narrative."
+        "</div>"
+    )
+    return (
+        '<section class="card"><h2>Chain warnings</h2>'
+        f'{intro}<table>{"".join(rows)}</table></section>'
+    )
+
+
 def _render_propagation(manifest: Mapping[str, Any]) -> str:
     """Section 3 — propagation graph (table).
 
@@ -1026,6 +1094,7 @@ def render_html(manifest: Mapping[str, Any]) -> str:
     body_parts.append(_render_risk(manifest))
     body_parts.append(_render_timeline(manifest))
     body_parts.append(_render_propagation(manifest))
+    body_parts.append(_render_chain_warnings(manifest))
     body_parts.append(_render_attack_coverage(manifest))
     body_parts.append(_render_telemetry(manifest))
     body_parts.append(_render_detections(manifest))
