@@ -167,6 +167,43 @@ def test_apt29_lateral_pivot_propagation_markers(tmp_path: Path) -> None:
     assert artifacts.get("target_propagated_from_step") == "discover-finance-hosts"
 
 
+def test_apt29_lateral_pivot_target_is_concrete_host_not_cidr(
+    tmp_path: Path,
+) -> None:
+    """Codex P2 (PR #159): the discovery step's targets must be
+    concrete host names, not a CIDR block. Otherwise propagation
+    via ``target_from_step`` lands the lateral-pivot step on a
+    subnet string rather than a host - mismatching the module's
+    host-level contract and the scenario objective ("pivot to one
+    of the discovered hosts")."""
+
+    nexus = _make_isolated_nexus(tmp_path)
+    result = nexus.run_scenario_file(str(SCENARIO_PATH))
+    steps = result.get("steps") or []
+    pivot = next(
+        (s for s in steps if s.get("module") == "lateral_movement"),
+        None,
+    )
+    assert pivot is not None
+    target = (pivot.get("artifacts") or {}).get("target", "")
+    # No CIDR notation should appear in the propagated target host.
+    assert "/" not in target, (
+        f"lateral-pivot target propagated as a CIDR: {target!r}"
+    )
+    # And the value must be one of the discovery step's concrete
+    # hosts (the propagation picks the first entry).
+    discovery = next(
+        (s for s in steps if s.get("module") == "discovery"),
+        None,
+    )
+    assert discovery is not None
+    declared_targets = (discovery.get("artifacts") or {}).get("targets") or []
+    assert target in declared_targets, (
+        f"lateral-pivot target {target!r} not in discovery targets "
+        f"{declared_targets!r}"
+    )
+
+
 def test_apt29_chain_summary_produces_required_types(tmp_path: Path) -> None:
     """The chain summary in manifest.chain should include the
     canonical APT29-relevant types: c2_endpoint (from
