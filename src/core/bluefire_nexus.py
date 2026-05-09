@@ -326,6 +326,8 @@ class BlueFireNexus:
                             "module": step.module,
                             "message": f"Unknown module '{step.module}'",
                             "step_id": step.step_id,
+                            "name": step.name,
+                            "objective": step.objective,
                         }
                     )
                     if scenario.fail_fast:
@@ -375,6 +377,7 @@ class BlueFireNexus:
                         "module": step.module,
                         "step_id": step.step_id,
                         "name": step.name,
+                        "objective": step.objective,
                         "message": result.message,
                         "techniques": result.techniques,
                         "artifacts": result.artifacts,
@@ -395,6 +398,7 @@ class BlueFireNexus:
                             "module": step.module,
                             "step_id": step.step_id,
                             "name": step.name,
+                            "objective": step.objective,
                             "message": str(exc),
                         }
                     )
@@ -437,6 +441,19 @@ class BlueFireNexus:
             # surface a moment later. Same shape (kind / from_step
             # / to_step / from_module / to_module / narrative).
             scenario_propagation_edges = compute_propagation_edges(steps_results)
+            # Build the per-step objective map keyed by ``module:step_id``
+            # so the report.md writer can render a defender-facing
+            # ``- Objective: ...`` line in each per-step section. The
+            # orchestrator owns this map (not the writer) because the
+            # writer takes ``module_results`` keyed by the same
+            # composite key — keeping the lookup-shape symmetry here
+            # avoids re-deriving step ids inside the renderer.
+            step_objectives_by_key: Dict[str, str] = {}
+            for step in scenario.steps:
+                if step.objective:
+                    step_objectives_by_key[f"{step.module}:{step.step_id}"] = (
+                        step.objective
+                    )
             report_path = write_markdown_report(
                 context.output_dir,
                 scenario.name,
@@ -444,6 +461,7 @@ class BlueFireNexus:
                 detection_summary,
                 scenario_objective=scenario.objective,
                 propagation_edges=scenario_propagation_edges,
+                step_objectives=step_objectives_by_key,
             )
             write_json_report(context.output_dir, module_results)
             risk_summary_path = write_risk_summary(
@@ -457,6 +475,7 @@ class BlueFireNexus:
                 scenario_objective=scenario.objective,
                 module_results=module_results,
                 detection_summary=detection_summary,
+                step_objectives=step_objectives_by_key,
             )
             copilot_summary = copilot.narrate(
                 context.run_id, run_summary=run_summary

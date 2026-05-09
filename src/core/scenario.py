@@ -15,6 +15,14 @@ class ScenarioStep:
     name: str
     module: str
     params: Dict[str, Any]
+    # Optional defender-facing description of the step's intent — what
+    # this step is trying to achieve in the chain. Surfaces alongside
+    # the existing scenario-level ``objective:`` paragraph in the
+    # static dashboard timeline, ``report.md`` per-step section, the
+    # offline copilot narrative, and the manifest. Empty string is the
+    # backwards-compatible default for scenarios that don't declare
+    # per-step objectives.
+    objective: str = ""
 
 
 @dataclass
@@ -39,12 +47,20 @@ def load_scenario(path: str | Path) -> Scenario:
         if not isinstance(step, dict):
             continue
         step_id = str(step.get("id") or f"step-{index + 1}")
+        # Per-step ``objective:`` is schema-additive (PR #144) — older
+        # scenarios that omit it keep the empty-string default. The
+        # value is normalised to a string with leading/trailing
+        # whitespace stripped so a YAML block scalar with trailing
+        # newlines doesn't end up rendering with a stray blank line in
+        # the dashboard / report.md.
+        objective = str(step.get("objective") or "").strip()
         steps.append(
             ScenarioStep(
                 step_id=step_id,
                 name=str(step.get("name") or step_id),
                 module=str(step.get("module", "")),
                 params=step.get("params") or step.get("operation") or {},
+                objective=objective,
             )
         )
     # Resolve declared techniques. Fall back to legacy keys ONLY when the

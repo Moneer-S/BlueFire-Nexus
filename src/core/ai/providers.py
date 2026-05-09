@@ -66,8 +66,13 @@ def _parse_run_summary_block(prompt: str) -> Dict[str, Any]:
     The parser is intentionally tolerant: lines that don't match
     the documented shape are skipped, missing fields fall back to
     sensible defaults, and the ``module_statuses`` sub-block is
-    only consumed when explicitly indented under its key. Returns
-    an empty dict when no ``[run summary]`` block is present.
+    only consumed when explicitly indented under its key. Per-step
+    ``objective:`` sub-bullets (PR #144) are recognised inside the
+    statuses sub-block and attached to the most-recent status entry
+    so they do NOT terminate the sub-block or get re-parsed as the
+    top-level ``objective:`` key (which would silently overwrite
+    ``scenario_objective``). Returns an empty dict when no
+    ``[run summary]`` block is present.
     """
     if "[run summary]" not in prompt:
         return {}
@@ -89,11 +94,7 @@ def _parse_run_summary_block(prompt: str) -> Dict[str, Any]:
             break
         if in_statuses:
             stripped = raw_line.lstrip()
-            if not stripped.startswith("-"):
-                # End of the statuses sub-block (any non-list line
-                # at the same indent terminates it).
-                in_statuses = False
-            else:
+            if stripped.startswith("-"):
                 # Shape: ``- step_id: status``. ``step_id`` can
                 # itself contain a colon (orchestrator key
                 # ``module:step_id``), so partition on the LAST
@@ -105,6 +106,20 @@ def _parse_run_summary_block(prompt: str) -> Dict[str, Any]:
                         {"step": step.strip(), "status": status.strip()}
                     )
                 continue
+            # Per-step objective sub-bullet (PR #144). Shape:
+            # ``      objective: <text>``. Attach to the most-recent
+            # status entry rather than terminating the sub-block —
+            # otherwise the regular key/value parser at the bottom
+            # would re-interpret this line as the top-level
+            # ``objective:`` key and clobber ``scenario_objective``.
+            if statuses and stripped.startswith("objective:"):
+                _, _, objective_value = stripped.partition(":")
+                statuses[-1]["objective"] = objective_value.strip()
+                continue
+            # Any other indent-level line at the statuses position
+            # terminates the sub-block (matches the legacy contract
+            # for terminating on an unrecognised non-list line).
+            in_statuses = False
         line = raw_line.strip()
         if line.startswith("module_statuses"):
             in_statuses = True
@@ -245,6 +260,14 @@ def _render_template_narrative(summary: Mapping[str, Any], model: str) -> str:
             step = entry.get("step", "")
             status = entry.get("status", "")
             lines.append(f"{index}. {step} -> {status}")
+            # Per-step objective continuation (PR #144). When the
+            # step carries an objective, surface it as an indented
+            # continuation line so the timeline reads as "what
+            # happened" + "why this step matters" without blowing
+            # out the scan-friendly numbered shape.
+            objective = str(entry.get("objective") or "").strip()
+            if objective:
+                lines.append(f"   objective: {objective}")
         if len(statuses) > 16:
             lines.append(f"... (+{len(statuses) - 16} more steps not shown)")
 
