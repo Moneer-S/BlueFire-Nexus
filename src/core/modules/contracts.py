@@ -24,7 +24,7 @@ and downstream surfaces should know about.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Final, Iterable, Mapping, Tuple
+from typing import Any, Final, Iterable, Mapping, Optional, Tuple
 
 
 # -- Artifact-type vocabulary --------------------------------------------------
@@ -173,17 +173,40 @@ class ArtifactSpec:
     ``required`` is advisory: ``True`` for slots the module cannot do
     useful work without; ``False`` for optional slots (e.g. a
     ``source_host`` that defaults to ``lab-attacker`` when absent).
+
+    ``produced_if`` is an optional ``(discriminator_key, expected_value)``
+    predicate that gates whether this spec applies for a given run. It
+    exists for modules where multiple distinct artifact types share a
+    single ``key`` in the runtime artifacts dict — most notably
+    ``DiscoveryModule``, where ``targets`` is a single list whose items
+    are hosts / services / shares / users / files / impact_targets
+    depending on ``discovery_type``. Without this gate, a single
+    ``targets`` value would be indexed under every declared type,
+    misleading downstream chain consumers about what was actually
+    enumerated.
+
+    The predicate is matched by ``ChainContext.record_step`` as
+    ``run_artifacts.get(discriminator_key) == expected_value``. The
+    expected value can be a single string or a tuple of strings (any
+    match wins). When ``produced_if`` is ``None`` the spec is always
+    applicable for the spec's key.
     """
 
     type: str
     key: str = ""
     description: str = ""
     required: bool = True
+    produced_if: Optional[Tuple[str, "ProducedIfValue"]] = None
 
     def __post_init__(self) -> None:
         normalised = normalise_artifact_type(self.type)
         if normalised != self.type:
             object.__setattr__(self, "type", normalised)
+
+
+# Allowed shape for the second element of ``produced_if``: a single
+# value, or a tuple/frozenset of acceptable values (any-match wins).
+ProducedIfValue = "str | int | float | bool | tuple | frozenset"
 
 
 @dataclass(frozen=True, slots=True)

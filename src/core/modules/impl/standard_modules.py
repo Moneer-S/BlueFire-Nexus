@@ -957,17 +957,70 @@ class DiscoveryModule(BaseModule):
     # consumption to match.
     io_contract = CapabilityIOContract(
         produces=produces(
-            ArtifactSpec(type=DISCOVERY_RESULT, key="discovered", description="list of discovered targets/services/users"),
-            ArtifactSpec(type=HOST, key="targets", description="enumerated hosts (when discovery_type yields hosts)", required=False),
-            ArtifactSpec(type=SERVICE, key="targets", description="enumerated services (when discovery_type targets services)", required=False),
-            ArtifactSpec(type=SHARE, key="targets", description="enumerated shares (when discovery_type targets shares)", required=False),
-            ArtifactSpec(type=USER, key="targets", description="enumerated users (when discovery_type targets accounts)", required=False),
-            ArtifactSpec(type=FILE, key="targets", description="enumerated file paths (when discovery_type=files)", required=False),
-            # Any of the above can also serve as an impact_target downstream;
-            # surface the abstract type so the chaining engine + impact
-            # module's contract align without forcing the operator to
-            # rewire params.
-            ArtifactSpec(type=IMPACT_TARGET, key="targets", description="enumerated impact targets (host/service/share view)", required=False),
+            ArtifactSpec(
+                type=DISCOVERY_RESULT,
+                key="discovered",
+                description="list of discovered targets/services/users",
+            ),
+            # Each typed view is gated on ``discovery_type`` so a single
+            # ``targets`` value lands under exactly one canonical type
+            # per run instead of all six. Without the discriminator a
+            # ``discovery_type: files`` step would be indexed under
+            # host AND service AND share AND user AND file AND
+            # impact_target, misleading downstream chain consumers.
+            ArtifactSpec(
+                type=HOST,
+                key="targets",
+                description="enumerated hosts (host_discovery / network_scan / port_scan / service_scan)",
+                required=False,
+                produced_if=("discovery_type", ("host_discovery", "network_scan", "port_scan", "service_scan")),
+            ),
+            ArtifactSpec(
+                type=SERVICE,
+                key="targets",
+                description="enumerated services (service_info / service_scan)",
+                required=False,
+                produced_if=("discovery_type", ("service_info", "service_scan")),
+            ),
+            # No discovery_type emits SHARE today; reserved for future
+            # share-enumeration profiles. Predicate matches nothing in
+            # the current catalog so the slot is effectively dormant.
+            ArtifactSpec(
+                type=SHARE,
+                key="targets",
+                description="enumerated shares (reserved for future share-enumeration profiles)",
+                required=False,
+                produced_if=("discovery_type", ("share_discovery", "smb_share_enum")),
+            ),
+            ArtifactSpec(
+                type=USER,
+                key="targets",
+                description="enumerated users (user_info / group_info)",
+                required=False,
+                produced_if=("discovery_type", ("user_info", "group_info")),
+            ),
+            ArtifactSpec(
+                type=FILE,
+                key="targets",
+                description="enumerated file paths (discovery_type=files)",
+                required=False,
+                produced_if=("discovery_type", "files"),
+            ),
+            # impact_target is the abstract view: any host / service /
+            # share enumerated upstream is a candidate impact target
+            # downstream. Reuses the same predicate set as host so a
+            # network/host/service scan also surfaces an impact_target
+            # row for the impact module's contract.
+            ArtifactSpec(
+                type=IMPACT_TARGET,
+                key="targets",
+                description="enumerated impact targets (host/service/share view)",
+                required=False,
+                produced_if=(
+                    "discovery_type",
+                    ("host_discovery", "network_scan", "port_scan", "service_scan", "service_info"),
+                ),
+            ),
         ),
     )
 

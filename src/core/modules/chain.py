@@ -167,6 +167,14 @@ class ChainContext:
         Missing keys are silently skipped — the contract is advisory,
         not a runtime schema, so a module that doesn't actually emit a
         particular optional slot in this run is not a defect.
+
+        When multiple specs share the same ``key`` (e.g. discovery's
+        ``targets`` shared across host / service / share / file / etc.),
+        each spec's optional :attr:`ArtifactSpec.produced_if`
+        discriminator is evaluated against the run's artifacts dict;
+        specs whose predicate fails are skipped so a single ``targets``
+        value does not get indexed under every declared type. Specs
+        without a discriminator stay always-applicable for their key.
         """
 
         if contract is None or not contract.produces:
@@ -174,6 +182,8 @@ class ChainContext:
         for spec in contract.produces:
             value = artifacts.get(spec.key) if spec.key else None
             if value is None or value == "" or value == [] or value == {}:
+                continue
+            if not _spec_applies_to_run(spec, artifacts):
                 continue
             entry = ChainArtifact(
                 type=spec.type,
@@ -253,6 +263,37 @@ def _artifact_to_dict(row: ChainArtifact) -> Dict[str, Any]:
         "module": row.module,
         "key": row.key,
     }
+
+
+def _spec_applies_to_run(spec: Any, artifacts: Mapping[str, Any]) -> bool:
+    """Return ``True`` when an :class:`ArtifactSpec`'s discriminator
+    matches the run's artifacts dict (or no discriminator was set).
+
+    Used by :meth:`ChainContext.record_step` to disambiguate specs that
+    share the same artifact-dict key. Without this gate a single
+    discovery ``targets`` list would be indexed under host AND service
+    AND share AND user AND file AND impact_target, which is wrong: the
+    runtime only enumerated one of those at a time.
+
+    The discriminator value can be a single scalar or a tuple/frozenset
+    of acceptable values (any-match wins). Falls open (``True``) when
+    the spec carries no ``produced_if``.
+    """
+
+    discriminator = getattr(spec, "produced_if", None)
+    if discriminator is None:
+        return True
+    try:
+        key, expected = discriminator
+    except (TypeError, ValueError):
+        # Malformed predicate: treat as always-applicable rather than
+        # silently dropping a real emission. The contract test surfaces
+        # malformed shapes at registration time.
+        return True
+    actual = artifacts.get(key)
+    if isinstance(expected, (tuple, frozenset, set, list)):
+        return actual in expected
+    return actual == expected
 
 
 def _deep_copy_artifact(row: ChainArtifact) -> ChainArtifact:

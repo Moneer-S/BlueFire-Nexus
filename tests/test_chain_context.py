@@ -357,3 +357,171 @@ def test_lookup_apis_treat_unknown_type_as_missing():
     assert chain.has("definitely-not-a-real-type") is False
     assert chain.latest_artifact("definitely-not-a-real-type") is None
     assert chain.candidate_artifacts("definitely-not-a-real-type") == ()
+
+
+def test_produced_if_scalar_value_matches():
+    """ArtifactSpec(produced_if=("kind", "host")) should only index when
+    the run's artifacts['kind'] equals "host"."""
+
+    contract = CapabilityIOContract(
+        produces=produces(
+            ArtifactSpec(
+                type=HOST,
+                key="targets",
+                produced_if=("kind", "host"),
+            ),
+            ArtifactSpec(
+                type=USER,
+                key="targets",
+                produced_if=("kind", "user"),
+            ),
+        ),
+    )
+    chain = ChainContext()
+    chain.record_step(
+        step_id="step-1",
+        module="discovery",
+        contract=contract,
+        artifacts={"kind": "host", "targets": ["10.0.0.1"]},
+    )
+    snapshot = chain.snapshot()
+    assert "host" in snapshot["artifacts_by_type"]
+    assert "user" not in snapshot["artifacts_by_type"]
+
+
+def test_produced_if_tuple_value_matches_any_member():
+    """A tuple ``produced_if`` value should match if the run's value is
+    in the tuple (any-match wins)."""
+
+    contract = CapabilityIOContract(
+        produces=produces(
+            ArtifactSpec(
+                type=HOST,
+                key="targets",
+                produced_if=("kind", ("host_discovery", "network_scan", "port_scan")),
+            ),
+        ),
+    )
+    chain = ChainContext()
+    for kind in ("host_discovery", "network_scan", "port_scan"):
+        ch = ChainContext()
+        ch.record_step(
+            step_id="step-1",
+            module="discovery",
+            contract=contract,
+            artifacts={"kind": kind, "targets": ["10.0.0.1"]},
+        )
+        assert "host" in ch.snapshot()["artifacts_by_type"], (
+            f"expected host emission for kind={kind}"
+        )
+
+
+def test_produced_if_predicate_failure_skips_indexing():
+    """When the discriminator does not match, the spec is skipped
+    entirely. The same key with a passing spec still indexes."""
+
+    contract = CapabilityIOContract(
+        produces=produces(
+            ArtifactSpec(type=HOST, key="targets", produced_if=("kind", "host")),
+            ArtifactSpec(type=USER, key="targets", produced_if=("kind", "user")),
+            ArtifactSpec(type=CREDENTIAL, key="extracted"),  # always-applicable
+        ),
+    )
+    chain = ChainContext()
+    chain.record_step(
+        step_id="step-1",
+        module="multi",
+        contract=contract,
+        artifacts={
+            "kind": "user",
+            "targets": ["alice", "bob"],
+            "extracted": "lab-token",
+        },
+    )
+    snapshot = chain.snapshot()
+    by_type = snapshot["artifacts_by_type"]
+    assert "user" in by_type
+    assert by_type["user"][0]["value"] == ["alice", "bob"]
+    assert "host" not in by_type  # predicate failed
+    assert "credential" in by_type  # no predicate, always applies
+
+
+def test_produced_if_missing_discriminator_key_skips_spec():
+    """If the run's artifacts dict does not carry the discriminator
+    key at all, the predicate fails (compared against ``None``) and
+    the spec is skipped."""
+
+    contract = CapabilityIOContract(
+        produces=produces(
+            ArtifactSpec(type=HOST, key="targets", produced_if=("kind", "host")),
+        ),
+    )
+    chain = ChainContext()
+    chain.record_step(
+        step_id="step-1",
+        module="discovery",
+        contract=contract,
+        artifacts={"targets": ["10.0.0.1"]},  # no "kind"
+    )
+    assert chain.snapshot()["artifacts_by_type"] == {}
+
+
+def test_discovery_contract_files_only_emits_file(tmp_path):
+    """End-to-end Codex P1 fix: discovery's IO contract has six specs
+    sharing key=targets (host / service / share / user / file /
+    impact_target). Without ``produced_if`` discrimination, a single
+    ``targets`` value would be indexed under ALL six types.
+
+    Pinned shape: ``discovery_type: files`` only emits ``file`` rows
+    (plus ``discovery_result`` when the discovered list is non-empty).
+    """
+
+    from src.core.modules import build_runtime_modules
+
+    registry = build_runtime_modules()
+    discovery = registry["discovery"]
+    chain = ChainContext()
+    chain.record_step(
+        step_id="disc-1",
+        module="discovery",
+        contract=discovery.io_contract,
+        artifacts={
+            "discovery_type": "files",
+            "targets": ["/etc/passwd", "/var/log"],
+            "discovered": [{"target": "/etc/passwd", "status": "simulated_up"}],
+        },
+    )
+    by_type = chain.snapshot()["artifacts_by_type"]
+    # File is the only typed-target emission for discovery_type=files.
+    assert set(by_type.keys()) == {"discovery_result", "file"}
+    assert by_type["file"][0]["value"] == ["/etc/passwd", "/var/log"]
+
+
+def test_discovery_contract_host_discovery_emits_host_and_impact_target():
+    """``discovery_type: host_discovery`` should emit both ``host``
+    (the canonical host enumeration) and ``impact_target`` (the
+    abstract view that impact-tactic consumers want).
+    """
+
+    from src.core.modules import build_runtime_modules
+
+    registry = build_runtime_modules()
+    discovery = registry["discovery"]
+    chain = ChainContext()
+    chain.record_step(
+        step_id="disc-1",
+        module="discovery",
+        contract=discovery.io_contract,
+        artifacts={
+            "discovery_type": "host_discovery",
+            "targets": ["10.0.0.5"],
+            "discovered": [{"target": "10.0.0.5", "status": "simulated_up"}],
+        },
+    )
+    by_type = chain.snapshot()["artifacts_by_type"]
+    assert "host" in by_type
+    assert "impact_target" in by_type
+    # Files / users / services are NOT indexed for a host scan.
+    assert "file" not in by_type
+    assert "user" not in by_type
+    assert "service" not in by_type
