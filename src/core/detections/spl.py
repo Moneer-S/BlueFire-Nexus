@@ -311,7 +311,6 @@ _LOGSOURCE_TO_SPL: dict[Tuple[str, str], Tuple[str, str]] = {
 _SIGMA_FIELD_TO_CIM: dict[str, str] = {
     # ---- Endpoint.Processes ----
     "Image": "process_path",
-    "ImageLoaded": "process_path",
     "CommandLine": "process",
     "ParentImage": "parent_process_path",
     "ParentCommandLine": "parent_process",
@@ -322,11 +321,28 @@ _SIGMA_FIELD_TO_CIM: dict[str, str] = {
     "process.parent_command_line": "parent_process",
     "process.parent.command_line": "parent_process",
     "target.process.name": "process_name",
+    # ``ImageLoaded`` (Sysmon EventCode=7 / image_load) names the
+    # loaded module path, not the executing process path. CIM's
+    # ``process_path`` represents the EXECUTING process executable —
+    # mapping ``ImageLoaded`` onto it would silently turn an
+    # image-load detection into an executable-name match and miss
+    # the intended events. CIM has no canonical "loaded module"
+    # field, so leave ``ImageLoaded`` unmapped — the renderer falls
+    # through to the verbatim Sigma field name, which is exactly
+    # what CIM-after-Sysmon extractions preserve anyway.
     # ---- Endpoint.Filesystem ----
     "TargetFilename": "file_path",
     "file.path": "file_path",
     "file.name": "file_name",
-    "file.extension": "file_name",
+    # ``file.extension`` carries just the suffix (``.locked``,
+    # ``.enc``, ``.crypt``); CIM's canonical field for that is
+    # ``file_extension`` (Endpoint.Filesystem 5.x). Mapping it onto
+    # ``file_name`` would turn extension-equality / extension-IN
+    # selections into full-name equality checks that almost never
+    # match a real filename — false negatives across the impact
+    # data_encryption profile and any downstream rule using
+    # ``file.extension|in``.
+    "file.extension": "file_extension",
     "file.action": "action",
     "file.operation": "action",
     # ---- Endpoint.Registry ----

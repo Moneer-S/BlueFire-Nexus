@@ -50,7 +50,6 @@ from src.core.models import ModuleResult
     [
         # Endpoint.Processes
         ("Image", "process_path"),
-        ("ImageLoaded", "process_path"),
         ("CommandLine", "process"),
         ("ParentImage", "parent_process_path"),
         ("ParentCommandLine", "parent_process"),
@@ -65,7 +64,7 @@ from src.core.models import ModuleResult
         ("TargetFilename", "file_path"),
         ("file.path", "file_path"),
         ("file.name", "file_name"),
-        ("file.extension", "file_name"),
+        ("file.extension", "file_extension"),
         ("file.action", "action"),
         ("file.operation", "action"),
         # Endpoint.Registry
@@ -133,6 +132,56 @@ def test_unmapped_sigma_field_falls_through_to_verbatim() -> None:
     assert _cim_field("file.entropy") == "file.entropy"
     assert _cim_field("custom.bluefire_artifact") == "custom.bluefire_artifact"
     assert _cim_field("call.callee.user") == "call.callee.user"
+
+
+def test_image_loaded_falls_through_unmapped() -> None:
+    """Sysmon EventCode=7 ``ImageLoaded`` has no canonical CIM equivalent.
+
+    CIM's ``process_path`` represents the EXECUTING process
+    executable, not a loaded module. Mapping ``ImageLoaded`` onto
+    ``process_path`` would silently rewrite image-load (Sysmon EC=7)
+    detections into executable-name matches and miss the intended
+    events. Codex P1 finding on PR #143; pin the verbatim
+    pass-through so a future refactor can't reintroduce the
+    semantically-wrong rewrite.
+    """
+    assert _cim_field("ImageLoaded") == "ImageLoaded"
+    assert "ImageLoaded" not in _SIGMA_FIELD_TO_CIM
+    spl = render_spl(
+        _result(
+            {"ImageLoaded|endswith": "\\unsigned_module.dll"},
+            category="image_load",
+        ),
+        "run-imageloaded-1",
+    )
+    # Verbatim pass-through is the right answer — no rewrite to
+    # process_path. CIM-after-Sysmon extractions preserve the
+    # ImageLoaded field, so the rule is still defensible.
+    assert '| where ImageLoaded="*\\unsigned_module.dll"' in spl
+    assert "process_path" not in spl.split("CIM datamodel hint")[1] if "CIM datamodel hint" in spl else True
+
+
+def test_file_extension_maps_to_cim_file_extension() -> None:
+    """``file.extension`` -> CIM ``file_extension``, NOT ``file_name``.
+
+    Sigma's ``file.extension|in`` carries just the suffix (``.locked``,
+    ``.enc``); the CIM canonical field for that is ``file_extension``.
+    The previous mapping onto ``file_name`` turned extension-IN
+    selections into full-name-equality checks that almost never match
+    a real filename — false negatives across the impact
+    data_encryption profile. Codex P1 finding on PR #143.
+    """
+    assert _cim_field("file.extension") == "file_extension"
+    spl = render_spl(
+        _result(
+            {"file.extension|in": [".locked", ".enc", ".crypt"]},
+            category="file_event",
+        ),
+        "run-file-ext-1",
+    )
+    assert '| where file_extension IN (".locked", ".enc", ".crypt")' in spl
+    # The previous (wrong) mapping must NOT survive.
+    assert "file_name IN " not in spl
 
 
 # ---------------------------------------------------------------------------
