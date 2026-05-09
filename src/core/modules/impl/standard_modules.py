@@ -3685,21 +3685,33 @@ class CollectionModule(BaseModule):
             requested if requested in _COLLECTION_PROFILES else "file_staging"
         )
         profile = _COLLECTION_PROFILES[profile_key]
-        target = str(params.get("target") or "lab-host")
+        # Optional step-to-step propagation: when the scenario step
+        # sets `target_from_step: <step_id>` and does NOT pass an
+        # explicit `target`, pick up the upstream step's
+        # `artifacts.target` (single-target upstream like
+        # lateral_movement) or first entry of `artifacts.targets`
+        # (multi-target upstream like discovery). Explicit `target`
+        # always wins. Pairs naturally with lateral_movement ->
+        # collection (collect from the pivoted host).
+        target, propagated_from = resolve_target_from_step(
+            params, context, fallback="lab-host"
+        )
 
-        details = {
+        details: Dict[str, Any] = {
             "technique": profile_key,
             "target": target,
             "mitre_technique": profile["mitre"],
             "selection_value": profile["selection_value"],
         }
+        if propagated_from:
+            details["target_propagated_from_step"] = propagated_from
 
         event = TelemetryEvent(
             event_type=profile["event_type"],
             module=self.name,
             details=details,
         )
-        hints = {
+        hints: Dict[str, Any] = {
             "title": f"{profile['title_prefix']} {target}",
             "logsource": dict(profile["logsource"]),
             "detection": {
@@ -3712,6 +3724,16 @@ class CollectionModule(BaseModule):
         }
         if requested != profile_key:
             hints["unrecognized_collection_technique"] = requested
+        if propagated_from:
+            hints["target_propagated_from_step"] = propagated_from
+
+        artifacts: Dict[str, Any] = {
+            "technique": profile_key,
+            "target": target,
+            "mitre_technique": profile["mitre"],
+        }
+        if propagated_from:
+            artifacts["target_propagated_from_step"] = propagated_from
 
         return _result(
             self.name,
@@ -3720,11 +3742,7 @@ class CollectionModule(BaseModule):
             techniques=[profile["mitre"]],
             telemetry=[event],
             hints=hints,
-            artifacts={
-                "technique": profile_key,
-                "target": target,
-                "mitre_technique": profile["mitre"],
-            },
+            artifacts=artifacts,
         )
 
 

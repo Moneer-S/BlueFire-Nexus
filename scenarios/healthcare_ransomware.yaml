@@ -1,50 +1,226 @@
-name: Healthcare ransomware tabletop chain
-objective: Simulate a healthcare ransomware precursor path in a lab-safe workflow.
+id: healthcare_ransomware
+name: Healthcare double-extortion ransomware chain
+objective: |
+  Simulate a healthcare-sector double-extortion ransomware intrusion
+  in 10 steps: stand up the leak-site domain, spearphish a hospital
+  analyst, run an encoded PowerShell loader parented by OUTLOOK.EXE,
+  dump LSASS for domain credentials, enumerate adjacent EHR + share
+  hosts, pivot via PsExec, stage clinical data on the fileshare,
+  impair defenders before encryption, exfiltrate the staged data to
+  the attacker-controlled leak site, and finally encrypt the
+  fileshare. Modeled on documented healthcare-sector tradecraft from
+  the major double-extortion crews (BlackCat / Royal / LockBit / Clop):
+  spearphishing for foothold, LSASS for domain credentials, lateral
+  movement to EHR / fileshare hosts, double-extortion staging +
+  egress before encryption so the leak-extortion threat survives a
+  successful restore. Every step is simulate-only with
+  ``network_touch: false``; no real process spawn, registry write,
+  service stop, file rewrite, or live network call occurs under any
+  input. Five chain consumer pairs are demonstrated end-to-end so
+  defenders can correlate the typed propagation graph against their
+  telemetry.
 attack_coverage:
-  - T1566
-  - T1059
-  - T1053
-  - T1041
+  - T1583.001
+  - T1566.001
+  - T1059.001
+  - T1003.001
+  - T1018
+  - T1021.002
+  - T1074.001
+  - T1562.001
+  - T1567.002
   - T1486
 fail_fast: false
 steps:
-  - id: step1
-    name: Phishing attachment delivered to hospital analyst
+  - id: stage-leak-site-domain
+    name: Adversary registers leak-site domain for double extortion
+    objective: >-
+      Stand up the cloud-themed lookalike domain that will both
+      receive the staged clinical data egress AND host the public
+      leak-site countdown. Defenders pivot from registrar
+      intelligence on this step to the later HTTPS exfil
+      destination - the same domain that will threaten the
+      hospital with public release if ransom is unpaid.
+    module: resource_development
+    params:
+      resource_type: domain
+      target: secure-medfile-portal.example.lab
+      network_touch: false
+
+  - id: phish-delivery
+    name: Spearphishing attachment delivered to hospital analyst
+    objective: >-
+      Deliver the loader-bearing attachment (a fake patient-records
+      query Excel) to a hospital analyst's mailbox. The first
+      defender signal is the precursor email + attachment pair
+      from the lookalike domain.
     module: initial_access
     params:
       vector: phishing_attachment
-      target: hospital-analyst
+      target: hospital-analyst@example.lab
       network_touch: false
-  - id: step2
-    name: Hidden PowerShell script runs from attachment
+
+  - id: loader-execution
+    name: Encoded PowerShell loader spawned by OUTLOOK.EXE
+    objective: >-
+      Execute the encoded PowerShell loader from the macro inside
+      the patient-records attachment. The OUTLOOK.EXE ->
+      powershell.exe parent/child chain with -EncodedCommand is
+      the canonical phishing-to-loader signal; pin the parent
+      explicitly so the detection draft fires on
+      ``process.parent_command_line|contains OUTLOOK``.
     module: execution
     params:
-      command: powershell -nop -w hidden Write-Output "simulated ransomware prep"
+      command: "powershell -nop -w hidden -enc UwB0AGEAcgB0AC0AUAByAG8AYwBlAHMAcwA="
+      target_os: windows
+      parent_command_line: OUTLOOK.EXE
       network_touch: false
-  - id: step3
-    name: Scheduled-task persistence drops on victim host
-    module: persistence
+
+  - id: harvest-domain-creds
+    name: LSASS dump on hospital analyst host
+    objective: >-
+      Extract domain credentials from the analyst's host via LSASS
+      memory access. Healthcare-sector ransomware crews
+      consistently pivot from a single user foothold to LSASS
+      credential extraction so the rest of the chain has
+      privileged access to clinical fileshare + EHR servers.
+    module: credential_access
     params:
-      technique: scheduled_task
+      technique: lsass_dump
+      target: hospital-analyst-laptop
       network_touch: false
-  - id: step4
-    name: Data staged and exfiltrated over C2 channel
+
+  - id: discover-clinical-hosts
+    name: Enumerate adjacent EHR + fileshare hosts for pivot
+    objective: >-
+      Walk the clinical subnet for adjacent EHR / fileshare hosts
+      the harvested domain credentials might unlock. Targets are
+      concrete hostnames so the typed chain context propagates
+      a host-level value into the lateral-pivot step rather than
+      a subnet string.
+    module: discovery
+    params:
+      discovery_type: host_discovery
+      targets:
+        - clinical-fileshare-01.example.lab
+        - ehr-app-server.example.lab
+        - clinical-pdc-02.example.lab
+      network_touch: false
+
+  - id: lateral-pivot-to-fileshare
+    name: Pivot to clinical fileshare via PsExec using domain creds
+    objective: >-
+      Reuse the harvested domain credentials to pivot to the first
+      enumerated EHR-adjacent fileshare via PsExec. Source host is
+      propagated from the credential-harvest step; destination is
+      propagated from the discovery step. Defenders correlate the
+      LSASS-dump host with the cross-host SMB / service-create
+      burst.
+    module: lateral_movement
+    params:
+      technique: psexec
+      source_from_step: harvest-domain-creds
+      target_from_step: discover-clinical-hosts
+      network_touch: false
+
+  - id: stage-clinical-data
+    name: Stage clinical data on fileshare for double-extortion
+    objective: >-
+      Concentrate clinical / patient records into a staging
+      directory on the pivoted fileshare. The same target host the
+      lateral-pivot step landed on becomes the staging source for
+      the subsequent egress + encryption steps - a single host
+      drives three downstream defender signals (egress, fileshare
+      writes, mass-encryption pattern).
+    module: collection
+    params:
+      technique: file_staging
+      target_from_step: lateral-pivot-to-fileshare
+      network_touch: false
+
+  - id: impair-defenses-before-encryption
+    name: Impair Windows Defender on fileshare before encryption
+    objective: >-
+      Disable Defender / AV services on the fileshare host before
+      encryption begins so the bulk-rewrite pattern is not
+      flagged in real time. ``method: impair_defenses`` on the
+      same host the collection step staged data on is the
+      precursor signal defenders should treat as the encryption
+      runway.
+    module: defense_evasion
+    params:
+      technique: impair_defenses
+      target: clinical-fileshare-01.example.lab
+      network_touch: false
+
+  - id: exfil-to-leak-site
+    name: Exfiltrate staged data to leak-site cloud storage
+    objective: >-
+      Push the staged clinical data over HTTPS to the
+      attacker-controlled leak-site cloud storage BEFORE
+      encryption begins, so the double-extortion leak threat
+      survives a successful restore from backup. Defenders
+      correlate the lateral-pivot host with the egress event
+      and with the staged leak-site domain registration.
     module: exfiltration
     params:
-      method: via_c2
+      method: https_to_cloud_storage
+      target_from_step: stage-clinical-data
       network_touch: false
-  - id: step5
-    name: Ransomware encrypts hospital fileshare
+
+  - id: encrypt-fileshare
+    name: Encrypt clinical fileshare with bulk file rewrites
+    objective: >-
+      Encrypt the same fileshare host the data was staged + exfil'd
+      from. Bulk ``.locked`` / ``.enc`` rewrites on the EHR-adjacent
+      fileshare close the chain - by this point the leak-site
+      data is already gone, so the ransom note threatens both
+      decryption AND public release.
     module: impact
     params:
       technique: data_encryption
-      target: hospital-fileshare
+      target_from_step: stage-clinical-data
       network_touch: false
+
 expected_detections:
-  - process_creation
-  - scheduled_task_creation
-  - suspicious_data_staging
+  - Healthcare-themed leak-site domain provisioning correlated with later HTTPS exfil destination
+  - Spearphishing attachment from cloud-themed lookalike domain to a hospital analyst
+  - OUTLOOK.EXE -> powershell.exe parent/child chain with -EncodedCommand
+  - LSASS process-access from the loader's host
+  - Clinical-subnet host enumeration immediately preceding lateral pivot
+  - PsExec / SMB administrative-share lateral movement to EHR-adjacent fileshare
+  - Bulk file staging on the pivoted fileshare host
+  - Defender / AV service impairment immediately before bulk file rewrites
+  - HTTPS egress of staged clinical data to a freshly-provisioned cloud bucket
+  - Bulk ``.locked`` / ``.enc`` file rewrites on the same fileshare host
+
 blue_team_guidance:
-  - Tune process creation detections for encoded PowerShell and hidden windows.
-  - Baseline scheduled task creation and alert on anomalous task names.
-  - Correlate suspicious execution plus staging behavior in a short timeframe.
+  - Healthcare ransomware crews favour cloud-themed lookalike
+    domains (``secure-medfile`` / ``patient-portal`` / ``ehr-cloud``);
+    the stage-leak-site-domain step pins the seed for that
+    correlation. Tune registrar intelligence rules accordingly.
+  - OUTLOOK.EXE -> script-engine parent/child chains with encoded
+    command lines remain the canonical phishing-to-loader signal;
+    the loader-execution step's explicit OUTLOOK.EXE parent is
+    the test case for that detection.
+  - LSASS process-access from a non-administrative host (analyst
+    laptop) is the high-fidelity precursor to lateral movement;
+    the harvest-domain-creds step models that exact pattern.
+  - Clinical-subnet host enumeration immediately followed by
+    PsExec SMB administrative-share lateral movement is a classic
+    healthcare-ransomware chain - tune service-creation
+    (event 7045) plus SMB file-event correlation rules against
+    this scenario's run telemetry.
+  - Defender / AV service impairment immediately before bulk file
+    rewrites on the same host is the encryption-runway signal;
+    this scenario sequences the ``impair_defenses`` evasion
+    technique against the staging host so the bulk-rewrite alert
+    has a precursor signal to correlate with.
+  - The five chain consumer pairs (stage-leak-site-domain ->
+    exfil-to-leak-site via the C2 endpoint; harvest-domain-creds
+    -> lateral-pivot-to-fileshare source; discover-clinical-hosts
+    -> lateral-pivot-to-fileshare target; lateral-pivot-to-
+    fileshare -> stage-clinical-data target; stage-clinical-data
+    -> exfil-to-leak-site target AND -> encrypt-fileshare target)
+    are the typed propagation graph defenders should pivot
+    through when triaging this scenario's bundle.

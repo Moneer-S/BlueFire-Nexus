@@ -115,3 +115,76 @@ def test_module_advertises_all_catalog_techniques() -> None:
     assert expected.issubset(advertised), (
         f"Missing techniques on class attribute: {expected - advertised}"
     )
+
+
+def test_target_from_step_propagates_from_lateral_movement(tmp_path: Path) -> None:
+    """Collection should pick up the target host from an upstream
+    step's artifacts when ``target_from_step`` is set and no explicit
+    ``target`` is provided. Mirrors the propagation pattern used by
+    exfiltration / credential_access / anti_detection / impact, so
+    the lateral_movement -> collection chain pair lands the staging
+    step on the pivoted host instead of the fallback ``lab-host``."""
+
+    mod = CollectionModule()
+    ctx: Dict[str, Any] = {
+        "run_id": "coll-prop-test",
+        "output_dir": tmp_path,
+        "config": {},
+        "dry_run": True,
+        "max_runtime": 60,
+        "allowed_subnets": [],
+        "previous_step_results": {
+            "lateral-1": {
+                "status": "success",
+                "module": "lateral_movement",
+                "techniques": ["T1021.002"],
+                "artifacts": {"target": "clinical-fileshare-01.example.lab"},
+            },
+        },
+    }
+    result = mod.execute(
+        {"technique": "file_staging", "target_from_step": "lateral-1"},
+        ctx,
+    )
+    assert result.artifacts["target"] == "clinical-fileshare-01.example.lab"
+    assert (
+        result.artifacts.get("target_propagated_from_step") == "lateral-1"
+    )
+    assert (
+        result.detection_hints.get("target_propagated_from_step") == "lateral-1"
+    )
+
+
+def test_explicit_target_wins_over_target_from_step(tmp_path: Path) -> None:
+    """Explicit ``target`` always wins over propagated values, so
+    operators can override the chain wiring without removing the
+    ``target_from_step`` slot."""
+
+    mod = CollectionModule()
+    ctx: Dict[str, Any] = {
+        "run_id": "coll-prop-test",
+        "output_dir": tmp_path,
+        "config": {},
+        "dry_run": True,
+        "max_runtime": 60,
+        "allowed_subnets": [],
+        "previous_step_results": {
+            "lateral-1": {
+                "status": "success",
+                "module": "lateral_movement",
+                "techniques": ["T1021.002"],
+                "artifacts": {"target": "should-not-win"},
+            },
+        },
+    }
+    result = mod.execute(
+        {
+            "technique": "file_staging",
+            "target": "operator-explicit-target",
+            "target_from_step": "lateral-1",
+        },
+        ctx,
+    )
+    assert result.artifacts["target"] == "operator-explicit-target"
+    # No propagation marker should be set when the explicit value wins.
+    assert "target_propagated_from_step" not in result.artifacts
