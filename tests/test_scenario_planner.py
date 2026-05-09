@@ -365,6 +365,107 @@ def test_suggest_scenario_variants_handles_steps_with_no_catalog_slot() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Codex follow-up fixes
+# ---------------------------------------------------------------------------
+
+
+def test_offer_next_steps_partial_fit_outranks_chain_entry() -> None:
+    """Codex P1 on PR #156: rank tier must dominate score. A
+    chain_entry module that emits many new typed rows could not
+    outrank a partial_fit module via score inflation. The
+    "extension over restart" invariant requires explicit tier-first
+    sorting."""
+
+    registry = build_runtime_modules()
+    chain = ChainContext()
+    chain.record_step(
+        step_id="rd-1",
+        module="resource_development",
+        contract=registry["resource_development"].io_contract,
+        artifacts={"resource_type": "domain", "kind": "domain"},
+    )
+    state = from_snapshot(chain.snapshot())
+    suggestions = offer_next_steps(state, registry=registry, limit=20)
+    rank_order = [s.rank for s in suggestions]
+    if "chain_entry" in rank_order and "partial_fit" in rank_order:
+        first_partial = rank_order.index("partial_fit")
+        first_entry = rank_order.index("chain_entry")
+        assert first_partial < first_entry, (
+            "partial_fit must outrank chain_entry; got order: "
+            f"{[(s.module, s.rank, s.score) for s in suggestions]}"
+        )
+    if "chain_entry" in rank_order and "good_fit" in rank_order:
+        first_good = rank_order.index("good_fit")
+        first_entry = rank_order.index("chain_entry")
+        assert first_good < first_entry
+
+
+def test_offer_next_steps_perfect_fit_outranks_good_fit() -> None:
+    """Tier ordering: perfect_fit first, then good_fit, then
+    partial_fit, then chain_entry. Pin the ordering invariant."""
+
+    registry = build_runtime_modules()
+    chain = ChainContext()
+    chain.record_step(
+        step_id="disc-1",
+        module="discovery",
+        contract=registry["discovery"].io_contract,
+        artifacts={
+            "discovery_type": "host_discovery",
+            "targets": ["10.0.0.5"],
+            "discovered": [],
+        },
+    )
+    chain.record_step(
+        step_id="cred-1",
+        module="credential_access",
+        contract=registry["credential_access"].io_contract,
+        artifacts={"technique": "lsass_dump", "target": "10.0.0.5", "credential": "x"},
+    )
+    state = from_snapshot(chain.snapshot())
+    suggestions = offer_next_steps(state, registry=registry, limit=20)
+    seen_ranks: List[str] = []
+    for s in suggestions:
+        if s.rank not in seen_ranks:
+            seen_ranks.append(s.rank)
+    expected_partial_order = ["perfect_fit", "good_fit", "partial_fit", "chain_entry"]
+    expected_subseq = [r for r in expected_partial_order if r in seen_ranks]
+    assert seen_ranks == expected_subseq, (
+        f"rank tier ordering broken: {seen_ranks}"
+    )
+
+
+def test_suggest_scenario_variants_does_deep_copy_nested_params() -> None:
+    """Codex P2 on PR #156: a shallow ``dict(step)`` left nested
+    ``params`` dicts shared across variants and the input scenario.
+    Mutating one variant's params would leak into the input and
+    sibling variants. Pin that nested params dicts are independent
+    after variant generation."""
+
+    steps = [
+        {
+            "step_id": "s1",
+            "module": "command_control",
+            "params": {"channel": "http", "extras": {"flag": True}},
+        },
+        {
+            "step_id": "s2",
+            "module": "exfiltration",
+            "params": {"method": "via_c2", "extras": {"flag": True}},
+        },
+    ]
+    variants = suggest_scenario_variants(steps, count=3, seed=7)
+    variants[0][0]["params"]["extras"]["flag"] = False
+    assert steps[0]["params"]["extras"]["flag"] is True, (
+        "input scenario step's nested params got mutated through variant"
+    )
+    for other_variant in variants[1:]:
+        assert other_variant[0]["params"]["extras"]["flag"] is True, (
+            "sibling variant's nested params got mutated through another variant"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Integration: planner reads ChainContext snapshot end-to-end
 # ---------------------------------------------------------------------------
 

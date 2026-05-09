@@ -35,6 +35,7 @@ Public surface:
 
 from __future__ import annotations
 
+import copy
 import random
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -177,8 +178,25 @@ def offer_next_steps(
         suggestion = _rate_module(name, contract, state)
         if suggestion is not None:
             suggestions.append(suggestion)
-    suggestions.sort(key=lambda s: (-s.score, s.module))
+    # Sort by RANK TIER first, then by score within tier. Without the
+    # explicit tier ordering, a chain_entry module that emits many new
+    # types could outrank a partial_fit module via score inflation
+    # (Codex P1 on PR #156): a discovery step producing 5 new typed
+    # rows would beat exfiltration's partial_fit score of 2.0 + bonus
+    # bonuses, breaking the "extension over restart" invariant.
+    suggestions.sort(key=lambda s: (-_RANK_PRIORITY[s.rank], -s.score, s.module))
     return suggestions[:limit]
+
+
+# Tier priority. Higher = preferred. Used to sort `offer_next_steps`
+# results so a `partial_fit` module always outranks a `chain_entry`
+# regardless of score inflation; within a tier, higher score wins.
+_RANK_PRIORITY: Dict[str, int] = {
+    "perfect_fit": 4,
+    "good_fit": 3,
+    "partial_fit": 2,
+    "chain_entry": 1,
+}
 
 
 def _rate_module(
@@ -383,7 +401,16 @@ def suggest_scenario_variants(
     rng = random.Random(seed) if seed is not None else random.Random()
     variants: List[List[Dict[str, Any]]] = []
     for _ in range(count):
-        variant: List[Dict[str, Any]] = [dict(step) for step in scenario_steps]
+        # Deep-copy each step into the variant so unmutated steps
+        # don't share nested ``params`` dicts with the input scenario
+        # or with other variants. ``dict(step)`` is a shallow copy
+        # that leaves nested mutables shared, which would let a
+        # caller editing one variant before persisting / running it
+        # leak edits back into the input or sibling variants
+        # (Codex P2 on PR #156).
+        variant: List[Dict[str, Any]] = [
+            copy.deepcopy(dict(step)) for step in scenario_steps
+        ]
         # Pick one step at random and apply one random mutation to it.
         # If the random pick has no available mutations, scan the rest
         # of the chain for a step that does.
