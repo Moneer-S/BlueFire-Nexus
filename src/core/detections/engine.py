@@ -15,6 +15,29 @@ from .spl import render_spl
 from .yara_l import generate_yara_l
 
 
+def _load_existing_coverage_rows(summary_path: Path) -> List[Dict[str, Any]]:
+    """Read prior rows from a ``coverage_<run_id>.json`` file.
+
+    Returns ``[]`` on absence, malformed JSON, or unexpected shape — the
+    caller treats that as "fresh slate" and writes a brand-new file.
+    Used by :func:`write_detection_artifacts` to upsert per-step rows
+    across multiple per-step calls so the cumulative coverage sidecar
+    actually reflects the whole run, not just the most recent step.
+    """
+    if not summary_path.exists():
+        return []
+    try:
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    rows = data.get("detections")
+    if not isinstance(rows, list):
+        return []
+    return [r for r in rows if isinstance(r, dict)]
+
+
 # Characters that are invalid (or troublesome) in NTFS filenames.
 # ``:`` is the worst offender — Windows interprets it as the
 # Alternate Data Stream separator, so ``foo:bar.yml`` writes to
@@ -190,8 +213,28 @@ def write_detection_artifacts(
         # unsafe chars but a future operator-chosen ``run_id``
         # could.
         summary_path = detections_dir / f"coverage_{_safe_filename_component(run_id)}.json"
+        # The orchestrator calls ``write_detection_artifacts`` once
+        # per scenario step (each call passes a single-entry
+        # ``module_results`` dict). Without the upsert below, each
+        # call overwrote the prior coverage file and the on-disk
+        # ``coverage_<run_id>.json`` only reflected the LAST step,
+        # silently dropping the chain's earlier coverage rows
+        # despite its filename promising whole-run coverage. Upsert
+        # by ``module`` key (which is ``"<module>:<step_id>"`` for
+        # scenario steps) keeps insertion order, preserves earlier
+        # rows on subsequent calls, and lets a re-run of the same
+        # step replace the prior row in place. Single-call invocations
+        # (operator paths that pass the full module_results in one
+        # go) keep the legacy whole-batch shape because the existing
+        # file is empty until that single call lands.
+        existing_rows = _load_existing_coverage_rows(summary_path)
+        merged: Dict[str, Dict[str, Any]] = {}
+        for row in existing_rows + telemetry_summary_rows:
+            module_key = str(row.get("module", ""))
+            if module_key:
+                merged[module_key] = row
         summary_path.write_text(
-            json.dumps({"detections": telemetry_summary_rows}, indent=2),
+            json.dumps({"detections": list(merged.values())}, indent=2),
             encoding="utf-8",
         )
 
