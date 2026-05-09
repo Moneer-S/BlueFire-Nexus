@@ -33,13 +33,27 @@ def utc_now_iso() -> str:
 
 @dataclass(slots=True)
 class TelemetryEvent:
-    """A telemetry event emitted by a module execution."""
+    """A telemetry event emitted by a module execution.
+
+    ``step_id`` and ``run_id`` are schema-additive top-level fields
+    (PR #147) so a defender concatenating multiple ``telemetry.jsonl``
+    streams (e.g. for cross-run analysis) can trace each event back
+    to the specific scenario step + run that produced it. Modules
+    typically leave both fields empty when emitting events; the
+    orchestrator's ``TelemetryBus`` enriches each emitted event with
+    the step / run identifiers held by the runtime context, so module
+    code stays unaware of its caller. Empty strings remain the
+    backwards-compatible default for callers that emit events
+    directly to a sink without going through the bus.
+    """
 
     event_type: str
     module: str
     details: Dict[str, Any] = field(default_factory=dict)
     severity: str = "info"
     timestamp: str = field(default_factory=utc_now_iso)
+    step_id: str = ""
+    run_id: str = ""
 
 
 @dataclass(slots=True)
