@@ -142,10 +142,19 @@ def test_initial_access_and_execution_modules_acknowledged() -> None:
     hardcoded tuple (or strips the parent fallback) is caught here
     rather than only at the per-module test layer.
     """
-    # Execution: parent T1059 + every interpreter sub-technique.
+    # Execution: parent T1059 + every interpreter sub-technique +
+    # every Windows signed-binary proxy profile (T1218 family + T1140
+    # + T1197). The proxy catalog landed in the Windows-first depth
+    # pass; before it merged the test only unioned the interpreter
+    # profiles.
+    proxy_profiles = getattr(standard_modules, "_PROXY_EXECUTION_PROFILES", {})
     expected_execution = tuple(
         sorted(
-            {"T1059", *(profile["mitre"] for profile in standard_modules._EXECUTION_INTERPRETER_PROFILES.values())}
+            {
+                "T1059",
+                *(p["mitre"] for p in standard_modules._EXECUTION_INTERPRETER_PROFILES.values()),
+                *(p["mitre"] for p in proxy_profiles.values()),
+            }
         )
     )
     assert standard_modules.ExecutionModule.attack_techniques == expected_execution
