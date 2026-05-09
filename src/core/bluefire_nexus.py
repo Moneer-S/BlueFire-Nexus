@@ -157,7 +157,11 @@ class BlueFireNexus:
 
             safety.ensure_safe(operation_data)
             result: ModuleResult = module.execute(operation_data, self._module_context(context))
-            telemetry.emit_many(result.telemetry)
+            # Single-module ``execute_operation`` path: no scenario step
+            # to annotate, but the run_id is still useful so a defender
+            # concatenating multiple ``telemetry.jsonl`` streams across
+            # runs can still trace each event back to its origin.
+            telemetry.emit_many(result.telemetry, run_id=context.run_id)
 
             module_results: Dict[str, ModuleResult] = {}
             if result.status == "success":
@@ -352,7 +356,18 @@ class BlueFireNexus:
                             previous_step_results=previous_step_results,
                         ),
                     )
-                    telemetry.emit_many(result.telemetry)
+                    # Annotate each telemetry event with the scenario
+                    # step_id + run_id so a defender concatenating
+                    # multiple runs' ``telemetry.jsonl`` files can
+                    # trace every event back to the specific step
+                    # that produced it (PR #147). Modules typically
+                    # leave both fields empty; the bus fills them in
+                    # on the way out.
+                    telemetry.emit_many(
+                        result.telemetry,
+                        step_id=step.step_id,
+                        run_id=context.run_id,
+                    )
 
                     module_results[f"{step.module}:{step.step_id}"] = result
                     # Record this step's outcome for downstream steps.
