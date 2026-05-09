@@ -99,6 +99,62 @@ def _utc_now_isoformat() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _summarise_chain_snapshot(
+    snapshot: Mapping[str, Any] | None,
+) -> Dict[str, Any]:
+    """Summarise a :class:`ChainContext` snapshot for the manifest.
+
+    Surfaces compact counts plus the full ``warnings`` list - long
+    by-type / by-step artifact rows are NOT inlined to keep the
+    manifest readable. The viewer / report layer pivots off the
+    warnings list to flag consumer steps that ran without an
+    upstream emission for a required slot.
+
+    Returns a dict with deterministic shape even for an empty /
+    missing chain so consumers always read the same keys.
+    """
+
+    if not isinstance(snapshot, Mapping):
+        return {
+            "produced_types": [],
+            "type_counts": {},
+            "step_counts": {},
+            "warnings": [],
+            "warning_count": 0,
+        }
+    by_type = snapshot.get("artifacts_by_type") or {}
+    by_step = snapshot.get("artifacts_by_step") or {}
+    warnings_raw = snapshot.get("warnings") or []
+    type_counts: Dict[str, int] = {}
+    if isinstance(by_type, Mapping):
+        for key, rows in by_type.items():
+            try:
+                type_counts[str(key)] = len(rows)
+            except TypeError:
+                type_counts[str(key)] = 0
+    step_counts: Dict[str, int] = {}
+    if isinstance(by_step, Mapping):
+        for key, rows in by_step.items():
+            try:
+                step_counts[str(key)] = len(rows)
+            except TypeError:
+                step_counts[str(key)] = 0
+    warnings_list: List[Dict[str, str]] = []
+    if isinstance(warnings_raw, list):
+        for warning in warnings_raw:
+            if isinstance(warning, Mapping):
+                warnings_list.append(
+                    {str(k): str(v) for k, v in warning.items()}
+                )
+    return {
+        "produced_types": sorted(type_counts.keys()),
+        "type_counts": type_counts,
+        "step_counts": step_counts,
+        "warnings": warnings_list,
+        "warning_count": len(warnings_list),
+    }
+
+
 def _safety_summary(config: Mapping[str, Any] | None) -> Dict[str, Any]:
     """Surface the run's effective safety / mode settings.
 
@@ -487,6 +543,7 @@ def build_manifest(
     legacy_controls: Optional[Mapping[str, Any]] = None,
     warnings: Optional[Iterable[str]] = None,
     errors: Optional[Iterable[str]] = None,
+    chain: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Assemble the full manifest dict for a single run.
 
@@ -536,6 +593,14 @@ def build_manifest(
         ),
         "warnings": list(warnings or []),
         "errors": list(errors or []),
+        # Chain context summary (PR for P9 defensive output): only the
+        # warnings list + per-type counts are surfaced. The full
+        # by-step / by-type artifact rows can be very large for long
+        # scenarios; the manifest stays compact by exposing counts
+        # only. The static viewer / report layer can pivot on
+        # ``chain.warnings`` to flag consumer steps that ran without
+        # an upstream emission.
+        "chain": _summarise_chain_snapshot(chain),
     }
 
     # Roll blocked / failed / error step ids into the top-level
@@ -608,6 +673,7 @@ def write_run_manifest(
     legacy_controls: Optional[Mapping[str, Any]] = None,
     warnings: Optional[Iterable[str]] = None,
     errors: Optional[Iterable[str]] = None,
+    chain: Optional[Mapping[str, Any]] = None,
 ) -> Path:
     """Convenience wrapper: build + write in one call.
 
@@ -634,6 +700,7 @@ def write_run_manifest(
         legacy_controls=legacy_controls,
         warnings=warnings,
         errors=errors,
+        chain=chain,
     )
     return write_manifest(run_dir, manifest)
 

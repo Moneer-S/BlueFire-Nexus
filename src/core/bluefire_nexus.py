@@ -570,6 +570,12 @@ class BlueFireNexus:
                     ),
                     copilot=copilot_summary,
                     legacy_controls=self.legacy_activation_summary(),
+                    # Surface the typed chain context summary in the
+                    # manifest so the static viewer / report layer can
+                    # flag consumer steps that ran without an upstream
+                    # emission. Snapshot is built incrementally during
+                    # the scenario loop above.
+                    chain=chain.snapshot(),
                 )
             except OSError as manifest_exc:  # pragma: no cover - I/O safety net
                 self.logger.warning("manifest write failed: %s", manifest_exc)
