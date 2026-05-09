@@ -1,46 +1,172 @@
 id: insider_exfil_dns
-name: Insider DNS Exfiltration
-objective: Simulate insider-driven DNS-based data exfiltration from a restricted lab subnet.
-mitre:
+name: Insider DNS exfiltration chain
+objective: |
+  Simulate an insider-driven DNS exfiltration chain in seven steps
+  against a finance / HR data subnet: an outside accomplice stands
+  up the DNS tunnel domain, the insider enumerates sensitive HR
+  / payroll files on their authorised workstation, stages them
+  into a local archive, timestomps the archive to slow forensic
+  triage, opens a DNS-channel C2 to the staged domain, applies
+  protocol obfuscation (jittered cadence, label entropy), and
+  finally exfiltrates over the DNS tunnel. Modeled on documented
+  insider-threat tradecraft: no phishing, no exploit - the insider
+  ALREADY has authorised access to the data; defenders detect
+  through baseline-anomaly DNS volume + entropy + staging
+  artefacts. Every step is simulate-only with
+  ``network_touch: false``; no real DNS query, file rewrite, or
+  outbound packet leaves the host under any input. Five chain
+  consumer pairs are demonstrated end-to-end so defenders can
+  correlate the typed propagation graph against their telemetry.
+attack_coverage:
+  - T1583.001
   - T1083
-  - T1048.003
+  - T1560.002
+  - T1070.006
   - T1071.004
   - T1572
-fail_fast: true
+  - T1048.003
+fail_fast: false
 steps:
-  - id: step-1
-    name: Identify sensitive files
+  - id: stage-tunnel-domain
+    name: Outside accomplice stages DNS-tunnel domain
+    objective: >-
+      Stand up the attacker-controlled domain whose nameservers
+      will receive the DNS-tunnel queries. Defenders correlate
+      registrar intelligence on this step against the later DNS
+      query destination - the same domain that surfaces in the
+      tunnel-volume anomaly.
+    module: resource_development
+    params:
+      resource_type: domain
+      target: cdn-services.example.lab
+      network_touch: false
+
+  - id: enumerate-sensitive-files
+    name: Insider enumerates HR / payroll files on authorised host
+    objective: >-
+      Walk the insider's authorised workstation for sensitive
+      HR / payroll files. The insider has legitimate read access
+      so process-creation telemetry alone is benign; defenders
+      detect via volume + path anomalies (bulk-read of HR-share
+      paths during off-hours).
     module: discovery
     params:
-      targets:
-        - 10.0.0.35
       discovery_type: files
-      network_touch: true
-  - id: step-2
-    name: Stage data for exfiltration
-    module: exfiltration
+      targets:
+        - insider-finance-laptop.example.lab
+      network_touch: false
+
+  - id: stage-archive
+    name: Stage HR / payroll files into local archive
+    objective: >-
+      Concentrate the enumerated HR data into a local archive on
+      the insider's workstation. The same host the discovery
+      step ran on becomes the staging source - file_staging
+      target is propagated from the discovery step so the chain
+      narrative anchors on a single host throughout.
+    module: collection
     params:
-      method: dns_tunnel
-      controlled_domain: exfil.example.lab
-      data_set: synthetic_hr_exports
-      network_touch: true
-  - id: step-2b
-    name: Establish DNS-channel C2 metadata
+      technique: archive_compressed
+      target_from_step: enumerate-sensitive-files
+      network_touch: false
+
+  - id: timestomp-archive
+    name: Timestomp staged archive to delay forensic triage
+    objective: >-
+      Rewrite the staged archive's MAC times to match
+      surrounding directory entries so a forensic walk that
+      orders by mtime treats the archive as long-lived.
+      Insider-threat tradecraft routinely uses timestomping as
+      an anti-forensic precursor to exfil because the actor
+      has filesystem permissions but limited admin access -
+      log clearing would surface as an event the loader-style
+      adversary doesn't have to worry about.
+    module: defense_evasion
+    params:
+      technique: timestomping
+      target: insider-finance-laptop.example.lab
+      network_touch: false
+
+  - id: open-dns-c2
+    name: Open DNS-channel C2 to staged tunnel domain
+    objective: >-
+      Establish the DNS-channel C2 metadata (carrier domain +
+      record-type + label-length plan) that the exfiltration
+      step will use as its tunnel. ``c2_endpoint_from_step``
+      pulls the staged domain from step 1 so the chain ties
+      registrar intelligence to the tunnel destination
+      explicitly.
     module: command_control
     params:
       channel: dns
-      c2_url: dns://exfil.example.lab
-      network_touch: true
-  - id: step-3
-    name: Obfuscate exfil traffic pattern
+      c2_endpoint_from_step: stage-tunnel-domain
+      network_touch: false
+
+  - id: obfuscate-dns-pattern
+    name: Apply DNS protocol obfuscation to tunnel cadence
+    objective: >-
+      Add jittered cadence + per-query label-length variation
+      so the tunnel doesn't surface as a periodic
+      fixed-length-label DNS pattern. Insider exfil that
+      walks straight into a baseline DNS detection rule fires
+      the loudest alert; the obfuscation step models the
+      attacker's effort to evade rate / entropy analytics.
     module: network_obfuscator
     params:
       protocol: dns
-      jitter_percent: 35
-      network_touch: true
+      network_touch: false
+
+  - id: exfil-over-dns
+    name: Exfiltrate staged archive over DNS tunnel
+    objective: >-
+      Push the staged HR archive out over the obfuscated DNS
+      channel to the tunnel domain. Source host is propagated
+      from the staging step (the same insider workstation
+      throughout the chain). Defenders correlate volume +
+      entropy + label-length anomalies against this exfil
+      step's emitted DNS telemetry shape.
+    module: exfiltration
+    params:
+      method: dns_tunneling
+      target_from_step: stage-archive
+      network_touch: false
+
 expected_detections:
-  - Alert on high-volume DNS query entropy and long labels
-  - Correlate file staging with outbound DNS beacon patterns
+  - DNS-tunnel domain provisioning correlated with later DNS query destination
+  - Off-hours bulk read of HR / payroll file paths from a single workstation
+  - Local archive creation immediately following bulk-read on the same host
+  - File-time anti-forensic markers (timestomping) on a freshly-staged archive
+  - DNS query volume + label-length anomaly to a freshly-provisioned domain
+  - Jittered DNS query cadence + label entropy spike from a single host
+
 blue_team_guidance:
-  - Baseline normal DNS request lengths per host and detect deviations
-  - Use DNS sinkhole logs to map suspicious subdomains to endpoint process lineage
+  - Insider scenarios skip phishing entirely; the highest-fidelity
+    detection axis is bulk-read of sensitive data paths during
+    off-hours, NOT process-creation. The enumerate-sensitive-files
+    step pins the volume-anomaly signal.
+  - Local archive creation immediately following the bulk-read is
+    a strong precursor; tune file_event correlation rules across
+    discovery -> collection on the same host.
+  - Timestomping artefacts (file MAC times that match surrounding
+    directory entries within a small jitter) are a high-fidelity
+    insider-threat signal because the loader-style adversary
+    rarely has the filesystem permissions or motivation to
+    timestomp. The timestomp-archive step is the test case for
+    that detection.
+  - DNS-tunnel detection is most reliable when correlated against
+    a freshly-provisioned destination domain; the
+    stage-tunnel-domain registrar-intelligence link is the early
+    warning, while the exfil-over-dns step is the volume +
+    entropy spike.
+  - Protocol obfuscation (jittered cadence + label-length
+    variation) is the attacker's countermeasure against rate-
+    based detections; the obfuscate-dns-pattern step models
+    that countermeasure so defenders can tune analytics
+    against an evading-shape baseline.
+  - The five chain consumer pairs (stage-tunnel-domain ->
+    open-dns-c2 via the C2 endpoint; enumerate-sensitive-files
+    -> stage-archive target; stage-archive -> exfil-over-dns
+    target; plus the implicit timestomp -> exfil-over-dns
+    timing edge AND the obfuscate -> exfil channel-shaping
+    edge) are the typed propagation graph defenders should
+    pivot through when triaging this scenario's bundle.
