@@ -1069,6 +1069,46 @@ _PERSISTENCE_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "persistence_bootkit",
         "title_prefix": "Bootkit persistence on",
     },
+    # Linux / macOS depth: SSH ``authorized_keys`` injection is the
+    # canonical key-based persistence path on every Unix-like host
+    # (T1098.004). Defenders alert on file_event writes to the
+    # ``~/.ssh/authorized_keys`` path.
+    "authorized_keys": {
+        "mitre": "T1098.004",
+        "logsource": {"category": "file_event", "product": "linux"},
+        "selection_field": "file.path|contains",
+        "selection_value": ".ssh/authorized_keys",
+        "event_type": "persistence_authorized_keys",
+        "title_prefix": "SSH authorized_keys persistence on",
+    },
+    # Per-user systemd unit (T1543.002) is distinct from the system
+    # service (T1543.003 - Windows-flavoured) and from launch_agent /
+    # launch_daemon (macOS); the modern Linux foothold pattern is to
+    # drop a unit file under ``~/.config/systemd/user/`` and enable
+    # it without root.
+    "systemd_user_service": {
+        "mitre": "T1543.002",
+        "logsource": {"category": "file_event", "product": "linux"},
+        "selection_field": "file.path|contains",
+        "selection_value": ".config/systemd/user",
+        "event_type": "persistence_systemd_user_service",
+        "title_prefix": "Per-user systemd unit persistence on",
+    },
+    # macOS Login Items (T1547.015) is a persistence vector distinct
+    # from LaunchAgents - Ventura+ stores Login Items registrations in
+    # ``~/Library/Application Support/com.apple.backgroundtaskmanagementagent/backgrounditems.btm``;
+    # legacy forms used ``~/Library/Preferences/com.apple.loginitems.plist``.
+    # Anchor on the modern ``backgrounditems.btm`` filename so the
+    # detection draft does not silently overlap with the existing
+    # ``launch_agent`` profile (which fires on the LaunchAgents path).
+    "macos_login_item": {
+        "mitre": "T1547.015",
+        "logsource": {"category": "file_event", "product": "macos"},
+        "selection_field": "file.path|contains",
+        "selection_value": "backgrounditems.btm",
+        "event_type": "persistence_macos_login_item",
+        "title_prefix": "macOS login-item persistence on",
+    },
 }
 
 
@@ -1354,6 +1394,40 @@ _DISCOVERY_PROFILES: Dict[str, Dict[str, Any]] = {
         "title_prefix": "File and directory enumeration on",
         "event_type": "discovery_file_enumeration",
     },
+    # Linux / macOS depth: SSH artifact enumeration (~/.ssh/id_*,
+    # known_hosts, authorized_keys, config) is the canonical pivot
+    # precursor on every Unix-like host. Maps to the same T1083
+    # parent technique as `files`, but pins a SSH-specific
+    # logsource so detection drafts fire on file_event reads to
+    # ``~/.ssh/`` rather than the generic file-enum path.
+    "ssh_artifacts": {
+        "mitre": "T1083",
+        "logsource": {"category": "file_event", "product": "linux"},
+        "selection_field": "file.path|contains",
+        "title_prefix": "SSH-artifact enumeration on",
+        "event_type": "discovery_ssh_artifacts",
+    },
+    # Per-user systemd unit enumeration (T1518) is the post-foothold
+    # check that surfaces existing footholds on a Linux host.
+    # Distinct from `service_info` (which uses systemctl / service
+    # binaries) because the unit-file walk is filesystem-driven and
+    # surfaces under file_event telemetry.
+    "systemd_units": {
+        "mitre": "T1518",
+        "logsource": {"category": "file_event", "product": "linux"},
+        "selection_field": "file.path|contains",
+        "title_prefix": "systemd unit-file enumeration on",
+        "event_type": "discovery_systemd_units",
+    },
+    # macOS plist enumeration (T1518) — analogous to systemd_units
+    # but for LaunchAgents / LaunchDaemons / preferences plists.
+    "macos_plist_artifacts": {
+        "mitre": "T1518",
+        "logsource": {"category": "file_event", "product": "macos"},
+        "selection_field": "file.path|contains",
+        "title_prefix": "macOS plist-artifact enumeration on",
+        "event_type": "discovery_macos_plist_artifacts",
+    },
 }
 
 
@@ -1413,9 +1487,20 @@ class DiscoveryModule(BaseModule):
             ArtifactSpec(
                 type=FILE,
                 key="targets",
-                description="enumerated file paths (discovery_type=files)",
+                description=(
+                    "enumerated file paths (discovery_type=files / "
+                    "ssh_artifacts / systemd_units / macos_plist_artifacts)"
+                ),
                 required=False,
-                produced_if=("discovery_type", "files"),
+                produced_if=(
+                    "discovery_type",
+                    (
+                        "files",
+                        "ssh_artifacts",
+                        "systemd_units",
+                        "macos_plist_artifacts",
+                    ),
+                ),
             ),
             # impact_target is the abstract view: any host / service /
             # share enumerated upstream is a candidate impact target
