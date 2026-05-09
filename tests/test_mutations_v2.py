@@ -282,6 +282,15 @@ _RUNTIME_CATALOG_NAMES: Dict[Tuple[str, str], str] = {
 }
 
 
+# Slots intentionally absent from MUTATION_CATALOG even though the
+# runtime has a matching profile catalog. Each entry must include a
+# rationale so a future contributor reading the test understands why
+# the mutation surface skips the slot. An empty set means every
+# slot in ``_RUNTIME_CATALOG_NAMES`` MUST be present in
+# ``MUTATION_CATALOG`` - the test fails loudly otherwise.
+_INTENTIONALLY_ABSENT_FROM_MUTATION_CATALOG: Dict[Tuple[str, str], str] = {}
+
+
 @pytest.mark.parametrize(
     "module,key",
     sorted(_RUNTIME_CATALOG_NAMES.keys()),
@@ -294,21 +303,37 @@ def test_mutation_catalog_is_subset_of_runtime_catalog(
     proposed swap lands on an unrecognised value, falls back to the
     module's default, and the mutation is silently a no-op.
 
-    Codex P1 caught this on PR #155 for execution / network_obfuscator
+    Codex P1 (PR #155) caught this for execution / network_obfuscator
     / anti_detection / reconnaissance: the catalog had values that
     didn't exist in the runtime profile catalogs. This test now
     walks every ``MUTATION_CATALOG`` slot rather than the original
     11; a future drift between the mutation catalog and the runtime
     catalog surfaces as a parametrized failure naming both modules.
+
+    Codex follow-up P2 (PR #155) caught a related defect: silently
+    skipping when a slot is missing from MUTATION_CATALOG meant
+    deleting a mutation slot would still pass CI. The fix below
+    treats every runtime slot as required-in-mutation-catalog
+    unless the slot is explicitly listed in
+    :data:`_INTENTIONALLY_ABSENT_FROM_MUTATION_CATALOG` with a
+    documented rationale.
     """
 
     from src.core.modules.impl import standard_modules
 
     if (module, key) not in MUTATION_CATALOG:
-        # Slot intentionally absent from the catalog (e.g. execution,
-        # which accepts a free-form ``command`` string rather than a
-        # catalog key). Pinned by a separate explicit-absence test.
-        return
+        if (module, key) in _INTENTIONALLY_ABSENT_FROM_MUTATION_CATALOG:
+            return
+        pytest.fail(
+            f"runtime module {module!r} has a profile catalog at "
+            f"{_RUNTIME_CATALOG_NAMES[(module, key)]!r} but no "
+            f"corresponding mutation slot ({module}, {key}) - either "
+            f"add the slot to MUTATION_CATALOG or list it in "
+            f"_INTENTIONALLY_ABSENT_FROM_MUTATION_CATALOG with a "
+            f"reason. Without a mutation slot, defenders running "
+            f"random_mutation will never explore this module's "
+            f"alternative techniques."
+        )
     runtime_catalog = getattr(
         standard_modules, _RUNTIME_CATALOG_NAMES[(module, key)]
     )
