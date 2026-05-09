@@ -386,6 +386,82 @@ def test_format_run_summary_for_prompt_omits_objective_line_when_missing() -> No
     assert "      objective:" not in prompt_block
 
 
+def test_run_summary_parser_round_trips_per_step_objectives() -> None:
+    """``_parse_run_summary_block`` recognises per-step objective sub-bullets.
+
+    Codex P1 finding on PR #144: the parser previously treated the
+    ``      objective: <text>`` sub-bullet as a sub-block terminator,
+    which then re-parsed the line as the top-level ``objective:`` key
+    and silently overwrote ``scenario_objective``. Worse, every step
+    listed AFTER the first per-step objective sub-bullet was dropped
+    from ``module_statuses``.
+
+    This test pins the corrected behaviour: the parser attaches the
+    objective sub-bullet to the most-recent status entry, the
+    sub-block keeps consuming subsequent ``- step: status`` lines,
+    and ``scenario_objective`` is preserved end-to-end.
+    """
+    from src.core.ai.providers import _parse_run_summary_block
+
+    summary = summarise_run_state(
+        run_id="run-parser-1",
+        scenario_name="enterprise",
+        scenario_objective="Top-level scenario objective.",
+        module_results={
+            "discovery:enumerate-files": _module_result(),
+            "execution:loader": _module_result(),
+            "credential_access:harvest": _module_result(),
+        },
+        step_objectives={
+            "discovery:enumerate-files": "Find high-value files.",
+            "execution:loader": "Run the encoded loader.",
+        },
+    )
+    prompt = _format_run_summary_for_prompt(summary)
+    parsed = _parse_run_summary_block(prompt)
+    # Scenario-level objective survives the round-trip.
+    assert parsed["scenario_objective"] == "Top-level scenario objective."
+    # All three steps survive the round-trip — the per-step objective
+    # sub-bullet did NOT terminate the statuses block early.
+    statuses = parsed.get("module_statuses") or []
+    steps = {entry["step"]: entry for entry in statuses}
+    assert "discovery:enumerate-files" in steps, statuses
+    assert "execution:loader" in steps, statuses
+    assert "credential_access:harvest" in steps, statuses
+    # Per-step objectives attach to the right status entries.
+    assert steps["discovery:enumerate-files"]["objective"] == "Find high-value files."
+    assert steps["execution:loader"]["objective"] == "Run the encoded loader."
+    # The third step had no objective; the parser does not invent one.
+    assert "objective" not in steps["credential_access:harvest"]
+
+
+def test_run_summary_parser_does_not_overwrite_scenario_objective() -> None:
+    """A regression-only check: the ``objective:`` sub-bullet must NEVER
+    surface as the top-level ``scenario_objective`` value.
+
+    Pin the failure mode Codex flagged so a future refactor that
+    forgets the in-statuses guard cannot reintroduce the bug.
+    """
+    from src.core.ai.providers import _parse_run_summary_block
+
+    summary = summarise_run_state(
+        run_id="run-parser-2",
+        scenario_name="x",
+        scenario_objective="DO NOT OVERWRITE ME",
+        module_results={
+            "discovery:enumerate-files": _module_result(),
+        },
+        step_objectives={
+            "discovery:enumerate-files": "Find high-value files.",
+        },
+    )
+    prompt = _format_run_summary_for_prompt(summary)
+    parsed = _parse_run_summary_block(prompt)
+    assert parsed["scenario_objective"] == "DO NOT OVERWRITE ME"
+    # The per-step objective text is in the right place.
+    assert "Find high-value files." not in parsed["scenario_objective"]
+
+
 # ---------------------------------------------------------------------------
 # 6. End-to-end via the flagship enterprise_intrusion_chain scenario
 # ---------------------------------------------------------------------------
