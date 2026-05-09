@@ -6,13 +6,25 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from ..models import ModuleResult
+from .contracts import CapabilityIOContract
 
 
 class BaseModule(ABC):
-    """Common interface all orchestrated modules must implement."""
+    """Common interface all orchestrated modules must implement.
+
+    ``io_contract`` is a class-level attribute. Each concrete module
+    declares the artifact types it consumes/produces using the
+    capability IO contract vocabulary in :mod:`.contracts`. The
+    chaining engine, scenario planner, AI orchestrator, and report
+    surfaces all read this attribute; the registry contract test in
+    ``tests/test_module_io_contracts.py`` enforces that every
+    registered module either declares a meaningful contract or
+    explicitly opts out via ``not_applicable=True``.
+    """
 
     name: str = "base"
     attack_techniques: tuple[str, ...] = ()
+    io_contract: CapabilityIOContract = CapabilityIOContract()
 
     def __init__(self) -> None:
         self._config: Dict[str, Any] = {}
