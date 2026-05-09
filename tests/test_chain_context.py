@@ -307,3 +307,53 @@ def test_chain_starts_empty_and_safely_returns_none():
         "artifacts_by_step": {},
         "warnings": [],
     }
+
+
+def test_lookup_apis_normalise_alias_inputs():
+    """Codex P2: ``has`` / ``latest_artifact`` / ``candidate_artifacts``
+    must normalise an operator alias (``credentials`` -> ``credential``,
+    ``hosts`` -> ``host``, ``c2_endpoints`` -> ``c2_endpoint``) before
+    reading the type-indexed map. Without it a consumer that uses
+    :class:`ChainContext` directly silently misses valid upstream
+    data, since :meth:`record_step` always indexes under contract
+    types (canonical) but the lookup compared raw input keys.
+
+    The helper functions ``latest_artifact_value`` and
+    ``chain_provenance`` already normalised; the in-memory builder
+    API must agree.
+    """
+
+    chain = ChainContext()
+    chain.record_step(
+        step_id="creds-1",
+        module="credential_access",
+        contract=_credential_contract(),
+        artifacts={"credential": {"hash": "abc"}},
+    )
+    # Canonical lookup still works.
+    assert chain.has("credential") is True
+    assert chain.latest_artifact("credential") is not None
+    # Alias lookups must find the same row.
+    assert chain.has("credentials") is True
+    assert chain.has("creds") is True
+    latest_alias = chain.latest_artifact("credentials")
+    assert latest_alias is not None
+    assert latest_alias.value == {"hash": "abc"}
+    candidates_alias = chain.candidate_artifacts("creds")
+    assert len(candidates_alias) == 1
+
+
+def test_lookup_apis_treat_unknown_type_as_missing():
+    """Unknown artifact-type labels must not raise from the lookup APIs.
+
+    The helper functions ``latest_artifact_value`` /
+    ``chain_provenance`` raise ``ValueError`` on unknown labels via
+    :func:`normalise_artifact_type`. The in-memory builder API stays
+    permissive — callers that use ``ChainContext`` directly should
+    treat unknown labels as "no match" rather than crashing the run.
+    """
+
+    chain = ChainContext()
+    assert chain.has("definitely-not-a-real-type") is False
+    assert chain.latest_artifact("definitely-not-a-real-type") is None
+    assert chain.candidate_artifacts("definitely-not-a-real-type") == ()

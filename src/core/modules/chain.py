@@ -78,11 +78,25 @@ class ChainContext:
 
     # ----------------------------------------------------------------
     # Public lookup surface
+    #
+    # Lookups normalise the input artifact_type via
+    # :func:`normalise_artifact_type` so an operator-friendly alias
+    # (``credentials`` / ``hosts`` / ``c2_endpoints``) lands on the
+    # same canonical row :meth:`record_step` indexed under. This
+    # mirrors the helper functions :func:`latest_artifact_value` and
+    # :func:`chain_provenance` which already normalise; without it,
+    # callers that use ``ChainContext`` directly would silently miss
+    # valid upstream data when they passed an alias. Unknown labels
+    # resolve to "no match" (the helpers below raise on unknown; the
+    # in-memory builder API stays permissive).
 
     def has(self, artifact_type: str) -> bool:
         """Return True when at least one upstream step emitted this type."""
 
-        return artifact_type in self.by_type and bool(self.by_type[artifact_type])
+        canonical = self._canonical_type(artifact_type)
+        if canonical is None:
+            return False
+        return canonical in self.by_type and bool(self.by_type[canonical])
 
     def latest_artifact(self, artifact_type: str) -> Optional[ChainArtifact]:
         """Return the most-recent typed artifact, or None when absent.
@@ -91,7 +105,10 @@ class ChainContext:
         which preserves orchestrator step order.
         """
 
-        rows = self.by_type.get(artifact_type) or []
+        canonical = self._canonical_type(artifact_type)
+        if canonical is None:
+            return None
+        rows = self.by_type.get(canonical) or []
         if not rows:
             return None
         return _deep_copy_artifact(rows[-1])
@@ -99,8 +116,24 @@ class ChainContext:
     def candidate_artifacts(self, artifact_type: str) -> Tuple[ChainArtifact, ...]:
         """Return every typed artifact emitted upstream, in insertion order."""
 
-        rows = self.by_type.get(artifact_type) or []
+        canonical = self._canonical_type(artifact_type)
+        if canonical is None:
+            return ()
+        rows = self.by_type.get(canonical) or []
         return tuple(_deep_copy_artifact(row) for row in rows)
+
+    @staticmethod
+    def _canonical_type(artifact_type: str) -> Optional[str]:
+        """Normalise an alias to the canonical artifact type, or ``None``.
+
+        Returns ``None`` for unknown labels so the calling lookup
+        treats the type as missing rather than raising.
+        """
+
+        try:
+            return normalise_artifact_type(artifact_type)
+        except ValueError:
+            return None
 
     def artifacts_by_type(self) -> Dict[str, Tuple[ChainArtifact, ...]]:
         """Return the full type-indexed view as immutable tuples."""
