@@ -262,37 +262,77 @@ def test_random_mutation_returns_none_for_unmutable_step() -> None:
 # ---------------------------------------------------------------------------
 
 
+_RUNTIME_CATALOG_NAMES: Dict[Tuple[str, str], str] = {
+    ("anti_detection", "method"): "_ANTI_DETECTION_PROFILES",
+    ("collection", "technique"): "_COLLECTION_PROFILES",
+    ("command_control", "channel"): "_COMMAND_CONTROL_PROFILES",
+    ("credential_access", "technique"): "_CREDENTIAL_ACCESS_PROFILES",
+    ("defense_evasion", "technique"): "_DEFENSE_EVASION_PROFILES",
+    ("discovery", "discovery_type"): "_DISCOVERY_PROFILES",
+    ("exfiltration", "method"): "_EXFILTRATION_PROFILES",
+    ("impact", "technique"): "_IMPACT_PROFILES",
+    ("initial_access", "vector"): "_INITIAL_ACCESS_PROFILES",
+    ("intelligence", "intelligence_type"): "_INTELLIGENCE_PROFILES",
+    ("lateral_movement", "technique"): "_LATERAL_MOVEMENT_PROFILES",
+    ("network_obfuscator", "protocol"): "_NETWORK_OBFUSCATOR_PROFILES",
+    ("persistence", "technique"): "_PERSISTENCE_PROFILES",
+    ("privilege_escalation", "technique"): "_PRIVILEGE_ESCALATION_PROFILES",
+    ("reconnaissance", "source"): "_RECONNAISSANCE_PROFILES",
+    ("resource_development", "resource_type"): "_RESOURCE_DEVELOPMENT_PROFILES",
+}
+
+
 @pytest.mark.parametrize(
-    "module,key,runtime_catalog",
-    [
-        ("command_control", "channel", _COMMAND_CONTROL_PROFILES),
-        ("initial_access", "vector", _INITIAL_ACCESS_PROFILES),
-        ("persistence", "technique", _PERSISTENCE_PROFILES),
-        ("defense_evasion", "technique", _DEFENSE_EVASION_PROFILES),
-        ("discovery", "discovery_type", _DISCOVERY_PROFILES),
-        ("credential_access", "technique", _CREDENTIAL_ACCESS_PROFILES),
-        ("lateral_movement", "technique", _LATERAL_MOVEMENT_PROFILES),
-        ("collection", "technique", _COLLECTION_PROFILES),
-        ("exfiltration", "method", _EXFILTRATION_PROFILES),
-        ("impact", "technique", _IMPACT_PROFILES),
-        ("privilege_escalation", "technique", _PRIVILEGE_ESCALATION_PROFILES),
-    ],
+    "module,key",
+    sorted(_RUNTIME_CATALOG_NAMES.keys()),
 )
 def test_mutation_catalog_is_subset_of_runtime_catalog(
-    module: str, key: str, runtime_catalog: Dict[str, Any]
+    module: str, key: str
 ) -> None:
     """Every catalog candidate the mutation engine proposes must be a
     valid value the runtime module actually accepts. Otherwise a
-    proposed swap would land the scenario on an unrecognised value
-    that falls back to the module's default and the mutation has no
-    effect."""
+    proposed swap lands on an unrecognised value, falls back to the
+    module's default, and the mutation is silently a no-op.
 
+    Codex P1 caught this on PR #155 for execution / network_obfuscator
+    / anti_detection / reconnaissance: the catalog had values that
+    didn't exist in the runtime profile catalogs. This test now
+    walks every ``MUTATION_CATALOG`` slot rather than the original
+    11; a future drift between the mutation catalog and the runtime
+    catalog surfaces as a parametrized failure naming both modules.
+    """
+
+    from src.core.modules.impl import standard_modules
+
+    if (module, key) not in MUTATION_CATALOG:
+        # Slot intentionally absent from the catalog (e.g. execution,
+        # which accepts a free-form ``command`` string rather than a
+        # catalog key). Pinned by a separate explicit-absence test.
+        return
+    runtime_catalog = getattr(
+        standard_modules, _RUNTIME_CATALOG_NAMES[(module, key)]
+    )
     declared = set(MUTATION_CATALOG[(module, key)])
     runtime_keys = set(runtime_catalog.keys())
     missing_in_runtime = declared - runtime_keys
     assert not missing_in_runtime, (
         f"mutation catalog ({module}, {key}) declares values that the "
         f"runtime module does not recognise: {sorted(missing_in_runtime)}"
+    )
+
+
+def test_mutation_catalog_does_not_declare_execution_slot() -> None:
+    """ExecutionModule reads ``command`` / ``cmd`` (free-form), not a
+    catalog-keyed slot. Pin the absence of any execution entry so a
+    future contributor doesn't reintroduce a no-op like the original
+    PR #155 ``("execution", "command_template")`` (Codex P1)."""
+
+    execution_entries = [
+        slot for slot in MUTATION_CATALOG if slot[0] == "execution"
+    ]
+    assert execution_entries == [], (
+        f"unexpected execution entries in MUTATION_CATALOG: {execution_entries}; "
+        "execution accepts a free-form command string, not a catalog slot"
     )
 
 

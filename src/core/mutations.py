@@ -59,12 +59,14 @@ class StepMutation:
 # module is documented to recognise, so a swap always lands the
 # scenario on a real technique / channel / method.
 MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
-    ("execution", "command_template"): (
-        "powershell -nop -c {payload}",
-        "cmd /c {payload}",
-        "bash -lc '{payload}'",
-        "python -c '{payload}'",
-    ),
+    # NOTE: ExecutionModule is intentionally absent. The runtime
+    # accepts ``params["command"]`` / ``params["cmd"]`` as a free-form
+    # string (the interpreter is resolved from the first token), so
+    # swapping the whole command line is operator-supplied content
+    # rather than a catalog selection. The cross-cutting ``target_os``
+    # mutation still applies to execution steps that declare it.
+    # Modelling a "swap interpreter prefix" mutation that rewrites
+    # command in-place is a follow-up.
     ("command_control", "channel"): (
         "http",
         "https",
@@ -77,9 +79,13 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
     ),
     ("network_obfuscator", "protocol"): (
         "dns",
-        "https_fast_flux",
-        "websocket_quic",
-        "icmp",
+        "domain_fronting",
+        "external_proxy",
+        "internal_proxy",
+        "jitter_padding",
+        "multi_hop",
+        "protocol_tunneling",
+        "tor",
     ),
     ("initial_access", "vector"): (
         "phishing_email",
@@ -130,14 +136,17 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
     ),
     ("anti_detection", "method"): (
         "memory_evasion",
-        "argument_spoofing",
-        "masquerading",
-        "timestomping",
-        "log_clearing",
-        "hidden_files",
-        "system_binary_proxy",
-        "powershell_obfuscation",
-        "impair_defenses",
+        "anti_debug",
+        "anti_sandbox",
+        "anti_vm",
+        "api_unhooking",
+        "code_obfuscation",
+        "dynamic_api",
+        "log_clear",
+        "process_hollowing",
+        "reflective_loading",
+        "string_encryption",
+        "timestomp",
     ),
     ("discovery", "discovery_type"): (
         "network_scan",
@@ -228,10 +237,15 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
     ),
     ("reconnaissance", "source"): (
         "osint",
-        "passive_dns",
-        "cert_transparency",
-        "shodan",
-        "github",
+        "active_scan",
+        "code_repository",
+        "dns_records",
+        "email_harvesting",
+        "search_engine",
+        "service_banner",
+        "social_media",
+        "vuln_scan",
+        "whois",
     ),
     ("resource_development", "resource_type"): (
         "domain",
