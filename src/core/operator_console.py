@@ -33,6 +33,7 @@ from .modules.contracts import (
     CapabilityIOContract,
     is_meaningful_contract,
 )
+from .mutations import MUTATION_CATALOG, TARGET_OS_VALUES
 
 
 _CONSOLE_CSS = """
@@ -352,6 +353,7 @@ def _render_console_html(
     parts.append(_render_kpis(registry, chain_pairs, scenarios))
     parts.append(_render_modules_section(registry))
     parts.append(_render_chain_section(chain_pairs))
+    parts.append(_render_mutations_section())
     parts.append(_render_scenarios_section(scenarios))
     parts.append(_render_footer())
 
@@ -396,6 +398,13 @@ def _render_kpis(
             for spec_type in (getattr(module, "io_contract", CapabilityIOContract()).consumed_types() or ())
         }
     )
+    # Total catalog candidates across every mutation slot - a single
+    # number that quantifies the swap surface available to the
+    # mutation engine + scenario planner. Includes the cross-cutting
+    # target_os axis.
+    mutation_candidate_total = sum(len(v) for v in MUTATION_CATALOG.values()) + len(
+        TARGET_OS_VALUES
+    )
     return textwrap.dedent(
         f"""
         <div class='kpis'>
@@ -404,6 +413,7 @@ def _render_kpis(
           <div class='kpi'><b>{len(chain_pairs)}</b><span>chain pairs</span></div>
           <div class='kpi'><b>{len(scenarios)}</b><span>shipped scenarios</span></div>
           <div class='kpi'><b>{len(artifact_types)} / {len(ARTIFACT_TYPES)}</b><span>artifact types in use</span></div>
+          <div class='kpi'><b>{mutation_candidate_total}</b><span>mutation candidates</span></div>
         </div>
         """
     ).strip()
@@ -552,6 +562,88 @@ def _render_chain_section(chain_pairs: List[Dict[str, Any]]) -> str:
             "</tr>"
         )
     parts.append("</tbody></table>")
+    return "\n".join(parts)
+
+
+def _render_mutations_section() -> str:
+    """Render the per-module mutation catalog.
+
+    The operator console surfaces every catalog-driven swap the
+    capability mutation engine knows about so an operator can
+    preview the swap surface before invoking
+    ``random_mutation`` / ``suggest_scenario_variants``. The
+    rendered shape is a card per module, each card listing the
+    field being mutated + every alternative the runtime accepts.
+
+    Reads the live :data:`MUTATION_CATALOG` so a future catalog
+    change surfaces here automatically. The cross-cutting
+    ``target_os`` axis renders as its own card.
+    """
+
+    parts: List[str] = ["<h2>Mutation catalog</h2>"]
+    parts.append(
+        "<p class='section-note'>Per-module catalog of valid swap "
+        "alternatives. <span class='code'>random_mutation</span> "
+        "and <span class='code'>suggest_scenario_variants</span> "
+        "(in <span class='code'>src.core.mutations</span> + "
+        "<span class='code'>src.core.scenario_planner</span>) "
+        "draw from this catalog; every value below is one the "
+        "runtime module actually accepts.</p>"
+    )
+    if not MUTATION_CATALOG and not TARGET_OS_VALUES:
+        parts.append(
+            "<p class='muted'>No mutation slots declared.</p>"
+        )
+        return "\n".join(parts)
+
+    # Group catalog entries by module so each card lists every
+    # mutable field for that module + its alternatives.
+    by_module: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {}
+    for (module, key), values in MUTATION_CATALOG.items():
+        by_module.setdefault(module, []).append((key, values))
+    parts.append("<div class='grid'>")
+    for module in sorted(by_module):
+        slots = sorted(by_module[module], key=lambda row: row[0])
+        body_lines: List[str] = []
+        for key, values in slots:
+            value_tags = " ".join(
+                f"<span class='tag'>{html.escape(v)}</span>"
+                for v in sorted(values)
+            )
+            body_lines.append(
+                f"<div class='spec-row'>"
+                f"<b>{html.escape(key)}</b> "
+                f"<span class='muted'>({len(values)} alternatives)</span>"
+                f"<div>{value_tags}</div>"
+                f"</div>"
+            )
+        parts.append(
+            "<div class='card'>"
+            f"<h3 class='module-name'>{html.escape(module)}</h3>"
+            + "".join(body_lines)
+            + "</div>"
+        )
+    # Cross-cutting target_os axis - applies to any step that
+    # already declares target_os; render as its own card so the
+    # operator sees it isn't tied to a specific module.
+    if TARGET_OS_VALUES:
+        os_tags = " ".join(
+            f"<span class='tag'>{html.escape(v)}</span>"
+            for v in sorted(TARGET_OS_VALUES)
+        )
+        parts.append(
+            "<div class='card'>"
+            "<h3 class='module-name'>cross-cutting "
+            "<span class='tag warn'>any module</span></h3>"
+            "<div class='spec-row'>"
+            "<b>target_os</b> "
+            f"<span class='muted'>({len(TARGET_OS_VALUES)} alternatives;"
+            " applies only when the step declares target_os)</span>"
+            f"<div>{os_tags}</div>"
+            "</div>"
+            "</div>"
+        )
+    parts.append("</div>")
     return "\n".join(parts)
 
 
