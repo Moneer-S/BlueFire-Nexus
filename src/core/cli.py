@@ -1065,6 +1065,61 @@ def build_report_view_cmd(
     )
 
 
+@app.command("operator-console")
+def operator_console_cmd(
+    output_root: Path = typer.Option(  # noqa: B008
+        None,
+        "--output-root",
+        help=(
+            "Override BLUEFIRE_OUTPUT_ROOT / general.output_root. "
+            "Defaults to the runtime's resolved output root."
+        ),
+    ),
+    scenarios: Path = typer.Option(  # noqa: B008
+        None,
+        "--scenarios",
+        help=(
+            "Override the scenarios directory the console scrapes for "
+            "name / description / objective summaries. Defaults to "
+            "the repo's ``scenarios/`` directory when present."
+        ),
+    ),
+) -> None:
+    """Generate the local-only operator console.
+
+    Writes a single self-contained ``index.html`` at
+    ``<output_root>/operator-console/index.html`` listing every
+    registered module, its capability IO contract (produces /
+    consumes / discriminator), the typed chain pairs the registry
+    knows about, and the shipped scenarios. The page is read-only
+    planning context - it never starts a server, opens a browser,
+    or makes a network call.
+
+    Use this to decide which modules to chain BEFORE running a
+    scenario. The actual runner is ``run-scenario`` /
+    ``run-operation``; this command does not execute anything.
+
+    Examples:
+
+        python -m src.core.cli operator-console
+
+        python -m src.core.cli operator-console --output-root /tmp/lab
+
+        python -m src.core.cli operator-console --scenarios /work/custom-scenarios
+    """
+
+    from .operator_console import build_operator_console
+
+    root = output_root if output_root else resolve_output_root()
+    target = build_operator_console(Path(root), scenarios_dir=scenarios)
+    console.print(f"[green]Wrote operator console:[/] {target}")
+    console.print("[cyan]Open in browser (copy or click below):[/]")
+    console.print(_file_uri(target), no_wrap=True, overflow="ignore")
+    console.print(
+        "[dim]No server required - the page is fully self-contained.[/]"
+    )
+
+
 @app.command("build-output-index")
 def build_output_index_cmd(
     output_root: Path = typer.Option(  # noqa: B008
