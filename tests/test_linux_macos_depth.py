@@ -133,6 +133,33 @@ def test_persistence_macos_login_item_runs_under_module(tmp_path: Path) -> None:
     assert result.techniques == ["T1547.015"]
 
 
+def test_persistence_macos_login_item_does_not_collide_with_launch_agent() -> None:
+    """Codex P2 fix: T1547.015 (Login Items) and T1543.001 (Launch
+    Agent) are distinct macOS persistence techniques. The Login
+    Items profile must anchor on a Login-Items-specific artifact
+    (``backgrounditems.btm`` on Ventura+), NOT the LaunchAgents
+    path the existing ``launch_agent`` profile already covers.
+    Otherwise the detection draft for Login Items would silently
+    overlap with launch_agent and a defender alerting on the
+    overlap couldn't tell which technique fired."""
+
+    login_item = _PERSISTENCE_PROFILES["macos_login_item"]
+    launch_agent = _PERSISTENCE_PROFILES["launch_agent"]
+    assert login_item["selection_value"] != launch_agent["selection_value"], (
+        "macos_login_item and launch_agent share the same selection_value; "
+        "the detection drafts will alias and lose technique distinguishability"
+    )
+    assert "LaunchAgents" not in login_item["selection_value"], (
+        f"macos_login_item still anchors on LaunchAgents: "
+        f"{login_item['selection_value']}"
+    )
+    assert "backgrounditems" in login_item["selection_value"].lower(), (
+        f"macos_login_item should anchor on backgrounditems.btm "
+        f"(macOS Ventura+ Login Items artifact); got "
+        f"{login_item['selection_value']!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Discovery: ssh_artifacts
 # ---------------------------------------------------------------------------

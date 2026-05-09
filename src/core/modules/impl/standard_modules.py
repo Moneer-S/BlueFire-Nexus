@@ -1094,14 +1094,18 @@ _PERSISTENCE_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "persistence_systemd_user_service",
         "title_prefix": "Per-user systemd unit persistence on",
     },
-    # macOS login items (T1547.015) live under
-    # ``~/Library/LaunchAgents`` / ``Login Items`` plist; distinct
-    # from the system-level launch_daemon already in the catalog.
+    # macOS Login Items (T1547.015) is a persistence vector distinct
+    # from LaunchAgents - Ventura+ stores Login Items registrations in
+    # ``~/Library/Application Support/com.apple.backgroundtaskmanagementagent/backgrounditems.btm``;
+    # legacy forms used ``~/Library/Preferences/com.apple.loginitems.plist``.
+    # Anchor on the modern ``backgrounditems.btm`` filename so the
+    # detection draft does not silently overlap with the existing
+    # ``launch_agent`` profile (which fires on the LaunchAgents path).
     "macos_login_item": {
         "mitre": "T1547.015",
         "logsource": {"category": "file_event", "product": "macos"},
         "selection_field": "file.path|contains",
-        "selection_value": "Library/LaunchAgents",
+        "selection_value": "backgrounditems.btm",
         "event_type": "persistence_macos_login_item",
         "title_prefix": "macOS login-item persistence on",
     },
