@@ -27,6 +27,10 @@ fail_fast: false
 steps:
   - id: stage-infrastructure
     name: Adversary registers attacker-owned phishing domain
+    objective: >-
+      Stand up the lookalike domain that will both deliver the phish
+      and host the C2 endpoint, so defenders can pivot from
+      domain-registration intelligence to the later HTTPS C2 step.
     module: resource_development
     params:
       resource_type: domain
@@ -35,6 +39,10 @@ steps:
 
   - id: target-recon
     name: OSINT reconnaissance against victim organisation
+    objective: >-
+      Profile the victim org from open sources to identify a finance
+      addressee for the spearphish; recon precedes phishing in every
+      realistic intrusion.
     module: reconnaissance
     params:
       source: osint
@@ -43,6 +51,10 @@ steps:
 
   - id: phish-delivery
     name: Spearphishing email delivers loader to finance analyst
+    objective: >-
+      Deliver the encoded loader to a finance analyst's mailbox via a
+      lookalike-domain spearphish; first defender signal is the
+      precursor email + attachment / link pair.
     module: initial_access
     params:
       vector: phishing_email
@@ -51,6 +63,10 @@ steps:
 
   - id: loader-execution
     name: Encoded PowerShell loader executes on finance-analyst host
+    objective: >-
+      Run the encoded PowerShell loader on the finance host to
+      establish foothold; defender signal is encoded-command process
+      creation parented by an email app.
     module: execution
     params:
       command: powershell -nop -w hidden -enc UwB0AGEAcgB0AC0AUAByAG8AYwBlAHMAcwA=
@@ -58,6 +74,10 @@ steps:
 
   - id: masquerade
     name: Loader masquerades as svchost.exe to evade EDR
+    objective: >-
+      Rename the loader to svchost.exe so a naive process-name allowlist
+      misses it; the masquerade-vs-real-svchost mismatch is the
+      detection opportunity.
     module: defense_evasion
     params:
       technique: masquerading
@@ -66,6 +86,10 @@ steps:
 
   - id: enumerate-files
     name: Enumerate sensitive files on finance-analyst host
+    objective: >-
+      Walk the user profile to identify high-value documents; bulk file
+      enumeration immediately preceding credential extraction is a
+      high-fidelity precursor signal.
     module: discovery
     params:
       discovery_type: files
@@ -75,6 +99,10 @@ steps:
 
   - id: harvest-browser-creds
     name: Harvest browser credentials from enumerated host
+    objective: >-
+      Pull stored browser credentials from the same host enumeration
+      identified; this is the bridge from a single user foothold to
+      lateral-movement options.
     module: credential_access
     params:
       technique: browser_credentials
@@ -91,6 +119,11 @@ steps:
 
   - id: lateral-to-fileshare
     name: Pivot from compromised host to corporate fileshare via PsExec
+    objective: >-
+      Reuse the harvested credentials to pivot from the user host to
+      the corporate fileshare via PsExec — a classic admin-share
+      lateral-movement chain that defenders correlate with
+      service-create + SMB telemetry.
     module: lateral_movement
     params:
       technique: psexec
@@ -106,6 +139,11 @@ steps:
 
   - id: stage-collected-data
     name: Stage sensitive files on fileshare for exfiltration
+    objective: >-
+      Concentrate the collected files on the fileshare so the
+      subsequent exfil and impact steps each act on the same
+      high-value blob — the staging directory IS the next two
+      defender signals.
     module: collection
     params:
       technique: file_staging
@@ -114,6 +152,10 @@ steps:
 
   - id: c2-channel
     name: Beacon HTTPS to staged attacker domain (C2)
+    objective: >-
+      Beacon to the freshly-registered attacker domain over HTTPS so
+      defenders see the domain-registration -> C2 destination link
+      they would not catch from C2 telemetry alone.
     module: command_control
     params:
       channel: https
@@ -133,6 +175,10 @@ steps:
 
   - id: exfil-over-c2
     name: Exfiltrate staged data over established C2 channel
+    objective: >-
+      Push the staged blob out over the same C2 channel established
+      by the previous step; collection-host -> egress correlation is
+      the headline defender signal here.
     module: exfiltration
     params:
       method: via_c2
@@ -147,6 +193,10 @@ steps:
 
   - id: ransomware-impact
     name: Ransomware encrypts staged-data fileshare
+    objective: >-
+      Encrypt the same staged blob the previous steps egressed,
+      forcing a recovery + extortion path for the victim org. Bulk
+      ``.locked`` rewrites on the fileshare host close the chain.
     module: impact
     params:
       technique: data_encryption

@@ -505,6 +505,11 @@ def _render_timeline(manifest: Mapping[str, Any]) -> str:
     meaningful (failure / blocked / error / partial_success
     states); success messages are usually boilerplate and would
     clutter the table.
+
+    The ``name`` cell also surfaces the per-step ``objective:`` from
+    the scenario YAML when present (PR #144) as a second line in muted
+    type, so the timeline carries the same "why this step" defender
+    narrative the report.md and copilot artifact expose.
     """
     steps = manifest.get("steps") or []
     if not steps:
@@ -539,12 +544,24 @@ def _render_timeline(manifest: Mapping[str, Any]) -> str:
         step_key = f"{step.get('module','')}:{step.get('step_id','')}"
         severity = severity_by_key.get(step_key, "")
         severity_html = _severity_badge(severity) if severity else "&mdash;"
+        # Render the per-step objective inline beneath the step name
+        # when present. ``muted`` class de-emphasises the line so the
+        # name remains the primary visual anchor; the objective is
+        # supplementary "why this step is in the chain" context.
+        objective_text = str(step.get("objective") or "").strip()
+        if objective_text:
+            name_html = (
+                f'{_esc(step.get("name"))}'
+                f'<br><span class="muted">{_esc(objective_text)}</span>'
+            )
+        else:
+            name_html = _esc(step.get("name"))
         body.append(
             "<tr>"
             f"<td>{index}</td>"
             f'<td><code>{_esc(step.get("step_id"))}</code></td>'
             f'<td><code>{_esc(step.get("module"))}</code></td>'
-            f'<td>{_esc(step.get("name"))}</td>'
+            f"<td>{name_html}</td>"
             f'<td>{_status_badge(str(step.get("status", "")))}</td>'
             f"<td>{severity_html}</td>"
             f"<td>{techniques_html}</td>"

@@ -166,6 +166,7 @@ def summarise_run_state(
     scenario_objective: Optional[str] = None,
     module_results: Optional[Mapping[str, Any]] = None,
     detection_summary: Optional[Mapping[str, Any]] = None,
+    step_objectives: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
     """Build a compact, prompt-safe summary of a completed run.
 
@@ -186,6 +187,14 @@ def summarise_run_state(
     objectives suffix-truncate with an ellipsis so the model still
     sees "this is more than what fits".
 
+    The optional ``step_objectives`` (PR #144) maps step-key
+    (``"<module>:<step_id>"``) to the per-step ``objective:`` text
+    declared in the scenario YAML. Each entry surfaces inline in the
+    per-step ``module_statuses`` block so the offline copilot's
+    template can build a chain narrative grounded in the operator's
+    "why" for each step, not just status counts. Same trusted-field
+    treatment as ``scenario_objective``.
+
     Intentional restrictions:
 
     - **No free-form ``message`` text** — only field-typed status
@@ -201,7 +210,8 @@ def summarise_run_state(
     - **Scenario objective is a TRUSTED field** — it comes from the
       scenario YAML the operator authored, not from a module's
       runtime output, so the prompt-injection guard that excludes
-      ``ModuleResult.message`` does not apply to it.
+      ``ModuleResult.message`` does not apply to it. The same
+      reasoning extends to per-step objectives.
     """
     statuses: Counter[str] = Counter()
     techniques: list[str] = []
@@ -246,15 +256,33 @@ def summarise_run_state(
         for state in ("failure", "blocked", "error", "partial_success")
     )
 
+    # Per-step objective lookup table — keys match the ``step``
+    # values in ``module_status_pairs`` so each entry can attach its
+    # operator-authored "why" line. Empty values are dropped so the
+    # rendered prompt block stays compact.
+    objective_by_step: Dict[str, str] = {}
+    if step_objectives:
+        for raw_step_key, raw_text in step_objectives.items():
+            text = str(raw_text or "").strip()
+            if text:
+                objective_by_step[str(raw_step_key)] = (
+                    text if len(text) <= 240 else text[:239].rstrip() + "…"
+                )
+
+    module_status_entries: list[Dict[str, str]] = []
+    for step, status in module_status_pairs:
+        entry: Dict[str, str] = {"step": step, "status": status}
+        objective_text = objective_by_step.get(step)
+        if objective_text:
+            entry["objective"] = objective_text
+        module_status_entries.append(entry)
+
     return {
         "scenario_name": str(scenario_name) if scenario_name else "",
         "scenario_objective": _normalise_objective(scenario_objective),
         "run_id": str(run_id),
         "module_count": len(module_status_pairs),
-        "module_statuses": [
-            {"step": step, "status": status}
-            for step, status in module_status_pairs
-        ],
+        "module_statuses": module_status_entries,
         "successful_steps": successful_steps,
         "failed_steps": failed_steps,
         "techniques_total": len(techniques),
@@ -353,8 +381,17 @@ def _format_run_summary_for_prompt(run_summary: Mapping[str, Any]) -> str:
                 continue
             step = str(entry.get("step", "")).splitlines()[0][:120]
             status = str(entry.get("status", "")).splitlines()[0][:32]
-            if step:
-                lines.append(f"    - {step}: {status}")
+            if not step:
+                continue
+            lines.append(f"    - {step}: {status}")
+            # Per-step objective (PR #144) — surfaced inline as a
+            # sub-bullet so the offline template can pick up the
+            # operator's "why" without changing the existing parsing
+            # contract for status entries. One-line, single-paragraph
+            # form because the summariser already capped width.
+            objective = str(entry.get("objective") or "").strip()
+            if objective:
+                lines.append(f"      objective: {objective}")
         if len(module_statuses) > 16:
             lines.append(
                 f"    ... (+{len(module_statuses) - 16} more steps not shown)"

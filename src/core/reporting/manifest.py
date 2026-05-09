@@ -417,6 +417,12 @@ def _normalise_steps(steps: Iterable[Mapping[str, Any]], run_dir: Path) -> List[
                 "step_id": str(step.get("step_id") or ""),
                 "module": str(step.get("module") or ""),
                 "name": str(step.get("name") or ""),
+                # Per-step ``objective:`` (PR #144) — defender-facing
+                # description of what THIS step is trying to achieve in
+                # the chain. Emits an empty string when the scenario
+                # doesn't declare it so the manifest schema stays stable
+                # for older scenarios that haven't been retrofitted yet.
+                "objective": str(step.get("objective") or "").strip(),
                 "status": str(step.get("status") or ""),
                 "message": str(step.get("message") or ""),
                 "techniques": list(step.get("techniques") or []),

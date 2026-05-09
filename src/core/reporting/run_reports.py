@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional
 
 from ..models import ModuleResult
 from ..risk import score_module_result
@@ -187,6 +187,7 @@ def write_markdown_report(
     *,
     scenario_objective: str = "",
     propagation_edges: Any = None,
+    step_objectives: Optional[Mapping[str, str]] = None,
 ) -> Path:
     """Write a human-readable purple-team report.
 
@@ -203,6 +204,12 @@ def write_markdown_report(
       ``narrative`` text. Surfaces as a "Propagation narrative"
       section so reading the markdown alone (without the
       dashboard) tells the story of how steps fed each other.
+    - ``step_objectives``: optional ``{"<module>:<step_id>": "<text>"}``
+      map (PR #144). When supplied, each per-step section gets a
+      ``- Objective: <text>`` line near the top so a SOC analyst
+      reading the markdown gets the same "why this step" narrative
+      the dashboard timeline and copilot expose. Steps not in the
+      map (or with empty values) keep the legacy shape.
     """
     report_path = run_dir / "report.md"
     pack_stats = {
@@ -321,6 +328,12 @@ def write_markdown_report(
         ]
     )
     blocked_steps: list[str] = []
+    objectives_by_key: Dict[str, str] = {}
+    if step_objectives:
+        for raw_key, raw_value in step_objectives.items():
+            text = str(raw_value or "").strip()
+            if text:
+                objectives_by_key[str(raw_key)] = text
     for module_name, result in results.items():
         legacy = result.artifacts.get("legacy")
         safety_line = ""
@@ -330,6 +343,10 @@ def write_markdown_report(
             f"- Risk score: `{risk.get('score')}` "
             f"(severity: `{risk.get('severity')}`)"
         )
+        objective_line = ""
+        objective_text = objectives_by_key.get(module_name, "")
+        if objective_text:
+            objective_line = f"- Objective: {objective_text}"
         # Surface the defender-facing rationale list so a SOC
         # analyst reading report.md sees the same chain-position
         # reasoning the dashboard's "Why" column (PR #114) and
@@ -369,6 +386,7 @@ def write_markdown_report(
         lines.extend(
             [
                 f"### {module_name}",
+                objective_line,
                 f"- Status: `{result.status}`",
                 f"- Message: {result.message or 'n/a'}",
                 f"- Techniques: {', '.join(result.techniques) if result.techniques else 'n/a'}",
