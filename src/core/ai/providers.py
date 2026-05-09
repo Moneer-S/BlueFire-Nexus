@@ -260,6 +260,14 @@ def _render_template_narrative(summary: Mapping[str, Any], model: str) -> str:
             step = entry.get("step", "")
             status = entry.get("status", "")
             lines.append(f"{index}. {step} -> {status}")
+            # Per-step objective continuation (PR #144). When the
+            # step carries an objective, surface it as an indented
+            # continuation line so the timeline reads as "what
+            # happened" + "why this step matters" without blowing
+            # out the scan-friendly numbered shape.
+            objective = str(entry.get("objective") or "").strip()
+            if objective:
+                lines.append(f"   objective: {objective}")
         if len(statuses) > 16:
             lines.append(f"... (+{len(statuses) - 16} more steps not shown)")
 

@@ -260,13 +260,26 @@ def summarise_run_state(
     # values in ``module_status_pairs`` so each entry can attach its
     # operator-authored "why" line. Empty values are dropped so the
     # rendered prompt block stays compact.
+    #
+    # Embedded newlines (from YAML literal blocks like ``objective: |``
+    # with multi-paragraph text) MUST be collapsed before they reach
+    # the prompt formatter — otherwise the multi-line value writes
+    # continuation lines without the leading indent that
+    # ``_parse_run_summary_block`` requires, the parser exits the
+    # ``[run summary]`` block at the first non-indented line, and
+    # later steps silently disappear from ``module_statuses``. Same
+    # collapse the scenario-level objective uses; capped at 240 chars
+    # with ellipsis so a long literal block doesn't dominate the
+    # prompt budget.
     objective_by_step: Dict[str, str] = {}
     if step_objectives:
         for raw_step_key, raw_text in step_objectives.items():
-            text = str(raw_text or "").strip()
-            if text:
+            collapsed = " ".join(str(raw_text or "").split())
+            if collapsed:
                 objective_by_step[str(raw_step_key)] = (
-                    text if len(text) <= 240 else text[:239].rstrip() + "…"
+                    collapsed
+                    if len(collapsed) <= 240
+                    else collapsed[:239].rstrip() + "…"
                 )
 
     module_status_entries: list[Dict[str, str]] = []

@@ -462,6 +462,114 @@ def test_run_summary_parser_does_not_overwrite_scenario_objective() -> None:
     assert "Find high-value files." not in parsed["scenario_objective"]
 
 
+def test_summarise_run_state_collapses_embedded_newlines_in_per_step_objective() -> None:
+    """YAML literal blocks land as multi-line strings — must collapse to one line.
+
+    Codex P1 finding on PR #144: a step ``objective`` with embedded
+    newlines (e.g. ``objective: |\\n  Line one.\\n  Line two.``)
+    wrote the continuation line into the prompt without leading
+    indent. ``_parse_run_summary_block`` exits the ``[run summary]``
+    block at the first non-indented line, so later steps silently
+    disappear from ``module_statuses``.
+
+    Pin the collapse: every per-step objective surfaces in
+    ``module_statuses`` as a single-line string with internal
+    whitespace squeezed to single spaces.
+    """
+    summary = summarise_run_state(
+        run_id="run-newline-1",
+        scenario_name="x",
+        module_results={
+            "discovery:enumerate-files": _module_result(),
+            "execution:loader": _module_result(),
+        },
+        step_objectives={
+            "discovery:enumerate-files": "Line one.\nLine two.\n  Line three.\n",
+            "execution:loader": "  whitespace\t\tcollapsed   to   single   spaces  ",
+        },
+    )
+    statuses = {entry["step"]: entry for entry in summary["module_statuses"]}
+    objective_a = statuses["discovery:enumerate-files"]["objective"]
+    objective_b = statuses["execution:loader"]["objective"]
+    # No embedded newlines, no double spaces.
+    assert "\n" not in objective_a
+    assert "\n" not in objective_b
+    assert "  " not in objective_a
+    assert "  " not in objective_b
+    assert objective_a == "Line one. Line two. Line three."
+    assert objective_b == "whitespace collapsed to single spaces"
+
+
+def test_run_summary_parser_survives_multiline_per_step_objective_via_summariser() -> None:
+    """End-to-end: a multi-line YAML objective parses cleanly through the prompt.
+
+    Pin the failure mode Codex flagged. Without the newline collapse,
+    a multi-line per-step objective would truncate the
+    ``module_statuses`` block at the first non-indented continuation
+    line, dropping every subsequent step.
+    """
+    from src.core.ai.providers import _parse_run_summary_block
+
+    summary = summarise_run_state(
+        run_id="run-newline-2",
+        scenario_name="x",
+        scenario_objective="Top objective.",
+        module_results={
+            "discovery:enumerate-files": _module_result(),
+            "execution:loader": _module_result(),
+            "credential_access:harvest": _module_result(),
+        },
+        step_objectives={
+            "discovery:enumerate-files": "Walk the user profile\nfor high-value\ndocuments.",
+        },
+    )
+    prompt = _format_run_summary_for_prompt(summary)
+    parsed = _parse_run_summary_block(prompt)
+    statuses = {entry["step"]: entry for entry in parsed.get("module_statuses") or []}
+    # All three steps must survive the round-trip even though the
+    # FIRST step carried a multi-line objective.
+    assert "discovery:enumerate-files" in statuses
+    assert "execution:loader" in statuses
+    assert "credential_access:harvest" in statuses
+    # Scenario objective is preserved end-to-end.
+    assert parsed["scenario_objective"] == "Top objective."
+
+
+def test_template_narrative_surfaces_per_step_objective_in_timeline() -> None:
+    """The offline copilot narrative renders objectives as continuation lines.
+
+    The summariser threads per-step objectives through the prompt
+    block; the template renderer surfaces them inline beneath each
+    step's status entry so the rendered SOC narrative carries the
+    operator's "why" alongside the "what".
+    """
+    from src.core.ai.providers import _render_template_narrative
+
+    summary = summarise_run_state(
+        run_id="run-narrative-1",
+        scenario_name="enterprise",
+        scenario_objective="Top scenario objective.",
+        module_results={
+            "discovery:enumerate-files": _module_result(),
+            "execution:loader": _module_result(),
+        },
+        step_objectives={
+            "discovery:enumerate-files": "Find high-value files on the user host.",
+        },
+    )
+    rendered = _render_template_narrative(summary, model="template")
+    assert "1. discovery:enumerate-files -> success" in rendered
+    assert "   objective: Find high-value files on the user host." in rendered
+    # The other step has no objective; no spurious continuation line.
+    lines = rendered.split("\n")
+    loader_idx = next(
+        i for i, line in enumerate(lines)
+        if line.endswith("execution:loader -> success")
+    )
+    next_line = lines[loader_idx + 1] if loader_idx + 1 < len(lines) else ""
+    assert not next_line.lstrip().startswith("objective:")
+
+
 # ---------------------------------------------------------------------------
 # 6. End-to-end via the flagship enterprise_intrusion_chain scenario
 # ---------------------------------------------------------------------------
