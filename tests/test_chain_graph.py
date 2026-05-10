@@ -138,6 +138,85 @@ def test_unknown_module_is_chain_neutral_pass_through() -> None:
     assert graph.warnings == ()
 
 
+def test_explicit_from_step_pointing_at_unknown_source_emits_warning() -> None:
+    """When the source step's module has no producer contract (or
+    is unknown), the runtime ``resolve_target_from_step`` would fall
+    back rather than propagate. The static graph must mirror that:
+    emit a ``missing_required`` warning rather than a phantom edge
+    claiming connectivity that won't actually fire at runtime.
+
+    Codex P2 on PR #164.
+    """
+
+    # Source step references an unknown module (no contract). The
+    # static analyser cannot prove that module emits a usable value,
+    # so the explicit edge gets demoted to a warning rather than a
+    # phantom propagation.
+    registry = {
+        "credential_access": _consumer(
+            ArtifactSpec(type=HOST, key="target"),
+        ),
+    }
+    graph = build_scenario_graph(
+        [
+            _step("source-unknown", "no_such_module"),
+            _step(
+                "creds",
+                "credential_access",
+                {"target_from_step": "source-unknown"},
+            ),
+        ],
+        registry=registry,
+    )
+    edges = [e for e in graph.edges if e.target_step_id == "creds"]
+    assert edges == [], (
+        f"explicit edge synthesised against producer-less source: {edges}"
+    )
+    missing = [
+        w
+        for w in graph.warnings
+        if w.severity == "missing_required" and w.step_id == "creds"
+    ]
+    assert len(missing) >= 1
+    # Warning message should reference the source module so the
+    # operator sees what doesn't produce.
+    assert any("no_such_module" in w.message for w in missing)
+
+
+def test_explicit_from_step_pointing_at_producer_source_still_emits_edge() -> None:
+    """When the source step's module DOES have a producer contract
+    (even one that doesn't produce the consumer's expected type),
+    the explicit edge still lands -- runtime
+    ``resolve_target_from_step`` is type-agnostic at the artifacts
+    dict level. Only wholly producer-less / unknown sources demote
+    the edge to a warning.
+    """
+
+    registry = {
+        # Producer-only module that DOES produce something (just not
+        # the host the consumer needs).
+        "resource_development": _producer(
+            ArtifactSpec(type="c2_endpoint", key="target"),
+        ),
+        "credential_access": _consumer(
+            ArtifactSpec(type=HOST, key="target"),
+        ),
+    }
+    graph = build_scenario_graph(
+        [
+            _step("stage", "resource_development"),
+            _step(
+                "creds",
+                "credential_access",
+                {"target_from_step": "stage"},
+            ),
+        ],
+        registry=registry,
+    )
+    edges = [e for e in graph.edges if e.target_step_id == "creds"]
+    assert any(e.explicit for e in edges)
+
+
 def test_producer_only_module_with_from_step_does_not_synthesise_edge() -> None:
     """A producer-only module (``produces`` non-empty, ``consumes``
     empty) cannot meaningfully receive an explicit propagation. The

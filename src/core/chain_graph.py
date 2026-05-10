@@ -388,6 +388,43 @@ def build_scenario_graph(
             slot_key, slot_type, slot_required = _consumer_slot_for_axis(
                 contract, axis_slot_hint, default_type
             )
+            # Validate the source step actually has a producer contract
+            # the runtime ``resolve_target_from_step`` could pull from.
+            # When the source module is unknown OR has a meaningful
+            # contract that does not produce ANY artifact spec at all,
+            # the runtime resolver would fall back rather than
+            # propagate -- the static graph mirrors that by emitting a
+            # ``missing_required`` warning rather than a phantom edge
+            # claiming connectivity. (Codex P2 on PR #164.) Producer
+            # specs may carry a different artifact type than the
+            # consumer slot (the runtime resolver is type-agnostic at
+            # the artifacts dict level), so the validation only
+            # rejects wholly-empty / unknown sources, not type
+            # mismatches.
+            source_contract = contracts[source_index]
+            source_can_provide = (
+                source_contract is not None
+                and is_meaningful_contract(source_contract)
+                and bool(source_contract.produces)
+            )
+            if not source_can_provide:
+                source_module = (
+                    nodes[source_index].module if source_index < len(nodes) else "?"
+                )
+                warnings.append(
+                    ChainGraphWarning(
+                        severity="missing_required",
+                        step_id=step_id,
+                        artifact_type=slot_type,
+                        message=(
+                            f"{module}: explicit {param_key}={source_step_id!r} "
+                            f"points at {source_module!r} which has no producer "
+                            f"contract -- runtime would fall back rather than "
+                            f"propagate"
+                        ),
+                    )
+                )
+                continue
             source_key = _producer_source_key(contracts[source_index], slot_type)
             edges.append(
                 ChainGraphEdge(
