@@ -1,12 +1,10 @@
-"""Static operator console — local planning view over the module registry.
+"""Static operator console -- local planning view over the module registry.
 
-The console is the maintainer-direction priority 4 surface: a local-only
-HTML page that surfaces the registered modules, their IO contracts, and
-the chain pairs the runtime understands. These tests pin the safety
-constraints (no remote assets / scripts / network calls) and the content
-contract (every module appears, every chain pair is rendered) so a
-future change cannot silently strip the planning value or add a remote
-dependency.
+A local-only HTML page that surfaces the registered modules, their IO
+contracts, and the chain pairs the runtime understands. These tests pin
+the safety constraints (no remote assets / scripts / network calls) and
+the content contract (every module appears, every chain pair is
+rendered).
 """
 
 from __future__ import annotations

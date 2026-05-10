@@ -187,9 +187,12 @@ def test_operator_console_cli_tolerates_unreadable_config_yaml(
         app, ["operator-console", "--output-root", str(output_root)]
     )
     assert result.exit_code == 0, result.stdout
-    # Warning surfaced (CLI's malformed-YAML / non-mapping notice).
-    assert "Warning" in result.stdout
-    assert "non-mapping value" in result.stdout
+    # Warning surfaced. ``rich.console.Console`` line-wraps prose at
+    # the terminal width, which differs between local dev and CI;
+    # normalise whitespace before asserting on the substrings.
+    normalised = " ".join(result.stdout.split())
+    assert "Warning" in normalised
+    assert "non-mapping value" in normalised
     # Page still rendered via static fallback path.
     body = (output_root / "operator-console" / "index.html").read_text(
         encoding="utf-8"
@@ -253,11 +256,7 @@ def test_operator_console_diff_agrees_with_apply_mode_profile_against_partial_co
     Construct a partial config, then verify both the operator-console
     diff (``--write`` rows) and the ``apply-mode-profile <mode>
     --json`` output (``changes_to_write_count``) report the same set
-    of pending writes per mode. If the operator-console used a raw
-    YAML load (no default-merge) and ``apply-mode-profile`` used the
-    full ``ConfigManager().to_dict()`` path, the two would disagree on
-    the partial-config case. Pin the agreement so a future drift
-    fails here."""
+    of pending writes per mode."""
 
     import json
 
