@@ -477,3 +477,151 @@ def test_apply_mode_profile_live_lab_subnets_only_change_does_not_show_no_change
     # The subnets write IS a change. Output must reflect that.
     assert "No changes were needed" not in result.stdout
     assert "Applied" in result.stdout
+
+
+def test_apply_mode_profile_simulate_does_not_clobber_per_pack_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``apply-mode-profile simulate --write`` clears the GLOBAL
+    legacy state (``modules.legacy.global_mode`` /
+    ``modules.legacy.global_lab_acknowledged`` /
+    ``modules.legacy.lab_confirmation`` /
+    ``modules.legacy.enable_all_lab_capabilities``) but MUST NOT
+    touch per-pack state (``modules.legacy.<pack>.lab_confirmation``
+    / ``modules.legacy.<pack>.mode`` / ``modules.legacy.<pack>.enabled``).
+
+    Per-pack toggles are dynamic (one per pack the operator has
+    enabled) and can't be enumerated in the static catalog. The
+    simulate-mode warning explicitly flags per-pack cleanup as an
+    operator responsibility -- if apply-mode-profile silently
+    cleared per-pack state along with the globals, an operator
+    transitioning from emulate back to simulate would lose any
+    per-pack confirmation they'd intentionally left in place for a
+    later run.
+
+    Pin: pre-populate per-pack state, run simulate --write, assert
+    every per-pack key remains at its pre-run value.
+    """
+
+    _isolated_config_dir(tmp_path, monkeypatch)
+
+    from src.core.config import ConfigManager
+
+    cm = ConfigManager()
+    # Operator was previously in live-lab. ALL FIVE simulate-clearable
+    # globals are seeded to non-default values so a regression that
+    # stops clearing any one of them surfaces as a value mismatch on
+    # the corresponding assertion below. Codex P2 on the original PR
+    # caught the prior version that only seeded three of the five --
+    # ``global_lab_acknowledged`` and ``enable_all_lab_capabilities``
+    # are False by default in ``ConfigManager``, so a bug that stopped
+    # clearing them when previously True would have passed silently.
+    cm.set("general.dry_run", False)
+    cm.set("modules.legacy.global_mode", "emulate")
+    cm.set("modules.legacy.lab_confirmation", True)
+    cm.set("modules.legacy.global_lab_acknowledged", True)
+    cm.set("modules.legacy.enable_all_lab_capabilities", True)
+    # AND they had per-pack state from earlier deliberate setup.
+    cm.set("modules.legacy.actor_pack.lab_confirmation", True)
+    cm.set("modules.legacy.actor_pack.mode", "emulate")
+    cm.set("modules.legacy.tactic_pack.lab_confirmation", True)
+    cm.set("modules.legacy.tactic_pack.enabled", True)
+    cm.save()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["apply-mode-profile", "simulate", "--write"]
+    )
+    assert result.exit_code == 0, result.stdout
+
+    cm_after = ConfigManager()
+    # Globals: ALL FIVE simulate-clearable keys must be reset back to
+    # the simulate baseline. Each was seeded above to its non-
+    # default value, so any one of these assertions failing pins
+    # exactly which catalog override regressed.
+    assert cm_after.get("general.dry_run") is True
+    assert cm_after.get("modules.legacy.global_mode") == "simulate"
+    assert cm_after.get("modules.legacy.lab_confirmation") is False
+    assert (
+        cm_after.get("modules.legacy.global_lab_acknowledged") is False
+    )
+    assert (
+        cm_after.get("modules.legacy.enable_all_lab_capabilities") is False
+    )
+    # Per-pack: untouched. Operator-readable invariant -- the
+    # central mode profile does NOT enumerate per-pack keys, so it
+    # MUST NOT mutate them.
+    assert (
+        cm_after.get("modules.legacy.actor_pack.lab_confirmation") is True
+    )
+    assert cm_after.get("modules.legacy.actor_pack.mode") == "emulate"
+    assert (
+        cm_after.get("modules.legacy.tactic_pack.lab_confirmation") is True
+    )
+    assert cm_after.get("modules.legacy.tactic_pack.enabled") is True
+
+
+def test_apply_mode_profile_emulate_does_not_clobber_per_pack_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Same invariant for the emulate target. The emulate-mode
+    overrides are intentionally minimal (``general.dry_run: False``
+    + ``modules.legacy.global_mode: "emulate"``); they explicitly
+    do NOT enumerate per-pack keys, so applying emulate to a config
+    with stale per-pack state must leave that state intact.
+
+    The seeded per-pack values are non-default sentinels (a string
+    that no reset-to-default codepath would ever produce, and a True
+    that's distinct from the default-False of an absent key) so a
+    future regression that "resets per-pack state to defaults" when
+    applying emulate would surface as a value mismatch -- not get
+    masked because the seeded value happens to coincide with the
+    default. (Codex P2 on the original PR caught the prior version
+    that seeded ``False`` / ``"simulate"`` -- both of which a
+    reset-to-defaults bug could also produce.)
+    """
+
+    _isolated_config_dir(tmp_path, monkeypatch)
+
+    from src.core.config import ConfigManager
+
+    cm = ConfigManager()
+    # Per-pack state the operator had set before applying emulate.
+    # All values are deliberately NON-default sentinels.
+    cm.set("modules.legacy.actor_pack.lab_confirmation", True)
+    cm.set("modules.legacy.actor_pack.mode", "operator-set-sentinel")
+    cm.set("modules.legacy.c2_pack.lab_confirmation", True)
+    cm.set("modules.legacy.c2_pack.enabled", True)
+    cm.save()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "apply-mode-profile",
+            "emulate",
+            "--write",
+            "--i-understand-this-is-a-lab",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    cm_after = ConfigManager()
+    # Per-pack state: untouched. Each assertion uses a value that a
+    # reset-to-default codepath would NOT produce, so a bug that
+    # silently clears per-pack state surfaces here unambiguously.
+    assert (
+        cm_after.get("modules.legacy.actor_pack.lab_confirmation")
+        is True
+    )
+    assert (
+        cm_after.get("modules.legacy.actor_pack.mode")
+        == "operator-set-sentinel"
+    )
+    assert (
+        cm_after.get("modules.legacy.c2_pack.lab_confirmation") is True
+    )
+    assert cm_after.get("modules.legacy.c2_pack.enabled") is True
+    # Emulate's catalog overrides DID land on the global keys.
+    assert cm_after.get("general.dry_run") is False
+    assert cm_after.get("modules.legacy.global_mode") == "emulate"
