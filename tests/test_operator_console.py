@@ -843,3 +843,174 @@ def test_console_scenario_graph_card_includes_objective_preview(
     # FIN7's objective is multi-line and starts with "Simulate a
     # FIN7-like seven-step intrusion".
     assert "Simulate a FIN7-like" in body
+
+
+# ---------------------------------------------------------------------------
+# Module category badges + ATT&CK quality indicators (PR4)
+# ---------------------------------------------------------------------------
+
+
+def test_categorize_module_returns_standard_for_canonical_modules() -> None:
+    """Modules without the ``legacy_`` prefix are categorised as
+    ``standard`` (the canonical capability surface)."""
+
+    from src.core.operator_console import _categorize_module
+
+    for canonical in ("execution", "discovery", "credential_access", "lateral_movement"):
+        assert _categorize_module(canonical) == "standard"
+
+
+def test_categorize_module_returns_pack_label_for_legacy_modules() -> None:
+    """Each shipped legacy module maps to one of the documented pack
+    categories (actor / c2 / stealth / tactic / meta) so the operator
+    console can render a colour-coded badge per pack."""
+
+    from src.core.operator_console import _categorize_module
+
+    expected = {
+        "legacy_actor_profile": "actor",
+        "legacy_apt28_research": "actor",
+        "legacy_apt29_research": "actor",
+        "legacy_apt32_research": "actor",
+        "legacy_apt38_research": "actor",
+        "legacy_apt41_research": "actor",
+        "legacy_protocol_research": "c2",
+        "legacy_stealth_research": "stealth",
+        "legacy_collection": "tactic",
+        "legacy_credential_access": "tactic",
+        "legacy_impact": "tactic",
+        "legacy_lateral_movement": "tactic",
+        "legacy_privilege_escalation": "tactic",
+        "legacy_capability_summary": "meta",
+    }
+    for module_name, expected_category in expected.items():
+        assert _categorize_module(module_name) == expected_category, (
+            f"{module_name!r} categorised as "
+            f"{_categorize_module(module_name)!r}, expected {expected_category!r}"
+        )
+
+
+def test_categorize_module_unknown_legacy_falls_back_to_meta() -> None:
+    """A future ``legacy_*`` module without an explicit mapping falls
+    back to ``meta`` so the badge still renders rather than going
+    silently uncategorised."""
+
+    from src.core.operator_console import _categorize_module
+
+    assert _categorize_module("legacy_brand_new_pack") == "meta"
+
+
+def test_console_renders_category_badge_for_every_module(tmp_path: Path) -> None:
+    """Every module card surfaces a colour-coded category badge so an
+    operator scanning the catalog sees standard / actor / c2 /
+    stealth / tactic / meta at a glance."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    # Every category should appear at least once given the current
+    # registry (standard, actor from APT*, c2 from protocol_research,
+    # stealth from stealth_research, tactic from legacy tactic
+    # adapters, meta from capability_summary).
+    for category in ("standard", "actor", "c2", "stealth", "tactic", "meta"):
+        assert f"cat-{category}" in body, (
+            f"category badge {category!r} not rendered"
+        )
+
+
+def test_console_kpi_includes_attack_technique_count(tmp_path: Path) -> None:
+    """The top KPI strip surfaces the deduped count of declared
+    ATT&CK techniques across every module so the operator sees the
+    catalog's defender-facing surface without scrolling."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    assert "ATT&amp;CK techniques in catalog" in body
+    # Compute the expected value from the live registry; pin the
+    # KPI value matches.
+    registry = build_runtime_modules()
+    techniques: set[str] = set()
+    for module in registry.values():
+        for t in getattr(module, "attack_techniques", ()) or ():
+            cleaned = str(t).strip()
+            if cleaned:
+                techniques.add(cleaned)
+    assert f"<b>{len(techniques)}</b><span>ATT&amp;CK techniques in catalog</span>" in body
+
+
+def test_console_kpi_includes_scenarios_with_attack_coverage(tmp_path: Path) -> None:
+    """The KPI strip counts how many shipped scenarios declare any
+    ``attack_coverage`` so an operator sees the catalog's spread
+    of defender-targeted scenarios."""
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=_REPO_SCENARIOS_DIR
+    ).read_text(encoding="utf-8")
+    assert "scenarios with ATT&amp;CK coverage" in body
+    # All five tier-1 scenarios declare ``attack_coverage``; lower
+    # bound only so adding a new scenario without coverage doesn't
+    # break the test.
+    import re
+
+    match = re.search(
+        r"<b>(\d+)</b><span>scenarios with ATT&amp;CK coverage</span>", body
+    )
+    assert match is not None
+    assert int(match.group(1)) >= 5
+
+
+def test_console_scenario_card_renders_attack_technique_chips(
+    tmp_path: Path,
+) -> None:
+    """Per-scenario card surfaces every declared technique as a
+    chip, plus the count in the per-card KPI strip, so a defender
+    sees the scenario's coverage without re-opening the YAML."""
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=_REPO_SCENARIOS_DIR
+    ).read_text(encoding="utf-8")
+    # Per-card KPI strip carries the technique count.
+    assert "<span>ATT&amp;CK techniques</span>" in body
+    # Chip area surfaces the declared label and at least one known
+    # FIN7 technique (T1583.001 - Domains).
+    assert "scenario-graph-attack" in body
+    assert "T1583.001" in body
+    # Chip area surfaces an APT29-specific technique too.
+    assert "T1003.001" in body or "T1547.001" in body
+
+
+def test_console_scenario_card_omits_attack_chips_when_no_coverage(
+    tmp_path: Path,
+) -> None:
+    """A scenario that doesn't declare ``attack_coverage`` must not
+    render an empty chip block (cards stay clean for early-draft
+    scenarios)."""
+
+    scenarios_dir = tmp_path / "scenarios"
+    scenarios_dir.mkdir()
+    (scenarios_dir / "no_attack.yaml").write_text(
+        "id: no-coverage\n"
+        "name: No-coverage scenario\n"
+        "objective: Scenario without attack_coverage declared.\n"
+        "fail_fast: false\n"
+        "steps:\n"
+        "  - id: step-1\n"
+        "    name: Step 1\n"
+        "    module: discovery\n"
+        "    params:\n"
+        "      discovery_type: host_discovery\n"
+        "      targets: ['lab-host']\n",
+        encoding="utf-8",
+    )
+    body = build_operator_console(
+        tmp_path, scenarios_dir=scenarios_dir
+    ).read_text(encoding="utf-8")
+    # The card exists for the no-coverage scenario.
+    assert "no_attack.yaml" in body
+    # But no chip block surfaces for a scenario that doesn't declare
+    # ``attack_coverage``. Anchor the negative on the chip-block class
+    # so the broader test page can still mention the class via other
+    # cards. Use a substring scoped to the no_attack card section.
+    no_attack_card_start = body.find("no_attack.yaml")
+    no_attack_card_end = body.find(
+        "</div>", body.find("</div>", no_attack_card_start) + 1
+    )
+    no_attack_card_section = body[no_attack_card_start:no_attack_card_end]
+    assert "scenario-graph-attack" not in no_attack_card_section
