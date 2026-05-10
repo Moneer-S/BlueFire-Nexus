@@ -36,6 +36,7 @@ from .modules.contracts import (
 )
 from .mutations import MUTATION_CATALOG, TARGET_OS_VALUES
 from .scenario import load_scenario
+from .scenario_planner import ChainState, NextStepSuggestion, offer_next_steps
 
 
 _CONSOLE_CSS = """
@@ -141,6 +142,17 @@ th { color: var(--fg-muted); font-weight: 500; font-size: 12px; }
 .severity-unused_emission { background: rgba(140,150,170,0.14); color: var(--fg-muted); }
 .scenario-graph-empty { color: var(--fg-muted); font-size: 12px; font-style: italic; }
 .scenario-graph-attack { font-size: 11px; padding: 6px 0 4px; }
+.scenario-suggestions { margin: 10px 0 0; }
+.scenario-suggestions h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin: 8px 0 4px; }
+.scenario-suggestion { font-size: 12px; padding: 4px 0; border-bottom: 1px dashed var(--border); }
+.scenario-suggestion:last-child { border-bottom: none; }
+.scenario-suggestion .rank-tier { font-family: "SF Mono", Menlo, Consolas, monospace; padding: 1px 6px; border-radius: 4px; font-size: 10px; margin-right: 6px; }
+.rank-perfect_fit { background: rgba(45,160,109,0.18); color: var(--produce); }
+.rank-good_fit    { background: rgba(79,141,247,0.18); color: var(--accent); }
+.rank-partial_fit { background: rgba(230,162,60,0.18); color: var(--warn); }
+.rank-chain_entry { background: rgba(140,150,170,0.16); color: var(--fg-muted); }
+.scenario-suggestion-rationale { color: var(--fg-muted); font-size: 11px; margin-left: 0; padding-left: 0; }
+.scenario-suggestions-empty { color: var(--fg-muted); font-style: italic; font-size: 12px; }
 .footer { color: var(--fg-muted); font-size: 12px; margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--border); }
 """.strip()
 
@@ -345,8 +357,44 @@ def _build_scenario_graphs(
             )
         except Exception as exc:  # pragma: no cover - graph builder is robust
             entry["error"] = f"graph build failed: {exc.__class__.__name__}"
+        # Compute next-step planner suggestions from the scenario's
+        # produced types. This mirrors what the planner-suggest CLI
+        # does (``_chain_state_from_scenario`` in :mod:`src.core.cli`)
+        # so the inline panel and the CLI agree on the ranking. Skips
+        # silently when graph construction failed -- the suggestions
+        # block then renders the empty-state copy.
+        entry["planner_suggestions"] = _planner_suggestions_for(
+            entry.get("graph"), registry
+        )
         rows.append(entry)
     return rows
+
+
+def _planner_suggestions_for(
+    graph: Optional[ChainGraph],
+    registry: Mapping[str, Any],
+) -> Tuple[NextStepSuggestion, ...]:
+    """Return up to 5 ranked next-step suggestions for ``graph``.
+
+    Mirrors :func:`src.core.cli._chain_state_from_scenario`'s state-
+    building rule so the inline panel and the planner-suggest CLI
+    agree on the ranking. Walks the graph nodes' ``produces`` to
+    compose the produced-types frozenset; the planner does the
+    actual ranking via :func:`src.core.scenario_planner.offer_next_steps`.
+
+    Returns an empty tuple when ``graph`` is ``None`` (graph build
+    failed) so the caller renders the empty-state copy without
+    raising.
+    """
+
+    if graph is None:
+        return ()
+    produced_types: set[str] = set()
+    for node in graph.nodes:
+        for produced_type in node.produces:
+            produced_types.add(produced_type)
+    state = ChainState(produced_types=frozenset(produced_types))
+    return tuple(offer_next_steps(state, registry=registry, limit=5))
 
 
 def _list_scenarios(scenarios_dir: Optional[Path]) -> List[Dict[str, Any]]:
@@ -983,8 +1031,60 @@ def _render_scenario_graph_card(entry: Mapping[str, Any]) -> str:
     pieces.append(_render_scenario_graph_edges_table(graph))
     if graph.warnings:
         pieces.append(_render_scenario_graph_warnings(graph))
+    pieces.append(
+        _render_scenario_planner_suggestions(
+            tuple(entry.get("planner_suggestions") or ())
+        )
+    )
     pieces.append("</div>")
     return "\n".join(pieces)
+
+
+def _render_scenario_planner_suggestions(
+    suggestions: Tuple[NextStepSuggestion, ...],
+) -> str:
+    """Render the per-scenario planner-suggestions panel.
+
+    Mirrors the ``planner-suggest`` CLI output: the same ranked list,
+    same rank tiers, same rationale lines. The console adds inline
+    rank-tier badges so an operator scanning the card sees
+    ``perfect_fit`` / ``good_fit`` / ``partial_fit`` / ``chain_entry``
+    at a glance.
+
+    Empty ``suggestions`` (e.g. graph build failed, registry rejected
+    every module) renders an italic empty-state line so the panel
+    structure stays visible without showing fake content.
+    """
+
+    parts: List[str] = ["<div class='scenario-suggestions'>"]
+    parts.append("<h4>Suggested next steps</h4>")
+    if not suggestions:
+        parts.append(
+            "<p class='scenario-suggestions-empty'>No next-step "
+            "suggestions: scenario emits no chain-relevant artifacts "
+            "or every registered module rejected the chain state.</p>"
+        )
+        parts.append("</div>")
+        return "\n".join(parts)
+    for suggestion in suggestions:
+        parts.append("<div class='scenario-suggestion'>")
+        parts.append(
+            "<span class='rank-tier rank-{rank}'>{rank}</span>"
+            "<span class='code'>{module}</span> "
+            "<span class='muted'>(score {score})</span>".format(
+                rank=html.escape(suggestion.rank),
+                module=html.escape(suggestion.module),
+                score=html.escape(f"{suggestion.score:.2f}"),
+            )
+        )
+        parts.append(
+            "<div class='scenario-suggestion-rationale'>"
+            f"{html.escape(suggestion.rationale)}"
+            "</div>"
+        )
+        parts.append("</div>")
+    parts.append("</div>")
+    return "\n".join(parts)
 
 
 # Layout constants for the scenario graph SVG. Picked so a 12-step

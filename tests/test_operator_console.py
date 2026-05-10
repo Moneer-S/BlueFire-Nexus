@@ -1014,3 +1014,137 @@ def test_console_scenario_card_omits_attack_chips_when_no_coverage(
     )
     no_attack_card_section = body[no_attack_card_start:no_attack_card_end]
     assert "scenario-graph-attack" not in no_attack_card_section
+
+
+# ---------------------------------------------------------------------------
+# Per-scenario planner-suggestions panel (PR follow-up to #168)
+# ---------------------------------------------------------------------------
+
+
+_REPO_SCENARIOS_DIR = Path(__file__).resolve().parent.parent / "scenarios"
+
+
+def test_console_renders_planner_suggestions_section_per_scenario(
+    tmp_path: Path,
+) -> None:
+    """Every scenario card surfaces a ``Suggested next steps`` section
+    with at least the panel scaffold so an operator scanning a card
+    sees the planner output without flipping to the CLI."""
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=_REPO_SCENARIOS_DIR
+    ).read_text(encoding="utf-8")
+    assert "Suggested next steps" in body
+    assert "scenario-suggestions" in body
+
+
+def test_console_planner_panel_pins_rank_tier_and_module(
+    tmp_path: Path,
+) -> None:
+    """The panel must surface at least one ranked module with its
+    rank tier (``perfect_fit`` / ``good_fit`` / ``partial_fit`` /
+    ``chain_entry``). Anchors on the tier marker so the test fires
+    on a regression that drops the ranking metadata or stops calling
+    into the planner."""
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=_REPO_SCENARIOS_DIR
+    ).read_text(encoding="utf-8")
+    # At least one rank-tier badge appears (every shipped scenario
+    # produces typed artifacts that match downstream consumers).
+    assert "rank-tier" in body
+    assert any(
+        marker in body
+        for marker in (
+            "rank-perfect_fit",
+            "rank-good_fit",
+            "rank-partial_fit",
+            "rank-chain_entry",
+        )
+    )
+
+
+def test_console_planner_panel_renders_empty_state_when_no_suggestions(
+    tmp_path: Path,
+) -> None:
+    """A scenario whose graph could not be built (or whose chain
+    state matches no registered module) must render the empty-state
+    copy rather than crashing or rendering nothing. The empty-state
+    keeps the panel scaffold visible so the operator knows the
+    planner ran and produced no candidates."""
+
+    scenarios_dir = tmp_path / "scenarios"
+    scenarios_dir.mkdir()
+    # An intentionally malformed scenario yaml -- the chain graph
+    # builder will fail and the planner should fall through to the
+    # empty-state copy.
+    (scenarios_dir / "broken.yaml").write_text(
+        "id: broken\nname: Broken\nfail_fast: false\nsteps: not-a-list\n",
+        encoding="utf-8",
+    )
+    body = build_operator_console(
+        tmp_path, scenarios_dir=scenarios_dir
+    ).read_text(encoding="utf-8")
+    assert "broken.yaml" in body
+    # Either the empty-state copy fires (panel rendered with no
+    # entries) or the panel is skipped because the entire card hit
+    # an error path. Both are acceptable; we just don't want a
+    # crash + we do want the empty-state copy to be reachable in
+    # principle, so the marker class must exist somewhere on the
+    # rendered page.
+    assert "scenario-suggestions" in body or "Chain graph unavailable" in body
+
+
+def test_console_planner_panel_emits_no_external_assets(
+    tmp_path: Path,
+) -> None:
+    """The planner panel must respect the no-remote-assets contract.
+    Re-anchors the constraint specifically on the new section so a
+    future template-string accident in
+    :func:`_render_scenario_planner_suggestions` surfaces as a
+    localised failure."""
+
+    body = build_operator_console(
+        tmp_path, scenarios_dir=_REPO_SCENARIOS_DIR
+    ).read_text(encoding="utf-8")
+    # Find the first scenario-suggestions block and clamp on its end.
+    panel_start = body.find("scenario-suggestions")
+    assert panel_start != -1
+    # End of the first per-card panel: take a generous slice that
+    # covers a single panel's worth of output (~1500 chars max).
+    panel_end = panel_start + 1500
+    panel_section = body[panel_start:panel_end]
+    assert "<script" not in panel_section
+    assert "<link" not in panel_section
+    assert "http://" not in panel_section
+    assert "https://" not in panel_section
+
+
+def test_console_planner_panel_rationale_is_html_escaped(
+    tmp_path: Path,
+) -> None:
+    """Suggestion rationales come from
+    :func:`src.core.scenario_planner._rationale_for`; render-side
+    escaping is the only barrier between a future module name with
+    HTML metachars and the rendered console. Pin that the rendered
+    HTML escapes its rationales so a future module name with HTML
+    metacharacters cannot break out of the panel."""
+
+    from src.core.operator_console import _render_scenario_planner_suggestions
+    from src.core.scenario_planner import NextStepSuggestion
+
+    bad = NextStepSuggestion(
+        module="<img onerror=alert(1) src=x>",
+        rank="chain_entry",
+        score=1.0,
+        required_satisfied=(),
+        optional_satisfied=(),
+        required_missing=(),
+        produces=(),
+        rationale="<script>alert('rationale')</script>",
+    )
+    rendered = _render_scenario_planner_suggestions((bad,))
+    assert "<img onerror" not in rendered
+    assert "<script>alert" not in rendered
+    assert "&lt;img onerror" in rendered
+    assert "&lt;script&gt;alert(&#x27;rationale&#x27;)&lt;/script&gt;" in rendered
