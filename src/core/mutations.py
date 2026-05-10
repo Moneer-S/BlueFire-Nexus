@@ -31,7 +31,7 @@ from __future__ import annotations
 import copy
 import random
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
 @dataclass(frozen=True, slots=True)
@@ -628,12 +628,136 @@ def random_mutation(
     return chooser.choice(proposals)
 
 
+# ---------------------------------------------------------------------------
+# Chain-context-aware mutation filtering
+# ---------------------------------------------------------------------------
+
+
+def _import_chain_helpers():
+    """Lazy import of chain_graph helpers + module registry.
+
+    Imported lazily (inside the predicate / filter functions) so the
+    module-level import surface stays as it was: ``mutations.py`` is
+    used by code paths that must not eagerly import the runtime
+    module registry (e.g. operator console template render in test
+    fixtures), and the chain-context-aware path is opt-in.
+    """
+
+    from .chain_graph import _active_produced_specs
+    from .modules import build_runtime_modules
+    from .modules.contracts import is_meaningful_contract
+
+    return _active_produced_specs, build_runtime_modules, is_meaningful_contract
+
+
+def mutation_preserves_step_produced_types(
+    step: Mapping[str, Any],
+    mutation: StepMutation,
+    *,
+    registry: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """Return True iff applying ``mutation`` to ``step`` preserves the
+    set of artifact types the step's contract would actively produce.
+
+    Some module contracts gate per-spec emission with ``produced_if``
+    (e.g. discovery emits HOST when ``discovery_type`` is one of
+    ``host_discovery`` / ``network_scan`` / ``port_scan`` /
+    ``service_scan``, USER when ``discovery_type`` is one of
+    ``user_info`` / ``group_info``, etc). Mutating a discriminator
+    param can therefore change what the step actually emits at
+    runtime; downstream consumers that depend on the original typed
+    output would silently lose their input.
+
+    This predicate lets a caller filter swap proposals against the
+    chain's typology: a swap that drops a produced type the chain's
+    static graph relies on can be excluded from
+    :func:`propose_mutations_for_chain` so the mutated bundle still
+    validates against the chain graph.
+
+    The check is conservative: when no contract is available for the
+    module (legacy / unknown module name), it returns True (no
+    filtering). When the contract has no ``produced_if``-gated specs
+    at all, the produced-type set is constant across mutations and
+    the predicate always returns True.
+    """
+
+    module_name = str(step.get("module") or "").strip()
+    if not module_name:
+        return True
+    _active_specs, build_modules, is_meaningful = _import_chain_helpers()
+    registry = registry if registry is not None else build_modules()
+    module_obj = registry.get(module_name)
+    if module_obj is None:
+        return True
+    contract = getattr(module_obj, "io_contract", None)
+    if contract is None or not is_meaningful(contract):
+        return True
+    # Compute the active produced types for the original step and the
+    # mutated step. If they differ, the swap would change the chain's
+    # typology.
+    params_before = dict(step.get("params") or {})
+    params_after = dict(params_before)
+    params_after[mutation.param_key] = mutation.to_value
+    before_specs = _active_specs(contract, params_before)
+    after_specs = _active_specs(contract, params_after)
+    before_types = {spec.type for spec in before_specs}
+    after_types = {spec.type for spec in after_specs}
+    return before_types == after_types
+
+
+def propose_mutations_for_chain(
+    steps: Sequence[Mapping[str, Any]],
+    step_index: int,
+    *,
+    registry: Optional[Mapping[str, Any]] = None,
+) -> List[StepMutation]:
+    """Return mutations for ``steps[step_index]`` that preserve chain validity.
+
+    Walks the catalog via :func:`propose_mutations` and filters out
+    candidates whose application would change the active produced
+    types of the step (per
+    :func:`mutation_preserves_step_produced_types`). This means a
+    downstream step that relies on the step's typed emission still
+    sees the same produced types after the swap.
+
+    The filter is conservative: it only drops a candidate when the
+    chain's typology would observably shift. Catalog candidates that
+    don't change ``produced_if`` outcomes (the common case for
+    persistence / credential_access / lateral_movement etc) pass
+    through unchanged.
+
+    ``steps`` is supplied to keep the signature future-compatible
+    with broader chain analysis (downstream consumer required-input
+    tracking is a follow-up); it is currently unused beyond the
+    indexed step.
+    """
+
+    if step_index < 0 or step_index >= len(steps):
+        return []
+    step = steps[step_index]
+    proposals = propose_mutations(step)
+    if not proposals:
+        return []
+    if registry is None:
+        _, build_modules, _ = _import_chain_helpers()
+        registry = build_modules()
+    return [
+        proposal
+        for proposal in proposals
+        if mutation_preserves_step_produced_types(
+            step, proposal, registry=registry
+        )
+    ]
+
+
 __all__ = [
     "MUTATION_CATALOG",
     "StepMutation",
     "TARGET_OS_VALUES",
     "apply_mutation",
+    "mutation_preserves_step_produced_types",
     "propose_command_interpreter_swaps",
     "propose_mutations",
+    "propose_mutations_for_chain",
     "random_mutation",
 ]
