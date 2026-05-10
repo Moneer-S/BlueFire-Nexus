@@ -88,9 +88,21 @@ MODE_METADATA: Dict[str, ModeDefinition] = {
             "iteration. The runtime baseline."
         ),
         required_gates=(),
+        # Simulate's "no real side effect" contract is global. The
+        # patch must FULLY clear any prior emulate / live-lab
+        # execution state -- not just flip dry_run -- otherwise an
+        # operator transitioning from a previous emulate / live-lab
+        # run could leave ``modules.legacy.global_mode`` at
+        # ``emulate`` or ``modules.legacy.global_lab_acknowledged``
+        # at ``true``, and a legacy module would still resolve to
+        # emulate semantics via ``resolve_legacy_settings`` even
+        # though dry_run is True. (Codex P1 on PR #169.)
         config_overrides=(
             ("general.dry_run", True),
             ("modules.legacy.enable_all_lab_capabilities", False),
+            ("modules.legacy.global_mode", "simulate"),
+            ("modules.legacy.global_lab_acknowledged", False),
+            ("modules.legacy.lab_confirmation", False),
         ),
         side_effects=(
             "writes artifacts under output_root (manifest, report, "
@@ -99,7 +111,20 @@ MODE_METADATA: Dict[str, ModeDefinition] = {
             "no real subprocess spawns.",
             "no registry / system-state mutation.",
         ),
-        warnings=(),
+        # Per-pack toggles are dynamic (one per legacy pack the
+        # operator has previously enabled) and can't be enumerated
+        # in this static catalog. Flag the cleanup as an operator
+        # responsibility so a stale per-pack
+        # ``modules.legacy.<pack>.mode: emulate`` doesn't slip
+        # through a "simulate" patch.
+        warnings=(
+            "Per-pack legacy state (``modules.legacy.<pack>.mode`` / "
+            "``modules.legacy.<pack>.lab_confirmation`` / "
+            "``modules.legacy.<pack>.enabled``) is not enumerated in "
+            "this catalog. After applying simulate, audit "
+            "``modules.legacy.*`` for any pack-level state left over "
+            "from a prior emulate / live-lab run.",
+        ),
         safe_for_unattended=True,
     ),
     "emulate": ModeDefinition(

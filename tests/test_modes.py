@@ -64,12 +64,31 @@ def test_mode_metadata_documents_three_modes() -> None:
 def test_simulate_requires_no_gates_and_is_safe_for_unattended() -> None:
     """The default mode must stay zero-gate. A future change that
     starts requiring gates for simulate would silently break
-    automation."""
+    automation. Warnings are allowed (informational about prior
+    runtime state) but must not promote to a required gate."""
 
     sim = MODE_METADATA["simulate"]
     assert sim.required_gates == ()
-    assert sim.warnings == ()
     assert sim.safe_for_unattended is True
+
+
+def test_simulate_overrides_clear_prior_legacy_lab_state() -> None:
+    """Simulate's "no real side effect" contract is global. The
+    config patch must FULLY clear any prior emulate / live-lab
+    execution state -- not just flip ``dry_run`` -- otherwise an
+    operator transitioning from a previous emulate / live-lab run
+    could leave ``modules.legacy.global_mode`` at ``emulate`` (and
+    legacy modules would still resolve to emulate semantics).
+    (Codex P1 on PR #169.)
+    """
+
+    sim_overrides = dict(MODE_METADATA["simulate"].config_overrides)
+    # Core dry_run + enable-all toggle are already covered by the
+    # pre-existing pin; explicitly check the global legacy state
+    # resets land too.
+    assert sim_overrides["modules.legacy.global_mode"] == "simulate"
+    assert sim_overrides["modules.legacy.global_lab_acknowledged"] is False
+    assert sim_overrides["modules.legacy.lab_confirmation"] is False
 
 
 def test_emulate_requires_per_pack_lab_confirmation() -> None:
@@ -164,7 +183,10 @@ def test_build_mode_plan_for_simulate_against_fin7_has_no_gates() -> None:
     plan = build_mode_plan(scenario, "simulate")
     assert plan.mode == "simulate"
     assert plan.required_gates == ()
-    assert plan.warnings == ()
+    # Simulate carries one informational warning about per-pack
+    # cleanup (added in Codex P1 fix on PR #169) — the pin allows
+    # any non-empty warnings tuple but verifies safe-for-unattended
+    # stays True.
     assert plan.legacy_packs == ()
     assert plan.safe_for_unattended is True
     # Step count matches the loaded scenario.
