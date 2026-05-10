@@ -3763,6 +3763,48 @@ _PRIVILEGE_ESCALATION_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "privilege_escalation_uac_bypass",
         "title_prefix": "UAC bypass attempt on",
     },
+    # Parent PID Spoofing (T1134.004): Windows lets a process specify
+    # a different parent PID at creation time via
+    # ``UpdateProcThreadAttribute(PROC_THREAD_ATTRIBUTE_PARENT_PROCESS)``.
+    # Adversaries use this to make a malicious child of (e.g.)
+    # explorer.exe appear to be a child of a legitimate parent like
+    # winlogon.exe / lsass.exe / services.exe, breaking the parent-
+    # child chain a defender uses to detect anomalies. Defender
+    # narrative: process_creation events whose Sysmon
+    # ``ParentProcessGuid`` doesn't appear in any prior CreateProcess
+    # event, OR a known child process whose parent doesn't match the
+    # expected parent for that image (e.g. cmd.exe whose parent is
+    # winlogon.exe). The selector pins the canonical Win32 API
+    # ``UpdateProcThreadAttribute`` substring that surfaces in
+    # tooling that constructs PPID-spoofed processes.
+    "parent_pid_spoof": {
+        "mitre": "T1134.004",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "UpdateProcThreadAttribute",
+        "event_type": "privilege_escalation_parent_pid_spoof",
+        "title_prefix": "Parent PID spoofing on",
+    },
+    # SID-History Injection (T1134.005): on a Windows domain trust,
+    # an attacker with full control of one domain can forge a
+    # Kerberos ticket whose ``SidHistory`` contains an SID from a
+    # trusted domain (e.g. the parent forest's Enterprise Admins).
+    # The forged ticket then grants access in the trusted domain
+    # without ever having an account there. Tooling: mimikatz
+    # ``kerberos::golden /sids:...`` injects custom SidHistory
+    # entries into a forged TGT. Defender narrative: EventID 4769
+    # service-ticket request with anomalous group membership chains
+    # AND/OR a non-standard ``SidHistory`` field value in the
+    # account-management 4738/4720 events. Catalog selector pins the
+    # ``/sids:`` substring (mimikatz CLI form).
+    "sid_history_injection": {
+        "mitre": "T1134.005",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "/sids:",
+        "event_type": "privilege_escalation_sid_history_injection",
+        "title_prefix": "SID-History injection forged-ticket on",
+    },
 }
 
 

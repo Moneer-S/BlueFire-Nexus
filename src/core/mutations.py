@@ -256,6 +256,8 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "service_creation",
         "service_modification",
         "uac_bypass",
+        "parent_pid_spoof",
+        "sid_history_injection",
     ),
     ("intelligence", "intelligence_type"): (
         "actor_research",
