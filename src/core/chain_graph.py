@@ -316,25 +316,35 @@ def build_scenario_graph(
 
         # 2a. Explicit ``*_from_step`` references in the scenario YAML.
         # Gate the explicit-axis pass on the consumer having a
-        # meaningful IO contract. Without the gate, an unknown
-        # module's ``*_from_step`` reference would synthesise a chain
-        # edge against axis defaults — misleading for the operator,
-        # who can't verify the module actually accepts that
-        # propagation. The chain-neutral-pass-through behaviour for
-        # unknown modules (pinned by
-        # ``test_unknown_module_is_chain_neutral_pass_through``)
-        # extends here too. (Codex P2 on PR #164.) The implicit pass
-        # (2b) and the produced-tracking pass (2c) are gated
-        # independently below so a producer-only module without
-        # ``consumes`` still indexes its emissions for downstream
-        # consumers.
-        contract_meaningful = (
-            contract is not None and is_meaningful_contract(contract)
+        # meaningful IO contract WITH at least one consumed slot.
+        # Without the gate, an unknown module's ``*_from_step``
+        # reference would synthesise a chain edge against axis
+        # defaults — misleading for the operator, who can't verify
+        # the module actually accepts that propagation. Producer-only
+        # modules (``resource_development``, ``reconnaissance`` —
+        # contract has ``produces`` but empty ``consumes``) also
+        # cannot meaningfully receive an explicit propagation, so
+        # they're gated out too. (Codex P2 #6 on PR #164.) The
+        # implicit pass (2b) and the produced-tracking pass (2c) are
+        # gated independently below so a producer-only module still
+        # indexes its emissions for downstream consumers.
+        consumer_contract_present = (
+            contract is not None
+            and is_meaningful_contract(contract)
+            and bool(contract.consumes)
         )
         for param_key, axis_slot_hint, default_type, inline_param_keys in (
-            _FROM_STEP_AXES if contract_meaningful else ()
+            _FROM_STEP_AXES if consumer_contract_present else ()
         ):
-            raw_source = params.get(param_key)
+            # Mirror the runtime: ``str(... or "").strip()`` is how
+            # ``resolve_target_from_step`` reads ``step_param_key``.
+            # A whitespace-padded reference (``" step-1 "``) trims to
+            # ``step-1`` at runtime; the static graph must too,
+            # otherwise the source lookup misses and emits a false
+            # ``missing_required`` warning. A blank / whitespace-only
+            # reference resolves to "no propagation" — same as
+            # missing the key entirely. (Codex P2 #5 on PR #164.)
+            raw_source = str(params.get(param_key) or "").strip()
             if not raw_source:
                 continue
             # Inline param wins at runtime: when the consumer's
@@ -349,7 +359,7 @@ def build_scenario_graph(
                 _slot_set_inline(params, key) for key in inline_param_keys
             ):
                 continue
-            source_step_id = str(raw_source)
+            source_step_id = raw_source
             source_index = step_index_by_id.get(source_step_id)
             if source_index is None or source_index >= index:
                 # Forward reference (impossible at runtime) or unknown
