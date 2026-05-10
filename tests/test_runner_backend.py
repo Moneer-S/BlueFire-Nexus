@@ -231,6 +231,41 @@ def test_manifest_rejects_non_mapping_params() -> None:
         )
 
 
+def test_manifest_params_cannot_be_mutated_after_construction() -> None:
+    """The caller's mapping is deep-copied + wrapped in a
+    ``MappingProxyType`` at construction time, so a mutation on the
+    original mapping does not leak through, and a mutation through
+    ``manifest.params[...] = ...`` raises. Pin both halves so a
+    refactor that drops either guard fails here."""
+
+    original_params = {"target": "lab-host", "nested": {"k": "v"}}
+    manifest = _valid_manifest(params=original_params)
+
+    # Mutating the caller's mapping does not change manifest.params.
+    original_params["target"] = "production-host"
+    original_params["nested"]["k"] = "tampered"
+    assert manifest.params["target"] == "lab-host"
+    assert manifest.params["nested"]["k"] == "v"
+
+    # Mutating manifest.params directly raises TypeError (read-only proxy).
+    with pytest.raises(TypeError):
+        manifest.params["target"] = "production-host"  # type: ignore[index]
+
+
+def test_manifest_params_cannot_smuggle_forbidden_key_post_construction() -> None:
+    """A caller cannot bypass forbidden-key validation by mutating
+    the original ``params`` mapping after construction. The
+    deep-copy + read-only proxy ensures the validated state is the
+    permanent state."""
+
+    original_params: dict[str, object] = {"target": "lab-host"}
+    manifest = _valid_manifest(params=original_params)
+    # Try to inject a forbidden key on the original mapping.
+    original_params["command"] = "rm -rf /"
+    # The manifest's params do not see the post-construction mutation.
+    assert "command" not in manifest.params
+
+
 def test_manifest_to_dict_roundtrip_includes_every_field() -> None:
     """Pin the JSON-serialisable shape so a future field addition
     that forgets to plumb through ``to_dict`` surfaces here."""
@@ -441,11 +476,11 @@ def test_local_runner_does_not_import_subprocess_or_socket() -> None:
 
 
 def test_local_runner_provenance_is_echoed_on_every_result() -> None:
-    """Every TaskResult MUST carry the manifest's provenance fields.
-    Defender-readable: a result alone lets you trace the manifest."""
+    """Every TaskResult carries the manifest's provenance fields.
+    A result alone lets a defender trace the manifest."""
 
     stub = _StubModule()
-    runner = LocalRunner({"credential_access": stub})
+    runner = LocalRunner({"credential_access": stub}, runner_id="local-host-1")
     manifest = _valid_manifest(
         run_id="run-42",
         step_id="step-7",
@@ -465,6 +500,32 @@ def test_local_runner_provenance_is_echoed_on_every_result() -> None:
     # "requested_at" downstream still represents request time, not
     # completion time -- that's the ``completed_at`` field).
     assert result.requested_at == manifest.requested_at
+
+
+def test_local_runner_result_runner_id_reflects_backend_not_manifest() -> None:
+    """When the manifest's ``runner_id`` and the backend's
+    ``runner_id`` differ, the TaskResult ``runner_id`` reflects the
+    backend that actually executed the task, not the value the
+    operator wrote on the manifest. Pin so a misrouted manifest can
+    be attributed to the backend that handled it."""
+
+    stub = _StubModule()
+    runner = LocalRunner({"credential_access": stub}, runner_id="actual-backend")
+    manifest = _valid_manifest(runner_id="declared-backend")
+    result = runner.accept(manifest)
+    assert result.runner_id == "actual-backend"
+
+
+def test_local_runner_result_runner_id_uses_backend_on_refused_path() -> None:
+    """The ``REFUSED`` path also reflects the backend's runner_id, not
+    the manifest's. The refused-result attribution must be consistent
+    with the dispatch-path attribution above."""
+
+    runner = LocalRunner(runner_id="actual-backend")  # no registry
+    manifest = _valid_manifest(runner_id="declared-backend")
+    result = runner.accept(manifest)
+    assert result.is_refused
+    assert result.runner_id == "actual-backend"
 
 
 # ---------------------------------------------------------------------------

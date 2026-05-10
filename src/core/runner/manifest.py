@@ -196,6 +196,21 @@ class TaskManifest:
         # Strict typed-scalars-only check on params values. Catches
         # bytes, callables, file handles, etc.
         _validate_params_value(self.params, path="params")
+        # Replace the caller's mapping with a deep-copied
+        # ``MappingProxyType`` view so external code cannot mutate
+        # ``params`` after construction and bypass the validation
+        # above (e.g. inject a ``command`` key, or swap a scalar for
+        # a callable). The dataclass is frozen, so we have to use
+        # ``object.__setattr__`` to swap the field. The deep copy is
+        # the actual ownership transfer; the read-only proxy gives
+        # the caller a clean error if they try to mutate via the
+        # manifest's attribute.
+        from copy import deepcopy
+        from types import MappingProxyType
+
+        object.__setattr__(
+            self, "params", MappingProxyType(deepcopy(dict(self.params)))
+        )
 
     @classmethod
     def now(cls) -> str:

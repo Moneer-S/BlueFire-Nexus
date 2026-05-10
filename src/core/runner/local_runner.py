@@ -257,7 +257,14 @@ class LocalRunner:
             profile=manifest.profile,
             mode=manifest.mode,
             platform=manifest.platform,
-            runner_id=manifest.runner_id,
+            # ``runner_id`` on the result is the BACKEND that ran the
+            # task, not whatever the manifest declared. The two can
+            # differ when an operator hands a manifest declared for one
+            # backend (e.g. ``runner_id="local-host-1"``) to a
+            # different backend (e.g. ``runner_id="local-host-2"``);
+            # downstream telemetry must attribute the result to the
+            # backend that actually executed it.
+            runner_id=self.runner_id,
             requested_at=manifest.requested_at,
             status=status,
             artifacts=artifacts,
@@ -285,7 +292,16 @@ class LocalRunner:
         return [dict(row) for row in rows if isinstance(row, Mapping)]
 
     def _refused(self, manifest: TaskManifest, reason: str) -> TaskResult:
-        """Build a ``REFUSED`` TaskResult with provenance echoed."""
+        """Build a ``REFUSED`` TaskResult with provenance echoed.
+
+        The ``runner_id`` on the result is the backend's own id, not
+        the manifest's. The manifest's ``runner_id`` reflects what the
+        OPERATOR DECLARED at construction; the result's reflects what
+        BACKEND HANDLED the manifest. The two can differ on a
+        misrouted manifest, and a defender reading the result must see
+        the backend that actually saw the manifest, not whatever the
+        operator wrote.
+        """
 
         return TaskResult(
             task_type=manifest.task_type,
@@ -295,7 +311,7 @@ class LocalRunner:
             profile=manifest.profile,
             mode=manifest.mode,
             platform=manifest.platform,
-            runner_id=manifest.runner_id,
+            runner_id=self.runner_id,
             requested_at=manifest.requested_at,
             status=TaskStatus.REFUSED,
             elapsed_ms=0,
@@ -310,7 +326,11 @@ class LocalRunner:
         *,
         elapsed_ms: int,
     ) -> TaskResult:
-        """Build a ``FAILURE`` TaskResult with provenance echoed."""
+        """Build a ``FAILURE`` TaskResult with provenance echoed.
+
+        See :meth:`_refused` for why ``runner_id`` is the backend's
+        id, not the manifest's.
+        """
 
         return TaskResult(
             task_type=manifest.task_type,
@@ -320,7 +340,7 @@ class LocalRunner:
             profile=manifest.profile,
             mode=manifest.mode,
             platform=manifest.platform,
-            runner_id=manifest.runner_id,
+            runner_id=self.runner_id,
             requested_at=manifest.requested_at,
             status=TaskStatus.FAILURE,
             elapsed_ms=elapsed_ms,
