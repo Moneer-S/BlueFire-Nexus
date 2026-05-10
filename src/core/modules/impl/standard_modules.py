@@ -3088,21 +3088,27 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
     # request with anomalous account-membership chains (a forged
     # TGT often carries unusual group memberships the real account
     # never had) AND/OR EventID 4624 logon events that lack a
-    # corresponding 4768 (TGT request) on the DC. Tooling markers
-    # ``mimikatz kerberos::golden`` / ``Rubeus.exe golden`` /
-    # ``Invoke-Mimikatz "kerberos::golden"`` surface in
-    # process_creation telemetry; the ``kerberos::golden`` substring
-    # picks both mimikatz and Invoke-Mimikatz wrappers. Distinct
-    # from the other T1558.* sub-techniques (Kerberoasting /
-    # AS-REP roasting) by both the credential material extracted
-    # (a forged TGT, not a crackable hash) and by the persistence
-    # implication (golden tickets persist across password rotations
-    # of the targeted user).
+    # corresponding 4768 (TGT request) on the DC. Tooling markers in
+    # process_creation telemetry: mimikatz
+    # ``kerberos::golden /admin:...`` and the Invoke-Mimikatz wrapper
+    # form, plus Rubeus ``Rubeus.exe golden /aes256:...``. Both tool
+    # families share the substring ``golden /`` (the technique name
+    # immediately followed by the first ``/``-prefixed CLI argument),
+    # so this single substring catches mimikatz, Invoke-Mimikatz, AND
+    # Rubeus invocations without false-positing on generic command
+    # lines mentioning the word "golden". Distinct from the other
+    # T1558.* sub-techniques (Kerberoasting / AS-REP roasting) by
+    # both the credential material extracted (a forged TGT, not a
+    # crackable hash) and by the persistence implication (golden
+    # tickets persist across password rotations of the targeted
+    # user). (Codex P2 on PR #178 caught the prior ``kerberos::golden``
+    # selector, which matched only mimikatz-family invocations and
+    # missed Rubeus despite the comment claiming Rubeus support.)
     "golden_ticket": {
         "mitre": "T1558.001",
         "logsource": {"category": "process_creation", "product": "windows"},
         "selection_field": "process.command_line|contains",
-        "selection_value": "kerberos::golden",
+        "selection_value": "golden /",
         "event_type": "credential_access_golden_ticket",
         "title_prefix": "Golden Ticket TGT forgery against",
     },
@@ -3115,19 +3121,26 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
     # sees a Kerberos PAC it can't validate against the KDC).
     #
     # Defender narrative: target-service authentication that does
-    # not have a corresponding KDC-side 4769; PAC validation
-    # failures on the service host. Tooling markers
-    # ``mimikatz kerberos::silver`` and Rubeus's silver subcommand
-    # surface in process_creation telemetry on the attacker host.
-    # Distinct from Golden Ticket (T1558.001) by which hash drives
-    # the forgery (service hash vs krbtgt hash) and by which Event
-    # IDs the defender needs to correlate -- Silver tickets are
-    # noisier on the target service but invisible to the DC.
+    # not have a corresponding KDC-side 4769; PAC validation failures
+    # on the service host. Tooling markers in process_creation
+    # telemetry: mimikatz ``kerberos::silver /service:...`` and
+    # Rubeus ``Rubeus.exe silver /service:...``. Both tool families
+    # share the substring ``silver /`` (the technique name
+    # immediately followed by the first ``/``-prefixed CLI argument),
+    # so this single substring catches mimikatz AND Rubeus silver-
+    # ticket invocations without false-positing on generic command
+    # lines mentioning the word "silver". Distinct from Golden Ticket
+    # (T1558.001) by which hash drives the forgery (service hash vs
+    # krbtgt hash) and by which Event IDs the defender needs to
+    # correlate -- Silver tickets are noisier on the target service
+    # but invisible to the DC. (Codex P2 on PR #178 caught the prior
+    # ``kerberos::silver`` selector, which matched only mimikatz-
+    # family invocations and missed Rubeus.)
     "silver_ticket": {
         "mitre": "T1558.002",
         "logsource": {"category": "process_creation", "product": "windows"},
         "selection_field": "process.command_line|contains",
-        "selection_value": "kerberos::silver",
+        "selection_value": "silver /",
         "event_type": "credential_access_silver_ticket",
         "title_prefix": "Silver Ticket service-ticket forgery against",
     },
