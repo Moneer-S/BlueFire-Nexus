@@ -2939,6 +2939,24 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "credential_access_dpapi_master_key",
         "title_prefix": "DPAPI master-key extraction",
     },
+    # Kerberoasting (T1558.003) is the canonical Active Directory
+    # service-account credential extraction technique. The attacker
+    # requests a Kerberos service ticket (TGS-REP) for any account
+    # with a Service Principal Name (SPN), then cracks the
+    # RC4-encrypted ticket offline to recover the service-account
+    # password. Defender narrative: EventID 4769 Kerberos service
+    # ticket request with RC4 encryption type (0x17) AND a
+    # non-machine account requesting tickets for many SPNs in a
+    # short window. ``Rubeus`` and ``GetUserSPNs.py`` are the
+    # canonical tooling markers in process_creation telemetry.
+    "kerberoasting": {
+        "mitre": "T1558.003",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "kerberoast",
+        "event_type": "credential_access_kerberoasting",
+        "title_prefix": "Kerberoasting service-ticket extraction",
+    },
 }
 
 
@@ -3688,6 +3706,22 @@ _COLLECTION_PROFILES: Dict[str, Dict[str, Any]] = {
         "selection_value": ".pst",
         "event_type": "collection_email_collection",
         "title_prefix": "Local email collection on",
+    },
+    # Network shared drive collection (T1039) is the canonical
+    # Windows tradecraft for pulling data from file shares rather
+    # than local disk -- distinct from ``file_staging`` (which reads
+    # local FS paths). Defenders alert on file_event reads against
+    # UNC paths (``\\<host>\<share>\``); the SMB read pattern is the
+    # high-fidelity discriminator from local-disk collection. Pairs
+    # naturally with discovery (share enumeration → share to read)
+    # and exfiltration (collected_data → exfil package).
+    "network_share": {
+        "mitre": "T1039",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "file.path|startswith",
+        "selection_value": "\\\\\\\\",
+        "event_type": "collection_network_share",
+        "title_prefix": "Network share data collection on",
     },
 }
 

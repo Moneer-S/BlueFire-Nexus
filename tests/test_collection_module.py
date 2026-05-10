@@ -48,6 +48,7 @@ def test_default_technique_is_file_staging(tmp_path: Path) -> None:
         ("screen_capture", "T1113"),
         ("audio_capture", "T1123"),
         ("email_collection", "T1114.001"),
+        ("network_share", "T1039"),
     ],
 )
 def test_technique_fans_out_to_correct_mitre(
@@ -58,6 +59,37 @@ def test_technique_fans_out_to_correct_mitre(
     assert result.techniques == [expected_mitre]
     assert result.detection_hints["mitre_technique"] == expected_mitre
     assert result.detection_hints["collection_technique"] == technique
+
+
+def test_network_share_pins_unc_path_file_event(tmp_path: Path) -> None:
+    """Network shared drive collection (T1039) reads SMB / NFS share
+    contents rather than local disk. The catalog must pin a Windows
+    file_event logsource with a UNC-path discriminator (``\\\\``) so
+    the detection draft fires on the SMB read pattern, not local
+    file_staging.
+    """
+
+    mod = CollectionModule()
+    result = mod.execute(
+        {"technique": "network_share", "target": "fileshare-01"},
+        _ctx(tmp_path),
+    )
+    assert result.status == "success"
+    assert result.techniques == ["T1039"]
+    assert result.artifacts["technique"] == "network_share"
+    # Detection hint pins file_event logsource scoped to Windows.
+    logsource = result.detection_hints["logsource"]
+    assert logsource["product"] == "windows"
+    assert logsource["category"] == "file_event"
+    # Selection value carries the UNC-path discriminator.
+    detection = result.detection_hints["detection"]
+    selection_value = next(iter(detection["selection"].values()))
+    # ``\\`` is the canonical UNC path prefix; the catalog stores it
+    # as escaped backslashes for the YAML / JSON detection draft.
+    assert "\\" in selection_value
+    # Telemetry event type carries the technique-specific marker.
+    event = result.telemetry[0]
+    assert event.event_type == "collection_network_share"
 
 
 def test_unknown_technique_falls_back_with_marker(tmp_path: Path) -> None:
