@@ -46,6 +46,7 @@ def _ctx(tmp_path: Path) -> Dict[str, Any]:
         ("impair_defenses", "T1562.001"),
         ("debugger_evasion", "T1622"),
         ("encrypted_encoded_file", "T1027.013"),
+        ("environmental_keying", "T1480.001"),
     ],
 )
 def test_technique_fans_out_to_correct_mitre(
@@ -104,6 +105,33 @@ def test_encrypted_encoded_file_pins_t1027_013_with_extension_selector(
     }
     selection = result.detection_hints["detection"]["selection"]
     assert ".enc" in selection.get("file.path|endswith", "")
+
+
+def test_environmental_keying_pins_t1480_001_with_machineguid_selector(
+    tmp_path: Path,
+) -> None:
+    """Environmental Keying (T1480.001) reads a per-machine identity
+    value (typically ``HKLM\\Software\\Microsoft\\Cryptography\\
+    MachineGuid``) and uses it as decryption key material so the
+    payload only runs on the targeted host. Pin the MITRE id,
+    registry_event logsource, and the ``MachineGuid`` substring
+    selector so the rendered detection draft fires on the canonical
+    machine-fingerprint read."""
+
+    mod = DefenseEvasionModule()
+    result = mod.execute(
+        {"technique": "environmental_keying", "target": "lab-host"},
+        _ctx(tmp_path),
+    )
+    assert result.techniques == ["T1480.001"]
+    assert result.detection_hints["logsource"] == {
+        "category": "registry_event",
+        "product": "windows",
+    }
+    selection = result.detection_hints["detection"]["selection"]
+    selector_value = next(iter(selection.values()))
+    assert "MachineGuid" in selector_value
+    assert "Cryptography" in selector_value
 
 
 def test_each_profile_emits_a_distinct_event_type(tmp_path: Path) -> None:

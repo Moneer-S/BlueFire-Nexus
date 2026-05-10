@@ -1331,6 +1331,28 @@ _DEFENSE_EVASION_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "defense_evasion_encrypted_encoded_file",
         "title_prefix": "Encrypted/encoded file artefact on",
     },
+    # Environmental Keying (T1480.001): malware uses an environment
+    # fingerprint (machine SID, hardware MAC, domain name, user name,
+    # mounted drive letters) as a key to decrypt itself, so the
+    # payload only runs on the targeted machine. A wrong-machine
+    # detonation produces an undecryptable blob and the payload
+    # silently fails. The canonical defender signal is a
+    # process_creation event followed by registry reads of the
+    # machine-identity values used as keying material -- e.g.
+    # ``HKLM\Software\Microsoft\Cryptography\MachineGuid``, which is
+    # the most common environmental key on Windows. Anchor the
+    # selector on the ``MachineGuid`` substring so the rule fires on
+    # process / registry events that read that path. Distinct from
+    # ``debugger_evasion`` (T1622) which probes for an attached
+    # debugger rather than a per-machine identity.
+    "environmental_keying": {
+        "mitre": "T1480.001",
+        "logsource": {"category": "registry_event", "product": "windows"},
+        "selection_field": "registry.key|contains",
+        "selection_value": "Cryptography\\MachineGuid",
+        "event_type": "defense_evasion_environmental_keying",
+        "title_prefix": "Environmental-keying machine fingerprint read on",
+    },
 }
 
 

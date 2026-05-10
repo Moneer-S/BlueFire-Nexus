@@ -141,6 +141,7 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "impair_defenses",
         "debugger_evasion",
         "encrypted_encoded_file",
+        "environmental_keying",
     ),
     ("anti_detection", "method"): (
         "memory_evasion",
