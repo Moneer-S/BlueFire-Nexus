@@ -551,6 +551,16 @@ def test_apply_mode_profile_emulate_does_not_clobber_per_pack_state(
     + ``modules.legacy.global_mode: "emulate"``); they explicitly
     do NOT enumerate per-pack keys, so applying emulate to a config
     with stale per-pack state must leave that state intact.
+
+    The seeded per-pack values are non-default sentinels (a string
+    that no reset-to-default codepath would ever produce, and a True
+    that's distinct from the default-False of an absent key) so a
+    future regression that "resets per-pack state to defaults" when
+    applying emulate would surface as a value mismatch -- not get
+    masked because the seeded value happens to coincide with the
+    default. (Codex P2 on the original PR caught the prior version
+    that seeded ``False`` / ``"simulate"`` -- both of which a
+    reset-to-defaults bug could also produce.)
     """
 
     _isolated_config_dir(tmp_path, monkeypatch)
@@ -559,9 +569,11 @@ def test_apply_mode_profile_emulate_does_not_clobber_per_pack_state(
 
     cm = ConfigManager()
     # Per-pack state the operator had set before applying emulate.
-    cm.set("modules.legacy.actor_pack.lab_confirmation", False)
-    cm.set("modules.legacy.actor_pack.mode", "simulate")
+    # All values are deliberately NON-default sentinels.
+    cm.set("modules.legacy.actor_pack.lab_confirmation", True)
+    cm.set("modules.legacy.actor_pack.mode", "operator-set-sentinel")
     cm.set("modules.legacy.c2_pack.lab_confirmation", True)
+    cm.set("modules.legacy.c2_pack.enabled", True)
     cm.save()
 
     runner = CliRunner()
@@ -577,17 +589,21 @@ def test_apply_mode_profile_emulate_does_not_clobber_per_pack_state(
     assert result.exit_code == 0, result.stdout
 
     cm_after = ConfigManager()
-    # Per-pack state: untouched.
+    # Per-pack state: untouched. Each assertion uses a value that a
+    # reset-to-default codepath would NOT produce, so a bug that
+    # silently clears per-pack state surfaces here unambiguously.
     assert (
         cm_after.get("modules.legacy.actor_pack.lab_confirmation")
-        is False
+        is True
     )
     assert (
-        cm_after.get("modules.legacy.actor_pack.mode") == "simulate"
+        cm_after.get("modules.legacy.actor_pack.mode")
+        == "operator-set-sentinel"
     )
     assert (
         cm_after.get("modules.legacy.c2_pack.lab_confirmation") is True
     )
+    assert cm_after.get("modules.legacy.c2_pack.enabled") is True
     # Emulate's catalog overrides DID land on the global keys.
     assert cm_after.get("general.dry_run") is False
     assert cm_after.get("modules.legacy.global_mode") == "emulate"
