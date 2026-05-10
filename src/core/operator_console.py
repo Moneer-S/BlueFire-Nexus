@@ -169,6 +169,7 @@ th { color: var(--fg-muted); font-weight: 500; font-size: 12px; }
 .mode-section li { padding: 1px 0; }
 .mode-config-key { font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--accent); }
 .mode-config-value { font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--fg); }
+.mode-apply-command { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; margin: 4px 0 0; white-space: pre-wrap; color: var(--fg); }
 .footer { color: var(--fg-muted); font-size: 12px; margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--border); }
 """.strip()
 
@@ -1404,8 +1405,77 @@ def _render_mode_card(mode_name: str) -> str:
         pieces.append("</ul>")
         pieces.append("</div>")
 
+    # "Apply this mode" hint -- shows the exact CLI invocation an
+    # operator would run to apply the mode via the new
+    # ``apply-mode-profile`` command. The block is purely
+    # informational; the console never invokes the CLI itself, never
+    # writes config, and never starts execution. The hint mirrors
+    # the gate requirements from ``check_apply_gates`` (in
+    # src.core.modes) so the rendered command line matches what the
+    # CLI actually accepts: simulate has no extra flags, emulate
+    # adds ``--i-understand-this-is-a-lab``, live-lab additionally
+    # requires ``--allowed-subnets <cidr,cidr>``.
+    pieces.append("<div class='mode-section mode-apply-hint'>")
+    pieces.append("<h4>Apply this mode</h4>")
+    pieces.append(
+        "<p class='muted'>Preview by default; pass "
+        "<span class='code'>--write</span> to persist the overrides "
+        "shown above.</p>"
+    )
+    pieces.append(_render_apply_command_block(definition.name))
+    pieces.append("</div>")
+
     pieces.append("</div>")
     return "\n".join(pieces)
+
+
+def _render_apply_command_block(mode_name: str) -> str:
+    """Render the ``apply-mode-profile`` command block for a mode.
+
+    Returns an HTML <pre> block containing the canonical command
+    line an operator would run to write the mode's config overrides
+    to disk. The command line includes the mode-specific gate flags
+    so an operator who copy-pastes the block lands a complete,
+    runnable invocation rather than one that the CLI would refuse.
+
+    The mapping mirrors :func:`src.core.modes.check_apply_gates`:
+
+    - ``simulate``  -> no extra flags
+    - ``emulate``   -> ``--i-understand-this-is-a-lab``
+    - ``live-lab``  -> ``--i-understand-this-is-a-lab``
+                       ``--allowed-subnets <cidr,cidr>``
+    """
+
+    base = "python -m src.core.cli apply-mode-profile"
+    if mode_name == "simulate":
+        command = f"{base} simulate --write"
+    elif mode_name == "emulate":
+        command = (
+            f"{base} emulate --write \\\n"
+            "    --i-understand-this-is-a-lab"
+        )
+    elif mode_name == "live-lab":
+        # Sample CIDRs (NOT placeholders in ``<...>`` form). Bash
+        # parses unquoted ``<lab-cidr-1>`` as input redirection,
+        # so a copy-paste of an angle-bracketed placeholder would
+        # produce a shell parse error instead of running the
+        # command. Concrete RFC 1918 CIDRs render as a runnable
+        # template the operator substitutes for their own lab
+        # network. (Codex P1 on PR #182.)
+        command = (
+            f"{base} live-lab --write \\\n"
+            "    --i-understand-this-is-a-lab \\\n"
+            "    --allowed-subnets 10.10.0.0/24,192.168.50.0/24"
+        )
+    else:
+        # Defensive: a future mode addition that forgets to update
+        # this dispatch lands a bare preview command.
+        command = f"{base} {mode_name}"
+    return (
+        "<pre class='mode-apply-command'>"
+        f"{html.escape(command)}"
+        "</pre>"
+    )
 
 
 def _render_footer() -> str:
