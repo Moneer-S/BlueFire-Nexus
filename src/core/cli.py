@@ -773,6 +773,52 @@ def _file_uri(path: Path) -> str:
     return path.resolve().as_uri()
 
 
+def _load_config_for_console_preview() -> Optional[Dict[str, Any]]:
+    """Read ``config.yaml`` for the operator-console mode-diff render.
+
+    The ``operator-console`` CLI is documented as a read-only
+    generator and must not mutate on-disk state. ``ConfigManager()``
+    cannot be used here because its ``_load_config`` writes the
+    default ``config.yaml`` when the file is missing (Codex P1 on
+    PR #183) -- a stray ``operator-console`` invocation in a clean
+    directory would silently create a config file just by previewing
+    the page.
+
+    This helper instead loads ``config.yaml`` directly via
+    ``yaml.safe_load`` and returns the loaded mapping. When the file
+    is missing, unreadable, or doesn't parse to a mapping, the helper
+    returns ``None`` so the console falls back to the static-only
+    render path. No file is ever created or modified.
+    """
+
+    import yaml
+
+    config_path = Path("config.yaml")
+    if not config_path.is_file():
+        console.print(
+            "[dim]config.yaml not found; rendering mode cards with "
+            "static target overrides only.[/]"
+        )
+        return None
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            loaded = yaml.safe_load(handle)
+    except (OSError, yaml.YAMLError) as exc:
+        console.print(
+            f"[yellow]Warning: could not load config.yaml for mode "
+            f"diff ({exc.__class__.__name__}); rendering static "
+            f"target overrides only.[/]"
+        )
+        return None
+    if not isinstance(loaded, dict):
+        console.print(
+            "[yellow]Warning: config.yaml is not a mapping; rendering "
+            "static target overrides only.[/]"
+        )
+        return None
+    return loaded
+
+
 def _print_next_steps_hint(run: dict) -> None:
     """Print next-step hints to stdout, file:// URI on its own line.
 
@@ -1108,25 +1154,22 @@ def operator_console_cmd(
         python -m src.core.cli operator-console --scenarios /work/custom-scenarios
     """
 
-    from .config import ConfigManager
     from .operator_console import build_operator_console
 
     root = output_root if output_root else resolve_output_root()
     # Load the current config so each mode card renders a real
     # ``current -> target`` diff against what's on disk, not just the
-    # static target overrides. Falls back to the static-only render when
-    # ConfigManager construction blows up (operator running in an env
-    # without a config.yaml at all). Either way the console builds; the
-    # diff is just an enhancement when config is loadable.
-    current_config: Optional[Dict[str, Any]] = None
-    try:
-        current_config = ConfigManager().to_dict()
-    except Exception as exc:  # pragma: no cover - defensive
-        console.print(
-            f"[yellow]Warning: could not load config for mode diff "
-            f"({exc.__class__.__name__}); rendering static target "
-            f"overrides only.[/]"
-        )
+    # static target overrides. The console is documented as a
+    # read-only generator -- "never writes anywhere outside
+    # ``output_root/operator-console/``" -- so the load path MUST NOT
+    # mutate on-disk state. ``ConfigManager()`` constructs the default
+    # ``config.yaml`` when the file is missing (Codex P1 on PR #183),
+    # so we cannot use ConfigManager here. Read ``config.yaml``
+    # directly via ``yaml.safe_load`` only when the file already
+    # exists; if it is missing or unreadable the console falls back to
+    # the static-only render and the operator gets a
+    # current-config-not-loaded notice. Either way no file is created.
+    current_config: Optional[Dict[str, Any]] = _load_config_for_console_preview()
     target = build_operator_console(
         Path(root),
         scenarios_dir=scenarios,
