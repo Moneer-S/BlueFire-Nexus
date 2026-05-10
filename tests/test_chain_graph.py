@@ -138,6 +138,302 @@ def test_unknown_module_is_chain_neutral_pass_through() -> None:
     assert graph.warnings == ()
 
 
+def test_explicit_from_step_pointing_at_unknown_source_emits_warning() -> None:
+    """When the source step's module has no producer contract (or
+    is unknown), the runtime ``resolve_target_from_step`` would fall
+    back rather than propagate. The static graph must mirror that:
+    emit a ``missing_required`` warning rather than a phantom edge
+    claiming connectivity that won't actually fire at runtime.
+
+    Codex P2 on PR #164.
+    """
+
+    # Source step references an unknown module (no contract). The
+    # static analyser cannot prove that module emits a usable value,
+    # so the explicit edge gets demoted to a warning rather than a
+    # phantom propagation.
+    registry = {
+        "credential_access": _consumer(
+            ArtifactSpec(type=HOST, key="target"),
+        ),
+    }
+    graph = build_scenario_graph(
+        [
+            _step("source-unknown", "no_such_module"),
+            _step(
+                "creds",
+                "credential_access",
+                {"target_from_step": "source-unknown"},
+            ),
+        ],
+        registry=registry,
+    )
+    edges = [e for e in graph.edges if e.target_step_id == "creds"]
+    assert edges == [], (
+        f"explicit edge synthesised against producer-less source: {edges}"
+    )
+    missing = [
+        w
+        for w in graph.warnings
+        if w.severity == "missing_required" and w.step_id == "creds"
+    ]
+    assert len(missing) >= 1
+    # Warning message should reference the source module so the
+    # operator sees what doesn't produce.
+    assert any("no_such_module" in w.message for w in missing)
+
+
+def test_explicit_from_step_pointing_at_producer_source_still_emits_edge() -> None:
+    """When the source step's module DOES have a producer contract
+    (even one that doesn't produce the consumer's expected type),
+    the explicit edge still lands -- runtime
+    ``resolve_target_from_step`` is type-agnostic at the artifacts
+    dict level. Only wholly producer-less / unknown sources demote
+    the edge to a warning.
+    """
+
+    registry = {
+        # Producer-only module that DOES produce something (just not
+        # the host the consumer needs).
+        "resource_development": _producer(
+            ArtifactSpec(type="c2_endpoint", key="target"),
+        ),
+        "credential_access": _consumer(
+            ArtifactSpec(type=HOST, key="target"),
+        ),
+    }
+    graph = build_scenario_graph(
+        [
+            _step("stage", "resource_development"),
+            _step(
+                "creds",
+                "credential_access",
+                {"target_from_step": "stage"},
+            ),
+        ],
+        registry=registry,
+    )
+    edges = [e for e in graph.edges if e.target_step_id == "creds"]
+    assert any(e.explicit for e in edges)
+
+
+def test_producer_only_module_with_from_step_does_not_synthesise_edge() -> None:
+    """A producer-only module (``produces`` non-empty, ``consumes``
+    empty) cannot meaningfully receive an explicit propagation. The
+    static graph must NOT synthesise an edge against axis defaults
+    when such a module accidentally carries a ``*_from_step``
+    reference.
+
+    Mirrors the chain-neutral-pass-through behaviour for unknown
+    modules: an explicit propagation reference requires a consumer
+    contract that exposes a slot for it. (Codex P2 #6 on PR #164.)
+    """
+
+    registry = {
+        "discovery": _producer(
+            ArtifactSpec(type=HOST, key="targets"),
+        ),
+        # Producer-only module: contract has produces but empty
+        # consumes (mirrors ``resource_development`` /
+        # ``reconnaissance`` shape).
+        "resource_development": _producer(
+            ArtifactSpec(type="c2_endpoint", key="target"),
+        ),
+    }
+    graph = build_scenario_graph(
+        [
+            _step("disc", "discovery"),
+            _step(
+                "stage",
+                "resource_development",
+                {"target_from_step": "disc"},
+            ),
+        ],
+        registry=registry,
+    )
+    edges_to_stage = [e for e in graph.edges if e.target_step_id == "stage"]
+    assert edges_to_stage == [], (
+        f"producer-only consumer synthesised an edge: {edges_to_stage}"
+    )
+    # No false ``missing_required`` warnings about the synthesised
+    # propagation. The producer-only module's own emission can still
+    # surface as a dangling-emission warning (that's the correct
+    # ``high_value_unused`` signal for a c2_endpoint with no
+    # consumer); only the synthesised-edge warning is the regression.
+    missing_required_for_stage = [
+        w
+        for w in graph.warnings
+        if w.step_id == "stage" and w.severity == "missing_required"
+    ]
+    assert missing_required_for_stage == []
+
+
+def test_explicit_from_step_value_is_trimmed_before_lookup() -> None:
+    """Runtime resolves ``step_param_key`` via
+    ``str(... or "").strip()`` so a whitespace-padded reference
+    still locates the upstream step. The static graph must mirror
+    that — otherwise a YAML quirk like ``target_from_step: " disc "``
+    would emit a false ``missing_required`` warning even though the
+    runtime would resolve the upstream cleanly.
+
+    A blank / whitespace-only reference (``"   "``) resolves to no
+    propagation at all (same as missing the key entirely), so no
+    edge AND no warning land. (Codex P2 #5 on PR #164.)
+    """
+
+    registry = {
+        "discovery": _producer(
+            ArtifactSpec(type=HOST, key="targets"),
+        ),
+        "credential_access": _consumer(
+            ArtifactSpec(type=HOST, key="target"),
+        ),
+    }
+    # Whitespace-padded value resolves to the canonical step id.
+    graph_padded = build_scenario_graph(
+        [
+            _step("disc", "discovery"),
+            _step(
+                "creds",
+                "credential_access",
+                {"target_from_step": "  disc  "},
+            ),
+        ],
+        registry=registry,
+    )
+    explicit = [
+        e
+        for e in graph_padded.edges
+        if e.explicit and e.target_step_id == "creds"
+    ]
+    assert len(explicit) == 1
+    assert explicit[0].source_step_id == "disc"
+    # No false missing_required warning landed.
+    missing = [
+        w
+        for w in graph_padded.warnings
+        if w.severity == "missing_required" and w.step_id == "creds"
+    ]
+    assert missing == []
+
+    # Whitespace-only value resolves to "no propagation".
+    graph_blank = build_scenario_graph(
+        [
+            _step("disc", "discovery"),
+            _step(
+                "creds",
+                "credential_access",
+                {"target_from_step": "   "},
+            ),
+        ],
+        registry=registry,
+    )
+    explicit_blank = [
+        e for e in graph_blank.edges if e.explicit and e.target_step_id == "creds"
+    ]
+    assert explicit_blank == []
+    # The implicit pass still fires from upstream discovery, so an
+    # implicit edge IS expected (host slot satisfied via implicit).
+    implicit = [
+        e for e in graph_blank.edges if not e.explicit and e.target_step_id == "creds"
+    ]
+    assert len(implicit) == 1
+
+
+def test_unknown_module_with_from_step_reference_is_still_neutral() -> None:
+    """An unknown module that carries an explicit ``*_from_step``
+    reference must NOT synthesise a chain edge against axis defaults.
+
+    Without this gate, a step like
+    ``module: no_such_module`` + ``target_from_step: source-step``
+    would produce a phantom host edge using fallback axis defaults,
+    misleading defenders into thinking the chain propagated. The
+    chain-neutral-pass-through behaviour extends to the explicit-
+    axis pass too. (Codex P2 on PR #164.)
+    """
+
+    registry = {
+        "discovery": _producer(
+            ArtifactSpec(type=HOST, key="targets"),
+        ),
+    }
+    graph = build_scenario_graph(
+        [
+            _step("disc", "discovery"),
+            _step(
+                "unknown",
+                "no_such_module",
+                {"target_from_step": "disc"},
+            ),
+        ],
+        registry=registry,
+    )
+    edges_to_unknown = [e for e in graph.edges if e.target_step_id == "unknown"]
+    assert edges_to_unknown == []
+    warnings_for_unknown = [w for w in graph.warnings if w.step_id == "unknown"]
+    assert warnings_for_unknown == []
+
+
+def test_inline_slot_check_aligns_with_runtime_truthiness_rules() -> None:
+    """Runtime resolution uses ``str(params.get(key) or "").strip()``
+    so falsy values (``False`` / ``0`` / empty list) fall through to
+    the upstream propagation. The static graph must mirror that —
+    treating ``target: false`` as inline-set would suppress the
+    edge AND the warning even though runtime would propagate.
+    (Codex P2 on PR #164.)
+    """
+
+    registry = {
+        "discovery": _producer(
+            ArtifactSpec(type=HOST, key="targets"),
+        ),
+        "credential_access": _consumer(
+            ArtifactSpec(type=HOST, key="target"),
+        ),
+    }
+    # Falsy-but-not-None values should NOT count as inline-set.
+    for falsy_value in (False, 0, [], {}):
+        graph = build_scenario_graph(
+            [
+                _step("disc", "discovery"),
+                _step(
+                    "creds",
+                    "credential_access",
+                    {
+                        "target": falsy_value,
+                        "target_from_step": "disc",
+                    },
+                ),
+            ],
+            registry=registry,
+        )
+        edges_to_creds = [e for e in graph.edges if e.target_step_id == "creds"]
+        assert any(
+            e.explicit and e.source_step_id == "disc" for e in edges_to_creds
+        ), (
+            f"target={falsy_value!r} suppressed the explicit edge — "
+            f"should fall through to upstream propagation per runtime rules"
+        )
+
+    # Truthy values continue to suppress propagation.
+    graph_truthy = build_scenario_graph(
+        [
+            _step("disc", "discovery"),
+            _step(
+                "creds",
+                "credential_access",
+                {
+                    "target": "lab-host",
+                    "target_from_step": "disc",
+                },
+            ),
+        ],
+        registry=registry,
+    )
+    edges_to_creds = [e for e in graph_truthy.edges if e.target_step_id == "creds"]
+    assert edges_to_creds == []
+
+
 # ---------------------------------------------------------------------------
 # Node shape
 # ---------------------------------------------------------------------------

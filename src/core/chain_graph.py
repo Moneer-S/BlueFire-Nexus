@@ -315,8 +315,36 @@ def build_scenario_graph(
         contract = contracts[index]
 
         # 2a. Explicit ``*_from_step`` references in the scenario YAML.
-        for param_key, axis_slot_hint, default_type, inline_param_keys in _FROM_STEP_AXES:
-            raw_source = params.get(param_key)
+        # Gate the explicit-axis pass on the consumer having a
+        # meaningful IO contract WITH at least one consumed slot.
+        # Without the gate, an unknown module's ``*_from_step``
+        # reference would synthesise a chain edge against axis
+        # defaults — misleading for the operator, who can't verify
+        # the module actually accepts that propagation. Producer-only
+        # modules (``resource_development``, ``reconnaissance`` —
+        # contract has ``produces`` but empty ``consumes``) also
+        # cannot meaningfully receive an explicit propagation, so
+        # they're gated out too. (Codex P2 #6 on PR #164.) The
+        # implicit pass (2b) and the produced-tracking pass (2c) are
+        # gated independently below so a producer-only module still
+        # indexes its emissions for downstream consumers.
+        consumer_contract_present = (
+            contract is not None
+            and is_meaningful_contract(contract)
+            and bool(contract.consumes)
+        )
+        for param_key, axis_slot_hint, default_type, inline_param_keys in (
+            _FROM_STEP_AXES if consumer_contract_present else ()
+        ):
+            # Mirror the runtime: ``str(... or "").strip()`` is how
+            # ``resolve_target_from_step`` reads ``step_param_key``.
+            # A whitespace-padded reference (``" step-1 "``) trims to
+            # ``step-1`` at runtime; the static graph must too,
+            # otherwise the source lookup misses and emits a false
+            # ``missing_required`` warning. A blank / whitespace-only
+            # reference resolves to "no propagation" — same as
+            # missing the key entirely. (Codex P2 #5 on PR #164.)
+            raw_source = str(params.get(param_key) or "").strip()
             if not raw_source:
                 continue
             # Inline param wins at runtime: when the consumer's
@@ -331,7 +359,7 @@ def build_scenario_graph(
                 _slot_set_inline(params, key) for key in inline_param_keys
             ):
                 continue
-            source_step_id = str(raw_source)
+            source_step_id = raw_source
             source_index = step_index_by_id.get(source_step_id)
             if source_index is None or source_index >= index:
                 # Forward reference (impossible at runtime) or unknown
@@ -360,6 +388,43 @@ def build_scenario_graph(
             slot_key, slot_type, slot_required = _consumer_slot_for_axis(
                 contract, axis_slot_hint, default_type
             )
+            # Validate the source step actually has a producer contract
+            # the runtime ``resolve_target_from_step`` could pull from.
+            # When the source module is unknown OR has a meaningful
+            # contract that does not produce ANY artifact spec at all,
+            # the runtime resolver would fall back rather than
+            # propagate -- the static graph mirrors that by emitting a
+            # ``missing_required`` warning rather than a phantom edge
+            # claiming connectivity. (Codex P2 on PR #164.) Producer
+            # specs may carry a different artifact type than the
+            # consumer slot (the runtime resolver is type-agnostic at
+            # the artifacts dict level), so the validation only
+            # rejects wholly-empty / unknown sources, not type
+            # mismatches.
+            source_contract = contracts[source_index]
+            source_can_provide = (
+                source_contract is not None
+                and is_meaningful_contract(source_contract)
+                and bool(source_contract.produces)
+            )
+            if not source_can_provide:
+                source_module = (
+                    nodes[source_index].module if source_index < len(nodes) else "?"
+                )
+                warnings.append(
+                    ChainGraphWarning(
+                        severity="missing_required",
+                        step_id=step_id,
+                        artifact_type=slot_type,
+                        message=(
+                            f"{module}: explicit {param_key}={source_step_id!r} "
+                            f"points at {source_module!r} which has no producer "
+                            f"contract -- runtime would fall back rather than "
+                            f"propagate"
+                        ),
+                    )
+                )
+                continue
             source_key = _producer_source_key(contracts[source_index], slot_type)
             edges.append(
                 ChainGraphEdge(
@@ -602,12 +667,25 @@ def _slot_set_inline(params: Mapping[str, Any], slot_key: str) -> bool:
     An empty key (the consumer's spec carries no ``key``) cannot be
     set inline by name, so falls through to the upstream producer
     pathway.
+
+    Coercion mirrors the runtime helper
+    :func:`resolve_target_from_step` which uses
+    ``str(params.get(param_key) or "").strip()`` to test for an inline
+    value. That short-circuits ``False`` / ``0`` / empty list / empty
+    dict / ``None`` to "no inline value" — at runtime a step with
+    ``target: false`` (or ``0``) STILL falls through to the
+    ``*_from_step`` propagation. Without this alignment the static
+    graph would suppress the explicit edge AND the
+    ``missing_required`` warning for malformed-but-runtime-accepted
+    YAML, creating planner/runtime divergence. (Codex P2 on PR #164.)
     """
 
     if not slot_key:
         return False
     value = params.get(slot_key)
-    return value not in (None, "", [], {})
+    if value is None:
+        return False
+    return bool(str(value or "").strip())
 
 
 # Inline-param names that win at runtime for a given consumed artifact
