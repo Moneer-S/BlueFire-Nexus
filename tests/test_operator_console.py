@@ -1317,13 +1317,19 @@ def test_console_mode_card_live_lab_renders_subnets_flag(
     apply_section = section[apply_start:]
     assert "--i-understand-this-is-a-lab" in apply_section
     assert "--allowed-subnets" in apply_section
-    # The placeholder must look obviously placeholder-shaped so the
-    # operator knows to substitute their own lab CIDR. The literal
-    # ``<...>`` form is HTML-escaped by the renderer (so it surfaces
-    # as ``&lt;lab-cidr-1&gt;`` in the rendered HTML, not as a real
-    # tag); the escaped form is what the operator copy-pasting the
-    # rendered text would see.
-    assert "&lt;lab-cidr" in apply_section
+    # The CIDR placeholders MUST be shell-safe -- unquoted ``<...>``
+    # is Bash input redirection and a copy-paste would produce a
+    # shell parse error rather than running the command. Pin that
+    # the rendered subnets are concrete RFC 1918 sample CIDRs the
+    # operator substitutes for their own lab network. (Codex P1 on
+    # the original PR.)
+    assert "10.10.0.0/24" in apply_section
+    assert "192.168.50.0/24" in apply_section
+    # And: the angle-bracket placeholder form MUST NOT surface
+    # anywhere in the apply block, so a future regression that
+    # re-introduces shell-unsafe templating fails here.
+    assert "&lt;lab-cidr" not in apply_section
+    assert "<lab-cidr" not in apply_section
 
 
 def test_console_mode_card_apply_hint_is_preview_first(

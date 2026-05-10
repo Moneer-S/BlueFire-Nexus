@@ -1455,10 +1455,17 @@ def _render_apply_command_block(mode_name: str) -> str:
             "    --i-understand-this-is-a-lab"
         )
     elif mode_name == "live-lab":
+        # Sample CIDRs (NOT placeholders in ``<...>`` form). Bash
+        # parses unquoted ``<lab-cidr-1>`` as input redirection,
+        # so a copy-paste of an angle-bracketed placeholder would
+        # produce a shell parse error instead of running the
+        # command. Concrete RFC 1918 CIDRs render as a runnable
+        # template the operator substitutes for their own lab
+        # network. (Codex P1 on PR #182.)
         command = (
             f"{base} live-lab --write \\\n"
             "    --i-understand-this-is-a-lab \\\n"
-            "    --allowed-subnets <lab-cidr-1>,<lab-cidr-2>"
+            "    --allowed-subnets 10.10.0.0/24,192.168.50.0/24"
         )
     else:
         # Defensive: a future mode addition that forgets to update
