@@ -110,16 +110,25 @@ class ChainExplanation:
 
 @dataclass(frozen=True, slots=True)
 class ChainState:
-    """Shape the planner walks: the set of types produced so far +
-    optional warnings list.
+    """Shape the planner walks: the set of types produced so far,
+    optional warnings list, and the set of modules already used in
+    the chain.
 
     Built from a :class:`ChainContext` snapshot via :func:`from_snapshot`,
     or constructed directly by callers that already track typed state
-    elsewhere.
+    elsewhere. ``modules_used`` is derived from the snapshot's
+    ``artifacts_by_step`` entries -- each artifact carries a
+    ``module`` field, so the snapshot indirectly records every
+    module that has run. The planner uses ``modules_used`` to apply a
+    small re-use penalty in :func:`_rate_module` so a chain with one
+    discovery step is gently pushed to extend with a credential_access
+    or lateral_movement step instead of recommending another
+    discovery step.
     """
 
     produced_types: frozenset
     warnings: Tuple[Dict[str, str], ...] = ()
+    modules_used: frozenset = frozenset()
 
 
 def from_snapshot(snapshot: Mapping[str, Any]) -> ChainState:
@@ -129,17 +138,53 @@ def from_snapshot(snapshot: Mapping[str, Any]) -> ChainState:
     ``context["chain"]`` — see :class:`src.core.modules.ChainContext`.
     Tolerant of partial / empty snapshots so the planner can answer
     "what should I run first?" against an empty chain.
+
+    ``modules_used`` is derived by walking ``artifacts_by_step`` and
+    collecting the ``module`` field from each artifact row. Snapshots
+    that omit the field (legacy / partial) result in an empty
+    ``modules_used`` set so the planner falls back to the legacy
+    "no diversity bonus" behaviour.
     """
 
     by_type = (snapshot.get("artifacts_by_type") if snapshot else None) or {}
+    by_step = (snapshot.get("artifacts_by_step") if snapshot else None) or {}
+    steps_recorded = (
+        (snapshot.get("steps_recorded") if snapshot else None) or []
+    )
     warnings_raw = (snapshot.get("warnings") if snapshot else None) or []
     warnings: List[Dict[str, str]] = []
     for warning in warnings_raw:
         if isinstance(warning, Mapping):
             warnings.append({str(k): str(v) for k, v in warning.items()})
+    modules_seen: set = set()
+    # Prefer the explicit ``steps_recorded`` field -- it tracks every
+    # step that ran, regardless of whether the step emitted typed
+    # artifacts. Empty-emission steps would otherwise be missed by
+    # the artifacts-by-step walk below. (Codex P2 on PR #198.)
+    if isinstance(steps_recorded, list):
+        for entry in steps_recorded:
+            if not isinstance(entry, Mapping):
+                continue
+            module_name = str(entry.get("module") or "").strip()
+            if module_name:
+                modules_seen.add(module_name)
+    # Legacy fallback: snapshots that pre-date ``steps_recorded`` only
+    # carry ``artifacts_by_step``. Walk it so the planner still gets
+    # module-reuse signal from older snapshot shapes.
+    if isinstance(by_step, Mapping):
+        for rows in by_step.values():
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    continue
+                module_name = str(row.get("module") or "").strip()
+                if module_name:
+                    modules_seen.add(module_name)
     return ChainState(
         produced_types=frozenset(t for t in by_type.keys() if t in ARTIFACT_TYPES),
         warnings=tuple(warnings),
+        modules_used=frozenset(modules_seen),
     )
 
 
@@ -252,6 +297,18 @@ def _rate_module(
     score += 0.5 * len(required_satisfied)
     score += 0.25 * len(optional_satisfied)
     score -= 0.5 * len(required_missing)
+    # Module-reuse penalty: a small score reduction when the candidate
+    # module is already in the chain. Pushes the planner toward chain
+    # extension over re-emission of the same module without removing
+    # the candidate entirely (a defender re-running the same module
+    # for a different technique IS sometimes the right call -- e.g.
+    # discovery host_discovery followed by discovery user_info gives
+    # a different artifact type). The penalty is small enough that
+    # required-input matches still dominate; without
+    # ``state.modules_used`` populated (snapshot omits the field),
+    # the penalty silently falls through to zero.
+    if name in state.modules_used:
+        score -= 0.1
 
     rationale = _rationale_for(
         name,

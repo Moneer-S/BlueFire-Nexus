@@ -75,6 +75,17 @@ class ChainContext:
     by_type: Dict[str, List[ChainArtifact]] = field(default_factory=dict)
     by_step: Dict[str, List[ChainArtifact]] = field(default_factory=dict)
     warnings: List[Dict[str, Any]] = field(default_factory=list)
+    # Records every step the chain has seen via :meth:`record_step`,
+    # regardless of whether the step emitted any typed artifacts. The
+    # ``by_step`` index above is keyed by step_id but only populated
+    # when a step's contract produced rows; a step that ran but
+    # emitted nothing has no entry in ``by_step``. Downstream
+    # consumers (planner module-reuse penalty, dashboards) need to
+    # know "which modules ran" independent of artifact emission, so
+    # this field tracks the (step_id, module) tuples explicitly.
+    # Insertion-ordered so a consumer can walk the chain in original
+    # step order. (Codex P2 on PR #198.)
+    steps_recorded: List[Dict[str, str]] = field(default_factory=list)
 
     # ----------------------------------------------------------------
     # Public lookup surface
@@ -177,6 +188,14 @@ class ChainContext:
         without a discriminator stay always-applicable for their key.
         """
 
+        # Always record the step's existence, regardless of whether
+        # the contract has produced specs or whether those specs
+        # actually fire. ``steps_recorded`` is the canonical
+        # "modules-ever-run" view for downstream consumers
+        # (planner module-reuse penalty, dashboards). Keep this BEFORE
+        # the contract / produces walk so even an empty-emission step
+        # gets recorded.
+        self.steps_recorded.append({"step_id": step_id, "module": module})
         if contract is None or not contract.produces:
             return
         for spec in contract.produces:
@@ -252,6 +271,7 @@ class ChainContext:
                 for step_id, rows in self.by_step.items()
             },
             "warnings": [dict(warning) for warning in self.warnings],
+            "steps_recorded": [dict(entry) for entry in self.steps_recorded],
         }
 
 

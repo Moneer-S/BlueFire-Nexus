@@ -540,3 +540,147 @@ def test_planner_consumes_chaincontext_snapshot_directly() -> None:
     assert suggestions
     explanation = explain_chain(snapshot, registry=registry)
     assert "host" in explanation.produced_types
+
+
+# ---------------------------------------------------------------------------
+# Module-reuse penalty (diversity bonus)
+# ---------------------------------------------------------------------------
+
+
+def test_from_snapshot_collects_modules_used_from_artifact_rows() -> None:
+    """``modules_used`` is derived by walking ``artifacts_by_step``
+    and collecting each artifact row's ``module`` field. Pin the
+    derivation so a future change to the snapshot shape doesn't
+    silently empty the set."""
+
+    registry = build_runtime_modules()
+    chain = ChainContext()
+    chain.record_step(
+        step_id="disc-1",
+        module="discovery",
+        contract=registry["discovery"].io_contract,
+        artifacts={
+            "discovery_type": "host_discovery",
+            "targets": ["10.0.0.5"],
+            "discovered": [],
+        },
+    )
+    state = from_snapshot(chain.snapshot())
+    assert "discovery" in state.modules_used
+
+
+def test_from_snapshot_modules_used_empty_for_legacy_snapshot() -> None:
+    """A snapshot that omits ``artifacts_by_step`` entirely (or has
+    rows without a ``module`` field) yields an empty ``modules_used``
+    set. The planner then falls back to the legacy "no diversity
+    bonus" behaviour."""
+
+    state = from_snapshot({"artifacts_by_type": {"host": []}})
+    assert state.modules_used == frozenset()
+
+
+def test_offer_next_steps_applies_reuse_penalty_to_modules_in_chain() -> None:
+    """A candidate module that already appears in the chain receives
+    a small score reduction. Two modules with otherwise-identical
+    chain-fit should sort with the not-yet-used module first.
+
+    Concrete scenario: a chain that has run discovery + recorded
+    only host artifacts. Both ``discovery`` (already in chain) and
+    ``credential_access`` (not in chain) are candidates that
+    consume / interact with the produced ``host`` type. The penalty
+    pushes ``credential_access`` ahead of ``discovery`` where the
+    score difference was previously a tie."""
+
+    registry = build_runtime_modules()
+    chain = ChainContext()
+    chain.record_step(
+        step_id="disc-1",
+        module="discovery",
+        contract=registry["discovery"].io_contract,
+        artifacts={
+            "discovery_type": "host_discovery",
+            "targets": ["10.0.0.5"],
+            "discovered": [],
+        },
+    )
+    state = from_snapshot(chain.snapshot())
+    suggestions = offer_next_steps(state, registry=registry, limit=20)
+    by_module = {s.module: s for s in suggestions}
+    assert "discovery" in by_module
+    assert "credential_access" in by_module
+    cred_idx = next(
+        i for i, s in enumerate(suggestions) if s.module == "credential_access"
+    )
+    disc_idx = next(
+        i for i, s in enumerate(suggestions) if s.module == "discovery"
+    )
+    assert cred_idx < disc_idx, (
+        "credential_access should outrank discovery -- the re-use "
+        f"penalty pushes already-used modules down the list. Got: "
+        f"{[(s.module, s.score) for s in suggestions[:5]]}"
+    )
+
+
+def test_offer_next_steps_reuse_penalty_does_not_remove_candidates() -> None:
+    """The re-use penalty is a small score reduction, not a hard
+    filter. A module already in the chain still appears in the
+    recommendations -- the operator may legitimately re-run it with
+    a different technique (e.g. discovery host_discovery then
+    discovery user_info)."""
+
+    registry = build_runtime_modules()
+    chain = ChainContext()
+    chain.record_step(
+        step_id="disc-1",
+        module="discovery",
+        contract=registry["discovery"].io_contract,
+        artifacts={
+            "discovery_type": "host_discovery",
+            "targets": ["10.0.0.5"],
+            "discovered": [],
+        },
+    )
+    state = from_snapshot(chain.snapshot())
+    suggestions = offer_next_steps(state, registry=registry, limit=30)
+    modules = {s.module for s in suggestions}
+    assert "discovery" in modules
+
+
+def test_from_snapshot_collects_modules_used_for_empty_emission_step() -> None:
+    """Codex P2 on PR #198: a step that runs but emits NO typed
+    artifacts must still register in ``modules_used`` so the
+    re-use penalty fires. The chain context tracks every
+    ``record_step`` call in a separate ``steps_recorded`` list, not
+    just rows in ``artifacts_by_step``."""
+
+    registry = build_runtime_modules()
+    chain = ChainContext()
+    chain.record_step(
+        step_id="empty-disc",
+        module="discovery",
+        contract=registry["discovery"].io_contract,
+        artifacts={"discovery_type": "host_discovery"},
+    )
+    snapshot = chain.snapshot()
+    assert snapshot.get("artifacts_by_step", {}) == {}
+    assert {"step_id": "empty-disc", "module": "discovery"} in snapshot["steps_recorded"]
+    state = from_snapshot(snapshot)
+    assert "discovery" in state.modules_used
+
+
+def test_from_snapshot_falls_back_to_artifacts_by_step_for_legacy_snapshot() -> None:
+    """A legacy snapshot (pre-``steps_recorded``) only carries
+    ``artifacts_by_step``. The planner walks that as a fallback so
+    older snapshots still register module-reuse signal."""
+
+    legacy_snapshot = {
+        "artifacts_by_type": {"host": [{"value": "10.0.0.1"}]},
+        "artifacts_by_step": {
+            "step-1": [
+                {"type": "host", "value": "10.0.0.1", "module": "discovery"}
+            ],
+        },
+        "warnings": [],
+    }
+    state = from_snapshot(legacy_snapshot)
+    assert "discovery" in state.modules_used
