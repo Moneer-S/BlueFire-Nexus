@@ -134,9 +134,16 @@ def test_pass_the_ticket_pins_kerberos_replay_tooling_marker(
     """Pass-the-Ticket (T1550.003) reuses captured Kerberos tickets
     instead of NTLM hashes. Distinct from pass_the_hash by MITRE id,
     by the credential material reused (Kerberos ticket vs NTLM hash),
-    and by the tooling-marker substring (``rubeus ptt`` vs
-    ``sekurlsa::pth``). The catalog must pin a Windows
-    process_creation logsource and the ``ptt`` substring.
+    and by the tooling-marker substring. The catalog must pin a
+    Windows process_creation logsource and a selector that catches
+    BOTH families: Rubeus's ``ptt`` subcommand AND mimikatz's
+    ``kerberos::ptt`` module string.
+
+    Pins the EXACT runtime selector (``ptt``) so a regression that
+    narrows the substring back to a single tool family (``rubeus
+    ptt`` was Codex P2 on PR #175 -- only matched Rubeus, silently
+    missed every mimikatz invocation despite the comment claiming
+    both) surfaces immediately.
     """
 
     mod = LateralMovementModule()
@@ -156,11 +163,48 @@ def test_pass_the_ticket_pins_kerberos_replay_tooling_marker(
     assert logsource["category"] == "process_creation"
     detection = result.detection_hints["detection"]
     selection_value = next(iter(detection["selection"].values()))
-    assert "ptt" in selection_value.lower()
+    # The selector must remain the bare ``ptt`` substring so it
+    # matches BOTH ``Rubeus.exe ptt`` AND ``mimikatz "kerberos::ptt
+    # ..."``. A regression that narrows the substring to a tool-
+    # specific marker (e.g. ``rubeus ptt`` -- Codex P2 on PR #175)
+    # silently misses one of the two tool families.
+    assert selection_value == "ptt", (
+        f"selector value must remain ``ptt`` to cover both Rubeus and "
+        f"mimikatz invocations; got {selection_value!r}"
+    )
     # Distinct from pass_the_hash's selector (no ``pth`` substring).
     assert "pth" not in selection_value.lower()
     event = result.telemetry[0]
     assert event.event_type == "lateral_movement_pass_the_ticket"
+
+
+def test_pass_the_ticket_selector_matches_both_rubeus_and_mimikatz(
+    tmp_path: Path,
+) -> None:
+    """Sanity check that the chosen ``ptt`` selector substring
+    actually matches the canonical command lines for the two PtT
+    tooling families. Pins the regression Codex P2 on PR #175
+    surfaced (the prior ``rubeus ptt`` selector failed this check
+    on the mimikatz invocation)."""
+
+    mod = LateralMovementModule()
+    result = mod.execute(
+        {"technique": "pass_the_ticket"}, _ctx(tmp_path)
+    )
+    detection = result.detection_hints["detection"]
+    selection_value = next(iter(detection["selection"].values()))
+    rubeus_cmdline = (
+        "C:\\Tools\\Rubeus.exe ptt /ticket:doIFTjCCBUqgAwIBBaED..."
+    )
+    mimikatz_cmdline = (
+        'mimikatz.exe "kerberos::ptt admin.ccache" exit'
+    )
+    assert selection_value in rubeus_cmdline.lower(), (
+        "selector must match Rubeus PtT command lines"
+    )
+    assert selection_value in mimikatz_cmdline.lower(), (
+        "selector must match mimikatz PtT command lines"
+    )
 
 
 def test_unknown_technique_falls_back_with_marker(tmp_path: Path) -> None:
