@@ -5,9 +5,8 @@ All notable changes to BlueFire-Nexus are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-The detailed merged-PR history lives in
-[`docs/reports/next_roadmap.md`](docs/reports/next_roadmap.md).
-This file summarises the deltas at the version-tag granularity.
+This file summarises the deltas at the version-tag granularity. See
+the git history for the per-commit detail.
 
 ## [Unreleased]
 
@@ -175,8 +174,7 @@ This is a **release candidate**: the maintainer may publish
 `-rc2`, `-rc3`, etc. in response to operator feedback before
 cutting the bare `v3.0.0` tag.
 
-Headline story (full per-PR history lives in
-[`docs/reports/next_roadmap.md`](docs/reports/next_roadmap.md)):
+Headline story (full per-PR history lives in the git log):
 
 ### Added
 
