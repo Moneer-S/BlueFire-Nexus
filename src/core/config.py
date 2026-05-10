@@ -3,7 +3,7 @@ import os
 import re
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -307,6 +307,62 @@ class ConfigManager:
         """Persist configuration to disk."""
         with self.config_path.open("w", encoding="utf-8") as handle:
             yaml.safe_dump(self.config, handle, sort_keys=False)
+
+    # -- read-only helpers ---------------------------------------------
+
+    @classmethod
+    def load_readonly(
+        cls, config_path: str = "config.yaml"
+    ) -> Optional[Dict[str, Any]]:
+        """Return the merged config dict from disk WITHOUT side effects.
+
+        Mirrors the merge / normalisation pipeline in
+        :meth:`_load_config` but skips :meth:`_create_default_config`
+        when the file is missing -- so a read-only previewer (the
+        operator console, the ``apply-mode-profile`` preview path)
+        never creates a default ``config.yaml`` just by previewing the
+        page.
+
+        Returns ``None`` when the file is missing or unreadable so the
+        caller can fall back to the static / target-only render.
+        Returns the merged dict otherwise: defaults from
+        :meth:`_default_config` deep-merged with the on-disk YAML, with
+        legacy aliases normalised and ``{{ env VAR }}`` templates
+        resolved -- the same shape :meth:`to_dict` produces, so a
+        consumer can swap between this helper and
+        :func:`ConfigManager().to_dict()` without changing behaviour.
+
+        Codex P2 on PR #183: the original operator-console preview
+        used a raw ``yaml.safe_load`` against ``config.yaml``, which
+        skipped the default-merge. With a partial config (e.g. a file
+        containing only ``general.dry_run``), the preview marked
+        several mode keys as ``(write)`` even though the actual
+        ``apply-mode-profile`` path treated them as no-ops because
+        ``ConfigManager.to_dict()`` had merged the defaults in.
+        """
+
+        path = Path(config_path)
+        if not path.is_file():
+            return None
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                loaded = yaml.safe_load(handle)
+        except (OSError, yaml.YAMLError):
+            return None
+        if loaded is None:
+            loaded = {}
+        if not isinstance(loaded, dict):
+            return None
+
+        # Build via __new__ so we skip __init__'s _load_env / _load_config
+        # side effects. The four helper methods we call only depend on
+        # their arguments -- they don't read self.config_path or
+        # self.config.
+        instance = cls.__new__(cls)
+        merged = instance._default_config()
+        instance._deep_merge(merged, loaded)
+        instance._normalize_legacy_config_aliases(merged)
+        return instance._resolve_env_templates(merged)
 
 
 config = ConfigManager()

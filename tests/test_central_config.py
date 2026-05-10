@@ -628,3 +628,117 @@ def test_default_configmanager_keeps_safety_baseline(tmp_path) -> None:
     safety = get_safety_config(config)
     assert safety["dry_run"] is True
     assert safety["max_runtime"] == 3600
+
+
+# ---------------------------------------------------------------------------
+# ConfigManager.load_readonly -- side-effect-free disk loader for read-only
+# previewers (operator console, future scenario validators).
+# ---------------------------------------------------------------------------
+
+
+def test_load_readonly_returns_none_when_file_missing(tmp_path) -> None:
+    """Headline contract: ``load_readonly`` MUST NOT create a default
+    ``config.yaml`` when the file is missing. Returns ``None`` so
+    callers can fall back to a static / target-only render."""
+
+    from src.core.config import ConfigManager
+
+    cfg_path = tmp_path / "config.yaml"
+    assert not cfg_path.exists()
+    result = ConfigManager.load_readonly(str(cfg_path))
+    assert result is None
+    # Codex P1 invariant: the path was NOT created.
+    assert not cfg_path.exists()
+
+
+def test_load_readonly_returns_default_merged_dict_for_partial_config(
+    tmp_path,
+) -> None:
+    """Codex P2 contract: a partial ``config.yaml`` (e.g. only
+    ``general.dry_run``) MUST come back with the runtime defaults
+    merged in, so a downstream consumer (the operator-console diff)
+    sees the same shape ``ConfigManager().to_dict()`` produces.
+
+    Pin: ``modules.legacy.global_mode`` (a default key not set in the
+    partial config) is present after ``load_readonly`` returns."""
+
+    from src.core.config import ConfigManager
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text("general:\n  dry_run: true\n", encoding="utf-8")
+
+    merged = ConfigManager.load_readonly(str(cfg_path))
+    assert isinstance(merged, dict)
+    # The user-supplied value is preserved.
+    assert merged["general"]["dry_run"] is True
+    # The default-merge pulled in the legacy default.
+    assert (
+        merged["modules"]["legacy"]["global_mode"]
+        == "simulate"
+    )
+    # Codex P1 invariant: the YAML file was not modified by the load.
+    assert (
+        cfg_path.read_text(encoding="utf-8")
+        == "general:\n  dry_run: true\n"
+    )
+
+
+def test_load_readonly_agrees_with_to_dict_for_partial_config(tmp_path) -> None:
+    """Stronger Codex P2 contract: ``load_readonly`` and
+    ``ConfigManager(...).to_dict()`` must produce equal dicts for
+    every config the runtime can load. Without this the operator-
+    console diff and the ``apply-mode-profile`` plan computed by the
+    runtime can disagree on partial configs.
+
+    Builds a config with the partial-config shape Codex flagged, then
+    pins equality."""
+
+    from src.core.config import ConfigManager
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "general:\n  dry_run: true\nmodules:\n  legacy:\n    "
+        "global_mode: simulate\n",
+        encoding="utf-8",
+    )
+
+    via_load_readonly = ConfigManager.load_readonly(str(cfg_path))
+
+    # Use a different cfg_path for the ConfigManager() instance so the
+    # _create_default_config side effect doesn't mutate our test
+    # fixture file. Then point a fresh load at the original tmp file.
+    side_effect_path = tmp_path / "side_effect.yaml"
+    cm = ConfigManager(str(side_effect_path))
+    cm.config_path = cfg_path
+    cm._load_config()
+    via_to_dict = cm.to_dict()
+
+    assert via_load_readonly == via_to_dict
+
+
+def test_load_readonly_returns_none_for_non_mapping_yaml(tmp_path) -> None:
+    """Malformed YAML (top-level non-mapping) returns ``None`` rather
+    than raising. The callers (operator console, validators) treat
+    None as "unloadable" and fall back to the static render with a
+    warning."""
+
+    from src.core.config import ConfigManager
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text("just a string\n", encoding="utf-8")
+    assert ConfigManager.load_readonly(str(cfg_path)) is None
+
+
+def test_load_readonly_returns_none_for_unparseable_yaml(tmp_path) -> None:
+    """YAML that doesn't parse at all (genuine syntax error) also
+    returns None. ``load_readonly`` swallows the parse error so the
+    caller can render a single warning rather than catching the
+    library-specific exception themselves."""
+
+    from src.core.config import ConfigManager
+
+    cfg_path = tmp_path / "config.yaml"
+    # Tab character at the start of a child line is a real YAML parse
+    # error in PyYAML.
+    cfg_path.write_text("foo:\n\tbar: 1\n", encoding="utf-8")
+    assert ConfigManager.load_readonly(str(cfg_path)) is None

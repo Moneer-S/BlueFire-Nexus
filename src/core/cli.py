@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import typer
 from rich.console import Console
@@ -780,6 +780,57 @@ def _file_uri(path: Path) -> str:
     return path.resolve().as_uri()
 
 
+def _load_config_for_console_preview() -> Optional[Dict[str, Any]]:
+    """Read ``config.yaml`` for the operator-console mode-diff render.
+
+    The ``operator-console`` CLI is documented as a read-only
+    generator and must not mutate on-disk state. ``ConfigManager()``
+    cannot be used here because its ``_load_config`` writes the
+    default ``config.yaml`` when the file is missing (Codex P1 on
+    PR #183) -- a stray ``operator-console`` invocation in a clean
+    directory would silently create a config file just by previewing
+    the page.
+
+    This helper delegates to :meth:`ConfigManager.load_readonly`,
+    which mirrors the load + default-merge + alias-normalisation +
+    env-template-resolution pipeline that the runtime
+    ``apply-mode-profile`` path uses (via ``ConfigManager().to_dict()``)
+    but skips the default-file-creation side effect when the file is
+    missing. The console diff is therefore computed against the same
+    merged shape that ``apply-mode-profile`` would actually compare
+    against -- a partial config (e.g. only ``general.dry_run`` set)
+    no longer over-reports ``(write)`` rows that would in fact be
+    no-ops on disk (Codex P2 on PR #183).
+
+    When the file is missing, unreadable, or doesn't parse to a
+    mapping, the helper returns ``None`` so the console falls back to
+    the static-only render path. No file is ever created or modified.
+    """
+
+    from .config import ConfigManager
+
+    config_path = Path("config.yaml")
+    if not config_path.is_file():
+        console.print(
+            "[dim]config.yaml not found; rendering mode cards with "
+            "static target overrides only.[/]"
+        )
+        return None
+    merged = ConfigManager.load_readonly(str(config_path))
+    if merged is None:
+        # Either malformed YAML or a non-mapping top-level value.
+        # ``load_readonly`` already swallowed the parse error; here we
+        # just surface a single warning to the operator and fall back
+        # to the static render.
+        console.print(
+            "[yellow]Warning: could not load config.yaml for mode "
+            "diff (malformed YAML or non-mapping value); rendering "
+            "static target overrides only.[/]"
+        )
+        return None
+    return merged
+
+
 def _print_next_steps_hint(run: dict) -> None:
     """Print next-step hints to stdout, file:// URI on its own line.
 
@@ -1118,7 +1169,24 @@ def operator_console_cmd(
     from .operator_console import build_operator_console
 
     root = output_root if output_root else resolve_output_root()
-    target = build_operator_console(Path(root), scenarios_dir=scenarios)
+    # Load the current config so each mode card renders a real
+    # ``current -> target`` diff against what's on disk, not just the
+    # static target overrides. The console is documented as a
+    # read-only generator -- "never writes anywhere outside
+    # ``output_root/operator-console/``" -- so the load path MUST NOT
+    # mutate on-disk state. ``ConfigManager()`` constructs the default
+    # ``config.yaml`` when the file is missing (Codex P1 on PR #183),
+    # so we cannot use ConfigManager here. Read ``config.yaml``
+    # directly via ``yaml.safe_load`` only when the file already
+    # exists; if it is missing or unreadable the console falls back to
+    # the static-only render and the operator gets a
+    # current-config-not-loaded notice. Either way no file is created.
+    current_config: Optional[Dict[str, Any]] = _load_config_for_console_preview()
+    target = build_operator_console(
+        Path(root),
+        scenarios_dir=scenarios,
+        current_config=current_config,
+    )
     console.print(f"[green]Wrote operator console:[/] {target}")
     console.print("[cyan]Open in browser (copy or click below):[/]")
     console.print(_file_uri(target), no_wrap=True, overflow="ignore")
