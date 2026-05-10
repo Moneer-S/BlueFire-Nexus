@@ -47,6 +47,9 @@ def _ctx(tmp_path: Path) -> Dict[str, Any]:
         ("debugger_evasion", "T1622"),
         ("encrypted_encoded_file", "T1027.013"),
         ("environmental_keying", "T1480.001"),
+        ("software_packing", "T1027.002"),
+        ("html_smuggling", "T1027.006"),
+        ("fileless_storage_registry", "T1027.011"),
     ],
 )
 def test_technique_fans_out_to_correct_mitre(
@@ -132,6 +135,101 @@ def test_environmental_keying_pins_t1480_001_with_machineguid_selector(
     selector_value = next(iter(selection.values()))
     assert "MachineGuid" in selector_value
     assert "Cryptography" in selector_value
+
+
+def test_software_packing_pins_t1027_002_with_upx_marker(tmp_path: Path) -> None:
+    """Software Packing (T1027.002) pins the canonical UPX magic
+    ``UPX!`` -- the open-source packer used by both legitimate
+    software and a wide range of malware families. Pin the MITRE id,
+    file_event/windows logsource, and the substring marker so the
+    rendered detection draft fires on UPX-packed PE artefacts."""
+
+    mod = DefenseEvasionModule()
+    result = mod.execute(
+        {"technique": "software_packing", "target": "lab-host"},
+        _ctx(tmp_path),
+    )
+    assert result.techniques == ["T1027.002"]
+    assert result.detection_hints["logsource"] == {
+        "category": "file_event",
+        "product": "windows",
+    }
+    selection = result.detection_hints["detection"]["selection"]
+    selector_value = next(iter(selection.values()))
+    assert selector_value == "UPX!"
+
+
+def test_html_smuggling_pins_t1027_006_with_octet_stream_marker(
+    tmp_path: Path,
+) -> None:
+    """HTML Smuggling (T1027.006) delivers a base64-encoded payload
+    inside an HTML file; client-side JS reassembles via ``Blob`` +
+    ``createObjectURL``. The canonical defender signal is
+    ``application/octet-stream`` in the file content. Pin the MITRE
+    id, file_event/host logsource, and the substring."""
+
+    mod = DefenseEvasionModule()
+    result = mod.execute(
+        {"technique": "html_smuggling", "target": "lab-host"},
+        _ctx(tmp_path),
+    )
+    assert result.techniques == ["T1027.006"]
+    assert result.detection_hints["logsource"] == {
+        "category": "file_event",
+        "product": "host",
+    }
+    selection = result.detection_hints["detection"]["selection"]
+    selector_value = next(iter(selection.values()))
+    assert "application/octet-stream" in selector_value
+
+
+def test_fileless_storage_registry_pins_t1027_011_with_regsetvalueex_marker(
+    tmp_path: Path,
+) -> None:
+    """Fileless Storage (T1027.011) drops payload-component data into
+    a non-filesystem medium -- canonically registry values storing
+    base64-encoded chunks. The catalog selector pins the
+    ``RegSetValueEx`` Win32 API substring that surfaces in
+    process_creation events for tools writing fileless registry
+    payloads. Distinct from the persistence ``registry_run_key``
+    profile (T1547.001) which targets the autostart Run key tree."""
+
+    mod = DefenseEvasionModule()
+    result = mod.execute(
+        {"technique": "fileless_storage_registry", "target": "lab-host"},
+        _ctx(tmp_path),
+    )
+    assert result.techniques == ["T1027.011"]
+    assert result.detection_hints["logsource"] == {
+        "category": "process_creation",
+        "product": "windows",
+    }
+    selection = result.detection_hints["detection"]["selection"]
+    selector_value = next(iter(selection.values()))
+    assert "RegSetValueEx" in selector_value
+
+
+def test_t1027_subtechnique_family_partial_coverage(tmp_path: Path) -> None:
+    """The T1027 family (Obfuscated Files or Information) now spans
+    the parent ``T1027`` (powershell_obfuscation) plus four sub-
+    techniques: ``T1027.002`` (Software Packing),
+    ``T1027.006`` (HTML Smuggling), ``T1027.011`` (Fileless Storage),
+    and ``T1027.013`` (Encrypted/Encoded File). Pin presence so a
+    future drop fails here."""
+
+    mod = DefenseEvasionModule()
+    expected = {
+        "T1027",
+        "T1027.002",
+        "T1027.006",
+        "T1027.011",
+        "T1027.013",
+    }
+    seen: set[str] = set()
+    for technique in _DEFENSE_EVASION_PROFILES:
+        result = mod.execute({"technique": technique}, _ctx(tmp_path))
+        seen.update(result.techniques)
+    assert expected <= seen, f"missing T1027 sub-techniques: {expected - seen}"
 
 
 def test_each_profile_emits_a_distinct_event_type(tmp_path: Path) -> None:

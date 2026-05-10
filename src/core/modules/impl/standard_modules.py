@@ -1353,6 +1353,67 @@ _DEFENSE_EVASION_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "defense_evasion_environmental_keying",
         "title_prefix": "Environmental-keying machine fingerprint read on",
     },
+    # Software Packing (T1027.002): a packer wraps an executable in a
+    # compressed/encrypted shell that unpacks at runtime. UPX is the
+    # canonical open-source packer (used by both legitimate software
+    # and a wide range of malware families); custom packers also
+    # exist. The defender signal is the literal ``UPX!`` magic at
+    # offset 0xF0 in the PE file (or the same magic in the section
+    # header table for variant packers), surfaced via file_event
+    # writes whose content header carries the marker. Anchor on the
+    # ``UPX!`` substring -- a defender wanting broader entropy-based
+    # packing detection should add a parallel rule.
+    "software_packing": {
+        "mitre": "T1027.002",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "file.content_header|contains",
+        "selection_value": "UPX!",
+        "event_type": "defense_evasion_software_packing",
+        "title_prefix": "UPX-packed executable artefact on",
+    },
+    # HTML Smuggling (T1027.006): the adversary delivers a payload as
+    # a base64-encoded blob INSIDE an HTML file; client-side
+    # JavaScript reassembles and decodes the blob in the browser,
+    # which writes the decoded executable to disk via a
+    # ``Blob`` object + ``createObjectURL`` + an ``<a download>``
+    # click. Defender signal: file_event writes for ``.html`` files
+    # whose content carries a ``Blob([...]{type:application/octet-stream})``
+    # construct. Anchor on the ``application/octet-stream`` substring
+    # paired with file_event/file.path|endswith=.html -- the catalog
+    # uses the broader content selector since the
+    # ``Blob`` + ``application/octet-stream`` pattern is the
+    # canonical HTML-smuggling marker (used by Storm-0978 / Lazarus /
+    # NOBELIUM campaigns).
+    "html_smuggling": {
+        "mitre": "T1027.006",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.content|contains",
+        "selection_value": "application/octet-stream",
+        "event_type": "defense_evasion_html_smuggling",
+        "title_prefix": "HTML smuggling payload artefact on",
+    },
+    # Fileless Storage (T1027.011): adversary stores payload-component
+    # data in a non-filesystem medium so a defender's file-based
+    # scanners miss the artefact. Canonical media: registry values
+    # under ``HKCU\Software`` or ``HKLM\Software`` storing base64-
+    # encoded payload chunks; WMI ``__EventConsumer`` /
+    # ``__EventFilter`` instances carrying a CommandLineEventConsumer
+    # body that is itself the payload. Anchor on the registry-event
+    # path: registry writes to a ``Software\<random-guid-or-name>``
+    # value with high-entropy content are the canonical signal. The
+    # catalog uses the ``RegSetValueEx`` Win32 API substring, which
+    # appears in process_creation events for tools that drop fileless
+    # registry payloads. Distinct from ``persistence_registry_run_key``
+    # (T1547.001, which targets the Run key tree for autostart) -- this
+    # is about non-execution data storage in the registry hives.
+    "fileless_storage_registry": {
+        "mitre": "T1027.011",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "RegSetValueEx",
+        "event_type": "defense_evasion_fileless_storage_registry",
+        "title_prefix": "Fileless registry payload storage on",
+    },
 }
 
 
