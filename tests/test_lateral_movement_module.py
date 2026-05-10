@@ -46,6 +46,7 @@ def test_default_technique_is_psexec(tmp_path: Path) -> None:
         ("ftp_transfer", "T1570"),
         ("scp_transfer", "T1570"),
         ("service_create", "T1543.003"),
+        ("rdp", "T1021.001"),
     ],
 )
 def test_technique_fans_out_to_correct_mitre(
@@ -59,6 +60,36 @@ def test_technique_fans_out_to_correct_mitre(
     assert result.techniques == [expected_mitre]
     assert result.detection_hints["mitre_technique"] == expected_mitre
     assert result.detection_hints["lateral_technique"] == technique
+
+
+def test_rdp_pins_port_3389_and_windows_logsource(tmp_path: Path) -> None:
+    """RDP lateral movement (T1021.001) is the canonical Windows GUI-
+    session pivot. Defenders alert on TCP connections to port 3389
+    plus EventID 4624 logon-type 10. The catalog must pin port 3389
+    and the windows logsource so the detection draft fires.
+
+    Distinct from psexec/wmi/winrm: RDP delivers a full interactive
+    session rather than a remote command runner, so the defender
+    narrative differs.
+    """
+
+    mod = LateralMovementModule()
+    result = mod.execute(
+        {"technique": "rdp", "source": "jumpbox-01", "target": "victim-01"},
+        _ctx(tmp_path),
+    )
+    assert result.status == "success"
+    assert result.techniques == ["T1021.001"]
+    assert result.artifacts["technique"] == "rdp"
+    # Detection hint pins port 3389 + windows logsource.
+    detection = result.detection_hints["detection"]
+    assert detection["selection"]["network.dst_port"] == 3389
+    logsource = result.detection_hints["logsource"]
+    assert logsource["product"] == "windows"
+    assert logsource["category"] == "network_connection"
+    # Telemetry event type carries the technique-specific marker.
+    event = result.telemetry[0]
+    assert event.event_type == "lateral_movement_rdp"
 
 
 def test_unknown_technique_falls_back_with_marker(tmp_path: Path) -> None:

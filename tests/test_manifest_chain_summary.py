@@ -270,3 +270,245 @@ def test_manifest_chain_field_default_shape_when_no_chain_passed(
         "warnings": [],
         "warning_count": 0,
     }
+
+
+# ---------------------------------------------------------------------------
+# manifest.chain.graph (static chain graph from scenario YAML)
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_chain_graph_omitted_when_no_scenario_steps(
+    tmp_path: Path,
+) -> None:
+    """The ``chain.graph`` block is the static analyser's view of the
+    scenario YAML; runs without a scenario (``execute_operation``
+    single-module flow) must NOT carry it.
+
+    Otherwise the graph block would be an empty
+    ``{nodes: [], edges: [], warnings: []}`` for every single-module
+    invocation, bloating the manifest.
+    """
+
+    manifest = build_manifest(run_id="rid-no-scenario", run_dir=tmp_path)
+    chain = manifest["chain"]
+    assert "graph" not in chain
+
+
+def test_manifest_chain_graph_omitted_when_scenario_steps_is_empty_list(
+    tmp_path: Path,
+) -> None:
+    """Empty list passes through as no-graph too."""
+
+    manifest = build_manifest(
+        run_id="rid-empty",
+        run_dir=tmp_path,
+        scenario_steps=[],
+    )
+    assert "graph" not in manifest["chain"]
+
+
+def test_manifest_chain_graph_embeds_nodes_edges_warnings(tmp_path: Path) -> None:
+    """A scenario with two steps + an explicit ``target_from_step`` must
+    surface a ``chain.graph`` block with the corresponding node count,
+    one explicit edge, and a JSON-serialisable shape."""
+
+    from src.core.scenario import ScenarioStep
+
+    steps = [
+        ScenarioStep(
+            step_id="disc-1",
+            name="Discover hosts",
+            module="discovery",
+            params={
+                "discovery_type": "host_discovery",
+                "targets": ["10.0.0.5"],
+                "network_touch": False,
+            },
+        ),
+        ScenarioStep(
+            step_id="cred-1",
+            name="Credential access",
+            module="credential_access",
+            params={
+                "technique": "lsass_dump",
+                "target_from_step": "disc-1",
+            },
+        ),
+    ]
+    manifest = build_manifest(
+        run_id="rid-graph",
+        run_dir=tmp_path,
+        scenario_steps=steps,
+    )
+    graph = manifest["chain"].get("graph")
+    assert isinstance(graph, dict), f"chain.graph missing: {manifest['chain']}"
+    assert len(graph["nodes"]) == 2
+    assert graph["nodes"][0]["step_id"] == "disc-1"
+    assert graph["nodes"][1]["step_id"] == "cred-1"
+    # One explicit edge: disc-1 → cred-1 via host (target_from_step).
+    explicit_edges = [e for e in graph["edges"] if e["explicit"]]
+    assert len(explicit_edges) == 1
+    edge = explicit_edges[0]
+    assert edge["source_step_id"] == "disc-1"
+    assert edge["target_step_id"] == "cred-1"
+    assert edge["artifact_type"] == "host"
+    assert edge["target_key"] == "target"
+
+
+def test_manifest_chain_graph_payload_is_json_serialisable(tmp_path: Path) -> None:
+    """The chain.graph block must be a plain dict / list shape so the
+    manifest's ``json.dumps`` doesn't choke on a leftover dataclass."""
+
+    from src.core.scenario import ScenarioStep
+
+    steps = [
+        ScenarioStep(
+            step_id="stage-1",
+            name="Stage domain",
+            module="resource_development",
+            params={"resource_type": "domain", "target": "stage.example.invalid"},
+        ),
+        ScenarioStep(
+            step_id="c2-1",
+            name="HTTPS C2",
+            module="command_control",
+            params={"channel": "https", "c2_endpoint_from_step": "stage-1"},
+        ),
+    ]
+    manifest = build_manifest(
+        run_id="rid-json",
+        run_dir=tmp_path,
+        scenario_steps=steps,
+    )
+    rendered = json.dumps(manifest, default=str)
+    parsed = json.loads(rendered)
+    assert "graph" in parsed["chain"]
+    assert isinstance(parsed["chain"]["graph"]["nodes"], list)
+
+
+def test_run_scenario_file_writes_chain_graph_to_manifest(tmp_path: Path) -> None:
+    """End-to-end: a scenario run persists ``manifest.chain.graph``
+    with the static analyser's predicted nodes / edges / warnings so
+    the bundle ships predicted-vs-actual side by side."""
+
+    nexus = _make_isolated_nexus(tmp_path)
+    scenario = tmp_path / "graph.yaml"
+    scenario.write_text(
+        "\n".join(
+            [
+                "id: chain-graph-test",
+                "name: Chain graph scenario",
+                "objective: validate chain graph in manifest",
+                "attack_coverage: ['T1018', 'T1003.001', 'T1071.001']",
+                "fail_fast: false",
+                "steps:",
+                "  - id: stage-1",
+                "    name: Stage adversary domain",
+                "    module: resource_development",
+                "    params:",
+                "      resource_type: domain",
+                "      target: stage.example.invalid",
+                "      network_touch: false",
+                "  - id: c2-1",
+                "    name: HTTPS C2 to staged domain",
+                "    module: command_control",
+                "    params:",
+                "      channel: https",
+                "      c2_endpoint_from_step: stage-1",
+                "      network_touch: false",
+                "  - id: disc-1",
+                "    name: Discover hosts",
+                "    module: discovery",
+                "    params:",
+                "      discovery_type: host_discovery",
+                "      targets: ['10.0.0.5']",
+                "      network_touch: false",
+                "  - id: exfil-1",
+                "    name: Exfil over C2",
+                "    module: exfiltration",
+                "    params:",
+                "      method: via_c2",
+                "      target_from_step: disc-1",
+                "      network_touch: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = nexus.run_scenario_file(str(scenario))
+    run_id = result["run_id"]
+    manifest = json.loads(
+        (tmp_path / "output" / run_id / "manifest.json").read_text(encoding="utf-8")
+    )
+    graph = manifest["chain"].get("graph")
+    assert isinstance(graph, dict), (
+        f"manifest.chain.graph missing on a scenario run: {manifest['chain']}"
+    )
+    assert len(graph["nodes"]) == 4
+    # Two explicit edges: c2_endpoint_from_step (stage-1 → c2-1) and
+    # target_from_step (disc-1 → exfil-1).
+    explicit_edges = [e for e in graph["edges"] if e["explicit"]]
+    assert len(explicit_edges) == 2
+    sources = {(e["source_step_id"], e["target_step_id"]) for e in explicit_edges}
+    assert ("stage-1", "c2-1") in sources
+    assert ("disc-1", "exfil-1") in sources
+
+
+def test_manifest_chain_graph_is_deterministic(tmp_path: Path) -> None:
+    """Same scenario_steps → same chain.graph payload, byte for byte."""
+
+    from src.core.scenario import ScenarioStep
+
+    steps = [
+        ScenarioStep(
+            step_id="disc-1",
+            name="Discover",
+            module="discovery",
+            params={"discovery_type": "host_discovery"},
+        ),
+        ScenarioStep(
+            step_id="cred-1",
+            name="Creds",
+            module="credential_access",
+            params={"target_from_step": "disc-1"},
+        ),
+    ]
+    a = build_manifest(run_id="r1", run_dir=tmp_path, scenario_steps=steps)
+    b = build_manifest(run_id="r1", run_dir=tmp_path, scenario_steps=steps)
+    assert a["chain"]["graph"] == b["chain"]["graph"]
+
+
+def test_manifest_chain_block_keeps_runtime_summary_when_graph_added(
+    tmp_path: Path,
+) -> None:
+    """Adding ``chain.graph`` must NOT drop the runtime summary keys
+    (``produced_types`` / ``type_counts`` / ``step_counts`` /
+    ``warnings`` / ``warning_count``). The two are complementary and
+    consumers may pivot on either."""
+
+    from src.core.scenario import ScenarioStep
+
+    steps = [
+        ScenarioStep(
+            step_id="disc-1",
+            name="Discover",
+            module="discovery",
+            params={"discovery_type": "host_discovery"},
+        ),
+    ]
+    snapshot = {
+        "artifacts_by_type": {"host": [{"value": "10.0.0.5"}]},
+        "artifacts_by_step": {"disc-1": [{"type": "host"}]},
+        "warnings": [],
+    }
+    manifest = build_manifest(
+        run_id="r1",
+        run_dir=tmp_path,
+        scenario_steps=steps,
+        chain=snapshot,
+    )
+    chain = manifest["chain"]
+    assert chain["produced_types"] == ["host"]
+    assert chain["type_counts"] == {"host": 1}
+    assert chain["warning_count"] == 0
+    assert "graph" in chain
+    assert isinstance(chain["graph"]["nodes"], list)
