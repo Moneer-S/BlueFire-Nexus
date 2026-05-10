@@ -1120,6 +1120,250 @@ def operator_console_cmd(
     )
 
 
+# ---------------------------------------------------------------------------
+# Scenario-planner CLI surfaces (PR5 in the chain-graph loop)
+#
+# Wraps :mod:`src.core.scenario_planner` so an operator can interrogate
+# the planner from the terminal without writing Python. Each command
+# loads a scenario YAML, computes the static chain state from it via
+# :func:`src.core.chain_graph.build_scenario_graph`, then calls into
+# the planner. Outputs are pure-Python rich tables / panels -- no
+# remote calls, no LLM.
+
+
+def _chain_state_from_scenario(scenario_path: Path):
+    """Load a scenario YAML and return a :class:`ChainState` for it.
+
+    The state's produced-types frozenset is the union of every step's
+    ``produces`` declaration -- the planner uses it to rank what could
+    plausibly run AFTER this scenario completes (i.e. "given this is
+    the chain so far, what's the natural extension?").
+
+    Warnings come from the static :class:`ChainGraph` so the planner
+    sees the same coverage gaps the manifest / operator console
+    surface (``missing_required`` warnings the static analyser
+    flagged).
+    """
+
+    from .chain_graph import build_scenario_graph
+    from .scenario import load_scenario
+    from .scenario_planner import ChainState
+
+    scenario = load_scenario(scenario_path)
+    graph = build_scenario_graph(scenario.steps)
+    produced_types: set[str] = set()
+    for node in graph.nodes:
+        for produced_type in node.produces:
+            produced_types.add(produced_type)
+    warnings = tuple(
+        {
+            "step_id": w.step_id,
+            "module": (
+                next(
+                    (n.module for n in graph.nodes if n.step_id == w.step_id),
+                    "",
+                )
+            ),
+            "missing_type": w.artifact_type,
+            "severity": w.severity,
+        }
+        for w in graph.warnings
+    )
+    return scenario, ChainState(
+        produced_types=frozenset(produced_types), warnings=warnings
+    )
+
+
+@app.command("planner-suggest")
+def planner_suggest_cmd(
+    scenario: Path = SCENARIO_ARG,
+    limit: int = typer.Option(  # noqa: B008
+        10, "--limit", min=1, max=50, help="Max suggestions to render."
+    ),
+    json_output: bool = typer.Option(  # noqa: B008
+        False, "--json", help="Print the suggestions as JSON instead of a table."
+    ),
+) -> None:
+    """Rank next-step suggestions for a scenario's chain state.
+
+    Loads the scenario, computes the union of typed artifacts every
+    step would produce, and asks the planner what could run NEXT
+    given that chain state. Useful for deciding how to extend an
+    existing scenario without grepping for compatible modules.
+
+    Examples:
+
+        python -m src.core.cli planner-suggest scenarios/fin7_initial_access_to_c2.yaml
+        python -m src.core.cli planner-suggest scenarios/apt29_credential_access.yaml --limit 5
+        python -m src.core.cli planner-suggest scenarios/insider_exfil_dns.yaml --json
+    """
+
+    from .scenario_planner import offer_next_steps
+
+    scenario_obj, state = _chain_state_from_scenario(scenario)
+    suggestions = offer_next_steps(state, limit=limit)
+    if json_output:
+        payload = [
+            {
+                "module": s.module,
+                "rank": s.rank,
+                "score": s.score,
+                "required_satisfied": list(s.required_satisfied),
+                "optional_satisfied": list(s.optional_satisfied),
+                "required_missing": list(s.required_missing),
+                "produces": list(s.produces),
+                "rationale": s.rationale,
+            }
+            for s in suggestions
+        ]
+        # Bypass rich's wrap/highlight to keep the JSON byte-stable so
+        # automation can pipe stdout straight into ``json.loads``.
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    table = Table(title=f"Next-step suggestions for {scenario_obj.name}")
+    table.add_column("Rank tier")
+    table.add_column("Module")
+    table.add_column("Score", justify="right")
+    table.add_column("Required satisfied")
+    table.add_column("Required missing")
+    table.add_column("Produces")
+    for suggestion in suggestions:
+        table.add_row(
+            suggestion.rank,
+            suggestion.module,
+            f"{suggestion.score:.2f}",
+            ", ".join(suggestion.required_satisfied) or "-",
+            ", ".join(suggestion.required_missing) or "-",
+            ", ".join(suggestion.produces) or "-",
+        )
+    console.print(table)
+
+
+@app.command("planner-explain")
+def planner_explain_cmd(
+    scenario: Path = SCENARIO_ARG,
+    json_output: bool = typer.Option(  # noqa: B008
+        False, "--json", help="Print the explanation as JSON instead of a panel."
+    ),
+) -> None:
+    """Summarise a scenario's chain coherence in plain text.
+
+    Surfaces produced types, dangling producer types (emitted but no
+    registered consumer would pick them up), and unsatisfied
+    consumer warnings. Reads from the static chain graph so the
+    explanation is available before any execution.
+
+    Examples:
+
+        python -m src.core.cli planner-explain scenarios/healthcare_ransomware.yaml
+        python -m src.core.cli planner-explain scenarios/insider_exfil_dns.yaml --json
+    """
+
+    from .scenario_planner import explain_chain
+
+    scenario_obj, state = _chain_state_from_scenario(scenario)
+    explanation = explain_chain(state)
+    if json_output:
+        payload = {
+            "produced_types": list(explanation.produced_types),
+            "unused_emissions": list(explanation.unused_emissions),
+            "unsatisfied_warnings": [dict(w) for w in explanation.unsatisfied_warnings],
+            "narrative": explanation.narrative,
+        }
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    lines = [explanation.narrative]
+    if explanation.produced_types:
+        lines.append("")
+        lines.append(f"Produced types: {', '.join(explanation.produced_types)}")
+    if explanation.unused_emissions:
+        lines.append("")
+        lines.append(
+            f"Dangling producer types: {', '.join(explanation.unused_emissions)}"
+        )
+    if explanation.unsatisfied_warnings:
+        lines.append("")
+        lines.append("Unsatisfied warnings:")
+        for warning in explanation.unsatisfied_warnings:
+            lines.append(
+                f"  - {warning.get('step_id', '?')} ({warning.get('module', '?')}): "
+                f"{warning.get('missing_type', '?')}"
+            )
+    console.print(
+        Panel.fit("\n".join(lines), title=f"Chain explanation: {scenario_obj.name}")
+    )
+
+
+@app.command("planner-variants")
+def planner_variants_cmd(
+    scenario: Path = SCENARIO_ARG,
+    count: int = typer.Option(  # noqa: B008
+        3, "--count", min=1, max=20, help="How many mutated variants to generate."
+    ),
+    seed: int = typer.Option(  # noqa: B008
+        None, "--seed", help="Optional RNG seed for reproducible variant generation."
+    ),
+    json_output: bool = typer.Option(  # noqa: B008
+        False, "--json", help="Print the variants as JSON instead of a per-variant tree."
+    ),
+) -> None:
+    """Generate mutated variants of a scenario via the capability mutation catalog.
+
+    Each variant is a fresh list of step dicts with one or more steps
+    swapped via the catalog (technique / channel / method / vector
+    etc.). The planner never writes the variants to disk and never
+    triggers execution -- the operator copies the variant they want
+    into a new scenario YAML and runs it via ``run-scenario``.
+
+    Examples:
+
+        python -m src.core.cli planner-variants scenarios/fin7_initial_access_to_c2.yaml
+        python -m src.core.cli planner-variants scenarios/apt29_credential_access.yaml --count 5 --seed 42
+        python -m src.core.cli planner-variants scenarios/healthcare_ransomware.yaml --json
+    """
+
+    from .scenario import load_scenario
+    from .scenario_planner import suggest_scenario_variants
+
+    scenario_obj = load_scenario(scenario)
+    step_dicts = [
+        {
+            "step_id": step.step_id,
+            "name": step.name,
+            "module": step.module,
+            "params": dict(step.params),
+            "objective": step.objective,
+        }
+        for step in scenario_obj.steps
+    ]
+    variants = suggest_scenario_variants(step_dicts, count=count, seed=seed)
+    if json_output:
+        typer.echo(json.dumps(variants, indent=2, default=str))
+        return
+
+    if not variants:
+        console.print(
+            "[yellow]No variants generated[/]: scenario has no steps that "
+            "match a mutation catalog slot."
+        )
+        return
+
+    for index, variant in enumerate(variants, start=1):
+        tree = Tree(f"[bold cyan]Variant {index}[/] (of {scenario_obj.name})")
+        for step_idx, step in enumerate(variant, start=1):
+            step_node = tree.add(
+                f"[magenta]{step.get('step_id', '?')}[/] "
+                f"{step.get('module', '?')}"
+            )
+            params = step.get("params") or {}
+            if params:
+                for key, value in sorted(params.items()):
+                    step_node.add(f"{key}: {value}")
+        console.print(tree)
+
+
 @app.command("build-output-index")
 def build_output_index_cmd(
     output_root: Path = typer.Option(  # noqa: B008
