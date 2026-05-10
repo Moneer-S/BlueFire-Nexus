@@ -55,6 +55,7 @@ def test_default_technique_is_lsass_dump(tmp_path: Path) -> None:
         ("keylogging", "T1056.001"),
         ("clipboard", "T1115"),
         ("screen_capture", "T1113"),
+        ("dpapi_master_key", "T1555.004"),
     ],
 )
 def test_technique_fans_out_to_correct_mitre(
@@ -71,6 +72,44 @@ def test_technique_fans_out_to_correct_mitre(
     assert result.detection_hints["mitre_technique"] == expected_mitre
     assert result.detection_hints["credential_technique"] == technique
     assert result.artifacts["mitre_technique"] == expected_mitre
+
+
+def test_dpapi_master_key_pins_protect_directory_file_event(
+    tmp_path: Path,
+) -> None:
+    """DPAPI master-key extraction (T1555.004) is the canonical
+    Windows credential-store unwrap path. Defenders alert on file
+    reads of ``%APPDATA%\\Microsoft\\Protect\\<SID>\\``; the catalog
+    must pin that path fragment so the detection draft fires.
+
+    Distinct from ``lsass_dump`` (in-memory MasterKeys via LSASS) -
+    the file-based path persists across reboots and surfaces in
+    file_event telemetry rather than process_access.
+    """
+
+    mod = CredentialAccessModule()
+    result = mod.execute(
+        {"technique": "dpapi_master_key", "target": "lab-host"}, _ctx(tmp_path)
+    )
+    assert result.status == "success"
+    assert result.techniques == ["T1555.004"]
+    assert result.artifacts["technique"] == "dpapi_master_key"
+    # Detection hint targets file_event of the Protect directory.
+    detection = result.detection_hints["detection"]
+    assert "file_event" in str(result.detection_hints["logsource"]).lower() or (
+        "file" in str(result.detection_hints["logsource"]).lower()
+    )
+    selection_value = next(iter(detection["selection"].values()))
+    # Pin the EXACT runtime selector value so a regression that
+    # over- or under-escapes the separator surfaces immediately.
+    # Real Windows file_event telemetry shows
+    # ``%APPDATA%\Microsoft\Protect\...`` with a SINGLE backslash
+    # separator; selectors with two backslashes (``Microsoft\\Protect``)
+    # would never match real logs (Codex P1 on PR #170).
+    assert selection_value == "Microsoft\\Protect"
+    # Telemetry event type carries the technique-specific marker.
+    event = result.telemetry[0]
+    assert event.event_type == "credential_access_dpapi_master_key"
 
 
 def test_unknown_technique_falls_back_with_marker(tmp_path: Path) -> None:
