@@ -13,15 +13,15 @@ unchanged; this package is a planning surface for an eventual lab-runner
 deployment, not a runner that takes over the existing
 ``BlueFireNexus.execute_operation`` path.
 
-What this package will NOT do:
+Out-of-scope for this package:
 
-- accept arbitrary command / script / shellcode strings
-- spawn subprocesses
-- open network sockets
-- maintain background state across tasks
-- act as a C2 listener / reverse-callback / beacon receiver
-- implement a Rust agent (deferred per maintainer direction)
-- implement a remote agent / hosted GUI (deferred)
+- accepting arbitrary command / script / shellcode strings
+- spawning subprocesses
+- opening network sockets
+- maintaining background state across tasks
+- acting as a listener / receiver for external check-ins
+- a Rust runner (deferred)
+- a remote runner / hosted GUI (deferred)
 
 The intent is that a future Nexus operator-console can advertise "runner
 backend: local" today; when the eventual authorized lab runner ships, the
