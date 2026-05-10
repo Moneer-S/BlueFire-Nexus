@@ -3074,6 +3074,63 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "credential_access_as_rep_roasting",
         "title_prefix": "AS-REP roasting pre-auth ticket extraction",
     },
+    # Golden Ticket (T1558.001) is THE post-exploitation goldmine for
+    # Active Directory adversaries. Once the attacker has the krbtgt
+    # account's NTLM hash (typically via DCSync / NTDS.dit extraction),
+    # they can forge Kerberos TGTs for any user in the domain, with
+    # arbitrary group membership and effectively unlimited lifetime.
+    # The forged TGT is indistinguishable from a real TGT to most
+    # downstream services; rotation of the krbtgt password is the
+    # only durable mitigation, and even then must be done twice (the
+    # password history retains the previous hash for 24 hours).
+    #
+    # Defender narrative: EventID 4769 Kerberos service ticket
+    # request with anomalous account-membership chains (a forged
+    # TGT often carries unusual group memberships the real account
+    # never had) AND/OR EventID 4624 logon events that lack a
+    # corresponding 4768 (TGT request) on the DC. Tooling markers
+    # ``mimikatz kerberos::golden`` / ``Rubeus.exe golden`` /
+    # ``Invoke-Mimikatz "kerberos::golden"`` surface in
+    # process_creation telemetry; the ``kerberos::golden`` substring
+    # picks both mimikatz and Invoke-Mimikatz wrappers. Distinct
+    # from the other T1558.* sub-techniques (Kerberoasting /
+    # AS-REP roasting) by both the credential material extracted
+    # (a forged TGT, not a crackable hash) and by the persistence
+    # implication (golden tickets persist across password rotations
+    # of the targeted user).
+    "golden_ticket": {
+        "mitre": "T1558.001",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "kerberos::golden",
+        "event_type": "credential_access_golden_ticket",
+        "title_prefix": "Golden Ticket TGT forgery against",
+    },
+    # Silver Ticket (T1558.002) is the per-service variant of the
+    # Golden Ticket forgery: rather than the krbtgt hash, the attacker
+    # uses a service account's NTLM hash to forge a service ticket
+    # (TGS-REP) for that specific service. The forged TGS bypasses
+    # the KDC entirely, so EventID 4769 NEVER fires on the DC --
+    # detection has to live on the target service host (the service
+    # sees a Kerberos PAC it can't validate against the KDC).
+    #
+    # Defender narrative: target-service authentication that does
+    # not have a corresponding KDC-side 4769; PAC validation
+    # failures on the service host. Tooling markers
+    # ``mimikatz kerberos::silver`` and Rubeus's silver subcommand
+    # surface in process_creation telemetry on the attacker host.
+    # Distinct from Golden Ticket (T1558.001) by which hash drives
+    # the forgery (service hash vs krbtgt hash) and by which Event
+    # IDs the defender needs to correlate -- Silver tickets are
+    # noisier on the target service but invisible to the DC.
+    "silver_ticket": {
+        "mitre": "T1558.002",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "kerberos::silver",
+        "event_type": "credential_access_silver_ticket",
+        "title_prefix": "Silver Ticket service-ticket forgery against",
+    },
 }
 
 
