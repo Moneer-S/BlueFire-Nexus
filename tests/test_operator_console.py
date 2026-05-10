@@ -1253,3 +1253,97 @@ def test_console_mode_panel_emits_no_external_assets(tmp_path: Path) -> None:
     assert "<link" not in mode_section
     assert "http://" not in mode_section
     assert "https://" not in mode_section
+
+
+# ---------------------------------------------------------------------------
+# Mode card "Apply this mode" hint
+# ---------------------------------------------------------------------------
+
+
+def test_console_mode_card_simulate_renders_apply_hint(
+    tmp_path: Path,
+) -> None:
+    """Each mode card carries a copy-pasteable ``apply-mode-profile``
+    command line. simulate has no extra gates, so the hint shows the
+    bare ``--write`` form. The hint is purely informational -- the
+    console never invokes the CLI itself."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    section = _slice_mode_card(body, "simulate")
+    assert "Apply this mode" in section
+    assert "apply-mode-profile simulate --write" in section
+    # simulate must NOT advertise the lab confirmation flag in its
+    # apply-block (that flag is only meaningful for emulate / live-lab).
+    apply_start = section.find("Apply this mode")
+    apply_section = section[apply_start:]
+    assert "--i-understand-this-is-a-lab" not in apply_section
+
+
+def test_console_mode_card_emulate_renders_lab_confirmation_flag(
+    tmp_path: Path,
+) -> None:
+    """The emulate card's apply hint includes
+    ``--i-understand-this-is-a-lab`` so an operator copy-pasting the
+    block lands a complete invocation that the CLI's ``check_apply_gates``
+    will accept."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    section = _slice_mode_card(body, "emulate")
+    assert "apply-mode-profile emulate --write" in section
+    apply_start = section.find("Apply this mode")
+    apply_section = section[apply_start:]
+    assert "--i-understand-this-is-a-lab" in apply_section
+    # Emulate has no allowed_subnets gate -- the apply block must
+    # NOT carry a subnets flag (which would mislead the operator
+    # into supplying a live-lab-only argument on emulate).
+    assert "--allowed-subnets" not in apply_section
+
+
+def test_console_mode_card_live_lab_renders_subnets_flag(
+    tmp_path: Path,
+) -> None:
+    """The live-lab card's apply hint must include BOTH
+    ``--i-understand-this-is-a-lab`` AND ``--allowed-subnets`` --
+    those two flags are the blast-radius gates that
+    ``check_apply_gates`` requires for live-lab. A copy-paste of
+    just the emulate-shaped command would be refused by the CLI;
+    pinning the subnets flag here keeps the console hint and the
+    CLI gate logic in lockstep."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    section = _slice_mode_card(body, "live-lab")
+    assert "apply-mode-profile live-lab --write" in section
+    apply_start = section.find("Apply this mode")
+    apply_section = section[apply_start:]
+    assert "--i-understand-this-is-a-lab" in apply_section
+    assert "--allowed-subnets" in apply_section
+    # The placeholder must look obviously placeholder-shaped so the
+    # operator knows to substitute their own lab CIDR. The literal
+    # ``<...>`` form is HTML-escaped by the renderer (so it surfaces
+    # as ``&lt;lab-cidr-1&gt;`` in the rendered HTML, not as a real
+    # tag); the escaped form is what the operator copy-pasting the
+    # rendered text would see.
+    assert "&lt;lab-cidr" in apply_section
+
+
+def test_console_mode_card_apply_hint_is_preview_first(
+    tmp_path: Path,
+) -> None:
+    """The apply-block prose must surface the preview-by-default
+    contract so an operator who just opened the page understands
+    that the displayed command requires explicit ``--write`` to
+    persist anything. Without that disclosure the operator might
+    paste the command and be surprised it didn't take effect (it
+    DID take effect because we render the ``--write`` form, but
+    the preview-first framing is the headline contract)."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    section = _slice_mode_card(body, "simulate")
+    apply_start = section.find("Apply this mode")
+    apply_section = section[apply_start:]
+    # Headline contract phrasing.
+    assert "Preview by default" in apply_section
+    # The render shows ``--write`` because that's the actual on-disk
+    # action; the prose must explicitly tell the operator that's
+    # what flips it from preview to write.
+    assert "--write" in apply_section
