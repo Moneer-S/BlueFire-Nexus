@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .chain_graph import ChainGraph, build_scenario_graph
+from .modes import MODE_METADATA, MODE_NAMES
 from .modules import build_runtime_modules
 from .modules.contracts import (
     ARTIFACT_TYPES,
@@ -153,6 +154,21 @@ th { color: var(--fg-muted); font-weight: 500; font-size: 12px; }
 .rank-chain_entry { background: rgba(140,150,170,0.16); color: var(--fg-muted); }
 .scenario-suggestion-rationale { color: var(--fg-muted); font-size: 11px; margin-left: 0; padding-left: 0; }
 .scenario-suggestions-empty { color: var(--fg-muted); font-style: italic; font-size: 12px; }
+.mode-card { border-left: 4px solid var(--accent); }
+.mode-card.mode-simulate { border-left-color: var(--produce); }
+.mode-card.mode-emulate { border-left-color: var(--warn); }
+.mode-card.mode-live-lab { border-left-color: #c04848; }
+.mode-title { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; font-size: 16px; }
+.mode-name { font-weight: 600; font-family: "SF Mono", Menlo, Consolas, monospace; }
+.mode-badge { font-size: 10px; padding: 2px 6px; border-radius: 4px; }
+.mode-badge.unattended { background: rgba(45,160,109,0.18); color: var(--produce); }
+.mode-badge.confirm { background: rgba(192,72,72,0.18); color: #e07c7c; }
+.mode-section { font-size: 12px; margin: 8px 0 0; }
+.mode-section h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin: 8px 0 4px; }
+.mode-section ul { margin: 0; padding-left: 18px; }
+.mode-section li { padding: 1px 0; }
+.mode-config-key { font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--accent); }
+.mode-config-value { font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--fg); }
 .footer { color: var(--fg-muted); font-size: 12px; margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--border); }
 """.strip()
 
@@ -542,6 +558,7 @@ def _render_console_html(
     parts.append(_render_mutations_section())
     parts.append(_render_scenarios_section(scenarios))
     parts.append(_render_scenario_graphs_section(scenario_graphs))
+    parts.append(_render_modes_section())
     parts.append(_render_footer())
 
     parts.append("</body></html>")
@@ -1285,6 +1302,110 @@ def _render_scenario_graph_warnings(graph: ChainGraph) -> str:
             "</div>"
         )
     return "\n".join(rows)
+
+
+def _render_modes_section() -> str:
+    """Render the per-mode info card grid.
+
+    Each card mirrors a :class:`src.core.modes.ModeDefinition` from
+    :data:`src.core.modes.MODE_METADATA`. The section is purely
+    informational - the console never writes a mode override, never
+    enables a mode, and never starts execution. Operators apply the
+    config patch via the ordinary config-writer path after reviewing
+    the description, gates, side effects, and warnings shown here.
+    """
+
+    parts: List[str] = ["<h2>Execution modes</h2>"]
+    parts.append(
+        "<p class='section-note'>The runtime supports three execution "
+        "modes. <span class='code'>simulate</span> is the safe-by-default "
+        "baseline; <span class='code'>emulate</span> writes deeper "
+        "artifacts but stays offline; <span class='code'>live-lab</span> "
+        "performs real network/process side effects and requires explicit "
+        "confirmation. Mode metadata is read from "
+        "<span class='code'>src.core.modes</span> - see "
+        "<span class='code'>python -m src.core.cli explain-mode &lt;mode&gt;</span> "
+        "for the same data on the terminal.</p>"
+    )
+    parts.append("<div class='grid'>")
+    for mode_name in MODE_NAMES:
+        parts.append(_render_mode_card(mode_name))
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
+def _render_mode_card(mode_name: str) -> str:
+    definition = MODE_METADATA[mode_name]
+    css_safe_name = mode_name.replace("_", "-")
+    badge_class = "unattended" if definition.safe_for_unattended else "confirm"
+    badge_label = (
+        "safe for unattended" if definition.safe_for_unattended
+        else "requires explicit confirmation"
+    )
+    pieces: List[str] = [
+        f"<div class='card mode-card mode-{html.escape(css_safe_name)}'>"
+    ]
+    pieces.append(
+        "<h3 class='mode-title'>"
+        f"<span class='mode-name'>{html.escape(definition.name)}</span>"
+        f"<span class='mode-badge {badge_class}'>"
+        f"{html.escape(badge_label)}</span>"
+        "</h3>"
+    )
+    pieces.append(
+        f"<p class='muted'>{html.escape(definition.description)}</p>"
+    )
+
+    pieces.append("<div class='mode-section'>")
+    pieces.append("<h4>Config overrides</h4>")
+    if definition.config_overrides:
+        pieces.append("<ul>")
+        for key, value in definition.config_overrides:
+            pieces.append(
+                "<li>"
+                f"<span class='mode-config-key'>{html.escape(key)}</span> "
+                "= "
+                f"<span class='mode-config-value'>{html.escape(repr(value))}</span>"
+                "</li>"
+            )
+        pieces.append("</ul>")
+    else:
+        pieces.append("<p class='muted'>(none)</p>")
+    pieces.append("</div>")
+
+    pieces.append("<div class='mode-section'>")
+    pieces.append("<h4>Required gates</h4>")
+    if definition.required_gates:
+        pieces.append("<ul>")
+        for gate in definition.required_gates:
+            pieces.append(f"<li>{html.escape(gate)}</li>")
+        pieces.append("</ul>")
+    else:
+        pieces.append("<p class='muted'>(none)</p>")
+    pieces.append("</div>")
+
+    pieces.append("<div class='mode-section'>")
+    pieces.append("<h4>Side effects</h4>")
+    if definition.side_effects:
+        pieces.append("<ul>")
+        for effect in definition.side_effects:
+            pieces.append(f"<li>{html.escape(effect)}</li>")
+        pieces.append("</ul>")
+    else:
+        pieces.append("<p class='muted'>(none)</p>")
+    pieces.append("</div>")
+
+    if definition.warnings:
+        pieces.append("<div class='mode-section'>")
+        pieces.append("<h4 class='warn'>Warnings</h4>")
+        pieces.append("<ul>")
+        for warning in definition.warnings:
+            pieces.append(f"<li class='warn'>{html.escape(warning)}</li>")
+        pieces.append("</ul>")
+        pieces.append("</div>")
+
+    pieces.append("</div>")
+    return "\n".join(pieces)
 
 
 def _render_footer() -> str:

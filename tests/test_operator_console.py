@@ -1148,3 +1148,108 @@ def test_console_planner_panel_rationale_is_html_escaped(
     assert "<script>alert" not in rendered
     assert "&lt;img onerror" in rendered
     assert "&lt;script&gt;alert(&#x27;rationale&#x27;)&lt;/script&gt;" in rendered
+
+
+# ---------------------------------------------------------------------------
+# Mode options panel (PR follow-up to #169 / #167)
+# ---------------------------------------------------------------------------
+
+
+def test_console_renders_mode_section(tmp_path: Path) -> None:
+    """The console exposes the three execution modes as first-class
+    cards so an operator inspecting the catalog sees mode options at
+    the same glance as modules and scenarios."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    assert "Execution modes" in body
+    # All three canonical modes render as their own card.
+    assert "mode-simulate" in body
+    assert "mode-emulate" in body
+    assert "mode-live-lab" in body
+
+
+def _slice_mode_card(body: str, mode_name: str) -> str:
+    """Extract the rendered card markup for ``mode_name``.
+
+    Anchors on the rendered card class (``card mode-card mode-<name>``)
+    rather than on the bare class name so the slice never picks up the
+    CSS rule of the same name from the inline ``<style>`` block.
+    Each card ends at the next mode-card marker, or at the modes
+    section's closing ``</div>`` if this is the last mode.
+    """
+
+    css_safe_name = mode_name.replace("_", "-")
+    marker = f"<div class='card mode-card mode-{css_safe_name}'>"
+    start = body.find(marker)
+    assert start != -1, f"mode card for {mode_name!r} not rendered"
+    # Search for the next mode-card opener after this one. Falls back
+    # to the section close (footer) when ``mode_name`` is the last
+    # mode in MODE_NAMES.
+    next_card = body.find("<div class='card mode-card mode-", start + len(marker))
+    if next_card == -1:
+        next_card = body.find("class='footer'", start)
+    assert next_card != -1
+    return body[start:next_card]
+
+
+def test_console_mode_card_pins_simulate_as_safe_for_unattended(
+    tmp_path: Path,
+) -> None:
+    """``simulate`` is the default safe-by-default mode and must
+    advertise the unattended-safe badge so an operator never confuses
+    it with the gated modes."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    section = _slice_mode_card(body, "simulate")
+    assert "safe for unattended" in section
+    # The simulate card should advertise the dry_run override.
+    assert "general.dry_run" in section
+
+
+def test_console_mode_card_pins_live_lab_as_requires_confirmation(
+    tmp_path: Path,
+) -> None:
+    """``live-lab`` is the highest-friction mode and must be flagged
+    as requiring explicit confirmation so the operator never enters
+    it inadvertently."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    section = _slice_mode_card(body, "live-lab")
+    assert "requires explicit confirmation" in section
+    # live-lab must surface the allowed_subnets gate.
+    assert "allowed_subnets" in section
+
+
+def test_console_mode_card_renders_warnings_when_present(
+    tmp_path: Path,
+) -> None:
+    """Modes carrying warnings (simulate / emulate / live-lab) must
+    render the operator-facing warning list. The simulate card's
+    per-pack-cleanup warning (added in the Codex P1 fix on PR #169)
+    exercises the warning render path on the safe mode."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    simulate_section = _slice_mode_card(body, "simulate")
+    assert "Per-pack legacy state" in simulate_section
+
+
+def test_console_mode_panel_emits_no_external_assets(tmp_path: Path) -> None:
+    """The mode panel CSS / markup must respect the existing
+    no-remote-assets contract (no <script>, no <link>, no remote URLs).
+    Re-anchors the constraint specifically on the mode section markup
+    so a future template-string accident in :func:`_render_mode_card`
+    surfaces as a localised failure instead of breaking the broader
+    no-remote-assets test."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    mode_start = body.find("Execution modes")
+    assert mode_start != -1
+    footer_start = body.find("class='footer'", mode_start)
+    if footer_start == -1:
+        footer_start = body.find("<div class='footer'>", mode_start)
+    assert footer_start != -1
+    mode_section = body[mode_start:footer_start]
+    assert "<script" not in mode_section
+    assert "<link" not in mode_section
+    assert "http://" not in mode_section
+    assert "https://" not in mode_section
