@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import typer
 from rich.console import Console
@@ -1108,10 +1108,30 @@ def operator_console_cmd(
         python -m src.core.cli operator-console --scenarios /work/custom-scenarios
     """
 
+    from .config import ConfigManager
     from .operator_console import build_operator_console
 
     root = output_root if output_root else resolve_output_root()
-    target = build_operator_console(Path(root), scenarios_dir=scenarios)
+    # Load the current config so each mode card renders a real
+    # ``current -> target`` diff against what's on disk, not just the
+    # static target overrides. Falls back to the static-only render when
+    # ConfigManager construction blows up (operator running in an env
+    # without a config.yaml at all). Either way the console builds; the
+    # diff is just an enhancement when config is loadable.
+    current_config: Optional[Dict[str, Any]] = None
+    try:
+        current_config = ConfigManager().to_dict()
+    except Exception as exc:  # pragma: no cover - defensive
+        console.print(
+            f"[yellow]Warning: could not load config for mode diff "
+            f"({exc.__class__.__name__}); rendering static target "
+            f"overrides only.[/]"
+        )
+    target = build_operator_console(
+        Path(root),
+        scenarios_dir=scenarios,
+        current_config=current_config,
+    )
     console.print(f"[green]Wrote operator console:[/] {target}")
     console.print("[cyan]Open in browser (copy or click below):[/]")
     console.print(_file_uri(target), no_wrap=True, overflow="ignore")

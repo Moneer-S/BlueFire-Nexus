@@ -1353,3 +1353,286 @@ def test_console_mode_card_apply_hint_is_preview_first(
     # action; the prose must explicitly tell the operator that's
     # what flips it from preview to write.
     assert "--write" in apply_section
+
+
+# ---------------------------------------------------------------------------
+# Real per-mode current -> target diff (Priority 1 from the operator-
+# console mode-apply preview track)
+#
+# When a caller passes ``current_config`` to ``build_operator_console``,
+# each mode card MUST replace the static "Config overrides" block with
+# a real diff computed from :func:`compute_apply_plan`. The diff's tag
+# column distinguishes ``(no-op)`` rows (current already equals target)
+# from ``(write)`` rows (current differs from target). The CLI render
+# uses the same tags, so the operator sees one consistent format whether
+# they look at the page or run ``apply-mode-profile <mode>``.
+# ---------------------------------------------------------------------------
+
+
+def _slice_mode_card_with_config(body: str, mode_name: str) -> str:
+    """Same slice helper as ``_slice_mode_card`` -- redeclared at a
+    top-level scope so the new tests don't depend on the helper landing
+    above them in the file. Keeps the new tests self-contained."""
+
+    return _slice_mode_card(body, mode_name)
+
+
+def test_console_mode_card_renders_real_diff_when_config_supplied(
+    tmp_path: Path,
+) -> None:
+    """``build_operator_console(current_config=...)`` must replace the
+    static "Config overrides" block with a real
+    ``current -> target`` diff computed from
+    :func:`compute_apply_plan`. Pin the headline column header and the
+    section heading so a future refactor can't silently revert to the
+    static-only render."""
+
+    # A config where simulate is already in effect so several rows are
+    # ``(no-op)`` and at least one row (live-lab differs from simulate)
+    # would be ``(write)``. Using the runtime's safe defaults.
+    current = {
+        "general": {"dry_run": True},
+        "modules": {
+            "legacy": {
+                "enable_all_lab_capabilities": False,
+                "global_mode": "simulate",
+                "global_lab_acknowledged": False,
+                "lab_confirmation": False,
+            }
+        },
+    }
+    body = build_operator_console(
+        tmp_path, current_config=current
+    ).read_text(encoding="utf-8")
+    simulate_section = _slice_mode_card_with_config(body, "simulate")
+    # Header advertises the diff form, not the legacy "Config overrides".
+    assert "Apply diff (current -&gt; target)" in simulate_section
+    # The diff table renders with a typed Status column.
+    assert "<th>Current</th>" in simulate_section
+    assert "<th>Target</th>" in simulate_section
+    assert "<th>Status</th>" in simulate_section
+
+
+def test_console_mode_card_simulate_is_full_no_op_against_safe_defaults(
+    tmp_path: Path,
+) -> None:
+    """A ``current_config`` matching every simulate target value MUST
+    render the simulate card as a complete no-op AND surface the
+    summary line ("complete no-op") so the operator sees the all-no-op
+    state at a glance instead of having to scan the tag column."""
+
+    current = {
+        "general": {"dry_run": True},
+        "modules": {
+            "legacy": {
+                "enable_all_lab_capabilities": False,
+                "global_mode": "simulate",
+                "global_lab_acknowledged": False,
+                "lab_confirmation": False,
+            }
+        },
+    }
+    body = build_operator_console(
+        tmp_path, current_config=current
+    ).read_text(encoding="utf-8")
+    section = _slice_mode_card_with_config(body, "simulate")
+    # Summary surfaces the complete no-op state explicitly.
+    assert "complete no-op" in section
+    # Every diff row in the simulate card carries the (no-op) tag.
+    diff_start = section.find("Apply diff")
+    diff_block = section[diff_start:]
+    assert "(write)" not in diff_block
+    assert "(no-op)" in diff_block
+
+
+def test_console_mode_card_live_lab_shows_write_rows_against_safe_defaults(
+    tmp_path: Path,
+) -> None:
+    """When the loaded config is in simulate state, the live-lab card
+    MUST surface ``(write)`` rows for the keys that would actually
+    change (e.g. ``modules.legacy.enable_all_lab_capabilities`` flips
+    False -> True). Pins the contract that operators inspecting
+    live-lab against a safe baseline see exactly which keys would be
+    flipped."""
+
+    current = {
+        "general": {"dry_run": True},
+        "modules": {
+            "legacy": {
+                "enable_all_lab_capabilities": False,
+                "global_mode": "simulate",
+                "global_lab_acknowledged": False,
+                "lab_confirmation": False,
+            }
+        },
+    }
+    body = build_operator_console(
+        tmp_path, current_config=current
+    ).read_text(encoding="utf-8")
+    section = _slice_mode_card_with_config(body, "live-lab")
+    diff_start = section.find("Apply diff")
+    diff_block = section[diff_start:]
+    # live-lab against simulate state: at least one (write) row must
+    # render -- enable_all_lab_capabilities flips False -> True.
+    assert "(write)" in diff_block
+    # And the summary line counts at least one pending write.
+    assert "pending write" in diff_block
+
+
+def test_console_mode_card_diff_is_pure_preview_does_not_mutate_config(
+    tmp_path: Path,
+) -> None:
+    """The diff render path must NEVER mutate ``current_config``. The
+    operator console contract is "purely informational, never writes
+    config". A future refactor that started passing the dict through
+    a path that mutates it (e.g. via ``ConfigManager.set``) would
+    silently break that invariant. Pin the dict equality before /
+    after the build."""
+
+    import copy
+
+    current = {
+        "general": {"dry_run": True},
+        "modules": {
+            "legacy": {
+                "enable_all_lab_capabilities": False,
+                "global_mode": "simulate",
+                "global_lab_acknowledged": False,
+                "lab_confirmation": False,
+            }
+        },
+    }
+    snapshot = copy.deepcopy(current)
+    build_operator_console(tmp_path, current_config=current)
+    assert current == snapshot, (
+        "build_operator_console must not mutate the supplied "
+        "current_config dict; observed mutation."
+    )
+
+
+def test_console_mode_card_diff_falls_back_to_static_overrides_without_config(
+    tmp_path: Path,
+) -> None:
+    """Without ``current_config``, the mode card MUST keep the legacy
+    static "Config overrides" block (target values only) rather than
+    rendering an empty/diff-shaped placeholder. Backwards-compat for
+    every caller of ``build_operator_console`` that doesn't supply a
+    config."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    section = _slice_mode_card_with_config(body, "simulate")
+    # Static path: the legacy header is rendered.
+    assert "<h4>Config overrides</h4>" in section
+    # ...and the diff-form header is NOT rendered.
+    assert "Apply diff (current -&gt; target)" not in section
+
+
+def test_console_mode_card_diff_renders_for_every_canonical_mode(
+    tmp_path: Path,
+) -> None:
+    """Each of the three canonical modes MUST surface a diff section
+    when ``current_config`` is supplied. A future mode addition that
+    forgets to plumb through the diff render lands a localised
+    failure here instead of silently dropping the diff for the new
+    mode."""
+
+    current = {
+        "general": {"dry_run": True},
+        "modules": {
+            "legacy": {
+                "enable_all_lab_capabilities": False,
+                "global_mode": "simulate",
+                "global_lab_acknowledged": False,
+                "lab_confirmation": False,
+            }
+        },
+    }
+    body = build_operator_console(
+        tmp_path, current_config=current
+    ).read_text(encoding="utf-8")
+    for mode_name in ("simulate", "emulate", "live-lab"):
+        section = _slice_mode_card_with_config(body, mode_name)
+        assert "Apply diff (current -&gt; target)" in section, (
+            f"mode {mode_name!r} did not render the apply diff section"
+        )
+
+
+def test_console_mode_card_diff_renders_missing_keys_as_none_current(
+    tmp_path: Path,
+) -> None:
+    """A ``current_config`` that is missing some of the override keys
+    MUST render those rows with ``None`` as the current value (the
+    ``compute_apply_plan`` contract for absent keys) rather than
+    raising. Pins the partial-config tolerance so a real-world config
+    file that pre-dates a mode-override addition still renders cleanly."""
+
+    # Empty config: every override key is missing.
+    body = build_operator_console(
+        tmp_path, current_config={}
+    ).read_text(encoding="utf-8")
+    section = _slice_mode_card_with_config(body, "simulate")
+    # Every simulate row would be a (write) -- no key matches, so no
+    # row is a no-op.
+    diff_start = section.find("Apply diff")
+    diff_block = section[diff_start:]
+    assert "(write)" in diff_block
+    # ``None`` is the current value for missing keys (per
+    # compute_apply_plan's contract).
+    assert "None" in diff_block
+
+
+def test_console_mode_card_diff_keeps_no_remote_assets_invariant(
+    tmp_path: Path,
+) -> None:
+    """The diff render path must respect the existing no-remote-assets
+    contract -- no <script>, no <link>, no http:// / https:// URLs.
+    A future refactor that pulled in an external CSS framework for
+    table styling lands as a localised failure here."""
+
+    current = {
+        "general": {"dry_run": True},
+        "modules": {"legacy": {"global_mode": "simulate"}},
+    }
+    body = build_operator_console(
+        tmp_path, current_config=current
+    ).read_text(encoding="utf-8")
+    section = _slice_mode_card_with_config(body, "simulate")
+    diff_start = section.find("Apply diff")
+    diff_block = section[diff_start:]
+    assert "<script" not in diff_block
+    assert "<link" not in diff_block
+    assert "http://" not in diff_block
+    assert "https://" not in diff_block
+
+
+def test_console_with_config_is_deterministic(tmp_path: Path) -> None:
+    """Two builds of the operator console with the SAME config dict
+    must produce byte-identical HTML. Pins the determinism contract
+    that already covers the registry-only render path."""
+
+    current = {
+        "general": {"dry_run": True},
+        "modules": {
+            "legacy": {
+                "enable_all_lab_capabilities": False,
+                "global_mode": "simulate",
+                "global_lab_acknowledged": False,
+                "lab_confirmation": False,
+            }
+        },
+    }
+    first = build_operator_console(
+        tmp_path / "first", current_config=current
+    ).read_text(encoding="utf-8")
+    second = build_operator_console(
+        tmp_path / "second", current_config=current
+    ).read_text(encoding="utf-8")
+    # Header carries the generated-at timestamp; strip the timestamp
+    # span before comparing the rest of the page (the registry-only
+    # determinism test does the same).
+    import re
+
+    pattern = re.compile(r"<span class='code'>2[0-9-T:Z]+</span>")
+    first_norm = pattern.sub("<span class='code'>TS</span>", first)
+    second_norm = pattern.sub("<span class='code'>TS</span>", second)
+    assert first_norm == second_norm

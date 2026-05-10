@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .chain_graph import ChainGraph, build_scenario_graph
-from .modes import MODE_METADATA, MODE_NAMES
+from .modes import MODE_METADATA, MODE_NAMES, ApplyPlan, compute_apply_plan
 from .modules import build_runtime_modules
 from .modules.contracts import (
     ARTIFACT_TYPES,
@@ -170,6 +170,17 @@ th { color: var(--fg-muted); font-weight: 500; font-size: 12px; }
 .mode-config-key { font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--accent); }
 .mode-config-value { font-family: "SF Mono", Menlo, Consolas, monospace; color: var(--fg); }
 .mode-apply-command { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 11px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 4px; padding: 8px 10px; margin: 4px 0 0; white-space: pre-wrap; color: var(--fg); }
+.mode-apply-diff-table { font-size: 11px; }
+.mode-apply-diff-table th { font-size: 10px; }
+.mode-apply-diff-table td { padding: 4px 8px; }
+.diff-row.no-op { color: var(--fg-muted); }
+.diff-row.write { color: var(--fg); }
+.diff-tag { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 10px; padding: 1px 6px; border-radius: 4px; }
+.diff-tag.no-op { background: rgba(140,150,170,0.14); color: var(--fg-muted); }
+.diff-tag.write { background: rgba(230,162,60,0.18); color: var(--warn); font-weight: 600; }
+.mode-apply-summary { font-size: 12px; margin: 4px 0 8px; }
+.mode-apply-summary.no-op { color: var(--produce); }
+.mode-apply-summary.pending { color: var(--warn); }
 .footer { color: var(--fg-muted); font-size: 12px; margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--border); }
 """.strip()
 
@@ -178,6 +189,7 @@ def build_operator_console(
     output_root: Path,
     *,
     scenarios_dir: Optional[Path] = None,
+    current_config: Optional[Mapping[str, Any]] = None,
 ) -> Path:
     """Build the operator console as ``output_root/operator-console/index.html``.
 
@@ -185,6 +197,16 @@ def build_operator_console(
     contract, walks the registry to compute typed chain pairs, and
     surfaces the shipped scenario YAML files (if ``scenarios_dir`` is
     provided or auto-discovered under ``scenarios/``).
+
+    When ``current_config`` is supplied (typically
+    ``ConfigManager().to_dict()``), each mode card additionally renders
+    a real ``current -> target`` diff computed via
+    :func:`src.core.modes.compute_apply_plan`, so an operator inspecting
+    the page sees not just the static target overrides but also which
+    keys would actually change on disk if they ran
+    ``apply-mode-profile <mode> --write`` against the loaded config.
+    Without ``current_config`` the cards fall back to the static
+    target-only view (registry-only render path).
 
     Returns the path to the rendered HTML file. Never starts a server,
     never opens a browser, never writes anywhere outside
@@ -206,6 +228,7 @@ def build_operator_console(
         chain_pairs=chain_pairs,
         scenarios=scenarios,
         scenario_graphs=scenario_graphs,
+        current_config=current_config,
     )
     out_path.write_text(html_text, encoding="utf-8")
     return out_path
@@ -539,6 +562,7 @@ def _render_console_html(
     chain_pairs: List[Dict[str, Any]],
     scenarios: List[Dict[str, Any]],
     scenario_graphs: Optional[List[Dict[str, Any]]] = None,
+    current_config: Optional[Mapping[str, Any]] = None,
 ) -> str:
     """Stitch every section together into the single static page."""
 
@@ -559,7 +583,7 @@ def _render_console_html(
     parts.append(_render_mutations_section())
     parts.append(_render_scenarios_section(scenarios))
     parts.append(_render_scenario_graphs_section(scenario_graphs))
-    parts.append(_render_modes_section())
+    parts.append(_render_modes_section(current_config=current_config))
     parts.append(_render_footer())
 
     parts.append("</body></html>")
@@ -1305,7 +1329,10 @@ def _render_scenario_graph_warnings(graph: ChainGraph) -> str:
     return "\n".join(rows)
 
 
-def _render_modes_section() -> str:
+def _render_modes_section(
+    *,
+    current_config: Optional[Mapping[str, Any]] = None,
+) -> str:
     """Render the per-mode info card grid.
 
     Each card mirrors a :class:`src.core.modes.ModeDefinition` from
@@ -1314,9 +1341,31 @@ def _render_modes_section() -> str:
     enables a mode, and never starts execution. Operators apply the
     config patch via the ordinary config-writer path after reviewing
     the description, gates, side effects, and warnings shown here.
+
+    When ``current_config`` is supplied, each card additionally renders
+    a real ``current -> target`` diff via
+    :func:`src.core.modes.compute_apply_plan`. With no
+    ``current_config`` the cards keep the legacy target-only "Config
+    overrides" block so registry-only callers keep their existing
+    output.
     """
 
     parts: List[str] = ["<h2>Execution modes</h2>"]
+    if current_config is not None:
+        intro_extra = (
+            " The diff below each mode is computed against the loaded "
+            "<span class='code'>config.yaml</span> -- "
+            "<span class='code'>(no-op)</span> rows are already in "
+            "place; <span class='code'>(write)</span> rows are what "
+            "<span class='code'>apply-mode-profile</span> would change."
+        )
+    else:
+        intro_extra = (
+            " (No config loaded -- target overrides are shown as "
+            "static values. Pass <span class='code'>current_config</span> "
+            "to <span class='code'>build_operator_console</span> for the "
+            "real <span class='code'>current -&gt; target</span> diff.)"
+        )
     parts.append(
         "<p class='section-note'>The runtime supports three execution "
         "modes. <span class='code'>simulate</span> is the safe-by-default "
@@ -1326,16 +1375,22 @@ def _render_modes_section() -> str:
         "confirmation. Mode metadata is read from "
         "<span class='code'>src.core.modes</span> - see "
         "<span class='code'>python -m src.core.cli explain-mode &lt;mode&gt;</span> "
-        "for the same data on the terminal.</p>"
+        "for the same data on the terminal." + intro_extra + "</p>"
     )
     parts.append("<div class='grid'>")
     for mode_name in MODE_NAMES:
-        parts.append(_render_mode_card(mode_name))
+        parts.append(
+            _render_mode_card(mode_name, current_config=current_config)
+        )
     parts.append("</div>")
     return "\n".join(parts)
 
 
-def _render_mode_card(mode_name: str) -> str:
+def _render_mode_card(
+    mode_name: str,
+    *,
+    current_config: Optional[Mapping[str, Any]] = None,
+) -> str:
     definition = MODE_METADATA[mode_name]
     css_safe_name = mode_name.replace("_", "-")
     badge_class = "unattended" if definition.safe_for_unattended else "confirm"
@@ -1357,22 +1412,10 @@ def _render_mode_card(mode_name: str) -> str:
         f"<p class='muted'>{html.escape(definition.description)}</p>"
     )
 
-    pieces.append("<div class='mode-section'>")
-    pieces.append("<h4>Config overrides</h4>")
-    if definition.config_overrides:
-        pieces.append("<ul>")
-        for key, value in definition.config_overrides:
-            pieces.append(
-                "<li>"
-                f"<span class='mode-config-key'>{html.escape(key)}</span> "
-                "= "
-                f"<span class='mode-config-value'>{html.escape(repr(value))}</span>"
-                "</li>"
-            )
-        pieces.append("</ul>")
+    if current_config is not None:
+        pieces.append(_render_mode_apply_diff(mode_name, current_config))
     else:
-        pieces.append("<p class='muted'>(none)</p>")
-    pieces.append("</div>")
+        pieces.append(_render_mode_static_overrides(definition))
 
     pieces.append("<div class='mode-section'>")
     pieces.append("<h4>Required gates</h4>")
@@ -1476,6 +1519,106 @@ def _render_apply_command_block(mode_name: str) -> str:
         f"{html.escape(command)}"
         "</pre>"
     )
+
+
+def _render_mode_static_overrides(definition: Any) -> str:
+    """Render the legacy static "Config overrides" block for a mode card.
+
+    Used when the console is built without a loaded ``current_config``.
+    Renders the static target values from the
+    :class:`src.core.modes.ModeDefinition` so registry-only callers
+    keep their previous output. With a loaded config the
+    :func:`_render_mode_apply_diff` block replaces this one.
+    """
+
+    pieces: List[str] = ["<div class='mode-section'>"]
+    pieces.append("<h4>Config overrides</h4>")
+    if definition.config_overrides:
+        pieces.append("<ul>")
+        for key, value in definition.config_overrides:
+            pieces.append(
+                "<li>"
+                f"<span class='mode-config-key'>{html.escape(key)}</span> "
+                "= "
+                f"<span class='mode-config-value'>{html.escape(repr(value))}</span>"
+                "</li>"
+            )
+        pieces.append("</ul>")
+    else:
+        pieces.append("<p class='muted'>(none)</p>")
+    pieces.append("</div>")
+    return "\n".join(pieces)
+
+
+def _render_mode_apply_diff(
+    mode_name: str,
+    current_config: Mapping[str, Any],
+) -> str:
+    """Render the real ``current -> target`` diff for a mode card.
+
+    Computes the per-key diff via :func:`compute_apply_plan` against
+    ``current_config`` and renders one row per key with both values
+    visible AND a ``(no-op)`` / ``(write)`` tag. The tag mirrors the
+    CLI's tree render so an operator who's already used
+    ``apply-mode-profile <mode>`` recognises the format.
+
+    Adds a small summary line ("N pending write of M total") so a card
+    that is already a complete no-op surfaces the all-no-op state
+    explicitly rather than leaving the operator to scan the tag column.
+    """
+
+    plan: ApplyPlan = compute_apply_plan(mode_name, current_config)
+    pieces: List[str] = ["<div class='mode-section mode-apply-diff'>"]
+    pieces.append("<h4>Apply diff (current -&gt; target)</h4>")
+    pending = len(plan.changes_to_write)
+    total = len(plan.changes)
+    if total == 0:
+        pieces.append(
+            "<p class='muted'>(no overrides for this mode)</p>"
+        )
+        pieces.append("</div>")
+        return "\n".join(pieces)
+    if plan.effective_no_op:
+        summary_class = "mode-apply-summary no-op"
+        summary_text = (
+            f"All {total} target overrides already match the current "
+            f"config. <span class='code'>apply-mode-profile "
+            f"{html.escape(plan.mode)} --write</span> would be a "
+            "complete no-op."
+        )
+    else:
+        summary_class = "mode-apply-summary pending"
+        summary_text = (
+            f"{pending} change(s) pending write of {total} total. "
+            "Rows tagged <span class='code'>(write)</span> are what "
+            "<span class='code'>apply-mode-profile "
+            f"{html.escape(plan.mode)} --write</span> would change."
+        )
+    pieces.append(f"<p class='{summary_class}'>{summary_text}</p>")
+    pieces.append("<table class='mode-apply-diff-table'>")
+    pieces.append(
+        "<thead><tr>"
+        "<th>Key</th><th>Current</th><th>Target</th><th>Status</th>"
+        "</tr></thead><tbody>"
+    )
+    for change in plan.changes:
+        if change.no_op:
+            tag_html = "<span class='diff-tag no-op'>(no-op)</span>"
+            row_class = "diff-row no-op"
+        else:
+            tag_html = "<span class='diff-tag write'>(write)</span>"
+            row_class = "diff-row write"
+        pieces.append(
+            f"<tr class='{row_class}'>"
+            f"<td><span class='mode-config-key'>{html.escape(change.key)}</span></td>"
+            f"<td><span class='mode-config-value'>{html.escape(repr(change.current))}</span></td>"
+            f"<td><span class='mode-config-value'>{html.escape(repr(change.target))}</span></td>"
+            f"<td>{tag_html}</td>"
+            "</tr>"
+        )
+    pieces.append("</tbody></table>")
+    pieces.append("</div>")
+    return "\n".join(pieces)
 
 
 def _render_footer() -> str:
