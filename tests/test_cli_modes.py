@@ -508,10 +508,19 @@ def test_apply_mode_profile_simulate_does_not_clobber_per_pack_state(
     from src.core.config import ConfigManager
 
     cm = ConfigManager()
-    # Operator was previously in emulate mode. Globals are set.
+    # Operator was previously in live-lab. ALL FIVE simulate-clearable
+    # globals are seeded to non-default values so a regression that
+    # stops clearing any one of them surfaces as a value mismatch on
+    # the corresponding assertion below. Codex P2 on the original PR
+    # caught the prior version that only seeded three of the five --
+    # ``global_lab_acknowledged`` and ``enable_all_lab_capabilities``
+    # are False by default in ``ConfigManager``, so a bug that stopped
+    # clearing them when previously True would have passed silently.
     cm.set("general.dry_run", False)
     cm.set("modules.legacy.global_mode", "emulate")
     cm.set("modules.legacy.lab_confirmation", True)
+    cm.set("modules.legacy.global_lab_acknowledged", True)
+    cm.set("modules.legacy.enable_all_lab_capabilities", True)
     # AND they had per-pack state from earlier deliberate setup.
     cm.set("modules.legacy.actor_pack.lab_confirmation", True)
     cm.set("modules.legacy.actor_pack.mode", "emulate")
@@ -526,10 +535,19 @@ def test_apply_mode_profile_simulate_does_not_clobber_per_pack_state(
     assert result.exit_code == 0, result.stdout
 
     cm_after = ConfigManager()
-    # Globals: cleared back to simulate baseline.
+    # Globals: ALL FIVE simulate-clearable keys must be reset back to
+    # the simulate baseline. Each was seeded above to its non-
+    # default value, so any one of these assertions failing pins
+    # exactly which catalog override regressed.
     assert cm_after.get("general.dry_run") is True
     assert cm_after.get("modules.legacy.global_mode") == "simulate"
     assert cm_after.get("modules.legacy.lab_confirmation") is False
+    assert (
+        cm_after.get("modules.legacy.global_lab_acknowledged") is False
+    )
+    assert (
+        cm_after.get("modules.legacy.enable_all_lab_capabilities") is False
+    )
     # Per-pack: untouched. Operator-readable invariant -- the
     # central mode profile does NOT enumerate per-pack keys, so it
     # MUST NOT mutate them.
