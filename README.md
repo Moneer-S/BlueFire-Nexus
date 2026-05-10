@@ -1,6 +1,6 @@
 # BlueFire Nexus
 
-[![tests](https://img.shields.io/badge/tests-2152%20passed-blue)](#development--tests)
+[![tests](https://img.shields.io/badge/tests-passing-blue)](#development--tests)
 [![security](https://img.shields.io/badge/security-bandit%20strict-green)](#development--tests)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue)](#quickstart)
 [![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
@@ -232,7 +232,6 @@ If your use case requires distributed execution, live data shipping, or a hosted
 - Architecture and ModuleResult contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Operator usage and CLI reference: [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELINES.md)
 - Security and threat model: [SECURITY.md](SECURITY.md)
-- Roadmap: [docs/reports/next_roadmap.md](docs/reports/next_roadmap.md)
 - Capability inventory: [docs/reports/capability_inventory.md](docs/reports/capability_inventory.md)
 - Scenario validation: [docs/reports/scenario_validation.md](docs/reports/scenario_validation.md)
 - AI layer reference: [docs/reports/ai_layer.md](docs/reports/ai_layer.md)

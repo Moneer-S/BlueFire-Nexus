@@ -1,7 +1,6 @@
-"""Smoke tests for the three preserved orphan files.
+"""Smoke tests for the three preserved files outside the registry.
 
-The files covered by this test suite are documented in
-``docs/reports/orphan_files.md``:
+The files covered by this test suite:
 
 - ``src/core/bluefire.py`` — compatibility shim re-exporting
   ``cli.main`` for legacy ``python -m src.core.bluefire``
@@ -149,27 +148,3 @@ def test_evasion_techniques_module_is_not_in_runtime_registry() -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# Standing-rule check: docs reference matches the smoke tests
-# ---------------------------------------------------------------------------
-
-
-def test_orphan_decision_report_references_each_smoke_target() -> None:
-    """The decision report names each file the smoke tests cover.
-
-    Pins the bidirectional contract: the docs report enumerates
-    the files; this smoke test asserts each one is exercised. If
-    a future refactor renames or moves a file, both halves
-    surface.
-    """
-    report_path = Path(__file__).resolve().parents[1] / "docs" / "reports" / "orphan_files.md"
-    assert report_path.exists(), report_path
-    content = report_path.read_text(encoding="utf-8")
-    for relative in (
-        "src/core/bluefire.py",
-        "src/legal_safeguards.py",
-        "src/modules/evasion_techniques.py",
-    ):
-        assert relative in content, (
-            f"{relative} not referenced in {report_path.name}"
-        )
