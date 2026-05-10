@@ -115,12 +115,13 @@ def test_ifeo_debugger_pins_image_file_execution_options_path(
     assert "Image File Execution Options" in selection[selector_key]
 
 
-def test_appinit_dlls_pins_value_name_selector(tmp_path: Path) -> None:
+def test_appinit_dlls_pins_exact_value_name_selector(tmp_path: Path) -> None:
     """AppInit DLLs (T1546.010) writes a value at the ``AppInit_DLLs``
     name under ``HKLM\\Software\\Microsoft\\Windows
-    NT\\CurrentVersion\\Windows``. Anchor the selector on the value
-    name (not the key path) so the detection rule matches the value-
-    write event regardless of subkey."""
+    NT\\CurrentVersion\\Windows``. The selector must be an EXACT
+    match on ``registry.value_name`` -- a ``|contains`` selector
+    would also fire on the unrelated ``LoadAppInit_DLLs`` and
+    ``RequireSignedAppInit_DLLs`` values."""
 
     mod = PersistenceModule()
     result = mod.execute(
@@ -128,9 +129,12 @@ def test_appinit_dlls_pins_value_name_selector(tmp_path: Path) -> None:
         _ctx(tmp_path),
     )
     selection = result.detection_hints["detection"]["selection"]
-    selector_key = next(iter(selection))
-    assert "registry.value_name" in selector_key
-    assert "AppInit_DLLs" in selection[selector_key]
+    # Bare ``registry.value_name`` (no operator suffix) -> exact match.
+    assert "registry.value_name" in selection
+    assert selection["registry.value_name"] == "AppInit_DLLs"
+    # The ``|contains`` form must not appear -- it would broaden to
+    # ``LoadAppInit_DLLs`` and ``RequireSignedAppInit_DLLs``.
+    assert "registry.value_name|contains" not in selection
 
 
 def test_persistence_techniques_each_have_distinct_event_type() -> None:

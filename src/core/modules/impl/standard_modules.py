@@ -1144,11 +1144,14 @@ _PERSISTENCE_PROFILES: Dict[str, Dict[str, Any]] = {
     # configured DLLs into every user32.dll-loading process. Modern
     # Windows requires SecureBoot=Off + AppInit_DLLs registry edit
     # under HKLM\Software\Microsoft\Windows NT\CurrentVersion\Windows.
-    # Defender signal anchors on the AppInit_DLLs value name.
+    # Anchor the selector on an EXACT match against the value name --
+    # ``|contains`` would also fire on the unrelated
+    # ``LoadAppInit_DLLs`` and ``RequireSignedAppInit_DLLs`` values
+    # (Codex P2 on PR #186).
     "appinit_dlls": {
         "mitre": "T1546.010",
         "logsource": {"category": "registry_event", "product": "windows"},
-        "selection_field": "registry.value_name|contains",
+        "selection_field": "registry.value_name",
         "selection_value": "AppInit_DLLs",
         "event_type": "persistence_appinit_dlls",
         "title_prefix": "AppInit DLL persistence on",
