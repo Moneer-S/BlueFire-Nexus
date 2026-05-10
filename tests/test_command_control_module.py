@@ -138,9 +138,39 @@ def test_domain_fronting_pins_tls_sni_mismatch_marker(tmp_path: Path) -> None:
     assert logsource["category"] == "network_connection"
     detection = result.detection_hints["detection"]
     selection_keys = list(detection["selection"].keys())
-    assert any("tls.sni" in k for k in selection_keys)
+    # The selector field must use a SUPPORTED Sigma modifier
+    # (contains/startswith/endswith/in). The previous ``|fronts``
+    # custom modifier silently downgraded to plain equality in the
+    # YARA-L/SPL converters and would have emitted
+    # ``tls.sni = "<c2_url>"`` (URL never matches an SNI hostname).
+    # (Codex P1 on PR #177.)
+    assert any(k.startswith("tls.sni") for k in selection_keys)
+    assert any("|contains" in k for k in selection_keys), (
+        f"selector field must use a supported Sigma modifier; "
+        f"got {selection_keys}"
+    )
     event = result.telemetry[0]
     assert event.event_type == "command_control_domain_fronting"
+
+
+def test_dga_selector_uses_supported_sigma_modifier(tmp_path: Path) -> None:
+    """Per Codex P1 on PR #177, the DGA profile must use a supported
+    Sigma modifier (contains/startswith/endswith/in) rather than the
+    custom ``|matches`` modifier (which silently downgrades to plain
+    equality in the YARA-L/SPL converters and would emit a rule that
+    never fires on real DGA traffic)."""
+
+    mod = CommandControlModule()
+    result = mod.execute(
+        {"channel": "dga", "c2_url": "https://dga-c2.test/c2"}, _ctx(tmp_path)
+    )
+    detection = result.detection_hints["detection"]
+    selection_keys = list(detection["selection"].keys())
+    assert any(k.startswith("dns.question.name") for k in selection_keys)
+    assert any("|contains" in k for k in selection_keys), (
+        f"selector field must use a supported Sigma modifier "
+        f"(``|matches`` is not supported); got {selection_keys}"
+    )
 
 
 def test_each_profile_emits_a_distinct_event_type(tmp_path: Path) -> None:

@@ -1966,7 +1966,16 @@ _COMMAND_CONTROL_PROFILES: Dict[str, Dict[str, Any]] = {
     "dga": {
         "mitre": "T1568.002",
         "logsource": {"category": "dns", "product": "network"},
-        "selection_field": "dns.question.name|matches",
+        # ``dns.question.name|contains`` rather than a non-standard
+        # ``|matches`` modifier. The YARA-L / SPL converters only
+        # implement contains/startswith/endswith/in and silently
+        # downgrade unknown modifiers to plain equality, which would
+        # emit ``dns.question.name = "<c2_url>"`` and never fire on
+        # real DGA traffic. The simulated emission carries the c2_url
+        # as the substring; defenders pivot from this starter rule
+        # to an entropy-based DGA detection downstream. (Codex P1
+        # on PR #177.)
+        "selection_field": "dns.question.name|contains",
         "event_type": "command_control_dga",
         "title_prefix": "Domain-generation-algorithm C2 to",
     },
@@ -2006,7 +2015,18 @@ _COMMAND_CONTROL_PROFILES: Dict[str, Dict[str, Any]] = {
     "domain_fronting": {
         "mitre": "T1090.004",
         "logsource": {"category": "network_connection", "product": "host"},
-        "selection_field": "tls.sni|fronts",
+        # ``tls.sni|contains`` rather than the previous non-standard
+        # ``|fronts`` modifier. The YARA-L / SPL converters only
+        # implement contains/startswith/endswith/in; an unknown
+        # modifier silently downgrades to plain equality, which
+        # would emit ``tls.sni = "<c2_url>"`` and never match real
+        # SNI values (which are bare hostnames, not URLs). The
+        # simulated emission carries the c2_url substring; a defender
+        # pivots from this starter rule to a multi-condition rule
+        # that compares TLS SNI against HTTP Host (the canonical
+        # SNI/Host-mismatch fronting detection) downstream. (Codex
+        # P1 on PR #177.)
+        "selection_field": "tls.sni|contains",
         "event_type": "command_control_domain_fronting",
         "title_prefix": "Domain-fronted C2 to",
     },
