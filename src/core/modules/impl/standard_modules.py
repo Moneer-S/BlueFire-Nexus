@@ -3514,6 +3514,71 @@ _IMPACT_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "impact_resource_hijacking",
         "title_prefix": "Resource hijacking on",
     },
+    # Inhibit System Recovery (T1490) is THE canonical ransomware
+    # preparation step on Windows: the operator deletes Volume Shadow
+    # Copies (so victims can't roll the filesystem back) and disables
+    # automatic repair / boot-up recovery. Defenders alert on the
+    # ``vssadmin delete shadows`` invocation (the textbook command),
+    # plus ``wbadmin delete catalog`` (Windows Server backup), plus
+    # ``bcdedit /set {default} recoveryenabled No`` (recovery
+    # disabling). Pinning ``vssadmin delete shadows`` catches the
+    # most-common form -- it is the substring textbooks, IR reports,
+    # and every recent ransomware family (LockBit, BlackCat, Conti,
+    # Royal, et al.) put in their pre-encryption sequence. A defender
+    # wanting wbadmin/bcdedit coverage adds parallel rules with the
+    # same logsource; a future multi-selector profile model could
+    # collapse them into one rule.
+    "inhibit_system_recovery": {
+        "mitre": "T1490",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "vssadmin delete shadows",
+        "event_type": "impact_inhibit_system_recovery",
+        "title_prefix": "Volume shadow-copy deletion on",
+    },
+    # Disk Structure Wipe (T1561.002) is the destructive end-state
+    # canonical to wiper malware (Shamoon, NotPetya, CaddyWiper,
+    # HermeticWiper, IsaacWiper et al.): the attacker overwrites the
+    # MBR / partition table / first sectors of the boot disk so the
+    # host can't boot. Defenders alert on direct PhysicalDrive writes
+    # via the win32 API surface; the textbook command-line proxy is
+    # ``\\\\.\\PhysicalDrive0`` appearing in process command lines
+    # (e.g. PowerShell wrapping a CreateFile + WriteFile call). The
+    # ``PhysicalDrive`` substring picks both ``PhysicalDrive0`` and
+    # ``\\\\.\\PhysicalDrive`` raw-disk references without needing a
+    # multi-selector. Distinct from ``data_destruction`` (T1485,
+    # bulk file deletion) and from ``data_encryption`` (T1486,
+    # ransomware) because the boot host is the target rather than
+    # the file content.
+    "disk_structure_wipe": {
+        "mitre": "T1561.002",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "PhysicalDrive",
+        "event_type": "impact_disk_structure_wipe",
+        "title_prefix": "Boot-disk structure wipe on",
+    },
+    # Defacement -- Internal (T1491.001) is the canonical ransomware
+    # ransom-note display step: after encryption, the operator drops
+    # an HTML / TXT ransom note on the desktop / shared paths and
+    # often replaces the desktop wallpaper with the ransom message.
+    # Defenders alert on creation of files matching common ransom-
+    # note filename patterns (``readme.txt``, ``HOW_TO_DECRYPT.html``,
+    # ``RESTORE_FILES_INFO.hta`` et al.). The ``ransom`` substring
+    # picks the most common defender-relevant filename markers across
+    # families. Linux-flavoured ransomware (BlackCat for ESXi,
+    # LockBit Linux) uses similar conventions, so the logsource is
+    # left as ``host`` rather than narrowed to Windows. Distinct from
+    # ``data_encryption`` (which fires on the file-extension change)
+    # and from ``data_destruction`` (which fires on bulk deletion).
+    "internal_defacement": {
+        "mitre": "T1491.001",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|contains",
+        "selection_value": "ransom",
+        "event_type": "impact_internal_defacement",
+        "title_prefix": "Internal defacement / ransom note on",
+    },
 }
 
 
