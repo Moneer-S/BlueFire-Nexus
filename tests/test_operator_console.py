@@ -1634,3 +1634,98 @@ def test_console_with_config_is_deterministic(tmp_path: Path) -> None:
     first_norm = pattern.sub("<span class='code'>TS</span>", first)
     second_norm = pattern.sub("<span class='code'>TS</span>", second)
     assert first_norm == second_norm
+
+
+# ---------------------------------------------------------------------------
+# Runner backend section
+# ---------------------------------------------------------------------------
+
+
+def test_console_renders_runner_backend_section(tmp_path: Path) -> None:
+    """The console renders a Runner backend section advertising the
+    active backend's runner_id, supported task types, and prose
+    description. The section is purely informational; the console
+    never constructs a manifest or invokes the backend."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    assert "<h2>Runner backend</h2>" in body
+    # Default LocalRunner advertises runner_id="local".
+    assert "<span class='runner-id'>local</span>" in body
+
+
+def test_console_runner_backend_section_lists_supported_task_types(
+    tmp_path: Path,
+) -> None:
+    """The supported-task-types list mirrors ``ALLOWED_TASK_TYPES``
+    so an operator scanning the page sees which task types the
+    backend will accept."""
+
+    from src.core.runner import ALLOWED_TASK_TYPES
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    runner_section = body[body.find("<h2>Runner backend</h2>"):]
+    for task_type in ALLOWED_TASK_TYPES:
+        assert task_type in runner_section
+
+
+def test_console_runner_backend_section_lists_forbidden_param_keys(
+    tmp_path: Path,
+) -> None:
+    """The forbidden-keys list surfaces every key in
+    ``FORBIDDEN_PARAM_KEYS`` so an operator skimming the page sees
+    which keys the backend refuses to accept."""
+
+    from src.core.runner import FORBIDDEN_PARAM_KEYS
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    runner_section = body[body.find("<h2>Runner backend</h2>"):]
+    for forbidden in FORBIDDEN_PARAM_KEYS:
+        assert forbidden in runner_section
+
+
+def test_console_runner_backend_section_accepts_custom_backend(
+    tmp_path: Path,
+) -> None:
+    """The console accepts a custom ``runner_backend`` argument so a
+    test (or a future backend implementer) can render the section
+    against a non-default backend."""
+
+    from src.core.runner import LocalRunner
+
+    custom = LocalRunner(runner_id="lab-host-7")
+    body = build_operator_console(
+        tmp_path, runner_backend=custom
+    ).read_text(encoding="utf-8")
+    assert "<span class='runner-id'>lab-host-7</span>" in body
+
+
+def test_console_runner_backend_section_emits_no_remote_assets(
+    tmp_path: Path,
+) -> None:
+    """The runner-backend section respects the existing no-remote-
+    assets contract -- no <script>, no <link>, no http:// / https://
+    URLs."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    start = body.find("<h2>Runner backend</h2>")
+    assert start != -1
+    end = body.find("class='footer'", start)
+    if end == -1:
+        end = body.find("<div class='footer'>", start)
+    runner_section = body[start:end]
+    assert "<script" not in runner_section
+    assert "<link" not in runner_section
+    assert "http://" not in runner_section
+    assert "https://" not in runner_section
+
+
+def test_console_runner_backend_section_renders_describe_prose(
+    tmp_path: Path,
+) -> None:
+    """The backend's ``describe()`` output renders inside the section
+    so an operator sees the prose label the backend declared. The
+    default LocalRunner's describe mentions "in-process"."""
+
+    body = build_operator_console(tmp_path).read_text(encoding="utf-8")
+    runner_section = body[body.find("<h2>Runner backend</h2>"):]
+    assert "in-process" in runner_section

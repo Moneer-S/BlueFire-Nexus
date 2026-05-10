@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .chain_graph import ChainGraph, build_scenario_graph
 from .modes import MODE_METADATA, MODE_NAMES, ApplyPlan, compute_apply_plan
 from .modules import build_runtime_modules
+from .runner import ALLOWED_TASK_TYPES, FORBIDDEN_PARAM_KEYS, LocalRunner, RunnerBackend
 from .modules.contracts import (
     ARTIFACT_TYPES,
     CapabilityIOContract,
@@ -181,6 +182,14 @@ th { color: var(--fg-muted); font-weight: 500; font-size: 12px; }
 .mode-apply-summary { font-size: 12px; margin: 4px 0 8px; }
 .mode-apply-summary.no-op { color: var(--produce); }
 .mode-apply-summary.pending { color: var(--warn); }
+.runner-backend-card { border-left: 4px solid var(--accent); }
+.runner-backend-title { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; font-size: 16px; }
+.runner-id { font-weight: 600; font-family: "SF Mono", Menlo, Consolas, monospace; }
+.runner-describe { font-size: 12px; }
+.runner-section { font-size: 12px; margin: 8px 0 0; }
+.runner-section h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-muted); margin: 8px 0 4px; }
+.runner-section ul { margin: 0; padding-left: 18px; }
+.runner-forbidden-list { font-size: 11px; line-height: 1.8; margin: 4px 0 0; }
 .footer { color: var(--fg-muted); font-size: 12px; margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--border); }
 """.strip()
 
@@ -190,6 +199,7 @@ def build_operator_console(
     *,
     scenarios_dir: Optional[Path] = None,
     current_config: Optional[Mapping[str, Any]] = None,
+    runner_backend: Optional[RunnerBackend] = None,
 ) -> Path:
     """Build the operator console as ``output_root/operator-console/index.html``.
 
@@ -208,6 +218,13 @@ def build_operator_console(
     Without ``current_config`` the cards fall back to the static
     target-only view (registry-only render path).
 
+    When ``runner_backend`` is supplied, the console renders a
+    ``Runner backend`` section advertising the backend's runner_id,
+    supported task types, and prose description. When omitted, the
+    console constructs a default :class:`LocalRunner` against the
+    live registry so the section always renders against the
+    in-process baseline.
+
     Returns the path to the rendered HTML file. Never starts a server,
     never opens a browser, never writes anywhere outside
     ``output_root/operator-console/``.
@@ -222,6 +239,7 @@ def build_operator_console(
     resolved_scenarios_dir = scenarios_dir or _autodiscover_scenarios_dir()
     scenarios = _list_scenarios(resolved_scenarios_dir)
     scenario_graphs = _build_scenario_graphs(resolved_scenarios_dir, registry)
+    backend = runner_backend if runner_backend is not None else LocalRunner(registry)
 
     html_text = _render_console_html(
         registry=registry,
@@ -229,6 +247,7 @@ def build_operator_console(
         scenarios=scenarios,
         scenario_graphs=scenario_graphs,
         current_config=current_config,
+        runner_backend=backend,
     )
     out_path.write_text(html_text, encoding="utf-8")
     return out_path
@@ -563,6 +582,7 @@ def _render_console_html(
     scenarios: List[Dict[str, Any]],
     scenario_graphs: Optional[List[Dict[str, Any]]] = None,
     current_config: Optional[Mapping[str, Any]] = None,
+    runner_backend: Optional[RunnerBackend] = None,
 ) -> str:
     """Stitch every section together into the single static page."""
 
@@ -584,6 +604,8 @@ def _render_console_html(
     parts.append(_render_scenarios_section(scenarios))
     parts.append(_render_scenario_graphs_section(scenario_graphs))
     parts.append(_render_modes_section(current_config=current_config))
+    if runner_backend is not None:
+        parts.append(_render_runner_backend_section(runner_backend))
     parts.append(_render_footer())
 
     parts.append("</body></html>")
@@ -1619,6 +1641,75 @@ def _render_mode_apply_diff(
     pieces.append("</tbody></table>")
     pieces.append("</div>")
     return "\n".join(pieces)
+
+
+def _render_runner_backend_section(backend: RunnerBackend) -> str:
+    """Render the active runner-backend section.
+
+    Surfaces the typed contract from :mod:`src.core.runner` so an
+    operator inspecting the page sees which backend the runtime would
+    dispatch typed task manifests to. The section is purely
+    informational: the console never constructs a manifest, never
+    calls ``backend.accept``, and never starts execution. The
+    abstraction is in place for a future Nexus + lab-runner split
+    even though only the in-process :class:`LocalRunner` ships today.
+    """
+
+    runner_id = html.escape(str(getattr(backend, "runner_id", "")))
+    description = html.escape(str(backend.describe()))
+    supported = sorted(getattr(backend, "supported_task_types", ()) or ())
+
+    parts: List[str] = ["<h2>Runner backend</h2>"]
+    parts.append(
+        "<p class='section-note'>The runtime dispatches typed task "
+        "manifests through a <span class='code'>RunnerBackend</span>. "
+        "Today only an in-process backend ships; the abstraction is "
+        "wired so a future authorized lab-runner can swap in without "
+        "touching scenarios or detection content. Manifests are typed "
+        "and validated -- arbitrary command / script / shellcode / "
+        "binary fields are refused at construction time.</p>"
+    )
+    parts.append("<div class='card runner-backend-card'>")
+    parts.append(
+        "<h3 class='runner-backend-title'>"
+        f"<span class='runner-id'>{runner_id}</span>"
+        "</h3>"
+    )
+    parts.append(f"<p class='muted runner-describe'>{description}</p>")
+
+    parts.append("<div class='runner-section'>")
+    parts.append("<h4>Supported task types</h4>")
+    if supported:
+        parts.append("<ul>")
+        for task_type in supported:
+            parts.append(
+                f"<li><span class='code'>{html.escape(task_type)}</span></li>"
+            )
+        parts.append("</ul>")
+    else:
+        parts.append("<p class='muted'>(none)</p>")
+    parts.append("</div>")
+
+    forbidden = sorted(FORBIDDEN_PARAM_KEYS)
+    parts.append("<div class='runner-section'>")
+    parts.append("<h4>Forbidden manifest param keys</h4>")
+    parts.append(
+        "<p class='muted'>Manifests carrying any of these keys are "
+        "rejected at construction time. The typed module-profile path "
+        "is the only sanctioned execution surface.</p>"
+    )
+    parts.append("<p class='runner-forbidden-list'>")
+    parts.append(
+        ", ".join(
+            f"<span class='code'>{html.escape(key)}</span>"
+            for key in forbidden
+        )
+    )
+    parts.append("</p>")
+    parts.append("</div>")
+
+    parts.append("</div>")
+    return "\n".join(parts)
 
 
 def _render_footer() -> str:
