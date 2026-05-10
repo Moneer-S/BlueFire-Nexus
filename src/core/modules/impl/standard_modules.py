@@ -1109,6 +1109,53 @@ _PERSISTENCE_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "persistence_macos_login_item",
         "title_prefix": "macOS login-item persistence on",
     },
+    # Windows COM hijacking (T1546.015): an adversary plants a
+    # CLSID -> InprocServer32 / LocalServer32 registry mapping under
+    # HKCU\Software\Classes\CLSID, which Windows resolves before
+    # HKLM\Software\Classes\CLSID. The canonical defender signal is a
+    # registry write whose key path includes the
+    # ``Software\Classes\CLSID\`` substring under HKCU. Anchor the
+    # selector on the InprocServer32 leaf so the detection draft does
+    # not over-fire on benign CLSID enumeration.
+    "com_hijack": {
+        "mitre": "T1546.015",
+        "logsource": {"category": "registry_event", "product": "windows"},
+        "selection_field": "registry.key|contains",
+        "selection_value": "Software\\\\Classes\\\\CLSID\\\\",
+        "event_type": "persistence_com_hijack",
+        "title_prefix": "COM hijacking persistence on",
+    },
+    # Image File Execution Options (T1546.012): an adversary writes a
+    # ``Debugger`` value under
+    # HKLM\Software\Microsoft\Windows NT\CurrentVersion\Image File
+    # Execution Options\<exe-name>; the OS launches the configured
+    # debugger whenever the named exe is invoked, giving a persistent
+    # foothold via any frequently-launched program (e.g. sethc.exe,
+    # utilman.exe). Defender signal is the registry write path.
+    "ifeo_debugger": {
+        "mitre": "T1546.012",
+        "logsource": {"category": "registry_event", "product": "windows"},
+        "selection_field": "registry.key|contains",
+        "selection_value": "Image File Execution Options\\\\",
+        "event_type": "persistence_ifeo_debugger",
+        "title_prefix": "Image File Execution Options persistence on",
+    },
+    # AppInit DLLs (T1546.010): legacy Windows mechanism that loads
+    # configured DLLs into every user32.dll-loading process. Modern
+    # Windows requires SecureBoot=Off + AppInit_DLLs registry edit
+    # under HKLM\Software\Microsoft\Windows NT\CurrentVersion\Windows.
+    # Anchor the selector on an EXACT match against the value name --
+    # ``|contains`` would also fire on the unrelated
+    # ``LoadAppInit_DLLs`` and ``RequireSignedAppInit_DLLs`` values
+    # (Codex P2 on PR #186).
+    "appinit_dlls": {
+        "mitre": "T1546.010",
+        "logsource": {"category": "registry_event", "product": "windows"},
+        "selection_field": "registry.value_name",
+        "selection_value": "AppInit_DLLs",
+        "event_type": "persistence_appinit_dlls",
+        "title_prefix": "AppInit DLL persistence on",
+    },
 }
 
 

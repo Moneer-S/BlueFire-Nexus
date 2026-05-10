@@ -123,6 +123,9 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "authorized_keys",
         "systemd_user_service",
         "macos_login_item",
+        "com_hijack",
+        "ifeo_debugger",
+        "appinit_dlls",
     ),
     ("defense_evasion", "technique"): (
         "argument_spoofing",
