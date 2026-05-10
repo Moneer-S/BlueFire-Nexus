@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, List, Mapping, Optional, Tuple
 
 import typer
 from rich.console import Console
@@ -1557,6 +1557,227 @@ def mode_plan_cmd(
         )
         for warning in plan.warnings:
             warnings_node.add(warning)
+
+    console.print(tree)
+
+
+@app.command("apply-mode-profile")
+def apply_mode_profile_cmd(
+    mode: str = typer.Argument(..., help="Target mode: simulate / emulate / live-lab."),  # noqa: B008
+    write: bool = typer.Option(  # noqa: B008
+        False,
+        "--write",
+        help=(
+            "Persist the mode's config overrides to disk via "
+            "ConfigManager.save(). Without this flag the command is "
+            "preview-only and never mutates config."
+        ),
+    ),
+    i_understand_this_is_a_lab: bool = typer.Option(  # noqa: B008
+        False,
+        "--i-understand-this-is-a-lab",
+        help=(
+            "Operator confirmation required to write a non-simulate "
+            "mode. Has no effect in preview mode."
+        ),
+    ),
+    allowed_subnets: Optional[List[str]] = typer.Option(  # noqa: B008
+        None,
+        "--allowed-subnets",
+        help=(
+            "Comma-separated CIDR ranges. Required (along with "
+            "--i-understand-this-is-a-lab) when applying live-lab "
+            "with --write."
+        ),
+    ),
+    json_output: bool = typer.Option(  # noqa: B008
+        False, "--json", help="Print the apply plan as JSON instead of a tree."
+    ),
+) -> None:
+    """Preview or apply a mode's config overrides to ``config.yaml``.
+
+    Without ``--write`` the command is preview-only: it loads the
+    current config, computes the per-key diff between the current
+    state and the target mode's overrides, and renders the diff
+    plus the required gates and warnings. **Nothing on disk
+    changes.**
+
+    With ``--write`` (and the matching gate flags for non-simulate
+    modes) the command applies the overrides via
+    ``ConfigManager.set(...)`` for each non-no-op change and calls
+    ``ConfigManager.save()``. The operator MUST opt in twice for
+    non-simulate modes -- once with ``--write`` and once with the
+    mode-specific confirmation flags -- so a stray ``--write`` on
+    its own cannot silently turn on emulate or live-lab.
+
+    Examples:
+
+        # Preview only -- the safe default.
+        python -m src.core.cli apply-mode-profile simulate
+        python -m src.core.cli apply-mode-profile emulate
+        python -m src.core.cli apply-mode-profile live-lab
+
+        # Apply simulate (no extra gates).
+        python -m src.core.cli apply-mode-profile simulate --write
+
+        # Apply emulate (lab-confirmation required).
+        python -m src.core.cli apply-mode-profile emulate --write \\
+            --i-understand-this-is-a-lab
+
+        # Apply live-lab (lab-confirmation + bounded subnets required).
+        python -m src.core.cli apply-mode-profile live-lab --write \\
+            --i-understand-this-is-a-lab \\
+            --allowed-subnets 10.10.0.0/24,192.168.50.0/24
+
+        # Same, JSON output.
+        python -m src.core.cli apply-mode-profile emulate --json
+    """
+
+    from .config import ConfigManager
+    from .modes import (
+        apply_mode_to_config_manager,
+        check_apply_gates,
+        compute_apply_plan,
+    )
+
+    config_manager = ConfigManager()
+    try:
+        plan = compute_apply_plan(mode, config_manager.to_dict())
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="mode") from exc
+
+    parsed_subnets: List[str] = []
+    if allowed_subnets:
+        # typer "List[str]" with comma-separated values arrives as a
+        # single-element list; split each element on commas to support
+        # ``--allowed-subnets a,b,c`` and ``--allowed-subnets a
+        # --allowed-subnets b`` interchangeably.
+        for entry in allowed_subnets:
+            for part in str(entry).split(","):
+                stripped = part.strip()
+                if stripped:
+                    parsed_subnets.append(stripped)
+
+    unmet_gates = (
+        check_apply_gates(
+            plan.mode,
+            i_understand_this_is_a_lab=i_understand_this_is_a_lab,
+            allowed_subnets=parsed_subnets,
+        )
+        if write
+        else ()
+    )
+
+    applied_changes: Tuple[Any, ...] = ()
+    if write and not unmet_gates:
+        applied_changes = apply_mode_to_config_manager(
+            config_manager, plan, save=True
+        )
+        if plan.mode == "live-lab" and parsed_subnets:
+            # live-lab also needs allowed_subnets populated. The mode
+            # catalog deliberately doesn't pin a value (the operator's
+            # lab subnets are theirs to declare); write the user-
+            # supplied list here so a single ``--write`` run lands a
+            # complete live-lab config.
+            #
+            # The subnets write must show up in ``applied_changes``
+            # alongside the catalog-driven mode overrides so:
+            #   1. ``changes_applied_count`` in the JSON output is
+            #      accurate, and
+            #   2. the "No changes were needed" message never fires
+            #      while we just persisted a safety-critical config
+            #      value (Codex P1 on PR #180).
+            from .modes import ConfigChange as _ConfigChange
+
+            current_subnets = config_manager.get(
+                "general.safeties.allowed_subnets", default=None
+            )
+            target_subnets = list(parsed_subnets)
+            subnets_change = _ConfigChange(
+                key="general.safeties.allowed_subnets",
+                current=current_subnets,
+                target=target_subnets,
+                no_op=current_subnets == target_subnets,
+            )
+            config_manager.set(
+                "general.safeties.allowed_subnets", target_subnets
+            )
+            config_manager.save()
+            if not subnets_change.no_op:
+                applied_changes = applied_changes + (subnets_change,)
+
+    if json_output:
+        payload = plan.to_dict()
+        payload["write_requested"] = bool(write)
+        payload["unmet_gates"] = list(unmet_gates)
+        payload["applied"] = bool(write and not unmet_gates)
+        payload["changes_applied_count"] = len(applied_changes)
+        payload["allowed_subnets_supplied"] = list(parsed_subnets)
+        typer.echo(json.dumps(payload, indent=2, default=str))
+        # Refusal exit code MUST be preserved across output modes.
+        # An automation harness that runs
+        # ``apply-mode-profile emulate --write --json`` without the
+        # confirmation flag is relying on the process status code to
+        # detect a blocked apply (the docstring promises exit code 2
+        # on unmet gates). The early ``return`` here previously
+        # short-circuited the refusal exit and let unmet-gate runs
+        # exit 0, breaking the contract (Codex P1 on PR #180).
+        if write and unmet_gates:
+            raise typer.Exit(code=2)
+        return
+
+    header = (
+        f"[bold cyan]Apply plan:[/] mode={plan.mode} "
+        f"({'WRITE' if write else 'preview-only'})"
+    )
+    tree = Tree(header)
+    tree.add(f"Description: {plan.description}")
+    tree.add(
+        f"Changes pending write: {len(plan.changes_to_write)} "
+        f"(of {len(plan.changes)} total)"
+    )
+
+    if plan.changes:
+        changes_node = tree.add("Per-key diff")
+        for change in plan.changes:
+            tag = "[dim](no-op)[/]" if change.no_op else "[bold yellow](write)[/]"
+            changes_node.add(
+                f"{change.key}: {change.current!r} -> "
+                f"{change.target!r} {tag}"
+            )
+
+    if plan.required_gates:
+        gates_node = tree.add(
+            f"Required gates ({len(plan.required_gates)})"
+        )
+        for gate in plan.required_gates:
+            gates_node.add(gate)
+
+    if plan.warnings:
+        warnings_node = tree.add(
+            f"[bold red]Warnings ({len(plan.warnings)})[/]"
+        )
+        for warning in plan.warnings:
+            warnings_node.add(warning)
+
+    if write and unmet_gates:
+        gate_block = tree.add("[bold red]Refusing to write -- unmet gates[/]")
+        for gate in unmet_gates:
+            gate_block.add(gate)
+        console.print(tree)
+        raise typer.Exit(code=2)
+
+    if write and not unmet_gates:
+        if applied_changes:
+            tree.add(
+                f"[bold green]Applied {len(applied_changes)} change(s) "
+                f"to config.yaml.[/]"
+            )
+        else:
+            tree.add(
+                "[bold green]No changes were needed -- config "
+                "already matches the target mode.[/]"
+            )
 
     console.print(tree)
 
