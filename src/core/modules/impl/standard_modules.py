@@ -1156,6 +1156,25 @@ _PERSISTENCE_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "persistence_appinit_dlls",
         "title_prefix": "AppInit DLL persistence on",
     },
+    # PowerShell Profile (T1546.013): adversary writes a malicious
+    # PowerShell profile script (canonically
+    # ``%USERPROFILE%\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1``
+    # or the system-wide
+    # ``$PSHOME\Microsoft.PowerShell_profile.ps1``) so every new
+    # PowerShell session auto-runs the attacker's code at startup.
+    # Defender narrative: file_event writes to any path containing
+    # the substring ``Microsoft.PowerShell_profile.ps1`` (covers
+    # both per-user and system-wide profile filenames). Distinct
+    # from ``registry_run_key`` (T1547.001) -- the trigger here is
+    # PowerShell session startup, not OS logon.
+    "powershell_profile": {
+        "mitre": "T1546.013",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "file.path|contains",
+        "selection_value": "Microsoft.PowerShell_profile.ps1",
+        "event_type": "persistence_powershell_profile",
+        "title_prefix": "PowerShell profile persistence on",
+    },
 }
 
 
@@ -1413,6 +1432,28 @@ _DEFENSE_EVASION_PROFILES: Dict[str, Dict[str, Any]] = {
         "selection_value": "RegSetValueEx",
         "event_type": "defense_evasion_fileless_storage_registry",
         "title_prefix": "Fileless registry payload storage on",
+    },
+    # Command Obfuscation (T1027.010): adversary obscures the
+    # PowerShell / cmd command line itself using techniques like
+    # backtick injection, randomised case, escape characters,
+    # variable-substitution chains, or string-concatenation tricks
+    # that defeat naive regex matches against canonical APIs. The
+    # canonical tooling is Invoke-Obfuscation (Daniel Bohannon /
+    # mandiant) which rewrites a PowerShell payload into a heavily
+    # mangled equivalent. Defender narrative: process_creation
+    # events whose ``process.command_line`` is unusually long
+    # (>1024 chars) AND/OR contains non-canonical character mixes.
+    # The catalog uses a substring selector on the canonical
+    # ``Invoke-Obfuscation`` tooling marker -- a defender wanting
+    # length-based heuristic detection should add a parallel rule
+    # selecting on ``process.command_line.length > 1024``.
+    "command_obfuscation": {
+        "mitre": "T1027.010",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "Invoke-Obfuscation",
+        "event_type": "defense_evasion_command_obfuscation",
+        "title_prefix": "PowerShell command obfuscation on",
     },
 }
 

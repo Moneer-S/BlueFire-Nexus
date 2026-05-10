@@ -56,6 +56,7 @@ def _ctx(tmp_path: Path) -> Dict[str, Any]:
         ("com_hijack", "T1546.015"),
         ("ifeo_debugger", "T1546.012"),
         ("appinit_dlls", "T1546.010"),
+        ("powershell_profile", "T1546.013"),
     ],
 )
 def test_technique_fans_out_to_correct_mitre(
@@ -135,6 +136,31 @@ def test_appinit_dlls_pins_exact_value_name_selector(tmp_path: Path) -> None:
     # The ``|contains`` form must not appear -- it would broaden to
     # ``LoadAppInit_DLLs`` and ``RequireSignedAppInit_DLLs``.
     assert "registry.value_name|contains" not in selection
+
+
+def test_powershell_profile_pins_t1546_013_with_profile_path_selector(
+    tmp_path: Path,
+) -> None:
+    """PowerShell Profile (T1546.013) writes a malicious profile
+    script (``Microsoft.PowerShell_profile.ps1``) so every new
+    PowerShell session auto-runs the attacker's code. Pin the MITRE
+    id, file_event/windows logsource, and the canonical filename
+    substring so the rule fires on both per-user and system-wide
+    profile paths."""
+
+    mod = PersistenceModule()
+    result = mod.execute(
+        {"technique": "powershell_profile", "target": "lab-host"},
+        _ctx(tmp_path),
+    )
+    assert result.techniques == ["T1546.013"]
+    assert result.detection_hints["logsource"] == {
+        "category": "file_event",
+        "product": "windows",
+    }
+    selection = result.detection_hints["detection"]["selection"]
+    selector_value = next(iter(selection.values()))
+    assert "Microsoft.PowerShell_profile.ps1" in selector_value
 
 
 def test_persistence_techniques_each_have_distinct_event_type() -> None:

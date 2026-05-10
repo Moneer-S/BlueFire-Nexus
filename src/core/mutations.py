@@ -129,6 +129,7 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "com_hijack",
         "ifeo_debugger",
         "appinit_dlls",
+        "powershell_profile",
     ),
     ("defense_evasion", "technique"): (
         "argument_spoofing",
@@ -145,6 +146,7 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "software_packing",
         "html_smuggling",
         "fileless_storage_registry",
+        "command_obfuscation",
     ),
     ("anti_detection", "method"): (
         "memory_evasion",
