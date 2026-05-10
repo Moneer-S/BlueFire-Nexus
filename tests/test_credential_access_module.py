@@ -154,9 +154,13 @@ def test_as_rep_roasting_pins_pre_auth_disabled_ticket_extraction(
     targeted (regular users vs SPN-bearing service accounts), and by
     the protocol message that yields the crackable hash (AS-REP vs
     TGS-REP). The catalog must pin a Windows process_creation
-    logsource and the ``asrep`` tooling-marker substring so a
-    Rubeus / GetNPUsers.py invocation surfaces in the detection
-    draft.
+    logsource and the canonical Rubeus tooling-marker substring
+    (``asreproast``).
+
+    Pins the *exact* selector value so a regression that loosens it
+    back to a generic ``asrep`` substring (which would falsely imply
+    Impacket coverage but never fire on Impacket invocations) surfaces
+    immediately. (Codex P2 on PR #174.)
     """
 
     mod = CredentialAccessModule()
@@ -172,9 +176,14 @@ def test_as_rep_roasting_pins_pre_auth_disabled_ticket_extraction(
     assert logsource["product"] == "windows"
     assert logsource["category"] == "process_creation"
     # Selection value carries the AS-REP-specific tooling marker.
+    # Pin the EXACT runtime selector value so the test fires on any
+    # regression that loosens the substring (Codex P2 on PR #174).
     detection = result.detection_hints["detection"]
     selection_value = next(iter(detection["selection"].values()))
-    assert "asrep" in selection_value.lower()
+    assert selection_value == "asreproast", (
+        f"selector value must remain the canonical Rubeus subcommand; "
+        f"got {selection_value!r}"
+    )
     # The selection must NOT collide with kerberoasting's marker --
     # both techniques live under T1558.* but a defender separating
     # AS-REP roasting from kerberoasting needs distinct selectors.
