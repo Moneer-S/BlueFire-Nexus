@@ -148,12 +148,29 @@ def from_snapshot(snapshot: Mapping[str, Any]) -> ChainState:
 
     by_type = (snapshot.get("artifacts_by_type") if snapshot else None) or {}
     by_step = (snapshot.get("artifacts_by_step") if snapshot else None) or {}
+    steps_recorded = (
+        (snapshot.get("steps_recorded") if snapshot else None) or []
+    )
     warnings_raw = (snapshot.get("warnings") if snapshot else None) or []
     warnings: List[Dict[str, str]] = []
     for warning in warnings_raw:
         if isinstance(warning, Mapping):
             warnings.append({str(k): str(v) for k, v in warning.items()})
     modules_seen: set = set()
+    # Prefer the explicit ``steps_recorded`` field -- it tracks every
+    # step that ran, regardless of whether the step emitted typed
+    # artifacts. Empty-emission steps would otherwise be missed by
+    # the artifacts-by-step walk below. (Codex P2 on PR #198.)
+    if isinstance(steps_recorded, list):
+        for entry in steps_recorded:
+            if not isinstance(entry, Mapping):
+                continue
+            module_name = str(entry.get("module") or "").strip()
+            if module_name:
+                modules_seen.add(module_name)
+    # Legacy fallback: snapshots that pre-date ``steps_recorded`` only
+    # carry ``artifacts_by_step``. Walk it so the planner still gets
+    # module-reuse signal from older snapshot shapes.
     if isinstance(by_step, Mapping):
         for rows in by_step.values():
             if not isinstance(rows, list):

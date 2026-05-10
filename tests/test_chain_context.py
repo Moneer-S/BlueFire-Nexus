@@ -200,7 +200,12 @@ def test_record_step_skips_keys_with_empty_value():
     assert chain.snapshot()["artifacts_by_type"] == {}
 
 
-def test_record_step_no_contract_is_no_op():
+def test_record_step_no_contract_records_step_but_no_artifacts():
+    """Without a contract, no artifacts are indexed -- but the step
+    IS recorded in ``steps_recorded`` so downstream consumers (the
+    planner module-reuse penalty) know which modules ran. Codex P2
+    on PR #198: empty-emission steps must still be tracked."""
+
     chain = ChainContext()
     chain.record_step(
         step_id="x",
@@ -212,6 +217,7 @@ def test_record_step_no_contract_is_no_op():
         "artifacts_by_type": {},
         "artifacts_by_step": {},
         "warnings": [],
+        "steps_recorded": [{"step_id": "x", "module": "anonymous"}],
     }
 
 
@@ -306,6 +312,7 @@ def test_chain_starts_empty_and_safely_returns_none():
         "artifacts_by_type": {},
         "artifacts_by_step": {},
         "warnings": [],
+        "steps_recorded": [],
     }
 
 

@@ -644,3 +644,43 @@ def test_offer_next_steps_reuse_penalty_does_not_remove_candidates() -> None:
     suggestions = offer_next_steps(state, registry=registry, limit=30)
     modules = {s.module for s in suggestions}
     assert "discovery" in modules
+
+
+def test_from_snapshot_collects_modules_used_for_empty_emission_step() -> None:
+    """Codex P2 on PR #198: a step that runs but emits NO typed
+    artifacts must still register in ``modules_used`` so the
+    re-use penalty fires. The chain context tracks every
+    ``record_step`` call in a separate ``steps_recorded`` list, not
+    just rows in ``artifacts_by_step``."""
+
+    registry = build_runtime_modules()
+    chain = ChainContext()
+    chain.record_step(
+        step_id="empty-disc",
+        module="discovery",
+        contract=registry["discovery"].io_contract,
+        artifacts={"discovery_type": "host_discovery"},
+    )
+    snapshot = chain.snapshot()
+    assert snapshot.get("artifacts_by_step", {}) == {}
+    assert {"step_id": "empty-disc", "module": "discovery"} in snapshot["steps_recorded"]
+    state = from_snapshot(snapshot)
+    assert "discovery" in state.modules_used
+
+
+def test_from_snapshot_falls_back_to_artifacts_by_step_for_legacy_snapshot() -> None:
+    """A legacy snapshot (pre-``steps_recorded``) only carries
+    ``artifacts_by_step``. The planner walks that as a fallback so
+    older snapshots still register module-reuse signal."""
+
+    legacy_snapshot = {
+        "artifacts_by_type": {"host": [{"value": "10.0.0.1"}]},
+        "artifacts_by_step": {
+            "step-1": [
+                {"type": "host", "value": "10.0.0.1", "module": "discovery"}
+            ],
+        },
+        "warnings": [],
+    }
+    state = from_snapshot(legacy_snapshot)
+    assert "discovery" in state.modules_used
