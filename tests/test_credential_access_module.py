@@ -384,3 +384,95 @@ def test_module_advertises_all_catalog_techniques_in_attack_techniques() -> None
     assert expected.issubset(advertised), (
         f"Class attack_techniques missing entries: {expected - advertised}"
     )
+
+
+# ---------------------------------------------------------------------------
+# DCSync / LSA secrets / cached domain credentials
+# ---------------------------------------------------------------------------
+
+
+def test_dcsync_pins_t1003_006_with_process_creation_logsource(
+    tmp_path: Path,
+) -> None:
+    """DCSync (T1003.006) is the canonical AD secret-extraction
+    technique once an attacker has Replicating-Directory-Changes
+    rights. Pin the MITRE id, the process_creation logsource, and
+    the ``dcsync`` substring selector so the rule fires on
+    ``mimikatz lsadump::dcsync`` and Impacket secretsdump
+    invocations."""
+
+    mod = CredentialAccessModule()
+    result = mod.execute({"technique": "dcsync"}, _ctx(tmp_path))
+    assert result.techniques == ["T1003.006"]
+    assert result.detection_hints["logsource"] == {
+        "category": "process_creation",
+        "product": "windows",
+    }
+    selection = result.detection_hints["detection"]["selection"]
+    assert "dcsync" in selection.get("process.command_line|contains", "")
+
+
+def test_lsa_secrets_pins_t1003_004_with_registry_path_selector(
+    tmp_path: Path,
+) -> None:
+    """LSA Secrets (T1003.004) extracts cached service-credential
+    material from ``HKLM\\SECURITY\\Policy\\Secrets``. Pin the MITRE
+    id, registry_event logsource, and ``Policy\\Secrets`` substring
+    selector so the rule anchors on the canonical SECURITY-hive
+    subtree."""
+
+    mod = CredentialAccessModule()
+    result = mod.execute({"technique": "lsa_secrets"}, _ctx(tmp_path))
+    assert result.techniques == ["T1003.004"]
+    assert result.detection_hints["logsource"] == {
+        "category": "registry_event",
+        "product": "windows",
+    }
+    selection = result.detection_hints["detection"]["selection"]
+    selector_value = next(iter(selection.values()))
+    assert "Policy" in selector_value and "Secrets" in selector_value
+
+
+def test_cached_domain_credentials_pins_t1003_005_with_cache_selector(
+    tmp_path: Path,
+) -> None:
+    """Cached Domain Credentials (T1003.005) lives under
+    ``HKLM\\SECURITY\\Cache``. Pin the MITRE id, registry_event
+    logsource, and the ``SECURITY\\Cache`` substring so the rule
+    distinguishes from ``lsa_secrets`` (which targets
+    ``Policy\\Secrets`` in the same hive)."""
+
+    mod = CredentialAccessModule()
+    result = mod.execute(
+        {"technique": "cached_domain_credentials"}, _ctx(tmp_path)
+    )
+    assert result.techniques == ["T1003.005"]
+    selection = result.detection_hints["detection"]["selection"]
+    selector_value = next(iter(selection.values()))
+    assert "SECURITY" in selector_value and "Cache" in selector_value
+    # Distinct from the lsa_secrets selector (Policy\\Secrets) -- pin
+    # that the two profiles do not collide on substring.
+    assert "Policy" not in selector_value
+
+
+def test_t1003_subtechnique_family_complete(tmp_path: Path) -> None:
+    """The T1003 family (OS Credential Dumping) now spans
+    ``T1003.001`` (LSASS), ``T1003.002`` (SAM), ``T1003.003`` (NTDS),
+    ``T1003.004`` (LSA Secrets), ``T1003.005`` (Cached Domain
+    Credentials), and ``T1003.006`` (DCSync). Pin completeness of
+    the family across the catalog so a future drop fails here."""
+
+    mod = CredentialAccessModule()
+    expected = {
+        "T1003.001",
+        "T1003.002",
+        "T1003.003",
+        "T1003.004",
+        "T1003.005",
+        "T1003.006",
+    }
+    seen: set[str] = set()
+    for technique in _CREDENTIAL_ACCESS_PROFILES:
+        result = mod.execute({"technique": technique}, _ctx(tmp_path))
+        seen.update(result.techniques)
+    assert expected <= seen, f"missing T1003 sub-techniques: {expected - seen}"
