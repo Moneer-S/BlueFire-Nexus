@@ -50,6 +50,7 @@ def _ctx(tmp_path: Path) -> Dict[str, Any]:
         ("software_packing", "T1027.002"),
         ("html_smuggling", "T1027.006"),
         ("fileless_storage_registry", "T1027.011"),
+        ("command_obfuscation", "T1027.010"),
     ],
 )
 def test_technique_fans_out_to_correct_mitre(
@@ -209,19 +210,43 @@ def test_fileless_storage_registry_pins_t1027_011_with_regsetvalueex_marker(
     assert "RegSetValueEx" in selector_value
 
 
+def test_command_obfuscation_pins_t1027_010_with_invoke_obfuscation_marker(
+    tmp_path: Path,
+) -> None:
+    """Command Obfuscation (T1027.010) pins the canonical
+    Invoke-Obfuscation tooling marker. Pin the MITRE id,
+    process_creation/windows logsource, and the substring."""
+
+    mod = DefenseEvasionModule()
+    result = mod.execute(
+        {"technique": "command_obfuscation", "target": "lab-host"},
+        _ctx(tmp_path),
+    )
+    assert result.techniques == ["T1027.010"]
+    assert result.detection_hints["logsource"] == {
+        "category": "process_creation",
+        "product": "windows",
+    }
+    selection = result.detection_hints["detection"]["selection"]
+    selector_value = next(iter(selection.values()))
+    assert "Invoke-Obfuscation" in selector_value
+
+
 def test_t1027_subtechnique_family_partial_coverage(tmp_path: Path) -> None:
     """The T1027 family (Obfuscated Files or Information) now spans
-    the parent ``T1027`` (powershell_obfuscation) plus four sub-
+    the parent ``T1027`` (powershell_obfuscation) plus five sub-
     techniques: ``T1027.002`` (Software Packing),
-    ``T1027.006`` (HTML Smuggling), ``T1027.011`` (Fileless Storage),
-    and ``T1027.013`` (Encrypted/Encoded File). Pin presence so a
-    future drop fails here."""
+    ``T1027.006`` (HTML Smuggling), ``T1027.010`` (Command
+    Obfuscation), ``T1027.011`` (Fileless Storage), and ``T1027.013``
+    (Encrypted/Encoded File). Pin presence so a future drop fails
+    here."""
 
     mod = DefenseEvasionModule()
     expected = {
         "T1027",
         "T1027.002",
         "T1027.006",
+        "T1027.010",
         "T1027.011",
         "T1027.013",
     }
