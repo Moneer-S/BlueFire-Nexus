@@ -1120,6 +1120,196 @@ def operator_console_cmd(
     )
 
 
+# ---------------------------------------------------------------------------
+# Mode-selection CLI surfaces (PR6 in the chain-graph loop)
+#
+# Wraps :mod:`src.core.modes` so an operator can preview what each
+# execution mode (simulate / emulate / live-lab) implies before
+# running anything. The commands are purely declarative -- they
+# never mutate config, never enable a mode, never start execution.
+# Operators apply mode overrides themselves via the ordinary
+# config-writer path after reviewing the plan.
+
+
+@app.command("explain-mode")
+def explain_mode_cmd(
+    mode: str = typer.Argument(  # noqa: B008
+        ...,
+        help="Mode name: simulate / emulate / live-lab (aliases: sim / em / live / lab).",
+    ),
+    json_output: bool = typer.Option(  # noqa: B008
+        False, "--json", help="Print the mode metadata as JSON instead of a panel."
+    ),
+) -> None:
+    """Describe what a given execution mode entails.
+
+    Prints the mode's description, the gates it requires, the config
+    overrides a config writer would apply, the categories of real-
+    world side effects it permits, and (for non-default modes) the
+    operator-facing warnings.
+
+    The command is read-only -- no config write, no execution,
+    no network call. Use it to decide whether a mode is appropriate
+    for the target environment BEFORE configuring the run.
+
+    Examples:
+
+        python -m src.core.cli explain-mode simulate
+        python -m src.core.cli explain-mode emulate --json
+        python -m src.core.cli explain-mode live-lab
+    """
+
+    from .modes import resolve_mode
+
+    try:
+        definition = resolve_mode(mode)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="mode") from exc
+
+    if json_output:
+        payload = {
+            "name": definition.name,
+            "description": definition.description,
+            "required_gates": list(definition.required_gates),
+            "config_overrides": [
+                {"key": key, "value": value}
+                for key, value in definition.config_overrides
+            ],
+            "side_effects": list(definition.side_effects),
+            "warnings": list(definition.warnings),
+            "safe_for_unattended": definition.safe_for_unattended,
+        }
+        typer.echo(json.dumps(payload, indent=2))
+        return
+
+    title = f"Mode: {definition.name}"
+    if not definition.safe_for_unattended:
+        title = f"{title} -- requires explicit confirmation"
+    body_lines: List[str] = [definition.description, ""]
+    body_lines.append("Config overrides:")
+    if definition.config_overrides:
+        for key, value in definition.config_overrides:
+            body_lines.append(f"  {key}: {value}")
+    else:
+        body_lines.append("  (none)")
+    body_lines.append("")
+    body_lines.append("Required gates:")
+    if definition.required_gates:
+        for gate in definition.required_gates:
+            body_lines.append(f"  - {gate}")
+    else:
+        body_lines.append("  (none)")
+    body_lines.append("")
+    body_lines.append("Side effects:")
+    for effect in definition.side_effects:
+        body_lines.append(f"  - {effect}")
+    if definition.warnings:
+        body_lines.append("")
+        body_lines.append("Warnings:")
+        for warning in definition.warnings:
+            body_lines.append(f"  - {warning}")
+    console.print(Panel.fit("\n".join(body_lines), title=title))
+
+
+@app.command("mode-plan")
+def mode_plan_cmd(
+    scenario: Path = SCENARIO_ARG,
+    mode: str = typer.Option(  # noqa: B008
+        "simulate",
+        "--mode",
+        help="Target mode: simulate / emulate / live-lab.",
+    ),
+    json_output: bool = typer.Option(  # noqa: B008
+        False, "--json", help="Print the mode plan as JSON instead of a tree."
+    ),
+) -> None:
+    """Project what running a scenario in a given mode would mean.
+
+    Loads the scenario, walks its module list to surface any legacy
+    packs it references, and composes a per-scenario mode plan
+    showing the config patch the operator would apply, every
+    required gate (mode-level + per-pack), and the operator-facing
+    warnings.
+
+    The command is read-only -- it does NOT write the config patch,
+    does NOT enable any mode, and does NOT start execution.
+    Operators apply mode overrides via the ordinary config-writer
+    path after reviewing the plan.
+
+    Examples:
+
+        python -m src.core.cli mode-plan scenarios/fin7_initial_access_to_c2.yaml
+        python -m src.core.cli mode-plan scenarios/apt29_credential_access.yaml --mode emulate
+        python -m src.core.cli mode-plan scenarios/insider_exfil_dns.yaml --mode live-lab --json
+    """
+
+    from .modes import build_mode_plan
+    from .scenario import load_scenario
+
+    try:
+        scenario_obj = load_scenario(scenario)
+    except Exception as exc:
+        raise typer.BadParameter(
+            f"failed to load scenario: {exc.__class__.__name__}",
+            param_hint="scenario",
+        ) from exc
+    try:
+        plan = build_mode_plan(scenario_obj, mode)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--mode") from exc
+
+    if json_output:
+        typer.echo(json.dumps(plan.to_dict(), indent=2, default=str))
+        return
+
+    tree = Tree(
+        f"[bold cyan]Mode plan:[/] {plan.mode} -- {plan.scenario_name}"
+    )
+    tree.add(f"Scenario id: {plan.scenario_id or '(none)'}")
+    tree.add(f"Step count: {plan.step_count}")
+    if not plan.safe_for_unattended:
+        tree.add(
+            "[bold yellow]NOT safe for unattended use[/] -- "
+            "requires explicit confirmation."
+        )
+
+    overrides_node = tree.add("Config overrides")
+    if plan.config_overrides:
+        for key, value in plan.config_overrides:
+            overrides_node.add(f"{key}: {value}")
+    else:
+        overrides_node.add("(none)")
+
+    gates_node = tree.add(
+        f"Required gates ({len(plan.required_gates)})"
+    )
+    if plan.required_gates:
+        for gate in plan.required_gates:
+            gates_node.add(gate)
+    else:
+        gates_node.add("(none)")
+
+    if plan.legacy_packs:
+        packs_node = tree.add(
+            f"Legacy packs referenced ({len(plan.legacy_packs)})"
+        )
+        for pack in plan.legacy_packs:
+            packs_node.add(pack)
+
+    side_effects_node = tree.add("Side effects")
+    for effect in plan.side_effects:
+        side_effects_node.add(effect)
+
+    if plan.warnings:
+        warnings_node = tree.add(
+            f"[bold red]Warnings ({len(plan.warnings)})[/]"
+        )
+        for warning in plan.warnings:
+            warnings_node.add(warning)
+
+    console.print(tree)
+
+
 @app.command("build-output-index")
 def build_output_index_cmd(
     output_root: Path = typer.Option(  # noqa: B008
