@@ -58,6 +58,8 @@ def test_default_technique_is_lsass_dump(tmp_path: Path) -> None:
         ("dpapi_master_key", "T1555.004"),
         ("kerberoasting", "T1558.003"),
         ("as_rep_roasting", "T1558.004"),
+        ("golden_ticket", "T1558.001"),
+        ("silver_ticket", "T1558.002"),
     ],
 )
 def test_technique_fans_out_to_correct_mitre(
@@ -191,6 +193,117 @@ def test_as_rep_roasting_pins_pre_auth_disabled_ticket_extraction(
     # Telemetry event type carries the technique-specific marker.
     event = result.telemetry[0]
     assert event.event_type == "credential_access_as_rep_roasting"
+
+
+def test_golden_ticket_pins_krbtgt_forgery_marker(tmp_path: Path) -> None:
+    """Golden Ticket (T1558.001) forges Kerberos TGTs using the
+    krbtgt account hash. The catalog must pin a Windows
+    process_creation logsource and the ``golden /`` substring -- the
+    technique name immediately followed by the first ``/``-prefixed
+    CLI argument. That substring is shared by both mimikatz
+    (``kerberos::golden /admin:...``) and Rubeus (``Rubeus.exe golden
+    /aes256:...``), so a defender's starter rule catches BOTH tool
+    families' golden-ticket forgery invocations without false-
+    positing on generic command lines mentioning the word "golden".
+
+    Distinct from the other T1558.* sub-techniques by both the
+    credential material extracted (a forged TGT, not a crackable
+    hash) and by the persistence implication (golden tickets persist
+    across user-level password rotations).
+    """
+
+    mod = CredentialAccessModule()
+    result = mod.execute(
+        {"technique": "golden_ticket", "target": "domain-controller-01"},
+        _ctx(tmp_path),
+    )
+    assert result.status == "success"
+    assert result.techniques == ["T1558.001"]
+    assert result.artifacts["technique"] == "golden_ticket"
+    logsource = result.detection_hints["logsource"]
+    assert logsource["product"] == "windows"
+    assert logsource["category"] == "process_creation"
+    detection = result.detection_hints["detection"]
+    selection_value = next(iter(detection["selection"].values()))
+    assert selection_value == "golden /"
+    # The selector must catch BOTH mimikatz-family invocations
+    # (``kerberos::golden /admin:...``) AND Rubeus invocations
+    # (``Rubeus.exe golden /aes256:...``). Both share ``golden /``
+    # as a substring (Codex P2 on PR #178 caught a prior
+    # ``kerberos::golden`` selector that missed Rubeus).
+    mimikatz_cmd = (
+        "mimikatz.exe \"kerberos::golden /admin:Administrator "
+        "/domain:contoso.com /sid:S-1-5-21-1234 /krbtgt:HASH /id:500 /ptt\""
+    )
+    rubeus_cmd = (
+        "Rubeus.exe golden /aes256:HASH /user:Administrator "
+        "/domain:contoso.com /sid:S-1-5-21-1234 /printcmd"
+    )
+    invoke_mimikatz_cmd = "Invoke-Mimikatz \"kerberos::golden /admin:...\""
+    assert selection_value in mimikatz_cmd
+    assert selection_value in rubeus_cmd
+    assert selection_value in invoke_mimikatz_cmd
+    # Selector must NOT collide with kerberoast / asreproast / silver
+    # markers -- defenders splitting the T1558.* sub-techniques need
+    # non-overlapping rules.
+    assert "kerberoast" not in selection_value.lower()
+    assert "asreproast" not in selection_value.lower()
+    assert "silver" not in selection_value.lower()
+    event = result.telemetry[0]
+    assert event.event_type == "credential_access_golden_ticket"
+
+
+def test_silver_ticket_pins_service_ticket_forgery_marker(tmp_path: Path) -> None:
+    """Silver Ticket (T1558.002) is the per-service variant of the
+    Golden Ticket forgery: the attacker forges a service ticket
+    (TGS-REP) using a service account's NTLM hash. The catalog must
+    pin a Windows process_creation logsource and the ``silver /``
+    substring -- the technique name immediately followed by the first
+    ``/``-prefixed CLI argument. That substring is shared by both
+    mimikatz (``kerberos::silver /service:...``) and Rubeus
+    (``Rubeus.exe silver /service:...``), so a defender's starter
+    rule catches BOTH tool families' silver-ticket forgery
+    invocations.
+
+    Distinct from Golden Ticket (T1558.001) by which hash drives the
+    forgery (service hash vs krbtgt hash). Crucially: silver tickets
+    bypass the KDC entirely, so EventID 4769 NEVER fires on the DC --
+    detection has to live on the target service host.
+    """
+
+    mod = CredentialAccessModule()
+    result = mod.execute(
+        {"technique": "silver_ticket", "target": "fileserver-03"},
+        _ctx(tmp_path),
+    )
+    assert result.status == "success"
+    assert result.techniques == ["T1558.002"]
+    assert result.artifacts["technique"] == "silver_ticket"
+    logsource = result.detection_hints["logsource"]
+    assert logsource["product"] == "windows"
+    assert logsource["category"] == "process_creation"
+    detection = result.detection_hints["detection"]
+    selection_value = next(iter(detection["selection"].values()))
+    assert selection_value == "silver /"
+    # Selector must catch BOTH mimikatz-family invocations
+    # (``kerberos::silver /service:...``) AND Rubeus invocations
+    # (``Rubeus.exe silver /service:...``). Both share ``silver /``
+    # as a substring (Codex P2 on PR #178 caught a prior
+    # ``kerberos::silver`` selector that missed Rubeus).
+    mimikatz_cmd = (
+        "mimikatz.exe \"kerberos::silver /service:cifs/fs01.contoso.com "
+        "/rc4:HASH /user:Administrator /domain:contoso.com /sid:S-1-5-21-1234 /ptt\""
+    )
+    rubeus_cmd = (
+        "Rubeus.exe silver /service:cifs/fs01.contoso.com "
+        "/rc4:HASH /user:Administrator /domain:contoso.com /sid:S-1-5-21-1234"
+    )
+    assert selection_value in mimikatz_cmd
+    assert selection_value in rubeus_cmd
+    # Selector distinct from Golden Ticket's ``golden /``.
+    assert "golden" not in selection_value.lower()
+    event = result.telemetry[0]
+    assert event.event_type == "credential_access_silver_ticket"
 
 
 def test_unknown_technique_falls_back_with_marker(tmp_path: Path) -> None:
