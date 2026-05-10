@@ -3191,6 +3191,111 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "credential_access_silver_ticket",
         "title_prefix": "Silver Ticket service-ticket forgery against",
     },
+    # DCSync (T1003.006) is the canonical Active Directory secret-
+    # extraction technique once an attacker has Domain Admin (or
+    # Replicating-Directory-Changes) rights: the attacker impersonates
+    # a domain controller and issues a DRSReplica RPC to pull every
+    # account's password hash (including krbtgt) from any DC in the
+    # domain. Defender narrative:
+    #
+    # - EventID 4662 with the DRS-Replica GUID
+    #   (1131f6aa-9c07-11d1-f79f-00c04fc2dcd2) requested by a
+    #   non-DC principal
+    # - mimikatz ``lsadump::dcsync`` is the canonical tooling
+    #   marker in process_creation telemetry
+    #
+    # The single-substring profile model can't OR two tooling markers
+    # in one selector, so this profile pins the mimikatz substring
+    # ``dcsync`` (case-preserving). Mimikatz invocations like
+    # ``lsadump::dcsync /user:...`` and ``Invoke-Mimikatz`` wrappers
+    # both contain the literal ``dcsync`` token. Impacket's
+    # ``secretsdump.py`` performs DCSync via the ``-just-dc`` /
+    # ``-just-dc-user`` flags and does NOT carry ``dcsync`` in its
+    # process command line; the string ``DCSync`` appears in the
+    # tool's OUTPUT but not in the surfaced process_creation
+    # telemetry. Defenders also running Impacket on monitored hosts
+    # should add a parallel rule selecting on
+    # ``process.command_line|contains: "secretsdump"`` -- or migrate
+    # this profile to a multi-selector model when the catalog grows
+    # one. (Codex P2 on PR #188 caught the prior comment, which
+    # claimed Impacket coverage that the selector did not actually
+    # provide.) Anchor on process_creation so the rule fires whether
+    # the tooling is run from a workstation or directly on the DC.
+    "dcsync": {
+        "mitre": "T1003.006",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "dcsync",
+        "event_type": "credential_access_dcsync",
+        "title_prefix": "DCSync domain replication credential extraction",
+    },
+    # LSA Secrets (T1003.004) extracts cached credentials from the
+    # Local Security Authority secrets store, which holds:
+    #
+    # - service-account passwords for autologon services (these are
+    #   plaintext-recoverable via DPAPI)
+    # - cached domain-account hashes
+    # - the machine-account computer$ NTLM hash
+    #
+    # Defender narrative: registry_event reads of
+    # ``HKLM\\SECURITY\\Policy\\Secrets\\`` (only the SYSTEM account
+    # can read these by default; access by another account is highly
+    # anomalous), or process_creation events spawning mimikatz
+    # ``lsadump::secrets`` / Impacket secretsdump.
+    #
+    # Catalog anchors on the registry path: a non-SYSTEM read of
+    # ``Policy\\Secrets`` is the canonical defender signal. Distinct
+    # from ``sam_dump`` (T1003.002, which targets the SAM hive for
+    # local-account hashes) and from ``ntds_dump`` (T1003.003, which
+    # targets domain-account hashes from the DC's NTDS.dit). LSA
+    # Secrets is the workstation/server-side counterpart -- it
+    # extracts service-credential material that lets the attacker
+    # pivot without going back to the DC.
+    "lsa_secrets": {
+        "mitre": "T1003.004",
+        "logsource": {"category": "registry_event", "product": "windows"},
+        "selection_field": "registry.key|contains",
+        # Single-backslash separators -- Windows registry_event
+        # telemetry surfaces ``SECURITY\Policy\Secrets`` (one
+        # separator), not ``SECURITY\\Policy\\Secrets``. The Python
+        # source ``\\`` produces a single literal backslash in the
+        # runtime selector. (Codex P1 on PR #188 caught the
+        # previous ``\\\\`` form, which would render as a doubled
+        # backslash and miss real registry traces.)
+        "selection_value": "SECURITY\\Policy\\Secrets",
+        "event_type": "credential_access_lsa_secrets",
+        "title_prefix": "LSA Secrets cached-credential extraction",
+    },
+    # Cached Domain Credentials (T1003.005) lives in the SECURITY
+    # registry hive at ``HKLM\\SECURITY\\Cache``. When a user logs
+    # in to a domain-joined workstation while disconnected from the
+    # network, Windows caches an MSCASH/MSCASHv2 hash of the
+    # domain credentials so they can authenticate locally next time.
+    # An attacker with SYSTEM can read the cache and crack the
+    # MSCASHv2 hashes offline (PBKDF2-SHA1 with 10240 iterations --
+    # GPU-friendly but slow).
+    #
+    # Defender narrative: registry_event reads of the
+    # ``SECURITY\\Cache`` subtree by a non-SYSTEM principal, OR
+    # mimikatz ``lsadump::cache`` invocations in process_creation
+    # telemetry. Anchor the catalog on the registry path so the
+    # rule covers both Impacket ``secretsdump`` (which reads the
+    # registry directly via remote RPC) and mimikatz (which reads
+    # the registry locally). Distinct from ``lsa_secrets``
+    # (T1003.004, ``Policy\\Secrets``) by which subtree of the
+    # SECURITY hive holds the material -- the cached domain hashes
+    # require offline cracking, while LSA secrets often surface as
+    # plaintext.
+    "cached_domain_credentials": {
+        "mitre": "T1003.005",
+        "logsource": {"category": "registry_event", "product": "windows"},
+        "selection_field": "registry.key|contains",
+        # Single-backslash separator -- ``SECURITY\Cache`` matches
+        # real registry telemetry. (Codex P1 on PR #188.)
+        "selection_value": "SECURITY\\Cache",
+        "event_type": "credential_access_cached_domain_credentials",
+        "title_prefix": "Cached domain credential extraction",
+    },
 }
 
 
