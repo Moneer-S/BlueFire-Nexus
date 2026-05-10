@@ -731,6 +731,53 @@ def test_mode_status_does_not_mutate_existing_config(
     assert config_yaml.read_text(encoding="utf-8") == original
 
 
+def test_mode_status_with_live_lab_baseline_reports_live_lab_not_emulate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Codex P1 on PR #193: live-lab's canonical overrides are a
+    superset of emulate's (both flip ``general.dry_run=False`` and
+    ``modules.legacy.global_mode=emulate``), so a config in canonical
+    live-lab state ALSO satisfies emulate's apply-plan as no-op. The
+    most-specific match wins -- ``current_mode`` must report
+    ``live-lab`` for a canonical live-lab config, not the
+    less-specific ``emulate``."""
+
+    monkeypatch.chdir(tmp_path)
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        "\n".join(
+            [
+                "general:",
+                "  dry_run: false",
+                "modules:",
+                "  legacy:",
+                "    enable_all_lab_capabilities: true",
+                "    global_mode: emulate",
+                "    global_lab_acknowledged: true",
+                "    lab_confirmation: true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mode-status", "--json"])
+    assert result.exit_code == 0, result.stdout
+    parsed = json.loads(result.stdout)
+    # The live-lab and emulate plans both happen to be no-op against
+    # this config. The most-specific (riskiest) match wins.
+    assert parsed["current_mode"] == "live-lab", (
+        f"Codex P1 invariant: full live-lab config must report "
+        f"current_mode=live-lab; got {parsed['current_mode']!r}. "
+        f"Both live-lab and emulate are no-op here, but live-lab is "
+        f"the more committed posture and should be reported."
+    )
+    # Both modes are indeed effective no-op against this config.
+    assert parsed["modes"]["live-lab"]["effective_no_op"] is True
+    assert parsed["modes"]["emulate"]["effective_no_op"] is True
+
+
 def test_mode_status_lists_pending_writes_for_non_matching_modes(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -1685,12 +1685,20 @@ def mode_status_cmd(
     plans = {name: compute_apply_plan(name, config) for name in MODE_NAMES}
     # The current mode is the canonical mode whose apply-plan is a
     # complete no-op against the loaded config. Multiple modes can
-    # match (e.g. simulate and emulate both happen to no-op) when the
-    # config sets only the keys those modes share; the resolution is
-    # to pick the safest match (earliest in MODE_NAMES, which is
-    # intentionally ordered safest -> riskiest).
+    # legitimately match because the canonical override sets are not
+    # disjoint -- live-lab's overrides are a SUPERSET of emulate's
+    # (live-lab sets ``general.dry_run=False`` and
+    # ``modules.legacy.global_mode=emulate``, which are the same
+    # values emulate sets), so a config in canonical live-lab state
+    # also satisfies emulate's apply-plan as a no-op.
+    #
+    # Resolution: walk ``MODE_NAMES`` in REVERSE (most committed /
+    # riskiest first) and return the first no-op match. That gives
+    # the operator the most-specific posture signal -- a config in
+    # full live-lab state reports ``current_mode=live-lab`` rather
+    # than misclassifying as emulate. (Codex P1 on PR #193.)
     current_mode: Optional[str] = None
-    for name in MODE_NAMES:
+    for name in reversed(MODE_NAMES):
         if plans[name].effective_no_op:
             current_mode = name
             break
