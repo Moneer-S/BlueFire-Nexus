@@ -364,6 +364,57 @@ def test_suggest_scenario_variants_handles_steps_with_no_catalog_slot() -> None:
             assert "mutation_history" not in step.get("params", {})
 
 
+def test_suggest_scenario_variants_emits_distinct_mutations() -> None:
+    """Each variant the function emits must apply a UNIQUE
+    ``(step_index, param_key, to_value)`` mutation. Without dedup,
+    two random rolls could pick the same swap and produce
+    byte-identical variants -- callers asking for ``count=3``
+    different variants would silently get duplicate runs."""
+
+    steps = [
+        {"step_id": "s1", "module": "command_control", "params": {"channel": "http"}},
+    ]
+    variants = suggest_scenario_variants(steps, count=5, seed=0)
+    # Project each variant onto its applied mutation key for equality.
+    keys = []
+    for var in variants:
+        history = var[0]["params"].get("mutation_history", [])
+        assert history, "every variant must record exactly one mutation"
+        # The single mutation entry: (step_idx=0, param_key, to_value).
+        entry = history[0]
+        keys.append((entry["param_key"], entry["to_value"]))
+    # All keys distinct.
+    assert len(set(keys)) == len(keys), (
+        f"variants are not deduplicated; saw duplicate mutation keys: "
+        f"{keys}"
+    )
+
+
+def test_suggest_scenario_variants_stops_when_catalog_exhausted() -> None:
+    """When the catalog has fewer distinct mutations than ``count``,
+    the function emits as many unique variants as it can and stops --
+    rather than re-emitting duplicates to fill the count.
+
+    ``command_control.channel`` catalog has 11 entries; against a
+    starting value of ``http`` there are 10 distinct alternatives.
+    Asking for 50 variants should return at most 10."""
+
+    steps = [
+        {"step_id": "s1", "module": "command_control", "params": {"channel": "http"}},
+    ]
+    variants = suggest_scenario_variants(steps, count=50, seed=0)
+    # Should be at most the catalog size minus the current value.
+    assert len(variants) <= 10
+    assert len(variants) >= 1
+    # All the variants must still be distinct.
+    keys = []
+    for var in variants:
+        history = var[0]["params"].get("mutation_history", [])
+        assert history
+        keys.append((history[0]["param_key"], history[0]["to_value"]))
+    assert len(set(keys)) == len(keys)
+
+
 # ---------------------------------------------------------------------------
 # Codex follow-up fixes
 # ---------------------------------------------------------------------------

@@ -386,9 +386,20 @@ def suggest_scenario_variants(
     """Generate ``count`` mutated variants of a scenario.
 
     Each variant is a fresh list of step dicts with one or more steps
-    swapped via the capability mutation catalog (PR #155). The same
-    seed produces the same variants byte-for-byte, so a defender can
-    reproduce a variant set on demand.
+    swapped via the capability mutation catalog. The same seed produces
+    the same variants byte-for-byte, so a defender can reproduce a
+    variant set on demand.
+
+    Variants are deduplicated by ``(step_index, param_key, to_value)``
+    tuple: a caller asking for ``count=3`` distinct variants gets 3
+    different mutations. When the catalog has fewer distinct mutations
+    available than ``count``, the function emits as many unique
+    variants as it can and stops -- callers asking for more variants
+    than the catalog can provide receive the available subset rather
+    than synthetic duplicates. (Without dedup, two variants could
+    independently roll the same step+mutation pair and a defender
+    asking for "three different variants" would actually run the same
+    chain twice.)
 
     The planner never writes variants to disk and never triggers
     execution; the operator persists / runs the variant they want via
@@ -399,16 +410,38 @@ def suggest_scenario_variants(
         return []
 
     rng = random.Random(seed) if seed is not None else random.Random()
+    # Pre-compute whether ANY step has a catalog mutation available at
+    # all. If not, fall back to the legacy behaviour of returning
+    # ``count`` unmutated copies so downstream callers (CLI / planner
+    # UI) still receive a stable count of variants. When at least one
+    # step does have catalog mutations, we use the dedup-aware path
+    # below: each variant is a UNIQUE (step, param_key, to_value)
+    # mutation, and the loop stops early once the catalog is exhausted
+    # rather than re-emitting duplicate variants.
+    has_any_mutation = any(
+        propose_mutations(step) for step in scenario_steps
+    )
     variants: List[List[Dict[str, Any]]] = []
-    for _ in range(count):
+
+    if not has_any_mutation:
+        for _ in range(count):
+            variant: List[Dict[str, Any]] = [
+                copy.deepcopy(dict(step)) for step in scenario_steps
+            ]
+            variants.append(variant)
+        return variants
+
+    seen_mutation_keys: set[Tuple[int, str, Any]] = set()
+    # Cap the retry attempts so a catalog with fewer distinct mutations
+    # than ``count`` can't loop forever.
+    max_attempts = count * 4
+    attempts = 0
+    while len(variants) < count and attempts < max_attempts:
+        attempts += 1
         # Deep-copy each step into the variant so unmutated steps
         # don't share nested ``params`` dicts with the input scenario
-        # or with other variants. ``dict(step)`` is a shallow copy
-        # that leaves nested mutables shared, which would let a
-        # caller editing one variant before persisting / running it
-        # leak edits back into the input or sibling variants
-        # (Codex P2 on PR #156).
-        variant: List[Dict[str, Any]] = [
+        # or with other variants.
+        variant = [
             copy.deepcopy(dict(step)) for step in scenario_steps
         ]
         # Pick one step at random and apply one random mutation to it.
@@ -416,20 +449,30 @@ def suggest_scenario_variants(
         # of the chain for a step that does.
         order = list(range(len(variant)))
         rng.shuffle(order)
-        applied = False
+        applied_key: Optional[Tuple[int, str, Any]] = None
         for idx in order:
             step = variant[idx]
             proposals = propose_mutations(step)
             if not proposals:
                 continue
-            mutation = rng.choice(proposals)
+            # Filter out mutations we've already applied at this step.
+            available = [
+                m
+                for m in proposals
+                if (idx, m.param_key, m.to_value) not in seen_mutation_keys
+            ]
+            if not available:
+                continue
+            mutation = rng.choice(available)
             variant[idx] = apply_mutation(step, mutation)
-            applied = True
+            applied_key = (idx, mutation.param_key, mutation.to_value)
             break
-        if not applied:
-            # No step in the chain has a catalog slot - return a copy
-            # so callers still get ``count`` entries, just unmutated.
-            pass
+        if applied_key is None:
+            # No step in the chain has any unused mutation. Stop --
+            # adding an unmutated copy would be a synthetic duplicate
+            # of the original scenario, not a real variant.
+            break
+        seen_mutation_keys.add(applied_key)
         variants.append(variant)
     return variants
 
