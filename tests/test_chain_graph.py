@@ -138,6 +138,100 @@ def test_unknown_module_is_chain_neutral_pass_through() -> None:
     assert graph.warnings == ()
 
 
+def test_unknown_module_with_from_step_reference_is_still_neutral() -> None:
+    """An unknown module that carries an explicit ``*_from_step``
+    reference must NOT synthesise a chain edge against axis defaults.
+
+    Without this gate, a step like
+    ``module: no_such_module`` + ``target_from_step: source-step``
+    would produce a phantom host edge using fallback axis defaults,
+    misleading defenders into thinking the chain propagated. The
+    chain-neutral-pass-through behaviour extends to the explicit-
+    axis pass too. (Codex P2 on PR #164.)
+    """
+
+    registry = {
+        "discovery": _producer(
+            ArtifactSpec(type=HOST, key="targets"),
+        ),
+    }
+    graph = build_scenario_graph(
+        [
+            _step("disc", "discovery"),
+            _step(
+                "unknown",
+                "no_such_module",
+                {"target_from_step": "disc"},
+            ),
+        ],
+        registry=registry,
+    )
+    edges_to_unknown = [e for e in graph.edges if e.target_step_id == "unknown"]
+    assert edges_to_unknown == []
+    warnings_for_unknown = [w for w in graph.warnings if w.step_id == "unknown"]
+    assert warnings_for_unknown == []
+
+
+def test_inline_slot_check_aligns_with_runtime_truthiness_rules() -> None:
+    """Runtime resolution uses ``str(params.get(key) or "").strip()``
+    so falsy values (``False`` / ``0`` / empty list) fall through to
+    the upstream propagation. The static graph must mirror that —
+    treating ``target: false`` as inline-set would suppress the
+    edge AND the warning even though runtime would propagate.
+    (Codex P2 on PR #164.)
+    """
+
+    registry = {
+        "discovery": _producer(
+            ArtifactSpec(type=HOST, key="targets"),
+        ),
+        "credential_access": _consumer(
+            ArtifactSpec(type=HOST, key="target"),
+        ),
+    }
+    # Falsy-but-not-None values should NOT count as inline-set.
+    for falsy_value in (False, 0, [], {}):
+        graph = build_scenario_graph(
+            [
+                _step("disc", "discovery"),
+                _step(
+                    "creds",
+                    "credential_access",
+                    {
+                        "target": falsy_value,
+                        "target_from_step": "disc",
+                    },
+                ),
+            ],
+            registry=registry,
+        )
+        edges_to_creds = [e for e in graph.edges if e.target_step_id == "creds"]
+        assert any(
+            e.explicit and e.source_step_id == "disc" for e in edges_to_creds
+        ), (
+            f"target={falsy_value!r} suppressed the explicit edge — "
+            f"should fall through to upstream propagation per runtime rules"
+        )
+
+    # Truthy values continue to suppress propagation.
+    graph_truthy = build_scenario_graph(
+        [
+            _step("disc", "discovery"),
+            _step(
+                "creds",
+                "credential_access",
+                {
+                    "target": "lab-host",
+                    "target_from_step": "disc",
+                },
+            ),
+        ],
+        registry=registry,
+    )
+    edges_to_creds = [e for e in graph_truthy.edges if e.target_step_id == "creds"]
+    assert edges_to_creds == []
+
+
 # ---------------------------------------------------------------------------
 # Node shape
 # ---------------------------------------------------------------------------

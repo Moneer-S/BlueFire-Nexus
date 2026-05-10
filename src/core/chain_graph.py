@@ -315,7 +315,25 @@ def build_scenario_graph(
         contract = contracts[index]
 
         # 2a. Explicit ``*_from_step`` references in the scenario YAML.
-        for param_key, axis_slot_hint, default_type, inline_param_keys in _FROM_STEP_AXES:
+        # Gate the explicit-axis pass on the consumer having a
+        # meaningful IO contract. Without the gate, an unknown
+        # module's ``*_from_step`` reference would synthesise a chain
+        # edge against axis defaults — misleading for the operator,
+        # who can't verify the module actually accepts that
+        # propagation. The chain-neutral-pass-through behaviour for
+        # unknown modules (pinned by
+        # ``test_unknown_module_is_chain_neutral_pass_through``)
+        # extends here too. (Codex P2 on PR #164.) The implicit pass
+        # (2b) and the produced-tracking pass (2c) are gated
+        # independently below so a producer-only module without
+        # ``consumes`` still indexes its emissions for downstream
+        # consumers.
+        contract_meaningful = (
+            contract is not None and is_meaningful_contract(contract)
+        )
+        for param_key, axis_slot_hint, default_type, inline_param_keys in (
+            _FROM_STEP_AXES if contract_meaningful else ()
+        ):
             raw_source = params.get(param_key)
             if not raw_source:
                 continue
@@ -602,12 +620,25 @@ def _slot_set_inline(params: Mapping[str, Any], slot_key: str) -> bool:
     An empty key (the consumer's spec carries no ``key``) cannot be
     set inline by name, so falls through to the upstream producer
     pathway.
+
+    Coercion mirrors the runtime helper
+    :func:`resolve_target_from_step` which uses
+    ``str(params.get(param_key) or "").strip()`` to test for an inline
+    value. That short-circuits ``False`` / ``0`` / empty list / empty
+    dict / ``None`` to "no inline value" — at runtime a step with
+    ``target: false`` (or ``0``) STILL falls through to the
+    ``*_from_step`` propagation. Without this alignment the static
+    graph would suppress the explicit edge AND the
+    ``missing_required`` warning for malformed-but-runtime-accepted
+    YAML, creating planner/runtime divergence. (Codex P2 on PR #164.)
     """
 
     if not slot_key:
         return False
     value = params.get(slot_key)
-    return value not in (None, "", [], {})
+    if value is None:
+        return False
+    return bool(str(value or "").strip())
 
 
 # Inline-param names that win at runtime for a given consumed artifact
