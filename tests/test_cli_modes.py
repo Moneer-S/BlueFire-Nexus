@@ -625,3 +625,193 @@ def test_apply_mode_profile_emulate_does_not_clobber_per_pack_state(
     # Emulate's catalog overrides DID land on the global keys.
     assert cm_after.get("general.dry_run") is False
     assert cm_after.get("modules.legacy.global_mode") == "emulate"
+
+
+# ---------------------------------------------------------------------------
+# mode-status
+# ---------------------------------------------------------------------------
+
+
+def test_mode_status_with_simulate_baseline_reports_simulate_current(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A config matching every simulate target value reports the
+    current mode as simulate."""
+
+    monkeypatch.chdir(tmp_path)
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        "\n".join(
+            [
+                "general:",
+                "  dry_run: true",
+                "modules:",
+                "  legacy:",
+                "    enable_all_lab_capabilities: false",
+                "    global_mode: simulate",
+                "    global_lab_acknowledged: false",
+                "    lab_confirmation: false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mode-status"])
+    assert result.exit_code == 0, result.stdout
+    assert "current mode is simulate" in result.stdout
+
+
+def test_mode_status_json_emits_documented_shape(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``--json`` returns a stable dict shape with current_mode,
+    config_loaded, and a per-mode breakdown."""
+
+    monkeypatch.chdir(tmp_path)
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        "general:\n  dry_run: true\n", encoding="utf-8"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mode-status", "--json"])
+    assert result.exit_code == 0, result.stdout
+    parsed = json.loads(result.stdout)
+    assert {"current_mode", "config_loaded", "modes"} <= set(parsed)
+    assert parsed["config_loaded"] is True
+    # Every canonical mode appears in the breakdown.
+    assert {"simulate", "emulate", "live-lab"} <= set(parsed["modes"])
+    for mode_name, mode_info in parsed["modes"].items():
+        assert {
+            "effective_no_op",
+            "changes_to_write_count",
+            "total_overrides",
+        } <= set(mode_info)
+
+
+def test_mode_status_without_config_yaml_reports_not_loaded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Without ``config.yaml`` the command reports ``current_mode=None``
+    and ``config_loaded=False``. Critically: it does NOT create a
+    default config.yaml as a side effect."""
+
+    monkeypatch.chdir(tmp_path)
+    assert not (tmp_path / "config.yaml").exists()
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mode-status", "--json"])
+    assert result.exit_code == 0, result.stdout
+    parsed = json.loads(result.stdout)
+    assert parsed["current_mode"] is None
+    assert parsed["config_loaded"] is False
+    # No file created.
+    assert not (tmp_path / "config.yaml").exists()
+
+
+def test_mode_status_does_not_mutate_existing_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Existing ``config.yaml`` is preserved byte-for-byte by the
+    command. Read-only contract."""
+
+    monkeypatch.chdir(tmp_path)
+    config_yaml = tmp_path / "config.yaml"
+    original = (
+        "general:\n  dry_run: true\nmodules:\n  legacy:\n    "
+        "global_mode: simulate\n"
+    )
+    config_yaml.write_text(original, encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mode-status"])
+    assert result.exit_code == 0, result.stdout
+    assert config_yaml.read_text(encoding="utf-8") == original
+
+
+def test_mode_status_with_live_lab_baseline_reports_live_lab_not_emulate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Codex P1 on PR #193: live-lab's canonical overrides are a
+    superset of emulate's (both flip ``general.dry_run=False`` and
+    ``modules.legacy.global_mode=emulate``), so a config in canonical
+    live-lab state ALSO satisfies emulate's apply-plan as no-op. The
+    most-specific match wins -- ``current_mode`` must report
+    ``live-lab`` for a canonical live-lab config, not the
+    less-specific ``emulate``."""
+
+    monkeypatch.chdir(tmp_path)
+    config_yaml = tmp_path / "config.yaml"
+    config_yaml.write_text(
+        "\n".join(
+            [
+                "general:",
+                "  dry_run: false",
+                "modules:",
+                "  legacy:",
+                "    enable_all_lab_capabilities: true",
+                "    global_mode: emulate",
+                "    global_lab_acknowledged: true",
+                "    lab_confirmation: true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mode-status", "--json"])
+    assert result.exit_code == 0, result.stdout
+    parsed = json.loads(result.stdout)
+    # The live-lab and emulate plans both happen to be no-op against
+    # this config. The most-specific (riskiest) match wins.
+    assert parsed["current_mode"] == "live-lab", (
+        f"Codex P1 invariant: full live-lab config must report "
+        f"current_mode=live-lab; got {parsed['current_mode']!r}. "
+        f"Both live-lab and emulate are no-op here, but live-lab is "
+        f"the more committed posture and should be reported."
+    )
+    # Both modes are indeed effective no-op against this config.
+    assert parsed["modes"]["live-lab"]["effective_no_op"] is True
+    assert parsed["modes"]["emulate"]["effective_no_op"] is True
+
+
+def test_mode_status_lists_pending_writes_for_non_matching_modes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The tree output lists the keys that would change for each
+    non-matching mode so an operator sees what blocks a transition."""
+
+    monkeypatch.chdir(tmp_path)
+    config_yaml = tmp_path / "config.yaml"
+    # Simulate baseline -- so simulate is current and live-lab has
+    # several pending writes.
+    config_yaml.write_text(
+        "\n".join(
+            [
+                "general:",
+                "  dry_run: true",
+                "modules:",
+                "  legacy:",
+                "    enable_all_lab_capabilities: false",
+                "    global_mode: simulate",
+                "    global_lab_acknowledged: false",
+                "    lab_confirmation: false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["mode-status"])
+    assert result.exit_code == 0, result.stdout
+    # live-lab is non-matching; it lists pending writes including the
+    # canonical dry_run flip.
+    assert "live-lab" in result.stdout
+    assert "pending write" in result.stdout
+    # The dry_run flip is a known live-lab pending write against a
+    # simulate baseline.
+    assert "general.dry_run" in result.stdout

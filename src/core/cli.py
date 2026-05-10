@@ -1636,6 +1636,118 @@ def mode_plan_cmd(
     console.print(tree)
 
 
+@app.command("mode-status")
+def mode_status_cmd(
+    json_output: bool = typer.Option(  # noqa: B008
+        False, "--json", help="Print mode status as JSON instead of a tree."
+    ),
+) -> None:
+    """Report which mode the loaded ``config.yaml`` is currently in.
+
+    Loads the merged config (defaults + ``config.yaml`` overrides + alias
+    normalisation) via the side-effect-free ``ConfigManager.load_readonly``
+    helper and computes the apply-plan for every canonical mode. The
+    mode whose apply-plan is a complete no-op (zero pending writes) is
+    the current mode. When no mode matches exactly, the command prints
+    the per-mode pending-write count so the operator sees how far the
+    config drifted from each canonical baseline.
+
+    The command is read-only -- no config write, no file creation, no
+    execution.
+
+    Examples:
+
+        python -m src.core.cli mode-status
+        python -m src.core.cli mode-status --json
+    """
+
+    from .config import ConfigManager
+    from .modes import MODE_NAMES, compute_apply_plan
+
+    config = ConfigManager.load_readonly("config.yaml")
+    if config is None:
+        message = (
+            "config.yaml not found or unreadable; mode-status is "
+            "computed against the loaded config and has nothing to "
+            "report."
+        )
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {"current_mode": None, "config_loaded": False, "message": message},
+                    indent=2,
+                )
+            )
+            return
+        console.print(f"[yellow]{message}[/]")
+        return
+
+    plans = {name: compute_apply_plan(name, config) for name in MODE_NAMES}
+    # The current mode is the canonical mode whose apply-plan is a
+    # complete no-op against the loaded config. Multiple modes can
+    # legitimately match because the canonical override sets are not
+    # disjoint -- live-lab's overrides are a SUPERSET of emulate's
+    # (live-lab sets ``general.dry_run=False`` and
+    # ``modules.legacy.global_mode=emulate``, which are the same
+    # values emulate sets), so a config in canonical live-lab state
+    # also satisfies emulate's apply-plan as a no-op.
+    #
+    # Resolution: walk ``MODE_NAMES`` in REVERSE (most committed /
+    # riskiest first) and return the first no-op match. That gives
+    # the operator the most-specific posture signal -- a config in
+    # full live-lab state reports ``current_mode=live-lab`` rather
+    # than misclassifying as emulate. (Codex P1 on PR #193.)
+    current_mode: Optional[str] = None
+    for name in reversed(MODE_NAMES):
+        if plans[name].effective_no_op:
+            current_mode = name
+            break
+
+    if json_output:
+        payload = {
+            "current_mode": current_mode,
+            "config_loaded": True,
+            "modes": {
+                name: {
+                    "effective_no_op": plan.effective_no_op,
+                    "changes_to_write_count": len(plan.changes_to_write),
+                    "total_overrides": len(plan.changes),
+                }
+                for name, plan in plans.items()
+            },
+        }
+        typer.echo(json.dumps(payload, indent=2, default=str))
+        return
+
+    if current_mode is None:
+        header = (
+            "[bold yellow]Mode status: NO canonical mode matches the "
+            "loaded config[/]"
+        )
+    else:
+        header = f"[bold green]Mode status: current mode is {current_mode}[/]"
+    tree = Tree(header)
+    for name in MODE_NAMES:
+        plan = plans[name]
+        pending = len(plan.changes_to_write)
+        total = len(plan.changes)
+        if plan.effective_no_op:
+            status = "[bold green]no-op[/] (matches loaded config)"
+        else:
+            status = (
+                f"[yellow]{pending} of {total} overrides pending write[/]"
+            )
+        node = tree.add(f"{name}: {status}")
+        # Show the keys that would change so the operator sees what
+        # blocks a transition into this mode.
+        for change in plan.changes_to_write:
+            node.add(
+                f"{change.key}: {change.current!r} -> {change.target!r}"
+            )
+
+    console.print(tree)
+
+
 @app.command("apply-mode-profile")
 def apply_mode_profile_cmd(
     mode: str = typer.Argument(..., help="Target mode: simulate / emulate / live-lab."),  # noqa: B008
