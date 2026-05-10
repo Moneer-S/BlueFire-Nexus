@@ -1949,6 +1949,67 @@ _COMMAND_CONTROL_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "command_control_web_service",
         "title_prefix": "Web-service-bidirectional C2 to",
     },
+    # Domain Generation Algorithm (T1568.002) is the canonical
+    # advanced C2 resilience pattern: rather than hard-coding C2
+    # domains the operator generates a deterministic stream of
+    # pseudo-random subdomains (often algorithmically derived from
+    # the current date) and the C2 endpoint registers a small
+    # rotating subset. Defenders alert on bursts of NXDOMAIN
+    # responses against high-entropy subdomain names from a single
+    # endpoint AND/OR DNS queries to high-entropy randomly-generated
+    # subdomains. Distinct from the bare ``dns`` profile (T1071.004)
+    # by MITRE id and by detection narrative -- DNS-tunneled C2
+    # encodes data in subdomain queries against a fixed parent
+    # domain, while DGA rotates the parent domain itself across
+    # algorithmically-generated candidates. Used by Conficker, Locky,
+    # Necurs, Pushdo, Mirai, Emotet, Qakbot, et al.
+    "dga": {
+        "mitre": "T1568.002",
+        "logsource": {"category": "dns", "product": "network"},
+        "selection_field": "dns.question.name|matches",
+        "event_type": "command_control_dga",
+        "title_prefix": "Domain-generation-algorithm C2 to",
+    },
+    # Internal Proxy (T1090.001) routes C2 traffic through one or
+    # more compromised intermediate hosts inside the victim network
+    # so the egress beacon comes from a single allowed-host instead
+    # of every infected endpoint. Defenders alert on internal hosts
+    # initiating outbound C2-style traffic on behalf of OTHER
+    # internal hosts (asymmetric beacon timing, unusual proxy hops),
+    # or on internal-to-internal traffic that mirrors an external C2
+    # beacon shape. The selector pins the ``internal_proxy`` action
+    # marker so the simulated emission lands in the proxy logsource
+    # bucket; defender follow-ups separate this from the existing
+    # ``http``/``https`` flat-beacon profiles. Used by APT29 (HAFNIUM
+    # ProxyLogon staging), APT41, FIN7, and most large-network
+    # ransomware operators.
+    "internal_proxy": {
+        "mitre": "T1090.001",
+        "logsource": {"category": "proxy", "product": "host"},
+        "selection_field": "proxy.action",
+        "event_type": "command_control_internal_proxy",
+        "title_prefix": "Internal-proxy C2 hop on",
+    },
+    # Domain Fronting (T1090.004) hides the C2 endpoint behind a
+    # high-reputation CDN by setting the TLS SNI / Host header to a
+    # benign fronting domain (e.g. ``cdn.example.com``) while the
+    # HTTP Host header points at the real C2 (``c2.attacker.com``)
+    # served on the same CDN. Network defenders see only the
+    # benign SNI and miss the malicious destination. Modern
+    # detection pivots on TLS SNI vs HTTP Host header mismatch, on
+    # JA3 fingerprints, or on CDN-egress traffic shape. The selector
+    # pins the ``front_domain`` action marker so defender narratives
+    # separate domain-fronted C2 from the ordinary ``https`` profile.
+    # Used by APT29 / Cozy Bear (Tor-meek-azure transport), and
+    # historically by Signal / Telegram before CDNs disabled their
+    # SNI/Host mismatch backbones.
+    "domain_fronting": {
+        "mitre": "T1090.004",
+        "logsource": {"category": "network_connection", "product": "host"},
+        "selection_field": "tls.sni|fronts",
+        "event_type": "command_control_domain_fronting",
+        "title_prefix": "Domain-fronted C2 to",
+    },
 }
 
 
