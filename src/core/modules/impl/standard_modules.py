@@ -3145,6 +3145,45 @@ _LATERAL_MOVEMENT_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "lateral_movement_rdp",
         "title_prefix": "RDP lateral movement to",
     },
+    # Pass-the-Hash (T1550.002) is the canonical Windows alternate-
+    # authentication-material pivot: an attacker who has captured an
+    # NTLM hash (typically via ``lsass_dump`` / ``sam_dump``) replays
+    # it against another host's NTLM authentication endpoint to gain
+    # access without ever knowing the cleartext password. Defenders
+    # alert on EventID 4624 with ``LogonType: 9`` (NewCredentials) AND
+    # ``AuthenticationPackageName: Negotiate`` while the actual
+    # logon-process is non-standard. Tooling markers ``mimikatz`` /
+    # ``sekurlsa::pth`` / ``Invoke-Mimikatz`` surface in
+    # process_creation telemetry; the ``pth::`` substring picks both
+    # mimikatz module names and Rubeus's own ``ptt::``/``pth`` tabs.
+    "pass_the_hash": {
+        "mitre": "T1550.002",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "sekurlsa::pth",
+        "event_type": "lateral_movement_pass_the_hash",
+        "title_prefix": "Pass-the-Hash NTLM replay against",
+    },
+    # Pass-the-Ticket (T1550.003) reuses captured Kerberos tickets
+    # (TGT or service tickets) instead of NTLM hashes. The attacker
+    # extracts a ticket via ``mimikatz sekurlsa::tickets`` or via
+    # ``Rubeus dump``, then injects it into the current logon session
+    # with ``Rubeus ptt /ticket:<base64>`` and uses standard SMB / RPC
+    # / WinRM tooling to act as the ticket's principal. Defenders
+    # alert on EventID 4624 with ``LogonType: 3`` AND a Kerberos
+    # ticket from a host without a corresponding 4768 (TGT request).
+    # The ``ptt::`` mimikatz / ``rubeus ptt`` substring is the canonical
+    # process_creation tooling marker; deliberately distinct from the
+    # ``pth::`` selector so a defender splitting the two T1550.* sub-
+    # techniques sees them as separate detection rules.
+    "pass_the_ticket": {
+        "mitre": "T1550.003",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "rubeus ptt",
+        "event_type": "lateral_movement_pass_the_ticket",
+        "title_prefix": "Pass-the-Ticket Kerberos replay against",
+    },
 }
 
 

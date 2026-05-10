@@ -47,6 +47,8 @@ def test_default_technique_is_psexec(tmp_path: Path) -> None:
         ("scp_transfer", "T1570"),
         ("service_create", "T1543.003"),
         ("rdp", "T1021.001"),
+        ("pass_the_hash", "T1550.002"),
+        ("pass_the_ticket", "T1550.003"),
     ],
 )
 def test_technique_fans_out_to_correct_mitre(
@@ -90,6 +92,75 @@ def test_rdp_pins_port_3389_and_windows_logsource(tmp_path: Path) -> None:
     # Telemetry event type carries the technique-specific marker.
     event = result.telemetry[0]
     assert event.event_type == "lateral_movement_rdp"
+
+
+def test_pass_the_hash_pins_ntlm_replay_tooling_marker(tmp_path: Path) -> None:
+    """Pass-the-Hash (T1550.002) is the canonical Windows alternate-
+    authentication-material pivot. Defenders alert on
+    ``mimikatz sekurlsa::pth`` in process_creation telemetry; the
+    catalog must pin a Windows process_creation logsource and the
+    ``sekurlsa::pth`` substring so the detection draft fires.
+    """
+
+    mod = LateralMovementModule()
+    result = mod.execute(
+        {
+            "technique": "pass_the_hash",
+            "source": "compromised-host-01",
+            "target": "fileserver-03",
+        },
+        _ctx(tmp_path),
+    )
+    assert result.status == "success"
+    assert result.techniques == ["T1550.002"]
+    assert result.artifacts["technique"] == "pass_the_hash"
+    logsource = result.detection_hints["logsource"]
+    assert logsource["product"] == "windows"
+    assert logsource["category"] == "process_creation"
+    detection = result.detection_hints["detection"]
+    selection_value = next(iter(detection["selection"].values()))
+    assert "pth" in selection_value.lower()
+    # The selection must NOT collide with pass_the_ticket's marker --
+    # both techniques live under T1550.* but a defender splitting the
+    # two sub-techniques needs distinct selectors.
+    assert "ptt" not in selection_value.lower()
+    event = result.telemetry[0]
+    assert event.event_type == "lateral_movement_pass_the_hash"
+
+
+def test_pass_the_ticket_pins_kerberos_replay_tooling_marker(
+    tmp_path: Path,
+) -> None:
+    """Pass-the-Ticket (T1550.003) reuses captured Kerberos tickets
+    instead of NTLM hashes. Distinct from pass_the_hash by MITRE id,
+    by the credential material reused (Kerberos ticket vs NTLM hash),
+    and by the tooling-marker substring (``rubeus ptt`` vs
+    ``sekurlsa::pth``). The catalog must pin a Windows
+    process_creation logsource and the ``ptt`` substring.
+    """
+
+    mod = LateralMovementModule()
+    result = mod.execute(
+        {
+            "technique": "pass_the_ticket",
+            "source": "compromised-host-01",
+            "target": "domain-controller-01",
+        },
+        _ctx(tmp_path),
+    )
+    assert result.status == "success"
+    assert result.techniques == ["T1550.003"]
+    assert result.artifacts["technique"] == "pass_the_ticket"
+    logsource = result.detection_hints["logsource"]
+    assert logsource["product"] == "windows"
+    assert logsource["category"] == "process_creation"
+    detection = result.detection_hints["detection"]
+    selection_value = next(iter(detection["selection"].values()))
+    assert "ptt" in selection_value.lower()
+    # Distinct from pass_the_hash's selector (no ``pth`` substring).
+    assert "pth" not in selection_value.lower()
+    event = result.telemetry[0]
+    assert event.event_type == "lateral_movement_pass_the_ticket"
 
 
 def test_unknown_technique_falls_back_with_marker(tmp_path: Path) -> None:
