@@ -184,6 +184,7 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "dcsync",
         "lsa_secrets",
         "cached_domain_credentials",
+        "pam_unix_backdoor",
     ),
     ("lateral_movement", "technique"): (
         "psexec",

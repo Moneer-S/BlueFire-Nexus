@@ -503,3 +503,29 @@ def test_t1003_subtechnique_family_complete(tmp_path: Path) -> None:
         result = mod.execute({"technique": technique}, _ctx(tmp_path))
         seen.update(result.techniques)
     assert expected <= seen, f"missing T1003 sub-techniques: {expected - seen}"
+
+
+# ---------------------------------------------------------------------------
+# PAM Unix auth-stack backdoor (Linux/macOS depth)
+# ---------------------------------------------------------------------------
+
+
+def test_pam_unix_backdoor_pins_t1556_003_with_pam_d_path_selector(
+    tmp_path: Path,
+) -> None:
+    """PAM Unix backdoor (T1556.003) writes a modified PAM config or
+    pam_unix.so module to capture cleartext credentials at login.
+    Pin the MITRE id, file_event/linux logsource, and the
+    ``/etc/pam.d/`` path substring so the rule fires on the canonical
+    PAM-config tampering pattern."""
+
+    mod = CredentialAccessModule()
+    result = mod.execute({"technique": "pam_unix_backdoor"}, _ctx(tmp_path))
+    assert result.techniques == ["T1556.003"]
+    assert result.detection_hints["logsource"] == {
+        "category": "file_event",
+        "product": "linux",
+    }
+    selection = result.detection_hints["detection"]["selection"]
+    selector_value = next(iter(selection.values()))
+    assert "/etc/pam.d/" in selector_value
