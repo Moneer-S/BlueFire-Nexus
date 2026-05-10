@@ -187,11 +187,133 @@ def test_operator_console_cli_tolerates_unreadable_config_yaml(
         app, ["operator-console", "--output-root", str(output_root)]
     )
     assert result.exit_code == 0, result.stdout
-    # Warning surfaced.
-    assert "not a mapping" in result.stdout
+    # Warning surfaced (CLI's malformed-YAML / non-mapping notice).
+    assert "Warning" in result.stdout
+    assert "non-mapping value" in result.stdout
     # Page still rendered via static fallback path.
     body = (output_root / "operator-console" / "index.html").read_text(
         encoding="utf-8"
     )
     assert "Apply diff (current -&gt; target)" not in body
     assert "<h4>Config overrides</h4>" in body
+
+
+def test_operator_console_cli_diff_uses_default_merge_for_partial_config(
+    isolated_cwd: Path,
+) -> None:
+    """Codex P2 fix: the diff must be computed against the same
+    default-merged + alias-normalised config that
+    ``apply-mode-profile`` operates on. With a sparse ``config.yaml``
+    that only sets ``general.dry_run: true`` and leaves all
+    ``modules.legacy.*`` keys absent, the simulate card MUST treat
+    every simulate target value as a no-op (because the
+    ``ConfigManager.load_readonly`` path merges the safe defaults in,
+    and those defaults already match every simulate override).
+    Without the default-merge fix, the legacy keys would render as
+    ``(write)`` rows even though ``apply-mode-profile`` would treat
+    them as no-ops -- the diff and the actual on-disk action would
+    disagree.
+
+    The simulate card therefore renders as ``complete no-op`` against
+    a config that ONLY sets ``general.dry_run`` -- the rest of the
+    simulate target values match the default-merged baseline.
+    """
+
+    config_yaml = isolated_cwd / "config.yaml"
+    config_yaml.write_text(
+        "general:\n  dry_run: true\n", encoding="utf-8"
+    )
+
+    output_root = isolated_cwd / "lab-output"
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["operator-console", "--output-root", str(output_root)]
+    )
+    assert result.exit_code == 0, result.stdout
+    body = (output_root / "operator-console" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    # Must use the diff form (we have a config) ...
+    assert "Apply diff (current -&gt; target)" in body
+    # ... and the simulate card must render as a complete no-op,
+    # because the default-merge pulled in
+    # ``modules.legacy.global_mode: simulate``,
+    # ``modules.legacy.global_lab_acknowledged: false``, etc.
+    # (Codex P2 invariant: agreement with apply-mode-profile.)
+    assert "complete no-op" in body
+
+
+def test_operator_console_diff_agrees_with_apply_mode_profile_against_partial_config(
+    isolated_cwd: Path,
+) -> None:
+    """Stronger Codex P2 invariant: the diff the operator console
+    renders must use the SAME merged config dict that
+    ``apply-mode-profile`` would compute its plan against.
+
+    Construct a partial config, then verify both the operator-console
+    diff (``--write`` rows) and the ``apply-mode-profile <mode>
+    --json`` output (``changes_to_write_count``) report the same set
+    of pending writes per mode. If the operator-console used a raw
+    YAML load (no default-merge) and ``apply-mode-profile`` used the
+    full ``ConfigManager().to_dict()`` path, the two would disagree on
+    the partial-config case. Pin the agreement so a future drift
+    fails here."""
+
+    import json
+
+    config_yaml = isolated_cwd / "config.yaml"
+    config_yaml.write_text(
+        "general:\n  dry_run: true\n", encoding="utf-8"
+    )
+
+    output_root = isolated_cwd / "lab-output"
+    runner = CliRunner()
+    runner.invoke(
+        app, ["operator-console", "--output-root", str(output_root)]
+    )
+    body = (output_root / "operator-console" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+    # Per mode, the console's "N pending write of M total" count must
+    # equal apply-mode-profile's changes_to_write_count.
+    for mode_name in ("simulate", "emulate", "live-lab"):
+        plan_result = runner.invoke(
+            app, ["apply-mode-profile", mode_name, "--json"]
+        )
+        assert plan_result.exit_code == 0, plan_result.stdout
+        plan = json.loads(plan_result.stdout)
+        # The console renders either "complete no-op" (zero pending)
+        # or "N change(s) pending write of M total". Locate the
+        # mode's card and check the count agrees.
+        css_safe = mode_name.replace("_", "-")
+        card_marker = f"<div class='card mode-card mode-{css_safe}'>"
+        card_start = body.find(card_marker)
+        assert card_start != -1, f"mode card for {mode_name!r} missing"
+        # End the card slice at the next mode card (or the page footer).
+        end = body.find(
+            "<div class='card mode-card mode-",
+            card_start + len(card_marker),
+        )
+        if end == -1:
+            end = body.find("class='footer'", card_start)
+        card = body[card_start:end]
+        # Compute the actual pending-write count we expect from
+        # apply-mode-profile's plan.
+        pending = sum(
+            1 for change in plan["changes"] if not change["no_op"]
+        )
+        if pending == 0:
+            assert "complete no-op" in card, (
+                f"mode {mode_name!r}: apply-mode-profile says 0 "
+                "pending writes but console card does not advertise "
+                "complete no-op"
+            )
+        else:
+            assert (
+                f"{pending} change(s) pending write" in card
+            ), (
+                f"mode {mode_name!r}: apply-mode-profile says "
+                f"{pending} pending writes; console card pending-"
+                "count text does not match"
+            )

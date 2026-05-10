@@ -784,14 +784,23 @@ def _load_config_for_console_preview() -> Optional[Dict[str, Any]]:
     directory would silently create a config file just by previewing
     the page.
 
-    This helper instead loads ``config.yaml`` directly via
-    ``yaml.safe_load`` and returns the loaded mapping. When the file
-    is missing, unreadable, or doesn't parse to a mapping, the helper
-    returns ``None`` so the console falls back to the static-only
-    render path. No file is ever created or modified.
+    This helper delegates to :meth:`ConfigManager.load_readonly`,
+    which mirrors the load + default-merge + alias-normalisation +
+    env-template-resolution pipeline that the runtime
+    ``apply-mode-profile`` path uses (via ``ConfigManager().to_dict()``)
+    but skips the default-file-creation side effect when the file is
+    missing. The console diff is therefore computed against the same
+    merged shape that ``apply-mode-profile`` would actually compare
+    against -- a partial config (e.g. only ``general.dry_run`` set)
+    no longer over-reports ``(write)`` rows that would in fact be
+    no-ops on disk (Codex P2 on PR #183).
+
+    When the file is missing, unreadable, or doesn't parse to a
+    mapping, the helper returns ``None`` so the console falls back to
+    the static-only render path. No file is ever created or modified.
     """
 
-    import yaml
+    from .config import ConfigManager
 
     config_path = Path("config.yaml")
     if not config_path.is_file():
@@ -800,23 +809,19 @@ def _load_config_for_console_preview() -> Optional[Dict[str, Any]]:
             "static target overrides only.[/]"
         )
         return None
-    try:
-        with config_path.open("r", encoding="utf-8") as handle:
-            loaded = yaml.safe_load(handle)
-    except (OSError, yaml.YAMLError) as exc:
+    merged = ConfigManager.load_readonly(str(config_path))
+    if merged is None:
+        # Either malformed YAML or a non-mapping top-level value.
+        # ``load_readonly`` already swallowed the parse error; here we
+        # just surface a single warning to the operator and fall back
+        # to the static render.
         console.print(
-            f"[yellow]Warning: could not load config.yaml for mode "
-            f"diff ({exc.__class__.__name__}); rendering static "
-            f"target overrides only.[/]"
-        )
-        return None
-    if not isinstance(loaded, dict):
-        console.print(
-            "[yellow]Warning: config.yaml is not a mapping; rendering "
+            "[yellow]Warning: could not load config.yaml for mode "
+            "diff (malformed YAML or non-mapping value); rendering "
             "static target overrides only.[/]"
         )
         return None
-    return loaded
+    return merged
 
 
 def _print_next_steps_hint(run: dict) -> None:
