@@ -38,7 +38,7 @@ behavior” abstractly, the run produces:
 
 When run in `emulate`, the adapter now attempts to execute the corresponding
 legacy actor routine and captures runtime outcomes and extracted indicators in
-the same normalized payload used by the detection engine.
+the same normalised event-data shape the detection engine consumes.
 
 ## Safety model
 

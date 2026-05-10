@@ -1,6 +1,11 @@
-"""
-Consolidated Initial Access Module
-Handles initial access for all APT implementations
+"""Consolidated initial-access emulation module.
+
+Surfaces the runtime hooks that adversary-emulation scenarios use to
+drive initial-access behaviour (phishing, exploit, supply-chain). The
+profile catalog mirrors ATT&CK tactics so detection engineering can
+attach indicators to a typed profile; the module emulates the
+behavioural fingerprint real adversaries expose at this stage rather
+than deploying anything against an actual target.
 """
 
 import random
@@ -9,7 +14,13 @@ from typing import Any, Dict
 
 
 class InitialAccessManager:
-    """Handles initial access for all APT implementations"""
+    """Coordinate scenario initial-access emulation profiles.
+
+    Catalogs the phishing / exploit / supply-chain technique fingerprints
+    scenarios drive at the initial-access stage. The profile identifiers
+    preserve the legacy runtime surface; the abstraction is purely about
+    emulating tradecraft fingerprints for detection engineering, not
+    about deploying anything against a real target host."""
 
     def __init__(self):
         # Initialize initial access techniques
