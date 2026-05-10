@@ -1292,6 +1292,45 @@ _DEFENSE_EVASION_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "defense_evasion_impair_defenses",
         "title_prefix": "Defensive-tool impairment on",
     },
+    # Debugger Evasion (T1622): adversaries probe for an attached
+    # debugger before executing sensitive code, bailing out if one is
+    # detected. The canonical Win32 API surface: ``IsDebuggerPresent``
+    # / ``CheckRemoteDebuggerPresent`` / ``NtQueryInformationProcess``
+    # with ``ProcessDebugPort`` (or ``ProcessDebugObjectHandle`` /
+    # ``ProcessDebugFlags``). Defender narrative: process_creation
+    # events whose command line or loaded module list references one
+    # of these API names; the catalog selector pins the most common
+    # ``IsDebuggerPresent`` substring -- a defender that wants the
+    # ProcessDebugPort variant should add a parallel rule.
+    "debugger_evasion": {
+        "mitre": "T1622",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "IsDebuggerPresent",
+        "event_type": "defense_evasion_debugger_evasion",
+        "title_prefix": "Debugger-presence probe on",
+    },
+    # Encrypted/Encoded File (T1027.013): an artefact dropped to disk
+    # whose contents are obfuscated by a non-platform-default
+    # algorithm (e.g. AES-encrypted blob, custom XOR-cycled file,
+    # base64-encoded data file with no textual structure). The
+    # canonical defender signal is a file_event write where the
+    # written content has high entropy AND/OR a known
+    # encrypted-payload extension (``.enc`` / ``.aes`` / ``.xor``).
+    # Anchor on the ``.enc`` extension as the simplest stable
+    # selector; a defender wanting broader entropy-based detection
+    # should add a parallel rule. Distinct from
+    # ``powershell_obfuscation`` (T1027) which targets the
+    # PowerShell command-line FromBase64String form rather than a
+    # disk artefact.
+    "encrypted_encoded_file": {
+        "mitre": "T1027.013",
+        "logsource": {"category": "file_event", "product": "host"},
+        "selection_field": "file.path|endswith",
+        "selection_value": ".enc",
+        "event_type": "defense_evasion_encrypted_encoded_file",
+        "title_prefix": "Encrypted/encoded file artefact on",
+    },
 }
 
 
@@ -3804,6 +3843,27 @@ _PRIVILEGE_ESCALATION_PROFILES: Dict[str, Dict[str, Any]] = {
         "selection_value": "/sids:",
         "event_type": "privilege_escalation_sid_history_injection",
         "title_prefix": "SID-History injection forged-ticket on",
+    },
+    # Create Process with Token (T1134.002): an attacker calls
+    # ``CreateProcessWithTokenW`` (or ``CreateProcessAsUserW``) with a
+    # token they hold (typically obtained via duplication or theft)
+    # to spawn a child running as a different security principal.
+    # Distinct from ``token_impersonation`` (T1134.001) by which API
+    # the technique uses -- impersonation hijacks the calling thread's
+    # identity for the duration of one syscall, while
+    # ``CreateProcessWithToken*`` produces a persistent child process
+    # that runs as the target principal until it exits. Defender
+    # narrative: process_creation events whose Sysmon
+    # ``LogonId``/``IntegrityLevel`` does not match the parent
+    # process, AND/OR direct API-name match in
+    # ``CreateProcessWithTokenW`` callers.
+    "create_process_with_token": {
+        "mitre": "T1134.002",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "CreateProcessWithToken",
+        "event_type": "privilege_escalation_create_process_with_token",
+        "title_prefix": "Create-Process-With-Token spawn on",
     },
 }
 

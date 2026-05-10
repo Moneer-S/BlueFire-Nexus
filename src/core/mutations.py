@@ -139,6 +139,8 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "system_binary_proxy",
         "powershell_obfuscation",
         "impair_defenses",
+        "debugger_evasion",
+        "encrypted_encoded_file",
     ),
     ("anti_detection", "method"): (
         "memory_evasion",
@@ -258,6 +260,7 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "uac_bypass",
         "parent_pid_spoof",
         "sid_history_injection",
+        "create_process_with_token",
     ),
     ("intelligence", "intelligence_type"): (
         "actor_research",
