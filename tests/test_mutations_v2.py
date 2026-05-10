@@ -708,3 +708,174 @@ def test_propose_command_interpreter_swaps_recognises_cmd_param_alias() -> None:
     assert swaps
     # The mutation should target the ``cmd`` key, not ``command``.
     assert all(s.param_key == "cmd" for s in swaps)
+
+
+# ---------------------------------------------------------------------------
+# Chain-context-aware mutation filtering
+# ---------------------------------------------------------------------------
+
+
+def test_mutation_preserves_step_produced_types_returns_true_for_static_contract() -> None:
+    """A module whose contract has no ``produced_if`` discriminator
+    has a constant produced-type set across mutations -- the
+    predicate returns True for every catalog candidate."""
+
+    from src.core.mutations import (
+        StepMutation,
+        mutation_preserves_step_produced_types,
+    )
+
+    step = {
+        "module": "credential_access",
+        "params": {"technique": "lsass_dump"},
+    }
+    mutation = StepMutation(
+        module="credential_access",
+        param_key="technique",
+        from_value="lsass_dump",
+        to_value="kerberoasting",
+        rationale="test",
+    )
+    assert mutation_preserves_step_produced_types(step, mutation) is True
+
+
+def test_mutation_preserves_step_produced_types_detects_discovery_typology_drift() -> None:
+    """The discovery module gates per-spec emission with
+    ``produced_if`` on ``discovery_type``. Mutating from
+    ``host_discovery`` (produces HOST) to ``user_info`` (produces
+    USER, not HOST) changes the produced-type set -- the predicate
+    returns False so chain-context-aware callers can filter the
+    swap."""
+
+    from src.core.mutations import (
+        StepMutation,
+        mutation_preserves_step_produced_types,
+    )
+
+    step = {
+        "module": "discovery",
+        "params": {"discovery_type": "host_discovery"},
+    }
+    mutation = StepMutation(
+        module="discovery",
+        param_key="discovery_type",
+        from_value="host_discovery",
+        to_value="user_info",
+        rationale="test",
+    )
+    assert mutation_preserves_step_produced_types(step, mutation) is False
+
+
+def test_mutation_preserves_step_produced_types_returns_true_for_same_typology() -> None:
+    """A discovery swap that stays within the same produced-type
+    bucket (e.g. ``host_discovery`` -> ``network_scan``, both
+    produce HOST) preserves the typology."""
+
+    from src.core.mutations import (
+        StepMutation,
+        mutation_preserves_step_produced_types,
+    )
+
+    step = {
+        "module": "discovery",
+        "params": {"discovery_type": "host_discovery"},
+    }
+    mutation = StepMutation(
+        module="discovery",
+        param_key="discovery_type",
+        from_value="host_discovery",
+        to_value="network_scan",
+        rationale="test",
+    )
+    assert mutation_preserves_step_produced_types(step, mutation) is True
+
+
+def test_mutation_preserves_step_produced_types_unknown_module_passes() -> None:
+    """An unknown / legacy module name (no entry in the runtime
+    registry) returns True -- the predicate doesn't filter swaps
+    when it can't reason about the contract."""
+
+    from src.core.mutations import (
+        StepMutation,
+        mutation_preserves_step_produced_types,
+    )
+
+    step = {
+        "module": "definitely-not-a-real-module",
+        "params": {"x": "y"},
+    }
+    mutation = StepMutation(
+        module="definitely-not-a-real-module",
+        param_key="x",
+        from_value="y",
+        to_value="z",
+        rationale="test",
+    )
+    assert mutation_preserves_step_produced_types(step, mutation) is True
+
+
+def test_propose_mutations_for_chain_filters_typology_breaking_swaps() -> None:
+    """``propose_mutations_for_chain`` filters out catalog swaps
+    that would change the step's active produced types.
+
+    For a discovery step with ``host_discovery``, the catalog has
+    other ``discovery_type`` values that produce different artifact
+    types (``user_info`` -> USER, ``service_info`` -> SERVICE, etc).
+    The chain-context-aware function drops those candidates while
+    keeping HOST-producing alternatives (``network_scan``,
+    ``port_scan``, ``service_scan``)."""
+
+    from src.core.mutations import propose_mutations_for_chain
+
+    steps = [
+        {
+            "module": "discovery",
+            "params": {"discovery_type": "host_discovery"},
+        }
+    ]
+    proposals = propose_mutations_for_chain(steps, 0)
+    swap_targets = {
+        p.to_value for p in proposals if p.param_key == "discovery_type"
+    }
+    # HOST-producing alternatives are accepted.
+    assert "network_scan" in swap_targets
+    assert "port_scan" in swap_targets
+    # USER-producing / SERVICE-producing alternatives are filtered out.
+    assert "user_info" not in swap_targets
+    assert "group_info" not in swap_targets
+    assert "service_info" not in swap_targets
+
+
+def test_propose_mutations_for_chain_returns_full_set_for_static_contract() -> None:
+    """When the step's module has no ``produced_if`` discriminator,
+    every catalog candidate passes the chain-context filter
+    (the typology can't drift)."""
+
+    from src.core.mutations import (
+        propose_mutations,
+        propose_mutations_for_chain,
+    )
+
+    steps = [
+        {
+            "module": "credential_access",
+            "params": {"technique": "lsass_dump"},
+        }
+    ]
+    blind = propose_mutations(steps[0])
+    chain_aware = propose_mutations_for_chain(steps, 0)
+    blind_keys = {(p.param_key, p.to_value) for p in blind}
+    chain_keys = {(p.param_key, p.to_value) for p in chain_aware}
+    assert blind_keys == chain_keys
+
+
+def test_propose_mutations_for_chain_handles_out_of_range_index() -> None:
+    """Negative or out-of-range step_index returns ``[]`` rather
+    than raising."""
+
+    from src.core.mutations import propose_mutations_for_chain
+
+    steps = [{"module": "command_control", "params": {"channel": "http"}}]
+    assert propose_mutations_for_chain(steps, -1) == []
+    assert propose_mutations_for_chain(steps, 5) == []
+    assert propose_mutations_for_chain([], 0) == []
