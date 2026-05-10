@@ -3296,6 +3296,26 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "credential_access_cached_domain_credentials",
         "title_prefix": "Cached domain credential extraction",
     },
+    # PAM unix authentication abuse (T1556.003): pluggable
+    # authentication-module module on Linux/macOS that hooks the auth
+    # stack to capture cleartext credentials at login. The canonical
+    # implementations are pam_unix.so backdoors (file-replacement of
+    # the system's pam_unix.so with a modified copy that logs every
+    # authentication attempt) and rogue PAM modules added under
+    # ``/etc/pam.d/``. Defender narrative: file_event writes to
+    # ``/etc/pam.d/`` (the per-service PAM config tree) or to the
+    # PAM module directory itself (``/lib/security/pam_unix.so``).
+    # Anchor on the ``/etc/pam.d`` path -- the per-service config
+    # tree is the more common attacker touchpoint and writes there
+    # are rare in normal operation.
+    "pam_unix_backdoor": {
+        "mitre": "T1556.003",
+        "logsource": {"category": "file_event", "product": "linux"},
+        "selection_field": "file.path|contains",
+        "selection_value": "/etc/pam.d/",
+        "event_type": "credential_access_pam_unix_backdoor",
+        "title_prefix": "PAM Unix authentication-stack backdoor on",
+    },
 }
 
 
