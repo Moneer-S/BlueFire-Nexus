@@ -2914,6 +2914,31 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "credential_access_screen_capture",
         "title_prefix": "Screen capture for credential harvest",
     },
+    # DPAPI master-key extraction (T1555.004) is the canonical Windows
+    # credential-store unwrap path: DPAPI master keys live under
+    # ``%APPDATA%\Microsoft\Protect\<SID>\``, and an attacker who
+    # extracts them can decrypt any DPAPI-protected blob (browser
+    # cookies, RDP credentials, certificates, third-party app secrets).
+    # Defenders alert on file_event reads of the Protect directory or
+    # process_creation events spawning ``mimikatz`` /
+    # ``SharpDPAPI`` with DPAPI subcommand strings. Distinct from
+    # ``lsass_dump`` (which extracts the in-memory MasterKeys via
+    # LSASS) -- the file-based path persists across reboots.
+    "dpapi_master_key": {
+        "mitre": "T1555.004",
+        "logsource": {"category": "file_event", "product": "windows"},
+        "selection_field": "file.path|contains",
+        # Single backslash separator -- Windows file_event telemetry
+        # surfaces ``Microsoft\Protect`` (one separator), not
+        # ``Microsoft\\Protect``. The Python source ``\\`` below
+        # produces a single literal backslash in the runtime string
+        # (Codex P1 on PR #170 caught the previous ``\\\\`` form,
+        # which would render as a two-backslash selector and miss
+        # real DPAPI traces in standard Windows logs).
+        "selection_value": "Microsoft\\Protect",
+        "event_type": "credential_access_dpapi_master_key",
+        "title_prefix": "DPAPI master-key extraction",
+    },
     # Kerberoasting (T1558.003) is the canonical Active Directory
     # service-account credential extraction technique. The attacker
     # requests a Kerberos service ticket (TGS-REP) for any account
@@ -3102,6 +3127,23 @@ _LATERAL_MOVEMENT_PROFILES: Dict[str, Dict[str, Any]] = {
         "selection_value": "svcname",
         "event_type": "lateral_movement_service_create",
         "title_prefix": "Remote Windows service creation on",
+    },
+    # RDP lateral movement (T1021.001) is the canonical Windows GUI-
+    # session pivot: an attacker who has captured a credential opens
+    # an RDP session against the next host. Defenders alert on TCP
+    # connections to port 3389 (or the configured RDP port) plus
+    # ``EventID 4624`` Windows logon-type 10 (RemoteInteractive). The
+    # ``mstsc.exe`` process-creation marker rounds out the
+    # source-side signal. Distinct from psexec/wmi/winrm because the
+    # operator gets a full interactive session rather than a remote
+    # command runner -- defender narratives differ accordingly.
+    "rdp": {
+        "mitre": "T1021.001",
+        "logsource": {"category": "network_connection", "product": "windows"},
+        "selection_field": "network.dst_port",
+        "selection_value": 3389,
+        "event_type": "lateral_movement_rdp",
+        "title_prefix": "RDP lateral movement to",
     },
 }
 
