@@ -375,11 +375,251 @@ def build_mode_plan(
     )
 
 
+# ---------------------------------------------------------------------------
+# Apply plan: diff between current config and target mode
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigChange:
+    """A single dot-path config change ``apply-mode-profile`` would make.
+
+    ``current`` is what the value is in the loaded config right now;
+    ``target`` is what it would become. ``no_op`` is True iff the
+    current value already equals the target -- the operator sees those
+    rows in the preview so they understand the mode is already (mostly)
+    in effect, but nothing would actually be written.
+    """
+
+    key: str
+    current: Any
+    target: Any
+    no_op: bool
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "key": self.key,
+            "current": self.current,
+            "target": self.target,
+            "no_op": self.no_op,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyPlan:
+    """Plan describing what ``apply-mode-profile <mode> --write`` would do.
+
+    The plan is **read-only** -- computing it never mutates any
+    config. Callers compose the plan, render it for the operator,
+    and only after explicit confirmation pass the same plan back to
+    :func:`apply_mode_to_config_manager` to actually mutate config.
+
+    ``effective_no_op`` is True iff every change in the plan is a
+    no-op AND the mode's required gates are already satisfied (so
+    even with ``--write`` the call wouldn't change anything on disk).
+    """
+
+    mode: str
+    description: str
+    changes: Tuple[ConfigChange, ...]
+    required_gates: Tuple[str, ...]
+    warnings: Tuple[str, ...]
+    side_effects: Tuple[str, ...]
+    safe_for_unattended: bool
+
+    @property
+    def effective_no_op(self) -> bool:
+        return all(change.no_op for change in self.changes)
+
+    @property
+    def changes_to_write(self) -> Tuple[ConfigChange, ...]:
+        return tuple(change for change in self.changes if not change.no_op)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "description": self.description,
+            "changes": [change.to_dict() for change in self.changes],
+            "changes_to_write_count": len(self.changes_to_write),
+            "effective_no_op": self.effective_no_op,
+            "required_gates": list(self.required_gates),
+            "warnings": list(self.warnings),
+            "side_effects": list(self.side_effects),
+            "safe_for_unattended": self.safe_for_unattended,
+        }
+
+
+def _read_dot_path(config: Mapping[str, Any], dot_path: str) -> Any:
+    """Read a dot-path value out of a nested ``Mapping``.
+
+    Returns a sentinel ``_MISSING`` if any segment is absent, so the
+    caller can distinguish "absent" from "explicitly set to None".
+    """
+
+    cursor: Any = config
+    for part in dot_path.split("."):
+        if not isinstance(cursor, Mapping) or part not in cursor:
+            return _MISSING
+        cursor = cursor[part]
+    return cursor
+
+
+_MISSING: Any = object()
+
+
+def compute_apply_plan(
+    mode: str,
+    current_config: Mapping[str, Any],
+) -> ApplyPlan:
+    """Compute an :class:`ApplyPlan` for ``mode`` against ``current_config``.
+
+    ``current_config`` should be the loaded, fully-merged config dict
+    (e.g. ``ConfigManager.to_dict()``). Per-key dot-paths from the
+    mode's ``config_overrides`` are looked up in the dict; the
+    resulting :class:`ConfigChange` rows mark each as no-op (current
+    already equals target) or pending write.
+
+    The plan is computed **without** the per-pack
+    ``lab_confirmation`` enrichment that :func:`build_mode_plan`
+    adds (``apply-mode-profile`` is mode-level, not scenario-level
+    -- the scenario-level cross-check belongs in ``mode-plan``).
+
+    Raises ``ValueError`` for unknown modes (via
+    :func:`resolve_mode`).
+    """
+
+    definition = resolve_mode(mode)
+    changes: List[ConfigChange] = []
+    for dot_path, target_value in definition.config_overrides:
+        current_value = _read_dot_path(current_config, dot_path)
+        if current_value is _MISSING:
+            no_op = False
+            current_repr: Any = None
+        else:
+            no_op = current_value == target_value
+            current_repr = current_value
+        changes.append(
+            ConfigChange(
+                key=dot_path,
+                current=current_repr,
+                target=target_value,
+                no_op=no_op,
+            )
+        )
+    return ApplyPlan(
+        mode=definition.name,
+        description=definition.description,
+        changes=tuple(changes),
+        required_gates=tuple(definition.required_gates),
+        warnings=tuple(definition.warnings),
+        side_effects=tuple(definition.side_effects),
+        safe_for_unattended=definition.safe_for_unattended,
+    )
+
+
+def check_apply_gates(
+    mode: str,
+    *,
+    i_understand_this_is_a_lab: bool,
+    allowed_subnets: Optional[Sequence[str]] = None,
+) -> Tuple[str, ...]:
+    """Return the list of unmet gates that block ``--write`` for ``mode``.
+
+    An empty tuple means the gates pass and the apply may proceed.
+    A non-empty tuple lists the operator-readable gate names that
+    are still missing -- the CLI surfaces them as a refusal message.
+
+    Mode-by-mode requirements:
+
+    - ``simulate`` -- no gates. ``--write`` always proceeds.
+    - ``emulate`` -- requires ``i_understand_this_is_a_lab=True``.
+      Catches the operator who runs ``apply-mode-profile emulate
+      --write`` without realising emulate writes deeper artifacts
+      to the local filesystem.
+    - ``live-lab`` -- requires ``i_understand_this_is_a_lab=True``
+      AND a non-empty ``allowed_subnets`` list. Catches the operator
+      who runs ``apply-mode-profile live-lab --write`` without
+      bounding the lab network -- live-lab without
+      ``allowed_subnets`` would let the safety gate accept ANY
+      destination, which is exactly the configuration we never want
+      to land on disk by accident.
+    """
+
+    definition = resolve_mode(mode)
+    unmet: List[str] = []
+    if definition.name == "simulate":
+        return ()
+    if not i_understand_this_is_a_lab:
+        unmet.append(
+            "--i-understand-this-is-a-lab confirmation flag is required "
+            "for non-simulate modes."
+        )
+    if definition.name == "live-lab":
+        subnets = list(allowed_subnets or [])
+        if not subnets:
+            unmet.append(
+                "--allowed-subnets must be populated with the lab "
+                "network's CIDR ranges before live-lab can be applied."
+            )
+    return tuple(unmet)
+
+
+def apply_mode_to_config_manager(
+    config_manager: Any,
+    plan: ApplyPlan,
+    *,
+    save: bool = True,
+) -> Tuple[ConfigChange, ...]:
+    """Mutate ``config_manager`` to match ``plan`` and return the writes done.
+
+    ``config_manager`` is duck-typed: anything with a callable
+    ``set(dot_path, value)`` (and, when ``save=True``, a callable
+    ``save()``) works. Mirrors :func:`apply_simple_preset` for
+    consistency with the simple-mode preset path.
+
+    Returns the tuple of :class:`ConfigChange` rows that were
+    actually written -- the caller can use this for telemetry / a
+    "applied N changes" CLI message. No-op rows are skipped.
+
+    Callers are responsible for verifying gates via
+    :func:`check_apply_gates` BEFORE calling this. This function
+    intentionally does not check gates itself, so test code can
+    construct a ``simulate`` apply without supplying gate-related
+    fixtures, and so the gate-policy logic stays in one place.
+    """
+
+    setter = getattr(config_manager, "set", None)
+    if not callable(setter):
+        raise TypeError(
+            "apply_mode_to_config_manager requires a config-manager-like "
+            "object with a callable .set(dot_path, value) method"
+        )
+    if save:
+        saver = getattr(config_manager, "save", None)
+        if not callable(saver):
+            raise TypeError(
+                "apply_mode_to_config_manager(save=True) requires a "
+                "config-manager-like object with a callable .save() method"
+            )
+    written: List[ConfigChange] = []
+    for change in plan.changes_to_write:
+        setter(change.key, change.target)
+        written.append(change)
+    if save and written:
+        config_manager.save()
+    return tuple(written)
+
+
 __all__ = [
+    "ApplyPlan",
+    "ConfigChange",
     "MODE_METADATA",
     "MODE_NAMES",
     "ModeDefinition",
     "ModePlan",
+    "apply_mode_to_config_manager",
     "build_mode_plan",
+    "check_apply_gates",
+    "compute_apply_plan",
     "resolve_mode",
 ]

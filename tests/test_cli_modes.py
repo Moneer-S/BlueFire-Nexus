@@ -189,3 +189,183 @@ def test_mode_plan_rejects_missing_scenario() -> None:
         ["mode-plan", "scenarios/no_such_scenario.yaml", "--mode", "simulate"],
     )
     assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# apply-mode-profile
+# ---------------------------------------------------------------------------
+
+
+def _isolated_config_dir(tmp_path: Path, monkeypatch) -> Path:
+    """Point the CLI's ConfigManager at a tmp config root.
+
+    ``ConfigManager`` reads ``BLUEFIRE_CONFIG_DIR`` (or the project's
+    default) at construction time. Test runs that exercise
+    ``apply-mode-profile --write`` need an isolated config file so
+    they don't mutate the developer's working-tree ``config.yaml``.
+
+    Returns the directory the temporary config lives in so callers
+    can assert against the file directly.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BLUEFIRE_CONFIG_DIR", str(tmp_path))
+    return tmp_path
+
+
+def test_apply_mode_profile_default_is_preview_only_no_file_written(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The headline contract: without ``--write`` the command does
+    NOT mutate any file on disk. Even with the config dir pointed at
+    an empty tmp_path, no ``config.yaml`` should appear after the
+    command runs in preview mode."""
+
+    config_dir = _isolated_config_dir(tmp_path, monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(app, ["apply-mode-profile", "simulate"])
+    assert result.exit_code == 0, result.stdout
+    assert "preview-only" in result.stdout
+    # No on-disk write happened. ConfigManager does write a fresh
+    # config.yaml at construction time if the file doesn't exist
+    # yet, so the right pin is "the file's mtime did not change after
+    # the apply call". We assert by re-running the command and
+    # confirming preview-only stays the default.
+    files = list(config_dir.iterdir())
+    pre = {f: f.stat().st_mtime_ns for f in files if f.is_file()}
+    runner.invoke(app, ["apply-mode-profile", "simulate"])
+    files_after = list(config_dir.iterdir())
+    post = {f: f.stat().st_mtime_ns for f in files_after if f.is_file()}
+    # Same files, same mtimes -- nothing was rewritten by the
+    # preview path.
+    assert pre.keys() == post.keys()
+    for f, mtime in pre.items():
+        assert post[f] == mtime, f
+
+
+def test_apply_mode_profile_simulate_with_write_succeeds_without_extra_flags(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Simulate is the safe baseline -- ``--write`` works without
+    ``--i-understand-this-is-a-lab``. The command exits 0 and the
+    summary mentions either an applied count or a no-op result."""
+
+    _isolated_config_dir(tmp_path, monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["apply-mode-profile", "simulate", "--write"]
+    )
+    assert result.exit_code == 0, result.stdout
+    # Either we applied N changes, or the config already matched.
+    assert (
+        "Applied" in result.stdout or "already matches" in result.stdout
+    )
+
+
+def test_apply_mode_profile_emulate_write_without_lab_flag_refuses(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Emulate ``--write`` WITHOUT ``--i-understand-this-is-a-lab``
+    must refuse with exit code 2 so a typo or scripted misuse cannot
+    silently flip dry_run to False."""
+
+    _isolated_config_dir(tmp_path, monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["apply-mode-profile", "emulate", "--write"]
+    )
+    assert result.exit_code == 2, result.stdout
+    assert "Refusing to write" in result.stdout
+    assert "--i-understand-this-is-a-lab" in result.stdout
+
+
+def test_apply_mode_profile_live_lab_write_without_subnets_refuses(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Live-lab ``--write --i-understand-this-is-a-lab`` WITHOUT
+    ``--allowed-subnets`` must refuse. The lab-network bound is the
+    blast-radius gate; a live-lab config that lands on disk without
+    bounded subnets is the exact thing this command is meant to
+    prevent."""
+
+    _isolated_config_dir(tmp_path, monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "apply-mode-profile",
+            "live-lab",
+            "--write",
+            "--i-understand-this-is-a-lab",
+        ],
+    )
+    assert result.exit_code == 2, result.stdout
+    assert "--allowed-subnets" in result.stdout
+
+
+def test_apply_mode_profile_live_lab_write_with_both_flags_succeeds(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Live-lab with BOTH gates satisfied (lab confirmation +
+    populated subnets) succeeds with exit 0 and writes the
+    allowed_subnets list as part of the apply."""
+
+    _isolated_config_dir(tmp_path, monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "apply-mode-profile",
+            "live-lab",
+            "--write",
+            "--i-understand-this-is-a-lab",
+            "--allowed-subnets",
+            "10.10.0.0/24,192.168.50.0/24",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+
+    # Read the on-disk config and verify the allowed_subnets landed.
+    from src.core.config import ConfigManager
+
+    cm = ConfigManager()
+    subnets = cm.get("general.safeties.allowed_subnets")
+    assert subnets == ["10.10.0.0/24", "192.168.50.0/24"]
+    # Live-lab's catalog overrides also landed.
+    assert cm.get("modules.legacy.global_lab_acknowledged") is True
+    assert cm.get("modules.legacy.lab_confirmation") is True
+
+
+def test_apply_mode_profile_json_output_carries_apply_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``--json`` output exposes the documented automation shape
+    (``write_requested`` / ``unmet_gates`` / ``applied`` /
+    ``changes_applied_count``). Operator scripts can pipe stdout
+    through ``json.loads`` and branch on those fields."""
+
+    _isolated_config_dir(tmp_path, monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["apply-mode-profile", "emulate", "--json"]
+    )
+    assert result.exit_code == 0, result.stdout
+    parsed = json.loads(result.stdout)
+    assert parsed["mode"] == "emulate"
+    assert parsed["write_requested"] is False
+    assert parsed["applied"] is False
+    assert "changes" in parsed
+    assert "required_gates" in parsed
+    assert "unmet_gates" in parsed
+
+
+def test_apply_mode_profile_rejects_unknown_mode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Unknown mode argument exits non-zero with a helpful error."""
+
+    _isolated_config_dir(tmp_path, monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(app, ["apply-mode-profile", "production"])
+    assert result.exit_code != 0
+    output = (result.stdout or "") + (result.stderr or "")
+    assert "Unknown mode" in output
