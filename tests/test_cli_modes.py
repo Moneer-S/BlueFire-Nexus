@@ -369,3 +369,111 @@ def test_apply_mode_profile_rejects_unknown_mode(
     assert result.exit_code != 0
     output = (result.stdout or "") + (result.stderr or "")
     assert "Unknown mode" in output
+
+
+def test_apply_mode_profile_json_write_with_unmet_gates_exits_2(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Refusal exit code MUST be preserved across output modes
+    (Codex P1 on PR #180). Automation that runs
+    ``apply-mode-profile emulate --write --json`` without the
+    confirmation flag is relying on the process status code to
+    detect a blocked apply -- not on parsing the JSON ``applied``
+    field. Exit code 2 must fire even on the JSON path."""
+
+    _isolated_config_dir(tmp_path, monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "apply-mode-profile",
+            "emulate",
+            "--write",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 2, result.stdout
+    parsed = json.loads(result.stdout)
+    assert parsed["applied"] is False
+    assert parsed["write_requested"] is True
+    assert len(parsed["unmet_gates"]) >= 1
+
+
+def test_apply_mode_profile_live_lab_subnets_write_counted_in_applied(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When live-lab is applied with --allowed-subnets, the resulting
+    ``general.safeties.allowed_subnets`` write must be counted in
+    ``applied_changes`` (Codex P1 on PR #180). Otherwise the JSON
+    ``changes_applied_count`` field and the human-readable "applied N
+    change(s)" message would mislead operators about whether a
+    safety-critical config value just got persisted."""
+
+    _isolated_config_dir(tmp_path, monkeypatch)
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "apply-mode-profile",
+            "live-lab",
+            "--write",
+            "--i-understand-this-is-a-lab",
+            "--allowed-subnets",
+            "10.10.0.0/24",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    parsed = json.loads(result.stdout)
+    # The catalog ships 5 mode overrides for live-lab; an empty
+    # initial config means all 5 land as writes, plus the
+    # subnets write -- so changes_applied_count should be at least 6.
+    # Pin >= 6 (rather than == 6) so a future override addition
+    # doesn't break the test.
+    assert parsed["applied"] is True
+    assert parsed["changes_applied_count"] >= 6
+
+
+def test_apply_mode_profile_live_lab_subnets_only_change_does_not_show_no_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """If every catalog override is already a no-op but
+    ``--allowed-subnets`` is being newly written, the human output
+    must NOT say "No changes were needed" -- a safety-critical
+    write IS happening. (Codex P1 on PR #180.)
+
+    Setup: pre-populate the config so every live-lab catalog
+    override is already at its target. The only thing left to write
+    is the subnets list. The output should therefore claim "Applied
+    1 change", not "No changes were needed"."""
+
+    _isolated_config_dir(tmp_path, monkeypatch)
+
+    # Seed config with live-lab catalog state already in place so
+    # every override is no-op.
+    from src.core.config import ConfigManager
+
+    cm = ConfigManager()
+    cm.set("general.dry_run", False)
+    cm.set("modules.legacy.enable_all_lab_capabilities", True)
+    cm.set("modules.legacy.global_lab_acknowledged", True)
+    cm.set("modules.legacy.lab_confirmation", True)
+    cm.set("modules.legacy.global_mode", "emulate")
+    cm.save()
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "apply-mode-profile",
+            "live-lab",
+            "--write",
+            "--i-understand-this-is-a-lab",
+            "--allowed-subnets",
+            "10.50.0.0/24",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    # The subnets write IS a change. Output must reflect that.
+    assert "No changes were needed" not in result.stdout
+    assert "Applied" in result.stdout

@@ -1679,10 +1679,32 @@ def apply_mode_profile_cmd(
             # lab subnets are theirs to declare); write the user-
             # supplied list here so a single ``--write`` run lands a
             # complete live-lab config.
+            #
+            # The subnets write must show up in ``applied_changes``
+            # alongside the catalog-driven mode overrides so:
+            #   1. ``changes_applied_count`` in the JSON output is
+            #      accurate, and
+            #   2. the "No changes were needed" message never fires
+            #      while we just persisted a safety-critical config
+            #      value (Codex P1 on PR #180).
+            from .modes import ConfigChange as _ConfigChange
+
+            current_subnets = config_manager.get(
+                "general.safeties.allowed_subnets", default=None
+            )
+            target_subnets = list(parsed_subnets)
+            subnets_change = _ConfigChange(
+                key="general.safeties.allowed_subnets",
+                current=current_subnets,
+                target=target_subnets,
+                no_op=current_subnets == target_subnets,
+            )
             config_manager.set(
-                "general.safeties.allowed_subnets", list(parsed_subnets)
+                "general.safeties.allowed_subnets", target_subnets
             )
             config_manager.save()
+            if not subnets_change.no_op:
+                applied_changes = applied_changes + (subnets_change,)
 
     if json_output:
         payload = plan.to_dict()
@@ -1692,6 +1714,16 @@ def apply_mode_profile_cmd(
         payload["changes_applied_count"] = len(applied_changes)
         payload["allowed_subnets_supplied"] = list(parsed_subnets)
         typer.echo(json.dumps(payload, indent=2, default=str))
+        # Refusal exit code MUST be preserved across output modes.
+        # An automation harness that runs
+        # ``apply-mode-profile emulate --write --json`` without the
+        # confirmation flag is relying on the process status code to
+        # detect a blocked apply (the docstring promises exit code 2
+        # on unmet gates). The early ``return`` here previously
+        # short-circuited the refusal exit and let unmet-gate runs
+        # exit 0, breaking the contract (Codex P1 on PR #180).
+        if write and unmet_gates:
+            raise typer.Exit(code=2)
         return
 
     header = (
