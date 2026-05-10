@@ -76,6 +76,9 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "websocket",
         "mail",
         "web_service",
+        "dga",
+        "internal_proxy",
+        "domain_fronting",
     ),
     ("network_obfuscator", "protocol"): (
         "dns",
@@ -195,6 +198,9 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "ftp_transfer",
         "scp_transfer",
         "service_create",
+        "rdp",
+        "pass_the_hash",
+        "pass_the_ticket",
     ),
     ("collection", "technique"): (
         "file_staging",
@@ -207,6 +213,7 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "archive_collected",
         "archive_compressed",
         "archive_encrypted",
+        "network_share",
     ),
     ("exfiltration", "method"): (
         "via_c2",
@@ -214,6 +221,15 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "https_to_cloud_storage",
         "https_to_code_repo",
         "https_to_web_service",
+        "alt_protocol_asymmetric",
+        "alt_protocol_symmetric",
+        "alt_protocol_unencrypted",
+        "bluetooth",
+        "email_smtp",
+        "ftp_to_remote",
+        "scheduled_transfer",
+        "traffic_duplication",
+        "usb_removable_media",
     ),
     ("impact", "technique"): (
         "data_encryption",
@@ -226,6 +242,9 @@ MUTATION_CATALOG: Dict[Tuple[str, str], Tuple[str, ...]] = {
         "system_shutdown",
         "endpoint_dos",
         "resource_hijacking",
+        "disk_structure_wipe",
+        "inhibit_system_recovery",
+        "internal_defacement",
     ),
     ("privilege_escalation", "technique"): (
         "token_impersonation",

@@ -368,14 +368,48 @@ def test_mutation_catalog_covers_all_swap_relevant_runtime_techniques() -> None:
     technique - leaving a real coverage hole."""
 
     # Spot-check persistence: every runtime profile key should appear
-    # in the catalog. (Choosing one module to pin; broader coverage is
-    # parametrized above.)
+    # in the catalog.
     declared = set(MUTATION_CATALOG[("persistence", "technique")])
     runtime_keys = set(_PERSISTENCE_PROFILES.keys())
     missing_in_catalog = runtime_keys - declared
     assert not missing_in_catalog, (
         f"mutation catalog missing persistence techniques: "
         f"{sorted(missing_in_catalog)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "module,key",
+    sorted(_RUNTIME_CATALOG_NAMES.keys()),
+)
+def test_mutation_catalog_covers_every_runtime_technique(
+    module: str, key: str
+) -> None:
+    """Stronger version of the persistence-only check above:
+    every runtime technique key MUST appear as a mutation candidate
+    (unless the slot is in
+    ``_INTENTIONALLY_ABSENT_FROM_MUTATION_CATALOG``). A new runtime
+    profile that is not added to the mutation catalog leaves a
+    real coverage hole -- random_mutation will never explore it."""
+
+    from src.core.modules.impl import standard_modules
+
+    if (module, key) in _INTENTIONALLY_ABSENT_FROM_MUTATION_CATALOG:
+        return
+    if (module, key) not in MUTATION_CATALOG:
+        # Already pinned by ``test_mutation_catalog_is_subset_of_runtime_catalog``;
+        # don't double-fail here.
+        return
+    runtime_catalog = getattr(
+        standard_modules, _RUNTIME_CATALOG_NAMES[(module, key)]
+    )
+    declared = set(MUTATION_CATALOG[(module, key)])
+    runtime_keys = set(runtime_catalog.keys())
+    missing_in_catalog = runtime_keys - declared
+    assert not missing_in_catalog, (
+        f"mutation catalog ({module}, {key}) missing runtime keys: "
+        f"{sorted(missing_in_catalog)}. random_mutation cannot explore "
+        f"these techniques without an entry in MUTATION_CATALOG."
     )
 
 
