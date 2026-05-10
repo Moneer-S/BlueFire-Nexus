@@ -104,6 +104,17 @@ h3 { font-size: 15px; margin: 20px 0 8px; color: var(--fg-muted); }
 .tag.warn { background: rgba(230,162,60,0.16); color: var(--warn); }
 .tag.legacy { background: rgba(140,150,170,0.14); color: var(--fg-muted); }
 .tag.required { font-weight: 600; }
+/* Module-category badges. ``standard`` modules get the accent colour;
+   each legacy pack gets its own colour so an operator scanning the
+   catalog can tell at a glance whether a card is the standard
+   surface, an actor research adapter, a c2-protocol research adapter,
+   a stealth research adapter, or a tactic-pack legacy class. */
+.tag.cat-standard { background: rgba(79,141,247,0.18); color: var(--accent); }
+.tag.cat-actor    { background: rgba(192,98,192,0.18); color: var(--consume); }
+.tag.cat-c2       { background: rgba(230,162,60,0.18); color: var(--warn); }
+.tag.cat-stealth  { background: rgba(140,150,170,0.20); color: var(--fg); }
+.tag.cat-tactic   { background: rgba(45,160,109,0.18); color: var(--produce); }
+.tag.cat-meta     { background: rgba(140,150,170,0.10); color: var(--fg-muted); }
 table { width: 100%; border-collapse: collapse; margin: 8px 0; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { color: var(--fg-muted); font-weight: 500; font-size: 12px; }
@@ -129,6 +140,7 @@ th { color: var(--fg-muted); font-weight: 500; font-size: 12px; }
 .severity-high_value_unused { background: rgba(230,162,60,0.18); color: var(--warn); }
 .severity-unused_emission { background: rgba(140,150,170,0.14); color: var(--fg-muted); }
 .scenario-graph-empty { color: var(--fg-muted); font-size: 12px; font-style: italic; }
+.scenario-graph-attack { font-size: 11px; padding: 6px 0 4px; }
 .footer { color: var(--fg-muted); font-size: 12px; margin-top: 30px; padding-top: 12px; border-top: 1px solid var(--border); }
 """.strip()
 
@@ -172,6 +184,58 @@ def build_operator_console(
 
 # ---------------------------------------------------------------------------
 # Helpers
+
+
+# Module category vocabulary. A registered module belongs to exactly
+# one of these. ``standard`` covers every module that isn't part of the
+# legacy capability surface; the other categories map to the legacy
+# pack vocabulary in :mod:`src.core.legacy_controls`.
+MODULE_CATEGORIES: Tuple[str, ...] = (
+    "standard",
+    "actor",
+    "c2",
+    "stealth",
+    "tactic",
+    "meta",
+)
+
+# Legacy module-name → category mapping. Hard-coded against the
+# current registered set so the operator console stays decoupled from
+# legacy_controls' pack/capability machinery (which is keyed on
+# capability names, not module names). Keeping the mapping here also
+# means a renamed legacy module surfaces a "legacy" category fallback
+# instead of silently mis-categorising.
+_LEGACY_MODULE_CATEGORY: Dict[str, str] = {
+    "legacy_actor_profile": "actor",
+    "legacy_apt28_research": "actor",
+    "legacy_apt29_research": "actor",
+    "legacy_apt32_research": "actor",
+    "legacy_apt38_research": "actor",
+    "legacy_apt41_research": "actor",
+    "legacy_protocol_research": "c2",
+    "legacy_stealth_research": "stealth",
+    "legacy_collection": "tactic",
+    "legacy_credential_access": "tactic",
+    "legacy_impact": "tactic",
+    "legacy_lateral_movement": "tactic",
+    "legacy_privilege_escalation": "tactic",
+    "legacy_capability_summary": "meta",
+}
+
+
+def _categorize_module(name: str) -> str:
+    """Return the category bucket for a registered module name.
+
+    Categories: ``standard`` (the canonical capability surface) /
+    ``actor`` / ``c2`` / ``stealth`` / ``tactic`` / ``meta`` (legacy
+    pack groupings). Unknown ``legacy_*`` modules fall back to
+    ``meta`` so the badge still renders rather than going silently
+    uncategorised.
+    """
+
+    if not name.startswith("legacy_"):
+        return "standard"
+    return _LEGACY_MODULE_CATEGORY.get(name, "meta")
 
 
 def _autodiscover_scenarios_dir() -> Optional[Path]:
@@ -268,6 +332,13 @@ def _build_scenario_graphs(
             continue
         entry["name"] = scenario.name or scenario.id or path.stem
         entry["objective"] = (scenario.objective or "").strip()
+        # Surface the scenario's declared ATT&CK technique surface so
+        # the per-card KPI strip can render the count without re-
+        # parsing YAML. Cleans empty entries the loader may have
+        # passed through verbatim.
+        entry["attack_techniques"] = tuple(
+            str(t).strip() for t in (scenario.attack_techniques or ()) if str(t).strip()
+        )
         try:
             entry["graph"] = build_scenario_graph(
                 scenario.steps, registry=registry
@@ -489,6 +560,23 @@ def _render_kpis(
             continue
         explicit_edges_total += sum(1 for edge in graph.edges if edge.explicit)
         warnings_total += len(graph.warnings)
+    # ATT&CK technique surface: dedup across every module's declared
+    # ``attack_techniques`` tuple (covers both standard and legacy
+    # adapters) so the operator sees how broad the catalog's defender-
+    # facing surface is in one glance. Empty / missing tuples are
+    # silently skipped.
+    attack_technique_set: set[str] = set()
+    for module in registry.values():
+        for technique in getattr(module, "attack_techniques", ()) or ():
+            cleaned = str(technique).strip()
+            if cleaned:
+                attack_technique_set.add(cleaned)
+    # Per-scenario: count scenarios that declare ANY ``attack_coverage``.
+    # Defender value: high-coverage scenarios shape detection content
+    # in a way single-technique scenarios can't.
+    scenarios_with_attack = sum(
+        1 for entry in scenario_graphs if entry.get("attack_techniques")
+    )
     return textwrap.dedent(
         f"""
         <div class='kpis'>
@@ -500,6 +588,8 @@ def _render_kpis(
           <div class='kpi'><b>{mutation_candidate_total}</b><span>mutation candidates</span></div>
           <div class='kpi'><b>{explicit_edges_total}</b><span>scenario explicit edges</span></div>
           <div class='kpi'><b>{warnings_total}</b><span>scenario chain warnings</span></div>
+          <div class='kpi'><b>{len(attack_technique_set)}</b><span>ATT&amp;CK techniques in catalog</span></div>
+          <div class='kpi'><b>{scenarios_with_attack}</b><span>scenarios with ATT&amp;CK coverage</span></div>
         </div>
         """
     ).strip()
@@ -524,8 +614,15 @@ def _render_module_card(name: str, module: Any) -> str:
     contract: CapabilityIOContract = getattr(module, "io_contract", CapabilityIOContract())
     techniques = getattr(module, "attack_techniques", ())
     is_legacy = name.startswith("legacy_")
+    category = _categorize_module(name)
 
     badges: List[str] = []
+    # Category badge always renders so an operator scanning the
+    # catalog sees standard / actor / c2 / stealth / tactic / meta at
+    # a glance — beyond just the legacy/standard binary.
+    badges.append(
+        f"<span class='tag cat-{html.escape(category)}'>{html.escape(category)}</span>"
+    )
     if is_legacy:
         badges.append("<span class='tag legacy'>legacy</span>")
     if contract.not_applicable:
@@ -848,14 +945,31 @@ def _render_scenario_graph_card(entry: Mapping[str, Any]) -> str:
 
     explicit_count = sum(1 for edge in graph.edges if edge.explicit)
     implicit_count = sum(1 for edge in graph.edges if not edge.explicit)
+    attack_techniques = tuple(entry.get("attack_techniques") or ())
     pieces.append(
         "<div class='kpis'>"
         f"<div class='kpi'><b>{len(graph.nodes)}</b><span>steps</span></div>"
         f"<div class='kpi'><b>{explicit_count}</b><span>explicit edges</span></div>"
         f"<div class='kpi'><b>{implicit_count}</b><span>implicit edges</span></div>"
         f"<div class='kpi'><b>{len(graph.warnings)}</b><span>warnings</span></div>"
+        f"<div class='kpi'><b>{len(attack_techniques)}</b>"
+        f"<span>ATT&amp;CK techniques</span></div>"
         "</div>"
     )
+    # ATT&CK technique chips: render every declared technique as a
+    # tag below the KPI strip so a defender sees the coverage surface
+    # at a glance. Skipped silently when the scenario doesn't declare
+    # any ``attack_coverage:``.
+    if attack_techniques:
+        chips = " ".join(
+            f"<span class='tag'>{html.escape(t)}</span>"
+            for t in attack_techniques
+        )
+        pieces.append(
+            "<div class='scenario-graph-attack code'>"
+            f"<span class='muted'>declared ATT&amp;CK:</span> {chips}"
+            "</div>"
+        )
     pieces.append(_render_scenario_graph_svg(graph))
     pieces.append(
         "<p class='scenario-graph-legend'>"
