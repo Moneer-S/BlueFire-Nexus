@@ -16,7 +16,16 @@ from ..models import ModuleResult, TelemetryEvent
 
 
 class CommandControl:
-    """Handles Command and Control operations, including C2 beaconing."""
+    """Coordinate scenario command-channel emulation profiles.
+
+    Surfaces the runtime hooks that adversary-emulation scenarios use to
+    drive command-channel behaviour (HTTP/HTTPS check-in cadence, jitter,
+    queueing of scenario telemetry / exfil chunks). The runtime profile
+    names and method identifiers are preserved as the typed contract
+    that shipped scenarios reference. The abstraction emulates command-
+    channel behaviour for detection-engineering content; it does not
+    deploy or transmit anything against an external target.
+    """
 
     def __init__(self, nexus_instance=None):
         self.config = {

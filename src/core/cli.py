@@ -45,7 +45,14 @@ console = Console()
 CONFIG_OPTION = typer.Option(Path("config.yaml"), "--config")  # noqa: B008
 SCENARIO_ARG = typer.Argument(..., exists=True, readable=True)  # noqa: B008
 MODULE_OPTION = typer.Option(..., "--module")  # noqa: B008
-PAYLOAD_OPTION = typer.Option("{}", "--payload", help="JSON payload")  # noqa: B008
+PAYLOAD_OPTION = typer.Option(  # noqa: B008
+    "{}",
+    "--payload",
+    help=(
+        "Module operation request body, supplied as a JSON object. The "
+        "value is forwarded to the module's run_operation entrypoint."
+    ),
+)
 GOAL_ARG = typer.Argument(...)  # noqa: B008
 RUN_ID_ARG = typer.Argument(...)  # noqa: B008
 STRATEGY_OPTION = typer.Option("evasion-lite", "--strategy")  # noqa: B008
@@ -246,7 +253,7 @@ def run_operation_cmd(
     legacy_capability: str = LEGACY_CAPABILITY_OPTION,
     legacy_mode: str = LEGACY_MODE_OPTION,
 ) -> None:
-    """Run one module operation from inline JSON payload."""
+    """Run one module operation from an inline JSON request body."""
     nexus = BlueFireNexus(str(config))
     _apply_legacy_overrides(
         nexus,
@@ -289,7 +296,7 @@ def mutate_technique_cmd(
     strategy: str = STRATEGY_OPTION,
     config: Path = CONFIG_OPTION,
 ) -> None:
-    """Mutate a technique payload for lab-only research experiments."""
+    """Mutate a module's technique parameters for lab-only research experiments."""
     nexus = BlueFireNexus(str(config))
     data = json.loads(payload)
     mutated = nexus.mutate_technique(module_name=module, base_params=data, strategy=strategy)

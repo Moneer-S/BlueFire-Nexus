@@ -1,6 +1,11 @@
-"""
-Exfiltration Module
-Handles collection and exfiltration of data.
+"""Exfiltration emulation module.
+
+Surfaces the runtime hooks that adversary-emulation scenarios use to
+drive data-collection-and-exfiltration behaviour (chunking, archive
+staging, channel-aware send queues). Detection engineers attach
+indicators to the typed profiles this module exposes; the module
+emulates the behavioural fingerprint real adversaries expose at this
+stage rather than moving real data off an actual target host.
 """
 
 import base64
@@ -24,7 +29,12 @@ if TYPE_CHECKING:
     from ..command_control.command_control import CommandControl
 
 class Exfiltration:
-    """Handles data collection and exfiltration techniques."""
+    """Coordinate scenario data-collection-and-exfiltration emulation.
+
+    Provides the runtime hooks scenarios use to emulate adversary
+    exfiltration tradecraft (chunking, archive staging, channel-aware
+    send queues). Runtime profile names and method identifiers preserve
+    the typed contract that shipped scenarios reference."""
 
     # Inject CommandControl to access its outbound queue/mechanism
     def __init__(self, command_control_module: Optional['CommandControl'] = None):
