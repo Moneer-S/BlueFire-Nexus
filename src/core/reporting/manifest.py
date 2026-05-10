@@ -56,6 +56,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..chain_graph import build_scenario_graph
 from ..models import ModuleResult
 
 
@@ -97,6 +98,69 @@ def _relative_path(path: Optional[str | Path], run_dir: Path) -> Optional[str]:
 def _utc_now_isoformat() -> str:
     """Manifest-side UTC timestamp helper. Centralised so tests can monkey-patch."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _build_chain_manifest_block(
+    snapshot: Mapping[str, Any] | None,
+    scenario_steps: Optional[Iterable[Any]],
+) -> Dict[str, Any]:
+    """Assemble the full ``manifest.chain`` block.
+
+    Combines the runtime chain summary (from
+    :func:`_summarise_chain_snapshot`) with the optional static chain
+    graph (from :func:`_build_chain_graph_payload`). The graph is
+    embedded under ``chain.graph`` only when ``scenario_steps`` is
+    provided AND the builder produces a non-empty graph; absent
+    otherwise so the chain block stays compact for runs that don't
+    have a scenario (single-module ``execute_operation`` flow).
+
+    The shape is intentionally additive: existing consumers reading
+    ``chain.produced_types`` / ``chain.warnings`` continue to work
+    unchanged; new consumers that want the predicted graph read
+    ``chain.graph`` and check for ``None`` defensively.
+    """
+
+    block = _summarise_chain_snapshot(snapshot)
+    graph_payload = _build_chain_graph_payload(scenario_steps)
+    if graph_payload is not None:
+        block["graph"] = graph_payload
+    return block
+
+
+def _build_chain_graph_payload(
+    scenario_steps: Optional[Iterable[Any]],
+) -> Optional[Dict[str, Any]]:
+    """Compute the static chain-graph dict for the manifest.
+
+    Walks ``scenario_steps`` (the loaded scenario's step list, with
+    ``params`` intact) through :func:`build_scenario_graph` and returns
+    its serialisable dict. The graph is the predicted-vs-actual
+    counterpart to the runtime ``chain.warnings`` list: defenders
+    pivoting on a run bundle now see both views — what the runtime
+    emitted (``chain.produced_types`` / ``chain.warnings``) AND what
+    the static analyser predicted from the YAML alone
+    (``chain.graph.nodes`` / ``chain.graph.edges`` /
+    ``chain.graph.warnings``).
+
+    Returns ``None`` when ``scenario_steps`` is empty / missing so
+    single-module runs (``execute_operation`` flow) don't carry an
+    empty graph block. Returns ``None`` on builder failure too — the
+    manifest stays writable even if a future scenario shape regresses
+    the graph builder. Builder failures are silent here because the
+    manifest is best-effort attribution; the runtime chain summary
+    still surfaces under ``chain.warnings``.
+    """
+
+    if not scenario_steps:
+        return None
+    steps_list = list(scenario_steps)
+    if not steps_list:
+        return None
+    try:
+        graph = build_scenario_graph(steps_list)
+    except Exception:  # pragma: no cover - chain_graph builder is robust
+        return None
+    return graph.to_dict()
 
 
 def _summarise_chain_snapshot(
@@ -535,6 +599,7 @@ def build_manifest(
     finished_at: Optional[str] = None,
     config: Optional[Mapping[str, Any]] = None,
     steps: Optional[Iterable[Mapping[str, Any]]] = None,
+    scenario_steps: Optional[Iterable[Any]] = None,
     module_results: Optional[Mapping[str, ModuleResult]] = None,
     report_path: Optional[str | Path] = None,
     risk_summary_path: Optional[str | Path] = None,
@@ -600,7 +665,15 @@ def build_manifest(
         # only. The static viewer / report layer can pivot on
         # ``chain.warnings`` to flag consumer steps that ran without
         # an upstream emission.
-        "chain": _summarise_chain_snapshot(chain),
+        #
+        # When the orchestrator passes ``scenario_steps`` (the loaded
+        # scenario's typed step list with params intact), the static
+        # chain graph is also embedded under ``chain.graph``. That
+        # block is the predicted-vs-actual counterpart to the runtime
+        # warnings: defenders see both the typed propagation the
+        # static analyser predicted from the YAML and the typed
+        # propagation the runtime actually fired during this run.
+        "chain": _build_chain_manifest_block(chain, scenario_steps),
     }
 
     # Roll blocked / failed / error step ids into the top-level
@@ -665,6 +738,7 @@ def write_run_manifest(
     finished_at: Optional[str] = None,
     config: Optional[Mapping[str, Any]] = None,
     steps: Optional[Iterable[Mapping[str, Any]]] = None,
+    scenario_steps: Optional[Iterable[Any]] = None,
     module_results: Optional[Mapping[str, ModuleResult]] = None,
     report_path: Optional[str | Path] = None,
     risk_summary_path: Optional[str | Path] = None,
@@ -692,6 +766,7 @@ def write_run_manifest(
         finished_at=finished_at,
         config=config,
         steps=steps,
+        scenario_steps=scenario_steps,
         module_results=module_results,
         report_path=report_path,
         risk_summary_path=risk_summary_path,

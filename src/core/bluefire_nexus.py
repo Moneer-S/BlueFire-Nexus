@@ -576,6 +576,14 @@ class BlueFireNexus:
                     # emission. Snapshot is built incrementally during
                     # the scenario loop above.
                     chain=chain.snapshot(),
+                    # Pass the loaded scenario's typed step list so
+                    # the manifest writer can compute the static chain
+                    # graph (``chain.graph``) alongside the runtime
+                    # snapshot. Defenders pivoting on a run bundle
+                    # then see both the predicted propagation graph
+                    # (from YAML) and the actual runtime chain — the
+                    # gap between them is a coverage signal.
+                    scenario_steps=scenario.steps,
                 )
             except OSError as manifest_exc:  # pragma: no cover - I/O safety net
                 self.logger.warning("manifest write failed: %s", manifest_exc)
