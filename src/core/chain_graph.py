@@ -169,16 +169,45 @@ class ChainGraph:
 # ---------------------------------------------------------------------------
 
 
-# (param_key, consumer_slot_key, default_artifact_type) — the three
-# explicit propagation axes the runtime understands today. Adding a new
-# axis here expands the static graph to recognise it; the runtime side
-# already lives in ``standard_modules.py`` (``resolve_target_from_step``)
-# and the manifest side in ``reporting/manifest.py``
-# (``_PROPAGATION_NARRATIVE_TEMPLATES``).
-_FROM_STEP_AXES: Tuple[Tuple[str, str, str], ...] = (
-    ("target_from_step", "target", "host"),
-    ("source_from_step", "source", "host"),
-    ("c2_endpoint_from_step", "c2_endpoint", "c2_endpoint"),
+# Propagation axis table. Each row is:
+#
+#   ``(param_key, axis_slot_hint, default_artifact_type, inline_param_keys)``
+#
+# - ``param_key`` is the YAML field that wires the propagation
+#   (``target_from_step``, ``source_from_step``, ``c2_endpoint_from_step``).
+# - ``axis_slot_hint`` is the conceptual consumer-side slot the axis
+#   targets. The static graph uses it as a fallback display label
+#   when the consumer's IO contract has no spec matching the axis
+#   type (rare today but possible for legacy / experimental modules).
+# - ``default_artifact_type`` is the canonical artifact type the
+#   axis propagates. Used to look up the consumer's slot when the
+#   contract has multiple specs of different types but only one
+#   matches the axis.
+# - ``inline_param_keys`` is the set of YAML param keys that, when
+#   set on the consumer step, **win at runtime** and short-circuit
+#   the upstream propagation. The runtime helper
+#   :func:`resolve_target_from_step` returns the inline value before
+#   it walks the upstream step result, so the chain graph honours
+#   the same precedence: when any inline param key is non-empty,
+#   the explicit edge AND the implicit fallback are both skipped
+#   so the static view doesn't overstate propagation that won't
+#   actually happen at runtime.
+#
+# Adding a new axis here expands the static graph to recognise it;
+# the runtime side already lives in ``standard_modules.py``
+# (``resolve_target_from_step``) and the manifest side in
+# ``reporting/manifest.py`` (``_PROPAGATION_NARRATIVE_TEMPLATES``).
+_FROM_STEP_AXES: Tuple[Tuple[str, str, str, Tuple[str, ...]], ...] = (
+    ("target_from_step", "target", "host", ("target",)),
+    ("source_from_step", "source", "host", ("source",)),
+    # ``c2_endpoint_from_step`` is consumed today only by
+    # ``command_control``, which fills its endpoint slot from the
+    # ``c2_url`` inline param (``standard_modules.py`` calls
+    # ``resolve_target_from_step(..., param_key="c2_url",
+    # step_param_key="c2_endpoint_from_step")``). When ``c2_url`` is
+    # explicit, the runtime ignores the propagation and uses the
+    # inline URL — the static graph mirrors that precedence.
+    ("c2_endpoint_from_step", "c2_endpoint", "c2_endpoint", ("c2_url",)),
 )
 
 
@@ -286,9 +315,21 @@ def build_scenario_graph(
         contract = contracts[index]
 
         # 2a. Explicit ``*_from_step`` references in the scenario YAML.
-        for param_key, consumer_slot, default_type in _FROM_STEP_AXES:
+        for param_key, axis_slot_hint, default_type, inline_param_keys in _FROM_STEP_AXES:
             raw_source = params.get(param_key)
             if not raw_source:
+                continue
+            # Inline param wins at runtime: when the consumer's
+            # inline slot value (``target`` / ``source`` / ``c2_url``)
+            # is set, the runtime helper short-circuits the upstream
+            # walk and uses the inline value. The chain graph mirrors
+            # that precedence — emitting an explicit propagation edge
+            # here would mislead the operator into believing the
+            # ``*_from_step`` reference fired at runtime when it
+            # didn't. (Codex P1 on PR #164.)
+            if any(
+                _slot_set_inline(params, key) for key in inline_param_keys
+            ):
                 continue
             source_step_id = str(raw_source)
             source_index = step_index_by_id.get(source_step_id)
@@ -308,8 +349,16 @@ def build_scenario_graph(
                 )
                 continue
 
-            slot_type, slot_required = _consumer_slot_type(
-                contract, consumer_slot, default_type
+            # Resolve the consumer's actual contract slot key for the
+            # axis: prefer a spec whose key matches the axis hint, then
+            # any spec of the matching type. Without this lookup the
+            # ``c2_endpoint_from_step`` axis writes ``target_key="c2_endpoint"``
+            # while ``command_control``'s contract spec key is ``"endpoint"``;
+            # the dedup set then doesn't recognise the implicit pass
+            # entry under spec.key, so a phantom duplicate implicit
+            # edge would land for the same flow. (Codex P1 on PR #164.)
+            slot_key, slot_type, slot_required = _consumer_slot_for_axis(
+                contract, axis_slot_hint, default_type
             )
             source_key = _producer_source_key(contracts[source_index], slot_type)
             edges.append(
@@ -318,12 +367,32 @@ def build_scenario_graph(
                     target_step_id=step_id,
                     artifact_type=slot_type,
                     source_key=source_key,
-                    target_key=consumer_slot,
+                    target_key=slot_key,
                     explicit=True,
                     required=slot_required,
                 )
             )
-            explicit_covered.add((index, slot_type, consumer_slot))
+            explicit_covered.add((index, slot_type, slot_key))
+            # Mark every consumer spec that shares the resolved slot key
+            # as covered too. The runtime resolves the explicit
+            # ``*_from_step`` propagation into a single string that
+            # fills the consumer's slot; multiple specs with the same
+            # key are alternate type-interpretations of that slot
+            # (e.g. ``impact``'s ``key="target"`` specs as both
+            # ``impact_target`` and ``host``), all simultaneously
+            # satisfied by the explicit edge. Without this, the
+            # implicit pass would emit a phantom edge for the
+            # alternate-type sibling and a spurious
+            # ``missing_required`` warning when the canonical sibling
+            # is the required one.
+            if (
+                slot_key
+                and contract is not None
+                and is_meaningful_contract(contract)
+            ):
+                for spec in contract.consumes:
+                    if spec.key == slot_key:
+                        explicit_covered.add((index, spec.type, spec.key))
 
         # 2b. Implicit edges for declared consumed types not covered.
         if contract is not None and is_meaningful_contract(contract):
@@ -339,8 +408,13 @@ def build_scenario_graph(
                 # the value flowed from a chain step) nor a
                 # ``missing_required`` warning. This matches the
                 # runtime behaviour of every standard module's
-                # ``resolve_target_from_step`` fallback.
-                if _slot_set_inline(params, spec.key):
+                # ``resolve_target_from_step`` fallback. Includes
+                # axis-specific inline params (e.g. ``c2_url`` for
+                # the ``c2_endpoint`` slot on command_control) so the
+                # short-circuit covers the runtime call's
+                # ``param_key`` argument too, not just the contract
+                # slot key.
+                if _spec_inline_satisfied(params, spec):
                     continue
                 producers = produced_so_far.get(spec.type)
                 if producers:
@@ -536,6 +610,42 @@ def _slot_set_inline(params: Mapping[str, Any], slot_key: str) -> bool:
     return value not in (None, "", [], {})
 
 
+# Inline-param names that win at runtime for a given consumed artifact
+# type, **beyond** the consumer's own contract slot key. Sourced from
+# the ``param_key`` argument the runtime passes to
+# :func:`resolve_target_from_step` for that consumed slot. For host
+# type, the inline param matches whichever of ``target`` / ``source``
+# the consumer's contract slot key holds (already covered by the
+# basic spec.key inline check). For c2_endpoint type,
+# ``command_control`` calls the resolver with ``param_key="c2_url"``
+# so ``c2_url`` is the inline winner — register it here so the
+# implicit pass short-circuits when it's set even though no contract
+# spec has ``key="c2_url"``. (Codex P1 on PR #164.)
+_AXIS_INLINE_PARAMS_BY_TYPE: Dict[str, Tuple[str, ...]] = {
+    "c2_endpoint": ("c2_url",),
+}
+
+
+def _spec_inline_satisfied(
+    params: Mapping[str, Any], spec: ArtifactSpec
+) -> bool:
+    """Return ``True`` when a consumed spec is satisfied by an inline param.
+
+    Checks both the consumer's contract slot key (the simple case) and
+    any axis-specific inline param names known to win at runtime for
+    the spec's type. Used by the implicit-edge pass and the
+    missing-required warning emission so the static view mirrors the
+    runtime ``resolve_target_from_step`` precedence.
+    """
+
+    if _slot_set_inline(params, spec.key):
+        return True
+    for inline_key in _AXIS_INLINE_PARAMS_BY_TYPE.get(spec.type, ()):
+        if _slot_set_inline(params, inline_key):
+            return True
+    return False
+
+
 def _produced_if_matches(spec: ArtifactSpec, params: Mapping[str, Any]) -> bool:
     """Return ``True`` when a spec's ``produced_if`` predicate passes."""
 
@@ -566,26 +676,52 @@ def _required_consumed_types(
     return tuple(contract.required_consumed_types())
 
 
-def _consumer_slot_type(
+def _consumer_slot_for_axis(
     contract: Optional[CapabilityIOContract],
-    consumer_slot: str,
-    default_type: str,
-) -> Tuple[str, bool]:
-    """Return ``(artifact_type, required)`` for the consumer's slot key.
+    axis_slot_hint: str,
+    axis_type: str,
+) -> Tuple[str, str, bool]:
+    """Resolve the consumer's contract slot for a propagation axis.
 
-    Falls back to ``(default_type, True)`` when the consumer module has
-    no contract or the contract does not declare a spec with the
-    matching ``key``. The default ``required=True`` matches the
-    runtime semantic: the operator opted into propagation by writing a
-    ``*_from_step`` reference in the scenario YAML.
+    Returns ``(slot_key, artifact_type, required)`` for the consumer's
+    spec that best matches the axis.
+
+    Resolution order:
+
+    1. spec with ``key == axis_slot_hint`` — preferring required-over-
+       optional, then type-aligned-over-off-type. This handles
+       ``impact``'s two ``key="target"`` specs (``impact_target``
+       required + ``host`` optional) by picking ``impact_target``,
+       which is the meaningful slot for the impact module.
+    2. spec with ``type == axis_type`` (any key, prefer required) —
+       covers axes whose hint doesn't match any consumer slot key
+       (e.g. ``c2_endpoint_from_step`` on ``command_control``, whose
+       contract slot key is ``endpoint``, not ``c2_endpoint``).
+    3. ``(axis_slot_hint, axis_type, True)`` fallback for consumers
+       with no matching spec (legacy / experimental modules). The
+       default ``required=True`` matches the runtime semantic: the
+       operator opted into propagation by writing a ``*_from_step``
+       reference in the scenario YAML.
     """
 
     if contract is None or not is_meaningful_contract(contract):
-        return default_type, True
-    for spec in contract.consumes:
-        if spec.key == consumer_slot:
-            return spec.type, bool(spec.required)
-    return default_type, True
+        return axis_slot_hint, axis_type, True
+    key_matches = [spec for spec in contract.consumes if spec.key == axis_slot_hint]
+    if key_matches:
+        # Sort: required first, type-aligned first within required.
+        key_matches.sort(key=lambda s: (not s.required, s.type != axis_type))
+        spec = key_matches[0]
+        return spec.key, spec.type, bool(spec.required)
+    type_matches = [spec for spec in contract.consumes if spec.type == axis_type]
+    if type_matches:
+        # No key match — fall back to type-only. Prefer required so an
+        # axis whose canonical consumer (e.g. command_control) has the
+        # required-but-different-keyed slot still resolves to the right
+        # spec rather than a dormant optional sibling.
+        type_matches.sort(key=lambda s: not s.required)
+        spec = type_matches[0]
+        return spec.key or axis_slot_hint, spec.type, bool(spec.required)
+    return axis_slot_hint, axis_type, True
 
 
 def _producer_source_key(
