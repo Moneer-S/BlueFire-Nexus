@@ -33,10 +33,8 @@ class Exfiltration:
 
     Provides the runtime hooks scenarios use to emulate adversary
     exfiltration tradecraft (chunking, archive staging, channel-aware
-    send queues). The profile names and method identifiers preserve the
-    legacy runtime surface that existing scenarios already reference --
-    rename of identifiers would break the runtime contract; only the
-    user-facing prose surfaces are reframed for the public docs."""
+    send queues). Runtime profile names and method identifiers preserve
+    the typed contract that shipped scenarios reference."""
 
     # Inject CommandControl to access its outbound queue/mechanism
     def __init__(self, command_control_module: Optional['CommandControl'] = None):

@@ -20,12 +20,11 @@ class CommandControl:
 
     Surfaces the runtime hooks that adversary-emulation scenarios use to
     drive command-channel behaviour (HTTP/HTTPS check-in cadence, jitter,
-    queueing of scenario telemetry/exfil chunks). The profile names and
-    method identifiers (``start_http_beacon`` etc.) preserve the legacy
-    runtime surface that scenarios already reference; the abstraction is
-    purely about emulating the behaviour real adversary command channels
-    expose so detection engineering can attach indicators to a typed
-    profile, not about deploying anything.
+    queueing of scenario telemetry / exfil chunks). The runtime profile
+    names and method identifiers are preserved as the typed contract
+    that shipped scenarios reference. The abstraction emulates command-
+    channel behaviour for detection-engineering content; it does not
+    deploy or transmit anything against an external target.
     """
 
     def __init__(self, nexus_instance=None):

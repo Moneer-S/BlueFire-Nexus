@@ -50,10 +50,7 @@ PAYLOAD_OPTION = typer.Option(  # noqa: B008
     "--payload",
     help=(
         "Module operation request body, supplied as a JSON object. The "
-        "flag name preserves the historical CLI surface; the value is "
-        "the typed request data the module's run_operation reads -- "
-        "nothing is loaded into memory or executed beyond the module's "
-        "declared profile."
+        "value is forwarded to the module's run_operation entrypoint."
     ),
 )
 GOAL_ARG = typer.Argument(...)  # noqa: B008
