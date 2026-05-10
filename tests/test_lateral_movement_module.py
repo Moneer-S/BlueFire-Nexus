@@ -47,6 +47,8 @@ def test_default_technique_is_psexec(tmp_path: Path) -> None:
         ("scp_transfer", "T1570"),
         ("service_create", "T1543.003"),
         ("rdp", "T1021.001"),
+        ("pass_the_hash", "T1550.002"),
+        ("pass_the_ticket", "T1550.003"),
     ],
 )
 def test_technique_fans_out_to_correct_mitre(
@@ -90,6 +92,119 @@ def test_rdp_pins_port_3389_and_windows_logsource(tmp_path: Path) -> None:
     # Telemetry event type carries the technique-specific marker.
     event = result.telemetry[0]
     assert event.event_type == "lateral_movement_rdp"
+
+
+def test_pass_the_hash_pins_ntlm_replay_tooling_marker(tmp_path: Path) -> None:
+    """Pass-the-Hash (T1550.002) is the canonical Windows alternate-
+    authentication-material pivot. Defenders alert on
+    ``mimikatz sekurlsa::pth`` in process_creation telemetry; the
+    catalog must pin a Windows process_creation logsource and the
+    ``sekurlsa::pth`` substring so the detection draft fires.
+    """
+
+    mod = LateralMovementModule()
+    result = mod.execute(
+        {
+            "technique": "pass_the_hash",
+            "source": "compromised-host-01",
+            "target": "fileserver-03",
+        },
+        _ctx(tmp_path),
+    )
+    assert result.status == "success"
+    assert result.techniques == ["T1550.002"]
+    assert result.artifacts["technique"] == "pass_the_hash"
+    logsource = result.detection_hints["logsource"]
+    assert logsource["product"] == "windows"
+    assert logsource["category"] == "process_creation"
+    detection = result.detection_hints["detection"]
+    selection_value = next(iter(detection["selection"].values()))
+    assert "pth" in selection_value.lower()
+    # The selection must NOT collide with pass_the_ticket's marker --
+    # both techniques live under T1550.* but a defender splitting the
+    # two sub-techniques needs distinct selectors.
+    assert "ptt" not in selection_value.lower()
+    event = result.telemetry[0]
+    assert event.event_type == "lateral_movement_pass_the_hash"
+
+
+def test_pass_the_ticket_pins_kerberos_replay_tooling_marker(
+    tmp_path: Path,
+) -> None:
+    """Pass-the-Ticket (T1550.003) reuses captured Kerberos tickets
+    instead of NTLM hashes. Distinct from pass_the_hash by MITRE id,
+    by the credential material reused (Kerberos ticket vs NTLM hash),
+    and by the tooling-marker substring. The catalog must pin a
+    Windows process_creation logsource and a selector that catches
+    BOTH families: Rubeus's ``ptt`` subcommand AND mimikatz's
+    ``kerberos::ptt`` module string.
+
+    Pins the EXACT runtime selector (``ptt``) so a regression that
+    narrows the substring back to a single tool family (``rubeus
+    ptt`` was Codex P2 on PR #175 -- only matched Rubeus, silently
+    missed every mimikatz invocation despite the comment claiming
+    both) surfaces immediately.
+    """
+
+    mod = LateralMovementModule()
+    result = mod.execute(
+        {
+            "technique": "pass_the_ticket",
+            "source": "compromised-host-01",
+            "target": "domain-controller-01",
+        },
+        _ctx(tmp_path),
+    )
+    assert result.status == "success"
+    assert result.techniques == ["T1550.003"]
+    assert result.artifacts["technique"] == "pass_the_ticket"
+    logsource = result.detection_hints["logsource"]
+    assert logsource["product"] == "windows"
+    assert logsource["category"] == "process_creation"
+    detection = result.detection_hints["detection"]
+    selection_value = next(iter(detection["selection"].values()))
+    # The selector must remain the bare ``ptt`` substring so it
+    # matches BOTH ``Rubeus.exe ptt`` AND ``mimikatz "kerberos::ptt
+    # ..."``. A regression that narrows the substring to a tool-
+    # specific marker (e.g. ``rubeus ptt`` -- Codex P2 on PR #175)
+    # silently misses one of the two tool families.
+    assert selection_value == "ptt", (
+        f"selector value must remain ``ptt`` to cover both Rubeus and "
+        f"mimikatz invocations; got {selection_value!r}"
+    )
+    # Distinct from pass_the_hash's selector (no ``pth`` substring).
+    assert "pth" not in selection_value.lower()
+    event = result.telemetry[0]
+    assert event.event_type == "lateral_movement_pass_the_ticket"
+
+
+def test_pass_the_ticket_selector_matches_both_rubeus_and_mimikatz(
+    tmp_path: Path,
+) -> None:
+    """Sanity check that the chosen ``ptt`` selector substring
+    actually matches the canonical command lines for the two PtT
+    tooling families. Pins the regression Codex P2 on PR #175
+    surfaced (the prior ``rubeus ptt`` selector failed this check
+    on the mimikatz invocation)."""
+
+    mod = LateralMovementModule()
+    result = mod.execute(
+        {"technique": "pass_the_ticket"}, _ctx(tmp_path)
+    )
+    detection = result.detection_hints["detection"]
+    selection_value = next(iter(detection["selection"].values()))
+    rubeus_cmdline = (
+        "C:\\Tools\\Rubeus.exe ptt /ticket:doIFTjCCBUqgAwIBBaED..."
+    )
+    mimikatz_cmdline = (
+        'mimikatz.exe "kerberos::ptt admin.ccache" exit'
+    )
+    assert selection_value in rubeus_cmdline.lower(), (
+        "selector must match Rubeus PtT command lines"
+    )
+    assert selection_value in mimikatz_cmdline.lower(), (
+        "selector must match mimikatz PtT command lines"
+    )
 
 
 def test_unknown_technique_falls_back_with_marker(tmp_path: Path) -> None:

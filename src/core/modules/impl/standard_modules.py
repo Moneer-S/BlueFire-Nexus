@@ -3181,6 +3181,63 @@ _LATERAL_MOVEMENT_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "lateral_movement_rdp",
         "title_prefix": "RDP lateral movement to",
     },
+    # Pass-the-Hash (T1550.002) is the canonical Windows alternate-
+    # authentication-material pivot: an attacker who has captured an
+    # NTLM hash (typically via ``lsass_dump`` / ``sam_dump``) replays
+    # it against another host's NTLM authentication endpoint to gain
+    # access without ever knowing the cleartext password. Defenders
+    # alert on EventID 4624 with ``LogonType: 9`` (NewCredentials) AND
+    # ``AuthenticationPackageName: Negotiate`` while the actual
+    # logon-process is non-standard. Tooling markers ``mimikatz`` /
+    # ``sekurlsa::pth`` / ``Invoke-Mimikatz`` surface in
+    # process_creation telemetry; the ``pth::`` substring picks both
+    # mimikatz module names and Rubeus's own ``ptt::``/``pth`` tabs.
+    "pass_the_hash": {
+        "mitre": "T1550.002",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "sekurlsa::pth",
+        "event_type": "lateral_movement_pass_the_hash",
+        "title_prefix": "Pass-the-Hash NTLM replay against",
+    },
+    # Pass-the-Ticket (T1550.003) reuses captured Kerberos tickets
+    # (TGT or service tickets) instead of NTLM hashes. The attacker
+    # extracts a ticket via ``mimikatz sekurlsa::tickets`` or via
+    # ``Rubeus dump``, then injects it into the current logon session
+    # via ``Rubeus.exe ptt /ticket:<base64>`` or via ``mimikatz
+    # "kerberos::ptt <ticket-file>"`` and uses standard SMB / RPC /
+    # WinRM tooling to act as the ticket's principal. Defenders alert
+    # on EventID 4624 with ``LogonType: 3`` AND a Kerberos ticket
+    # from a host without a corresponding 4768 (TGT request).
+    #
+    # The selector picks the bare ``ptt`` substring rather than a
+    # tool-specific marker so the rule fires on BOTH families:
+    #
+    # - ``Rubeus.exe ptt /ticket:doI...`` (Rubeus subcommand)
+    # - ``mimikatz "kerberos::ptt admin.ccache"`` (mimikatz module)
+    # - ``Invoke-Mimikatz -Command 'kerberos::ptt'`` (PowerShell
+    #   wrapper used by Empire / PowerSploit)
+    #
+    # Codex P2 on PR #175 caught the prior ``rubeus ptt`` substring,
+    # which only matched Rubeus invocations and silently missed every
+    # mimikatz-driven PtT despite the comment claiming both. ``ptt``
+    # alone is short enough to risk occasional false positives in
+    # process_creation telemetry, but the surrounding rule (Windows
+    # process_creation logsource, T1550.003 mapping, AS-REP /
+    # kerberoasting / lsass_dump as common upstream credential
+    # source) keeps the false-positive rate workable for a starter
+    # defender rule. The selector remains deliberately distinct from
+    # the ``pth`` marker on the pass_the_hash profile so a defender
+    # splitting the two T1550.* sub-techniques sees them as separate
+    # detection rules.
+    "pass_the_ticket": {
+        "mitre": "T1550.003",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "ptt",
+        "event_type": "lateral_movement_pass_the_ticket",
+        "title_prefix": "Pass-the-Ticket Kerberos replay against",
+    },
 }
 
 
