@@ -57,6 +57,7 @@ def test_default_technique_is_lsass_dump(tmp_path: Path) -> None:
         ("screen_capture", "T1113"),
         ("dpapi_master_key", "T1555.004"),
         ("kerberoasting", "T1558.003"),
+        ("as_rep_roasting", "T1558.004"),
     ],
 )
 def test_technique_fans_out_to_correct_mitre(
@@ -142,6 +143,54 @@ def test_kerberoasting_pins_active_directory_service_ticket_extraction(
     # Telemetry event type carries the technique-specific marker.
     event = result.telemetry[0]
     assert event.event_type == "credential_access_kerberoasting"
+
+
+def test_as_rep_roasting_pins_pre_auth_disabled_ticket_extraction(
+    tmp_path: Path,
+) -> None:
+    """AS-REP roasting (T1558.004) targets Active Directory accounts
+    with Kerberos pre-authentication disabled. Distinct from
+    kerberoasting (T1558.003) by MITRE id, by the AD account class
+    targeted (regular users vs SPN-bearing service accounts), and by
+    the protocol message that yields the crackable hash (AS-REP vs
+    TGS-REP). The catalog must pin a Windows process_creation
+    logsource and the canonical Rubeus tooling-marker substring
+    (``asreproast``).
+
+    Pins the *exact* selector value so a regression that loosens it
+    back to a generic ``asrep`` substring (which would falsely imply
+    Impacket coverage but never fire on Impacket invocations) surfaces
+    immediately. (Codex P2 on PR #174.)
+    """
+
+    mod = CredentialAccessModule()
+    result = mod.execute(
+        {"technique": "as_rep_roasting", "target": "domain-controller-01"},
+        _ctx(tmp_path),
+    )
+    assert result.status == "success"
+    assert result.techniques == ["T1558.004"]
+    assert result.artifacts["technique"] == "as_rep_roasting"
+    # Detection hint pins Windows process_creation logsource.
+    logsource = result.detection_hints["logsource"]
+    assert logsource["product"] == "windows"
+    assert logsource["category"] == "process_creation"
+    # Selection value carries the AS-REP-specific tooling marker.
+    # Pin the EXACT runtime selector value so the test fires on any
+    # regression that loosens the substring (Codex P2 on PR #174).
+    detection = result.detection_hints["detection"]
+    selection_value = next(iter(detection["selection"].values()))
+    assert selection_value == "asreproast", (
+        f"selector value must remain the canonical Rubeus subcommand; "
+        f"got {selection_value!r}"
+    )
+    # The selection must NOT collide with kerberoasting's marker --
+    # both techniques live under T1558.* but a defender separating
+    # AS-REP roasting from kerberoasting needs distinct selectors.
+    assert "kerberoast" not in selection_value.lower()
+    # Telemetry event type carries the technique-specific marker.
+    event = result.telemetry[0]
+    assert event.event_type == "credential_access_as_rep_roasting"
 
 
 def test_unknown_technique_falls_back_with_marker(tmp_path: Path) -> None:

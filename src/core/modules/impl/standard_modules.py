@@ -2957,6 +2957,42 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "credential_access_kerberoasting",
         "title_prefix": "Kerberoasting service-ticket extraction",
     },
+    # AS-REP roasting (T1558.004) targets Active Directory accounts
+    # whose ``DONT_REQ_PREAUTH`` flag is set (Kerberos pre-
+    # authentication disabled). The attacker requests an AS-REP for
+    # such accounts; the response contains the user's password hash
+    # encrypted with their key, which can be cracked offline. Distinct
+    # from kerberoasting (T1558.003), which targets SPN-bearing
+    # service accounts via TGS-REP -- AS-REP roasting hits regular
+    # user accounts that just happen to have pre-auth disabled, and
+    # the hash material comes from the AS-REP itself rather than from
+    # a service-ticket reply.
+    #
+    # Defender narrative: EventID 4768 (Kerberos authentication
+    # ticket requested) with pre-auth NOT required AND RC4 encryption
+    # type (0x17). The single-substring profile model can't OR two
+    # tooling markers in one selector, so this profile pins the
+    # canonical Windows process_creation marker -- Rubeus's
+    # ``asreproast`` subcommand -- which fires on
+    # ``Rubeus.exe asreproast /user:...`` invocations. Impacket's
+    # ``GetNPUsers.py`` does NOT carry ``asrep`` in its command line
+    # (the ``$krb5asrep$...`` string only appears in the tool's
+    # OUTPUT, not the command line surfaced in process_creation
+    # telemetry); a defender that also runs Impacket on monitored
+    # hosts should add a parallel rule selecting on
+    # ``process.command_line|contains: "GetNPUsers"`` -- or migrate
+    # this profile to a multi-selector model when the catalog grows
+    # one. (Codex P2 on PR #174 caught the prior overly-permissive
+    # ``asrep`` substring, which both missed Impacket and falsely
+    # implied Impacket coverage.)
+    "as_rep_roasting": {
+        "mitre": "T1558.004",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "asreproast",
+        "event_type": "credential_access_as_rep_roasting",
+        "title_prefix": "AS-REP roasting pre-auth ticket extraction",
+    },
 }
 
 
