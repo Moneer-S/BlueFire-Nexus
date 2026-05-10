@@ -3154,19 +3154,26 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
     # - EventID 4662 with the DRS-Replica GUID
     #   (1131f6aa-9c07-11d1-f79f-00c04fc2dcd2) requested by a
     #   non-DC principal
-    # - mimikatz ``lsadump::dcsync`` and Impacket ``secretsdump.py``
-    #   are the canonical tooling markers in process_creation
-    #   telemetry
+    # - mimikatz ``lsadump::dcsync`` is the canonical tooling
+    #   marker in process_creation telemetry
     #
-    # Both tool families share the substring ``dcsync`` in the
-    # command line (mimikatz: ``lsadump::dcsync /user:...``;
-    # Impacket: ``secretsdump.py -dc-ip ... -just-dc-user ...``
-    # logs ``DCSync`` in its own output but the process command
-    # line is the more reliable signal) -- the catalog uses the
-    # case-preserving ``dcsync`` substring to catch the
-    # ``lsadump::dcsync`` form. Anchor on process_creation so the
-    # rule fires regardless of whether the tooling is run from a
-    # workstation or directly on the DC.
+    # The single-substring profile model can't OR two tooling markers
+    # in one selector, so this profile pins the mimikatz substring
+    # ``dcsync`` (case-preserving). Mimikatz invocations like
+    # ``lsadump::dcsync /user:...`` and ``Invoke-Mimikatz`` wrappers
+    # both contain the literal ``dcsync`` token. Impacket's
+    # ``secretsdump.py`` performs DCSync via the ``-just-dc`` /
+    # ``-just-dc-user`` flags and does NOT carry ``dcsync`` in its
+    # process command line; the string ``DCSync`` appears in the
+    # tool's OUTPUT but not in the surfaced process_creation
+    # telemetry. Defenders also running Impacket on monitored hosts
+    # should add a parallel rule selecting on
+    # ``process.command_line|contains: "secretsdump"`` -- or migrate
+    # this profile to a multi-selector model when the catalog grows
+    # one. (Codex P2 on PR #188 caught the prior comment, which
+    # claimed Impacket coverage that the selector did not actually
+    # provide.) Anchor on process_creation so the rule fires whether
+    # the tooling is run from a workstation or directly on the DC.
     "dcsync": {
         "mitre": "T1003.006",
         "logsource": {"category": "process_creation", "product": "windows"},
@@ -3201,7 +3208,14 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
         "mitre": "T1003.004",
         "logsource": {"category": "registry_event", "product": "windows"},
         "selection_field": "registry.key|contains",
-        "selection_value": "SECURITY\\\\Policy\\\\Secrets",
+        # Single-backslash separators -- Windows registry_event
+        # telemetry surfaces ``SECURITY\Policy\Secrets`` (one
+        # separator), not ``SECURITY\\Policy\\Secrets``. The Python
+        # source ``\\`` produces a single literal backslash in the
+        # runtime selector. (Codex P1 on PR #188 caught the
+        # previous ``\\\\`` form, which would render as a doubled
+        # backslash and miss real registry traces.)
+        "selection_value": "SECURITY\\Policy\\Secrets",
         "event_type": "credential_access_lsa_secrets",
         "title_prefix": "LSA Secrets cached-credential extraction",
     },
@@ -3229,7 +3243,9 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
         "mitre": "T1003.005",
         "logsource": {"category": "registry_event", "product": "windows"},
         "selection_field": "registry.key|contains",
-        "selection_value": "SECURITY\\\\Cache",
+        # Single-backslash separator -- ``SECURITY\Cache`` matches
+        # real registry telemetry. (Codex P1 on PR #188.)
+        "selection_value": "SECURITY\\Cache",
         "event_type": "credential_access_cached_domain_credentials",
         "title_prefix": "Cached domain credential extraction",
     },

@@ -416,10 +416,11 @@ def test_lsa_secrets_pins_t1003_004_with_registry_path_selector(
     tmp_path: Path,
 ) -> None:
     """LSA Secrets (T1003.004) extracts cached service-credential
-    material from ``HKLM\\SECURITY\\Policy\\Secrets``. Pin the MITRE
-    id, registry_event logsource, and ``Policy\\Secrets`` substring
-    selector so the rule anchors on the canonical SECURITY-hive
-    subtree."""
+    material from ``HKLM\\SECURITY\\Policy\\Secrets``. Pin the
+    EXACT runtime selector value so a regression that doubles the
+    backslashes (``SECURITY\\\\Policy\\\\Secrets``) fails here --
+    real Windows registry_event telemetry uses single backslashes
+    and a doubled-backslash selector would never match."""
 
     mod = CredentialAccessModule()
     result = mod.execute({"technique": "lsa_secrets"}, _ctx(tmp_path))
@@ -430,17 +431,19 @@ def test_lsa_secrets_pins_t1003_004_with_registry_path_selector(
     }
     selection = result.detection_hints["detection"]["selection"]
     selector_value = next(iter(selection.values()))
-    assert "Policy" in selector_value and "Secrets" in selector_value
+    # EXACT selector value, single-backslash separator. (Codex P1
+    # on PR #188.)
+    assert selector_value == "SECURITY\\Policy\\Secrets"
 
 
 def test_cached_domain_credentials_pins_t1003_005_with_cache_selector(
     tmp_path: Path,
 ) -> None:
     """Cached Domain Credentials (T1003.005) lives under
-    ``HKLM\\SECURITY\\Cache``. Pin the MITRE id, registry_event
-    logsource, and the ``SECURITY\\Cache`` substring so the rule
-    distinguishes from ``lsa_secrets`` (which targets
-    ``Policy\\Secrets`` in the same hive)."""
+    ``HKLM\\SECURITY\\Cache``. Pin the EXACT runtime selector value
+    (single-backslash separator) so a regression that doubles the
+    backslashes fails here -- real Windows registry_event telemetry
+    uses single backslashes."""
 
     mod = CredentialAccessModule()
     result = mod.execute(
@@ -449,10 +452,34 @@ def test_cached_domain_credentials_pins_t1003_005_with_cache_selector(
     assert result.techniques == ["T1003.005"]
     selection = result.detection_hints["detection"]["selection"]
     selector_value = next(iter(selection.values()))
-    assert "SECURITY" in selector_value and "Cache" in selector_value
+    # EXACT selector value, single-backslash separator. (Codex P1
+    # on PR #188.)
+    assert selector_value == "SECURITY\\Cache"
     # Distinct from the lsa_secrets selector (Policy\\Secrets) -- pin
     # that the two profiles do not collide on substring.
     assert "Policy" not in selector_value
+
+
+def test_lsa_secrets_and_cache_selectors_use_single_backslash(
+    tmp_path: Path,
+) -> None:
+    """Both registry-event credential profiles must use single
+    backslashes in the runtime selector. Real Windows registry_event
+    telemetry surfaces ``HKLM\\SECURITY\\Policy\\Secrets`` (one
+    backslash per separator), not the doubled form. A regression
+    that re-introduces doubled backslashes lands here."""
+
+    mod = CredentialAccessModule()
+    for technique in ("lsa_secrets", "cached_domain_credentials"):
+        result = mod.execute({"technique": technique}, _ctx(tmp_path))
+        selection = result.detection_hints["detection"]["selection"]
+        selector_value = next(iter(selection.values()))
+        # The doubled-backslash form must NOT appear in the rendered
+        # selector. (Codex P1 on PR #188.)
+        assert "\\\\" not in selector_value, (
+            f"{technique!r} selector contains doubled backslashes; "
+            "real registry telemetry uses single backslashes"
+        )
 
 
 def test_t1003_subtechnique_family_complete(tmp_path: Path) -> None:
