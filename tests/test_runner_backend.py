@@ -266,6 +266,96 @@ def test_manifest_params_cannot_smuggle_forbidden_key_post_construction() -> Non
     assert "command" not in manifest.params
 
 
+def test_manifest_nested_dict_in_params_cannot_be_mutated() -> None:
+    """Recursive freeze: nested dicts inside ``params`` are wrapped
+    in ``MappingProxyType``, so a caller cannot mutate them after
+    construction either. Without recursive freeze, a caller could
+    write ``manifest.params["options"]["script"] = "..."`` to inject
+    a forbidden key into a nested mapping after validation."""
+
+    manifest = _valid_manifest(params={"options": {"k": "v"}})
+    # Direct nested mutation raises (MappingProxyType is read-only).
+    with pytest.raises(TypeError):
+        manifest.params["options"]["k"] = "tampered"  # type: ignore[index]
+    # And injecting a forbidden key into a nested dict raises too.
+    with pytest.raises(TypeError):
+        manifest.params["options"]["script"] = (  # type: ignore[index]
+            "rm -rf /"
+        )
+
+
+def test_manifest_nested_list_in_params_is_immutable() -> None:
+    """Lists nested in ``params`` are converted to tuples on freeze,
+    so ``manifest.params["x"][0] = "..."`` raises and ``.append(...)``
+    is not available. Pin the contract so a caller cannot mutate a
+    list's contents after validation."""
+
+    manifest = _valid_manifest(
+        params={"target_subnets": ["10.10.0.0/24", "192.168.50.0/24"]}
+    )
+    target_subnets = manifest.params["target_subnets"]
+    # Tuples are immutable; assignment raises.
+    with pytest.raises(TypeError):
+        target_subnets[0] = "10.0.0.0/8"  # type: ignore[index]
+    # Tuples have no ``.append`` either.
+    assert not hasattr(target_subnets, "append")
+
+
+def test_manifest_nested_dict_mutation_on_caller_does_not_leak() -> None:
+    """A caller mutating their original nested dict / list after
+    construction does not see the mutation reflected on
+    ``manifest.params`` -- the recursive freeze deep-copied every
+    level."""
+
+    nested = {"k": "v"}
+    original_params: dict[str, object] = {"options": nested}
+    manifest = _valid_manifest(params=original_params)
+    # Mutate the original nested dict.
+    nested["k"] = "tampered"
+    nested["new_key"] = "added"
+    # Manifest's frozen view does not see it.
+    assert manifest.params["options"]["k"] == "v"
+    assert "new_key" not in manifest.params["options"]
+
+
+def test_make_manifest_rejects_explicit_empty_requested_at() -> None:
+    """``make_manifest`` does not silently substitute ``now()`` when
+    the caller explicitly passes an empty string for ``requested_at``.
+    An empty string is invalid provenance and the manifest's
+    ``__post_init__`` rejects it."""
+
+    with pytest.raises(TaskValidationError, match="requested_at"):
+        make_manifest(
+            task_type="module_profile",
+            run_id="r",
+            step_id="s",
+            module="m",
+            profile="p",
+            mode="simulate",
+            platform="any",
+            requested_at="",
+        )
+
+
+def test_make_manifest_substitutes_now_only_for_explicit_none() -> None:
+    """``make_manifest`` substitutes ``TaskManifest.now()`` when the
+    caller passes ``None`` or omits the argument. Pin the happy path
+    of the omit case so the substitution still works for callers
+    that legitimately want the helper to fill in the timestamp."""
+
+    manifest = make_manifest(
+        task_type="module_profile",
+        run_id="r",
+        step_id="s",
+        module="m",
+        profile="p",
+        mode="simulate",
+        platform="any",
+    )
+    # ISO timestamp shape (contains 'T').
+    assert "T" in manifest.requested_at
+
+
 def test_manifest_to_dict_roundtrip_includes_every_field() -> None:
     """Pin the JSON-serialisable shape so a future field addition
     that forgets to plumb through ``to_dict`` surfaces here."""

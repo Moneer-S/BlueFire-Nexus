@@ -196,21 +196,18 @@ class TaskManifest:
         # Strict typed-scalars-only check on params values. Catches
         # bytes, callables, file handles, etc.
         _validate_params_value(self.params, path="params")
-        # Replace the caller's mapping with a deep-copied
-        # ``MappingProxyType`` view so external code cannot mutate
-        # ``params`` after construction and bypass the validation
-        # above (e.g. inject a ``command`` key, or swap a scalar for
-        # a callable). The dataclass is frozen, so we have to use
-        # ``object.__setattr__`` to swap the field. The deep copy is
-        # the actual ownership transfer; the read-only proxy gives
-        # the caller a clean error if they try to mutate via the
-        # manifest's attribute.
-        from copy import deepcopy
-        from types import MappingProxyType
-
-        object.__setattr__(
-            self, "params", MappingProxyType(deepcopy(dict(self.params)))
-        )
+        # Replace the caller's mapping with a RECURSIVELY frozen view
+        # so external code cannot mutate ``params`` after construction
+        # and bypass the validation above. Top-level dict is wrapped
+        # in ``MappingProxyType``; nested dicts are recursively
+        # wrapped; nested lists become tuples (immutable). Scalars
+        # are already immutable. The dataclass is frozen, so we have
+        # to use ``object.__setattr__`` to swap the field.
+        # (Codex P1 on PR #185: a top-level proxy alone left nested
+        # dict / list values mutable, so callers could mutate
+        # ``manifest.params["nested"]["k"]`` post-construction and
+        # bypass the validated state.)
+        object.__setattr__(self, "params", _freeze_recursively(self.params))
 
     @classmethod
     def now(cls) -> str:
@@ -286,6 +283,37 @@ def _validate_params_value(value: Any, *, path: str) -> None:
     )
 
 
+def _freeze_recursively(value: Any) -> Any:
+    """Return an immutable view of a JSON-shape ``value`` tree.
+
+    Mappings -> ``MappingProxyType`` whose values are themselves
+    recursively frozen. Lists/tuples -> tuples whose elements are
+    recursively frozen. Scalars (str/int/float/bool/None) -> returned
+    unchanged (already immutable).
+
+    Caller's references are shadow-copied at every level so external
+    mutation of the original tree does not leak into the frozen view.
+    Used after :func:`_validate_params_value` succeeds to publish the
+    validated tree as a tamper-resistant artefact.
+    """
+
+    from types import MappingProxyType
+
+    if isinstance(value, _ALLOWED_SCALARS):
+        return value
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: _freeze_recursively(sub) for key, sub in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_recursively(sub) for sub in value)
+    # Validation should have rejected anything else already, but be
+    # explicit about the contract.
+    raise TaskValidationError(
+        f"_freeze_recursively: unsupported value type {type(value).__name__}"
+    )
+
+
 def make_manifest(
     *,
     task_type: str,
@@ -305,8 +333,18 @@ def make_manifest(
     that don't care about the exact UTC timestamp can let the helper
     fill it in. Validation is performed by :class:`TaskManifest` --
     the helper does not relax any rule.
+
+    ``requested_at`` is substituted with :meth:`TaskManifest.now` ONLY
+    when the caller passes ``None`` (i.e. did not supply a value).
+    An explicit empty string is forwarded unchanged so the dataclass's
+    ``__post_init__`` rejects it as invalid provenance, rather than
+    silently coercing bad upstream input into a valid-looking
+    timestamp. (Codex P2 on PR #185.)
     """
 
+    resolved_requested_at = (
+        TaskManifest.now() if requested_at is None else requested_at
+    )
     return TaskManifest(
         task_type=task_type,
         run_id=run_id,
@@ -315,7 +353,7 @@ def make_manifest(
         profile=profile,
         mode=mode,
         platform=platform,
-        requested_at=requested_at or TaskManifest.now(),
+        requested_at=resolved_requested_at,
         runner_id=runner_id,
         params=dict(params or {}),
     )
