@@ -1139,10 +1139,16 @@ def _chain_state_from_scenario(scenario_path: Path):
     plausibly run AFTER this scenario completes (i.e. "given this is
     the chain so far, what's the natural extension?").
 
-    Warnings come from the static :class:`ChainGraph` so the planner
-    sees the same coverage gaps the manifest / operator console
-    surface (``missing_required`` warnings the static analyser
-    flagged).
+    Warnings forwarded into ``ChainState`` are restricted to the
+    ``missing_required`` severity. The runtime ``ChainContext.warnings``
+    surface that the planner's ``explain_chain`` reads carries
+    consumer-side warnings only ("required input not produced
+    upstream"); ``ChainGraph`` also emits producer-side warnings
+    (``unused_emission`` / ``high_value_unused``) that aren't in the
+    same category. Forwarding all severities into the planner state
+    would surface dangling-emission warnings as if they were
+    unsatisfied consumer inputs and mislead JSON consumers reading
+    the ``missing_type`` field. (Codex P2 on PR #168.)
     """
 
     from .chain_graph import build_scenario_graph
@@ -1168,6 +1174,7 @@ def _chain_state_from_scenario(scenario_path: Path):
             "severity": w.severity,
         }
         for w in graph.warnings
+        if w.severity == "missing_required"
     )
     return scenario, ChainState(
         produced_types=frozenset(produced_types), warnings=warnings

@@ -110,6 +110,61 @@ def test_planner_explain_runs_against_shipped_scenario() -> None:
     assert "APT29" in result.stdout
 
 
+def test_planner_explain_filters_warnings_to_missing_required(
+    tmp_path: Path,
+) -> None:
+    """``ChainState.warnings`` should carry only ``missing_required``
+    rows when the planner CLI builds it from the static graph.
+
+    The static graph also emits ``unused_emission`` /
+    ``high_value_unused`` for dangling producer types; forwarding
+    those into ``ChainState.warnings`` would mislead
+    ``planner-explain`` consumers because the runtime warning
+    surface that ``explain_chain`` semantically corresponds to is
+    consumer-side only ("required input not produced upstream").
+    Codex P2 on PR #168.
+    """
+
+    scenarios_dir = tmp_path / "scenarios"
+    scenarios_dir.mkdir()
+    # Scenario produces a c2_endpoint with no consumer downstream
+    # → triggers a high_value_unused warning in the static graph.
+    # If the CLI forwards it into ChainState.warnings, the JSON
+    # output's unsatisfied_warnings list will include it (incorrect).
+    (scenarios_dir / "dangling.yaml").write_text(
+        "id: dangling-c2\n"
+        "name: Dangling c2_endpoint scenario\n"
+        "objective: Stand up c2 with no consumer downstream.\n"
+        "fail_fast: false\n"
+        "steps:\n"
+        "  - id: stage\n"
+        "    name: Stage adversary domain\n"
+        "    module: resource_development\n"
+        "    params:\n"
+        "      resource_type: domain\n"
+        "      target: x.example.invalid\n",
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "planner-explain",
+            str(scenarios_dir / "dangling.yaml"),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    parsed = json.loads(result.stdout)
+    # The dangling c2_endpoint is a producer-side warning. It must
+    # NOT appear under unsatisfied_warnings (which is the consumer-
+    # side surface).
+    for warning in parsed["unsatisfied_warnings"]:
+        assert warning.get("severity") == "missing_required", (
+            f"non-missing_required warning leaked through: {warning}"
+        )
+
+
 def test_planner_explain_json_mode_emits_structured_payload() -> None:
     """``--json`` returns the explanation dict so automation can pipe
     it forward."""
