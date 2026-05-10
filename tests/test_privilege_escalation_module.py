@@ -171,15 +171,48 @@ def test_t1134_subtechnique_family_includes_token_and_ppid_branches(
     tmp_path: Path,
 ) -> None:
     """The T1134 family (Access Token Manipulation) now spans
-    ``T1134.001`` (Token Impersonation/Theft), ``T1134.003`` (Make
-    and Impersonate Token), ``T1134.004`` (Parent PID Spoofing), and
-    ``T1134.005`` (SID-History Injection). Pin presence so a future
-    drop fails here."""
+    ``T1134.001`` (Token Impersonation/Theft), ``T1134.002`` (Create
+    Process with Token), ``T1134.003`` (Make and Impersonate Token),
+    ``T1134.004`` (Parent PID Spoofing), and ``T1134.005`` (SID-
+    History Injection). Pin presence so a future drop fails here."""
 
     mod = PrivilegeEscalationModule()
-    expected = {"T1134.001", "T1134.003", "T1134.004", "T1134.005"}
+    expected = {
+        "T1134.001",
+        "T1134.002",
+        "T1134.003",
+        "T1134.004",
+        "T1134.005",
+    }
     seen: set[str] = set()
     for technique in _PRIVILEGE_ESCALATION_PROFILES:
         result = mod.execute({"technique": technique}, _ctx(tmp_path))
         seen.update(result.techniques)
     assert expected <= seen, f"missing T1134 sub-techniques: {expected - seen}"
+
+
+def test_create_process_with_token_pins_t1134_002_with_api_substring(
+    tmp_path: Path,
+) -> None:
+    """Create Process with Token (T1134.002) pins the canonical Win32
+    API substring ``CreateProcessWithToken``. Pin the MITRE id, the
+    process_creation logsource, and the API substring so the rendered
+    detection draft fires on tooling that uses
+    ``CreateProcessWithTokenW`` to spawn a child as a different
+    principal. Distinct from ``token_impersonation`` (T1134.001)
+    which hijacks the calling thread instead."""
+
+    mod = PrivilegeEscalationModule()
+    result = mod.execute(
+        {"technique": "create_process_with_token", "target": "lab-host"},
+        _ctx(tmp_path),
+    )
+    assert result.techniques == ["T1134.002"]
+    assert result.detection_hints["logsource"] == {
+        "category": "process_creation",
+        "product": "windows",
+    }
+    selection = result.detection_hints["detection"]["selection"]
+    assert "CreateProcessWithToken" in selection.get(
+        "process.command_line|contains", ""
+    )
