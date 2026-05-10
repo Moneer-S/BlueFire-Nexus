@@ -2957,6 +2957,33 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
         "event_type": "credential_access_kerberoasting",
         "title_prefix": "Kerberoasting service-ticket extraction",
     },
+    # AS-REP roasting (T1558.004) targets Active Directory accounts
+    # whose ``DONT_REQ_PREAUTH`` flag is set (Kerberos pre-
+    # authentication disabled). The attacker requests an AS-REP for
+    # such accounts; the response contains the user's password hash
+    # encrypted with their key, which can be cracked offline. Distinct
+    # from kerberoasting (T1558.003), which targets SPN-bearing
+    # service accounts via TGS-REP -- AS-REP roasting hits regular
+    # user accounts that just happen to have pre-auth disabled, and
+    # the hash material comes from the AS-REP itself rather than from
+    # a service-ticket reply.
+    #
+    # Defender narrative: EventID 4768 (Kerberos authentication
+    # ticket requested) with pre-auth NOT required AND RC4 encryption
+    # type (0x17). Tooling markers ``Rubeus.exe asreproast`` /
+    # ``GetNPUsers.py`` / ``asrep`` surface in process_creation
+    # telemetry; the selection picks ``asrep`` rather than
+    # ``asreproast`` so both Rubeus's ``asreproast`` subcommand and
+    # Impacket's ``GetNPUsers.py`` AS-REP output (which also contains
+    # ``asrep`` substrings in the format-string output) match.
+    "as_rep_roasting": {
+        "mitre": "T1558.004",
+        "logsource": {"category": "process_creation", "product": "windows"},
+        "selection_field": "process.command_line|contains",
+        "selection_value": "asrep",
+        "event_type": "credential_access_as_rep_roasting",
+        "title_prefix": "AS-REP roasting pre-auth ticket extraction",
+    },
 }
 
 
