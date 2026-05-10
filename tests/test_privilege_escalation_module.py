@@ -115,3 +115,71 @@ def test_module_advertises_all_catalog_techniques() -> None:
     assert expected.issubset(advertised), (
         f"Missing techniques on class attribute: {expected - advertised}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Parent PID Spoofing / SID-History Injection (T1134.004 / T1134.005)
+# ---------------------------------------------------------------------------
+
+
+def test_parent_pid_spoof_pins_t1134_004_with_api_substring(tmp_path: Path) -> None:
+    """Parent PID Spoofing (T1134.004) pins the canonical Win32 API
+    substring ``UpdateProcThreadAttribute``. Pin the MITRE id, the
+    process_creation logsource, and the API substring so the rendered
+    detection draft fires on tooling that constructs PPID-spoofed
+    processes."""
+
+    mod = PrivilegeEscalationModule()
+    result = mod.execute(
+        {"technique": "parent_pid_spoof", "target": "lab-host"}, _ctx(tmp_path)
+    )
+    assert result.techniques == ["T1134.004"]
+    assert result.detection_hints["logsource"] == {
+        "category": "process_creation",
+        "product": "windows",
+    }
+    selection = result.detection_hints["detection"]["selection"]
+    assert "UpdateProcThreadAttribute" in selection.get(
+        "process.command_line|contains", ""
+    )
+
+
+def test_sid_history_injection_pins_t1134_005_with_sids_substring(
+    tmp_path: Path,
+) -> None:
+    """SID-History Injection (T1134.005) pins the mimikatz CLI
+    substring ``/sids:`` which appears in
+    ``kerberos::golden /sids:<...>`` invocations. Pin the MITRE id,
+    process_creation logsource, and the substring so the detection
+    draft fires on the canonical SID-History forging tool."""
+
+    mod = PrivilegeEscalationModule()
+    result = mod.execute(
+        {"technique": "sid_history_injection", "target": "lab-host"},
+        _ctx(tmp_path),
+    )
+    assert result.techniques == ["T1134.005"]
+    assert result.detection_hints["logsource"] == {
+        "category": "process_creation",
+        "product": "windows",
+    }
+    selection = result.detection_hints["detection"]["selection"]
+    assert "/sids:" in selection.get("process.command_line|contains", "")
+
+
+def test_t1134_subtechnique_family_includes_token_and_ppid_branches(
+    tmp_path: Path,
+) -> None:
+    """The T1134 family (Access Token Manipulation) now spans
+    ``T1134.001`` (Token Impersonation/Theft), ``T1134.003`` (Make
+    and Impersonate Token), ``T1134.004`` (Parent PID Spoofing), and
+    ``T1134.005`` (SID-History Injection). Pin presence so a future
+    drop fails here."""
+
+    mod = PrivilegeEscalationModule()
+    expected = {"T1134.001", "T1134.003", "T1134.004", "T1134.005"}
+    seen: set[str] = set()
+    for technique in _PRIVILEGE_ESCALATION_PROFILES:
+        result = mod.execute({"technique": technique}, _ctx(tmp_path))
+        seen.update(result.techniques)
+    assert expected <= seen, f"missing T1134 sub-techniques: {expected - seen}"
