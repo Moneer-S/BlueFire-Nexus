@@ -2928,7 +2928,14 @@ _CREDENTIAL_ACCESS_PROFILES: Dict[str, Dict[str, Any]] = {
         "mitre": "T1555.004",
         "logsource": {"category": "file_event", "product": "windows"},
         "selection_field": "file.path|contains",
-        "selection_value": "Microsoft\\\\Protect",
+        # Single backslash separator -- Windows file_event telemetry
+        # surfaces ``Microsoft\Protect`` (one separator), not
+        # ``Microsoft\\Protect``. The Python source ``\\`` below
+        # produces a single literal backslash in the runtime string
+        # (Codex P1 on PR #170 caught the previous ``\\\\`` form,
+        # which would render as a two-backslash selector and miss
+        # real DPAPI traces in standard Windows logs).
+        "selection_value": "Microsoft\\Protect",
         "event_type": "credential_access_dpapi_master_key",
         "title_prefix": "DPAPI master-key extraction",
     },

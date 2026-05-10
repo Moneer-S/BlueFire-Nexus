@@ -100,7 +100,13 @@ def test_dpapi_master_key_pins_protect_directory_file_event(
         "file" in str(result.detection_hints["logsource"]).lower()
     )
     selection_value = next(iter(detection["selection"].values()))
-    assert "Protect" in selection_value
+    # Pin the EXACT runtime selector value so a regression that
+    # over- or under-escapes the separator surfaces immediately.
+    # Real Windows file_event telemetry shows
+    # ``%APPDATA%\Microsoft\Protect\...`` with a SINGLE backslash
+    # separator; selectors with two backslashes (``Microsoft\\Protect``)
+    # would never match real logs (Codex P1 on PR #170).
+    assert selection_value == "Microsoft\\Protect"
     # Telemetry event type carries the technique-specific marker.
     event = result.telemetry[0]
     assert event.event_type == "credential_access_dpapi_master_key"
