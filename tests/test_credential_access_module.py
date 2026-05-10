@@ -55,6 +55,7 @@ def test_default_technique_is_lsass_dump(tmp_path: Path) -> None:
         ("keylogging", "T1056.001"),
         ("clipboard", "T1115"),
         ("screen_capture", "T1113"),
+        ("kerberoasting", "T1558.003"),
     ],
 )
 def test_technique_fans_out_to_correct_mitre(
@@ -71,6 +72,37 @@ def test_technique_fans_out_to_correct_mitre(
     assert result.detection_hints["mitre_technique"] == expected_mitre
     assert result.detection_hints["credential_technique"] == technique
     assert result.artifacts["mitre_technique"] == expected_mitre
+
+
+def test_kerberoasting_pins_active_directory_service_ticket_extraction(
+    tmp_path: Path,
+) -> None:
+    """Kerberoasting (T1558.003) is the canonical Active Directory
+    service-account credential extraction technique. The catalog
+    must pin a Windows process_creation logsource and a tooling
+    marker so the detection draft fires on the offline-cracking
+    workflow.
+    """
+
+    mod = CredentialAccessModule()
+    result = mod.execute(
+        {"technique": "kerberoasting", "target": "domain-controller-01"},
+        _ctx(tmp_path),
+    )
+    assert result.status == "success"
+    assert result.techniques == ["T1558.003"]
+    assert result.artifacts["technique"] == "kerberoasting"
+    # Detection hint pins Windows process_creation logsource.
+    logsource = result.detection_hints["logsource"]
+    assert logsource["product"] == "windows"
+    assert logsource["category"] == "process_creation"
+    # Selection value carries the tooling marker.
+    detection = result.detection_hints["detection"]
+    selection_value = next(iter(detection["selection"].values()))
+    assert "kerberoast" in selection_value.lower()
+    # Telemetry event type carries the technique-specific marker.
+    event = result.telemetry[0]
+    assert event.event_type == "credential_access_kerberoasting"
 
 
 def test_unknown_technique_falls_back_with_marker(tmp_path: Path) -> None:
