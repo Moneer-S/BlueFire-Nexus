@@ -31,6 +31,7 @@ python -m black --check bluefire tests_platform
 python -m mypy bluefire
 python -m bandit -r bluefire -ll
 python -m pip_audit
+pre-commit run --all-files
 python -m build
 
 cargo fmt --manifest-path runner/Cargo.toml -- --check

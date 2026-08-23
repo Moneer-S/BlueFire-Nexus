@@ -19,9 +19,18 @@ htmlcov/
 
 # Virtual environments
 .venv/
+.venv-codex/
 venv/
 env/
 ENV/
+
+# Repository-local Rust toolchain and isolated build output
+.cargo-home/
+.rustup-home/
+.cargo-target/
+
+# Disposable integration-test sandboxes
+.sandbox/
 
 # Secrets and local config
 .env
@@ -38,6 +47,7 @@ ENV/
 # Runtime output
 logs/
 output/
+runs/
 *.log
 
 # OS/editor junk
