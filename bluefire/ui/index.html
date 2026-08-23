@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Local experiment graph orchestration console">
+  <title>BlueFire Nexus · Experiment Console</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 40'%3E%3Cpath fill='%2338a8ff' d='M17 1c2 8-6 10-3 18 2 4 6 4 7 9 1 4-2 8-6 10 10-1 16-7 16-16C31 15 27 7 17 1Z'/%3E%3Cpath fill='%23ff7145' d='M13 16c0 6-8 8-8 15 0 4 3 7 8 7 5 0 9-4 9-9 0-5-3-8-6-11 1 5-2 7-5 6-2-1 2-5 2-8Z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/ui/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#workspace-main">Skip to workspace</a>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="BlueFire Nexus home">
+        <svg class="brand-mark" viewBox="0 0 44 52" role="img" aria-label="Blue flame">
+          <path d="M24 2c2 10-8 13-4 23 2 4 7 5 8 11 1 5-2 9-6 12 12-1 20-9 20-20 0-9-5-18-18-26Z"></path>
+          <path class="brand-mark-core" d="M18 21c0 8-10 10-10 20 0 5 4 9 10 9 7 0 12-5 12-12 0-6-4-11-7-14 0 6-4 9-7 8-4-2 1-7 2-11Z"></path>
+        </svg>
+        <span>
+          <strong>BlueFire Nexus</strong>
+          <small>Experiment console</small>
+        </span>
+      </a>
+      <div class="topbar-meta">
+        <span class="connection-state" id="connection-state" data-state="pending">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>Connecting locally</span>
+        </span>
+        <span class="privacy-mark">Loopback only</span>
+      </div>
+    </header>
+
+    <nav class="workspace-nav" aria-label="Primary workspace" role="tablist">
+      <button class="workspace-tab is-active" type="button" role="tab" id="tab-build" data-workspace="build"
+              aria-controls="workspace-build" aria-selected="true">
+        <span class="tab-index">01</span>
+        <span><strong>Build</strong><small>Compose the graph</small></span>
+      </button>
+      <button class="workspace-tab" type="button" role="tab" id="tab-run" data-workspace="run"
+              aria-controls="workspace-run" aria-selected="false" tabindex="-1">
+        <span class="tab-index">02</span>
+        <span><strong>Run</strong><small>Preflight and observe</small></span>
+      </button>
+      <button class="workspace-tab" type="button" role="tab" id="tab-compare" data-workspace="compare"
+              aria-controls="workspace-compare" aria-selected="false" tabindex="-1">
+        <span class="tab-index">03</span>
+        <span><strong>Compare</strong><small>Replay and measure</small></span>
+      </button>
+    </nav>
+
+    <main id="workspace-main" tabindex="-1">
+      <div class="toast" id="app-status" role="status" aria-live="polite" hidden></div>
+
+      <section class="workspace is-active" id="workspace-build" aria-labelledby="tab-build" role="tabpanel" tabindex="0">
+        <header class="workspace-heading">
+          <div>
+            <p class="eyebrow">Graph authoring</p>
+            <h1>Compose an evidence-first experiment</h1>
+            <p>Connect neutral behaviors with explicit outcome edges. Typed inputs and policy checks stay visible before anything runs.</p>
+          </div>
+          <div class="heading-actions">
+            <button class="button button-quiet" id="duplicate-graph" type="button">Duplicate draft</button>
+            <button class="button button-quiet" id="export-graph" type="button">Export JSON</button>
+            <button class="button button-primary" id="validate-graph" type="button">Validate graph</button>
+          </div>
+        </header>
+
+        <div class="build-layout">
+          <aside class="panel palette-panel" aria-labelledby="palette-title">
+            <div class="panel-heading">
+              <div><p class="eyebrow">Registry</p><h2 id="palette-title">Behavior palette</h2></div>
+              <span class="count-badge" id="behavior-count">0</span>
+            </div>
+            <label class="search-field">
+              <span class="sr-only">Filter behavior palette</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m20 20-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"></path></svg>
+              <input id="behavior-search" type="search" autocomplete="off" placeholder="Filter by purpose or capability">
+            </label>
+            <div class="filter-row" id="capability-filters" aria-label="Capability filters"></div>
+            <div class="behavior-list" id="behavior-list" aria-live="polite"></div>
+            <p class="panel-hint">Select a behavior to add it. Drag with a pointer or reposition selected nodes with arrow keys.</p>
+          </aside>
+
+          <section class="panel graph-panel" aria-labelledby="graph-title">
+            <div class="graph-toolbar">
+              <div>
+                <label for="scenario-title">Scenario</label>
+                <input id="scenario-title" value="Control validation path" maxlength="100">
+              </div>
+              <div>
+                <label for="scenario-version">Version</label>
+                <input id="scenario-version" value="1" type="number" min="1" max="999">
+              </div>
+              <label class="scenario-picker-label" for="scenario-picker">Load saved</label>
+              <select id="scenario-picker"><option value="">Current draft</option></select>
+              <button class="icon-button" id="fit-graph" type="button" title="Fit graph" aria-label="Fit graph to canvas">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M8 21H3v-5m13 5h5v-5"></path></svg>
+              </button>
+            </div>
+            <div class="graph-stage" id="graph-stage">
+              <svg id="graph-canvas" viewBox="0 0 1120 620" role="group" aria-label="Editable scenario graph">
+                <defs>
+                  <marker id="arrow-success" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z"></path></marker>
+                  <marker id="arrow-partial" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z"></path></marker>
+                  <marker id="arrow-blocked" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z"></path></marker>
+                  <marker id="arrow-failed" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z"></path></marker>
+                </defs>
+                <g id="graph-edges"></g>
+                <g id="graph-nodes"></g>
+              </svg>
+              <div class="empty-state" id="graph-empty" hidden>
+                <strong>Start with a behavior</strong>
+                <span>Choose one from the palette to create the first node.</span>
+              </div>
+              <div class="canvas-key">
+                <span><i class="edge-swatch edge-success"></i>Success</span>
+                <span><i class="edge-swatch edge-partial"></i>Partial</span>
+                <span><i class="edge-swatch edge-blocked"></i>Blocked</span>
+                <span><i class="edge-swatch edge-failed"></i>Failed</span>
+              </div>
+            </div>
+            <div class="validation-drawer" id="validation-drawer" aria-live="polite">
+              <div><strong>Draft not validated</strong><span>Run graph validation to inspect contracts and reachability.</span></div>
+              <button class="text-button" id="open-validation" type="button" aria-expanded="false">Show details</button>
+              <ul id="validation-list" hidden></ul>
+            </div>
+          </section>
+
+          <aside class="panel inspector-panel" aria-labelledby="inspector-title">
+            <div class="panel-heading">
+              <div><p class="eyebrow">Selected node</p><h2 id="inspector-title">Inspector</h2></div>
+              <button class="icon-button danger" id="remove-node" type="button" aria-label="Remove selected node" title="Remove selected node">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-9 0 1 14h10l1-14M10 11v6m4-6v6"></path></svg>
+              </button>
+            </div>
+            <div id="node-inspector" class="inspector-content">
+              <div class="empty-inspector"><strong>No node selected</strong><span>Select a node on the graph to inspect its contract.</span></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="workspace" id="workspace-run" aria-labelledby="tab-run" role="tabpanel" tabindex="0" hidden>
+        <header class="workspace-heading">
+          <div>
+            <p class="eyebrow">Execution control</p>
+            <h1>Preflight every path, then observe it live</h1>
+            <p>The selected mode controls effects. AI Planner is an independent proposal layer and never bypasses policy or approval.</p>
+          </div>
+          <div class="run-state-summary">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span><small>Active run</small><strong id="active-run-label">None</strong></span>
+          </div>
+        </header>
+
+        <div class="run-control-grid">
+          <section class="panel run-controls" aria-labelledby="run-controls-title">
+            <div class="panel-heading"><div><p class="eyebrow">Intent</p><h2 id="run-controls-title">Run controls</h2></div></div>
+            <fieldset class="mode-fieldset">
+              <legend>Mode</legend>
+              <div class="segmented-control">
+                <label><input type="radio" name="execution-mode" value="simulate" checked><span><strong>Simulate</strong><small>Model effects only</small></span></label>
+                <label><input type="radio" name="execution-mode" value="execute"><span><strong>Execute</strong><small>Use approved runner actions</small></span></label>
+              </div>
+            </fieldset>
+            <label class="switch-row" for="ai-planner">
+              <span><strong>AI Planner</strong><small>Propose graph changes without changing effect mode</small></span>
+              <span class="switch"><input id="ai-planner" type="checkbox"><i aria-hidden="true"></i></span>
+            </label>
+            <div class="execute-approval" id="execute-approval" hidden>
+              <div class="approval-heading">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.8 20h18.4L12 3Zm0 6v5m0 3v.1"></path></svg>
+                <span><strong>Execute approval</strong><small>Required only when the selected mode can produce runner effects.</small></span>
+              </div>
+              <label class="approval-check" for="execute-approval-confirm">
+                <input id="execute-approval-confirm" type="checkbox">
+                <span>I approve this Execute intent for the selected profile and scope.</span>
+              </label>
+              <label for="approval-operator"><span>Operator identity</span><input id="approval-operator" maxlength="120" autocomplete="off" placeholder="Name or operator label"></label>
+            </div>
+            <div class="field-grid">
+              <label><span>Runner profile</span><select id="runner-profile"><option value="">Select a profile</option></select></label>
+              <label><span>Scope reference</span><input id="scope-reference" value="sandbox.workspace" pattern="[A-Za-z0-9._:-]+" maxlength="120" spellcheck="false"></label>
+            </div>
+            <div class="button-row">
+              <button class="button button-quiet" id="request-preflight" type="button">Run preflight</button>
+              <button class="button button-primary" id="start-run" type="button" disabled>Start run</button>
+            </div>
+            <p class="control-note">The browser submits structured scenario intent to the local control plane. Runner dispatch remains behind the policy boundary.</p>
+          </section>
+
+          <section class="panel preflight-panel" aria-labelledby="preflight-title">
+            <div class="panel-heading">
+              <div><p class="eyebrow">Readiness</p><h2 id="preflight-title">Preflight</h2></div>
+              <span class="readiness-badge" id="readiness-badge" data-state="idle">Not checked</span>
+            </div>
+            <dl class="preflight-grid" id="preflight-grid">
+              <div><dt>Runner profile</dt><dd id="preflight-profile">—</dd></div>
+              <div><dt>Target scope</dt><dd id="preflight-scope">—</dd></div>
+              <div><dt>Capabilities</dt><dd id="preflight-capabilities">—</dd></div>
+              <div><dt>Safety tier</dt><dd id="preflight-tier">—</dd></div>
+              <div><dt>Approval</dt><dd id="preflight-approval">—</dd></div>
+              <div><dt>Cleanup plan</dt><dd id="preflight-cleanup">—</dd></div>
+            </dl>
+            <div class="preflight-findings" id="preflight-findings" aria-live="polite">Run preflight to resolve policy and runner readiness.</div>
+          </section>
+        </div>
+
+        <section class="panel live-panel" aria-labelledby="live-title">
+          <div class="panel-heading live-heading">
+            <div><p class="eyebrow">Live orchestration</p><h2 id="live-title">Node status</h2></div>
+            <div class="node-legend" aria-label="Node status legend">
+              <span data-status="queued">Queued</span><span data-status="planning">Planning</span><span data-status="running">Running</span>
+              <span data-status="succeeded">Succeeded</span><span data-status="partial">Partial</span><span data-status="blocked">Blocked</span>
+              <span data-status="failed">Failed</span><span data-status="skipped">Skipped</span><span data-status="refused">Refused</span>
+            </div>
+          </div>
+          <div class="live-graph" id="live-graph" aria-live="polite"><p>No active run. Complete preflight to begin.</p></div>
+          <div class="detail-tabs" role="tablist" aria-label="Run detail views">
+            <button type="button" role="tab" aria-selected="true" data-detail-view="planner">Planner</button>
+            <button type="button" role="tab" aria-selected="false" data-detail-view="policy" tabindex="-1">Policy</button>
+            <button type="button" role="tab" aria-selected="false" data-detail-view="runner" tabindex="-1">Runner</button>
+            <button type="button" role="tab" aria-selected="false" data-detail-view="evidence" tabindex="-1">Evidence</button>
+            <button type="button" role="tab" aria-selected="false" data-detail-view="detections" tabindex="-1">Detections</button>
+          </div>
+          <div class="detail-view" id="run-detail-view"><p class="muted">Planner proposals will appear here with their approval state.</p></div>
+        </section>
+      </section>
+
+      <section class="workspace" id="workspace-compare" aria-labelledby="tab-compare" role="tabpanel" tabindex="0" hidden>
+        <header class="workspace-heading">
+          <div>
+            <p class="eyebrow">Outcome analysis</p>
+            <h1>Replay deliberately. Compare what changed.</h1>
+            <p>Create lineage-linked replays, then inspect paths, control decisions, evidence provenance, detections, and cleanup across multiple runs.</p>
+          </div>
+          <button class="button button-quiet" id="refresh-runs" type="button">Refresh runs</button>
+        </header>
+
+        <div class="compare-layout">
+          <section class="panel history-panel" aria-labelledby="history-title">
+            <div class="panel-heading"><div><p class="eyebrow">History</p><h2 id="history-title">Select runs</h2></div><span class="count-badge" id="selected-run-count">0</span></div>
+            <p class="panel-hint">Choose two or more runs. The service compares canonical records, not rendered reports.</p>
+            <div class="run-list" id="run-list"></div>
+            <button class="button button-primary button-full" id="compare-runs" type="button" disabled>Compare selected runs</button>
+          </section>
+
+          <section class="panel replay-panel" aria-labelledby="replay-title">
+            <div class="panel-heading"><div><p class="eyebrow">Lineage</p><h2 id="replay-title">Replay controls</h2></div></div>
+            <label><span>Source run</span><select id="replay-source"><option value="">Select a run</option></select></label>
+            <fieldset class="replay-strategy">
+              <legend>Replay strategy</legend>
+              <label><input type="radio" name="replay-strategy" value="exact" checked><span><strong>Exact</strong><small>Immutable scenario, plan, policy, and profile</small></span></label>
+              <label><input type="radio" name="replay-strategy" value="from_node"><span><strong>From node</strong><small>Resume at an explicit graph node</small></span></label>
+              <label><input type="radio" name="replay-strategy" value="swap"><span><strong>Compatible swap</strong><small>Replace one behavior with a contract-compatible choice</small></span></label>
+            </fieldset>
+            <div class="field-grid">
+              <label><span>From node</span><select id="replay-from-node"><option value="">Select node</option></select></label>
+              <label><span>Swap node</span><select id="replay-swap-node"><option value="">Select node</option></select></label>
+              <label><span>Swap behavior</span><select id="replay-swap"><option value="">Select compatible behavior</option></select></label>
+              <label><span>Profile override</span><select id="replay-profile"><option value="">Preserve original</option></select></label>
+              <label><span>AI Planner override</span><select id="replay-ai"><option value="preserve">Preserve original</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></label>
+            </div>
+            <label><span>Declared defense change</span><textarea id="defense-change" rows="3" maxlength="500" placeholder="Describe the control or telemetry change being tested"></textarea></label>
+            <button class="button button-quiet button-full" id="create-replay" type="button">Create replay</button>
+          </section>
+
+          <section class="panel comparison-panel" aria-labelledby="comparison-title">
+            <div class="panel-heading"><div><p class="eyebrow">Comparison</p><h2 id="comparison-title">Outcome delta</h2></div><span class="readiness-badge" id="comparison-state" data-state="idle">Waiting</span></div>
+            <div class="comparison-summary" id="comparison-summary">
+              <div><span>First blocked node</span><strong>—</strong></div>
+              <div><span>Objective reached</span><strong>—</strong></div>
+              <div><span>Evidence provenance</span><strong>—</strong></div>
+              <div><span>Detection lifecycle</span><strong>—</strong></div>
+              <div><span>Cleanup result</span><strong>—</strong></div>
+              <div><span>Latency delta</span><strong>—</strong></div>
+            </div>
+            <div class="comparison-graph" id="comparison-graph"><p>Select at least two runs to generate a path overlay.</p></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <span>Local-first experiment orchestration</span>
+      <span>Evidence labels: synthetic · executed · observed · blocked · counterfactual · unknown</span>
+    </footer>
+  </div>
+  <script type="module" src="/ui/app.js"></script>
+</body>
+</html>
