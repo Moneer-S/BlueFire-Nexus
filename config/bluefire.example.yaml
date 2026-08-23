@@ -1,0 +1,98 @@
+schema_version: bluefire.config.v1
+mode: simulate
+ai:
+  enabled: false
+active_profile: sandbox-simulate.v1
+runner_profiles:
+  - id: sandbox-simulate.v1
+    mode: simulate
+    environment_type: disposable
+    platforms: [windows, linux, macos]
+    runner_binary:
+      env: BLUEFIRE_RUNNER_BINARY
+    sandbox_root:
+      env: BLUEFIRE_SANDBOX_ROOT
+    scope:
+      - sandbox.workspace
+      - network.loopback
+      - export.local
+    network_allowlist:
+      - 127.0.0.1/32
+      - "::1/128"
+    capabilities:
+      - sandbox.fixture
+      - sandbox.discovery
+      - sandbox.collection
+      - sandbox.network
+      - sandbox.export
+      - sandbox.cleanup
+      - filesystem.read
+      - filesystem.write
+      - process.spawn
+      - network.loopback
+      - export.local
+      - cleanup
+    safety_tiers: [safe, controlled]
+    approval_required: false
+    enabled_actions: []
+    blocked_actions: []
+    cleanup_policy: always
+    budgets:
+      max_steps: 25
+      max_seconds: 120
+      max_artifacts: 200
+      max_bytes: 10485760
+    secrets: {}
+
+  - &execute_profile
+    id: sandbox-execute.v1
+    mode: execute
+    environment_type: disposable
+    platforms: [windows, linux, macos]
+    runner_binary:
+      env: BLUEFIRE_RUNNER_BINARY
+    sandbox_root:
+      env: BLUEFIRE_SANDBOX_ROOT
+    scope:
+      - sandbox.workspace
+      - network.loopback
+      - export.local
+    network_allowlist:
+      - 127.0.0.1/32
+      - "::1/128"
+    capabilities:
+      - sandbox.fixture
+      - sandbox.discovery
+      - sandbox.collection
+      - sandbox.network
+      - sandbox.export
+      - sandbox.cleanup
+      - filesystem.read
+      - filesystem.write
+      - process.spawn
+      - network.loopback
+      - export.local
+      - cleanup
+    safety_tiers: [safe, controlled]
+    approval_required: true
+    enabled_actions:
+      - sandbox.fixture.create.v1
+      - sandbox.fixture.transform.v1
+      - sandbox.discovery.list.v1
+      - sandbox.discovery.metadata.v1
+      - sandbox.collection.stage.v1
+      - sandbox.network.loopback.v1
+      - sandbox.export.local.v1
+      - sandbox.cleanup.v1
+    blocked_actions: []
+    cleanup_policy: always
+    budgets:
+      max_steps: 12
+      max_seconds: 60
+      max_artifacts: 100
+      max_bytes: 5242880
+    secrets: {}
+
+  - <<: *execute_profile
+    id: sandbox-blocked-network.v1
+    blocked_actions: [sandbox.network.loopback.v1]

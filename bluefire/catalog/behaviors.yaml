@@ -1,0 +1,276 @@
+schema_version: bluefire.behavior-catalog.v1
+items:
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.fixture.create.v1
+    title: Create deterministic fixture
+    purpose: Prepare bounded synthetic records in a runner-owned sandbox workspace.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.fixture, filesystem.write]
+    inputs: []
+    outputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+        description: Opaque runner-owned workspace reference.
+    parameters:
+      - name: record_count
+        type: integer
+        default: 6
+        minimum: 1
+        maximum: 100
+        description: Number of synthetic records to create.
+    simulation_id: simulation.sandbox.fixture.create.v1
+    action_ids: [sandbox.fixture.create.v1]
+    telemetry: [sandbox.fixture.created]
+    detection_hints: [Fixture creation is synthetic and should remain labeled synthetic.]
+    provenance: &authored
+      source: BlueFire Nexus canonical sandbox design
+      reference: canonical neutral behavior catalog
+      license: MIT
+      derived: false
+      notes: New control-plane metadata; no operational implementation is embedded.
+    limitations: [Represents only deterministic synthetic fixture data.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.fixture.transform.v1
+    title: Transform deterministic fixture
+    purpose: Normalize and redact the synthetic fixture inside its sandbox workspace.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.fixture, filesystem.read, filesystem.write, process.spawn]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    parameters:
+      - name: redact_values
+        type: boolean
+        default: true
+        description: Replace fixture values with deterministic placeholders.
+    simulation_id: simulation.sandbox.fixture.transform.v1
+    action_ids: [sandbox.fixture.transform.v1]
+    telemetry: [sandbox.fixture.transformed]
+    detection_hints: [Transformation evidence should include the source artifact hash.]
+    provenance: *authored
+    limitations: [Only runner-owned fixture artifacts are eligible.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.discovery.list.v1
+    title: List fixture records
+    purpose: Enumerate record metadata from a typed sandbox fixture artifact.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1083]
+    capabilities: [sandbox.discovery, filesystem.read]
+    inputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    parameters: &discovery_parameters
+      - name: record_limit
+        type: integer
+        default: 25
+        minimum: 1
+        maximum: 100
+        description: Maximum number of fixture records returned.
+    simulation_id: simulation.sandbox.discovery.list.v1
+    action_ids: [sandbox.discovery.list.v1]
+    telemetry: [sandbox.discovery.listed]
+    detection_hints: [Record enumeration is confined to the bound fixture artifact.]
+    provenance: *authored
+    limitations: [Does not enumerate the host filesystem.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.discovery.metadata.v1
+    title: Inspect fixture metadata
+    purpose: Produce discovery records through a compatible metadata-oriented strategy.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1083]
+    capabilities: [sandbox.discovery, filesystem.read]
+    inputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    parameters: *discovery_parameters
+    simulation_id: simulation.sandbox.discovery.metadata.v1
+    action_ids: [sandbox.discovery.metadata.v1]
+    telemetry: [sandbox.discovery.metadata_inspected]
+    detection_hints: [Metadata inspection is confined to the bound fixture artifact.]
+    provenance: *authored
+    limitations: [Compatible alternative to listing; it does not inspect host metadata.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.collection.stage.v1
+    title: Stage selected fixture records
+    purpose: Package typed discovery records inside the runner-owned workspace.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: [T1074.001]
+    capabilities: [sandbox.collection, filesystem.read, filesystem.write]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    parameters:
+      - name: bundle_format
+        type: string
+        default: jsonl
+        enum: [jsonl, json]
+        description: Deterministic representation used for the fixture bundle.
+    simulation_id: simulation.sandbox.collection.stage.v1
+    action_ids: [sandbox.collection.stage.v1]
+    telemetry: [sandbox.collection.staged]
+    detection_hints: [Staging should link each output hash to its discovery-record parents.]
+    provenance: *authored
+    limitations: [Accepts only typed synthetic discovery records.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.network.loopback.v1
+    title: Exercise loopback transport
+    purpose: Send a synthetic bundle only to a runner-enforced loopback sink.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: [T1041]
+    capabilities: [sandbox.network, filesystem.read, network.loopback]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.network.receipt.v1
+    parameters:
+      - name: port
+        type: integer
+        default: 4317
+        minimum: 1024
+        maximum: 65535
+        description: Loopback sink port selected by the reviewed runner profile.
+    simulation_id: simulation.sandbox.network.loopback.v1
+    action_ids: [sandbox.network.loopback.v1]
+    telemetry: [sandbox.network.loopback_attempted]
+    detection_hints: [A policy refusal is control-blocked evidence, not executed evidence.]
+    provenance: *authored
+    limitations: [The action contract permits loopback scope only.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.export.local.v1
+    title: Export bundle to approved local storage
+    purpose: Preserve a synthetic bundle locally when the network step is blocked.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.export, filesystem.read, filesystem.write, export.local]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.export.receipt.v1
+    parameters:
+      - name: retention_label
+        type: string
+        default: ephemeral
+        enum: [ephemeral, review]
+        description: Policy label, not a filesystem path.
+    simulation_id: simulation.sandbox.export.local.v1
+    action_ids: [sandbox.export.local.v1]
+    telemetry: [sandbox.export.local_completed]
+    detection_hints: [Local export evidence should record the policy decision and bundle hash.]
+    provenance: *authored
+    limitations: [The runner chooses the approved export location; no path is accepted.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.cleanup.v1
+    title: Clean runner-owned workspace
+    purpose: Remove temporary fixture artifacts and emit a cleanup receipt.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.cleanup, filesystem.write, cleanup]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.cleanup.receipt.v1
+    parameters:
+      - name: verify_removal
+        type: boolean
+        default: true
+        description: Ask the runner to verify cleanup within its owned workspace.
+    simulation_id: simulation.sandbox.cleanup.v1
+    action_ids: [sandbox.cleanup.v1]
+    telemetry: [sandbox.cleanup.completed]
+    detection_hints: [Cleanup evidence should distinguish requested, completed, and partial states.]
+    provenance: *authored
+    limitations: [Cannot name or remove paths outside the runner-owned workspace.]
+
+  - &metadata_research
+    schema_version: bluefire.behavior.v1
+    id: research.credential.access.v1
+    title: Credential-access detection research
+    purpose: Describe credential-access observables for hypothesis and fixture design.
+    execution_state: metadata_only
+    safety_tier: restricted
+    platforms: [windows, linux, macos]
+    techniques: [T1003]
+    capabilities: [research.metadata]
+    inputs: []
+    outputs:
+      - name: hypothesis
+        type: artifact.research.hypothesis.v1
+    parameters:
+      - name: evidence_basis
+        type: string
+        required: true
+        enum: [public_documentation, synthetic_fixture]
+    action_ids: []
+    telemetry: [research.hypothesis.created]
+    detection_hints: [Treat the output as a hypothesis until fixture or observed evidence exists.]
+    provenance: &legacy_metadata
+      source: BlueFire Nexus existing neutral profile metadata
+      reference: src/core/modules/impl/standard_modules.py profile mappings
+      license: MIT
+      derived: true
+      notes: Only tactic mapping and observable concepts were retained; no implementation was copied.
+    limitations: [Metadata only; unavailable for execution or simulation dispatch.]
+
+  - <<: *metadata_research
+    id: research.persistence.change.v1
+    title: Persistence-change detection research
+    purpose: Describe persistence-change observables for hypothesis and fixture design.
+    techniques: [T1547]
+
+  - <<: *metadata_research
+    id: research.lateral.movement.v1
+    title: Lateral-movement detection research
+    purpose: Describe lateral-movement observables for hypothesis and fixture design.
+    techniques: [T1021]
+
+  - <<: *metadata_research
+    id: research.defense.evasion.v1
+    title: Defense-evasion detection research
+    purpose: Describe defense-evasion observables for hypothesis and fixture design.
+    techniques: [T1562.001]
