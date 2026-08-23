@@ -1,250 +1,204 @@
 # BlueFire Nexus
 
-[![tests](https://img.shields.io/badge/tests-passing-blue)](#development--tests)
-[![security](https://img.shields.io/badge/security-bandit%20strict-green)](#development--tests)
-[![python](https://img.shields.io/badge/python-3.10%2B-blue)](#quickstart)
-[![license](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
+BlueFire Nexus 0.1.0 is an evidence-first control plane for bounded security experiments. It validates typed scenario graphs, plans neutral behaviors, records provenance, and stores replayable run bundles. Python owns orchestration and policy; a separately built Rust runner is the only component allowed to perform reviewed actions.
 
-> A local-first adversary-emulation framework for purple-team validation. Every run produces structured telemetry, ATT&CK-mapped detection drafts, a risk summary, and a static HTML dashboard. No network calls by default.
+The maintained product has exactly two modes:
 
-BlueFire Nexus runs ATT&CK-aligned scenarios end-to-end on a single machine. Each run lands a complete artifact bundle under `output/<run_id>/`: a JSON manifest, a self-contained `index.html` dashboard, structured telemetry, Sigma / YARA-L / SPL detection drafts, a risk summary, and (optional) AI-augmented narratives. Open `index.html` with `file://` to read the run.
+| Mode | Default | Meaning |
+|---|---:|---|
+| **Simulate** | Yes | Models state transitions and emits explicitly synthetic or counterfactual evidence. It does not launch the Rust runner. |
+| **Execute** | No | Dispatches only registered action IDs through an explicit runner profile after policy and approval checks. |
 
-The framework is dual-use by design. It preserves realistic offensive tradecraft (APT actor packs, C2 protocol research, stealth and evasion research) but gates that capability behind explicit configuration, lab confirmation, and registry-wide safety tests. Defaults are conservative: `dry_run=True`, advanced packs disabled, AI offline.
+There is no generic command, shell, script, payload, identity-specific pack, or implicit plugin execution interface.
 
-This repository is intended for authorized purple-team work, detection-engineering research, and security education. See [§ Limitations & scope](#limitations--scope) for what it is not.
+## Current scope
 
----
+The active bluefire package provides:
 
-## Why this exists
+- strict, versioned behavior, action, scenario, configuration, plugin, evidence, and planner contracts;
+- a deterministic planner with typed artifact bindings and explicit outcome edges;
+- deny-by-default Execute policy and approval binding;
+- a Python-to-Rust transport with a fixed argument grammar;
+- tamper-evident local run bundles, replay preparation, and run comparison;
+- a loopback-only HTTP API and packaged browser UI;
+- a detection-candidate lifecycle that keeps hypotheses distinct from exercised candidates;
+- a neutral sandbox catalog and a seven-step fixture research scenario.
 
-Most adversary-emulation tools land in one of three failure modes:
+The Rust crate under runner/ contains eight bounded sandbox actions. It must be built and configured separately. A source checkout or a successful simulation does not prove that an Execute runner is installed, compatible, or authorized; check runner inventory and preflight first.
 
-- Compliance simulators with green dashboards and no realistic offensive telemetry.
-- Fragmented script collections with realism but no orchestration, telemetry contract, or safety story.
-- Unsafe operator suites with realism and orchestration but no gating or defensive output.
+Four credential, persistence, lateral-movement, and defense-evasion research entries are intentionally metadata_only. They preserve neutral technique and observable concepts for detection research, but have no simulation adapter or executable action.
 
-BlueFire Nexus tries to bridge these:
+## Install
 
-- Offensive realism preserved. Per-actor APT adapters, C2 protocol research, stealth and credential-access tradecraft, kept in tree behind explicit gates.
-- Defensive output every run. Sigma / YARA-L / SPL drafts, ATT&CK coverage maps, and a risk summary readable by a SOC analyst.
-- Local-first. No SIEM connectors, no remote observability, no required cloud account. Air-gapped use is supported by default.
-- Reproducible. Predictable artifact paths, a manifest schema, and a deterministic static dashboard.
-- Gated, not sanitised. Dangerous code paths are still in the repo; you have to opt in to run them.
+Python 3.10 or newer is required.
 
----
-
-## Quickstart
-
-```bash
-git clone https://github.com/Moneer-S/BlueFire-Nexus.git
-cd BlueFire-Nexus
+~~~bash
 python -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+# Linux/macOS: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install -r requirements-dev.txt
-pip install -e .
+python -m pip install -e ".[dev]"
+~~~
 
-# Run a scenario (simulate-only, dry-run, no network)
-python -m src.run_scenario --profile apt29_credential_access --output-json
+The Python runtime dependency is PyYAML. The wheel includes the neutral catalog, UI assets, canonical default configuration, and canonical sandbox scenario; checkout copies are parity-tested against those packaged defaults. The package does not install or download a runner, AI provider, browser, telemetry collector, or SIEM connector.
 
-# Inspect the results
-python -m src.core.cli latest-run            # prints a file:// link to index.html
-python -m src.core.cli list-runs             # everything in output/
-python -m src.core.cli validate-run <run_id> # check the bundle is complete
+The path-based examples below assume a source checkout. In a standalone wheel installation, the service and UI fall back to the packaged configuration and scenario; provide your own scenario path to path-based CLI commands.
 
-# Open the static dashboard with file:// (no server required)
-#   Linux:   xdg-open output/<run_id>/index.html
-#   macOS:   open       output/<run_id>/index.html
-#   Windows: start       output\<run_id>\index.html
-```
+## Start safely
 
-The default flow is fully offline. No `.env` file, no API key, no network call. The deterministic template AI provider produces copilot artifacts without external dependencies.
+Validate and preview the included scenario:
 
-To enable a remote AI provider, copy `.env.example` to `.env` and set the relevant key. See [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELINES.md#ai-provider-configuration).
+~~~bash
+bluefire scenario validate scenarios/sandbox_research_chain.yaml
+bluefire scenario preview scenarios/sandbox_research_chain.yaml
+~~~
 
-The full demo scenario is `enterprise_intrusion_chain` (12 standard modules, five step-to-step propagation pairs):
+Run it in the default Simulate mode and inspect the resulting local history:
 
-```bash
-python -m src.run_scenario --profile enterprise_intrusion_chain --output-json
-```
+~~~bash
+bluefire --runs-dir runs scenario run scenarios/sandbox_research_chain.yaml
+bluefire --runs-dir runs runs list
+bluefire --runs-dir runs bundle validate RUN_ID
+~~~
 
-A broader CLI / scenario / configuration reference is in [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELINES.md). Architecture and the `ModuleResult` contract live in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Start the local UI:
 
----
+~~~bash
+bluefire --runs-dir runs ui --host 127.0.0.1 --port 8765
+~~~
 
-## What a run produces
+The server refuses non-loopback bind addresses. The UI, CLI, and API are adapters over the same control-plane service and policy path.
 
-```
-output/
-├── index.html                   # top-level aggregator listing every run on disk
+Use bluefire --help and the help for each subcommand as the authoritative option reference.
 
-output/<run_id>/
-├── manifest.json                # machine-readable index of every artifact below
-├── index.html                   # static, browser-viewable run dashboard (no server)
-├── telemetry.jsonl              # one JSON event per module step
-├── report.md                    # purple-team narrative
-├── report.json                  # structured per-step result
-├── risk_summary.json            # per-run risk posture
-├── detections/
-│   ├── sigma/*.yml              # Sigma detection drafts
-│   ├── yara_l/*.yaral           # YARA-L detection drafts
-│   ├── spl/*.spl                # local Splunk SPL searches (NOT a connector)
-│   └── coverage_<run_id>.json   # ATT&CK technique coverage map
-├── copilot_narrative.md         # optional AI-augmented narrative
-├── copilot_plan.txt             # optional plan output
-└── copilot_detections.md        # optional detection-strategy summary
-```
+The command groups are deliberately small:
 
-Splunk SPL is generated as local detection-rule output. It is not a Splunk exporter or SIEM connector.
+| Command | Purpose |
+|---|---|
+| bluefire scenario validate | Parse and validate a scenario without running it |
+| bluefire scenario preview | Compile and preflight a Simulate or Execute plan |
+| bluefire scenario run | Create a run through the same validated service path |
+| bluefire runner status | Inspect configured runner availability and inventory parity |
+| bluefire runs list or detail | Inspect normalized local run records |
+| bluefire replay | Prepare a lineage-linked exact or declared variant replay |
+| bluefire compare | Compare two or more normalized runs |
+| bluefire bundle validate | Verify a finalized run bundle's file table and hashes |
+| bluefire plugins inventory | Show declarative plugin inventory; it does not load code |
+| bluefire research status | Show which behaviors are executable, simulated, or metadata only |
+| bluefire ui | Start the loopback-only browser workspace |
 
-### Detection draft maturity
+## Execute mode
 
-The three engines are not equally mature. Generated drafts are starting points for a detection engineer, not finished detections to deploy verbatim:
+Execute is deliberately not a more permissive form of Simulate. It requires all of the following:
 
-- Sigma (most mature). Full document with `title`, `id`, `logsource`, `detection.selection`, `detection.condition`, `tags`, `level`. Reusable in a SIEM pipeline after review.
-- YARA-L (medium). UDM event mapping derived from the same Sigma `logsource` and `detection.selection`. Usable as a Chronicle / Google SecOps starting point after parser-field review.
-- SPL (draft / starter). Each `.spl` file carries a leading multi-line backtick header marking it as a draft. Adjust `index=` and `sourcetype=` per environment before deploying.
+1. A locally built, compatible bluefire-runner binary.
+2. An existing sandbox root owned for the experiment.
+3. An explicit Execute runner profile whose platform, action allowlist, capabilities, safety tiers, network scope, cleanup policy, and resource budgets permit the request.
+4. A registered behavior/action pair and a successful runner inventory compatibility check.
+5. A fresh approval bound to the exact request, action, profile, and target-scope digest when the profile requires it.
 
-The dashboard's "Detection drafts" KPI counts every file written across all three engines. Treat the count as scope ("how many techniques fired?"), not maturity ("how many production detections do I have?"). The `coverage_<run_id>.json` sibling enumerates each draft's module / technique / engine paths for programmatic readouts.
+Build the runner with a local Rust toolchain:
 
-### Static dashboard
+~~~bash
+cargo build --release --manifest-path runner/Cargo.toml
+~~~
 
-`index.html` is one HTML file with an inline `<style>` block and zero JavaScript. Every value is HTML-escaped, every artifact link is run-dir-relative, and the run directory can be moved or zipped without breaking the page.
+Set BLUEFIRE_RUNNER_BINARY and BLUEFIRE_SANDBOX_ROOT to local paths, then use the Execute profile in config/bluefire.example.yaml as a template. Environment values are resolved only at the boundary that needs them; configuration objects retain environment-variable references rather than secret or path values.
 
-The dashboard renders, in order:
+Before any Execute request:
 
-1. Header. Scenario name, run id, status / dry_run / AI-mode badges, severity badge, scenario `objective:` paragraphs, AI provider attribution.
-2. KPI grid. Steps, techniques, detection drafts, telemetry events, blocked steps, plus a "Module status" mini-chart (pure-CSS bars).
-3. Risk summary. Tier totals plus a per-module table with severity badge, score, mode, and rationale (`tactic_base=<tactic>`, `matters_because=<chain-position text>`).
-4. Scenario timeline. Ordered steps with status, per-step severity column, ATT&CK techniques, and a notes column for non-success rows.
-5. Propagation graph. From-step / to-step / kind rows plus a defender-facing narrative column.
-6. ATT&CK coverage. Technique to emitting steps.
-7. Telemetry summary. Counts by event type and module, rendered as deterministic CSS bar charts.
-8. Detection drafts. Per-engine counts plus per-step paths.
-9. AI copilot. Provider, model, network state, fallback marker, link to the artifact.
-10. Artifact quick links. Each renders only when the file exists; missing artifacts surface as inert "not present" text.
+~~~bash
+bluefire --config config/bluefire.example.yaml runner status --profile sandbox-execute.v1
+bluefire --config config/bluefire.example.yaml scenario preview \
+  scenarios/sandbox_research_chain.yaml --mode execute --profile sandbox-execute.v1
+~~~
 
-The CLI exposes six commands for working with runs locally:
+Only after reviewing that preflight should an operator use scenario run --mode execute with the explicit profile and approval options. The runner independently revalidates the sealed manifest and profile. A Python policy decision cannot force the runner to accept an invalid request.
 
-```bash
-python -m src.core.cli list-runs                   # newest first
-python -m src.core.cli latest-run                  # most recent run detail
-python -m src.core.cli show-run <run_id>           # single-run detail
-python -m src.core.cli build-report-view <run_id>  # regenerate per-run index.html
-python -m src.core.cli build-output-index          # regenerate top-level output/index.html
-python -m src.core.cli validate-run <run_id>       # gate-style bundle check
-```
+The logical catalog parameters and typed artifact bindings are intentionally distinct from the Rust executor's sealed parameter objects. RunnerActionAdapter is the sole translation point. It maps only known action IDs and validated relative artifact references; arbitrary fields and unknown actions are refused.
 
-All six honour `general.output_root` / `BLUEFIRE_OUTPUT_ROOT` and accept `--output-root <path>` for ad-hoc discovery. None starts a server. None auto-opens a browser. `validate-run` exits non-zero when the bundle is missing artifacts or has broken viewer links, useful as a CI gate before sharing a run output.
+See [the execution model](docs/EXECUTION_MODEL.md) for the complete boundary and refusal model.
 
-The top-level `output/index.html` aggregator lists every run on disk newest-first with scenario name, status, severity, started timestamp, step count, and quick links into each run's viewer / manifest / report / risk summary. Same self-contained constraints as the per-run dashboard.
+## Scenario and catalog model
 
----
+scenarios/sandbox_research_chain.yaml demonstrates:
 
-## Modes and safety
+- seven registered steps;
+- typed artifact propagation;
+- an interchangeable discovery behavior with an identical logical contract;
+- explicit success, partial, blocked, and failed edges;
+- a blocked loopback step that falls back to local export;
+- cleanup bound to the original runner-owned workspace.
 
-Every run is shaped by three orthogonal mode controls. Defaults are safe; advanced behaviour requires explicit opt-in.
+Validation rejects unknown fields, unversioned IDs, duplicate steps or outcome routes, cycles, unreachable nodes, incompatible alternates, type mismatches, and bindings whose source is not guaranteed on every incoming path.
 
-- `general.dry_run` (default `true`). When true, no module invokes real subprocess / socket / HTTP primitives. Enforced by [tests/test_module_safety.py](tests/test_module_safety.py).
-- Legacy capability `mode`: `simulate` (default for any enabled capability) or `emulate`. `emulate` requires explicit `lab_confirmation: true`.
-- `ExecutionModule.allow_real_execution` (default `false`). Real `subprocess.run` invocations require BOTH `dry_run=False` AND `allow_real_execution=true`.
+The eight reviewed action IDs are:
 
-Additional safety primitives:
+~~~text
+sandbox.fixture.create.v1
+sandbox.fixture.transform.v1
+sandbox.discovery.list.v1
+sandbox.discovery.metadata.v1
+sandbox.collection.stage.v1
+sandbox.network.loopback.v1
+sandbox.export.local.v1
+sandbox.cleanup.v1
+~~~
 
-- `general.safeties.allowed_subnets`: orchestrator-level subnet allowlist.
-- `general.safeties.max_runtime`: hard ceiling on per-run wall time.
-- Destructive-operation acknowledgment: e.g. exfiltration with `destructive=true` is rejected unless `i_understand_this_is_a_lab=true` is also passed.
-- Artifact path enforcement: [tests/test_module_artifact_paths.py](tests/test_module_artifact_paths.py) asserts no module writes outside `context["output_dir"]`.
-- Bandit strict at `-ll`. Every dual-use offensive pattern carries a narrow per-line `# nosec BXXX` justification.
+They are sandbox actions, not a claim of general host or network emulation. Network scope in the example profile is limited to 127.0.0.1/32 and ::1/128.
 
-Full safety story: [SECURITY.md](SECURITY.md).
+## Evidence, detections, replay, and comparison
 
----
+Evidence provenance is explicit:
 
-## Legacy capability packs
+- synthetic: produced by a model or fixture simulation;
+- executed: reported by a runner after an action started;
+- observed: independently collected from a declared sandbox artifact;
+- control_blocked: evidence that a control prevented the requested action;
+- counterfactual: a modeled continuation after a blocked or failed branch;
+- unknown: retained when provenance cannot be established.
 
-Four opt-in research packs preserve the most advanced offensive code paths instead of hiding or deleting them:
+These labels are not interchangeable. Synthetic telemetry is not proof of execution, runner output is not independent observation, and a blocked request is not a successful action.
 
-- Actor pack. APT29 / APT28 / APT32 / APT38 / APT41 research adapters.
-- C2 / protocol pack. DNS tunneling, TLS fast-flux, QUIC, Solana RPC, network obfuscation.
-- Stealth pack. Anti-forensic, anti-sandbox, anti-detection, dynamic API resolution research.
-- Tactic pack. Credential-access, lateral-movement, privilege-escalation, impact, and collection research adapters wrapping the preserved per-tactic legacy classes.
+Detection candidates move through explicit lifecycle states. The included structured matcher can exercise declared fixtures and observed evidence, but it is not an authoritative parser for every target detection language. Generated hypotheses still require the relevant external parser/backend and environment-specific evaluation before production use.
 
-All packs ship disabled by default. Enable globally with the master lab toggle or per-pack/per-capability with explicit opt-in. `simulate` is the default mode for any enabled capability; `emulate` requires `lab_confirmation: true`. The standard tactic modules (`credential_access`, etc.) remain simulate-only and are NOT routed through the legacy adapters; scenarios that want the legacy behaviour must use `module: legacy_<tactic>` explicitly.
+Finalized run bundles capture scenario, plan, policy, profile, result, evidence, and detection snapshots; an append-only event stream; and a file table with hashes and a bundle digest. bundle validate checks those hashes. A digest detects modification but is not a digital signature or proof of authorship.
 
-Full enable/disable surface, preset profiles, and YAML examples: [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELINES.md). Per-pack case studies: [docs/case-studies/](docs/case-studies/).
+Replay creates lineage-linked variants without mutating the source snapshot. It supports exact replay, restart from a node, compatible behavior swaps, and declared profile, AI, or defense changes. Comparison reports path divergence, blocked controls, evidence-provenance deltas, detection-state deltas, telemetry changes, objective state, and cleanup state. It does not by itself establish scientific causality.
 
----
+## Plugins and AI
 
-## AI / copilot layer
+Plugin support is declarative inventory only. Manifests carry version, trust, integrity, license, provenance, permissions, capability IDs, behavior IDs, and action IDs. Loading a manifest does not import Python entry points or execute plugin code.
 
-- Default is offline / template. A deterministic local provider produces copilot artifacts every run with no external dependencies and no API key required.
-- Provider-agnostic interface. Canonical names (`openai`, `anthropic`, `gemini`, `grok`, `ollama`, `openai_compatible`, `llama.cpp`, `lm-studio`) are equal optional opt-in targets. No vendor is privileged as the default. Aliases (`google` to `gemini`, `xai` to `grok`, `claude` to `anthropic`) are normalised at factory time.
-- API keys via env vars only. `modules.ai.api_key_env` names the environment variable; the runtime never reads from disk and the key never appears in config files.
-- Optional fallback chain. `modules.ai.fallback_provider` (typically `template`) routes around primary failures so a remote outage degrades gracefully to deterministic offline output.
-- Artifact metadata header. Every copilot artifact starts with a YAML-front-matter block carrying `provider`, `model`, `generated_at`, `network_disabled`, `fallback_used`, and (when present) the run's scenario summary so artifacts reflect actual scenario context.
+AI enablement is independent of Simulate/Execute mode. AI decisions are untrusted proposals and must pass the same strict planner schema, registered-ID, parameter, edge, budget, and forbidden-field validation as any other proposal. AI cannot create an action, expand runner scope, or bypass policy and approval.
 
-Full reference: [docs/reports/ai_layer.md](docs/reports/ai_layer.md). Operator-facing config: [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELINES.md#ai-provider-configuration).
+## Repository boundaries
 
----
+- bluefire/: maintained Python package and packaged UI/catalog data.
+- bluefire/data/: packaged configuration and scenario defaults used when checkout copies are absent.
+- runner/: separately built Rust execution authority.
+- config/bluefire.example.yaml: canonical configuration example.
+- scenarios/sandbox_research_chain.yaml: canonical neutral scenario.
+- tests_platform/: active Python verification suite.
 
-## Development & tests
+Superseded Python effects, compatibility modes, identity-specific wrappers, and stale scenarios have been retired from the working tree. Their Git history is migration reference only and does not define a supported runner action.
 
-```bash
-pip install -r requirements-dev.txt
-pip install -e .
+## Development
 
-python -m compileall -q src tests
-pytest -q
-bandit -r src -ll
-detect-secrets scan --all-files --baseline .secrets.baseline
-pip-audit
-```
+~~~bash
+python -m pytest
+python -m ruff check bluefire tests_platform
+python -m build
 
-CI runs the same gates plus gitleaks (history scan) and SBOM generation. Workflows: [.github/workflows/tests.yml](.github/workflows/tests.yml), [.github/workflows/analysis.yml](.github/workflows/analysis.yml).
+cargo fmt --check --manifest-path runner/Cargo.toml
+cargo clippy --manifest-path runner/Cargo.toml --all-targets -- -D warnings
+cargo test --manifest-path runner/Cargo.toml
+~~~
 
-Three registry-wide enforcement tests run on every module:
+See [the architecture](docs/ARCHITECTURE.md), [the execution model](docs/EXECUTION_MODEL.md), [the migration guide](docs/MIGRATION.md), and [the security policy](SECURITY.md) before extending the execution boundary.
 
-- [tests/test_module_contract.py](tests/test_module_contract.py): every module returns a conformant `ModuleResult` (correct fields, types, status from `success | failure | blocked | skipped | partial_success`).
-- [tests/test_module_safety.py](tests/test_module_safety.py): no module touches `subprocess`, `socket`, `requests`, or `urllib` while `dry_run=True`, in either lab-off or lab-simulate mode.
-- [tests/test_module_artifact_paths.py](tests/test_module_artifact_paths.py): every module writes its files only under `context["output_dir"]` and registers them in `ModuleResult.artifacts`.
+## Responsible use
 
----
+Use BlueFire Nexus only in environments you own or are explicitly authorized to test. The default catalog is intentionally bounded, but configuration, local deployment, and operator authorization remain your responsibility. Report vulnerabilities through the process in [SECURITY.md](SECURITY.md).
 
-## Limitations & scope
-
-This is a security-research and detection-engineering tool, not a production breach-and-attack platform.
-
-- Single-host execution. Scenarios run on the box you launch them on. No agent, no controller / agent split, no remote execution mesh.
-- No live destructive behaviour by default. `dry_run=True`, `simulate` mode, and `allow_real_execution=false` are all in effect on a fresh install. You have to flip multiple gates explicitly to invoke real research code.
-- No outbound integrations in the baseline. SIEM exporters, remote observability, hosted dashboards, telemetry shipping: none of those exist on the active path. Telemetry is local JSON Lines.
-- AI providers are opt-in. The default `template` provider is fully offline and deterministic. Remote providers require explicit `modules.ai.enabled: true` plus an operator-supplied endpoint and (for vendor-specific backends) an API key resolved from an environment variable. No keys are bundled or written to disk.
-- `emulate` mode is gated. Legacy adapter packs default to `simulate`. `emulate` requires `lab_confirmation: true` and runs preserved research code paths that synthesise local artifacts; they do not open real network sockets in dry-run.
-- For authorized research only. The framework is dual-use. Use it on systems you own or have written permission to test. See [SECURITY.md](SECURITY.md) for the full threat model.
-- Static dashboard, not a live UI. `output/<run_id>/index.html` regenerates on every run. There is no SPA, no auto-refresh, and no server. Re-run the scenario or `build-report-view` for an updated view.
-
-If your use case requires distributed execution, live data shipping, or a hosted dashboard, BlueFire Nexus is not the right tool today.
-
----
-
-## Further reading
-
-- Architecture and ModuleResult contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- Operator usage and CLI reference: [docs/USAGE_GUIDELINES.md](docs/USAGE_GUIDELINES.md)
-- Security and threat model: [SECURITY.md](SECURITY.md)
-- Capability inventory: [docs/reports/capability_inventory.md](docs/reports/capability_inventory.md)
-- Scenario validation: [docs/reports/scenario_validation.md](docs/reports/scenario_validation.md)
-- AI layer reference: [docs/reports/ai_layer.md](docs/reports/ai_layer.md)
-- Per-pack case studies: [docs/case-studies/](docs/case-studies/)
-
----
-
-## Disclaimer
-
-BlueFire Nexus is dual-use security research tooling. Use only in authorized, isolated environments for defensive testing, purple-team validation, and security research. The author and contributors accept no responsibility for misuse.
-
----
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+BlueFire Nexus is licensed under the [MIT License](LICENSE).

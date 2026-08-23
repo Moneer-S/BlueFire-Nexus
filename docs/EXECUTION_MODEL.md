@@ -1,0 +1,194 @@
+# Execution model
+
+BlueFire Nexus has exactly two modes: **Simulate** and **Execute**. They share scenario and planning contracts but have different effect and evidence semantics.
+
+## Mode invariants
+
+| Property | Simulate | Execute |
+|---|---|---|
+| Default | Yes | No |
+| Rust runner launched | Never | Only after preflight and policy |
+| Action ID | May be shown as a possible action | Must be registered and profile-enabled |
+| Profile | Simulate profile | Explicit Execute profile |
+| Approval | Not an execution approval | Bound approval when the profile requires it |
+| Primary provenance | synthetic | executed, control_blocked, or unknown on transport failure |
+| Independent observation | Only if a separate observer runs | Only if a separate observer runs |
+| Network | Modeled only | Literal allowlisted loopback only in the current runner |
+
+An AI setting is orthogonal to both modes. It never changes these invariants.
+
+## Shared preflight
+
+Before either mode, the control plane:
+
+1. loads a versioned configuration without resolving environment values;
+2. loads the versioned behavior and action catalogs;
+3. parses the scenario with unknown-field rejection;
+4. validates stable IDs, parameters, typed bindings, alternates, explicit edges, DAG shape, reachability, and artifact-source dominance;
+5. compiles a deterministic plan;
+6. records the scenario and plan digests.
+
+Preview performs these checks without creating effects. Execute preview additionally resolves the selected profile, checks runner inventory compatibility, evaluates policy requirements, and reports approval and cleanup readiness.
+
+## Simulate path
+
+Simulate applies the behavior's registered simulation transition. It follows only declared outcome edges. A simulation result must retain synthetic provenance even when the modeled outcome is success.
+
+If a blocked or failed step has a declared alternate edge, the planner follows that edge. If it models the success branch without a real alternate, the continuation is counterfactual. Counterfactual evidence remains labeled and cannot satisfy a requirement for executed or observed evidence.
+
+Simulate must not:
+
+- instantiate or invoke the Rust runner transport;
+- write a runner manifest as if it were accepted;
+- label evidence executed or observed;
+- resolve a network destination for an effect;
+- bypass metadata_only behavior restrictions.
+
+## Execute prerequisites
+
+Execute is unavailable unless every prerequisite succeeds:
+
+- the requested mode is execute;
+- an explicit Execute profile is selected;
+- runner and sandbox-root environment references resolve to operator-provided local values;
+- the runner binary exists at an absolute path;
+- runner inventory uses the supported schema and contains compatible descriptors;
+- the scenario behavior exposes an action ID enabled by the profile;
+- action, profile, and current host platforms intersect;
+- action effect capabilities are contained by the profile capabilities;
+- the requested safety tier is permitted;
+- target scope is no broader than the profile;
+- step, time, file, byte, and output budgets are positive and within profile maxima;
+- cleanup is registered and permitted;
+- policy allows the exact request;
+- a live request-bound approval is present when required.
+
+Failure of any prerequisite is a refusal, approval_required, or control_blocked outcome. It is not silently converted into simulated success.
+
+## Logical contract to sealed executor contract
+
+The behavior/action catalog and Rust inventory serve different purposes.
+
+The logical catalog describes scenario-facing parameters and typed artifacts. It is stable across platforms and does not expose runner paths, process arguments, sockets, or receipt state.
+
+The Rust inventory describes executor-facing, action-specific parameter objects and effect capabilities. Those objects may contain bounded relative paths, fixed transform enums, literal loopback destinations, or receipt IDs after the control plane has resolved prior artifacts.
+
+RunnerActionAdapter is the only bridge. For each known action ID it:
+
+1. validates the logical parameters again;
+2. resolves typed input bindings from prior normalized artifacts;
+3. maps logical values to one fixed Rust parameter schema;
+4. normalizes and checks portable relative paths;
+5. rejects missing, ambiguous, or wrong-type artifacts;
+6. rejects unknown fields and action IDs;
+7. returns a sealed parameter mapping for manifest construction.
+
+There is no reflective mapper, free-form fallback, or caller-supplied executable field.
+
+## Policy and approval
+
+Policy evaluation is deny by default. It considers:
+
+- registered behavior and action identity;
+- selected profile and mode;
+- enabled and control-blocked action sets;
+- semantic and effect capabilities;
+- safety tier and platform;
+- filesystem and network scope references;
+- resource budgets and cleanup policy;
+- approval threshold and approval state.
+
+Approval uses a versioned record containing operator identity, issue and expiry times, action ID, runner-profile ID, target-scope digest, request hash, and nonce. It is valid only for the exact normalized request. Changing a parameter, artifact reference, action, profile, or scope requires a new approval.
+
+The CLI approval option records an operator decision; it does not prove external authorization. Organizational authorization remains outside the software boundary.
+
+## Manifest sealing
+
+The sealed runner manifest includes request, run, step, behavior, action, runner, profile, and platform identity; timestamps; translated parameters; target scope; required effect capabilities; safety tier; limits; cleanup action; policy digest; approval; parent evidence references; and request hash.
+
+The request hash is calculated over canonical JSON using the runner contract's normalization rules. The profile also has a canonical policy digest. These values detect mismatches between what was reviewed and what was received. They are not signatures.
+
+The Rust runner rejects unknown fields and validates the profile and manifest independently. It also checks that the request has not expired and that the requested platform matches the actual host.
+
+## Transport boundary
+
+SubprocessRustRunner accepts only a configured absolute runner path and a configured work root. Its public calls are inventory and execute. Execute writes canonical manifest and profile JSON into a temporary request directory, then invokes a fixed argument vector with shell disabled.
+
+The child receives null standard input, a minimal environment, a fixed working directory, a timeout, and bounded captured output. The transport rejects generic execution keys recursively before launch and verifies the returned schema, run ID, step ID, and action ID.
+
+Transport failure is not action success. Invalid JSON, output overflow, timeout, nonzero exit, or identity mismatch is reported as an error/refusal according to the normalization layer and retains unknown or control-blocked provenance as appropriate.
+
+## Rust action boundary
+
+The current Rust registry contains eight IDs:
+
+- sandbox.fixture.create.v1
+- sandbox.fixture.transform.v1
+- sandbox.discovery.list.v1
+- sandbox.discovery.metadata.v1
+- sandbox.collection.stage.v1
+- sandbox.network.loopback.v1
+- sandbox.export.local.v1
+- sandbox.cleanup.v1
+
+Their scope is deliberately narrow: create and transform deterministic sandbox fixtures, inspect bounded sandbox metadata, stage sandbox artifacts, send one bounded artifact to a literal allowlisted loopback socket, copy an artifact to an approved local sandbox export, and clean receipt-owned objects.
+
+The runner has no generic command, shell, URL, hostname resolution, redirect, proxy, dynamic library, or Python plugin action. Its fixed transform helper is private and accepts only compiled transform choices.
+
+These constraints describe the source contract. Execute readiness for a particular installation still requires a successful local build, inventory check, preflight, and applicable runner tests.
+
+## Scope enforcement
+
+Filesystem scope uses normalized relative paths beneath one existing sandbox root. Absolute, drive, UNC/device, alternate-separator traversal, dot-component, reserved-device, symbolic-link, and reparse-point escapes are refused.
+
+Network scope uses literal IP address and port pairs. The current network action accepts loopback only. The canonical profile allowlist contains only 127.0.0.1/32 and ::1/128. DNS names, redirects, proxies, and non-loopback destinations are outside the action contract.
+
+## Results and evidence
+
+The runner result echoes the request, action, behavior, runner, profile, platform, request hash, and policy digest. Runner statuses include success, failed, partial, refused, control_blocked, timed_out, and cleanup_failed. Normalization must preserve distinctions rather than folding them into success.
+
+Runner evidence can claim executed after an action starts and control_blocked for a pre-effect policy refusal. It cannot claim observed. Independent observation belongs to SandboxObserver or another separately reviewed observer.
+
+The control plane also supports synthetic, counterfactual, and unknown provenance. Each evidence record carries producer, parents, environment, hashes, confidence, limitations, and target-scope reference.
+
+## Cleanup
+
+Create-new runner actions issue receipts in runner-owned state. Cleanup accepts receipt IDs, not caller-selected paths. Before removal it reloads the receipt and checks the owned object's type, size, and digest. Changed objects are retained and reported. Successful receipts are consumed; reusing a consumed receipt is idempotent.
+
+The control plane validates and records returned receipt IDs immediately after runner identity checks, before evidence, event, or planner processing. It keeps outstanding receipts in creation order and submits them to cleanup in reverse order. If later control-plane processing raises unexpectedly, it makes an emergency cleanup attempt through the same registered Rust cleanup action and then preserves the original exception. A claimed successful cleanup is accepted only when its report covers every requested receipt and lists no errors or retained paths.
+
+Cleanup outcomes are first-class. partial and cleanup_failed remain visible in the step result, evidence, run bundle, and comparison view.
+
+Profiles declare always, on_success, or manual cleanup policy. Any Execute plan containing a mutating action is refused unless the profile uses always, the cleanup action is enabled and unblocked, and the plan contains a cleanup step. Preview shows this readiness before Execute begins.
+
+The emergency path covers failures while the Python process and runner transport remain available. It cannot clean after abrupt process termination, host loss, or loss of the configured sandbox; receipts remain the authoritative recovery records in those cases.
+
+## Replay and comparison
+
+Replay never changes the source run. Exact replay retains the original scenario snapshot. Variant replay records the source digest and every declared change, including restart node, compatible behavior swap, profile, AI setting, or defense note.
+
+Replaying executed evidence does not make the new run executed. Each new run produces its own provenance.
+
+Comparison operates on normalized bundles. It reports differences; it does not infer that one changed setting caused an observed outcome.
+
+## Operator checklist
+
+For Simulate:
+
+1. Validate the scenario.
+2. Preview the plan and provenance.
+3. Confirm the selected mode is simulate.
+4. Run and validate the finalized bundle.
+
+For Execute:
+
+1. Confirm written authorization and sandbox ownership.
+2. Build and test the runner for the current platform.
+3. Set runner and sandbox-root environment references locally.
+4. Check bluefire runner status.
+5. Preview with mode execute and the explicit profile.
+6. Review actions, translated scope, capabilities, budgets, cleanup, and approval request hash.
+7. Approve only the exact reviewed request.
+8. Run, inspect refusal or result honestly, verify cleanup, and validate the bundle.
+
+Never use a successful Simulate run, a preflight allow decision, or a bundle hash as proof that Execute occurred or that a defense observed it.

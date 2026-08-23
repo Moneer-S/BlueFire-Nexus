@@ -1,210 +1,222 @@
-# BlueFire-Nexus Architecture
+# Architecture
 
-This document describes the secure, modular architecture used by BlueFire-Nexus.
+BlueFire Nexus separates planning from effects. The Python package is the control plane; the Rust crate is the execution authority. The boundary is intentional: scenario, AI, plugin, or UI data can select only registered IDs and typed values, never an arbitrary executable instruction.
 
-## High-Level Design
+## System view
 
-```mermaid
+~~~mermaid
 flowchart LR
-    cli["CLI (scripts/bluefire.sh + src/run_scenario.py + src/core/cli.py)"] --> orchestrator["BlueFireNexus Orchestrator"]
-    scenarioLib["scenarios/*.yaml"] --> orchestrator
-    config["config.yaml + .env"] --> orchestrator
-    orchestrator --> moduleRegistry["Module Registry (src/core/modules/registry.py)"]
-    moduleRegistry --> modules["Standard Modules (src/core/modules/impl/standard_modules.py)"]
-    moduleRegistry --> legacyModules["Legacy Capability Packs (actor, c2, stealth)"]
-    modules --> telemetry["Telemetry Bus (src/core/telemetry)"]
-    legacyModules --> telemetry
-    modules --> detections["Detection Engine (src/core/detections)"]
-    legacyModules --> detections
-    modules --> report["Purple Report (src/core/reporting/run_reports.py + package exports)"]
-    legacyModules --> report
-    orchestrator --> safety["Safety Gate (src/core/safety.py)"]
-    report --> copilot["AI Copilot + RAG (src/core/ai)"]
-```
+    operator[Operator] --> cli[CLI]
+    operator --> ui[Loopback UI]
+    ui --> api[Loopback API]
+    cli --> service[Platform service]
+    api --> service
 
-## Execution Flow
+    config[Versioned config] --> service
+    scenario[Scenario DAG] --> service
+    catalog[Behavior and action catalog] --> service
 
-1. CLI resolves a scenario profile or scenario file.
-2. `BlueFireNexus` loads config via `ConfigManager`.
-3. `SafetyGate` enforces:
-   - `general.dry_run` behavior
-   - `general.safeties.allowed_subnets`
-   - `general.safeties.max_runtime`
-   - destructive-operation acknowledgment
-4. Legacy capability controls resolve global and granular activation:
-   - one master lab toggle for all legacy packs
-   - per-pack toggles
-   - per-capability toggles
-   - `simulate` vs `emulate` mode
-5. Module registry builds standard modules, legacy capability packs, and
-   optional plugins. `BUILTIN_MODULE_CLASSES` in
-   `src/core/modules/registry.py` is the single source of truth for
-   first-party modules and registration order.
-6. Each step returns a normalized `ModuleResult` (see
-   "ModuleResult contract" below).
-7. Telemetry events are emitted to the local JSONL sink only. Outbound
-   SIEM exporters were removed during baseline stabilization; legacy
-   `telemetry.sinks` config entries naming `splunk`/`opensearch`/
-   `elasticsearch`/`ngsiem` are warned-and-ignored at load time.
-8. Detection artifacts (Sigma, YARA-L, SPL) are generated per module
-   result. SPL is a local detection-rule output format, not a Splunk
-   exporter or SIEM connector. See "Detection-output story" below.
-9. A purple-team report is written and optionally augmented by AI copilot
-   output.
+    service --> registry[Registry validation]
+    registry --> planner[Deterministic planner]
+    planner --> simulation[Simulation adapter]
+    planner --> policy[Deny-by-default policy]
+    policy --> adapter[RunnerActionAdapter]
+    adapter --> transport[Fixed Rust transport]
+    transport --> runner[Reviewed Rust action registry]
 
-## Mode model
+    simulation --> evidence[Evidence graph]
+    runner --> evidence
+    evidence --> store[Run store]
+    store --> replay[Replay]
+    store --> compare[Comparison]
+    evidence --> detections[Detection lifecycle]
+~~~
 
-Every run is shaped by three orthogonal mode controls. The defaults are
-safe; advanced behaviour requires explicit opt-in.
+The UI and CLI are adapters over the same service boundary. Neither browser state nor command-line parsing is an execution authority.
 
-- **`general.dry_run`** (default `true`). When true, no module is permitted
-  to invoke real subprocess/socket/HTTP primitives; modules synthesise
-  telemetry and artifacts locally. The contract is enforced by
-  `tests/test_module_safety.py`.
-- **Legacy capability `mode`**: `simulate` (default for any enabled
-  capability) or `emulate`. `simulate` produces local telemetry/artifacts
-  describing the technique without invoking the real research code path.
-  `emulate` requires explicit lab confirmation at the global, pack, or
-  capability level.
-- **`ExecutionModule.allow_real_execution`** (default `false`). Real
-  `subprocess.run` invocations require BOTH `dry_run=False` AND
-  `allow_real_execution=True`. Either default leaves execution simulated.
+## Maintained components
 
-The intersection of these gates is enforced by code AND by the
-registry-wide tests in `tests/test_module_contract.py`,
-`tests/test_module_safety.py`, and `tests/test_module_artifact_paths.py`.
+| Component | Responsibility | Explicit non-responsibility |
+|---|---|---|
+| bluefire/cli.py and bluefire/service.py | Parse operator requests and expose one JSON-serializable application service to CLI and API adapters | Bypassing domain validation or policy |
+| bluefire/orchestrator.py | Preflight, step dispatch, outcome routing, normalization, cleanup, detection preparation, and run finalization | Implementing action effects |
+| bluefire/contracts.py | Versioned dataclasses and strict parsing for behaviors, actions, artifacts, parameters, and scenario graphs | Dispatch or effects |
+| bluefire/registry.py | Catalog loading, duplicate/reference checks, action/profile compatibility, graph/type/DAG validation | Dynamic imports or plugin execution |
+| bluefire/config.py | Exactly two modes, independent AI flag, environment references, runner profiles, scopes, tiers, approval requirement, budgets, cleanup policy | Resolving secrets during parsing |
+| bluefire/planner.py | Deterministic plan compilation, outcome-edge selection, budget state, strict validation of optional AI proposals | Policy bypass or action creation |
+| bluefire/policy.py | Deny-by-default Execute decisions and request-bound approval checks | Performing actions |
+| RunnerActionAdapter | Sole mapping from logical parameters and artifact bindings to a known Rust action's sealed parameters | Generic commands, arbitrary paths, or unknown actions |
+| bluefire/runner_client.py | Fixed invocation of one configured absolute runner binary and result-correlation checks | Shell execution or behavior implementation |
+| runner/ | Strict manifest/profile validation and compiled sandbox actions | Simulation, planning, UI, or arbitrary execution |
+| bluefire/evidence.py | Provenance records, evidence-parent graph, and independent sandbox file observation | Treating runner self-report as independent observation |
+| bluefire/detections.py | Detection candidate state machine and explicit fixture/observation evaluation | Claiming target-language production validity |
+| bluefire/run_store.py | Contained run directories, atomic JSON snapshots, append-only events, hashes, and bundle validation | Remote storage or digital signing |
+| bluefire/replay.py | Lineage, restart, and compatible behavior substitution | Mutating source runs through the replay API |
+| bluefire/comparison.py | Normalized run summaries and deltas | Causal inference |
+| bluefire/api.py and bluefire/ui/ | Loopback-only HTTP adapter and browser workspace | Authentication for remote exposure |
+| bluefire/plugins.py | Strict declarative plugin manifest inventory | Importing or executing third-party code |
 
-## ModuleResult contract
+## Contract model
 
-Every module's `execute()` must return a `ModuleResult`
-(`src/core/models.py`) with:
+All maintained external documents carry a fixed schema version and reject unknown fields. Stable behavior and action IDs end in a version suffix such as .v1.
 
-| Field             | Type                       | Notes                                            |
-| ----------------- | -------------------------- | ------------------------------------------------ |
-| `status`          | `ModuleStatus` literal     | `success` / `failure` / `blocked` / `skipped` / `partial_success` |
-| `module`          | `str`                      | Must equal the registry key for the module       |
-| `message`         | `str`                      | Human-readable summary                           |
-| `techniques`      | `list[str]`                | ATT&CK technique IDs                             |
-| `artifacts`       | `dict[str, Any]`           | Path values must resolve under `output_dir`      |
-| `telemetry`       | `list[TelemetryEvent]`     | Each event's `module` matches the result module  |
-| `detection_hints` | `dict[str, Any]`           | Optional keys: `title`, `logsource`, `detection`, `condition`, `mitre_technique` |
-| `error`           | `str \| None`              | Short error summary when `status` indicates failure |
-| `timestamp`       | `str` (ISO-8601 UTC)       | Auto-populated                                   |
+A behavior definition records purpose, execution state, safety tier, platforms, technique mappings, capabilities, typed inputs and outputs, logical parameters, simulation ID, action IDs, telemetry and detection hints, provenance, and limitations.
 
-`ModuleResult.__post_init__` emits a logger warning when a module returns
-an unknown `status` value. The warning is non-fatal so plugins and
-unaudited modules cannot break callers; the contract test surfaces the
-same condition as a test failure.
+An action definition is the control-plane description of a reviewed capability. It mirrors the behavior's logical parameter and artifact contract and declares safety, platforms, capabilities, mutations, cleanup action, and provenance.
 
-## Detection-output story
+The Rust action descriptor is a different interface. It describes the strict executor parameters and effect capabilities used after artifacts have been materialized as bounded relative paths or receipts. This distinction prevents a scenario from supplying runner-internal path and process fields directly.
 
-Each module attaches `detection_hints` to its `ModuleResult`. The detection
-engine (`src/core/detections/engine.py`) consumes those hints to emit
-local artifact files per run:
+RunnerActionAdapter is the only translation point:
 
-- **Sigma** rules — `output/<run_id>/detections/sigma/*.yml`
-  (`src/core/detections/sigma.py`)
-- **YARA-L** rules — `output/<run_id>/detections/yara_l/*.yaral`
-  (`src/core/detections/yara_l.py`)
-- **Splunk SPL** detections — `output/<run_id>/detections/spl/*.spl`
-  (`src/core/detections/spl.py`). This is a local detection-rule output
-  format that an analyst can paste into a Splunk search; BlueFire-Nexus
-  does **not** ship a Splunk exporter or SIEM connector in the baseline.
+1. accept a validated plan step and typed artifact bindings;
+2. select a hard-coded adapter for the registered action ID;
+3. resolve only known prior artifacts;
+4. construct the action-specific sealed parameter object;
+5. reject unknown fields, unknown actions, missing artifacts, absolute paths, or traversal;
+6. pass the result to manifest sealing.
 
-The hint keys used by the generators are `title`, `logsource`,
-`detection`, `condition`, `mitre_technique`, and topic-specific extras
-such as `network_protocol`, `network_url`, `process_command_line`.
+No generic fallback is permitted.
 
-## Local-first artifact flow
+## Scenario graph
 
-Every run produces the following local artifacts under `output/<run_id>/`:
+A scenario contains a versioned ID, purpose, start node, steps, explicit outcome edges, provenance, and limitations.
 
-- `manifest.json` — single machine-readable index of every artifact below.
-  Stable schema (versioned via `MANIFEST_SCHEMA_VERSION`); paths
-  inside the manifest are run-dir-relative so the directory can be
-  zipped/moved without breaking references. Carries the run identity,
-  per-step status + techniques, propagation graph (with each edge's
-  `narrative` line), ATT&CK coverage, telemetry counts, detection
-  counts, risk summary (with per-step `rationale` including
-  `matters_because=<chain-position text>`), copilot attribution,
-  and the scenario's `objective:` block under `run.scenario_objective`.
-- `index.html` — static HTML dashboard renderer (no JS, no external
-  assets, no network calls). Renders the same data as the manifest
-  with a header / KPI grid / risk summary / scenario timeline (with
-  per-step severity column) / propagation table (with narrative
-  column) / ATT&CK coverage / telemetry / detection drafts / copilot
-  attribution / artifact links. Open with `file://` from the run
-  directory.
-- `telemetry.jsonl` — append-only event log via the JSONL sink.
-- `report.md` and `report.json` — purple-team run report. The
-  markdown form opens with the scenario's `objective:` block, walks
-  the chain via `## Propagation narrative`, and surfaces each
-  module's risk score + severity + `Why:` rationale line for
-  defender triage from the markdown alone.
-- `risk_summary.json` — per-run risk posture (per-module score,
-  severity, rationale; aggregate by tier).
-- `detections/{sigma,yara_l,spl}/*` — detection drafts.
-- `copilot_narrative.md` / `copilot_plan.txt` / `copilot_detections.md`
-  — optional AI copilot artifacts (deterministic template fallback
-  when no remote provider is configured). Each file leads with a
-  YAML metadata header carrying `provider` / `model` /
-  `network_disabled` / `scenario_objective` so artifact attribution
-  survives without re-parsing the body.
+Each step selects one behavior ID, typed parameters, input bindings, and optional contract-compatible alternates. Each edge binds exactly one source-step outcome to a destination step. Outcomes are success, partial, blocked, and failed.
 
-In addition, the orchestrator refreshes a top-level
-`output/index.html` aggregator listing every run with quick links
-into per-run artifacts. Same self-contained constraints — no JS,
-no external assets, no network calls.
+Validation checks:
 
-Nothing in the baseline pushes these artifacts out of the run directory.
+- schema version and unknown fields;
+- stable and duplicate IDs;
+- behavior and alternate registry membership;
+- parameter types, enums, ranges, and required values;
+- required and unknown input ports;
+- producer output name, type, and multiplicity;
+- source dominance, so an input exists on every path reaching its consumer;
+- duplicate outcome routes;
+- start node, cycles, and reachability.
 
-## Roadmap (out of current baseline)
+The canonical sandbox scenario has seven nodes. Its discovery step may swap between two compatible logical behaviors. A blocked, partial, or failed loopback step routes to local export, and both branches converge on cleanup.
 
-The following are intentionally **not** present in the current baseline.
-They are listed so contributors don't add them by accident:
+## Planning and AI
 
-- Outbound SIEM exporters (Splunk HEC, OpenSearch, Elasticsearch, NGSIEM,
-  generic HTTP bulk). Removed during stabilization; not slated for
-  reintroduction.
-- A standalone observed-telemetry collector / correlator that ingests
-  telemetry from external endpoints. Future work; no scaffolding ships
-  today.
-- Remote AI copilot integrations beyond the user-configured providers
-  list.
+Deterministic planning is authoritative. It compiles a validated graph into a versioned plan, applies declared defaults, selects only profile-enabled action IDs in Execute, and follows registered outcome edges.
 
-## Key Components
+AI is an independent opt-in. An AI proposal is untrusted data. The validator requires the complete planner-decision schema, rejects unknown and executable-content fields, checks selected behavior/action/step/edge membership, and keeps budgets and approvals explicit. A valid proposal still goes through policy and runner validation.
 
-- `src/core/bluefire_nexus.py`: orchestrator and scenario runner
-- `src/core/config.py`: safe-by-default config loader
-- `src/core/models.py`: `ModuleResult`, `TelemetryEvent`, `RunContext`,
-  `ModuleStatus` literal, `ALLOWED_STATUSES`
-- `src/core/modules/base.py`: module contract
-- `src/core/modules/registry.py`: module assembly + plugin merge,
-  exposes `BUILTIN_MODULE_CLASSES` as the source of truth
-- `src/core/modules/impl/legacy_base.py`: shared adapter utilities for legacy packs
-- `src/core/modules/impl/legacy_packs.py`: actor, protocol, and stealth capability-pack adapters
-- `src/core/modules/impl/legacy_runtime.py`: safe execution wrappers for legacy internals in emulate mode
-- `src/core/legacy_controls.py`: master-toggle plus granular-toggle resolution and activation summaries
-- `src/core/telemetry/sinks.py`: local JSONL sink (baseline is local-first; outbound SIEM exporters were removed during stabilization)
-- `src/core/telemetry/bus.py`: fan-out bus
-- `src/core/detections/engine.py`: detection artifact generation
-- `src/core/ai/copilot.py`: plan/narrate/suggest workflows
-- `src/core/ai/rag.py`: lightweight local retrieval index
-- `src/core/reporting/__init__.py`: public imports for APT reporting classes and JSON/Markdown run outputs
-- `src/core/reporting/run_reports.py`: `write_markdown_report`, `write_json_report`, `write_risk_summary`, `build_risk_summary`
+AI enablement does not imply Execute, and Execute does not imply AI.
 
-## Security Model
+## Mode paths
 
-- No secret values are committed; environment values are loaded from `.env` templates.
-- Remote telemetry and AI calls are disabled by default unless explicitly configured.
-- Runtime safety checks prevent out-of-scope targeting and unsafe operations.
-- Legacy research packs are disabled by default and can be enabled either:
-  - globally through one lab toggle, or
-  - one-by-one for granular control.
-- `simulate` mode is the default for legacy packs; `emulate` requires explicit lab confirmation.
-- Backward-compatible aliases are supported for legacy configuration keys (e.g.,
-  `lab_mode`/`lab_acknowledged`, `network_obfuscator`, `anti_detection`) so
-  older configs continue to resolve into canonical capability controls.
-- Emulate-mode runtime failures are surfaced as telemetry + report metadata by default, while keeping
-  the scenario progressing unless safety gates explicitly block execution.
-- Security scanning and dependency auditing are enforced in CI.
+### Simulate
+
+Simulate is the default and stays within the Python control plane. It applies registered simulation transitions, follows explicit edges, and records synthetic provenance. If the planner models a continuation after a failure with no real alternate, the resulting evidence is counterfactual.
+
+Simulation must never instantiate SubprocessRustRunner. It must not label output executed or observed.
+
+### Execute
+
+Execute requires an explicit Execute profile. The service validates the scenario, compiles a plan, checks runner inventory, evaluates policy, obtains any required request-bound approval, translates logical inputs through RunnerActionAdapter, seals the manifest, and invokes the Rust runner.
+
+The transport uses an argument vector equivalent to:
+
+~~~text
+bluefire-runner execute --manifest MANIFEST --profile PROFILE --json
+~~~
+
+The binary path is configured rather than selected by a scenario. The child receives a bounded environment, fixed working directory, null standard input, time limit, and output-size limits. Result run, step, and action IDs must match the request.
+
+The Rust runner then repeats the relevant validation. It recognizes only its compiled action inventory and refuses Simulate manifests. See [Execution model](EXECUTION_MODEL.md).
+
+## Runner profiles
+
+A control-plane runner profile records:
+
+- mode and environment type;
+- supported platforms;
+- environment references for runner binary and sandbox root;
+- semantic and effect capabilities;
+- allowed safety tiers;
+- enabled and blocked action IDs;
+- logical scope and CIDR allowlist;
+- approval requirement;
+- step, time, artifact, and byte budgets;
+- cleanup policy;
+- environment references needed at a later boundary.
+
+The canonical example contains a default Simulate profile and a separate Execute profile. Its only network entries are IPv4 and IPv6 loopback.
+
+At the Rust boundary, the adapter produces the runner's sealed profile schema with a concrete current platform, canonical sandbox root, action/capability allowlists, target scope, hard limits, approval threshold, and policy digest. This is another explicit translation, not loose dictionary forwarding.
+
+## Evidence
+
+EvidenceRecord carries:
+
+- run, step, behavior, action, and profile identity;
+- provenance;
+- producer and environment;
+- timestamp and parent evidence IDs;
+- content and content hash;
+- record hash;
+- confidence and limitations;
+- target-scope reference.
+
+The provenance vocabulary is:
+
+| Value | Claim |
+|---|---|
+| synthetic | A simulation or fixture model produced the record |
+| executed | The runner reports that an action started |
+| observed | A separate observer collected a declared sandbox artifact |
+| control_blocked | A control prevented the action |
+| counterfactual | A modeled branch continued without execution |
+| unknown | Provenance could not be established |
+
+EvidenceGraph rejects missing parents. SandboxObserver resolves normalized relative paths beneath one existing sandbox root, refuses symbolic-link paths, and hashes file content. It observes filesystem state only and records that limitation.
+
+## Detections
+
+Detection candidates begin as hypotheses. Their lifecycle distinguishes parsed, fixture_exercised, observed_exercised, benign_evaluated, and rejected states.
+
+The included structured matcher supports deterministic local fixtures. It does not claim to be an authoritative Sigma, YARA-L, query-language, SIEM, or EDR parser. Production claims require the real target parser/backend, backend version, environment-specific fixtures, observed evidence where appropriate, benign evaluation, known misses, false-positive notes, and tuning decisions.
+
+Multiple renderings of the same hypothesis do not count as independent validation.
+
+## Run storage, replay, and comparison
+
+RunStore creates internally named, contained run directories. It stores scenario, plan, policy, profile, result, evidence, and detection JSON, plus append-only events. Finalization hashes every covered file and hashes the resulting file table. Validation detects missing or changed covered files.
+
+Hashes are tamper indicators, not signatures.
+
+Replay reads a captured source scenario snapshot without writing it. It can prepare an exact replay, resume after prior artifacts, substitute a contract-compatible behavior, or record declared AI, profile, or defense changes. Each replay receives lineage with a source scenario digest.
+
+Comparison summarizes two or more runs and reports path and first-blocked differences, objective and cleanup changes, evidence and detection deltas, telemetry and control changes, and counterfactual steps. Interpretation remains the operator's responsibility.
+
+## API and UI
+
+The HTTP adapter binds only to loopback addresses and serves fixed packaged assets. It rejects malformed request paths, duplicate JSON keys, non-finite constants, oversized bodies, invalid Host values, cross-origin mutation requests, and unsupported methods. Responses include a restrictive content security policy and related browser headers.
+
+The browser exposes graph building, preflight/run inspection, history, replay, and comparison workflows through PlatformService. Domain validation remains service-side.
+
+Loopback is not a substitute for authentication if an operator deliberately republishes the service. Remote exposure is outside the maintained threat model.
+
+## Plugins
+
+Plugin manifests are data. They describe identity, semantic version, enabled state, trust, SHA-256 integrity metadata, license, source provenance, permissions, capabilities, behavior IDs, and action IDs.
+
+The loader has no entry-point discovery and no import hook. An inventory entry alone cannot add a behavior implementation or runner action.
+
+## Packaging boundary
+
+The Python distribution discovers only bluefire packages. It includes catalog YAML, canonical configuration and scenario defaults, and UI CSS, HTML, and JavaScript as package data. Checkout config/scenario copies are parity-tested against bluefire/data; BlueFireService prefers checkout files when present and otherwise uses importlib.resources. PyYAML is the only runtime dependency. Package metadata reads the platform version from bluefire.__version__; the Rust crate is kept at the same 0.1.0 baseline.
+
+The wheel does not include repository tests or the Rust runner binary. The runner is built and deployed separately so Execute availability remains explicit.
+
+## Current limitations
+
+- The maintained catalog is a bounded sandbox vertical slice.
+- Restricted credential, persistence, lateral-movement, and defense-evasion entries are metadata only.
+- No remote telemetry collector, SIEM connector, cloud action, identity action, or general network target is part of the baseline.
+- Detection target-language validation requires external authoritative tooling.
+- Run hashes do not prove author identity.
+- Execute depends on local Rust build, inventory parity, profile configuration, policy, and approval; it is unavailable when any prerequisite fails.
+- In-process failures trigger receipt-based emergency cleanup, but abrupt process or host loss still requires operator recovery from retained runner receipts.
