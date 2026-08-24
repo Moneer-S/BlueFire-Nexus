@@ -1,0 +1,194 @@
+# Development guide
+
+BlueFire is a Python control plane, a separately built Rust runner, and a React/TypeScript frontend. Keep their authority boundaries explicit when making changes.
+
+## Repository map
+
+| Path | Responsibility |
+|---|---|
+| `bluefire/` | Python contracts, registry, planner, AI proposal boundary, policy, orchestration, storage, evidence, detections, API, CLI |
+| `bluefire/catalog/` | Built-in behavior/action catalogs |
+| `bluefire/data/` | Packaged scenarios, config, and research registry |
+| `scenarios/` | Checkout copies of the six canonical scenarios |
+| `config/` | Declarative example configuration |
+| `runner/` | Rust execution authority and boundary tests |
+| `frontend/` | React/TypeScript source, unit tests, and Playwright tests |
+| `bluefire/ui/` | Built frontend assets packaged by Python |
+| `tests_platform/` | Python contract, integration, storage, and E2E tests |
+| `docs/` | Public user, operator, and developer documentation |
+
+## Python setup
+
+Python 3.10 or newer:
+
+```bash
+python -m venv .venv
+# Linux/macOS: source .venv/bin/activate
+# Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+Optional maintained detection adapters:
+
+```bash
+python -m pip install "pysigma==1.4.0" "yara-python==4.5.4"
+```
+
+Do not install project dependencies globally. Keep test run stores, databases, sandboxes, caches, and build artifacts untracked.
+
+## Python verification
+
+```bash
+python -m compileall -q bluefire tests_platform
+python -m pytest
+python -m ruff check bluefire tests_platform
+python -m black --check bluefire tests_platform
+python -m mypy bluefire
+python -m bandit -r bluefire -ll
+python -m pip_audit --ignore-vuln PYSEC-2026-2447
+detect-secrets-hook --baseline .secrets.baseline $(git ls-files)
+gitleaks git --redact --no-banner
+python -m build
+```
+
+The single `pip-audit` exception is the reviewed, transitive optional pySigma/DiskCache advisory documented in [Security](../SECURITY.md); do not add or silently broaden exceptions.
+
+Run targeted tests while iterating, then the complete suite. Do not weaken refusal, provenance, cleanup, or boundary assertions to obtain green.
+
+## Rust setup and verification
+
+Use the toolchain declared in `rust-toolchain.toml` and a repository-local target directory where host policy requires it.
+
+```bash
+cargo fmt --manifest-path runner/Cargo.toml -- --check
+cargo clippy --manifest-path runner/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --manifest-path runner/Cargo.toml --all
+cargo build --release --manifest-path runner/Cargo.toml
+cargo run --release --manifest-path runner/Cargo.toml -- inventory --json
+```
+
+Runner tests may use only temporary roots and loopback. They must not need elevation, a host service, an external network, personal files, or persistent host changes.
+
+## Frontend setup and verification
+
+The workspace declares pnpm 11.19.0.
+
+```bash
+cd frontend
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm build
+pnpm test:e2e
+```
+
+`pnpm dev` serves the live API-backed development UI on loopback and proxies `/api` to `127.0.0.1:8765`. `pnpm dev:demo` uses deterministic sanitized browser data and refuses Execute. `pnpm build` replaces `bluefire/ui` with production assets.
+
+Before accepting UI changes, test keyboard navigation, focus/dialog behavior, loading/error/empty/refusal states, graph editing, preflight, run review, approval, replay/compare, settings import/export, axe checks, responsive layouts, and no console errors.
+
+## Product-level tests
+
+The opt-in real-runner E2E harness requires a freshly built binary:
+
+```bash
+export BLUEFIRE_E2E_RUNNER="$(pwd)/runner/target/release/bluefire-runner"
+python -m pytest tests_platform/test_execute_e2e.py
+```
+
+Windows PowerShell:
+
+```powershell
+$env:BLUEFIRE_E2E_RUNNER = (Resolve-Path .\runner\target\release\bluefire-runner.exe)
+python -m pytest tests_platform\test_execute_e2e.py
+```
+
+The harness creates temporary sandboxes and currently covers the canonical, Linux-oriented, Windows-oriented, and restricted-canary scenario cases. Keep this opt-in because a real runner performs real local effects even though the fixtures are harmless and disposable.
+
+Product tests should prove:
+
+- Simulate never instantiates runner transport;
+- Execute requires a compatible profile, explicit scope, and approval;
+- AI Off performs no provider call;
+- Assist persists every actionable v2 proposal and pauses before mutation;
+- Auto can apply a policy-valid Simulate choice for the exact next edge, compatible behavior, bounded primitive parameters, or one retry;
+- Execute proposal acceptance never reuses the original approval and instead performs a fresh-workspace full replay behind a fresh exact approval;
+- any action choice is already registered and enabled by the exact profile;
+- the model cannot select a cross-outcome edge, invent an action/command, or expand graph/profile/scope/tier/policy authority;
+- control blocks and counterfactuals remain distinct;
+- receipt cleanup reconciles to zero in disposable runs;
+- replay lineage and comparison deltas are correct;
+- bundle/event tampering is detected;
+- UI/CLI/API share the service boundary;
+- demo artifacts are sanitized.
+
+## Local storage and migrations
+
+`RunStore` owns immutable-ish per-run JSON bundles and hash-chained events. `ProductStore` owns SQLite product metadata: schema migrations, secret-safe settings, content-addressed scenario versions, typed resources, approval primitives, background-job state, and a run index.
+
+At service startup BlueFire:
+
+1. recovers unfinalized run bundles as interrupted;
+2. migrates/opens `bluefire-product.sqlite3` under the runs root unless explicitly configured;
+3. marks in-flight product jobs interrupted;
+4. idempotently seeds scenarios, actions, profiles, providers, six collector records, research sources, and detection backends;
+5. backfills/indexes run summaries.
+
+Migration changes must be additive and transactional where possible. Add tests for a fresh database, restart recovery, idempotent seeding, prior-schema upgrade, and corrupt/invalid data handling. Never persist resolved secret values.
+
+## Package and installed-wheel smoke
+
+Build the frontend first when its source changed, then build Python artifacts:
+
+```bash
+cd frontend && pnpm build && cd ..
+python -m build
+```
+
+Inspect wheel contents: only the `bluefire` package, catalog/data YAML, and built UI assets should ship. Then install the wheel into a fresh temporary virtual environment and smoke:
+
+```bash
+bluefire --help
+bluefire --runs-dir path/to/temp-runs scenario validate --scenario-id scenario.restricted.persistence-canary.v1
+bluefire --runs-dir path/to/temp-runs scenario run --scenario-id scenario.restricted.persistence-canary.v1 --mode simulate --autonomy off
+bluefire --runs-dir path/to/temp-runs ui --host 127.0.0.1 --port 8765
+```
+
+The runner is a separate release artifact and must be built/tested independently.
+
+## Contract-change workflow
+
+When adding or changing a behavior/action:
+
+1. update the versioned contract rather than silently changing semantics;
+2. preserve logical/executor separation;
+3. update registry and negative tests;
+4. update the explicit adapter and simulation;
+5. update profiles/scenarios and cleanup paths;
+6. verify Rust inventory parity;
+7. update API/UI fixtures and public docs;
+8. document migration and compatibility.
+
+See [Action SDK](ACTION_SDK.md) and [Behavior authoring](BEHAVIOR_AUTHORING.md).
+
+## Security and privacy before a commit
+
+1. Inspect `git status --short` and the full diff.
+2. Stage only explicit reviewed paths; never use `git add .` or `git add -A`.
+3. Inspect the complete staged diff.
+4. Run secret/privacy scans and `git diff --cached --check`.
+5. Ensure no virtual environment, dependency tree, cache, run bundle, SQLite database, log, local sandbox, external research cache, private endpoint, real telemetry, prompt, local absolute path, username, or machine name is staged.
+6. Use a concise public commit message.
+
+Do not push, merge, rewrite history, publish packages/releases, or change remotes without explicit authorization.
+
+## Release checklist
+
+- Python, Rust, frontend, browser, security, package, installed-wheel, API, CLI, and opt-in disposable E2E checks pass.
+- Version is consistent across Python, Rust, and frontend metadata.
+- Six packaged/check-out scenarios and thirteen action descriptors remain in parity.
+- Research pins/licenses and optional dependency versions are current and reviewed.
+- Generated screenshots use real UI with sanitized seeded data.
+- README/docs match shipped behavior and limitations.
+- Final tracked tree contains no private residue or runtime artifacts.

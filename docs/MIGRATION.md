@@ -15,10 +15,10 @@ This is an architectural migration, not an import-path rename.
 | Python subprocess/network/filesystem behavior | Fixed Rust action selected by stable action ID |
 | Actor pack or actor-named wrapper | Neutral technique metadata or no migration |
 | Implicit Python entry-point plugin | Declarative PluginManifest inventory |
-| Free-form AI plan text | Strict PlannerDecision proposal validated against the registry |
+| Free-form AI plan text | Strict AIProposal allowlisted by the deterministic planner |
 | Synthetic telemetry reported as success | EvidenceRecord with explicit synthetic provenance |
 | Generated detection files counted as validation | DetectionCandidate lifecycle with distinct exercise states |
-| Mutable output directory | Contained RunStore bundle with immutable snapshots and hashes |
+| Mutable output directory | Contained RunStore bundle plus migrated SQLite ProductStore metadata/index |
 
 ## What may be migrated
 
@@ -71,7 +71,7 @@ An old scenario filename or successful historical dry run is not evidence that t
 Start from config/bluefire.example.yaml rather than translating old keys automatically.
 
 - Choose Simulate unless Execute is specifically required.
-- Keep AI enablement as a separate boolean.
+- Choose AI autonomy independently from mode: `off`, `assist`, or `auto`; configure a deterministic fallback and secret-safe provider references.
 - Store runner binary, sandbox root, and secret names as environment references.
 - Do not add a network unless the new action and authorization require it. The canonical example is loopback only.
 - Define enabled and blocked actions explicitly.
@@ -80,6 +80,8 @@ Start from config/bluefire.example.yaml rather than translating old keys automat
 - Require approval for Execute.
 
 There is intentionally no compatibility resolver for dry_run, emulate, live-lab, actor packs, or global legacy toggles.
+
+The legacy `ai_enabled` request alias is accepted only for v1 callers: false maps to Off and true maps to Assist, never Auto. Do not persist it in new configuration or send it together with `autonomy`.
 
 ## Completion criteria
 

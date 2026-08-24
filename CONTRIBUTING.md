@@ -17,6 +17,10 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ~~~
 
+Frontend changes also require pnpm 11.19.0. Optional detection-backend work
+uses the pinned pySigma and yara-python versions documented in
+[docs/DETECTION_LAB.md](docs/DETECTION_LAB.md).
+
 The default Simulate path needs no Rust runner. Execute development must use an
 owned disposable sandbox and the explicit profile, approval, scope, and cleanup
 rules documented in [docs/EXECUTION_MODEL.md](docs/EXECUTION_MODEL.md).
@@ -37,6 +41,14 @@ python -m build
 cargo fmt --manifest-path runner/Cargo.toml -- --check
 cargo clippy --manifest-path runner/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path runner/Cargo.toml --all
+
+cd frontend
+pnpm install --frozen-lockfile
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm build
+pnpm test:e2e
 ~~~
 
 Tests must use temporary sandbox roots and loopback only. They must not require
@@ -57,9 +69,17 @@ privileges, or persistent host modifications.
   limitations.
 - Plugins remain declarative until a separately reviewed installation and trust
   mechanism exists.
+- AI Off must make no provider call; Assist records without applying; Auto may
+  apply only a registered compatible alternate selected inside the deterministic
+  next-node allowlist. Model output never grants policy or execution authority.
+- SQLite product-state migrations and seeding must be idempotent and must never
+  persist resolved secret values.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for component ownership and
-[docs/MIGRATION.md](docs/MIGRATION.md) for translating older concepts.
+[docs/MIGRATION.md](docs/MIGRATION.md) for translating older concepts. Detailed
+workflows live in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md),
+[docs/ACTION_SDK.md](docs/ACTION_SDK.md), and
+[docs/BEHAVIOR_AUTHORING.md](docs/BEHAVIOR_AUTHORING.md).
 
 ## Change quality
 

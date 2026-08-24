@@ -25,9 +25,9 @@ The product recognizes exactly two top-level modes.
 
 **Simulate** is the default. It models registered behavior transitions in Python and does not invoke the Rust runner. Its outputs use synthetic or counterfactual provenance. A successful Simulate result is not evidence that an action ran or that a defense observed it.
 
-**Execute** is explicit. It requires an Execute profile, a compatible runner inventory, a registered action, policy approval, and request-bound operator approval when required. Execute can create or transform sandbox files, inspect sandbox metadata, stage or locally export sandbox artifacts, send to an explicitly allowed loopback socket, and remove receipt-owned artifacts. Those are real local effects.
+**Execute** is explicit. It requires an Execute profile, explicit operator target scope, a compatible runner inventory, a registered action, policy approval, and request-bound operator approval. Execute can create or transform sandbox files; inspect bounded system, process, directory, and file metadata; create deterministic archives; stage or locally export sandbox artifacts; send to an explicitly allowed loopback socket; and remove receipt-owned artifacts. Those are real local effects.
 
-Changing an AI flag, scenario parameter, or UI control does not change these mode guarantees.
+Changing AI autonomy, a scenario parameter, or a UI control does not change these mode guarantees.
 
 ## Execution boundary
 
@@ -69,9 +69,15 @@ The command-line convenience flag for approval does not replace organizational a
 
 Canonical configuration stores environment-variable names through EnvironmentReference objects; the parser does not resolve or serialize their values. Do not commit secret values, runner credentials, customer identifiers, internal inventories, or private environment details.
 
-The example references BLUEFIRE_RUNNER_BINARY and BLUEFIRE_SANDBOX_ROOT by name. Set them in a protected local environment appropriate to your platform.
+The example references BLUEFIRE_RUNNER_BINARY, BLUEFIRE_SANDBOX_ROOT, and OPENAI_API_KEY by name. Set applicable values in a protected local environment appropriate to your platform.
 
-AI enablement is independent of execution mode. No AI provider dependency or credential is installed by the base package. Any future provider adapter must keep credentials out of plans and artifacts and must treat provider output as untrusted input.
+## AI provider boundary
+
+AI autonomy is `off`, `assist`, or `auto` and remains independent of execution mode. Off creates no provider. Assist persists an exact-digest proposal and pauses before mutation. Auto may apply a schema-valid, policy-valid Simulate proposal; every Execute mutation pauses for review and then requires a fresh one-time Execute approval.
+
+The deterministic planner supplies a request-specific `bluefire.ai-request.v2` envelope. It correlates the observed outcome with exactly one registered next edge and bounds any compatible behavior substitution, primitive parameter values, exact-profile registered action choice, and single retry. Independent allowlists cannot be cross-paired. The model cannot invent an edge for another outcome, command, path, capability, action ID, profile, scope, safety tier, approval, or cleanup policy. Every accepted choice is revalidated against immutable digests, the registry, profile inventory, budgets, and ordinary policy before it can affect a plan.
+
+BlueFire ships a deterministic offline provider and an OpenAI-compatible Responses provider. The latter uses strict structured output, no tools, endpoint validation, timeouts, retries, response/token limits, key-based redaction, evidence-content exclusion by default, and deterministic fallback. Provider output and observed content remain untrusted. A configuration-health result is not proof that a real provider request succeeded or that a proposal is safe.
 
 ## Plugins
 
@@ -91,9 +97,19 @@ The UI is an adapter over the same service-side validation and policy path as th
 
 Evidence records use one of these provenance values: synthetic, executed, observed, control_blocked, counterfactual, or unknown.
 
-Executed means the runner reports that an action started. Observed means a separate observer collected a declared sandbox artifact. Neither label is silently upgraded into the other. The included observer is filesystem-only and explicitly records that limitation.
+Executed means the runner reports that an action started. Observed means a separate observer/collector collected a declared artifact. Neither label is silently upgraded into the other. The built-in collectors are limited to bounded sandbox-file metadata/hashes and disposable JSONL fixture logs. Optional Sysmon/Event Log, auditd, packet-capture, and SIEM entries are readiness descriptors, not configured production collectors. Collector failure creates explicit `unknown` evidence rather than disappearing.
 
-Detection candidates progress through explicit lifecycle states. Fixture exercise, observed exercise, and benign evaluation are different claims. The included structured matcher is not an authoritative parser or backend for every detection language. Review and validate candidate content with the target platform before deployment.
+Detection candidates progress through explicit lifecycle states. Fixture exercise, observed exercise, and benign evaluation are different claims. The included internal matcher is not an authoritative external-language parser. Optional pinned pySigma parses Sigma and optional YARA-Python compiles YARA with includes disabled and warnings as errors; SPL structural checks deliberately remain hypotheses without an authoritative backend. Review and validate candidate content with the target platform before deployment.
+
+### Audited optional-dependency exception
+
+The optional `pysigma==1.4.0` package currently requires `diskcache==5.6.3`, which is affected by [PYSEC-2026-2447 / GHSA-w8v5-vhqr-4h9v](https://github.com/advisories/GHSA-w8v5-vhqr-4h9v) and has no patched release. The issue requires a victim to deserialize cache data from a directory an attacker can write. BlueFire imports only `sigma.collection` for in-memory rule parsing; it does not import pySigma's `sigma.data.mitre_attack` or `sigma.data.mitre_d3fend` modules, instantiate `diskcache.Cache`, or accept a cache directory. CI therefore carries one explicit `pip-audit` exception for this transitive optional dependency. Remove the exception when pySigma or DiskCache ships a patched dependency path; do not expand BlueFire's pySigma integration to those cache-backed modules while it remains in place.
+
+## Product metadata and recovery
+
+In addition to immutable-ish run bundles, the service maintains a migrated local SQLite product store under the run root by default. It stores secret-safe settings, content-addressed scenario versions, typed resource metadata, approval/job records, and a run index. Startup marks in-flight jobs and unfinalized bundles interrupted, then idempotently seeds reviewed built-ins.
+
+The store rejects plaintext values under secret-shaped keys; provider and runner configuration retains environment-variable references. This does not encrypt other metadata at rest. Protect the database and run directory with operating-system access controls, external retention, and disk quotas. Product-store approval primitives do not turn the loopback service into a remotely authenticated multi-user system.
 
 ## Run-bundle security
 
@@ -105,15 +121,19 @@ Run bundles may still contain environment descriptions, scenario parameters, tel
 
 - The Python wheel does not contain or install the Rust runner.
 - Execute availability depends on a locally built compatible runner and a passing inventory/preflight check.
-- The current actions are a bounded sandbox slice, not general endpoint, cloud, identity, or enterprise-network emulation.
-- Restricted research behaviors are metadata only and cannot be simulated or executed.
-- No remote telemetry collector, SIEM connector, or general network target support ships in the maintained baseline.
+- The thirteen current actions are a bounded endpoint/sandbox pack, not general endpoint, cloud, identity, or enterprise-network emulation.
+- Four `research.*` catalog entries remain metadata-only. A separate persistence-detection canary can Simulate or Execute one fixed non-executable marker inside a runner-owned sandbox under the dedicated restricted profile; it does not change host persistence.
+- No configured remote telemetry collector, SIEM connector, or general network target support ships in the maintained baseline.
+- Current runner transport is a local subprocess; remote enrollment, mutual authentication, revocation, encrypted transport, signed tasks, and a persistent replay cache are not implemented.
+- Runtime AI proposals do not yet tune detections or create replay experiments, and graph edge choice is deliberately limited to the exact registered edge for the observed outcome.
 - Bundle hashes and request/profile digests detect mismatch; they are not cryptographic identity signatures.
 - Historical Git objects may contain unsupported direct-effect implementations; do not restore or invoke them as runner actions.
 
 ## Reporting a vulnerability
 
 Use a private GitHub Security Advisory when possible. If that is unavailable, open a minimal issue asking maintainers for a private reporting channel; do not publish working exploit details.
+
+The fuller design review, including malicious scenarios/plugins, compromised runners/control plane, model prompt injection, task replay, UI exposure, evidence tampering, cleanup loss, and research supply-chain risk, is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
 Include:
 
@@ -128,6 +148,6 @@ Never include live credentials, customer data, or unauthorized target informatio
 
 ## Verification for maintainers
 
-Before release, run the active Python and Rust checks documented in README.md. Also inspect the built wheel to confirm that it contains only the bluefire package, catalog YAML, and UI assets.
+Before release, run the active Python, Rust, frontend, browser, and security checks documented in README.md. Also inspect the built wheel to confirm that it contains only the `bluefire` package, catalog and packaged data YAML, and built UI assets.
 
 Do not describe an action, platform, parser, detector, or isolation property as verified unless its applicable tests ran successfully in the release environment.

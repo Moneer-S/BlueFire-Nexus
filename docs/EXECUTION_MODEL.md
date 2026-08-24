@@ -15,7 +15,7 @@ BlueFire Nexus has exactly two modes: **Simulate** and **Execute**. They share s
 | Independent observation | Only if a separate observer runs | Only if a separate observer runs |
 | Network | Modeled only | Literal allowlisted loopback only in the current runner |
 
-An AI setting is orthogonal to both modes. It never changes these invariants.
+AI autonomy (`off`, `assist`, or `auto`) is orthogonal to both modes. It never changes these invariants.
 
 ## Shared preflight
 
@@ -50,6 +50,7 @@ Execute is unavailable unless every prerequisite succeeds:
 
 - the requested mode is execute;
 - an explicit Execute profile is selected;
+- the operator supplied an explicit target scope contained by that profile;
 - runner and sandbox-root environment references resolve to operator-provided local values;
 - the runner binary exists at an absolute path;
 - runner inventory uses the supported schema and contains compatible descriptors;
@@ -120,20 +121,31 @@ Transport failure is not action success. Invalid JSON, output overflow, timeout,
 
 ## Rust action boundary
 
-The current Rust registry contains eight IDs:
+The current Rust registry contains thirteen IDs:
 
 - sandbox.fixture.create.v1
 - sandbox.fixture.transform.v1
 - sandbox.discovery.list.v1
 - sandbox.discovery.metadata.v1
+- endpoint.discovery.system.v1
+- endpoint.discovery.processes.v1
+- sandbox.discovery.recursive.v1
+- sandbox.archive.tar.v1
 - sandbox.collection.stage.v1
 - sandbox.network.loopback.v1
 - sandbox.export.local.v1
+- sandbox.restricted.persistence-marker.v1
 - sandbox.cleanup.v1
 
-Their scope is deliberately narrow: create and transform deterministic sandbox fixtures, inspect bounded sandbox metadata, stage sandbox artifacts, send one bounded artifact to a literal allowlisted loopback socket, copy an artifact to an approved local sandbox export, and clean receipt-owned objects.
+Their scope is deliberately narrow: create/transform deterministic fixtures; inspect bounded system, process, directory, recursive-file, and file-metadata facts; create a deterministic archive; stage sandbox artifacts; send one bounded artifact to a literal allowlisted loopback socket; copy an artifact to an approved sandbox-local export; write one fixed non-executable restricted-tier canary marker; and clean receipt-owned objects. The canary never changes host persistence settings.
 
-The runner has no generic command, shell, URL, hostname resolution, redirect, proxy, dynamic library, or Python plugin action. Its fixed transform helper is private and accepts only compiled transform choices.
+The runner has no generic command, shell, URL, hostname resolution, redirect, proxy, dynamic library, or Python plugin action. Its transforms/templates are compiled choices. Process discovery uses Windows native APIs or one fixed platform-selected absolute `ps` adapter; callers cannot select a program or arguments.
+
+## AI proposal boundary
+
+Off creates no provider. Assist/Auto request a strict v2 proposal only after a step produces an observed outcome. The request binds the exact registered edge for that outcome and correlated options for a compatible behavior, allowlisted primitive parameters, an exact-profile registered action, and one bounded retry. Assist persists the choice and pauses before mutation. Auto may apply a policy-valid choice only in Simulate. Execute mutations remain stopped until proposal review, fresh-workspace full replay from the scenario start, and a separate fresh exact approval.
+
+Provider credentials are environment references. Requests are redacted/bounded; OpenAI-compatible structured responses use timeouts, retry limits, response/token bounds, exact schema validation, and deterministic fallback. The model cannot choose an edge for another outcome, cross-pair options, issue a command or path, create a capability, change profile/scope/tier/policy, approve itself, or exceed the retry budget.
 
 These constraints describe the source contract. Execute readiness for a particular installation still requires a successful local build, inventory check, preflight, and applicable runner tests.
 
@@ -161,7 +173,7 @@ Cleanup outcomes are first-class. partial and cleanup_failed remain visible in t
 
 Profiles declare always, on_success, or manual cleanup policy. Any Execute plan containing a mutating action is refused unless the profile uses always, the cleanup action is enabled and unblocked, and the plan contains a cleanup step. Preview shows this readiness before Execute begins.
 
-The emergency path covers failures while the Python process and runner transport remain available. It cannot clean after abrupt process termination, host loss, or loss of the configured sandbox; receipts remain the authoritative recovery records in those cases.
+Before every mutating filesystem effect, the runner atomically publishes a durable intent record. After the effect it commits the corresponding receipt. On startup, the control plane reconciles only privately bound execution workspaces, discovers pending or committed records, and invokes the registered cleanup action in reverse creation order. A finalized run is never rewritten: recovery is recorded in a separately hashed, atomically published sub-bundle. Recovery is deferred rather than guessed if the original workspace, approval binding, runner WAL protocol, or receipt integrity cannot be proven. Host loss or destruction of the bound workspace remains outside what software recovery can repair.
 
 ## Replay and comparison
 

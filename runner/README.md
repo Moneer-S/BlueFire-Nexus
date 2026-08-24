@@ -18,20 +18,24 @@ means refused/control-blocked, `4` means an attempted action failed, was
 partial, timed out, or could not clean up, and `2` means the input/CLI contract
 itself could not be read.
 
-There is one deliberately undocumented/private process entry point. The
-runner invokes its own current executable as `__private-transform` with a
-fixed argument shape, a cleared environment, explicit working directory, null
-stdin, bounded stdout/stderr, and a deadline. It supports only the two compiled
-transform enums. It is not an arbitrary process interface.
+Fixture transforms execute directly through compiled Rust enum variants. There
+is no helper subcommand or externally invokable policy-bypass path. Process
+discovery uses the Windows Toolhelp snapshot API or one platform-selected,
+absolute `ps` path with a fixed argument vector on Linux/macOS; caller input can
+never select an executable or argument.
 
 ## Registered actions
 
 | Action ID | Typed parameters | Required capabilities | Tier | Effects |
 |---|---|---|---|---|
 | `sandbox.fixture.create.v1` | `path`, `content_template` (`telemetry-seed`, `harmless-document`, `empty`) | `filesystem_write` | `safe` | create-new sandbox file |
-| `sandbox.fixture.transform.v1` | `input`, `output`, `transform` (`uppercase-ascii`, `reverse-bytes`) | `filesystem_read`, `filesystem_write`, `process_spawn` | `safe` | fixed self-helper plus create-new output |
+| `sandbox.fixture.transform.v1` | `input`, `output`, `transform` (`uppercase-ascii`, `reverse-bytes`) | `filesystem_read`, `filesystem_write` | `safe` | in-process transform plus create-new output |
 | `sandbox.discovery.list.v1` | `path`, `max_entries` | `filesystem_read` | `safe` | bounded sandbox directory inventory |
 | `sandbox.discovery.metadata.v1` | `path` | `filesystem_read` | `safe` | sandbox metadata and bounded file hash |
+| `endpoint.discovery.system.v1` | none | `system_discovery` | `safe` | compiled system identity APIs |
+| `endpoint.discovery.processes.v1` | `max_entries` | `process_discovery`, `process_spawn` | `safe` | bounded native/fixed-adapter process inventory |
+| `sandbox.discovery.recursive.v1` | `path`, `max_entries`, `max_depth` | `filesystem_read` | `safe` | bounded, non-link-following sandbox traversal |
+| `sandbox.archive.tar.v1` | `inputs`, `destination` | `filesystem_read`, `filesystem_write` | `controlled` | deterministic create-new ustar archive |
 | `sandbox.collection.stage.v1` | `inputs`, `destination_directory` | `filesystem_read`, `filesystem_write` | `controlled` | bounded create-new copies |
 | `sandbox.network.loopback.v1` | `artifact`, `destination {host,port}` | `filesystem_read`, `network_loopback` | `controlled` | fixed HTTP POST to a literal, declared loopback socket |
 | `sandbox.export.local.v1` | `source`, `destination` | `filesystem_read`, `filesystem_write`, `export_local` | `controlled` | bounded sandbox-local create-new copy |
@@ -40,6 +44,10 @@ transform enums. It is not an arbitrary process interface.
 Every parameter structure uses Serde `deny_unknown_fields`. The registry is a
 fixed Rust array; there is no dynamic library, Python entry point, action alias,
 generic command, URL, hostname resolution, proxy, redirect, or shell dispatch.
+`inventory --json` also exposes every action as
+`bluefire.runner-action-sdk.v1`, including its semantic version, JSON Schema,
+target types, observation hints, cleanup relationship, enforced limit classes,
+readiness, and provenance/license metadata.
 
 ## Manifest JSON
 
@@ -50,7 +58,7 @@ duplicate fields. Fields are:
 - `request_id`, `run_id`, `step_id`: stable provenance identifiers.
 - `behavior_id`: one of the selected action descriptor's compatible behavior
   IDs.
-- `action_id`: one of the eight exact IDs above.
+- `action_id`: one of the twelve exact IDs above.
 - `mode`: lowercase `execute`. The Rust runner refuses `simulate`; simulation
   remains entirely in the control plane.
 - `runner_id`, `runner_profile_id`: must exactly match the loaded profile.
@@ -156,21 +164,26 @@ Pre-effect refusals emit `control_blocked` evidence. Any started action emits
 `sha256:<hex>` and preserve manifest parent references. This runner deliberately
 does not claim independent `observed` evidence; a separate observer must do so.
 
-Every create-new action persists a runner-owned receipt under the reserved
-`.bluefire/receipts` state directory. Callers pass only receipt IDs to
-`sandbox.cleanup.v1`; the runner loads the stored paths, checks object type,
-size, and SHA-256, deletes files before owned directories, refuses altered
-objects, consumes successful receipts, and treats an already-consumed receipt
-as an idempotent success. Cleanup never accepts a caller path.
+Every create-new action uses `bluefire.runner-receipt-wal.v2`: it persists an
+exact receipt intent before effect, syncs bytes in runner-owned staging,
+publishes without overwrite, verifies the result, and persists a commit.
+Pending intents remain discoverable after interruption. Callers pass only
+receipt IDs to `sandbox.cleanup.v1`; the runner checks object type, size, and
+SHA-256, removes safe partial staging, deletes files before owned directories,
+refuses altered objects, consumes successful receipts, and treats an
+already-consumed receipt as idempotent success. Cleanup never accepts a caller
+path.
 
 ## Verification
 
 The tests cover registry closure, strict parameter schemas, valid actions,
 platform/capability/tier/approval/allowlist/control-block/scope enforcement,
-portable traversal rejection, Unix symlink refusal, bounded fixed-process
-output, resource limits, partial staging, structured evidence, receipt cleanup
+portable traversal rejection, Unix symlink refusal, bounded process discovery,
+recursive count/depth limits, deterministic archiving, legacy-helper bypass
+refusal, resource limits, partial staging, structured evidence, receipt cleanup
 and tamper refusal, pre-connect network refusal, a real ephemeral-loopback POST,
-and JSON CLI contracts. No test connects outside `127.0.0.1`.
+a slow/trickle monotonic-deadline case, and JSON CLI/SDK contracts. No test
+connects outside `127.0.0.1`.
 
 Run on a machine with Rust installed:
 

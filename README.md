@@ -1,204 +1,407 @@
 # BlueFire Nexus
 
-BlueFire Nexus 0.1.0 is an evidence-first control plane for bounded security experiments. It validates typed scenario graphs, plans neutral behaviors, records provenance, and stores replayable run bundles. Python owns orchestration and policy; a separately built Rust runner is the only component allowed to perform reviewed actions.
+**Graph-driven, evidence-aware purple-team experiments with a bounded Rust execution boundary.**
 
-The maintained product has exactly two modes:
+BlueFire Nexus turns a defensive question into a typed behavior graph, runs it in **Simulate** or **Execute**, preserves what was proposed, authorized, dispatched, and observed, then supports replay and side-by-side comparison after a control or detection changes.
 
-| Mode | Default | Meaning |
-|---|---:|---|
-| **Simulate** | Yes | Models state transitions and emits explicitly synthetic or counterfactual evidence. It does not launch the Rust runner. |
-| **Execute** | No | Dispatches only registered action IDs through an explicit runner profile after policy and approval checks. |
+It is deliberately not a shell wrapper. The Python control plane can select only registered behaviors and actions. Real effects cross a strict adapter into the separately built Rust runner, where the selected runner profile is enforced again.
 
-There is no generic command, shell, script, payload, identity-specific pack, or implicit plugin execution interface.
+> BlueFire Nexus is pre-1.0 software for owned or explicitly authorized labs. The shipped action pack is useful for bounded endpoint and sandbox validation, but it is not a general endpoint-management, cloud, identity, or enterprise-network agent. See [Current limitations](#current-limitations).
 
-## Current scope
+## Why BlueFire is different
 
-The active bluefire package provides:
+```mermaid
+flowchart LR
+    O[Defensive objective] --> G[Typed scenario graph]
+    G --> P[Deterministic planner]
+    M[Optional AI proposal] --> V[Schema and allowlist validation]
+    V --> P
+    P --> Y{Mode}
+    Y -->|Simulate| S[Synthetic transitions]
+    Y -->|Execute| Q[Policy, approval, scope, budgets]
+    Q --> R[Rust runner action]
+    S --> E[Evidence graph]
+    R --> E
+    C[Independent collectors] --> E
+    E --> D[Detection lifecycle]
+    E --> B[Immutable run bundle]
+    B --> X[Replay and compare]
+    X --> O
+```
 
-- strict, versioned behavior, action, scenario, configuration, plugin, evidence, and planner contracts;
-- a deterministic planner with typed artifact bindings and explicit outcome edges;
-- deny-by-default Execute policy and approval binding;
-- a Python-to-Rust transport with a fixed argument grammar;
-- tamper-evident local run bundles, replay preparation, and run comparison;
-- a loopback-only HTTP API and packaged browser UI;
-- a detection-candidate lifecycle that keeps hypotheses distinct from exercised candidates;
-- a neutral sandbox catalog and a seven-step fixture research scenario.
+- Graph edges carry explicit `success`, `partial`, `blocked`, and `failed` outcomes.
+- AI autonomy is independent from effect mode: `off`, `assist`, or `auto` never changes the runner's authority.
+- A control block is retained as a useful result. It is not normalized into success or hidden as a generic error.
+- `synthetic`, `executed`, `observed`, `control_blocked`, `counterfactual`, and `unknown` evidence remain distinct.
+- Replay creates a lineage-linked run; comparison reports differences without claiming causality.
+- Detection maturity is a lifecycle, not a count of rendered rule files.
 
-The Rust crate under runner/ contains eight bounded sandbox actions. It must be built and configured separately. A source checkout or a successful simulation does not prove that an Execute runner is installed, compatible, or authorized; check runner inventory and preflight first.
+## Simulate and Execute
 
-Four credential, persistence, lateral-movement, and defense-evasion research entries are intentionally metadata_only. They preserve neutral technique and observable concepts for detection research, but have no simulation adapter or executable action.
+BlueFire has exactly two run modes.
 
-## Install
+| | Simulate | Execute |
+|---|---|---|
+| Default | Yes | No |
+| Runner required | Never | Yes |
+| External effects | None | Registered, approved effects only |
+| Primary evidence | `synthetic` or `counterfactual` | `executed`, `control_blocked`, or `unknown`; `observed` only from a separate collector |
+| Profile | Simulate profile | Explicit Execute profile |
+| Scope | Modeled | Explicit operator scope, contained by the profile and runner |
+| Approval | Not an execution approval | Required by every shipped Execute profile |
+| Cleanup | Modeled | Receipt-owned, hash-checked cleanup |
 
-Python 3.10 or newer is required.
+AI does not create a third mode. Enabling `assist` or `auto` cannot widen target scope, raise the safety tier, change the runner profile, invent an action ID, or bypass approval.
 
-~~~bash
+## What ships today
+
+- A strict Python control plane for catalog, scenario, planning, policy, simulation, execution dispatch, evidence, detections, replay, comparison, and local run bundles.
+- A React/TypeScript workspace with Overview, Scenarios, Builder, Runs, Compare, Behaviors, Runner Profiles, Runners, Actions, Detection Lab, Research Sources, AI Planner, Settings, and Help areas.
+- Thirteen compiled Rust actions with versioned inventory descriptors, strict parameter schemas, resource bounds, structured results, and cleanup receipts.
+- Six sanitized scenario graphs, including blocked-path fallback, platform discovery, archive/staging, detection regression, AI-adaptive, and restricted-tier canary examples.
+- A deterministic offline AI provider and an OpenAI-compatible Responses provider using strict structured output, timeouts, retries, token limits, redaction, and deterministic fallback.
+- A bounded filesystem observer and JSONL fixture-log collector, plus honest readiness descriptors for optional auditd, Sysmon/Event Log, packet-capture, and SIEM adapters.
+- pySigma parsing and YARA compilation/fixture exercise when their optional pinned packages are installed; SPL receives structural checks only.
+- Content-addressed evidence records, hash-chained run events, finalized bundle manifests, exact/variant replay, and multi-run comparison.
+- A migrated local SQLite product store for secret-safe settings, content-addressed scenario versions, typed resources, approval/job state, restart recovery, and indexed run summaries.
+
+### Built-in Rust actions
+
+| Action | Tier | Purpose |
+|---|---|---|
+| `sandbox.fixture.create.v1` | safe | Create one deterministic file in the runner-owned sandbox |
+| `sandbox.fixture.transform.v1` | safe | Apply a compiled in-process transform to a bounded file |
+| `sandbox.discovery.list.v1` | safe | List a bounded sandbox directory |
+| `sandbox.discovery.metadata.v1` | safe | Read bounded metadata and, when eligible, a file digest |
+| `endpoint.discovery.system.v1` | safe | Report OS and architecture facts from compiled APIs |
+| `endpoint.discovery.processes.v1` | safe | Return a bounded PID/name inventory through a native or fixed adapter |
+| `sandbox.discovery.recursive.v1` | safe | Traverse a runner-owned subtree without following links |
+| `sandbox.archive.tar.v1` | controlled | Build a deterministic uncompressed ustar archive from approved files |
+| `sandbox.collection.stage.v1` | controlled | Copy selected sandbox files into a controlled staging directory |
+| `sandbox.network.loopback.v1` | controlled | POST one bounded artifact to a literal allowlisted loopback socket |
+| `sandbox.export.local.v1` | controlled | Create a bounded copy in the approved sandbox-local export area |
+| `sandbox.restricted.persistence-marker.v1` | restricted | Write one fixed, non-executable persistence-detection canary inside a dedicated runner-owned sandbox |
+| `sandbox.cleanup.v1` | safe | Remove only receipt-owned, unchanged objects |
+
+The runner does not expose a generic command, shell, script, URL, hostname-resolution, proxy, redirect, dynamic-library, or Python-entry-point action. Process discovery on Linux and macOS uses one platform-selected absolute `ps` path and a fixed argument vector; it is not caller-selectable process execution.
+
+### Included scenarios
+
+| File | What it demonstrates | Validation note |
+|---|---|---|
+| `scenarios/sandbox_research_chain.yaml` | Seven-step fixture, transform, discovery, staging, loopback/fallback, cleanup chain | Canonical minimal demo |
+| `scenarios/linux_container_validation.yaml` | System/process discovery, recursive files, archive, fixture staging, internal transport/fallback, cleanup | Requires an explicitly prepared disposable Linux/container runner for Execute |
+| `scenarios/windows_endpoint_validation.yaml` | Harmless Windows-oriented system/process/filesystem discovery, archive/staging, cleanup | Higher-impact Windows persistence/registry/service work is not shipped |
+| `scenarios/detection_regression.yaml` | Stable evidence baseline, declared control/detection change, replay, comparison | Does not itself deploy a production detector |
+| `scenarios/ai_adaptive_safe_chain.yaml` | Bounded planner choice around an incompatible or blocked internal-transport path | AI proposals remain inside registered graph objects and policy |
+| `scenarios/restricted_persistence_canary.yaml` | Restricted-tier canary creation, observation hints, and receipt cleanup | Requires the narrow `sandbox-restricted-owned.v1` profile; it never alters operating-system persistence |
+
+The persistence research family now has one deliberately narrow Simulate/Execute canary under a dedicated restricted profile and fresh approval. Credential-access, lateral-movement, and defense-evasion families remain **metadata-only** research contracts. BlueFire does not claim those three categories, or real host persistence changes, are operational.
+
+## Quickstart: first safe run
+
+Python 3.10 or newer is required. Docker is not required for Simulate.
+
+```bash
 python -m venv .venv
-# Linux/macOS: source .venv/bin/activate
+# Linux/macOS
+source .venv/bin/activate
 # Windows PowerShell: .venv\Scripts\Activate.ps1
+
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
-~~~
+```
 
-The Python runtime dependency is PyYAML. The wheel includes the neutral catalog, UI assets, canonical default configuration, and canonical sandbox scenario; checkout copies are parity-tested against those packaged defaults. The package does not install or download a runner, AI provider, browser, telemetry collector, or SIEM connector.
+Validate and preview the canonical graph:
 
-The path-based examples below assume a source checkout. In a standalone wheel installation, the service and UI fall back to the packaged configuration and scenario; provide your own scenario path to path-based CLI commands.
-
-## Start safely
-
-Validate and preview the included scenario:
-
-~~~bash
+```bash
 bluefire scenario validate scenarios/sandbox_research_chain.yaml
 bluefire scenario preview scenarios/sandbox_research_chain.yaml
-~~~
+```
 
-Run it in the default Simulate mode and inspect the resulting local history:
+Installed wheels can resolve packaged scenarios without a checkout path:
 
-~~~bash
-bluefire --runs-dir runs scenario run scenarios/sandbox_research_chain.yaml
-bluefire --runs-dir runs runs list
-bluefire --runs-dir runs bundle validate RUN_ID
-~~~
+```bash
+bluefire scenario validate --scenario-id scenario.sandbox.research.chain.v1
+```
 
-Start the local UI:
+One-command local demo (defaults to Simulate and writes a local run bundle):
 
-~~~bash
-bluefire --runs-dir runs ui --host 127.0.0.1 --port 8765
-~~~
+```bash
+bluefire --runs-dir .bluefire-runs scenario run --scenario-id scenario.sandbox.research.chain.v1
+```
 
-The server refuses non-loopback bind addresses. The UI, CLI, and API are adapters over the same control-plane service and policy path.
+For Execute, pin a registered implementation for a graph step with the repeatable `--action-implementation STEP_ID=ACTION_ID` option. The service validates each choice against the step behavior and exact runner profile, then binds the resolved map into approval.
 
-Use bluefire --help and the help for each subcommand as the authoritative option reference.
+Inspect the result:
 
-The command groups are deliberately small:
+```bash
+bluefire --runs-dir .bluefire-runs runs list
+bluefire --runs-dir .bluefire-runs runs detail RUN_ID
+bluefire --runs-dir .bluefire-runs bundle validate RUN_ID
+```
 
-| Command | Purpose |
-|---|---|
-| bluefire scenario validate | Parse and validate a scenario without running it |
-| bluefire scenario preview | Compile and preflight a Simulate or Execute plan |
-| bluefire scenario run | Create a run through the same validated service path |
-| bluefire runner status | Inspect configured runner availability and inventory parity |
-| bluefire runs list or detail | Inspect normalized local run records |
-| bluefire replay | Prepare a lineage-linked exact or declared variant replay |
-| bluefire compare | Compare two or more normalized runs |
-| bluefire bundle validate | Verify a finalized run bundle's file table and hashes |
-| bluefire plugins inventory | Show declarative plugin inventory; it does not load code |
-| bluefire research status | Show which behaviors are executable, simulated, or metadata only |
-| bluefire ui | Start the loopback-only browser workspace |
+`RUN_ID` is printed by the run command. A successful Simulate run proves that graph validation and simulation completed; it does not prove a runner action or defensive control executed.
 
-## Execute mode
+## Launch the product UI
 
-Execute is deliberately not a more permissive form of Simulate. It requires all of the following:
+The packaged UI uses the same loopback service as the CLI:
 
-1. A locally built, compatible bluefire-runner binary.
-2. An existing sandbox root owned for the experiment.
-3. An explicit Execute runner profile whose platform, action allowlist, capabilities, safety tiers, network scope, cleanup policy, and resource budgets permit the request.
-4. A registered behavior/action pair and a successful runner inventory compatibility check.
-5. A fresh approval bound to the exact request, action, profile, and target-scope digest when the profile requires it.
+```bash
+bluefire --runs-dir .bluefire-runs ui --host 127.0.0.1 --port 8765
+```
 
-Build the runner with a local Rust toolchain:
+Open `http://127.0.0.1:8765`. The service rejects non-loopback bind addresses. Loopback is a reduced exposure surface, not user authentication; do not publish it through a proxy, tunnel, or port forward.
 
-~~~bash
+### Product tour
+
+These screenshots come from the Python-backed local service with sanitized fixture data. They demonstrate the interface and control boundaries; synthetic records are labeled and are not presented as proof of host execution or defensive control coverage.
+
+| Mission control | Typed graph builder | Execute review |
+| --- | --- | --- |
+| ![BlueFire Nexus overview](docs/assets/screenshots/overview.png) | ![Typed scenario graph builder](docs/assets/screenshots/builder.png) | ![Canonical Execute plan and immutable approval envelope](docs/assets/screenshots/execute-review.png) |
+| Counts, readiness, active experiment, and canonical run history. | Registered behaviors, typed artifacts, explicit routes, and node parameters. | Exact profile, scope, tier, cleanup, action IDs, and bound digests before job creation. |
+
+| Approval-gated live run | Provenance-separated evidence | Replay comparison |
+| --- | --- | --- |
+| ![Execute job stopped at its one-time approval gate](docs/assets/screenshots/live-run.png) | ![Canonical evidence records and detection outcome](docs/assets/screenshots/evidence.png) | ![Side-by-side immutable replay comparison](docs/assets/screenshots/compare.png) |
+| The execution callback has not started while the job awaits a fresh operator approval. | Structured content, producer, behavior, action, confidence, and limitations remain visible. | Baseline and lineage-linked variant lanes compare path, objective, cleanup, evidence, telemetry, and controls. |
+
+| Detection Lab | Runner inventory | AI Planner |
+| --- | --- | --- |
+| ![Detection candidate lifecycle and parser health](docs/assets/screenshots/detection-lab.png) | ![Sanitized Rust runner health and action inventory](docs/assets/screenshots/runners.png) | ![Bounded AI Planner with an unsaved registered-contract draft](docs/assets/screenshots/ai-planner.png) |
+| Parser readiness and lifecycle stages distinguish hypotheses from completed validation. | Stored-profile probing exposes readiness and allowlisted action IDs without browser-visible paths or secrets. | Provider metadata, authority boundaries, and an explicitly unsaved, unauthorized graph draft stay separate. |
+
+For frontend development:
+
+```bash
+cd frontend
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
+The Vite development server proxies `/api` to the Python service on `127.0.0.1:8765`. `pnpm build` writes production assets to `bluefire/ui` for packaging.
+
+## First scenario walkthrough
+
+1. Open **Scenarios** and select **Neutral sandbox research chain**.
+2. Open **Builder**. Inspect typed input bindings and the compatible metadata-discovery alternate.
+3. Open **Runs**, keep **Simulate** and AI **Off**, then run preflight.
+4. Review the graph path, expected telemetry, profile, scope, budgets, and cleanup plan.
+5. Start the run. The loopback step may follow its declared fallback route; this is part of the scenario contract.
+6. In run review, keep synthetic expected evidence separate from independent observations.
+7. Copy the run ID, replay it exactly or with a declared defense note, then compare the two bundles.
+
+The browser demo mode is explicitly synthetic and refuses Execute dispatch. For canonical results, use the Python-backed UI rather than treating seeded browser data as a run.
+
+## Execute with the Rust runner
+
+Execute is opt-in and requires an existing runner-owned sandbox. Build the runner from source:
+
+```bash
 cargo build --release --manifest-path runner/Cargo.toml
-~~~
+cargo run --release --manifest-path runner/Cargo.toml -- inventory --json
+```
 
-Set BLUEFIRE_RUNNER_BINARY and BLUEFIRE_SANDBOX_ROOT to local paths, then use the Execute profile in config/bluefire.example.yaml as a template. Environment values are resolved only at the boundary that needs them; configuration objects retain environment-variable references rather than secret or path values.
+Set environment variables to the built binary and a disposable sandbox you own. Do not put their resolved values in tracked YAML.
 
-Before any Execute request:
+```bash
+# Linux/macOS example
+export BLUEFIRE_RUNNER_BINARY="$(pwd)/runner/target/release/bluefire-runner"
+export BLUEFIRE_SANDBOX_ROOT="$(pwd)/.bluefire-sandbox"
+mkdir -p "$BLUEFIRE_SANDBOX_ROOT"
+```
 
-~~~bash
+```powershell
+# Windows PowerShell example
+$env:BLUEFIRE_RUNNER_BINARY = (Resolve-Path .\runner\target\release\bluefire-runner.exe)
+$env:BLUEFIRE_SANDBOX_ROOT = (New-Item -ItemType Directory -Force .\.bluefire-sandbox).FullName
+```
+
+Check inventory and preflight before approval:
+
+```bash
 bluefire --config config/bluefire.example.yaml runner status --profile sandbox-execute.v1
 bluefire --config config/bluefire.example.yaml scenario preview \
-  scenarios/sandbox_research_chain.yaml --mode execute --profile sandbox-execute.v1
-~~~
+  scenarios/sandbox_research_chain.yaml \
+  --mode execute \
+  --profile sandbox-execute.v1 \
+  --scope-ref network.loopback \
+  --scope-ref export.local
+```
 
-Only after reviewing that preflight should an operator use scenario run --mode execute with the explicit profile and approval options. The runner independently revalidates the sealed manifest and profile. A Python policy decision cannot force the runner to accept an invalid request.
+After reviewing the exact plan and target scope:
 
-The logical catalog parameters and typed artifact bindings are intentionally distinct from the Rust executor's sealed parameter objects. RunnerActionAdapter is the sole translation point. It maps only known action IDs and validated relative artifact references; arbitrary fields and unknown actions are refused.
+```bash
+bluefire --config config/bluefire.example.yaml --runs-dir .bluefire-runs scenario run \
+  scenarios/sandbox_research_chain.yaml \
+  --mode execute \
+  --profile sandbox-execute.v1 \
+  --scope-ref network.loopback \
+  --scope-ref export.local \
+  --approve \
+  --approved-by local-operator
+```
 
-See [the execution model](docs/EXECUTION_MODEL.md) for the complete boundary and refusal model.
+The CLI adds `sandbox.workspace` to scenario-run scope by default. The other references above authorize only the scenario's reviewed fallback choices. The Rust runner independently checks the action inventory, profile digest, request hash, platform, capabilities, tier, filesystem/network scope, limits, approval lifetime, and cleanup binding.
 
-## Scenario and catalog model
+See [Runner deployment](docs/RUNNER_DEPLOYMENT.md), [Runner profiles](docs/RUNNER_PROFILES.md), and [the execution model](docs/EXECUTION_MODEL.md) before Execute.
 
-scenarios/sandbox_research_chain.yaml demonstrates:
+## AI Planner
 
-- seven registered steps;
-- typed artifact propagation;
-- an interchangeable discovery behavior with an identical logical contract;
-- explicit success, partial, blocked, and failed edges;
-- a blocked loopback step that falls back to local export;
-- cleanup bound to the original runner-owned workspace.
+Autonomy is independent of Simulate/Execute:
 
-Validation rejects unknown fields, unversioned IDs, duplicate steps or outcome routes, cycles, unreachable nodes, incompatible alternates, type mismatches, and bindings whose source is not guaranteed on every incoming path.
+| Level | Model behavior | Application rule |
+|---|---|---|
+| `off` | No model call | Deterministic planner only |
+| `assist` | Draft typed graphs and propose bounded registered choices | Persist every actionable runtime proposal for exact-digest operator review before mutation |
+| `auto` | Draft typed graphs and propose the exact observed edge, compatible behavior, bounded primitive parameters, exact-profile action, or one retry | May apply a policy-valid choice in Simulate; every Execute mutation pauses for review, fresh-workspace replay, and fresh exact approval |
 
-The eight reviewed action IDs are:
+The base configuration uses `deterministic-offline.v1`. To use the included OpenAI-compatible Responses provider, set the referenced environment variable locally and select the provider:
 
-~~~text
-sandbox.fixture.create.v1
-sandbox.fixture.transform.v1
-sandbox.discovery.list.v1
-sandbox.discovery.metadata.v1
-sandbox.collection.stage.v1
-sandbox.network.loopback.v1
-sandbox.export.local.v1
-sandbox.cleanup.v1
-~~~
+```bash
+export OPENAI_API_KEY="..."          # Linux/macOS
+# Windows PowerShell: $env:OPENAI_API_KEY = "..."
 
-They are sandbox actions, not a claim of general host or network emulation. Network scope in the example profile is limited to 127.0.0.1/32 and ::1/128.
+bluefire scenario preview scenarios/ai_adaptive_safe_chain.yaml \
+  --autonomy assist \
+  --ai-provider openai-responses.v1
+```
 
-## Evidence, detections, replay, and comparison
+Provider configuration lives under `ai.providers` in `config/bluefire.example.yaml`. The YAML stores the environment-variable name, endpoint, model, timeout, retry count, output-token limit, and redaction policy—not the secret value. If credentials are missing, the provider times out, or structured output is invalid, BlueFire uses the deterministic fallback and records that fact.
 
-Evidence provenance is explicit:
+The Builder and AI Planner can send a natural-language objective to `POST /api/v1/ai/drafts`. The response is an unsaved typed graph containing only allowlisted registered behaviors and primitive registered parameters. Scenario identity, artifact bindings, provenance, and validation are derived deterministically; mode, profile, scope, policy, approvals, actions, commands, and paths are excluded from the model contract.
 
-- synthetic: produced by a model or fixture simulation;
-- executed: reported by a runner after an action started;
-- observed: independently collected from a declared sandbox artifact;
-- control_blocked: evidence that a control prevented the requested action;
-- counterfactual: a modeled continuation after a blocked or failed branch;
-- unknown: retained when provenance cannot be established.
+The provider is a proposal boundary, not an execution authority. It cannot emit free-form execution, install an action, change the selected runner/profile, expand scope, raise a tier, approve itself, or declare its own detection validated. See [AI Planner](docs/AI_PLANNER.md).
 
-These labels are not interchangeable. Synthetic telemetry is not proof of execution, runner output is not independent observation, and a blocked request is not a successful action.
+## Replay and compare
 
-Detection candidates move through explicit lifecycle states. The included structured matcher can exercise declared fixtures and observed evidence, but it is not an authoritative parser for every target detection language. Generated hypotheses still require the relevant external parser/backend and environment-specific evaluation before production use.
+Exact replay retains the source scenario snapshot and autonomy/provider selection:
 
-Finalized run bundles capture scenario, plan, policy, profile, result, evidence, and detection snapshots; an append-only event stream; and a file table with hashes and a bundle digest. bundle validate checks those hashes. A digest detects modification but is not a digital signature or proof of authorship.
+```bash
+bluefire --runs-dir .bluefire-runs replay RUN_ID --exact
+```
 
-Replay creates lineage-linked variants without mutating the source snapshot. It supports exact replay, restart from a node, compatible behavior swaps, and declared profile, AI, or defense changes. Comparison reports path divergence, blocked controls, evidence-provenance deltas, detection-state deltas, telemetry changes, objective state, and cleanup state. It does not by itself establish scientific causality.
+Declared variants can restart from a node, swap to a contract-compatible behavior, change typed parameters, select another registered per-step action implementation, change autonomy/provider/profile, or attach a defense-change note. Parameter overrides are currently exposed through the UI/API; the CLI covers the other variants:
 
-## Plugins and AI
+```bash
+bluefire --runs-dir .bluefire-runs replay RUN_ID \
+  --from-step-id discover_records \
+  --autonomy off \
+  --defense-change "Enabled the reviewed staging correlation"
+```
 
-Plugin support is declarative inventory only. Manifests carry version, trust, integrity, license, provenance, permissions, capability IDs, behavior IDs, and action IDs. Loading a manifest does not import Python entry points or execute plugin code.
+Compare two or more runs; the first is the baseline:
 
-AI enablement is independent of Simulate/Execute mode. AI decisions are untrusted proposals and must pass the same strict planner schema, registered-ID, parameter, edge, budget, and forbidden-field validation as any other proposal. AI cannot create an action, expand runner scope, or bypass policy and approval.
+```bash
+bluefire --runs-dir .bluefire-runs compare BASELINE_RUN_ID CANDIDATE_RUN_ID
+```
 
-## Repository boundaries
+Comparison reports path and first-block divergence, outcome counts, objective state, evidence provenance, detection lifecycle/matches, telemetry, policy/control states, cleanup, autonomy/provider, AI proposal application, budgets, duration, and coarse improvement/regression signals. A reported delta is not proof that the declared change caused it. See [Replay and compare](docs/REPLAY_COMPARE.md).
 
-- bluefire/: maintained Python package and packaged UI/catalog data.
-- bluefire/data/: packaged configuration and scenario defaults used when checkout copies are absent.
-- runner/: separately built Rust execution authority.
-- config/bluefire.example.yaml: canonical configuration example.
-- scenarios/sandbox_research_chain.yaml: canonical neutral scenario.
-- tests_platform/: active Python verification suite.
+## Evidence and Detection Lab
 
-Superseded Python effects, compatibility modes, identity-specific wrappers, and stale scenarios have been retired from the working tree. Their Git history is migration reference only and does not define a supported runner action.
+Every evidence record is attributable to a producer and one provenance class:
 
-## Development
+- `synthetic`: modeled or fixture-generated;
+- `executed`: reported by a runner after an action started;
+- `observed`: independently collected by a declared collector;
+- `control_blocked`: a policy or defensive control prevented the action;
+- `counterfactual`: modeled continuation after a real path stopped;
+- `unknown`: the system cannot establish the requested observation.
 
-~~~bash
+Detection candidates move through `hypothesis` → `parsed` → `fixture_exercised` → `observed_exercised` → `benign_evaluated`, or `rejected`. Stages are evidence-driven and cannot be skipped.
+
+For authoritative parser/compiler adapters:
+
+```bash
+python -m pip install "pysigma==1.4.0" "yara-python==4.5.4"
+python -m pytest tests_platform/test_detections.py
+```
+
+- Sigma uses pySigma parsing and records parser version/errors.
+- YARA uses YARA-Python compilation with includes disabled and warnings as errors, then bounded fixture matching.
+- SPL has a bounded structural checker but remains a hypothesis without a real backend parser.
+- Public rules are provenance-retaining baselines, not automatic evasion targets.
+
+See [Evidence model](docs/EVIDENCE_MODEL.md) and [Detection Lab](docs/DETECTION_LAB.md).
+
+## Research provenance
+
+The built-in registry records source, authority, public URL, version/pin, retrieval date, license, relationship (`imported`, `adapted`, `inspired`, or `comparative`), intended use, and cache policy. It currently references MITRE ATT&CK Enterprise data 19.1, Sigma specification 2.1.0, pySigma 1.4.0, and yara-python 4.5.4. External datasets and corpora are not vendored.
+
+## Supported platforms
+
+| Surface | Current support |
+|---|---|
+| Python control plane | Python 3.10+ on Windows, Linux, and macOS-compatible environments |
+| Rust runner | Builds from source; action descriptors declare Windows, Linux, and macOS |
+| System discovery | Compiled standard-library/platform APIs |
+| Process discovery | Windows Toolhelp API; fixed absolute `ps` adapter on Linux/macOS |
+| Network | Literal loopback IP only in the shipped action/profile |
+| Remote runner | Not shipped; current transport is a local subprocess |
+| Sysmon/Event Log, auditd, PCAP, SIEM | Descriptor/readiness contracts only; no configured production adapter ships |
+| Cloud and identity execution | Not shipped |
+
+The opt-in Python Execute E2E harness runs only when `BLUEFIRE_E2E_RUNNER` points to a freshly built runner. It exercises the canonical, Linux-oriented, Windows-oriented, and restricted-canary scenarios against runner-owned temporary roots on the current host. This proves those safe adapters on the test host; structural cross-platform checks are not represented as dynamic validation on another operating system.
+
+## Development and verification
+
+```bash
+python -m compileall -q bluefire tests_platform
 python -m pytest
 python -m ruff check bluefire tests_platform
+python -m black --check bluefire tests_platform
+python -m mypy bluefire
+python -m bandit -r bluefire -ll
+python -m pip_audit --ignore-vuln PYSEC-2026-2447  # reviewed optional pySigma/DiskCache exception; see SECURITY.md
 python -m build
 
-cargo fmt --check --manifest-path runner/Cargo.toml
-cargo clippy --manifest-path runner/Cargo.toml --all-targets -- -D warnings
-cargo test --manifest-path runner/Cargo.toml
-~~~
+cargo fmt --manifest-path runner/Cargo.toml -- --check
+cargo clippy --manifest-path runner/Cargo.toml --all-targets --all-features -- -D warnings
+cargo test --manifest-path runner/Cargo.toml --all
 
-See [the architecture](docs/ARCHITECTURE.md), [the execution model](docs/EXECUTION_MODEL.md), [the migration guide](docs/MIGRATION.md), and [the security policy](SECURITY.md) before extending the execution boundary.
+cd frontend
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm build
+pnpm test:e2e
+```
 
-## Responsible use
+Security and release checks should also include detect-secrets/Gitleaks, staged-diff checks, built-wheel inspection, installed-wheel CLI/API smoke, and the opt-in real-runner E2E test in a disposable environment. See [Development](docs/DEVELOPMENT.md) and [Contributing](CONTRIBUTING.md).
 
-Use BlueFire Nexus only in environments you own or are explicitly authorized to test. The default catalog is intentionally bounded, but configuration, local deployment, and operator authorization remain your responsibility. Report vulnerabilities through the process in [SECURITY.md](SECURITY.md).
+## Documentation
+
+- [User guide](docs/USER_GUIDE.md)
+- [Architecture](docs/ARCHITECTURE.md) and [execution model](docs/EXECUTION_MODEL.md)
+- [Threat model](docs/THREAT_MODEL.md) and [responsible use](docs/RESPONSIBLE_USE.md)
+- [Runner deployment](docs/RUNNER_DEPLOYMENT.md) and [runner profiles](docs/RUNNER_PROFILES.md)
+- [Action SDK](docs/ACTION_SDK.md), [plugin manifest SDK](docs/PLUGIN_SDK.md), and [behavior authoring](docs/BEHAVIOR_AUTHORING.md)
+- [AI Planner](docs/AI_PLANNER.md)
+- [Detection Lab](docs/DETECTION_LAB.md) and [evidence model](docs/EVIDENCE_MODEL.md)
+- [Replay and compare](docs/REPLAY_COMPARE.md)
+- [Local API](docs/API.md)
+- [Development](docs/DEVELOPMENT.md), [migration](docs/MIGRATION.md), and [contributing](CONTRIBUTING.md)
+
+## Current limitations
+
+- BlueFire is local-first and pre-1.0. The API is loopback-only and has no remote authentication layer.
+- The Rust runner is built separately; the Python package does not download, install, enroll, or run it as a service.
+- Remote transport, mutual authentication, runner enrollment/revocation, and signed task/profile artifacts are not implemented.
+- The action pack is intentionally bounded to runner-owned fixtures, discovery, staging/archive, local export, loopback transport, and cleanup. It has no general shell or arbitrary program execution.
+- One restricted persistence-detection canary is available only through a dedicated narrow profile; real host persistence changes and the credential, lateral-movement, and defense-evasion research families remain unavailable for Execute.
+- Built-in independent observation is limited to declared sandbox files and disposable JSONL fixtures. Optional audit/SIEM collectors report unavailable until separately implemented and configured.
+- The Detection Lab backend offers candidate and validator primitives; backend-specific Sigma conversion and production SPL validation are not included.
+- Bundle/event hashes detect modification but are not digital signatures or proof of who produced a bundle.
+- Browser-only preview preferences are not canonical execution configuration. Durable settings, versioned scenarios, runner profiles, runner records, model providers, plugins, research sources, collectors, and detection backends use the loopback API; trust preflight, approval, run, and bundle records for execution authority.
+
+Roadmap work should close these explicit gaps rather than add aliases, broad provider catalogs, unreviewed action count, or a third run mode.
+
+## Responsible use and license
+
+Use BlueFire Nexus only on systems, accounts, networks, and labs you own or are explicitly authorized to test. Start in Simulate, use least-privilege runner profiles, keep targets disposable where possible, review every Execute plan, and verify cleanup.
+
+Read [Responsible use](docs/RESPONSIBLE_USE.md) and [Security policy](SECURITY.md). Report security issues privately as described in `SECURITY.md`.
 
 BlueFire Nexus is licensed under the [MIT License](LICENSE).
