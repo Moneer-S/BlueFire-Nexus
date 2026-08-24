@@ -44,11 +44,15 @@ Repository = "https://github.com/Moneer-S/BlueFire-Nexus"
 Issues = "https://github.com/Moneer-S/BlueFire-Nexus/issues"
 
 [project.optional-dependencies]
+detections = [
+  "pysigma==1.4.0",
+  "yara-python==4.5.4",
+]
 dev = [
   "bandit[toml]>=1.8,<2",
   "black>=26.3.1,<27",
   "build>=1.2.2,<2",
-  "cyclonedx-bom>=5.0,<6",
+  "cyclonedx-bom>=7.3.1,<8",
   "detect-secrets>=1.5,<2",
   "mypy>=1.14,<2",
   "pip-audit>=2.8,<3",

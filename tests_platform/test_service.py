@@ -1,12 +1,115 @@
 from __future__ import annotations
 
+import json
+import shutil
+import tempfile
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Mapping
 
 import pytest
 
+from bluefire.ai import UrllibAIJSONTransport
+from bluefire.api import APIError
+from bluefire.approvals import execution_approval_binding, public_approval_record
+from bluefire.config import load_config
+from bluefire.contracts import ContractError, ExecutionMode
+from bluefire.job_runtime import JobState
+from bluefire.orchestrator import Orchestrator
 from bluefire.service import BlueFireService
+from bluefire.util import content_hash
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class CleanupOnlyRecoveryRunner:
+    def __init__(self) -> None:
+        self.calls: list[Mapping[str, Any]] = []
+
+    def inventory(self) -> Mapping[str, Any]:
+        return {
+            "schema_version": "bluefire.runner-inventory.v1",
+            "receipt_protocol": "bluefire.runner-receipt-wal.v2",
+            "actions": [{"action_id": "sandbox.cleanup.v1", "readiness": "ready"}],
+        }
+
+    def execute(
+        self,
+        manifest: Mapping[str, Any],
+        profile: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        assert manifest["action_id"] == "sandbox.cleanup.v1"
+        self.calls.append(dict(manifest))
+        root = Path(str(profile["sandbox_root"]))
+        receipt_ids = list(manifest["params"]["receipt_ids"])
+        removed_paths: list[str] = []
+        for receipt_id in receipt_ids:
+            receipt_path = root / ".bluefire" / "receipts" / f"{receipt_id}.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            for owned in reversed(receipt["paths"]):
+                owned_path = root / str(owned["relative_path"])
+                if owned_path.is_file():
+                    owned_path.unlink()
+                    removed_paths.append(str(owned["relative_path"]))
+                elif owned_path.is_dir():
+                    owned_path.rmdir()
+                    removed_paths.append(str(owned["relative_path"]))
+            receipt_path.unlink()
+        return {
+            "schema_version": "bluefire.runner-result.v1",
+            "run_id": manifest["run_id"],
+            "step_id": manifest["step_id"],
+            "behavior_id": manifest["behavior_id"],
+            "action_id": manifest["action_id"],
+            "request_hash": manifest["request_hash"],
+            "policy_digest": profile["policy_digest"],
+            "platform": profile["platform"],
+            "status": "success",
+            "output": {"removed_receipts": receipt_ids},
+            "stdout": {"bytes": 0, "truncated": False},
+            "stderr": {"bytes": 0, "truncated": False},
+            "evidence": [{"kind": "restart-cleanup", "status": "success"}],
+            "receipt_ids": [],
+            "cleanup": {
+                "requested_receipts": len(receipt_ids),
+                "removed_paths": removed_paths,
+                "already_absent_receipts": [],
+                "retained_paths": [],
+                "errors": [],
+            },
+            "error": None,
+            "limitations": [],
+        }
+
+
+def _persist_interrupted_scenario_job(
+    service: BlueFireService,
+    request: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    job = service.product_store.create_job("scenario.run", request)
+    job_id = str(job["job_id"])
+    service.product_store.transition_job(job_id, "planning")
+    service.product_store.transition_job(job_id, "running")
+    return service.product_store.transition_job(job_id, "interrupted")
+
+
+def _pending_execute_approval(
+    service: BlueFireService,
+    request: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    preflight = service.preflight(request)
+    binding = preflight["approval_binding"]
+    assert isinstance(binding, Mapping)
+    digest = content_hash(binding)
+    return service.product_store.create_approval_request(
+        run_id="intent-" + digest[7:39],
+        state_digest=str(binding["state_digest"]),
+        plan_digest=str(binding["plan_digest"]),
+        profile_id=str(binding["profile_id"]),
+        target_scope_digest=str(binding["target_scope_digest"]),
+        maximum_tier=str(binding["maximum_tier"]),
+        expires_at=service._approval_review_expires_at(),
+    )
 
 
 def test_default_run_store_uses_callers_working_directory(
@@ -17,3 +120,734 @@ def test_default_run_store_uses_callers_working_directory(
     service = BlueFireService(project_root=ROOT)
 
     assert service.store.root == (tmp_path / ".bluefire-runs").resolve()
+
+
+def test_service_seeds_durable_product_state_and_indexes_completed_runs(
+    tmp_path: Path,
+) -> None:
+    runs_dir = tmp_path / "runs"
+    database = tmp_path / "state" / "bluefire.sqlite3"
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=database,
+    )
+
+    assert service.product_store.path == database.resolve()
+    assert service.seed_counts["scenario"] == 6
+    assert service.seed_counts["action"] == 13
+    assert len(service.product_store.list_resources("collector")) == 6
+
+    result = service.run(
+        {
+            "scenario_id": "scenario.sandbox.research.chain.v1",
+            "mode": "simulate",
+            "autonomy": "off",
+            "target_scope": {"scope_refs": ["sandbox.workspace"]},
+        }
+    )
+
+    indexed = service.product_store.list_runs()
+    assert [item["run_id"] for item in indexed] == [result["run_id"]]
+    assert indexed[0]["bundle_digest"] == result["manifest"]["bundle_hash"]
+    assert indexed[0]["objective_reached"] is True
+    first_page = service.events(result["run_id"], limit=2)
+    second_page = service.events(
+        result["run_id"],
+        after_sequence=first_page["next_sequence"],
+        limit=2,
+    )
+    assert first_page["items"]
+    assert not {item["sequence"] for item in first_page["items"]} & {
+        item["sequence"] for item in second_page["items"]
+    }
+
+    restarted = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=database,
+    )
+    assert restarted.recovered_runs == 0
+    assert restarted.recovered_jobs == 0
+    assert all(item["version"] == 1 for item in restarted.product_store.list_scenarios())
+    assert restarted.product_store.list_runs()[0]["run_id"] == result["run_id"]
+
+
+def test_service_recovers_inflight_product_jobs_after_restart(tmp_path: Path) -> None:
+    runs_dir = tmp_path / "runs"
+    database = tmp_path / "bluefire.sqlite3"
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=database,
+    )
+    job = service.product_store.create_job("run", {"scenario_id": "scenario.test.v1"})
+    service.product_store.transition_job(job["job_id"], "planning")
+    service.product_store.transition_job(job["job_id"], "running")
+
+    restarted = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=database,
+    )
+
+    assert restarted.recovered_jobs == 1
+    assert restarted.product_store.get_job(job["job_id"])["state"] == "interrupted"
+
+
+def test_restart_cleanup_uses_exact_bound_workspace_and_audits_run_bundle(
+    request: pytest.FixtureRequest,
+) -> None:
+    short_root = Path(tempfile.mkdtemp(prefix="bf-recovery-"))
+    request.addfinalizer(lambda: shutil.rmtree(short_root, ignore_errors=True))
+    runs_dir = short_root / "r"
+    database = short_root / "s.db"
+    original_root = short_root / "o"
+    changed_root = short_root / "n"
+    original_root.mkdir()
+    changed_root.mkdir()
+    runner = CleanupOnlyRecoveryRunner()
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=database,
+        runner_factory=lambda _profile: (runner, original_root),
+    )
+    scenario = next(item for item in service._scenarios if item.id.endswith("research.chain.v1"))
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    autonomy, provider = service._ai_context({"autonomy": "off"})
+    target_scope = {"scope_refs": list(profile.scope)}
+    orchestrator = Orchestrator(
+        service.registry,
+        service.store,
+        runner=runner,
+        approval_store=service.product_store,
+    )
+    consumed = service._bind_and_consume_approval(
+        scenario=scenario,
+        profile=profile,
+        target_scope=target_scope,
+        autonomy=autonomy,
+        ai_provider=provider,
+        approved_by="restart-test-operator",
+        orchestrator=orchestrator,
+    )
+    plan = orchestrator.planner.compile(
+        scenario,
+        mode=ExecutionMode.EXECUTE,
+        profile=profile,
+        autonomy=autonomy,
+        ai_provider=provider,
+    )
+    approval_binding = execution_approval_binding(
+        registry=service.registry,
+        scenario=scenario,
+        plan=plan.to_dict(),
+        profile=profile,
+        target_scope=target_scope,
+        autonomy=autonomy,
+        ai_provider=provider,
+    )
+    claimed = service.product_store.claim_consumed_approval(
+        str(consumed["approval_id"]),
+        nonce=str(consumed["nonce"]),
+        approved_by="restart-test-operator",
+        expected_state_digest=str(approval_binding["state_digest"]),
+        expected_plan_digest=str(approval_binding["plan_digest"]),
+        expected_target_scope_digest=str(approval_binding["target_scope_digest"]),
+        expected_profile_id=profile.id,
+        expected_maximum_tier=str(approval_binding["maximum_tier"]),
+    )
+    workspace = service._isolated_execution_sandbox(original_root, claimed)
+    service._bind_execution_workspace(
+        approval_record=claimed,
+        workspace=workspace,
+        runner=runner,
+        scenario=scenario,
+        profile=profile,
+        target_scope=target_scope,
+        autonomy=autonomy,
+        ai_provider=provider,
+    )
+    handle = service.store.create_run(
+        scenario=scenario.to_dict(),
+        plan=plan.to_dict(),
+        policy={
+            "schema_version": "bluefire.run-policy.v1",
+            "authorized_target_scope": target_scope,
+            "autonomy": autonomy.value,
+            "ai_provider": dict(provider),
+            "approval": public_approval_record(claimed),
+        },
+        profile=profile.to_dict(),
+    )
+    service.product_store.transition_execution_workspace(
+        str(claimed["approval_id"]),
+        "active",
+        run_id=handle.run_id,
+    )
+    job = service.product_store.create_job(
+        "scenario.run",
+        {
+            "scenario_id": scenario.id,
+            "mode": "execute",
+            "runner_profile_id": profile.id,
+            "autonomy": autonomy.value,
+            "target_scope": target_scope,
+            "approval_request_id": claimed["approval_id"],
+        },
+    )
+    service.product_store.transition_job(str(job["job_id"]), "planning")
+    service.product_store.transition_job(
+        str(job["job_id"]),
+        "running",
+        progress={"run_id": handle.run_id, "phase": "running"},
+    )
+
+    artifact = workspace / "fixtures" / "interrupted.txt"
+    artifact.parent.mkdir()
+    artifact.write_text("bounded test artifact", encoding="utf-8")
+    receipt_id = "f" * 64
+    receipt_root = workspace / ".bluefire" / "receipts"
+    receipt_root.mkdir(parents=True)
+    receipt = {
+        "schema_version": "bluefire.receipt/v1",
+        "receipt_id": receipt_id,
+        "request_hash": "sha256:interrupted",
+        "action_id": "sandbox.fixture.create.v1",
+        "runner_profile_id": profile.id,
+        "created_at": "2026-08-24T00:00:00Z",
+        "paths": [
+            {
+                "relative_path": "fixtures/interrupted.txt",
+                "kind": "file",
+                "sha256": None,
+                "size": artifact.stat().st_size,
+            }
+        ],
+    }
+    (receipt_root / f"{receipt_id}.json").write_text(
+        json.dumps(receipt),
+        encoding="utf-8",
+    )
+    service.close()
+
+    restarted = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=database,
+        runner_factory=lambda _profile: (runner, changed_root),
+    )
+
+    assert restarted.cleanup_recovery["completed"] == 1
+    assert runner.calls and [call["action_id"] for call in runner.calls] == ["sandbox.cleanup.v1"]
+    assert not artifact.exists()
+    assert not (receipt_root / f"{receipt_id}.json").exists()
+    durable = restarted.product_store.get_execution_workspace(str(claimed["approval_id"]))
+    assert durable["state"] == "recovered"
+    recovered_job = restarted.product_store.get_job(str(job["job_id"]))
+    assert recovered_job["state"] == "interrupted"
+    assert recovered_job["progress"]["cleanup_recovery"]["status"] == "completed"
+    detail = restarted.detail(handle.run_id)
+    assert detail["status"] == "interrupted"
+    assert detail["cleanup_recovery"]["status"] == "completed"
+    assert detail["cleanup"]["outstanding_receipts"] == 0
+    assert restarted.store.validate_bundle(handle.run_id)["valid"] is True
+    restarted.close()
+
+
+def test_simulate_submission_runs_as_a_durable_background_job(tmp_path: Path) -> None:
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+    submission = service.submit_run(
+        {
+            "scenario_id": "scenario.sandbox.research.chain.v1",
+            "mode": "simulate",
+            "autonomy": "off",
+            "target_scope": {"scope_refs": ["sandbox.workspace"]},
+        }
+    )
+    job_id = str(submission["job"]["job_id"])
+
+    completed = service.job_controller.wait(job_id, timeout=5)
+
+    assert completed["state"] == "completed"
+    assert str(completed["result_ref"]).startswith("run-")
+    assert service.detail(str(completed["result_ref"]))["status"] == "completed"
+    service.close()
+
+
+def test_interrupted_simulate_retry_clones_request_and_records_lineage(tmp_path: Path) -> None:
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+    request = {
+        "scenario_id": "scenario.sandbox.research.chain.v1",
+        "mode": "simulate",
+        "autonomy": "off",
+        "target_scope": {"scope_refs": ["sandbox.workspace"]},
+    }
+    interrupted = _persist_interrupted_scenario_job(service, request)
+
+    retry = service.retry_job(str(interrupted["job_id"]))
+    retry_job_id = str(retry["job"]["job_id"])
+    completed = service.job_controller.wait(retry_job_id, timeout=5)
+
+    assert retry["schema_version"] == "bluefire.job-retry.v1"
+    assert retry["retry_of_job_id"] == interrupted["job_id"]
+    assert completed["state"] == "completed"
+    assert completed["request"] == request
+    source = service.job(str(interrupted["job_id"]))
+    assert source["progress"]["retry_lineage"][-1]["retry_job_id"] == retry_job_id
+    assert source["progress"]["retry_lineage"][-1]["mode"] == "simulate"
+    service.close()
+
+
+def test_interrupted_execute_retry_requires_a_fresh_exact_approval(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_factory=lambda _profile: (object(), sandbox),  # type: ignore[arg-type]
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    base_request = {
+        "scenario_id": "scenario.sandbox.research.chain.v1",
+        "mode": "execute",
+        "runner_profile_id": profile.id,
+        "autonomy": "off",
+        "target_scope": {"scope_refs": list(profile.scope)},
+    }
+    old_approval = _pending_execute_approval(service, base_request)
+    interrupted = _persist_interrupted_scenario_job(
+        service,
+        {**base_request, "approval_request_id": old_approval["approval_id"]},
+    )
+
+    retry = service.retry_job(str(interrupted["job_id"]))
+    retry_job_id = str(retry["job"]["job_id"])
+    awaiting = service.job_controller.wait_for_state(
+        retry_job_id,
+        {JobState.AWAITING_APPROVAL},
+        timeout=3,
+    )
+
+    fresh_approval = retry["approval_request"]
+    assert fresh_approval["status"] == "pending"
+    assert fresh_approval["approval_id"] != old_approval["approval_id"]
+    assert awaiting["request"]["approval_request_id"] == fresh_approval["approval_id"]
+    assert old_approval["approval_id"] not in str(awaiting["request"])
+    assert retry["source_job"]["progress"]["retry_lineage"][-1]["mode"] == "execute"
+    service.close()
+
+
+def test_interrupted_execute_retry_refuses_an_unsettled_workspace(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_factory=lambda _profile: (CleanupOnlyRecoveryRunner(), sandbox),
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    request = {
+        "scenario_id": "scenario.sandbox.research.chain.v1",
+        "mode": "execute",
+        "runner_profile_id": profile.id,
+        "autonomy": "off",
+        "target_scope": {"scope_refs": list(profile.scope)},
+    }
+    preflight = service.preflight(request)
+    binding = preflight["approval_binding"]
+    assert isinstance(binding, Mapping)
+    pending = _pending_execute_approval(service, request)
+    approved = service.product_store.approve(
+        str(pending["approval_id"]),
+        approved_by="retry-safety-test",
+        expected_state_digest=str(binding["state_digest"]),
+        expected_plan_digest=str(binding["plan_digest"]),
+        expected_target_scope_digest=str(binding["target_scope_digest"]),
+        expires_at=service._approval_execution_expires_at(profile),
+    )
+    consumed = service.product_store.consume_approval(
+        str(pending["approval_id"]),
+        nonce=str(approved["nonce"]),
+        expected_state_digest=str(binding["state_digest"]),
+        expected_plan_digest=str(binding["plan_digest"]),
+        expected_target_scope_digest=str(binding["target_scope_digest"]),
+    )
+    claimed = service.product_store.claim_consumed_approval(
+        str(pending["approval_id"]),
+        nonce=str(consumed["nonce"]),
+        approved_by="retry-safety-test",
+        expected_state_digest=str(binding["state_digest"]),
+        expected_plan_digest=str(binding["plan_digest"]),
+        expected_target_scope_digest=str(binding["target_scope_digest"]),
+        expected_profile_id=profile.id,
+        expected_maximum_tier=str(binding["maximum_tier"]),
+    )
+    workspace = service._isolated_execution_sandbox(sandbox, claimed)
+    service.product_store.bind_execution_workspace(
+        str(claimed["approval_id"]),
+        profile_id=profile.id,
+        workspace_path=workspace,
+        runner_identity={"receipt_protocol": "bluefire.runner-receipt-wal.v2"},
+        recovery_context={"test": "active-unsettled"},
+    )
+    interrupted = _persist_interrupted_scenario_job(
+        service,
+        {**request, "approval_request_id": claimed["approval_id"]},
+    )
+
+    with pytest.raises(APIError) as refused:
+        service.retry_job(str(interrupted["job_id"]))
+
+    assert refused.value.status == 409
+    assert refused.value.code == "job_retry_refused"
+    assert service.product_store.list_jobs() == [interrupted]
+    service.close()
+
+
+def test_execute_job_requires_separate_exact_approval_before_callback(
+    tmp_path: Path,
+) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+
+    def unavailable_after_gate(_profile: object) -> tuple[object, Path]:
+        # Preflight only needs the configured boundary to exist. Once approved,
+        # the deliberately incomplete fake proves the callback was actually released.
+        return object(), sandbox
+
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_factory=unavailable_after_gate,  # type: ignore[arg-type]
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    submission = service.submit_run(
+        {
+            "scenario_id": "scenario.sandbox.research.chain.v1",
+            "mode": "execute",
+            "runner_profile_id": profile.id,
+            "autonomy": "off",
+            "target_scope": {"scope_refs": list(profile.scope)},
+            "approval": {"confirmed": True, "approved_by": "must-not-auto-apply"},
+        }
+    )
+    job_id = str(submission["job"]["job_id"])
+    awaiting = service.job_controller.wait_for_state(
+        job_id,
+        {JobState.AWAITING_APPROVAL},
+        timeout=3,
+    )
+
+    assert awaiting["state"] == "awaiting_approval"
+    assert submission["approval_request"]["status"] == "pending"
+    assert submission["approval_request"]["approved_by"] is None
+    assert "nonce" not in submission["approval_request"]
+    reloaded = service.job(job_id)
+    assert reloaded["approval_request"] == submission["approval_request"]
+    assert "nonce" not in reloaded["approval_request"]
+
+    approved = service.approve_job(job_id, {"approved_by": "local-reviewer"})
+    assert approved["job"]["state"] == "running"
+    assert approved["approval_request"]["status"] == "consumed"
+    assert "nonce" not in approved["approval_request"]
+
+    failed = service.job_controller.wait(job_id, timeout=3)
+    assert failed["state"] == "failed"
+    approval_id = str(submission["approval_request"]["approval_id"])
+    assert service.product_store.get_approval_request(approval_id)["status"] == "claimed"
+    service.close()
+
+
+def test_action_implementation_payload_is_strict_and_persisted_in_execute_job(
+    tmp_path: Path,
+) -> None:
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+    simulate_request = {
+        "scenario_id": "scenario.sandbox.research.chain.v1",
+        "mode": "simulate",
+        "target_scope": {"scope_refs": ["sandbox.workspace"]},
+        "action_implementations": {},
+    }
+    with pytest.raises(APIError) as simulate_refused:
+        service.preflight(simulate_request)
+    assert simulate_refused.value.status == 400
+    assert simulate_refused.value.code == "action_implementations_invalid"
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    service.close()
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "execute-runs",
+        runner_factory=lambda _profile: (object(), sandbox),  # type: ignore[arg-type]
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    selections = {"create_fixture": "sandbox.fixture.create.v1"}
+    submission = service.submit_run(
+        {
+            "scenario_id": "scenario.sandbox.research.chain.v1",
+            "mode": "execute",
+            "runner_profile_id": profile.id,
+            "target_scope": {"scope_refs": list(profile.scope)},
+            "action_implementations": selections,
+        }
+    )
+    job_id = str(submission["job"]["job_id"])
+    awaiting = service.job_controller.wait_for_state(
+        job_id,
+        {JobState.AWAITING_APPROVAL},
+        timeout=3,
+    )
+
+    assert awaiting["request"]["action_implementations"] == selections
+    assert submission["preflight"]["action_implementations"]["create_fixture"] == (
+        "sandbox.fixture.create.v1"
+    )
+    assert (
+        submission["approval_request"]["plan_digest"]
+        == submission["preflight"]["approval_binding"]["plan_digest"]
+    )
+    service.close()
+
+
+def test_execute_approval_ids_create_distinct_contained_workspaces(tmp_path: Path) -> None:
+    configured = tmp_path / "configured-sandbox"
+    configured.mkdir()
+
+    first = BlueFireService._isolated_execution_sandbox(
+        configured,
+        {"approval_id": "approval-" + "a" * 32},
+    )
+    second = BlueFireService._isolated_execution_sandbox(
+        configured,
+        {"approval_id": "approval-" + "b" * 32},
+    )
+
+    assert first != second
+    assert first.parent == second.parent == configured / ".bluefire-executions"
+    assert first.is_dir() and second.is_dir()
+
+
+def test_execute_confirmation_becomes_a_consumed_exact_envelope_approval(
+    tmp_path: Path,
+) -> None:
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+    scenario = next(item for item in service._scenarios if item.id.endswith("research.chain.v1"))
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    autonomy, provider = service._ai_context({"autonomy": "off"})
+    orchestrator = Orchestrator(
+        service.registry,
+        service.store,
+        runner=object(),  # type: ignore[arg-type]
+    )
+
+    record = service._bind_and_consume_approval(
+        scenario=scenario,
+        profile=profile,
+        target_scope={"scope_refs": list(profile.scope)},
+        autonomy=autonomy,
+        ai_provider=provider,
+        approved_by="local-test-operator",
+        orchestrator=orchestrator,
+    )
+
+    assert record["status"] == "consumed"
+    assert record["approved_by"] == "local-test-operator"
+    assert record["profile_id"] == profile.id
+    assert record["nonce"]
+    persisted = service.product_store.get_approval_request(str(record["approval_id"]))
+    assert persisted["status"] == "consumed"
+    assert persisted["state_digest"].startswith("sha256:")
+    assert persisted["plan_digest"].startswith("sha256:")
+    assert persisted["target_scope_digest"].startswith("sha256:")
+    requested_at = datetime.fromisoformat(str(persisted["requested_at"]).replace("Z", "+00:00"))
+    expires_at = datetime.fromisoformat(str(persisted["expires_at"]).replace("Z", "+00:00"))
+    assert (expires_at - requested_at).total_seconds() >= max(
+        15 * 60,
+        profile.budgets.max_seconds + 60,
+    )
+
+
+def test_catalog_reports_provider_health_without_resolving_secret_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "catalog-test-key-value")  # pragma: allowlist secret
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+
+    catalog = service.catalog()
+
+    assert catalog["ai"]["autonomy_levels"] == ["off", "assist", "auto"]
+    remote = next(
+        provider
+        for provider in catalog["ai"]["providers"]
+        if provider["provider_id"] == "openai-responses.v1"
+    )
+    assert remote["health"]["credential_available"] is True
+    assert "catalog-test-key-value" not in json.dumps(  # pragma: allowlist secret
+        catalog, sort_keys=True
+    )
+
+
+def test_service_enumerates_all_checkout_and_packaged_scenarios_in_stable_order(
+    tmp_path: Path,
+) -> None:
+    expected = [
+        "scenario.ai-adaptive.safe-chain.v1",
+        "scenario.detection.regression.v1",
+        "scenario.linux-container.validation.v1",
+        "scenario.restricted.persistence-canary.v1",
+        "scenario.sandbox.research.chain.v1",
+        "scenario.windows.endpoint.validation.v1",
+    ]
+    checkout = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "checkout-runs")
+    packaged = BlueFireService(
+        project_root=tmp_path / "no-checkout",
+        config=load_config(ROOT / "config" / "bluefire.example.yaml"),
+        runs_dir=tmp_path / "packaged-runs",
+    )
+
+    assert [item["id"] for item in checkout.scenarios()["scenarios"]] == expected
+    assert [item["id"] for item in packaged.scenarios()["scenarios"]] == expected
+
+
+def test_service_rejects_duplicate_scenario_ids(tmp_path: Path) -> None:
+    scenario_root = tmp_path / "project" / "scenarios"
+    scenario_root.mkdir(parents=True)
+    source = ROOT / "scenarios" / "sandbox_research_chain.yaml"
+    shutil.copyfile(source, scenario_root / "first.yaml")
+    shutil.copyfile(source, scenario_root / "second.yaml")
+
+    with pytest.raises(ContractError, match="duplicate scenario ID"):
+        BlueFireService(
+            project_root=tmp_path / "project",
+            config=load_config(ROOT / "config" / "bluefire.example.yaml"),
+            runs_dir=tmp_path / "runs",
+        )
+
+
+@pytest.mark.parametrize("autonomy", ["off", "assist", "auto"])
+def test_preflight_records_strict_autonomy_and_provider_metadata(
+    tmp_path: Path, autonomy: str
+) -> None:
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+
+    report = service.preflight(
+        {
+            "scenario_id": "scenario.sandbox.research.chain.v1",
+            "mode": "simulate",
+            "autonomy": autonomy,
+            "ai_provider_id": "deterministic-offline.v1",
+            "target_scope": {"scope_refs": ["sandbox.workspace"]},
+        }
+    )
+
+    assert report["autonomy"] == autonomy
+    assert report["ai_enabled"] is (autonomy != "off")
+    assert report["ai_provider"]["provider_id"] == "deterministic-offline.v1"
+    assert report["ai_provider"]["trust_boundary"] == ("proposal_schema_then_deterministic_policy")
+    assert report["plan"]["autonomy"] == autonomy
+    assert report["plan"]["ai_provider"]["provider_id"] == "deterministic-offline.v1"
+
+
+def test_legacy_ai_flag_maps_to_assist_and_conflicts_are_rejected(tmp_path: Path) -> None:
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+    base = {
+        "scenario_id": "scenario.sandbox.research.chain.v1",
+        "mode": "simulate",
+        "target_scope": {"scope_refs": ["sandbox.workspace"]},
+    }
+
+    report = service.preflight({**base, "ai_enabled": True})
+    assert report["autonomy"] == "assist"
+
+    with pytest.raises(APIError) as exc_info:
+        service.preflight({**base, "autonomy": "auto", "ai_enabled": True})
+    assert exc_info.value.code == "autonomy_conflict"
+
+
+def test_simulate_run_and_replay_persist_autonomy_provider_and_lineage(tmp_path: Path) -> None:
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+    base = {
+        "scenario_id": "scenario.sandbox.research.chain.v1",
+        "mode": "simulate",
+        "ai_provider_id": "deterministic-offline.v1",
+        "target_scope": {"scope_refs": ["sandbox.workspace"]},
+    }
+
+    original = service.run({**base, "autonomy": "auto"})
+    replay = service.replay(
+        original["run_id"],
+        {
+            "autonomy": "assist",
+            "ai_provider_id": "deterministic-offline.v1",
+        },
+    )
+    parameter_replay = service.replay(
+        original["run_id"],
+        {"parameter_overrides": {"create_fixture": {"record_count": 3}}},
+    )
+
+    persisted = service.detail(original["run_id"])
+    assert original["autonomy"] == "auto"
+    assert original["ai_provider"]["provider_id"] == "deterministic-offline.v1"
+    assert persisted["plan"]["autonomy"] == "auto"
+    assert persisted["plan"]["ai_provider"]["provider_id"] == "deterministic-offline.v1"
+    assert replay["autonomy"] == "assist"
+    assert replay["replay"]["autonomy_from"] == "auto"
+    assert replay["replay"]["autonomy_to"] == "assist"
+    assert replay["replay"]["ai_provider_to"] == "deterministic-offline.v1"
+    create_step = next(
+        step for step in parameter_replay["scenario"]["steps"] if step["id"] == "create_fixture"
+    )
+    assert create_step["parameters"]["record_count"] == 3
+    assert parameter_replay["replay"]["parameter_overrides"] == {
+        "create_fixture": {"record_count": 3}
+    }
+    original_create = next(
+        step for step in persisted["scenario"]["steps"] if step["id"] == "create_fixture"
+    )
+    assert original_create["parameters"]["record_count"] == 8
+
+
+def test_remote_provider_selection_persists_only_the_credential_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret_value = "service-test-key-value"  # pragma: allowlist secret
+    monkeypatch.setenv("OPENAI_API_KEY", secret_value)
+
+    def refuse_network(*args: object, **kwargs: object) -> bytes:
+        raise AssertionError("service metadata recording must not invoke the model provider")
+
+    monkeypatch.setattr(UrllibAIJSONTransport, "post", refuse_network)
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+
+    result = service.run(
+        {
+            "scenario_id": "scenario.sandbox.research.chain.v1",
+            "mode": "simulate",
+            "autonomy": "off",
+            "ai_provider_id": "openai-responses.v1",
+            "target_scope": {"scope_refs": ["sandbox.workspace"]},
+        }
+    )
+
+    persisted = service.detail(result["run_id"])
+    serialized = json.dumps(persisted, sort_keys=True)
+    assert secret_value not in serialized
+    assert persisted["ai_provider"]["credential_reference"] == "OPENAI_API_KEY"
+    assert persisted["ai_provider"]["health"]["credential_available"] is True
+    assert persisted["ai_proposals"] == []

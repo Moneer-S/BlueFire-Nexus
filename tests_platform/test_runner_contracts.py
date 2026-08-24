@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -25,6 +25,13 @@ ROOT = Path(__file__).resolve().parents[1]
 def _execute_profile() -> RunnerProfile:
     config = load_config(ROOT / "config" / "bluefire.example.yaml")
     return next(profile for profile in config.runner_profiles if profile.mode.value == "execute")
+
+
+def _restricted_profile() -> RunnerProfile:
+    config = load_config(ROOT / "config" / "bluefire.example.yaml")
+    return next(
+        profile for profile in config.runner_profiles if profile.id == "sandbox-restricted-owned.v1"
+    )
 
 
 def _unsigned_profile(document: dict[str, object]) -> dict[str, object]:
@@ -75,6 +82,8 @@ def test_runner_profile_has_exact_shape_and_content_seal(tmp_path: Path) -> None
     assert document["allowed_actions"] == list(profile.enabled_actions)
     assert document["control_blocked_actions"] == []
     assert document["capabilities"] == [
+        "system_discovery",
+        "process_discovery",
         "filesystem_read",
         "filesystem_write",
         "process_spawn",
@@ -111,6 +120,28 @@ def test_profile_control_block_is_a_permitted_allowlist_override(tmp_path: Path)
 
     assert blocked_action in document["allowed_actions"]
     assert document["control_blocked_actions"] == [blocked_action]
+
+
+def test_restricted_profile_seals_the_dedicated_runner_capability(tmp_path: Path) -> None:
+    profile = _restricted_profile()
+    document = build_runner_profile(
+        profile,
+        sandbox_root=tmp_path / "sandbox",
+        platform=current_platform(),
+        filesystem_scope=("restricted/persistence-marker.json",),
+        network_destinations=(),
+    )
+
+    assert document["allowed_actions"] == [
+        "sandbox.restricted.persistence-marker.v1",
+        "sandbox.cleanup.v1",
+    ]
+    assert document["capabilities"] == [
+        "sandbox_restricted",
+        "filesystem_write",
+        "cleanup",
+    ]
+    assert document["max_safety_tier"] == "restricted"
     assert document["policy_digest"] == content_hash(_unsigned_profile(document))
 
 
@@ -133,7 +164,12 @@ def test_execution_manifest_exactly_binds_profile_approval_and_hash(tmp_path: Pa
         params={"path": "fixtures/input.txt", "content_template": "telemetry-seed"},
         filesystem_scope=("fixtures/input.txt",),
         evidence_refs=("evidence-parent",),
-        approved_by="operator@example.test",
+        approval_record={
+            "approved_by": "operator@example.test",
+            "approved_at": now.isoformat(),
+            "expires_at": (now + timedelta(minutes=15)).isoformat(),
+        },
+        timeout_ms=1_234,
         now=now,
     )
 
@@ -171,6 +207,7 @@ def test_execution_manifest_exactly_binds_profile_approval_and_hash(tmp_path: Pa
     assert manifest["requested_at"] == "2026-08-23T12:00:00Z"
     assert manifest["expires_at"] == "2026-08-23T12:05:00Z"
     assert manifest["evidence_refs"] == ["evidence-parent"]
+    assert manifest["limits"]["timeout_ms"] == 1_234
     assert manifest["target_scope"] == {
         "filesystem": ["fixtures/input.txt"],
         "network": [],
@@ -187,6 +224,50 @@ def test_execution_manifest_exactly_binds_profile_approval_and_hash(tmp_path: Pa
     mutated = copy.deepcopy(manifest)
     mutated["params"]["content_template"] = "different"
     assert seal_manifest(mutated)["request_hash"] != manifest["request_hash"]
+
+
+def test_manifest_timestamps_match_rust_chrono_hash_normalization(tmp_path: Path) -> None:
+    profile = _execute_profile()
+    runner_profile = build_runner_profile(
+        profile,
+        sandbox_root=tmp_path / "sandbox",
+        platform=current_platform(),
+    )
+    action = load_builtin_registry().get_action("sandbox.fixture.transform.v1")
+    now = datetime(2026, 8, 23, 12, 0, 0, 123_000, tzinfo=timezone.utc)
+
+    manifest = build_execution_manifest(
+        run_id="run-20260823T120000Z-0123456789abcdef",
+        step_id="transform_fixture",
+        behavior_id=action.id,
+        action=action,
+        runner_profile=runner_profile,
+        params={
+            "input": "fixtures/input.txt",
+            "output": "fixtures/transformed.txt",
+            "transform": "uppercase-ascii",
+        },
+        filesystem_scope=("fixtures/input.txt", "fixtures/transformed.txt"),
+        approval_record={
+            "approved_by": "operator@example.test",
+            "approved_at": "2026-08-23T07:00:00.123000-05:00",
+            "expires_at": "2026-08-23T12:15:00.000000Z",
+        },
+        now=now,
+    )
+
+    assert manifest["requested_at"] == "2026-08-23T12:00:00.123Z"
+    assert manifest["expires_at"] == "2026-08-23T12:05:00.123Z"
+    assert manifest["approval"]["approved_at"] == "2026-08-23T12:00:00.123Z"
+    assert manifest["approval"]["expires_at"] == "2026-08-23T12:15:00Z"
+    assert manifest["request_hash"] == content_hash(_unsigned_manifest(manifest))
+
+    padded = copy.deepcopy(manifest)
+    padded["requested_at"] = "2026-08-23T12:00:00.123000Z"
+    padded["expires_at"] = "2026-08-23T12:05:00.123000Z"
+    padded["approval"]["approved_at"] = "2026-08-23T12:00:00.123000Z"
+    padded["approval"]["expires_at"] = "2026-08-23T12:15:00.000000Z"
+    assert seal_manifest(padded) == manifest
 
 
 @pytest.mark.parametrize(
@@ -224,5 +305,26 @@ def test_sealers_reject_unsupported_schema_and_non_object_approval() -> None:
             {
                 "schema_version": "bluefire.runner-manifest.v1",
                 "approval": "operator",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "2026-08-23T12:00:00",
+        "2026-08-23 12:00:00Z",
+        "2026-08-23T12:00:00.1234567Z",
+        "2026-08-23T12:00:00+00:00:30",
+    ],
+)
+def test_manifest_sealing_rejects_noncanonical_timestamp_grammars(timestamp: str) -> None:
+    with pytest.raises(RunnerContractError, match="RFC 3339"):
+        seal_manifest(
+            {
+                "schema_version": "bluefire.runner-manifest.v1",
+                "requested_at": timestamp,
+                "expires_at": "2026-08-23T12:05:00Z",
+                "approval": None,
             }
         )

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterable, Mapping
 
-from .config import RunnerProfile
+from .config import AutonomyLevel, RunnerProfile
 from .contracts import (
     ExecutionMode,
     ExecutionState,
@@ -22,6 +22,23 @@ from .util import content_hash
 
 class PlannerError(ValueError):
     pass
+
+
+def _resolve_autonomy(
+    autonomy: AutonomyLevel | str | None,
+    ai_enabled: bool | None,
+) -> AutonomyLevel:
+    if ai_enabled is not None and not isinstance(ai_enabled, bool):
+        raise PlannerError("legacy ai_enabled must be a boolean")
+    if autonomy is None:
+        return AutonomyLevel.ASSIST if ai_enabled else AutonomyLevel.OFF
+    try:
+        resolved = autonomy if isinstance(autonomy, AutonomyLevel) else AutonomyLevel(autonomy)
+    except ValueError as exc:
+        raise PlannerError("autonomy must be off, assist, or auto") from exc
+    if ai_enabled is not None and ai_enabled != (resolved is not AutonomyLevel.OFF):
+        raise PlannerError("autonomy conflicts with legacy ai_enabled")
+    return resolved
 
 
 class ExecutionDisposition(str, Enum):
@@ -66,11 +83,16 @@ class ExecutionPlan:
     scenario_id: str
     objective: str
     mode: ExecutionMode
-    ai_enabled: bool
+    autonomy: AutonomyLevel
+    ai_provider: Mapping[str, Any]
     runner_profile_id: str | None
     scenario_digest: str
     steps: tuple[PlanStep, ...]
     edges: tuple[Mapping[str, str], ...]
+
+    @property
+    def ai_enabled(self) -> bool:
+        return self.autonomy is not AutonomyLevel.OFF
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +101,8 @@ class ExecutionPlan:
             "objective": self.objective,
             "mode": self.mode.value,
             "ai_enabled": self.ai_enabled,
+            "autonomy": self.autonomy.value,
+            "ai_provider": dict(self.ai_provider),
             "runner_profile_id": self.runner_profile_id,
             "scenario_digest": self.scenario_digest,
             "steps": [step.to_dict() for step in self.steps],
@@ -148,50 +172,72 @@ class DeterministicPlanner:
         *,
         mode: ExecutionMode = ExecutionMode.SIMULATE,
         profile: RunnerProfile | None = None,
-        ai_enabled: bool = False,
+        autonomy: AutonomyLevel | str | None = None,
+        ai_provider: Mapping[str, Any] | None = None,
+        ai_enabled: bool | None = None,
+        action_implementations: Mapping[str, str] | None = None,
     ) -> ExecutionPlan:
+        resolved_autonomy = _resolve_autonomy(autonomy, ai_enabled)
         self.registry.validate_scenario(scenario)
         if mode is ExecutionMode.EXECUTE and profile is None:
             raise PlannerError("Execute requires an explicit runner profile")
         if profile is not None and profile.mode is not mode:
             raise PlannerError("runner profile mode does not match the requested mode")
-        steps: list[PlanStep] = []
-        for scenario_step in scenario.steps:
-            behavior = self.registry.get_behavior(scenario_step.behavior_id)
-            action_id: str | None = None
-            if mode is ExecutionMode.EXECUTE:
-                if behavior.execution_state is not ExecutionState.ACTION:
-                    raise PlannerError(f"behavior {behavior.id} is not available for Execute")
-                action_id = self._select_action(behavior.action_ids, profile)
-            elif behavior.simulation_id is None:
-                raise PlannerError(f"behavior {behavior.id} has no simulation adapter")
-            steps.append(
-                PlanStep(
-                    step_id=scenario_step.id,
-                    behavior_id=behavior.id,
-                    action_id=action_id,
-                    simulation_id=behavior.simulation_id,
-                    parameters=self._parameters_with_defaults(scenario_step, behavior.parameters),
-                    inputs={
-                        name: binding.to_dict() for name, binding in scenario_step.inputs.items()
-                    },
-                    expected_outputs=tuple(spec.name for spec in behavior.outputs),
-                    required_capabilities=behavior.capabilities,
-                    safety_tier=behavior.safety_tier,
-                    alternates=scenario_step.alternates,
-                )
+        selections = dict(action_implementations or {})
+        if mode is ExecutionMode.SIMULATE and selections:
+            raise PlannerError("Simulate does not accept action implementation selections")
+        unknown_steps = sorted(set(selections) - {step.id for step in scenario.steps})
+        if unknown_steps:
+            raise PlannerError("unknown action implementation step: " + ", ".join(unknown_steps))
+        steps = [
+            self._compile_step(
+                scenario_step,
+                behavior_id=scenario_step.behavior_id,
+                mode=mode,
+                profile=profile,
+                action_id=selections.get(scenario_step.id),
             )
+            for scenario_step in scenario.steps
+        ]
         scenario_snapshot = scenario.to_dict()
         return ExecutionPlan(
             schema_version="bluefire.plan.v1",
             scenario_id=scenario.id,
             objective=scenario.purpose,
             mode=mode,
-            ai_enabled=ai_enabled,
+            autonomy=resolved_autonomy,
+            ai_provider=dict(ai_provider or {}),
             runner_profile_id=profile.id if profile else None,
             scenario_digest=content_hash(scenario_snapshot),
             steps=tuple(steps),
             edges=tuple(edge.to_dict() for edge in scenario.edges),
+        )
+
+    def compile_registered_alternate(
+        self,
+        scenario_step: ScenarioStep,
+        *,
+        behavior_id: str,
+        mode: ExecutionMode,
+        profile: RunnerProfile | None,
+    ) -> PlanStep:
+        """Compile one graph-registered alternate through normal action selection."""
+
+        if behavior_id not in scenario_step.alternates:
+            raise PlannerError("AI behavior selection is not a registered alternate")
+        baseline = self.registry.get_behavior(scenario_step.behavior_id)
+        alternate = self.registry.get_behavior(behavior_id)
+        if alternate.io_signature() != baseline.io_signature():
+            raise PlannerError("AI behavior selection is not contract-compatible")
+        alternate.validate_parameters(
+            scenario_step.parameters,
+            f"step {scenario_step.id} alternate {behavior_id}.parameters",
+        )
+        return self._compile_step(
+            scenario_step,
+            behavior_id=behavior_id,
+            mode=mode,
+            profile=profile,
         )
 
     def decide_next(
@@ -286,6 +332,48 @@ class DeterministicPlanner:
             if action_id in profile.enabled_actions:
                 return action_id
         raise PlannerError("no behavior action is enabled by the selected runner profile")
+
+    def _compile_step(
+        self,
+        scenario_step: ScenarioStep,
+        *,
+        behavior_id: str,
+        mode: ExecutionMode,
+        profile: RunnerProfile | None,
+        action_id: str | None = None,
+    ) -> PlanStep:
+        behavior = self.registry.get_behavior(behavior_id)
+        selected_action_id: str | None = None
+        if mode is ExecutionMode.EXECUTE:
+            if behavior.execution_state is not ExecutionState.ACTION:
+                raise PlannerError(f"behavior {behavior.id} is not available for Execute")
+            if action_id is not None:
+                if action_id not in behavior.action_ids:
+                    raise PlannerError(
+                        f"action {action_id} is not registered to behavior {behavior.id}"
+                    )
+                self.registry.get_action(action_id)
+                if profile is None or action_id not in profile.enabled_actions:
+                    raise PlannerError(
+                        f"action {action_id} is disabled by the selected runner profile"
+                    )
+                selected_action_id = action_id
+            else:
+                selected_action_id = self._select_action(behavior.action_ids, profile)
+        elif behavior.simulation_id is None:
+            raise PlannerError(f"behavior {behavior.id} has no simulation adapter")
+        return PlanStep(
+            step_id=scenario_step.id,
+            behavior_id=behavior.id,
+            action_id=selected_action_id,
+            simulation_id=behavior.simulation_id,
+            parameters=self._parameters_with_defaults(scenario_step, behavior.parameters),
+            inputs={name: binding.to_dict() for name, binding in scenario_step.inputs.items()},
+            expected_outputs=tuple(spec.name for spec in behavior.outputs),
+            required_capabilities=behavior.capabilities,
+            safety_tier=behavior.safety_tier,
+            alternates=scenario_step.alternates,
+        )
 
     @staticmethod
     def _parameters_with_defaults(step: ScenarioStep, specs: Iterable[Any]) -> dict[str, Any]:

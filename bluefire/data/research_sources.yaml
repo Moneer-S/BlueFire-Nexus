@@ -1,0 +1,73 @@
+schema_version: bluefire.research-registry.v1
+sources:
+  - schema_version: bluefire.research-source.v1
+    id: research.mitre-attack-enterprise.v1
+    name: MITRE ATT&CK Enterprise STIX data
+    source_type: dataset
+    authority: The MITRE Corporation
+    reference_url: https://github.com/mitre-attack/attack-stix-data/blob/master/enterprise-attack/enterprise-attack-19.1.json
+    version: "19.1"
+    pin: enterprise-attack-19.1.json
+    retrieved_at: "2026-08-24"
+    license: CC-BY-4.0
+    license_url: https://github.com/mitre-attack/attack-stix-data/blob/master/LICENSE.txt
+    license_review: reviewed
+    relationship: comparative
+    uses: [behavior_mapping, research_reference]
+    cache_policy: external_only
+    executable_content: false
+    notes: Versioned STIX data is referenced for behavior semantics and attribution; no ATT&CK dataset is vendored.
+
+  - schema_version: bluefire.research-source.v1
+    id: research.sigma-specification.v1
+    name: Sigma specification
+    source_type: documentation
+    authority: SigmaHQ
+    reference_url: https://github.com/SigmaHQ/sigma-specification/tree/v2.1.0
+    version: 2.1.0
+    pin: v2.1.0
+    retrieved_at: "2026-08-24"
+    license: LGPL-2.1-only
+    license_url: https://github.com/SigmaHQ/sigma-specification/blob/v2.1.0/LICENSE
+    license_review: reviewed
+    relationship: inspired
+    uses: [parser_validation, research_reference]
+    cache_policy: metadata_only
+    executable_content: false
+    notes: Candidate structure follows the published specification; rendered output is never treated as validated without parser results.
+
+  - schema_version: bluefire.research-source.v1
+    id: research.pysigma.v1
+    name: pySigma
+    source_type: software
+    authority: SigmaHQ
+    reference_url: https://github.com/SigmaHQ/pySigma/tree/v1.4.0
+    version: 1.4.0
+    pin: v1.4.0
+    retrieved_at: "2026-08-24"
+    license: LGPL-2.1-only
+    license_url: https://github.com/SigmaHQ/pySigma/blob/v1.4.0/LICENSE
+    license_review: reviewed
+    relationship: imported
+    uses: [parser_validation]
+    cache_policy: external_only
+    executable_content: true
+    notes: The pinned Python package is an optional validation dependency; no source tree or rule corpus is vendored.
+
+  - schema_version: bluefire.research-source.v1
+    id: research.yara-python.v1
+    name: yara-python
+    source_type: software
+    authority: VirusTotal
+    reference_url: https://github.com/VirusTotal/yara-python/tree/v4.5.4
+    version: 4.5.4
+    pin: v4.5.4
+    retrieved_at: "2026-08-24"
+    license: Apache-2.0
+    license_url: https://github.com/VirusTotal/yara-python/blob/v4.5.4/LICENSE
+    license_review: reviewed
+    relationship: imported
+    uses: [parser_validation]
+    cache_policy: external_only
+    executable_content: true
+    notes: The pinned Python binding compiles generated YARA candidates with includes disabled; no public YARA corpus is vendored.

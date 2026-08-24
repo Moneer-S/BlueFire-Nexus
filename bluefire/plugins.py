@@ -147,6 +147,11 @@ class PluginManifest:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        provenance = self.provenance.to_dict()
+        if not provenance.get("notes"):
+            # ``notes`` is optional in the strict source contract; omitting an
+            # absent value keeps the canonical manifest round-trippable.
+            provenance.pop("notes", None)
         return {
             "schema_version": self.schema_version,
             "id": self.id,
@@ -156,7 +161,7 @@ class PluginManifest:
             "trust": self.trust.value,
             "integrity": self.integrity.to_dict(),
             "license": self.license,
-            "provenance": self.provenance.to_dict(),
+            "provenance": provenance,
             "permissions": list(self.permissions),
             "capabilities": list(self.capabilities),
             "behavior_ids": list(self.behavior_ids),

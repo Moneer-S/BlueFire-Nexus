@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .api import APIError, serve
-from .config import RunnerProfile
+from .config import AutonomyLevel, RunnerProfile
 from .contracts import ExecutionMode, load_scenario
 from .service import BlueFireService
 
@@ -26,7 +26,7 @@ def _parser() -> argparse.ArgumentParser:
     scenario = commands.add_parser("scenario", help="Validate, preview, or run a scenario")
     scenario_commands = scenario.add_subparsers(dest="scenario_command", required=True)
     validate = scenario_commands.add_parser("validate", help="Validate a scenario graph")
-    validate.add_argument("path", type=Path)
+    _scenario_reference_arguments(validate)
     preview = scenario_commands.add_parser("preview", help="Resolve a scenario preflight")
     _scenario_request_arguments(preview, include_approval=True)
     run = scenario_commands.add_parser("run", help="Run a scenario")
@@ -54,8 +54,17 @@ def _parser() -> argparse.ArgumentParser:
     replay.add_argument("--swap-step-id")
     replay.add_argument("--swap-behavior-id")
     replay.add_argument("--profile")
+    replay.add_argument("--autonomy", choices=[level.value for level in AutonomyLevel])
+    replay.add_argument("--ai-provider")
     replay.add_argument("--ai-enabled", action=argparse.BooleanOptionalAction, default=None)
+    replay.add_argument("--scope-ref", action="append", default=[])
     replay.add_argument("--defense-change")
+    replay.add_argument(
+        "--action-implementation",
+        action="append",
+        default=[],
+        metavar="STEP_ID=ACTION_ID",
+    )
     replay.add_argument("--approve", action="store_true")
     replay.add_argument("--approved-by", default="local-operator")
 
@@ -82,13 +91,26 @@ def _scenario_request_arguments(
     *,
     include_approval: bool,
 ) -> None:
-    parser.add_argument("path", type=Path)
+    _scenario_reference_arguments(parser)
     parser.add_argument(
         "--mode", choices=[mode.value for mode in ExecutionMode], default="simulate"
     )
     parser.add_argument("--profile")
-    parser.add_argument("--ai-enabled", action="store_true")
+    parser.add_argument("--autonomy", choices=[level.value for level in AutonomyLevel])
+    parser.add_argument("--ai-provider")
+    parser.add_argument(
+        "--ai-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Legacy alias: true maps to assist and false maps to off",
+    )
     parser.add_argument("--scope-ref", action="append", default=["sandbox.workspace"])
+    parser.add_argument(
+        "--action-implementation",
+        action="append",
+        default=[],
+        metavar="STEP_ID=ACTION_ID",
+    )
     if include_approval:
         parser.add_argument("--approve", action="store_true")
         parser.add_argument("--approved-by", default="local-operator")
@@ -99,17 +121,42 @@ def _service(args: argparse.Namespace) -> BlueFireService:
 
 
 def _scenario_payload(args: argparse.Namespace) -> dict[str, Any]:
-    scenario = load_scenario(args.path)
     payload: dict[str, Any] = {
-        "scenario": scenario.to_dict(),
+        **_scenario_reference_payload(args),
         "mode": args.mode,
-        "ai_enabled": bool(args.ai_enabled),
         "runner_profile_id": args.profile,
         "target_scope": {"scope_refs": list(dict.fromkeys(args.scope_ref))},
     }
+    if args.autonomy is not None:
+        payload["autonomy"] = args.autonomy
+    if args.ai_enabled is not None:
+        payload["ai_enabled"] = args.ai_enabled
+    if args.ai_provider is not None:
+        payload["ai_provider_id"] = args.ai_provider
+    action_implementations = _action_implementation_arguments(args.action_implementation)
+    if action_implementations:
+        payload["action_implementations"] = action_implementations
     if args.approve:
         payload["approval"] = {"confirmed": True, "approved_by": args.approved_by}
     return payload
+
+
+def _scenario_reference_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("path", type=Path, nargs="?")
+    parser.add_argument(
+        "--scenario-id",
+        help="Canonical ID of a scenario bundled with BlueFire",
+    )
+
+
+def _scenario_reference_payload(args: argparse.Namespace) -> dict[str, Any]:
+    path = args.path
+    scenario_id = args.scenario_id
+    if (path is None) == (scenario_id is None):
+        raise ValueError("select exactly one scenario path or --scenario-id")
+    if scenario_id is not None:
+        return {"scenario_id": scenario_id}
+    return {"scenario": load_scenario(path).to_dict()}
 
 
 def _json(value: Any) -> None:
@@ -120,8 +167,7 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
     service = _service(args)
     if args.command == "scenario":
         if args.scenario_command == "validate":
-            scenario = load_scenario(args.path)
-            return service.validate({"scenario": scenario.to_dict()})
+            return service.validate(_scenario_reference_payload(args))
         payload = _scenario_payload(args)
         if args.scenario_command == "preview":
             return service.preflight(payload)
@@ -148,9 +194,19 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
             "swap_step_id": args.swap_step_id,
             "swap_behavior_id": args.swap_behavior_id,
             "runner_profile_id": args.profile,
-            "ai_enabled": args.ai_enabled,
             "defense_change": args.defense_change,
         }
+        if args.autonomy is not None:
+            replay_payload["autonomy"] = args.autonomy
+        if args.ai_enabled is not None:
+            replay_payload["ai_enabled"] = args.ai_enabled
+        if args.ai_provider is not None:
+            replay_payload["ai_provider_id"] = args.ai_provider
+        if args.scope_ref:
+            replay_payload["target_scope"] = {"scope_refs": list(dict.fromkeys(args.scope_ref))}
+        action_implementations = _action_implementation_arguments(args.action_implementation)
+        if action_implementations:
+            replay_payload["action_implementations"] = action_implementations
         if args.approve:
             replay_payload["approval"] = {
                 "confirmed": True,
@@ -198,6 +254,16 @@ def _execute_profile(service: BlueFireService, profile_id: str | None) -> Runner
         choices = ", ".join(profile.id for profile in service.config.runner_profiles)
         raise ValueError(f"select one Execute profile with --profile; available: {choices}")
     return profiles[0]
+
+
+def _action_implementation_arguments(values: Sequence[str]) -> Mapping[str, str]:
+    result: dict[str, str] = {}
+    for value in values:
+        step_id, separator, action_id = value.partition("=")
+        if not separator or not step_id or not action_id or step_id in result:
+            raise ValueError("--action-implementation requires unique STEP_ID=ACTION_ID values")
+        result[step_id] = action_id
+    return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:

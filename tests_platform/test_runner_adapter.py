@@ -13,18 +13,25 @@ ACTION_IDS = {
     "sandbox.fixture.transform.v1",
     "sandbox.discovery.list.v1",
     "sandbox.discovery.metadata.v1",
+    "endpoint.discovery.system.v1",
+    "endpoint.discovery.processes.v1",
+    "sandbox.discovery.recursive.v1",
+    "sandbox.archive.tar.v1",
     "sandbox.collection.stage.v1",
     "sandbox.network.loopback.v1",
     "sandbox.export.local.v1",
+    "sandbox.restricted.persistence-marker.v1",
     "sandbox.cleanup.v1",
 }
 CONTROLLED_ACTIONS = {
+    "sandbox.archive.tar.v1",
     "sandbox.collection.stage.v1",
     "sandbox.network.loopback.v1",
     "sandbox.export.local.v1",
 }
 RECEIPT_CREATE = "a" * 64
 RECEIPT_STAGE = "b" * 64
+RECEIPT_RESTRICTED = "c" * 64
 
 
 def _step(action_id: str, parameters: Mapping[str, Any] | None = None) -> PlanStep:
@@ -37,7 +44,11 @@ def _step(action_id: str, parameters: Mapping[str, Any] | None = None) -> PlanSt
         inputs={},
         expected_outputs=(),
         required_capabilities=(),
-        safety_tier=(SafetyTier.CONTROLLED if action_id in CONTROLLED_ACTIONS else SafetyTier.SAFE),
+        safety_tier=(
+            SafetyTier.RESTRICTED
+            if action_id == "sandbox.restricted.persistence-marker.v1"
+            else SafetyTier.CONTROLLED if action_id in CONTROLLED_ACTIONS else SafetyTier.SAFE
+        ),
         alternates=(),
     )
 
@@ -96,6 +107,53 @@ def _step(action_id: str, parameters: Mapping[str, Any] | None = None) -> PlanSt
             id="discovery-metadata",
         ),
         pytest.param(
+            "endpoint.discovery.system.v1",
+            {},
+            {},
+            (),
+            AdaptedAction(params={}, filesystem_scope=()),
+            id="system-discovery",
+        ),
+        pytest.param(
+            "endpoint.discovery.processes.v1",
+            {"record_limit": 7},
+            {},
+            (),
+            AdaptedAction(params={"max_entries": 7}, filesystem_scope=()),
+            id="process-discovery",
+        ),
+        pytest.param(
+            "sandbox.discovery.recursive.v1",
+            {"record_limit": 9, "max_depth": 4},
+            {"workspace": {"root": "fixtures", "fixture_path": "fixtures/input.txt"}},
+            (),
+            AdaptedAction(
+                params={"path": "fixtures", "max_entries": 9, "max_depth": 4},
+                filesystem_scope=("fixtures",),
+            ),
+            id="recursive-discovery",
+        ),
+        pytest.param(
+            "sandbox.archive.tar.v1",
+            {},
+            {
+                "records": [
+                    {"path": "fixtures/input.txt", "kind": "file"},
+                    {"path": "fixtures/nested", "kind": "directory"},
+                ]
+            },
+            (),
+            AdaptedAction(
+                params={
+                    "inputs": ["fixtures/input.txt"],
+                    "destination": "staged/discovery.tar",
+                },
+                filesystem_scope=("fixtures/input.txt", "staged/discovery.tar"),
+                observable_paths=("staged/discovery.tar",),
+            ),
+            id="archive-tar",
+        ),
+        pytest.param(
             "sandbox.collection.stage.v1",
             {"bundle_format": "jsonl"},
             {
@@ -148,6 +206,18 @@ def _step(action_id: str, parameters: Mapping[str, Any] | None = None) -> PlanSt
                 observable_paths=("exports/bundle.bin",),
             ),
             id="export-local",
+        ),
+        pytest.param(
+            "sandbox.restricted.persistence-marker.v1",
+            {"label": "persistence_detection_canary"},
+            {},
+            (),
+            AdaptedAction(
+                params={"label": "persistence_detection_canary"},
+                filesystem_scope=("restricted/persistence-marker.json",),
+                observable_paths=("restricted/persistence-marker.json",),
+            ),
+            id="restricted-persistence-marker",
         ),
         pytest.param(
             "sandbox.cleanup.v1",
@@ -244,4 +314,61 @@ def test_stage_and_cleanup_require_runner_owned_inputs() -> None:
             _step("sandbox.cleanup.v1"),
             bound_inputs={},
             receipt_ids=("untrusted-receipt",),
+        )
+
+
+def test_new_action_outputs_are_typed_and_archive_accepts_only_file_records() -> None:
+    adapter = RunnerActionAdapter()
+    recursive_step = _step("sandbox.discovery.recursive.v1")
+    records = adapter.logical_outputs(
+        recursive_step,
+        bound_inputs={"workspace": {"root": "fixtures"}},
+        runner_output={
+            "entries": [
+                {"path": "fixtures/a.txt", "kind": "file", "size": 3, "depth": 1},
+                {"path": "fixtures/nested", "kind": "directory", "size": 0, "depth": 1},
+            ]
+        },
+        receipt_ids=(),
+    )["records"]
+    assert records[0]["type"] == "artifact.sandbox.filesystem.record.v1"
+
+    archive = adapter.adapt(
+        _step("sandbox.archive.tar.v1"),
+        bound_inputs={"records": records},
+        receipt_ids=(),
+    )
+    assert archive.params["inputs"] == ["fixtures/a.txt"]
+    typed = adapter.logical_outputs(
+        _step("sandbox.archive.tar.v1"),
+        bound_inputs={"records": records},
+        runner_output={"artifact": "staged/discovery.tar", "sha256": "sha256:value"},
+        receipt_ids=(RECEIPT_STAGE,),
+    )
+    assert typed["bundle"]["type"] == "artifact.sandbox.archive.v1"
+
+    restricted = adapter.logical_outputs(
+        _step("sandbox.restricted.persistence-marker.v1"),
+        bound_inputs={},
+        runner_output={
+            "artifact": "restricted/persistence-marker.json",
+            "sha256": "sha256:value",
+        },
+        receipt_ids=(RECEIPT_RESTRICTED,),
+    )
+    assert restricted["workspace"]["root"] == "restricted"
+    assert restricted["marker"] == {
+        "type": "artifact.sandbox.restricted-marker.v1",
+        "path": "restricted/persistence-marker.json",
+        "sha256": "sha256:value",
+        "receipt_ids": [RECEIPT_RESTRICTED],
+    }
+
+
+def test_restricted_marker_refuses_unreviewed_labels() -> None:
+    with pytest.raises(RunnerAdapterError, match="label is not reviewed"):
+        RunnerActionAdapter().adapt(
+            _step("sandbox.restricted.persistence-marker.v1", {"label": "custom-path"}),
+            bound_inputs={},
+            receipt_ids=(),
         )

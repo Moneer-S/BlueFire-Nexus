@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from bluefire.config import BlueFireConfig, ConfigError, EnvironmentType, load_config
+from bluefire.config import (
+    AIProviderKind,
+    AutonomyLevel,
+    BlueFireConfig,
+    ConfigError,
+    EnvironmentType,
+    load_config,
+)
 from bluefire.contracts import ContractError, ExecutionMode
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,19 +38,52 @@ def test_environment_values_remain_unresolved_references(monkeypatch: pytest.Mon
     assert "sensitive-local-value" not in repr(config)
 
 
-def test_ai_flag_is_independent_of_mode() -> None:
+def test_ai_autonomy_is_independent_of_mode() -> None:
     raw = load_config(CONFIG_PATH).to_dict()
-    raw["ai"]["enabled"] = True
+    raw["ai"]["autonomy"] = "auto"
     simulated = BlueFireConfig.from_mapping(raw)
     assert simulated.mode is ExecutionMode.SIMULATE
+    assert simulated.autonomy is AutonomyLevel.AUTO
     assert simulated.ai_enabled is True
 
     raw["mode"] = "execute"
     raw["active_profile"] = "sandbox-execute.v1"
-    raw["ai"]["enabled"] = False
+    raw["ai"]["autonomy"] = "off"
     executed = BlueFireConfig.from_mapping(raw)
     assert executed.mode is ExecutionMode.EXECUTE
+    assert executed.autonomy is AutonomyLevel.OFF
     assert executed.ai_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("enabled", "expected"),
+    [(False, AutonomyLevel.OFF), (True, AutonomyLevel.ASSIST)],
+)
+def test_legacy_ai_enabled_migrates_to_safe_autonomy(
+    enabled: bool, expected: AutonomyLevel
+) -> None:
+    raw = load_config(CONFIG_PATH).to_dict()
+    raw["ai"] = {"enabled": enabled}
+    parsed = BlueFireConfig.from_mapping(raw)
+
+    assert parsed.autonomy is expected
+    assert parsed.ai.provider().kind is AIProviderKind.DETERMINISTIC
+    assert "enabled" not in parsed.to_dict()["ai"]
+
+
+def test_ai_provider_configuration_is_strict() -> None:
+    raw = load_config(CONFIG_PATH).to_dict()
+    raw["ai"]["autonomy"] = "advisory"
+    with pytest.raises(ContractError, match="must be one of: off, assist, auto"):
+        BlueFireConfig.from_mapping(raw)
+
+    raw = load_config(CONFIG_PATH).to_dict()
+    remote = next(
+        provider for provider in raw["ai"]["providers"] if provider["kind"] == "openai_responses"
+    )
+    remote["endpoint"] = "http://example.test/v1/responses"
+    with pytest.raises(ConfigError, match="must use HTTPS"):
+        BlueFireConfig.from_mapping(raw)
 
 
 def test_execute_profile_requires_approval() -> None:
@@ -54,6 +94,23 @@ def test_execute_profile_requires_approval() -> None:
     execute_profile["approval_required"] = False
     with pytest.raises(ConfigError, match="must require approval"):
         BlueFireConfig.from_mapping(raw)
+
+
+def test_restricted_profile_is_narrow_and_requires_exact_approval() -> None:
+    config = load_config(CONFIG_PATH)
+    profile = next(
+        item for item in config.runner_profiles if item.id == "sandbox-restricted-owned.v1"
+    )
+
+    assert profile.mode is ExecutionMode.EXECUTE
+    assert profile.approval_required is True
+    assert tuple(tier.value for tier in profile.safety_tiers) == ("safe", "restricted")
+    assert profile.scope == ("sandbox.workspace",)
+    assert profile.network_allowlist == ()
+    assert profile.enabled_actions == (
+        "sandbox.restricted.persistence-marker.v1",
+        "sandbox.cleanup.v1",
+    )
 
 
 def test_config_rejects_unknown_fields_and_allows_explicit_block_override() -> None:

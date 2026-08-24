@@ -16,6 +16,7 @@ from typing import Any, Iterable, Mapping
 from .util import canonical_json_bytes, content_hash, file_hash, json_clone
 
 RUN_ID_RE = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
+RECOVERY_ID_RE = re.compile(r"^recovery-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
 SAFE_BUNDLE_NAMES = frozenset(
     {
         "scenario.json",
@@ -129,14 +130,17 @@ class RunStore:
         run_path = self._run_path(run_id, must_exist=True)
         target = self._contained_child(run_path, "events.jsonl")
         with self._lock(run_id):
-            sequence = self._last_event_sequence(target) + 1
-            row = {
+            previous_sequence, previous_hash = self._last_event_state(target)
+            sequence = previous_sequence + 1
+            body = {
                 "schema_version": "1.0",
                 "sequence": sequence,
                 "timestamp": utc_now(),
                 "event_type": event_type,
                 "data": json_clone(data),
+                "previous_event_hash": previous_hash,
             }
+            row = {**body, "event_hash": content_hash(body)}
             with target.open("ab") as handle:
                 handle.write(canonical_json_bytes(row) + b"\n")
                 handle.flush()
@@ -215,19 +219,83 @@ class RunStore:
             raise RunStoreError(f"{name} must contain a JSON object")
         return value
 
-    def read_events(self, run_id: str) -> list[Mapping[str, Any]]:
+    def read_events(
+        self,
+        run_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 10_000,
+    ) -> list[Mapping[str, Any]]:
+        if isinstance(after_sequence, bool) or after_sequence < 0:
+            raise RunStoreError("event cursor cannot be negative")
+        if isinstance(limit, bool) or not 1 <= limit <= 10_000:
+            raise RunStoreError("event page limit must be between 1 and 10000")
         path = self._contained_child(self._run_path(run_id, must_exist=True), "events.jsonl")
         if not path.exists():
             return []
         rows: list[Mapping[str, Any]] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            value = json.loads(line)
-            if not isinstance(value, dict):
-                raise RunStoreError("event stream contains a non-object row")
-            rows.append(value)
+        previous_hash: str | None = None
+        expected_sequence = 1
+        try:
+            handle = path.open("r", encoding="utf-8")
+        except OSError as exc:
+            raise RunStoreError("event stream could not be read") from exc
+        with handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                value = self._validated_event_row(
+                    line,
+                    expected_sequence=expected_sequence,
+                    previous_hash=previous_hash,
+                )
+                previous_hash = str(value["event_hash"])
+                expected_sequence += 1
+                if int(value["sequence"]) > after_sequence and len(rows) < limit:
+                    rows.append(value)
         return rows
 
+    def read_event_page(
+        self,
+        run_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 250,
+    ) -> Mapping[str, Any]:
+        if isinstance(limit, bool) or not 1 <= limit <= 1_000:
+            raise RunStoreError("event page limit must be between 1 and 1000")
+        rows = self.read_events(
+            run_id,
+            after_sequence=after_sequence,
+            limit=limit + 1,
+        )
+        has_more = len(rows) > limit
+        items = rows[:limit]
+        next_sequence = int(items[-1]["sequence"]) if items else after_sequence
+        return {
+            "schema_version": "bluefire.event-page.v1",
+            "run_id": run_id,
+            "after_sequence": after_sequence,
+            "next_sequence": next_sequence,
+            "has_more": has_more,
+            "items": items,
+        }
+
     def get_run(self, run_id: str) -> Mapping[str, Any]:
+        run_path = self._run_path(run_id, must_exist=True)
+        manifest_path = self._contained_child(run_path, "manifest.json")
+        manifest: Mapping[str, Any] | None = None
+        if manifest_path.exists():
+            integrity = self.validate_bundle(run_id)
+            if not integrity.get("valid"):
+                mismatches = ", ".join(str(name) for name in integrity.get("mismatches", []))
+                detail = f": {mismatches}" if mismatches else ""
+                raise RunStoreError(f"finalized run bundle failed integrity validation{detail}")
+            manifest_value = integrity.get("manifest")
+            if not isinstance(manifest_value, Mapping):
+                raise RunStoreError("bundle integrity validation returned no manifest")
+            manifest = manifest_value
+
         result = dict(self.read_json(run_id, "result.json"))
         result["scenario"] = self.read_json(run_id, "scenario.json")
         result["plan"] = self.read_json(run_id, "plan.json")
@@ -236,12 +304,143 @@ class RunStore:
         result["evidence"] = self.read_json(run_id, "evidence.json")
         result["detections"] = self.read_json(run_id, "detections.json")
         result["events"] = self.read_events(run_id)
-        manifest_path = self._contained_child(
-            self._run_path(run_id, must_exist=True), "manifest.json"
-        )
-        if manifest_path.is_file():
-            result["manifest"] = self.read_json(run_id, "manifest.json")
+        if manifest is not None:
+            result["manifest"] = manifest
+        recovery_journal = self.read_recovery_records(run_id)
+        if recovery_journal:
+            result["recovery_journal"] = recovery_journal
+            latest = recovery_journal[-1].get("record")
+            if isinstance(latest, Mapping):
+                result["cleanup_recovery"] = latest
         return result
+
+    def append_recovery_record(
+        self,
+        run_id: str,
+        record: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Atomically publish an independently hashed recovery sub-bundle.
+
+        Finalized run files and their original manifest remain immutable.  Both
+        recovery files are fsynced in a private staging directory before one
+        same-volume directory rename makes the complete record visible.
+        """
+
+        run_path = self._run_path(run_id, must_exist=True)
+        source = json_clone(record)
+        if not isinstance(source, dict):
+            raise RunStoreError("recovery record must be a JSON object")
+        source["run_id"] = run_id
+        source_digest = content_hash(source)
+        for existing in self.read_recovery_records(run_id):
+            manifest = existing.get("manifest")
+            if isinstance(manifest, Mapping) and manifest.get("source_digest") == source_digest:
+                return existing
+
+        recovery_id = (
+            "recovery-"
+            + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            + "-"
+            + uuid.uuid4().hex[:16]
+        )
+        source["recovery_id"] = recovery_id
+        source["recorded_at"] = utc_now()
+        final_path = self._contained_child(run_path, recovery_id)
+        if final_path.exists():
+            raise RunStoreError("recovery bundle identity already exists")
+
+        temporary = Path(tempfile.mkdtemp(dir=run_path, prefix=".recovery-tmp-"))
+        try:
+            record_path = temporary / "record.json"
+            self._atomic_write(record_path, canonical_json_bytes(source) + b"\n")
+            files = {
+                "record.json": {
+                    "hash": file_hash(record_path),
+                    "size_bytes": record_path.stat().st_size,
+                }
+            }
+            recovery_manifest = {
+                "schema_version": "bluefire.run-recovery-manifest.v1",
+                "run_id": run_id,
+                "recovery_id": recovery_id,
+                "source_digest": source_digest,
+                "files": files,
+                "bundle_hash": content_hash(files),
+            }
+            self._atomic_write(
+                temporary / "manifest.json",
+                canonical_json_bytes(recovery_manifest) + b"\n",
+            )
+            self._fsync_directory(temporary)
+            with self._lock(run_id):
+                os.replace(temporary, final_path)
+                self._fsync_directory(run_path)
+        finally:
+            if temporary.exists():
+                for child in temporary.iterdir():
+                    if child.is_file() and not child.is_symlink():
+                        child.unlink(missing_ok=True)
+                try:
+                    temporary.rmdir()
+                except OSError:
+                    pass
+        records = self.read_recovery_records(run_id)
+        published = next(
+            (item for item in records if item.get("recovery_id") == recovery_id),
+            None,
+        )
+        if published is None:
+            raise RunStoreError("recovery bundle was not published")
+        return published
+
+    def read_recovery_records(self, run_id: str) -> list[Mapping[str, Any]]:
+        run_path = self._run_path(run_id, must_exist=True)
+        rows: list[Mapping[str, Any]] = []
+        for directory in sorted(run_path.iterdir(), key=lambda item: item.name):
+            if not RECOVERY_ID_RE.fullmatch(directory.name):
+                continue
+            if directory.is_symlink() or not directory.is_dir():
+                raise RunStoreError("recovery bundle path is unsafe")
+            resolved = directory.resolve(strict=True)
+            if resolved.parent != run_path:
+                raise RunStoreError("recovery bundle escaped its run directory")
+            record_path = self._contained_child(resolved, "record.json")
+            manifest_path = self._contained_child(resolved, "manifest.json")
+            if not record_path.is_file() or not manifest_path.is_file():
+                raise RunStoreError("recovery bundle is incomplete")
+            record = self._read_json_path(record_path, "recovery record")
+            manifest = self._read_json_path(manifest_path, "recovery manifest")
+            files = manifest.get("files")
+            expected_files = {
+                "record.json": {
+                    "hash": file_hash(record_path),
+                    "size_bytes": record_path.stat().st_size,
+                }
+            }
+            if (
+                manifest.get("schema_version") != "bluefire.run-recovery-manifest.v1"
+                or manifest.get("run_id") != run_id
+                or manifest.get("recovery_id") != directory.name
+                or files != expected_files
+                or manifest.get("bundle_hash") != content_hash(expected_files)
+                or record.get("run_id") != run_id
+                or record.get("recovery_id") != directory.name
+            ):
+                raise RunStoreError("recovery bundle failed integrity validation")
+            source = dict(record)
+            source.pop("recovery_id", None)
+            source.pop("recorded_at", None)
+            if manifest.get("source_digest") != content_hash(source):
+                raise RunStoreError("recovery source digest does not match its record")
+            rows.append(
+                {
+                    "schema_version": "bluefire.run-recovery.v1",
+                    "recovery_id": directory.name,
+                    "record": record,
+                    "manifest": manifest,
+                }
+            )
+        return rows
 
     def list_runs(self) -> list[Mapping[str, Any]]:
         items: list[Mapping[str, Any]] = []
@@ -249,10 +448,82 @@ class RunStore:
             if not path.is_dir() or not RUN_ID_RE.fullmatch(path.name):
                 continue
             try:
+                manifest_path = self._contained_child(path, "manifest.json")
+            except RunStoreError as exc:
+                items.append(self._corrupted_run_summary(path.name, error=str(exc)))
+                continue
+            if manifest_path.exists():
+                try:
+                    integrity = self.validate_bundle(path.name)
+                except RunStoreError as exc:
+                    items.append(self._corrupted_run_summary(path.name, error=str(exc)))
+                    continue
+                try:
+                    self.read_recovery_records(path.name)
+                except RunStoreError as exc:
+                    items.append(self._corrupted_run_summary(path.name, error=str(exc)))
+                    continue
+                if not integrity.get("valid"):
+                    mismatches = integrity.get("mismatches", [])
+                    items.append(
+                        self._corrupted_run_summary(
+                            path.name,
+                            mismatches=(str(name) for name in mismatches if isinstance(name, str)),
+                        )
+                    )
+                    continue
+            try:
                 items.append(self.read_json(path.name, "result.json"))
             except RunStoreError:
                 items.append({"run_id": path.name, "status": "incomplete"})
         return items
+
+    @staticmethod
+    def _corrupted_run_summary(
+        run_id: str,
+        *,
+        mismatches: Iterable[str] = (),
+        error: str | None = None,
+    ) -> Mapping[str, Any]:
+        integrity: dict[str, Any] = {
+            "valid": False,
+            "mismatches": sorted(set(mismatches)),
+        }
+        if error is not None:
+            integrity["error"] = error
+        return {
+            "run_id": run_id,
+            "status": "corrupted",
+            "integrity": integrity,
+        }
+
+    def recover_interrupted_runs(self) -> int:
+        """Mark created, unfinalized bundles as interrupted after a restart."""
+
+        recovered = 0
+        for path in sorted(self.root.iterdir()):
+            if not path.is_dir() or not RUN_ID_RE.fullmatch(path.name):
+                continue
+            manifest = self._contained_child(path, "manifest.json")
+            if manifest.exists():
+                continue
+            try:
+                result = dict(self.read_json(path.name, "result.json"))
+            except RunStoreError:
+                continue
+            if result.get("status") != "created":
+                continue
+            result.update(
+                {
+                    "status": "interrupted",
+                    "interrupted_at": utc_now(),
+                    "recovery": "No finalized manifest was present after restart.",
+                }
+            )
+            self.write_json(path.name, "result.json", result)
+            self.append_event(path.name, "run.interrupted", {"reason": "restart_recovery"})
+            recovered += 1
+        return recovered
 
     def _new_run_id(self) -> str:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -307,23 +578,75 @@ class RunStore:
                 pass
 
     @staticmethod
-    def _last_event_sequence(path: Path) -> int:
+    def _read_json_path(path: Path, label: str) -> Mapping[str, Any]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RunStoreError(f"cannot read {label}") from exc
+        if not isinstance(value, dict):
+            raise RunStoreError(f"{label} must contain a JSON object")
+        return value
+
+    @staticmethod
+    def _fsync_directory(path: Path) -> None:
+        try:
+            descriptor = os.open(path, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            pass
+        finally:
+            os.close(descriptor)
+
+    @classmethod
+    def _last_event_sequence(cls, path: Path) -> int:
+        return cls._last_event_state(path)[0]
+
+    @classmethod
+    def _last_event_state(cls, path: Path) -> tuple[int, str | None]:
         if not path.exists():
-            return 0
-        last = 0
+            return 0, None
+        last_sequence = 0
+        previous_hash: str | None = None
         with path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 if not line.strip():
                     continue
-                try:
-                    row = json.loads(line)
-                    sequence = int(row.get("sequence", 0))
-                except (json.JSONDecodeError, TypeError, ValueError, AttributeError) as exc:
-                    raise RunStoreError("event stream is corrupt") from exc
-                if sequence <= last:
-                    raise RunStoreError("event stream sequence is not monotonic")
-                last = sequence
-        return last
+                row = cls._validated_event_row(
+                    line,
+                    expected_sequence=last_sequence + 1,
+                    previous_hash=previous_hash,
+                )
+                last_sequence = int(row["sequence"])
+                previous_hash = str(row["event_hash"])
+        return last_sequence, previous_hash
+
+    @staticmethod
+    def _validated_event_row(
+        line: str,
+        *,
+        expected_sequence: int,
+        previous_hash: str | None,
+    ) -> Mapping[str, Any]:
+        try:
+            row = json.loads(line)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise RunStoreError("event stream is corrupt") from exc
+        if not isinstance(row, dict):
+            raise RunStoreError("event stream contains a non-object row")
+        if row.get("schema_version") != "1.0":
+            raise RunStoreError("event stream schema version is unsupported")
+        if row.get("sequence") != expected_sequence:
+            raise RunStoreError("event stream sequence is not contiguous")
+        if row.get("previous_event_hash") != previous_hash:
+            raise RunStoreError("event stream hash chain is broken")
+        event_hash = row.get("event_hash")
+        body = {key: value for key, value in row.items() if key != "event_hash"}
+        if event_hash != content_hash(body):
+            raise RunStoreError("event stream hash does not match its content")
+        return row
 
 
 __all__ = ["RunHandle", "RunStore", "RunStoreError", "utc_now"]

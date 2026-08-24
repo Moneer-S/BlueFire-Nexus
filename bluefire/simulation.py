@@ -32,9 +32,14 @@ class SimulationRegistry:
             "simulation.sandbox.fixture.transform.v1",
             "simulation.sandbox.discovery.list.v1",
             "simulation.sandbox.discovery.metadata.v1",
+            "simulation.endpoint.discovery.system.v1",
+            "simulation.endpoint.discovery.processes.v1",
+            "simulation.sandbox.discovery.recursive.v1",
+            "simulation.sandbox.archive.tar.v1",
             "simulation.sandbox.collection.stage.v1",
             "simulation.sandbox.network.loopback.v1",
             "simulation.sandbox.export.local.v1",
+            "simulation.sandbox.restricted.persistence-marker.v1",
             "simulation.sandbox.cleanup.v1",
         }
     )
@@ -99,6 +104,59 @@ class SimulationRegistry:
                     else "sandbox.discovery.metadata_inspected"
                 ),
             )
+        elif simulation_id == "simulation.endpoint.discovery.system.v1":
+            artifacts = {
+                "system": {
+                    "type": "artifact.endpoint.system-profile.v1",
+                    "operating_system": "synthetic",
+                    "architecture": "synthetic",
+                    "logical_processors": 1,
+                }
+            }
+            telemetry = ("endpoint.discovery.system_observed",)
+        elif simulation_id == "simulation.endpoint.discovery.processes.v1":
+            maximum = max(1, min(int(step.parameters.get("record_limit", 25)), 100))
+            entries = [
+                {"pid": "100", "parent_pid": "1", "name": "bluefire-synthetic-a"},
+                {"pid": "101", "parent_pid": "100", "name": "bluefire-synthetic-b"},
+            ][:maximum]
+            artifacts = {
+                "processes": {
+                    "type": "artifact.endpoint.process-records.v1",
+                    "entries": entries,
+                    "synthetic": True,
+                }
+            }
+            telemetry = ("endpoint.discovery.processes_observed",)
+        elif simulation_id == "simulation.sandbox.discovery.recursive.v1":
+            workspace = _mapping(bound_inputs.get("workspace"), "workspace")
+            fixture_path = workspace.get("fixture_path", "synthetic/fixtures/input.txt")
+            artifacts = {
+                "records": [
+                    {
+                        "type": "artifact.sandbox.filesystem.record.v1",
+                        "path": fixture_path,
+                        "kind": "file",
+                        "depth": 1,
+                        "synthetic": True,
+                    }
+                ]
+            }
+            telemetry = ("sandbox.discovery.recursive_completed",)
+        elif simulation_id == "simulation.sandbox.archive.tar.v1":
+            records = bound_inputs.get("records")
+            if not isinstance(records, list) or not records:
+                raise SimulationError("archive simulation requires filesystem records")
+            body = {"format": "ustar", "records": records}
+            artifacts = {
+                "bundle": {
+                    "type": "artifact.sandbox.archive.v1",
+                    "path": "synthetic/staged/discovery.tar",
+                    "record_count": len(records),
+                    "content_hash": content_hash(body),
+                }
+            }
+            telemetry = ("sandbox.archive.created",)
         elif simulation_id == "simulation.sandbox.collection.stage.v1":
             records = bound_inputs.get("records")
             if not isinstance(records, list) or not records:
@@ -133,7 +191,24 @@ class SimulationRegistry:
                 }
             }
             telemetry = ("sandbox.export.local_completed",)
-        else:
+        elif simulation_id == "simulation.sandbox.restricted.persistence-marker.v1":
+            marker_path = "synthetic/restricted/persistence-marker.json"
+            label = step.parameters.get("label", "persistence_detection_canary")
+            artifacts = {
+                "workspace": {
+                    "type": "artifact.sandbox.workspace.v1",
+                    "root": "synthetic/restricted",
+                    "marker_path": marker_path,
+                },
+                "marker": {
+                    "type": "artifact.sandbox.restricted-marker.v1",
+                    "path": marker_path,
+                    "label": label,
+                    "synthetic": True,
+                },
+            }
+            telemetry = ("sandbox.restricted.persistence_marker_created",)
+        elif simulation_id == "simulation.sandbox.cleanup.v1":
             _mapping(bound_inputs.get("workspace"), "workspace")
             artifacts = {
                 "receipt": {
@@ -142,6 +217,8 @@ class SimulationRegistry:
                 }
             }
             telemetry = ("sandbox.cleanup.completed",)
+        else:  # pragma: no cover - guarded by the reviewed ID set above
+            raise SimulationError(f"simulation adapter is not implemented: {simulation_id}")
 
         return SimulationResult(
             outcome=StepOutcome.SUCCESS,

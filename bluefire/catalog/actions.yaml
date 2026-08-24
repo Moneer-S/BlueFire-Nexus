@@ -33,7 +33,7 @@ items:
     title: Transform sandbox fixture
     purpose: Normalize and redact fixture records without leaving the runner workspace.
     safety_tier: safe
-    capabilities: [sandbox.fixture, filesystem.read, filesystem.write, process.spawn]
+    capabilities: [sandbox.fixture, filesystem.read, filesystem.write]
     platforms: [windows, linux, macos]
     inputs:
       - name: workspace
@@ -92,6 +92,94 @@ items:
     parameters: *action_discovery_parameters
     mutates: false
     cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: endpoint.discovery.system.v1
+    title: Discover bounded system identity
+    purpose: Report cross-platform operating-system and architecture facts through compiled APIs.
+    safety_tier: safe
+    capabilities: [endpoint.discovery, system.discovery]
+    platforms: [windows, linux, macos]
+    inputs: []
+    outputs:
+      - name: system
+        type: artifact.endpoint.system-profile.v1
+    parameters: []
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: endpoint.discovery.processes.v1
+    title: Discover bounded process identities
+    purpose: Enumerate process IDs and names through one compiled platform adapter with bounded output.
+    safety_tier: safe
+    capabilities: [endpoint.discovery, process.discovery, process.spawn]
+    platforms: [windows, linux, macos]
+    inputs: []
+    outputs:
+      - name: processes
+        type: artifact.endpoint.process-records.v1
+    parameters:
+      - name: record_limit
+        type: integer
+        default: 25
+        minimum: 1
+        maximum: 100
+        description: Maximum number of process identity records returned.
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.discovery.recursive.v1
+    title: Recursively discover sandbox files
+    purpose: Enumerate a runner-owned workspace subtree with explicit count and depth limits.
+    safety_tier: safe
+    capabilities: [sandbox.discovery, filesystem.read]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.filesystem.record.v1
+        multiple: true
+    parameters:
+      - name: record_limit
+        type: integer
+        default: 25
+        minimum: 1
+        maximum: 100
+        description: Maximum number of filesystem records returned.
+      - name: max_depth
+        type: integer
+        default: 3
+        minimum: 1
+        maximum: 16
+        description: Maximum directory depth traversed below the bound workspace.
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.archive.tar.v1
+    title: Create deterministic sandbox archive
+    purpose: Stage selected runner-owned files into an uncompressed deterministic ustar archive.
+    safety_tier: controlled
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: records
+        type: artifact.sandbox.filesystem.record.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.archive.v1
+    parameters: []
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
     provenance: *authored
 
   - schema_version: bluefire.action.v1
@@ -161,6 +249,31 @@ items:
         default: ephemeral
         enum: [ephemeral, review]
         description: Policy label, not a filesystem path.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.restricted.persistence-marker.v1
+    title: Create restricted-tier persistence detection canary
+    purpose: Write one fixed, non-executable marker inside the runner-owned workspace to validate restricted-tier policy, telemetry, and cleanup controls.
+    safety_tier: restricted
+    capabilities: [sandbox.restricted, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs: []
+    outputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+        description: Runner-owned restricted canary workspace reference.
+      - name: marker
+        type: artifact.sandbox.restricted-marker.v1
+        description: Fixed-path non-executable persistence-detection marker.
+    parameters:
+      - name: label
+        type: string
+        default: persistence_detection_canary
+        enum: [persistence_detection_canary, control_validation]
+        description: Reviewed semantic label; it never becomes a path, command, or host persistence setting.
     mutates: true
     cleanup_action_id: sandbox.cleanup.v1
     provenance: *authored

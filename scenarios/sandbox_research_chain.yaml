@@ -75,8 +75,14 @@ edges:
   - from_step: discover_records
     outcome: success
     to_step: stage_records
+  - from_step: discover_records
+    outcome: partial
+    to_step: stage_records
   - from_step: stage_records
     outcome: success
+    to_step: try_loopback
+  - from_step: stage_records
+    outcome: partial
     to_step: try_loopback
   - from_step: try_loopback
     outcome: success

@@ -58,8 +58,14 @@ def _receipt_id(value: Any) -> str:
     return value
 
 
+def _bounded_integer(value: Any, context: str, minimum: int, maximum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+        raise RunnerAdapterError(f"{context} must be an integer between {minimum} and {maximum}")
+    return int(value)
+
+
 class RunnerActionAdapter:
-    """Compile only the eight reviewed action IDs into strict runner params.
+    """Compile only the thirteen reviewed action IDs into strict runner params.
 
     Paths are constants or validated outputs of earlier runner actions.  No
     scenario parameter can become an executable, command, or filesystem path.
@@ -71,9 +77,14 @@ class RunnerActionAdapter:
             "sandbox.fixture.transform.v1",
             "sandbox.discovery.list.v1",
             "sandbox.discovery.metadata.v1",
+            "endpoint.discovery.system.v1",
+            "endpoint.discovery.processes.v1",
+            "sandbox.discovery.recursive.v1",
+            "sandbox.archive.tar.v1",
             "sandbox.collection.stage.v1",
             "sandbox.network.loopback.v1",
             "sandbox.export.local.v1",
+            "sandbox.restricted.persistence-marker.v1",
             "sandbox.cleanup.v1",
         }
     )
@@ -121,6 +132,45 @@ class RunnerActionAdapter:
                 params={"path": fixture},
                 filesystem_scope=(fixture,),
             )
+        elif action_id == "endpoint.discovery.system.v1":
+            adapted = AdaptedAction(params={}, filesystem_scope=())
+        elif action_id == "endpoint.discovery.processes.v1":
+            maximum = _bounded_integer(
+                step.parameters.get("record_limit", 25), "record_limit", 1, 100
+            )
+            adapted = AdaptedAction(
+                params={"max_entries": maximum},
+                filesystem_scope=(),
+            )
+        elif action_id == "sandbox.discovery.recursive.v1":
+            workspace = _artifact_mapping(bound_inputs.get("workspace"), "workspace")
+            root = _runner_path(workspace.get("root"), "workspace.root")
+            maximum = _bounded_integer(
+                step.parameters.get("record_limit", 25), "record_limit", 1, 100
+            )
+            depth = _bounded_integer(step.parameters.get("max_depth", 3), "max_depth", 1, 16)
+            adapted = AdaptedAction(
+                params={"path": root, "max_entries": maximum, "max_depth": depth},
+                filesystem_scope=(root,),
+            )
+        elif action_id == "sandbox.archive.tar.v1":
+            records = bound_inputs.get("records")
+            if not isinstance(records, list) or not records:
+                raise RunnerAdapterError("records must contain typed filesystem artifacts")
+            inputs: list[str] = []
+            for index, item in enumerate(records):
+                record = _artifact_mapping(item, f"records[{index}]")
+                if record.get("kind") != "file":
+                    continue
+                inputs.append(_artifact_path(record, f"records[{index}]"))
+            if not inputs:
+                raise RunnerAdapterError("records must contain at least one regular file artifact")
+            archive_destination = "staged/discovery.tar"
+            adapted = AdaptedAction(
+                params={"inputs": inputs, "destination": archive_destination},
+                filesystem_scope=tuple(inputs) + (archive_destination,),
+                observable_paths=(archive_destination,),
+            )
         elif action_id == "sandbox.collection.stage.v1":
             records = bound_inputs.get("records")
             if not isinstance(records, list) or not records:
@@ -140,11 +190,11 @@ class RunnerActionAdapter:
             port = step.parameters.get("port", 4317)
             if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
                 raise RunnerAdapterError("loopback port must be an integer between 1 and 65535")
-            destination = {"host": loopback_host, "port": port}
+            network_destination = {"host": loopback_host, "port": port}
             adapted = AdaptedAction(
-                params={"artifact": bundle, "destination": destination},
+                params={"artifact": bundle, "destination": network_destination},
                 filesystem_scope=(bundle,),
-                network_destinations=(destination,),
+                network_destinations=(network_destination,),
             )
         elif action_id == "sandbox.export.local.v1":
             bundle = _artifact_path(bound_inputs.get("bundle"), "bundle")
@@ -153,7 +203,17 @@ class RunnerActionAdapter:
                 filesystem_scope=(bundle, "exports/bundle.bin"),
                 observable_paths=("exports/bundle.bin",),
             )
-        else:
+        elif action_id == "sandbox.restricted.persistence-marker.v1":
+            label = step.parameters.get("label", "persistence_detection_canary")
+            if label not in {"persistence_detection_canary", "control_validation"}:
+                raise RunnerAdapterError("restricted marker label is not reviewed")
+            marker_path = "restricted/persistence-marker.json"
+            adapted = AdaptedAction(
+                params={"label": label},
+                filesystem_scope=(marker_path,),
+                observable_paths=(marker_path,),
+            )
+        elif action_id == "sandbox.cleanup.v1":
             clean_receipts = tuple(_receipt_id(item) for item in receipt_ids)
             if not clean_receipts:
                 raise RunnerAdapterError("cleanup requires runner-issued receipt IDs")
@@ -214,6 +274,51 @@ class RunnerActionAdapter:
                     }
                 ]
             }
+        if action_id == "endpoint.discovery.system.v1":
+            return {
+                "system": {
+                    "type": "artifact.endpoint.system-profile.v1",
+                    "details": dict(runner_output),
+                }
+            }
+        if action_id == "endpoint.discovery.processes.v1":
+            entries = runner_output.get("entries")
+            if not isinstance(entries, list):
+                return {}
+            return {
+                "processes": {
+                    "type": "artifact.endpoint.process-records.v1",
+                    "entries": entries,
+                    "truncated": bool(runner_output.get("truncated", False)),
+                }
+            }
+        if action_id == "sandbox.discovery.recursive.v1":
+            entries = runner_output.get("entries")
+            if not isinstance(entries, list):
+                return {}
+            records = []
+            for index, item in enumerate(entries):
+                entry = _artifact_mapping(item, f"runner entries[{index}]")
+                path = _runner_path(entry.get("path"), f"runner entries[{index}].path")
+                records.append(
+                    {
+                        "type": "artifact.sandbox.filesystem.record.v1",
+                        "path": path,
+                        "kind": entry.get("kind"),
+                        "metadata": dict(entry),
+                    }
+                )
+            return {"records": records}
+        if action_id == "sandbox.archive.tar.v1":
+            path = _runner_path(runner_output.get("artifact"), "runner archive output")
+            return {
+                "bundle": {
+                    "type": "artifact.sandbox.archive.v1",
+                    "path": path,
+                    "sha256": runner_output.get("sha256"),
+                    "receipt_ids": list(receipt_ids),
+                }
+            }
         if action_id == "sandbox.collection.stage.v1":
             staged = runner_output.get("staged")
             if not isinstance(staged, list) or not staged:
@@ -246,12 +351,31 @@ class RunnerActionAdapter:
                     "receipt_ids": list(receipt_ids),
                 }
             }
-        return {
-            "receipt": {
-                "type": "artifact.sandbox.cleanup.receipt.v1",
-                "details": dict(runner_output),
+        if action_id == "sandbox.restricted.persistence-marker.v1":
+            path = _runner_path(runner_output.get("artifact"), "runner marker output")
+            marker = {
+                "type": "artifact.sandbox.restricted-marker.v1",
+                "path": path,
+                "sha256": runner_output.get("sha256"),
+                "receipt_ids": list(receipt_ids),
             }
-        }
+            return {
+                "workspace": {
+                    "type": "artifact.sandbox.workspace.v1",
+                    "root": str(PurePosixPath(path).parent),
+                    "marker_path": path,
+                    "receipt_ids": list(receipt_ids),
+                },
+                "marker": marker,
+            }
+        if action_id == "sandbox.cleanup.v1":
+            return {
+                "receipt": {
+                    "type": "artifact.sandbox.cleanup.receipt.v1",
+                    "details": dict(runner_output),
+                }
+            }
+        raise RunnerAdapterError(f"logical output adapter is not implemented: {action_id}")
 
 
 __all__ = ["AdaptedAction", "RunnerActionAdapter", "RunnerAdapterError"]

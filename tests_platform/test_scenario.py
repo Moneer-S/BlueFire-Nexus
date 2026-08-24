@@ -10,6 +10,7 @@ from bluefire.registry import RegistryError, load_builtin_registry
 
 ROOT = Path(__file__).resolve().parents[1]
 SCENARIO_PATH = ROOT / "scenarios" / "sandbox_research_chain.yaml"
+SCENARIO_PATHS = tuple(sorted((ROOT / "scenarios").glob("*.yaml")))
 
 
 def test_sandbox_scenario_is_typed_reachable_dag() -> None:
@@ -17,6 +18,41 @@ def test_sandbox_scenario_is_typed_reachable_dag() -> None:
     scenario = load_scenario(SCENARIO_PATH)
     registry.validate_scenario(scenario)
     assert len(scenario.steps) == 7
+
+
+@pytest.mark.parametrize("scenario_path", SCENARIO_PATHS, ids=lambda path: path.stem)
+def test_every_shipped_scenario_is_a_typed_reachable_dag(scenario_path: Path) -> None:
+    registry = load_builtin_registry()
+    scenario = load_scenario(scenario_path)
+
+    registry.validate_scenario(scenario)
+
+    assert scenario.provenance.source
+    assert scenario.limitations
+    assert all(step.behavior_id in registry.behavior_ids for step in scenario.steps)
+
+
+def test_product_ships_all_validation_scenario_families() -> None:
+    scenario_ids = {load_scenario(path).id for path in SCENARIO_PATHS}
+
+    assert scenario_ids >= {
+        "scenario.sandbox.research.chain.v1",
+        "scenario.linux-container.validation.v1",
+        "scenario.windows.endpoint.validation.v1",
+        "scenario.detection.regression.v1",
+        "scenario.ai-adaptive.safe-chain.v1",
+        "scenario.restricted.persistence-canary.v1",
+    }
+
+
+def test_restricted_canary_routes_only_to_mandatory_cleanup() -> None:
+    scenario = load_scenario(ROOT / "scenarios" / "restricted_persistence_canary.yaml")
+
+    assert scenario.step("create_persistence_canary").behavior_id == (
+        "sandbox.restricted.persistence-marker.v1"
+    )
+    assert scenario.step("cleanup_workspace").behavior_id == "sandbox.cleanup.v1"
+    assert {edge.to_step for edge in scenario.edges} == {"cleanup_workspace"}
 
 
 def test_scenario_has_discovery_swap_blocked_fallback_and_cleanup() -> None:

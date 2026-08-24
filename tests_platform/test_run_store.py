@@ -53,6 +53,10 @@ def test_event_stream_is_monotonic_and_bundle_detects_tampering(tmp_path: Path) 
     handle = _create(store)
     assert store.append_event(handle.run_id, "step.started", {"step_id": "one"}) == 2
     assert store.append_event(handle.run_id, "step.finished", {"step_id": "one"}) == 3
+    events = store.read_events(handle.run_id)
+    assert [row["sequence"] for row in events] == [1, 2, 3]
+    assert events[0]["previous_event_hash"] is None
+    assert events[1]["previous_event_hash"] == events[0]["event_hash"]
 
     manifest = store.finalize(
         handle.run_id,
@@ -70,6 +74,161 @@ def test_event_stream_is_monotonic_and_bundle_detects_tampering(tmp_path: Path) 
     validation = store.validate_bundle(handle.run_id)
     assert validation["valid"] is False
     assert "result.json" in validation["mismatches"]
+
+
+def test_finalized_bundle_integrity_gates_detail_and_list_summary(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    handle = _create(store)
+    store.finalize(
+        handle.run_id,
+        result={"schema_version": "bluefire.run.v1", "status": "completed"},
+        evidence=[],
+        detections=[],
+    )
+
+    result_path = handle.path / "result.json"
+    tampered = json.loads(result_path.read_text(encoding="utf-8"))
+    tampered["status"] = "attacker-controlled"
+    tampered["untrusted_result"] = {"claim": "success"}
+    result_path.write_text(json.dumps(tampered), encoding="utf-8")
+
+    with pytest.raises(RunStoreError, match="integrity validation.*result.json"):
+        store.get_run(handle.run_id)
+
+    assert store.list_runs() == [
+        {
+            "run_id": handle.run_id,
+            "status": "corrupted",
+            "integrity": {"valid": False, "mismatches": ["result.json"]},
+        }
+    ]
+
+
+def test_unfinalized_run_detail_and_list_behavior_is_preserved(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    handle = _create(store)
+
+    assert store.get_run(handle.run_id)["status"] == "created"
+    assert store.list_runs() == [
+        {
+            "schema_version": "1.0",
+            "run_id": handle.run_id,
+            "created_at": handle.created_at,
+            "status": "created",
+            "replay": None,
+        }
+    ]
+
+
+def test_finalized_recovery_journal_is_atomic_independent_and_tamper_evident(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    handle = _create(store)
+    store.finalize(
+        handle.run_id,
+        result={"schema_version": "bluefire.run.v1", "status": "completed"},
+        evidence=[],
+        detections=[],
+    )
+    original_manifest = (handle.path / "manifest.json").read_bytes()
+    original_result = (handle.path / "result.json").read_bytes()
+    recovery = {
+        "schema_version": "bluefire.cleanup-recovery.v1",
+        "status": "completed",
+        "remaining_receipt_count": 0,
+    }
+
+    first = store.append_recovery_record(handle.run_id, recovery)
+    duplicate = store.append_recovery_record(handle.run_id, recovery)
+
+    assert first["recovery_id"] == duplicate["recovery_id"]
+    assert (handle.path / "manifest.json").read_bytes() == original_manifest
+    assert (handle.path / "result.json").read_bytes() == original_result
+    assert store.validate_bundle(handle.run_id)["valid"] is True
+    detail = store.get_run(handle.run_id)
+    assert len(detail["recovery_journal"]) == 1
+    assert detail["cleanup_recovery"]["status"] == "completed"
+
+    record_path = handle.path / str(first["recovery_id"]) / "record.json"
+    changed = json.loads(record_path.read_text(encoding="utf-8"))
+    changed["status"] = "tampered"
+    record_path.write_text(json.dumps(changed), encoding="utf-8")
+    with pytest.raises(RunStoreError, match="recovery bundle failed integrity"):
+        store.get_run(handle.run_id)
+    assert store.list_runs()[0]["status"] == "corrupted"
+
+
+def test_partial_recovery_staging_directory_never_changes_finalized_bundle(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    handle = _create(store)
+    store.finalize(
+        handle.run_id,
+        result={"schema_version": "bluefire.run.v1", "status": "completed"},
+        evidence=[],
+        detections=[],
+    )
+    original_manifest = (handle.path / "manifest.json").read_bytes()
+    stale = handle.path / ".recovery-tmp-interrupted"
+    stale.mkdir()
+    (stale / "record.json").write_text('{"partial":true}', encoding="utf-8")
+
+    assert store.get_run(handle.run_id)["status"] == "completed"
+    assert store.read_recovery_records(handle.run_id) == []
+    assert (handle.path / "manifest.json").read_bytes() == original_manifest
+    assert store.validate_bundle(handle.run_id)["valid"] is True
+
+
+def test_event_pages_are_bounded_and_cursor_based(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    handle = _create(store)
+    for index in range(5):
+        store.append_event(handle.run_id, "progress", {"index": index})
+
+    first = store.read_event_page(handle.run_id, limit=3)
+    second = store.read_event_page(
+        handle.run_id,
+        after_sequence=first["next_sequence"],
+        limit=3,
+    )
+
+    assert [row["sequence"] for row in first["items"]] == [1, 2, 3]
+    assert first["has_more"] is True
+    assert [row["sequence"] for row in second["items"]] == [4, 5, 6]
+    assert second["has_more"] is False
+
+
+def test_event_stream_hash_chain_detects_content_tampering(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    handle = _create(store)
+    store.append_event(handle.run_id, "progress", {"index": 1})
+    events_path = handle.path / "events.jsonl"
+    rows = events_path.read_text(encoding="utf-8").splitlines()
+    row = json.loads(rows[0])
+    row["data"]["status"] = "tampered"
+    rows[0] = json.dumps(row)
+    events_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    with pytest.raises(RunStoreError, match="hash"):
+        store.read_events(handle.run_id)
+
+
+def test_restart_recovery_marks_only_unfinalized_created_runs(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    interrupted = _create(store)
+    completed = _create(store)
+    store.finalize(
+        completed.run_id,
+        result={"schema_version": "bluefire.run.v1", "status": "completed"},
+        evidence=[],
+        detections=[],
+    )
+
+    assert store.recover_interrupted_runs() == 1
+    assert store.get_run(interrupted.run_id)["status"] == "interrupted"
+    assert store.get_run(completed.run_id)["status"] == "completed"
 
 
 def test_bundle_file_symlink_is_refused(tmp_path: Path) -> None:

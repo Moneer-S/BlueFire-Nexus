@@ -41,7 +41,7 @@ items:
     safety_tier: safe
     platforms: [windows, linux, macos]
     techniques: []
-    capabilities: [sandbox.fixture, filesystem.read, filesystem.write, process.spawn]
+    capabilities: [sandbox.fixture, filesystem.read, filesystem.write]
     inputs:
       - name: workspace
         type: artifact.sandbox.workspace.v1
@@ -113,6 +113,114 @@ items:
     detection_hints: [Metadata inspection is confined to the bound fixture artifact.]
     provenance: *authored
     limitations: [Compatible alternative to listing; it does not inspect host metadata.]
+
+  - schema_version: bluefire.behavior.v1
+    id: endpoint.discovery.system.v1
+    title: Discover bounded system identity
+    purpose: Observe operating-system and architecture facts through compiled cross-platform APIs.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1082]
+    capabilities: [endpoint.discovery, system.discovery]
+    inputs: []
+    outputs:
+      - name: system
+        type: artifact.endpoint.system-profile.v1
+    parameters: []
+    simulation_id: simulation.endpoint.discovery.system.v1
+    action_ids: [endpoint.discovery.system.v1]
+    telemetry: [endpoint.discovery.system_observed]
+    detection_hints: [System discovery is bounded to non-sensitive platform identity fields.]
+    provenance: *authored
+    limitations: [Does not collect account, network, or host file content.]
+
+  - schema_version: bluefire.behavior.v1
+    id: endpoint.discovery.processes.v1
+    title: Discover bounded process identities
+    purpose: Observe a bounded list of process IDs and names through a fixed platform adapter.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1057]
+    capabilities: [endpoint.discovery, process.discovery, process.spawn]
+    inputs: []
+    outputs:
+      - name: processes
+        type: artifact.endpoint.process-records.v1
+    parameters:
+      - name: record_limit
+        type: integer
+        default: 25
+        minimum: 1
+        maximum: 100
+        description: Maximum number of process identity records returned.
+    simulation_id: simulation.endpoint.discovery.processes.v1
+    action_ids: [endpoint.discovery.processes.v1]
+    telemetry: [endpoint.discovery.processes_observed]
+    detection_hints: [Process discovery uses only a compiled API or fixed reviewed command vector.]
+    provenance: *authored
+    limitations: [Does not accept an executable or caller-authored arguments.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.discovery.recursive.v1
+    title: Recursively discover sandbox files
+    purpose: Enumerate files and directories only below a bound runner-owned workspace.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1083]
+    capabilities: [sandbox.discovery, filesystem.read]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.filesystem.record.v1
+        multiple: true
+    parameters:
+      - name: record_limit
+        type: integer
+        default: 25
+        minimum: 1
+        maximum: 100
+        description: Maximum number of filesystem records returned.
+      - name: max_depth
+        type: integer
+        default: 3
+        minimum: 1
+        maximum: 16
+        description: Maximum directory depth traversed below the bound workspace.
+    simulation_id: simulation.sandbox.discovery.recursive.v1
+    action_ids: [sandbox.discovery.recursive.v1]
+    telemetry: [sandbox.discovery.recursive_completed]
+    detection_hints: [Recursive enumeration should retain the bound root and truncation signal.]
+    provenance: *authored
+    limitations: [Symlinks are reported as blocked and are never traversed.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.archive.tar.v1
+    title: Create deterministic sandbox archive
+    purpose: Stage selected runner-owned files into a bounded deterministic ustar archive.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: [T1560.001]
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write]
+    inputs:
+      - name: records
+        type: artifact.sandbox.filesystem.record.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.archive.v1
+    parameters: []
+    simulation_id: simulation.sandbox.archive.tar.v1
+    action_ids: [sandbox.archive.tar.v1]
+    telemetry: [sandbox.archive.created]
+    detection_hints: [Archive evidence should link its digest to every selected input record.]
+    provenance: *authored
+    limitations: [Only regular files inside runner-owned scope can be archived.]
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.collection.stage.v1
@@ -226,6 +334,36 @@ items:
     detection_hints: [Cleanup evidence should distinguish requested, completed, and partial states.]
     provenance: *authored
     limitations: [Cannot name or remove paths outside the runner-owned workspace.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.restricted.persistence-marker.v1
+    title: Validate persistence detection with a restricted sandbox canary
+    purpose: Create one fixed, non-executable marker under the runner-owned restricted directory so operators can exercise restricted-tier approvals, observation, and cleanup without modifying host persistence.
+    execution_state: action
+    safety_tier: restricted
+    platforms: [windows, linux, macos]
+    techniques: [T1547]
+    capabilities: [sandbox.restricted, filesystem.write]
+    inputs: []
+    outputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+        description: Opaque runner-owned restricted canary workspace reference.
+      - name: marker
+        type: artifact.sandbox.restricted-marker.v1
+        description: Fixed-path non-executable marker used only for detection validation.
+    parameters:
+      - name: label
+        type: string
+        default: persistence_detection_canary
+        enum: [persistence_detection_canary, control_validation]
+        description: Reviewed semantic label; it never becomes a path, command, or host persistence setting.
+    simulation_id: simulation.sandbox.restricted.persistence-marker.v1
+    action_ids: [sandbox.restricted.persistence-marker.v1]
+    telemetry: [sandbox.restricted.persistence_marker_created]
+    detection_hints: [Correlate the fixed marker path with its approval, runner receipt, independent collector evidence, and cleanup outcome.]
+    provenance: *authored
+    limitations: [Does not create, alter, or test operating-system persistence; it writes only restricted/persistence-marker.json inside the bound runner workspace.]
 
   - &metadata_research
     schema_version: bluefire.behavior.v1

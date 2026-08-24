@@ -13,15 +13,20 @@ EXPECTED_ACTION_IDS = {
     "sandbox.fixture.transform.v1",
     "sandbox.discovery.list.v1",
     "sandbox.discovery.metadata.v1",
+    "endpoint.discovery.system.v1",
+    "endpoint.discovery.processes.v1",
+    "sandbox.discovery.recursive.v1",
+    "sandbox.archive.tar.v1",
     "sandbox.collection.stage.v1",
     "sandbox.network.loopback.v1",
     "sandbox.export.local.v1",
+    "sandbox.restricted.persistence-marker.v1",
     "sandbox.cleanup.v1",
 }
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_builtin_registry_has_only_reviewed_sandbox_actions() -> None:
+def test_builtin_registry_has_only_reviewed_bounded_actions() -> None:
     registry = load_builtin_registry()
     assert set(registry.action_ids) == EXPECTED_ACTION_IDS
     assert all(
@@ -58,6 +63,18 @@ def test_restricted_research_entries_are_metadata_only() -> None:
         assert behavior.execution_state is ExecutionState.METADATA_ONLY
         assert behavior.action_ids == ()
         assert behavior.simulation_id is None
+
+
+def test_restricted_canary_is_an_explicit_bounded_action() -> None:
+    registry = load_builtin_registry()
+    behavior = registry.get_behavior("sandbox.restricted.persistence-marker.v1")
+    action = registry.get_action("sandbox.restricted.persistence-marker.v1")
+
+    assert behavior.execution_state is ExecutionState.ACTION
+    assert behavior.safety_tier.value == "restricted"
+    assert behavior.action_ids == (action.id,)
+    assert action.capabilities == ("sandbox.restricted", "filesystem.write")
+    assert action.cleanup_action_id == "sandbox.cleanup.v1"
 
 
 def test_registry_rejects_duplicate_behavior_ids() -> None:

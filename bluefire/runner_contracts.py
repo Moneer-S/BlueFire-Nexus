@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import platform as host_platform
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,9 +26,12 @@ class RunnerContractError(ValueError):
 
 
 EFFECT_CAPABILITIES: Mapping[str, str] = {
+    "sandbox.restricted": "sandbox_restricted",
     "filesystem.read": "filesystem_read",
     "filesystem.write": "filesystem_write",
     "process.spawn": "process_spawn",
+    "process.discovery": "process_discovery",
+    "system.discovery": "system_discovery",
     "network.loopback": "network_loopback",
     "export.local": "export_local",
     "cleanup": "cleanup",
@@ -38,6 +42,35 @@ _TIER_RANK = {
     SafetyTier.CONTROLLED: 2,
     SafetyTier.RESTRICTED: 3,
 }
+
+_RFC3339_MICROSECONDS = re.compile(
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})"
+)
+
+
+def _format_rust_datetime(value: datetime, *, context: str) -> str:
+    """Match chrono's RFC 3339 ``AutoSi`` representation exactly."""
+
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise RunnerContractError(f"{context} must include a timezone offset")
+    normalized = value.astimezone(timezone.utc)
+    if normalized.microsecond == 0:
+        timespec = "seconds"
+    elif normalized.microsecond % 1_000 == 0:
+        timespec = "milliseconds"
+    else:
+        timespec = "microseconds"
+    return normalized.isoformat(timespec=timespec).replace("+00:00", "Z")
+
+
+def _normalize_rust_datetime(value: str, *, context: str) -> str:
+    if _RFC3339_MICROSECONDS.fullmatch(value) is None:
+        raise RunnerContractError(f"{context} must be an RFC 3339 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RunnerContractError(f"{context} must be an RFC 3339 timestamp") from exc
+    return _format_rust_datetime(parsed, context=context)
 
 
 def current_platform() -> str:
@@ -143,11 +176,22 @@ def seal_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
     sealed: dict[str, Any] = dict(json_clone(document))
     if sealed.get("schema_version") != "bluefire.runner-manifest.v1":
         raise RunnerContractError("runner manifest schema version is unsupported")
-    sealed["request_hash"] = ""
     approval = sealed.get("approval")
     if approval is not None:
         if not isinstance(approval, dict):
             raise RunnerContractError("runner approval must be an object")
+    for field in ("requested_at", "expires_at"):
+        value = sealed.get(field)
+        if not isinstance(value, str):
+            raise RunnerContractError(f"manifest {field} must be an explicit string")
+        sealed[field] = _normalize_rust_datetime(value, context=f"manifest {field}")
+    sealed["request_hash"] = ""
+    if isinstance(approval, dict):
+        for field in ("approved_at", "expires_at"):
+            value = approval.get(field)
+            if not isinstance(value, str):
+                raise RunnerContractError(f"approval {field} must be an explicit string")
+            approval[field] = _normalize_rust_datetime(value, context=f"approval {field}")
         approval["request_hash"] = ""
     digest = content_hash(sealed)
     sealed["request_hash"] = digest
@@ -167,22 +211,30 @@ def build_execution_manifest(
     filesystem_scope: Sequence[str],
     network_destinations: Sequence[Mapping[str, Any]] = (),
     evidence_refs: Sequence[str] = (),
-    approved_by: str | None,
+    approval_record: Mapping[str, Any] | None,
+    timeout_ms: int | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     timestamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     expires = timestamp + timedelta(minutes=5)
-    requested_at = timestamp.isoformat().replace("+00:00", "Z")
-    expires_at = expires.isoformat().replace("+00:00", "Z")
+    requested_at = _format_rust_datetime(timestamp, context="manifest requested_at")
+    expires_at = _format_rust_datetime(expires, context="manifest expires_at")
     approval = None
-    if approved_by is not None:
-        identity = approved_by.strip()
+    if approval_record is not None:
+        raw_identity = approval_record.get("approved_by")
+        identity = raw_identity.strip() if isinstance(raw_identity, str) else ""
         if not identity or len(identity) > 128:
             raise RunnerContractError("approval identity must contain 1..=128 characters")
+        approved_at = approval_record.get("approved_at")
+        approval_expires_at = approval_record.get("expires_at")
+        if not isinstance(approved_at, str) or not isinstance(approval_expires_at, str):
+            raise RunnerContractError("approval timestamps must be explicit strings")
         approval = {
             "approved_by": identity,
-            "approved_at": requested_at,
-            "expires_at": expires_at,
+            "approved_at": _normalize_rust_datetime(approved_at, context="approval approved_at"),
+            "expires_at": _normalize_rust_datetime(
+                approval_expires_at, context="approval expires_at"
+            ),
             "request_hash": "",
         }
     runner_id = runner_profile.get("runner_id")
@@ -193,6 +245,21 @@ def build_execution_manifest(
         raise RunnerContractError("runner profile identity fields are missing")
     if not isinstance(policy_digest, str) or not policy_digest.startswith("sha256:"):
         raise RunnerContractError("runner profile has no sealed policy digest")
+    profile_limits = runner_profile.get("limits")
+    if not isinstance(profile_limits, Mapping):
+        raise RunnerContractError("runner profile limits are missing")
+    maximum_timeout = profile_limits.get("timeout_ms")
+    if isinstance(maximum_timeout, bool) or not isinstance(maximum_timeout, int):
+        raise RunnerContractError("runner profile timeout is invalid")
+    effective_timeout = maximum_timeout if timeout_ms is None else timeout_ms
+    if (
+        isinstance(effective_timeout, bool)
+        or not isinstance(effective_timeout, int)
+        or not 1 <= effective_timeout <= maximum_timeout
+    ):
+        raise RunnerContractError("manifest timeout must be within the runner profile limit")
+    manifest_limits = dict(profile_limits)
+    manifest_limits["timeout_ms"] = effective_timeout
     cleanup_action = action.cleanup_action_id or "sandbox.cleanup.v1"
     document = {
         "schema_version": "bluefire.runner-manifest.v1",
@@ -214,7 +281,7 @@ def build_execution_manifest(
         },
         "required_capabilities": effect_capabilities(action.capabilities),
         "safety_tier": action.safety_tier.value,
-        "limits": dict(runner_profile["limits"]),
+        "limits": manifest_limits,
         "cleanup_action_id": cleanup_action,
         "policy_digest": policy_digest,
         "approval": approval,

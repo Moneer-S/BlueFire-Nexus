@@ -106,6 +106,7 @@ def test_plugin_manifest_is_declarative_only() -> None:
     manifest = PluginManifest.from_mapping(_plugin_mapping())
     assert manifest.enabled is False
     assert manifest.integrity.algorithm == "sha256"
+    assert PluginManifest.from_mapping(manifest.to_dict()) == manifest
 
     raw = _plugin_mapping()
     raw["python_entry_point"] = "untrusted.module:load"

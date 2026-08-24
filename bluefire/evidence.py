@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
-from .util import content_hash
+from .util import content_hash, json_clone
 
 
 class EvidenceError(ValueError):
@@ -117,6 +118,108 @@ class EvidenceRecord:
             target_scope_ref=target_scope_ref,
         )
 
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "EvidenceRecord":
+        """Rehydrate and cryptographically verify an immutable evidence row."""
+
+        expected_fields = {
+            "schema_version",
+            "evidence_id",
+            "run_id",
+            "step_id",
+            "behavior_id",
+            "action_id",
+            "provenance",
+            "producer",
+            "runner_profile_id",
+            "environment",
+            "timestamp",
+            "parent_evidence_ids",
+            "content",
+            "content_hash",
+            "record_hash",
+            "confidence",
+            "limitations",
+            "target_scope_ref",
+        }
+        if not isinstance(value, Mapping) or set(value) != expected_fields:
+            raise EvidenceError("evidence record fields do not match the evidence contract")
+        if value.get("schema_version") != "bluefire.evidence.v1":
+            raise EvidenceError("unsupported evidence schema version")
+
+        def required_string(name: str, maximum: int = 500) -> str:
+            item = value.get(name)
+            if not isinstance(item, str) or not item or len(item) > maximum or "\x00" in item:
+                raise EvidenceError(f"evidence {name} is invalid")
+            return item
+
+        def optional_string(name: str, maximum: int = 500) -> str | None:
+            item = value.get(name)
+            if item is None:
+                return None
+            return required_string(name, maximum)
+
+        try:
+            provenance = EvidenceProvenance(value.get("provenance"))
+        except (TypeError, ValueError) as exc:
+            raise EvidenceError("evidence provenance is invalid") from exc
+        environment = value.get("environment")
+        content = value.get("content")
+        if not isinstance(environment, Mapping) or not isinstance(content, Mapping):
+            raise EvidenceError("evidence environment and content must be objects")
+        try:
+            environment_copy = json_clone(environment)
+            content_copy = json_clone(content)
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise EvidenceError("evidence must contain only finite JSON values") from exc
+        if not isinstance(environment_copy, dict) or not isinstance(content_copy, dict):
+            raise EvidenceError("evidence environment and content must be objects")
+
+        def string_rows(name: str, maximum: int, item_maximum: int) -> tuple[str, ...]:
+            rows = value.get(name)
+            if not isinstance(rows, list) or len(rows) > maximum:
+                raise EvidenceError(f"evidence {name} is invalid")
+            result: list[str] = []
+            for item in rows:
+                if (
+                    not isinstance(item, str)
+                    or not item
+                    or len(item) > item_maximum
+                    or "\x00" in item
+                ):
+                    raise EvidenceError(f"evidence {name} is invalid")
+                result.append(item)
+            if len(set(result)) != len(result):
+                raise EvidenceError(f"evidence {name} contains duplicates")
+            return tuple(result)
+
+        confidence = value.get("confidence")
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+            raise EvidenceError("evidence confidence is invalid")
+        rebuilt = cls.create(
+            run_id=required_string("run_id", 80),
+            step_id=required_string("step_id", 200),
+            behavior_id=required_string("behavior_id", 200),
+            action_id=optional_string("action_id", 200),
+            provenance=provenance,
+            producer=required_string("producer", 200),
+            runner_profile_id=optional_string("runner_profile_id", 200),
+            environment=environment_copy,
+            timestamp=required_string("timestamp", 40),
+            parent_evidence_ids=string_rows("parent_evidence_ids", 256, 200),
+            content=content_copy,
+            confidence=confidence,
+            limitations=string_rows("limitations", 64, 1_000),
+            target_scope_ref=required_string("target_scope_ref", 500),
+        )
+        if value.get("content_hash") != rebuilt.content_hash:
+            raise EvidenceError("evidence content hash does not match its content")
+        if value.get("record_hash") != rebuilt.record_hash:
+            raise EvidenceError("evidence record hash does not match its fields")
+        if value.get("evidence_id") != rebuilt.evidence_id:
+            raise EvidenceError("evidence identifier does not match its record hash")
+        return rebuilt
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
@@ -152,6 +255,13 @@ class EvidenceGraph:
         missing = [parent for parent in record.parent_evidence_ids if parent not in self._records]
         if missing:
             raise EvidenceError(f"evidence references unknown parents: {missing}")
+        cross_run = [
+            parent
+            for parent in record.parent_evidence_ids
+            if self._records[parent].run_id != record.run_id
+        ]
+        if cross_run:
+            raise EvidenceError(f"evidence references parents from another run: {cross_run}")
         self._records[record.evidence_id] = record
 
     def extend(self, records: Iterable[EvidenceRecord]) -> None:
@@ -168,11 +278,23 @@ class EvidenceGraph:
 class SandboxObserver:
     """Read-only collector that records declared artifacts under one root."""
 
-    def __init__(self, sandbox_root: str | Path) -> None:
+    def __init__(
+        self,
+        sandbox_root: str | Path,
+        *,
+        max_file_bytes: int = 64 * 1024 * 1024,
+        read_timeout_seconds: float = 5.0,
+    ) -> None:
         root = Path(sandbox_root)
         if not root.is_dir():
             raise EvidenceError("sandbox observer root must already exist")
+        if max_file_bytes <= 0:
+            raise EvidenceError("observer maximum file size must be positive")
+        if read_timeout_seconds <= 0:
+            raise EvidenceError("observer read timeout must be positive")
         self.root = root.resolve(strict=True)
+        self.max_file_bytes = max_file_bytes
+        self.read_timeout_seconds = read_timeout_seconds
 
     def observe_file(
         self,
@@ -186,13 +308,23 @@ class SandboxObserver:
         parent_evidence_ids: Iterable[str] = (),
     ) -> EvidenceRecord:
         path = self._resolve_file(relative_path)
+        before = path.stat()
+        if before.st_size > self.max_file_bytes:
+            raise EvidenceError("observed file exceeds the configured byte limit")
         digest = hashlib.sha256()
         size = 0
+        deadline = time.monotonic() + self.read_timeout_seconds
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 size += len(chunk)
+                if size > self.max_file_bytes:
+                    raise EvidenceError("observed file exceeded the configured byte limit")
+                if time.monotonic() > deadline:
+                    raise EvidenceError("observed file read exceeded the configured time limit")
                 digest.update(chunk)
-        stat = path.stat()
+        after = path.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise EvidenceError("observed file changed while it was being collected")
         return EvidenceRecord.create(
             run_id=run_id,
             step_id=step_id,
@@ -208,7 +340,7 @@ class SandboxObserver:
                 "path": PurePosixPath(relative_path).as_posix(),
                 "size_bytes": size,
                 "sha256": digest.hexdigest(),
-                "modified_ns": stat.st_mtime_ns,
+                "modified_ns": after.st_mtime_ns,
             },
             confidence=1.0,
             limitations=("filesystem observation only; no host telemetry collector attached",),

@@ -1,7 +1,36 @@
 schema_version: bluefire.config.v1
 mode: simulate
 ai:
-  enabled: false
+  autonomy: "off"
+  active_provider: deterministic-offline.v1
+  fallback_provider: deterministic-offline.v1
+  providers:
+    - id: deterministic-offline.v1
+      kind: deterministic
+      model: deterministic-planner.v1
+      timeout_seconds: 1
+      max_retries: 0
+      max_output_tokens: 800
+      redaction:
+        enabled: true
+        redact_keys: [api_key, authorization, cookie, credential, password, secret, token]
+        max_string_chars: 4000
+        include_evidence_content: false
+
+    - id: openai-responses.v1
+      kind: openai_responses
+      model: gpt-4o-mini
+      endpoint: https://api.openai.com/v1/responses
+      api_key:
+        env: OPENAI_API_KEY
+      timeout_seconds: 30
+      max_retries: 2
+      max_output_tokens: 800
+      redaction:
+        enabled: true
+        redact_keys: [api_key, authorization, cookie, credential, password, secret, token]
+        max_string_chars: 4000
+        include_evidence_content: false
 active_profile: sandbox-simulate.v1
 runner_profiles:
   - id: sandbox-simulate.v1
@@ -25,7 +54,11 @@ runner_profiles:
       - sandbox.collection
       - sandbox.network
       - sandbox.export
+      - sandbox.archive
       - sandbox.cleanup
+      - endpoint.discovery
+      - system.discovery
+      - process.discovery
       - filesystem.read
       - filesystem.write
       - process.spawn
@@ -66,7 +99,11 @@ runner_profiles:
       - sandbox.collection
       - sandbox.network
       - sandbox.export
+      - sandbox.archive
       - sandbox.cleanup
+      - endpoint.discovery
+      - system.discovery
+      - process.discovery
       - filesystem.read
       - filesystem.write
       - process.spawn
@@ -80,7 +117,11 @@ runner_profiles:
       - sandbox.fixture.transform.v1
       - sandbox.discovery.list.v1
       - sandbox.discovery.metadata.v1
+      - endpoint.discovery.system.v1
+      - endpoint.discovery.processes.v1
+      - sandbox.discovery.recursive.v1
       - sandbox.collection.stage.v1
+      - sandbox.archive.tar.v1
       - sandbox.network.loopback.v1
       - sandbox.export.local.v1
       - sandbox.cleanup.v1
@@ -96,3 +137,19 @@ runner_profiles:
   - <<: *execute_profile
     id: sandbox-blocked-network.v1
     blocked_actions: [sandbox.network.loopback.v1]
+
+  - <<: *execute_profile
+    id: sandbox-restricted-owned.v1
+    scope: [sandbox.workspace]
+    network_allowlist: []
+    capabilities: [sandbox.restricted, sandbox.cleanup, filesystem.write, cleanup]
+    safety_tiers: [safe, restricted]
+    enabled_actions:
+      - sandbox.restricted.persistence-marker.v1
+      - sandbox.cleanup.v1
+    blocked_actions: []
+    budgets:
+      max_steps: 4
+      max_seconds: 30
+      max_artifacts: 16
+      max_bytes: 1048576

@@ -3,6 +3,11 @@
 __version__ = "0.1.0"
 
 from .config import (
+    AIConfig,
+    AIProviderConfig,
+    AIProviderKind,
+    AIRedactionPolicy,
+    AutonomyLevel,
     BlueFireConfig,
     CleanupPolicy,
     ConfigError,
@@ -40,11 +45,16 @@ from .registry import BehaviorRegistry, RegistryError, load_builtin_registry
 
 __all__ = [
     "ActionDefinition",
+    "AIConfig",
+    "AIProviderConfig",
+    "AIProviderKind",
+    "AIRedactionPolicy",
     "ArtifactBinding",
     "ArtifactSpec",
     "BehaviorDefinition",
     "BehaviorRegistry",
     "BlueFireConfig",
+    "AutonomyLevel",
     "CleanupPolicy",
     "ConfigError",
     "ContractError",

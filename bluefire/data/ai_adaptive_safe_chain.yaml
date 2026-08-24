@@ -1,0 +1,135 @@
+schema_version: bluefire.scenario.v1
+id: scenario.ai-adaptive.safe-chain.v1
+title: Containment-Aware Evidence Collection
+purpose: Given a disposable endpoint fixture, collect enough bounded system, process, and file evidence to validate detections; prefer approved internal transport, automatically choose the registered local-preservation path when policy blocks transport, and leave no runner-owned residue.
+start: create_fixture
+steps:
+  - id: create_fixture
+    behavior_id: sandbox.fixture.create.v1
+    parameters:
+      record_count: 9
+
+  - id: inspect_system
+    behavior_id: endpoint.discovery.system.v1
+
+  - id: inspect_processes
+    behavior_id: endpoint.discovery.processes.v1
+    parameters:
+      record_limit: 18
+
+  - id: transform_fixture
+    behavior_id: sandbox.fixture.transform.v1
+    parameters:
+      redact_values: true
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+  - id: choose_discovery
+    behavior_id: sandbox.discovery.list.v1
+    alternates:
+      - sandbox.discovery.metadata.v1
+    parameters:
+      record_limit: 25
+    inputs:
+      fixture:
+        from_step: transform_fixture
+        artifact: fixture
+
+  - id: stage_evidence
+    behavior_id: sandbox.collection.stage.v1
+    parameters:
+      bundle_format: jsonl
+    inputs:
+      records:
+        from_step: choose_discovery
+        artifact: records
+
+  - id: try_internal_transport
+    behavior_id: sandbox.network.loopback.v1
+    parameters:
+      port: 4317
+    inputs:
+      bundle:
+        from_step: stage_evidence
+        artifact: bundle
+
+  - id: preserve_approved_copy
+    behavior_id: sandbox.export.local.v1
+    parameters:
+      retention_label: ephemeral
+    inputs:
+      bundle:
+        from_step: stage_evidence
+        artifact: bundle
+
+  - id: cleanup_workspace
+    behavior_id: sandbox.cleanup.v1
+    parameters:
+      verify_removal: true
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+edges:
+  - from_step: create_fixture
+    outcome: success
+    to_step: inspect_system
+  - from_step: inspect_system
+    outcome: success
+    to_step: inspect_processes
+  - from_step: inspect_processes
+    outcome: success
+    to_step: transform_fixture
+  - from_step: inspect_processes
+    outcome: partial
+    to_step: transform_fixture
+  - from_step: transform_fixture
+    outcome: success
+    to_step: choose_discovery
+  - from_step: choose_discovery
+    outcome: success
+    to_step: stage_evidence
+  - from_step: choose_discovery
+    outcome: partial
+    to_step: stage_evidence
+  - from_step: stage_evidence
+    outcome: success
+    to_step: try_internal_transport
+  - from_step: stage_evidence
+    outcome: partial
+    to_step: try_internal_transport
+  - from_step: try_internal_transport
+    outcome: success
+    to_step: cleanup_workspace
+  - from_step: try_internal_transport
+    outcome: partial
+    to_step: preserve_approved_copy
+  - from_step: try_internal_transport
+    outcome: blocked
+    to_step: preserve_approved_copy
+  - from_step: try_internal_transport
+    outcome: failed
+    to_step: preserve_approved_copy
+  - from_step: preserve_approved_copy
+    outcome: success
+    to_step: cleanup_workspace
+  - from_step: preserve_approved_copy
+    outcome: partial
+    to_step: cleanup_workspace
+  - from_step: preserve_approved_copy
+    outcome: failed
+    to_step: cleanup_workspace
+
+provenance:
+  source: BlueFire Nexus authored validation scenario
+  reference: scenario.ai-adaptive.safe-chain.v1
+  license: MIT
+  derived: false
+  notes: Natural-language objective and graph are sanitized BlueFire content; AI providers may only propose registered graph objects and never executable commands.
+limitations:
+  - Autonomy off ignores model proposals; assist requires operator review; auto still passes every proposal through schema, registry, profile, scope, and policy validation.
+  - The deterministic provider is used whenever the configured model provider is unavailable or returns invalid output.
+  - Simulation and counterfactual evidence are never relabeled as observed execution.
