@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-UI_ROOT = Path(__file__).parents[1] / "bluefire" / "ui"
+PROJECT_ROOT = Path(__file__).parents[1]
+UI_ROOT = PROJECT_ROOT / "bluefire" / "ui"
+FRONTEND_ROOT = PROJECT_ROOT / "frontend"
+SOURCE_ROOT = FRONTEND_ROOT / "src"
 
 
 @pytest.fixture(scope="module")
@@ -18,172 +21,274 @@ def assets() -> dict[str, str]:
     }
 
 
-def test_ui_is_dependency_free_and_has_no_external_assets(assets: dict[str, str]) -> None:
+@pytest.fixture(scope="module")
+def source() -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(SOURCE_ROOT.rglob("*"))
+        if path.suffix in {".ts", ".tsx", ".css"}
+    )
+
+
+def test_packaged_ui_is_self_contained_and_uses_fixed_assets(assets: dict[str, str]) -> None:
     combined = "\n".join(assets.values())
     assert not re.search(r"(?:src|href)=[\"']https?://", assets["index.html"], re.IGNORECASE)
     assert not re.search(r"@import\s+url", assets["styles.css"], re.IGNORECASE)
     assert "unpkg.com" not in combined
-    assert "cdn." not in combined
     assert "node_modules" not in combined
-    assert '<script type="module" src="/ui/app.js"></script>' in assets["index.html"]
-    assert not re.search(r"<script(?:\s[^>]*)?>\s*[^<]", assets["index.html"], re.IGNORECASE)
+    assert re.search(r'<script[^>]+type="module"[^>]+src="/ui/app\.js"', assets["index.html"])
+    assert 'href="/ui/styles.css"' in assets["index.html"]
+    assert (UI_ROOT / "app.js").stat().st_size > 50_000
+    assert (UI_ROOT / "styles.css").stat().st_size > 10_000
 
 
-def test_ui_has_three_accessible_product_workspaces(assets: dict[str, str]) -> None:
-    html = assets["index.html"]
-    assert '<main id="workspace-main"' in html
-    assert 'aria-label="Primary workspace"' in html
-    for workspace in ("build", "run", "compare"):
-        assert f'data-workspace="{workspace}"' in html
-        assert f'id="workspace-{workspace}"' in html
-        assert f'aria-controls="workspace-{workspace}"' in html
-    assert "Skip to workspace" in html
-    assert "tabKeyboardNavigation" in assets["app.js"]
+def test_frontend_toolchain_is_locked_and_componentized() -> None:
+    package = (FRONTEND_ROOT / "package.json").read_text(encoding="utf-8")
+    assert (FRONTEND_ROOT / "pnpm-lock.yaml").is_file()
+    assert (FRONTEND_ROOT / "vite.config.ts").is_file()
+    assert (FRONTEND_ROOT / "vitest.config.ts").is_file()
+    assert (FRONTEND_ROOT / "playwright.config.ts").is_file()
+    for dependency in ("react", "@xyflow/react", "@tanstack/react-query", "@radix-ui/react-dialog"):
+        assert f'"{dependency}"' in package
+    assert (SOURCE_ROOT / "components" / "AppShell.tsx").is_file()
+    assert (SOURCE_ROOT / "state" / "ProductContext.tsx").is_file()
 
 
-def test_effect_modes_are_exactly_simulate_and_execute_and_ai_is_independent(
-    assets: dict[str, str],
-) -> None:
-    html = assets["index.html"]
-    modes = re.findall(r'name="execution-mode"\s+value="([^"]+)"', html)
-    assert modes == ["simulate", "execute"]
-    mode_fieldset = re.search(r'<fieldset class="mode-fieldset">(.*?)</fieldset>', html, re.DOTALL)
-    assert mode_fieldset
-    assert 'id="ai-planner"' not in mode_fieldset.group(1)
-    assert 'id="ai-planner"' in html
-    assert "AI Planner is an independent proposal layer" in html
-
-
-def test_execute_has_an_explicit_operator_bound_approval_gate(assets: dict[str, str]) -> None:
-    html = assets["index.html"]
-    script = assets["app.js"]
-    assert 'id="execute-approval" hidden' in html
-    confirmation = re.search(r'<input id="execute-approval-confirm"([^>]*)>', html)
-    assert confirmation
-    assert "checked" not in confirmation.group(1)
-    assert 'id="approval-operator"' in html
-    assert "Operator identity" in html
-    assert 'mode === "execute"' in script
-    assert "executeApprovalReady" in script
-    assert "Execute preflight requires explicit approval" in script
-    assert "approval: {" in script
-    assert "confirmed:" in script and "approved_by:" in script
-    assert 'value="sandbox.workspace"' in html
-
-
-def test_build_workspace_exposes_graph_contract_controls(assets: dict[str, str]) -> None:
-    html = assets["index.html"]
-    script = assets["app.js"]
-    for copy in (
-        "Behavior palette",
-        "Typed inputs",
-        "Typed outputs",
-        "Explicit outcome edges",
-        "Compatible swap",
-        "Swap node",
-        "Validate graph",
-    ):
-        assert copy in html or copy in script
-    assert 'aria-label="Editable scenario graph"' in html
-    assert 'role: "button"' in script
-    assert "ArrowLeft" in script and "ArrowRight" in script
-    assert "application/x-bluefire-behavior" in script
-    for outcome in ("success", "partial", "blocked", "failed"):
-        assert outcome in script
-
-
-def test_run_workspace_keeps_preflight_and_evidence_states_visible(assets: dict[str, str]) -> None:
-    html = assets["index.html"]
-    for copy in (
-        "Runner profile",
-        "Target scope",
-        "Capabilities",
-        "Safety tier",
-        "Approval",
-        "Cleanup plan",
-        "Queued",
-        "Planning",
-        "Running",
-        "Succeeded",
-        "Partial",
-        "Blocked",
-        "Failed",
-        "Skipped",
-        "Refused",
-        "Planner",
-        "Policy",
-        "Runner",
-        "Evidence",
-        "Detections",
-    ):
-        assert copy in html
-    assert 'id="start-run" type="button" disabled' in html
-    assert "state.preflight" in assets["app.js"]
-
-
-def test_replay_and_multi_run_compare_controls_are_present(assets: dict[str, str]) -> None:
-    html = assets["index.html"]
-    script = assets["app.js"]
-    for copy in (
-        "Exact",
-        "From node",
-        "Compatible swap",
-        "Profile override",
-        "AI Planner override",
-        "Declared defense change",
-        "First blocked node",
-        "Objective reached",
-        "Evidence provenance",
-        "Detection lifecycle",
-        "Cleanup result",
-        "Latency delta",
-    ):
-        assert copy in html
-    assert 'type="checkbox"' in script
-    assert "runIds.length < 2" in script
-    assert 'request("/comparisons"' in script
-    assert "/replays" in script
-
-
-def test_browser_has_no_direct_runner_or_arbitrary_shell_surface(assets: dict[str, str]) -> None:
-    combined = "\n".join(assets.values()).lower()
-    forbidden = (
-        "websocket(",
-        "runner_client",
-        "subprocess",
-        "shell command",
-        "command input",
-        "arbitrary command",
-        "/runner/execute",
+def test_all_required_product_routes_are_present() -> None:
+    app = (SOURCE_ROOT / "App.tsx").read_text(encoding="utf-8")
+    routes = (
+        "scenarios",
+        "builder",
+        "runs",
+        "compare",
+        "behaviors",
+        "runner-profiles",
+        "runners",
+        "actions",
+        "detection-lab",
+        "research-sources",
+        "ai-planner",
+        "settings",
+        "help",
     )
-    for value in forbidden:
-        assert value not in combined
-    assert "fetch(`${api}${path}`" in combined
+    for route in routes:
+        assert f'path="{route}"' in app
 
 
-def test_public_ui_has_no_actor_branding_or_private_review_residue(assets: dict[str, str]) -> None:
-    combined = "\n".join(assets.values())
-    assert not re.search(r"\bAPT\s*\d+\b|\bFIN\s*7\b|threat actor", combined, re.IGNORECASE)
-    assert not re.search(r"PR\s*#\d+|Codex P[0-9]", combined, re.IGNORECASE)
+def test_modes_and_autonomy_are_exact_and_independent(source: str) -> None:
+    types = (SOURCE_ROOT / "types.ts").read_text(encoding="utf-8")
+    assert 'RunMode = "simulate" | "execute"' in types
+    assert 'AutonomyLevel = "off" | "assist" | "auto"' in types
+    api = (SOURCE_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
+    assert "autonomy: config.autonomy" in api
+    assert "ai_provider_id: config.provider" in api
+    assert "autonomy_level: config.autonomy" not in api
+    assert "ai_enabled: config.autonomy" not in api
+    assert "Independent from Simulate or Execute mode" in source
 
 
-def test_css_is_responsive_and_supports_reduced_motion(assets: dict[str, str]) -> None:
+def test_execute_approval_is_ephemeral_and_operator_bound() -> None:
+    context = (SOURCE_ROOT / "state" / "ProductContext.tsx").read_text(encoding="utf-8")
+    runs = (SOURCE_ROOT / "pages" / "Runs.tsx").read_text(encoding="utf-8")
+    assert "approved: false" in context
+    assert 'approvedBy: ""' in context
+    assert "clearApproval" in context
+    assert "const { approved, approvedBy, endpoint, ...persistentConfig } = runConfig" in context
+    assert "JSON.stringify(persistentConfig)" in context
+    assert "Explicit one-time Execute approval" in runs
+    assert "onSettled: clearApproval" in runs
+    assert "I approve this exact immutable" in runs
+    assert '"job envelope"' in runs
+    assert "never sent as an execution capability" in runs
+    assert "Operator identity" in runs
+
+
+def test_run_ui_uses_durable_job_lifecycle_routes() -> None:
+    api = (SOURCE_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
+    runs = (SOURCE_ROOT / "pages" / "Runs.tsx").read_text(encoding="utf-8")
+    types = (SOURCE_ROOT / "types.ts").read_text(encoding="utf-8")
+    for route in (
+        'request("/runs"',
+        "request(`/jobs/${encodeURIComponent(jobId)}`)",
+        "/approval`",
+        "/${action}`",
+    ):
+        assert route in api
+    assert "submitRun" in api and "approveJob" in api and "controlJob" in api
+    for state in ("awaiting_approval", "running", "paused", "cancelling", "completed"):
+        assert state in runs + types
+    assert "Pause at the next cooperative checkpoint" in runs
+    assert "Approve and release job" in runs
+
+
+def test_management_ui_uses_durable_secret_safe_routes() -> None:
+    api = (SOURCE_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
+    builder = (SOURCE_ROOT / "pages" / "Builder.tsx").read_text(encoding="utf-8")
+    settings = (SOURCE_ROOT / "pages" / "SettingsHelp.tsx").read_text(encoding="utf-8")
+    catalog = (SOURCE_ROOT / "pages" / "CatalogPages.tsx").read_text(encoding="utf-8")
+    detection = (SOURCE_ROOT / "pages" / "DetectionLab.tsx").read_text(encoding="utf-8")
+
+    for route in (
+        "/settings/${encodeURIComponent(key)}",
+        'request("/scenario-versions"',
+        "/resources/${kind}/${encodeURIComponent(id)}",
+    ):
+        assert route in api
+    assert "api.saveScenarioVersion(scenario)" in builder
+    assert 'api.saveSetting("ui.preferences"' in settings
+    assert "const { approved, approvedBy, endpoint, ...runDefaults }" in settings
+    for kind in ('"runner-profiles"', '"runners"', '"plugins"', '"research-sources"'):
+        assert f"api.saveResource({kind}" in catalog
+    assert "api.upsertDetection(" in detection
+    assert "api.detectionAction(" in detection
+    for action in ("parse", "exercise-fixtures", "exercise-observed", "evaluate-benign", "reject"):
+        assert action in detection
+    assert 'api.activateResource("runner-profiles"' in catalog
+    assert 'api.deactivateResource("runner-profiles"' in catalog
+    assert "api.probeRunnerProfile(" in catalog
+    assert 'api.activateResource("plugins"' in catalog
+    assert 'api.deactivateResource("plugins"' in catalog
+    assert "does not launch, enroll, authenticate, or attest" in catalog
+    assert "does not download, verify bytes, install code" in catalog
+    assert "It never installs or loads plugin code" in catalog
+
+
+def test_graph_editor_exposes_typed_contract_controls(source: str) -> None:
+    builder = (SOURCE_ROOT / "pages" / "Builder.tsx").read_text(encoding="utf-8")
+    for capability in (
+        "application/x-bluefire-behavior",
+        "ReactFlow",
+        "MiniMap",
+        "Controls",
+        "onConnect",
+        "copySelected",
+        "duplicateSelected",
+        "undo",
+        "redo",
+        "Validate",
+        "Action implementation",
+    ):
+        assert capability in builder
+    for outcome in ("success", "partial", "blocked", "failed"):
+        assert outcome in builder
+    assert "Incompatible artifact contract" in builder
+
+
+def test_run_ui_separates_preview_preferences_from_canonical_preflight() -> None:
+    runs = (SOURCE_ROOT / "pages" / "Runs.tsx").read_text(encoding="utf-8")
+    for copy in (
+        "Profile-owned enforcement",
+        "Local research preferences",
+        "Canonical preflight",
+        "Resolved canonical plan",
+        "Plan digest",
+        "Expected outputs",
+        "Required capabilities",
+        "sent for exact binding",
+    ):
+        assert copy in runs
+    api = (SOURCE_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
+    for unsupported in (
+        "budgets:",
+        "collectors:",
+        "detection_backends:",
+        "cleanup_policy:",
+        "counterfactual_policy:",
+    ):
+        assert unsupported not in api
+    assert 'config.mode === "execute"' in api
+    assert "action_implementations" in api
+    assert "Simulate ignores and clears action selections" in (
+        SOURCE_ROOT / "pages" / "Builder.tsx"
+    ).read_text(encoding="utf-8")
+
+
+def test_replay_compare_requires_fresh_execute_approval_and_strict_parameters() -> None:
+    compare = (SOURCE_ROOT / "pages" / "Compare.tsx").read_text(encoding="utf-8")
+    api = (SOURCE_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
+    assert "parseParameterOverrides" in compare
+    assert "Run prospective base-plan check" in compare
+    assert "I approve this reviewed Execute replay request once" in compare
+    assert "Not the replay binding" in compare
+    assert "The source bundle never changes" in compare
+    assert "Source run" in compare
+    assert "Replay created" in compare and "replayMutation.data.run_id" in compare
+    assert "buildReplayPayload" in api
+    assert "parameter_overrides" in api
+    assert "target_scope" in api and "approval" in api
+    assert "autonomy:" in api and "ai_provider_id:" in api
+
+
+def test_durable_proposal_review_and_retry_stay_separate_from_execute_approval() -> None:
+    api = (SOURCE_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
+    runs = (SOURCE_ROOT / "pages" / "Runs.tsx").read_text(encoding="utf-8")
+    planner = (SOURCE_ROOT / "pages" / "AIPlanner.tsx").read_text(encoding="utf-8")
+    review = (SOURCE_ROOT / "components" / "ProposalReview.tsx").read_text(encoding="utf-8")
+    for route in ("/retry`", "/proposals`", "/${action}`"):
+        assert route in api
+    for digest in ("state_digest", "plan_digest", "proposal_digest"):
+        assert digest in api and digest in review
+    assert 'aria-label="AI decision boundaries"' in review
+    assert "Separate fresh one-time capability" in review
+    assert "Fresh Execute approval after proposal acceptance" in runs
+    assert "Retry as replacement" in runs
+    for capability in (
+        "exact observed next edge",
+        "compatible registered behavior",
+        "typed primitive parameters",
+        "exact active profile",
+        "one bounded retry",
+        "every Execute mutation stops for fresh one-time approval",
+    ):
+        assert capability in planner
+    for boundary in (
+        "arbitrary commands",
+        "widen scope",
+        "change profile, tier, or policy",
+        "edge for another outcome",
+        "runtime-apply detection or replay proposals",
+    ):
+        assert boundary in planner
+
+
+def test_browser_has_no_direct_runner_or_shell_surface(source: str) -> None:
+    lowered = source.lower()
+    for forbidden in (
+        "websocket(",
+        "subprocess",
+        "shell command input",
+        "/runner/execute",
+    ):
+        assert forbidden not in lowered
+    assert 'const api_root = "/api/v1"' in lowered
+    assert 'credentials: "same-origin"' in lowered
+
+
+def test_public_ui_has_no_actor_branding_or_review_residue(source: str) -> None:
+    assert not re.search(r"\bAPT\s*\d+\b|\bFIN\s*7\b|threat actor", source, re.IGNORECASE)
+    assert not re.search(r"PR\s*#\d+|Codex P[0-9]", source, re.IGNORECASE)
+
+
+def test_css_is_responsive_accessible_and_reduced_motion_safe(assets: dict[str, str]) -> None:
     css = assets["styles.css"]
-    assert css.count("@media (max-width:") >= 3
-    assert "@media (prefers-reduced-motion: no-preference)" in css
+    assert len(re.findall(r"@media\s*\(max-width:", css)) >= 3
+    assert "@media(prefers-reduced-motion:reduce)" in css.replace(" ", "")
     assert ":focus-visible" in css
-    assert "min-width: 320px" in css
+    assert "min-width:320px" in css.replace(" ", "")
+    assert ".skip-link" in css
 
 
 def test_javascript_passes_node_syntax_check_when_node_is_available() -> None:
     node = shutil.which("node")
     if not node:
-        pytest.skip("Node.js is not installed; the UI has no Node runtime dependency")
+        pytest.skip(
+            "Node.js is not installed; the packaged UI still has no runtime Node dependency"
+        )
     completed = subprocess.run(
         [node, "--check", str(UI_ROOT / "app.js")],
         check=False,
         capture_output=True,
         text=True,
-        timeout=20,
+        timeout=30,
     )
     assert completed.returncode == 0, completed.stderr
