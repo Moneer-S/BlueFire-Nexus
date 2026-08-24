@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
+use std::time::{Duration as StdDuration, Instant};
 
 use bluefire_runner::contract::{
-    MANIFEST_SCHEMA_VERSION, PROFILE_SCHEMA_VERSION, RESULT_SCHEMA_VERSION,
+    sha256_hex, MANIFEST_SCHEMA_VERSION, PROFILE_SCHEMA_VERSION, RESULT_SCHEMA_VERSION,
 };
+use bluefire_runner::safety::{owned_directories, owned_file, SafeRoot};
 use bluefire_runner::{
     inventory, seal_manifest, seal_profile, utc_now, Approval, Capability, EvidenceKind,
     ExecutionLimits, ExecutionManifest, NetworkDestination, Platform, RunMode, Runner,
@@ -59,7 +61,7 @@ fn runner_binary() -> PathBuf {
 }
 
 fn runner() -> Runner {
-    Runner::with_executable(runner_binary())
+    Runner::new().unwrap()
 }
 
 fn limits() -> ExecutionLimits {
@@ -88,8 +90,11 @@ fn profile(root: &TempDir, network: Vec<NetworkDestination>) -> RunnerProfile {
             Capability::FilesystemRead,
             Capability::FilesystemWrite,
             Capability::ProcessSpawn,
+            Capability::ProcessDiscovery,
+            Capability::SystemDiscovery,
             Capability::NetworkLoopback,
             Capability::ExportLocal,
+            Capability::SandboxRestricted,
             Capability::Cleanup,
         ],
         max_safety_tier: SafetyTier::Restricted,
@@ -162,9 +167,33 @@ fn valid_fixture_has_structured_provenance_and_receipt() {
     let profile = profile(&root, Vec::new());
     let result = create_fixture(&root, &profile, "artifacts/seed.txt");
     assert_eq!(result.schema_version, RESULT_SCHEMA_VERSION);
-    assert_eq!(result.status, TaskStatus::Success);
+    assert_eq!(result.status, TaskStatus::Success, "{result:#?}");
     assert!(root.path().join("artifacts/seed.txt").is_file());
     assert_eq!(result.receipt_ids.len(), 1);
+    let receipt_id = &result.receipt_ids[0];
+    let receipt: Value = serde_json::from_slice(
+        &fs::read(
+            root.path()
+                .join(".bluefire/receipts")
+                .join(format!("{receipt_id}.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(receipt["schema_version"], "bluefire.receipt/v1");
+    assert_eq!(receipt["receipt_id"], *receipt_id);
+    assert!(receipt["workspace_id"].as_str().is_some());
+    let commit: Value = serde_json::from_slice(
+        &fs::read(
+            root.path()
+                .join(".bluefire/receipt-commits")
+                .join(format!("{receipt_id}.json")),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(commit["schema_version"], "bluefire.receipt-commit/v1");
+    assert_eq!(commit["receipt_id"], *receipt_id);
     assert!(result.request_hash.starts_with("sha256:"));
     assert_eq!(result.policy_digest, profile.policy_digest);
     assert_eq!(result.evidence.len(), 1);
@@ -403,7 +432,7 @@ fn symlink_escape_is_blocked_without_following_the_link() {
 }
 
 #[test]
-fn fixed_transform_has_bounded_output_and_no_caller_executable() {
+fn fixed_transform_is_in_process_and_has_no_caller_executable() {
     let root = TempDir::new().unwrap();
     let profile = profile(&root, Vec::new());
     assert_eq!(
@@ -419,14 +448,34 @@ fn fixed_transform_has_bounded_output_and_no_caller_executable() {
             "transform": "uppercase-ascii"
         }),
     );
-    request.limits.max_stdout_bytes = 4;
     seal_manifest(&mut request);
     let result = runner().execute(request, profile);
     assert_eq!(result.status, TaskStatus::Success);
-    assert!(result.stdout.truncated);
-    assert_eq!(result.stdout.text.len(), 4);
+    assert!(result.stdout.text.is_empty());
+    assert_eq!(
+        result.output["implementation"],
+        "in_process_reviewed_transform"
+    );
     let bytes = fs::read(root.path().join("output.txt")).unwrap();
     assert_eq!(bytes, b"BLUEFIRE-FIXTURE-V1\nKIND=TELEMETRY-SEED\n");
+}
+
+#[test]
+fn legacy_private_transform_subcommand_is_not_an_invokable_bypass() {
+    let root = TempDir::new().unwrap();
+    fs::write(root.path().join("input.txt"), b"caller-controlled").unwrap();
+    let output = Command::new(runner_binary())
+        .arg("__private-transform")
+        .arg(root.path())
+        .arg("input.txt")
+        .arg("output.txt")
+        .arg("uppercase-ascii")
+        .env("BLUEFIRE_RUNNER_PRIVATE_TRANSFORM", "v1")
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(!root.path().join("output.txt").exists());
 }
 
 #[test]
@@ -450,6 +499,110 @@ fn collection_partial_result_retains_a_cleanup_receipt() {
     assert_eq!(result.receipt_ids.len(), 1);
     assert!(root.path().join("stage/000-input.txt").is_file());
     assert_eq!(result.evidence[0].kind, EvidenceKind::Executed);
+}
+
+#[test]
+fn system_process_recursive_and_archive_actions_are_bounded_and_typed() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+
+    let system = runner().execute(
+        manifest(&profile, "endpoint.discovery.system.v1", json!({})),
+        profile.clone(),
+    );
+    assert_eq!(system.status, TaskStatus::Success);
+    assert_eq!(system.output["operating_system"], std::env::consts::OS);
+    assert!(system.output["logical_processors"].as_u64().unwrap() >= 1);
+
+    let processes = runner().execute(
+        manifest(
+            &profile,
+            "endpoint.discovery.processes.v1",
+            json!({"max_entries": 4}),
+        ),
+        profile.clone(),
+    );
+    assert!(matches!(
+        processes.status,
+        TaskStatus::Success | TaskStatus::Partial
+    ));
+    assert!(processes.output["entries"]
+        .as_array()
+        .is_some_and(|entries| !entries.is_empty() && entries.len() <= 4));
+
+    let first = create_fixture(&root, &profile, "tree/a.txt");
+    let second = create_fixture(&root, &profile, "tree/deep/b.txt");
+    assert_eq!(first.status, TaskStatus::Success);
+    assert_eq!(second.status, TaskStatus::Success);
+
+    let recursive = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.discovery.recursive.v1",
+            json!({"path": "tree", "max_entries": 8, "max_depth": 3}),
+        ),
+        profile.clone(),
+    );
+    assert_eq!(recursive.status, TaskStatus::Success);
+    let paths = recursive.output["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["path"].as_str())
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&"tree/a.txt"));
+    assert!(paths.contains(&"tree/deep/b.txt"));
+
+    let shallow = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.discovery.recursive.v1",
+            json!({"path": "tree", "max_entries": 8, "max_depth": 1}),
+        ),
+        profile.clone(),
+    );
+    assert_eq!(shallow.status, TaskStatus::Success);
+    assert!(shallow.output["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|entry| entry["depth"].as_u64().is_some_and(|depth| depth <= 1)));
+    assert!(!shallow.output["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["path"] == "tree/deep/b.txt"));
+
+    let count_limited = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.discovery.recursive.v1",
+            json!({"path": "tree", "max_entries": 1, "max_depth": 3}),
+        ),
+        profile.clone(),
+    );
+    assert_eq!(count_limited.status, TaskStatus::Success);
+    assert_eq!(count_limited.output["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(count_limited.output["truncated"], true);
+
+    let archived = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.archive.tar.v1",
+            json!({
+                "inputs": ["tree/deep/b.txt", "tree/a.txt"],
+                "destination": "archives/tree.tar"
+            }),
+        ),
+        profile,
+    );
+    assert_eq!(archived.status, TaskStatus::Success);
+    assert_eq!(archived.output["format"], "ustar");
+    assert_eq!(archived.output["entry_count"], 2);
+    assert_eq!(archived.receipt_ids.len(), 1);
+    let archive = fs::read(root.path().join("archives/tree.tar")).unwrap();
+    assert_eq!(&archive[257..263], b"ustar\0");
+    assert_eq!(archive.len() % 512, 0);
 }
 
 #[test]
@@ -482,6 +635,214 @@ fn receipt_cleanup_is_idempotent_and_refuses_tampered_files() {
     assert_eq!(result.status, TaskStatus::CleanupFailed);
     assert!(root.path().join("tampered.txt").exists());
     assert!(!result.cleanup.unwrap().retained_paths.is_empty());
+}
+
+#[test]
+fn cleanup_refuses_a_receipt_whose_owned_path_metadata_was_rewritten() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let created = create_fixture(&root, &profile, "intent-owner.txt");
+    assert_eq!(created.status, TaskStatus::Success);
+    let receipt_id = &created.receipt_ids[0];
+    let receipt_path = root
+        .path()
+        .join(".bluefire/receipts")
+        .join(format!("{receipt_id}.json"));
+    let owner_bytes = fs::read(root.path().join("intent-owner.txt")).unwrap();
+    fs::write(root.path().join("unowned-victim.txt"), &owner_bytes).unwrap();
+
+    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    receipt["paths"][0]["relative_path"] = json!("unowned-victim.txt");
+    fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
+    let cleaned = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.cleanup.v1",
+            json!({"receipt_ids": [receipt_id]}),
+        ),
+        profile,
+    );
+    assert_eq!(cleaned.status, TaskStatus::CleanupFailed);
+    assert!(root.path().join("intent-owner.txt").exists());
+    assert!(root.path().join("unowned-victim.txt").exists());
+    assert!(cleaned
+        .cleanup
+        .unwrap()
+        .errors
+        .iter()
+        .any(|error| error.contains("content digest is invalid")));
+}
+
+#[test]
+fn cleanup_refuses_a_valid_receipt_copied_into_another_workspace() {
+    let source_root = TempDir::new().unwrap();
+    let source_profile = profile(&source_root, Vec::new());
+    let created = create_fixture(&source_root, &source_profile, "copied.txt");
+    assert_eq!(created.status, TaskStatus::Success);
+    let receipt_id = &created.receipt_ids[0];
+    let source_receipt = source_root
+        .path()
+        .join(".bluefire/receipts")
+        .join(format!("{receipt_id}.json"));
+
+    let destination_root = TempDir::new().unwrap();
+    let destination_profile = profile(&destination_root, Vec::new());
+    fs::write(
+        destination_root.path().join("copied.txt"),
+        fs::read(source_root.path().join("copied.txt")).unwrap(),
+    )
+    .unwrap();
+    fs::create_dir(destination_root.path().join(".bluefire")).unwrap();
+    fs::create_dir(destination_root.path().join(".bluefire/receipts")).unwrap();
+    fs::copy(
+        source_receipt,
+        destination_root
+            .path()
+            .join(".bluefire/receipts")
+            .join(format!("{receipt_id}.json")),
+    )
+    .unwrap();
+
+    let cleaned = runner().execute(
+        manifest(
+            &destination_profile,
+            "sandbox.cleanup.v1",
+            json!({"receipt_ids": [receipt_id]}),
+        ),
+        destination_profile,
+    );
+    assert_eq!(cleaned.status, TaskStatus::CleanupFailed);
+    assert!(destination_root.path().join("copied.txt").exists());
+    assert!(cleaned
+        .cleanup
+        .unwrap()
+        .errors
+        .iter()
+        .any(|error| error.contains("another workspace")));
+}
+
+#[test]
+fn pending_wal_intent_is_discoverable_and_cleans_a_partially_published_action() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let request = manifest(
+        &profile,
+        "sandbox.fixture.create.v1",
+        json!({"path": "partial/first.bin", "content_template": "empty"}),
+    );
+    let safe_root = SafeRoot::open(root.path()).unwrap();
+    let first_bytes = b"first-published-effect";
+    let second_bytes = b"second-never-published";
+    let first = safe_root.prepare_new_file("partial/first.bin").unwrap();
+    let second = safe_root.prepare_new_file("partial/second.bin").unwrap();
+    assert!(!root.path().join("partial").exists());
+    let mut owned = vec![
+        owned_file(first.relative.clone(), first_bytes),
+        owned_file(second.relative.clone(), second_bytes),
+    ];
+    owned.extend(owned_directories(&first.created_directories));
+    let intent = safe_root.begin_receipt(&request, &profile, owned).unwrap();
+    let receipt_id = intent.id().to_string();
+    assert!(!root.path().join("partial").exists());
+
+    // Deterministically model a hard kill between two file publications: the
+    // first exact effect exists, the second is absent, and no commit marker was
+    // written. The pre-effect receipt must already be independently visible.
+    safe_root.write_new(&first, first_bytes, &intent).unwrap();
+    drop(safe_root);
+    let receipt_path = root
+        .path()
+        .join(".bluefire/receipts")
+        .join(format!("{receipt_id}.json"));
+    let receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    assert_eq!(receipt["schema_version"], "bluefire.receipt/v1");
+    assert_eq!(receipt["receipt_id"], receipt_id);
+    assert_eq!(receipt["runner_profile_id"], profile.profile_id);
+    assert!(receipt["workspace_id"].as_str().is_some());
+    assert!(!root
+        .path()
+        .join(".bluefire/receipt-commits")
+        .join(format!("{receipt_id}.json"))
+        .exists());
+    assert!(root.path().join("partial/first.bin").exists());
+    assert!(!root.path().join("partial/second.bin").exists());
+
+    let cleaned = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.cleanup.v1",
+            json!({"receipt_ids": [receipt_id]}),
+        ),
+        profile,
+    );
+    assert_eq!(cleaned.status, TaskStatus::Success, "{cleaned:#?}");
+    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+}
+
+#[test]
+fn pending_wal_cleanup_removes_a_partial_runner_staging_effect() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let request = manifest(
+        &profile,
+        "sandbox.fixture.create.v1",
+        json!({"path": "partial-stage/output.bin", "content_template": "empty"}),
+    );
+    let safe_root = SafeRoot::open(root.path()).unwrap();
+    let bytes = b"complete-intended-content";
+    let target = safe_root
+        .prepare_new_file("partial-stage/output.bin")
+        .unwrap();
+    let mut owned = vec![owned_file(target.relative.clone(), bytes)];
+    owned.extend(owned_directories(&target.created_directories));
+    let intent = safe_root.begin_receipt(&request, &profile, owned).unwrap();
+    let receipt_id = intent.id().to_string();
+
+    // Model termination after the durable intent and a partial staging write,
+    // before atomic publication. Staging is runner-owned by receipt+path hash.
+    fs::create_dir(root.path().join("partial-stage")).unwrap();
+    let path_id = sha256_hex(target.relative.as_bytes());
+    let staging = root
+        .path()
+        .join(".bluefire/staging")
+        .join(format!("{receipt_id}-{path_id}.stage"));
+    fs::write(&staging, &bytes[..8]).unwrap();
+    drop(safe_root);
+
+    let cleaned = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.cleanup.v1",
+            json!({"receipt_ids": [receipt_id]}),
+        ),
+        profile,
+    );
+    assert_eq!(cleaned.status, TaskStatus::Success, "{cleaned:#?}");
+    assert!(!staging.exists());
+    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+}
+
+#[test]
+fn cleanup_enforces_receipt_lifo_even_when_the_request_is_oldest_first() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let parent = create_fixture(&root, &profile, "lifo/parent.txt");
+    let child = create_fixture(&root, &profile, "lifo/child.txt");
+    assert_eq!(parent.status, TaskStatus::Success);
+    assert_eq!(child.status, TaskStatus::Success);
+
+    let cleaned = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.cleanup.v1",
+            json!({
+                "receipt_ids": [parent.receipt_ids[0], child.receipt_ids[0]]
+            }),
+        ),
+        profile,
+    );
+    assert_eq!(cleaned.status, TaskStatus::Success, "{cleaned:#?}");
+    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
 }
 
 #[test]
@@ -549,6 +910,46 @@ fn loopback_action_uses_only_the_declared_ephemeral_receiver() {
     );
     let received = receiver.join().unwrap();
     assert!(received.ends_with(b"bluefire-fixture-v1\nkind=telemetry-seed\n"));
+}
+
+#[test]
+fn loopback_trickle_response_cannot_extend_the_monotonic_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let receiver = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        socket.read_to_end(&mut request).unwrap();
+        for byte in b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n" {
+            if socket.write_all(&[*byte]).is_err() {
+                break;
+            }
+            thread::sleep(StdDuration::from_millis(20));
+        }
+    });
+
+    let root = TempDir::new().unwrap();
+    let destination = NetworkDestination {
+        host: "127.0.0.1".to_string(),
+        port,
+    };
+    let profile = profile(&root, vec![destination.clone()]);
+    assert_eq!(
+        create_fixture(&root, &profile, "network-slow.txt").status,
+        TaskStatus::Success
+    );
+    let mut request = manifest(
+        &profile,
+        "sandbox.network.loopback.v1",
+        json!({"artifact": "network-slow.txt", "destination": destination}),
+    );
+    request.limits.timeout_ms = 80;
+    seal_manifest(&mut request);
+    let started = Instant::now();
+    let result = runner().execute(request, profile);
+    assert_eq!(result.status, TaskStatus::TimedOut);
+    assert!(started.elapsed() < StdDuration::from_millis(500));
+    receiver.join().unwrap();
 }
 
 #[test]
@@ -677,6 +1078,107 @@ fn disposable_vertical_slice_runs_real_steps_and_cleans_in_reverse_order() {
 }
 
 #[test]
+fn restricted_persistence_marker_is_profile_and_capability_gated_then_cleans() {
+    const ACTION_ID: &str = "sandbox.restricted.persistence-marker.v1";
+    let root = TempDir::new().unwrap();
+
+    let mut tier_denied = profile(&root, Vec::new());
+    tier_denied.max_safety_tier = SafetyTier::Controlled;
+    seal_profile(&mut tier_denied);
+    let result = runner().execute(
+        manifest(
+            &tier_denied,
+            ACTION_ID,
+            json!({"label": "persistence_detection_canary"}),
+        ),
+        tier_denied,
+    );
+    assert_eq!(result.status, TaskStatus::ControlBlocked);
+    assert_eq!(result.error.unwrap().code, "safety_tier_blocked");
+    assert!(!root
+        .path()
+        .join("restricted/persistence-marker.json")
+        .exists());
+
+    let mut allowlist_denied = profile(&root, Vec::new());
+    allowlist_denied
+        .allowed_actions
+        .retain(|action| action != ACTION_ID);
+    seal_profile(&mut allowlist_denied);
+    let result = runner().execute(
+        manifest(
+            &allowlist_denied,
+            ACTION_ID,
+            json!({"label": "control_validation"}),
+        ),
+        allowlist_denied,
+    );
+    assert_eq!(result.status, TaskStatus::ControlBlocked);
+    assert_eq!(result.error.unwrap().code, "action_not_allowed");
+
+    let mut capability_denied = profile(&root, Vec::new());
+    capability_denied
+        .capabilities
+        .retain(|capability| *capability != Capability::SandboxRestricted);
+    seal_profile(&mut capability_denied);
+    let result = runner().execute(
+        manifest(
+            &capability_denied,
+            ACTION_ID,
+            json!({"label": "control_validation"}),
+        ),
+        capability_denied,
+    );
+    assert_eq!(result.status, TaskStatus::ControlBlocked);
+    assert_eq!(result.error.unwrap().code, "capability_blocked");
+
+    let profile = profile(&root, Vec::new());
+    for params in [
+        json!({"label": "arbitrary"}),
+        json!({"label": "control_validation", "path": "caller/chosen.json"}),
+    ] {
+        let refused = runner().execute(manifest(&profile, ACTION_ID, params), profile.clone());
+        assert_eq!(refused.status, TaskStatus::Refused);
+        assert_eq!(refused.error.unwrap().code, "invalid_action_params");
+    }
+    let created = runner().execute(
+        manifest(
+            &profile,
+            ACTION_ID,
+            json!({"label": "persistence_detection_canary"}),
+        ),
+        profile.clone(),
+    );
+    assert_eq!(created.status, TaskStatus::Success, "{created:#?}");
+    assert_eq!(
+        created.output["artifact"],
+        "restricted/persistence-marker.json"
+    );
+    assert!(created.output["sha256"]
+        .as_str()
+        .is_some_and(|digest| digest.starts_with("sha256:") && digest.len() == 71));
+    assert_eq!(created.receipt_ids.len(), 1);
+    let marker: Value = serde_json::from_slice(
+        &fs::read(root.path().join("restricted/persistence-marker.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(marker["kind"], "non_executable_marker");
+    assert_eq!(marker["executable"], false);
+    assert_eq!(marker["label"], "persistence_detection_canary");
+
+    let cleaned = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.cleanup.v1",
+            json!({"receipt_ids": created.receipt_ids}),
+        ),
+        profile,
+    );
+    assert_eq!(cleaned.status, TaskStatus::Success, "{cleaned:#?}");
+    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+}
+
+#[test]
 fn inventory_and_execute_cli_emit_the_versioned_json_contract() {
     let inventory_output = Command::new(runner_binary())
         .args(["inventory", "--json"])
@@ -688,7 +1190,15 @@ fn inventory_and_execute_cli_emit_the_versioned_json_contract() {
         inventory_json["schema_version"],
         "bluefire.runner-inventory.v1"
     );
-    assert_eq!(inventory_json["actions"].as_array().unwrap().len(), 8);
+    assert_eq!(
+        inventory_json["action_sdk_version"],
+        "bluefire.runner-action-sdk.v1"
+    );
+    assert_eq!(
+        inventory_json["receipt_protocol"],
+        "bluefire.runner-receipt-wal.v2"
+    );
+    assert_eq!(inventory_json["actions"].as_array().unwrap().len(), 13);
 
     let root = TempDir::new().unwrap();
     let profile = profile(&root, Vec::new());

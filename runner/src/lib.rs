@@ -6,14 +6,15 @@
 
 pub mod actions;
 pub mod contract;
-pub mod process;
+mod process;
 pub mod runner;
 pub mod safety;
 
-pub use actions::{inventory, ActionDescriptor};
+pub use actions::{inventory, ActionDescriptor, ACTION_SDK_SCHEMA_VERSION};
 pub use contract::{
     seal_manifest, seal_profile, utc_now, Approval, Capability, CleanupReport, EvidenceKind,
     EvidenceRecord, ExecutionLimits, ExecutionManifest, NetworkDestination, Platform, RunMode,
     RunnerProfile, SafetyTier, TargetScope, TaskResult, TaskStatus,
 };
 pub use runner::{execute_files, Runner, RunnerError, MAX_DOCUMENT_BYTES};
+pub use safety::RECEIPT_PROTOCOL_VERSION;

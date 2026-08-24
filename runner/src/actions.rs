@@ -1,43 +1,137 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
-use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
 
 use crate::contract::{
     BoundedOutput, Capability, CleanupReport, ErrorRecord, ExecutionManifest, NetworkDestination,
     Platform, RunnerProfile, SafetyTier, TaskStatus,
 };
-use crate::process::run_fixed_transform;
+use crate::process::run_process_discovery;
 use crate::safety::{
     ensure_network_authorized, ensure_path_authorized, hash_file, normalize_relative,
-    owned_directories, owned_file, read_file_bounded, OwnedPath, SafeRoot,
+    owned_directories, owned_file, read_file_bounded, OwnedPath, ReceiptIntent, SafeRoot,
 };
 
 const ALL_PLATFORMS: &[Platform] = &[Platform::Windows, Platform::Linux, Platform::Macos];
+pub const ACTION_SDK_SCHEMA_VERSION: &str = "bluefire.runner-action-sdk.v1";
+const MAX_RECURSIVE_DEPTH: usize = 16;
+const MAX_RECURSIVE_ENTRIES: usize = 4_096;
+const MAX_RECURSIVE_ERRORS: usize = 64;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionReadiness {
+    Ready,
+    Structural,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ObservationHint {
+    pub source: &'static str,
+    pub signal: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct DeclaredLimits {
+    pub timeout_ms: bool,
+    pub max_stdout_bytes: bool,
+    pub max_stderr_bytes: bool,
+    pub max_artifact_bytes: bool,
+    pub max_files: bool,
+    pub max_depth: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ActionProvenance {
+    pub source: &'static str,
+    pub reference: &'static str,
+    pub license: &'static str,
+}
+
+const BLUEFIRE_PROVENANCE: ActionProvenance = ActionProvenance {
+    source: "BlueFire Nexus reviewed built-in action",
+    reference: "runner static registry",
+    license: "MIT",
+};
+
+const TASK_LIMITS: DeclaredLimits = DeclaredLimits {
+    timeout_ms: true,
+    max_stdout_bytes: true,
+    max_stderr_bytes: true,
+    max_artifact_bytes: true,
+    max_files: true,
+    max_depth: None,
+};
+
+const RECURSIVE_LIMITS: DeclaredLimits = DeclaredLimits {
+    max_depth: Some(MAX_RECURSIVE_DEPTH),
+    ..TASK_LIMITS
+};
+
+#[derive(Debug, Clone)]
 pub struct ActionDescriptor {
+    pub schema_version: &'static str,
     pub action_id: &'static str,
+    pub action_version: &'static str,
     pub behavior_ids: &'static [&'static str],
+    pub summary: &'static str,
     pub platforms: &'static [Platform],
+    pub parameter_schema: fn() -> Value,
     pub capabilities: &'static [Capability],
     pub safety_tier: SafetyTier,
+    pub target_types: &'static [&'static str],
+    pub observation_hints: &'static [ObservationHint],
+    pub cleanup_action_id: Option<&'static str>,
+    pub declared_limits: DeclaredLimits,
+    pub readiness: ActionReadiness,
+    pub provenance: ActionProvenance,
     pub filesystem_effect: bool,
     pub network_effect: bool,
     pub process_effect: bool,
     pub cleanup_receipt: bool,
 }
 
+impl Serialize for ActionDescriptor {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("ActionDescriptor", 19)?;
+        state.serialize_field("schema_version", self.schema_version)?;
+        state.serialize_field("action_id", self.action_id)?;
+        state.serialize_field("action_version", self.action_version)?;
+        state.serialize_field("behavior_ids", self.behavior_ids)?;
+        state.serialize_field("summary", self.summary)?;
+        state.serialize_field("platforms", self.platforms)?;
+        state.serialize_field("parameter_schema", &(self.parameter_schema)())?;
+        state.serialize_field("capabilities", self.capabilities)?;
+        state.serialize_field("safety_tier", &self.safety_tier)?;
+        state.serialize_field("target_types", self.target_types)?;
+        state.serialize_field("observation_hints", self.observation_hints)?;
+        state.serialize_field("cleanup_action_id", &self.cleanup_action_id)?;
+        state.serialize_field("declared_limits", &self.declared_limits)?;
+        state.serialize_field("readiness", &self.readiness)?;
+        state.serialize_field("provenance", &self.provenance)?;
+        state.serialize_field("filesystem_effect", &self.filesystem_effect)?;
+        state.serialize_field("network_effect", &self.network_effect)?;
+        state.serialize_field("process_effect", &self.process_effect)?;
+        state.serialize_field("cleanup_receipt", &self.cleanup_receipt)?;
+        state.end()
+    }
+}
+
 pub struct ActionContext<'a> {
     pub manifest: &'a ExecutionManifest,
     pub profile: &'a RunnerProfile,
     pub root: &'a SafeRoot,
-    pub runner_executable: &'a Path,
 }
 
 #[derive(Debug)]
@@ -103,6 +197,14 @@ impl ActionFailure {
             message: message.into(),
         }
     }
+
+    fn timed_out(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status: TaskStatus::TimedOut,
+            code,
+            message: message.into(),
+        }
+    }
 }
 
 pub trait PreparedAction: Send {
@@ -134,27 +236,252 @@ fn authorize_path(
     Ok(normalized)
 }
 
-fn store_receipt(
+fn begin_receipt(
     context: &ActionContext<'_>,
     paths: Vec<OwnedPath>,
+) -> Result<ReceiptIntent, ActionFailure> {
+    context
+        .root
+        .begin_receipt(context.manifest, context.profile, paths)
+        .map_err(|error| ActionFailure::failed("receipt_persistence_failed", error))
+}
+
+fn commit_receipt(
+    context: &ActionContext<'_>,
+    intent: &ReceiptIntent,
 ) -> Result<String, ActionFailure> {
     context
         .root
-        .store_receipt(context.manifest, context.profile, paths.clone())
-        .map_err(|error| {
-            // The newly-created objects are known by exact path and hash. If
-            // durable receipt storage fails, make a guarded best-effort rollback.
-            for path in &paths {
-                let _ = context.root.remove_owned(path);
-            }
-            ActionFailure::failed("receipt_persistence_failed", error)
-        })
+        .commit_receipt(intent, context.profile)
+        .map_err(|error| ActionFailure::failed("receipt_commit_failed", error))
 }
 
 fn receipt_paths(relative: String, bytes: &[u8], directories: &[String]) -> Vec<OwnedPath> {
     let mut paths = vec![owned_file(relative, bytes)];
     paths.extend(owned_directories(directories));
     paths
+}
+
+fn fixture_create_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "content_template"],
+        "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "content_template": {
+                "type": "string",
+                "enum": ["telemetry-seed", "harmless-document", "empty"]
+            }
+        }
+    })
+}
+
+fn fixture_transform_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["input", "output", "transform"],
+        "properties": {
+            "input": {"type": "string", "minLength": 1},
+            "output": {"type": "string", "minLength": 1},
+            "transform": {"type": "string", "enum": ["uppercase-ascii", "reverse-bytes"]}
+        }
+    })
+}
+
+fn discovery_list_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "max_entries"],
+        "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "max_entries": {"type": "integer", "minimum": 1}
+        }
+    })
+}
+
+fn discovery_metadata_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {"path": {"type": "string", "minLength": 1}}
+    })
+}
+
+fn collection_stage_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["inputs", "destination_directory"],
+        "properties": {
+            "inputs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+            "destination_directory": {"type": "string", "minLength": 1}
+        }
+    })
+}
+
+fn network_loopback_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["artifact", "destination"],
+        "properties": {
+            "artifact": {"type": "string", "minLength": 1},
+            "destination": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["host", "port"],
+                "properties": {
+                    "host": {"type": "string", "enum": ["127.0.0.1", "::1"]},
+                    "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+                }
+            }
+        }
+    })
+}
+
+fn export_local_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "destination"],
+        "properties": {
+            "source": {"type": "string", "minLength": 1},
+            "destination": {"type": "string", "minLength": 1}
+        }
+    })
+}
+
+fn restricted_persistence_marker_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label"],
+        "properties": {
+            "label": {
+                "type": "string",
+                "enum": ["persistence_detection_canary", "control_validation"]
+            }
+        }
+    })
+}
+
+fn cleanup_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["receipt_ids"],
+        "properties": {
+            "receipt_ids": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+            }
+        }
+    })
+}
+
+fn system_discovery_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+    })
+}
+
+fn process_discovery_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["max_entries"],
+        "properties": {"max_entries": {"type": "integer", "minimum": 1}}
+    })
+}
+
+fn recursive_discovery_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "max_entries", "max_depth"],
+        "properties": {
+            "path": {"type": "string", "minLength": 1},
+            "max_entries": {"type": "integer", "minimum": 1, "maximum": MAX_RECURSIVE_ENTRIES},
+            "max_depth": {"type": "integer", "minimum": 1, "maximum": MAX_RECURSIVE_DEPTH}
+        }
+    })
+}
+
+fn archive_tar_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["inputs", "destination"],
+        "properties": {
+            "inputs": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {"type": "string", "minLength": 1, "maxLength": 100}
+            },
+            "destination": {"type": "string", "minLength": 1}
+        }
+    })
+}
+
+macro_rules! reviewed_descriptor {
+    (
+        id: $id:literal,
+        behavior_ids: $behavior_ids:expr,
+        summary: $summary:literal,
+        schema: $schema:expr,
+        capabilities: $capabilities:expr,
+        tier: $tier:expr,
+        targets: $targets:expr,
+        hints: $hints:expr,
+        cleanup: $cleanup:expr,
+        limits: $limits:expr,
+        effects: ($filesystem:expr, $network:expr, $process:expr),
+        receipt: $receipt:expr $(,)?
+    ) => {
+        ActionDescriptor {
+            schema_version: ACTION_SDK_SCHEMA_VERSION,
+            action_id: $id,
+            action_version: "1.0.0",
+            behavior_ids: $behavior_ids,
+            summary: $summary,
+            platforms: ALL_PLATFORMS,
+            parameter_schema: $schema,
+            capabilities: $capabilities,
+            safety_tier: $tier,
+            target_types: $targets,
+            observation_hints: $hints,
+            cleanup_action_id: $cleanup,
+            declared_limits: $limits,
+            readiness: ActionReadiness::Ready,
+            provenance: BLUEFIRE_PROVENANCE,
+            filesystem_effect: $filesystem,
+            network_effect: $network,
+            process_effect: $process,
+            cleanup_receipt: $receipt,
+        }
+    };
 }
 
 // -------------------------------------------------------------------------
@@ -198,14 +525,15 @@ impl PreparedAction for FixtureCreatePrepared {
             .root
             .prepare_new_file(&path)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
-        context
-            .root
-            .write_new(&target, bytes)
-            .map_err(|error| ActionFailure::failed("fixture_write_failed", error))?;
-        let receipt_id = store_receipt(
+        let intent = begin_receipt(
             context,
             receipt_paths(target.relative.clone(), bytes, &target.created_directories),
         )?;
+        context
+            .root
+            .write_new(&target, bytes, &intent)
+            .map_err(|error| ActionFailure::failed("fixture_write_failed", error))?;
+        let receipt_id = commit_receipt(context, &intent)?;
         Ok(ActionOutcome::success(json!({
             "artifact": target.relative,
             "sha256": crate::contract::sha256_hex(bytes),
@@ -222,15 +550,20 @@ impl PreparedAction for FixtureCreatePrepared {
 
 struct FixtureCreateAction;
 static FIXTURE_CREATE_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
-    action_id: "sandbox.fixture.create.v1",
-    behavior_ids: &["sandbox.fixture.create.v1"],
-    platforms: ALL_PLATFORMS,
-    capabilities: &[Capability::FilesystemWrite],
-    safety_tier: SafetyTier::Safe,
-    filesystem_effect: true,
-    network_effect: false,
-    process_effect: false,
-    cleanup_receipt: true,
+    ..reviewed_descriptor! {
+        id: "sandbox.fixture.create.v1",
+        behavior_ids: &["sandbox.fixture.create.v1"],
+        summary: "Create one deterministic fixture inside the runner-owned sandbox.",
+        schema: fixture_create_schema,
+        capabilities: &[Capability::FilesystemWrite],
+        tier: SafetyTier::Safe,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "file_create" }],
+        cleanup: Some("sandbox.cleanup.v1"),
+        limits: TASK_LIMITS,
+        effects: (true, false, false),
+        receipt: true,
+    }
 };
 impl Action for FixtureCreateAction {
     fn descriptor(&self) -> &'static ActionDescriptor {
@@ -275,6 +608,8 @@ impl PreparedAction for FixtureTransformPrepared {
         self: Box<Self>,
         context: &ActionContext<'_>,
     ) -> Result<ActionOutcome, ActionFailure> {
+        let started = Instant::now();
+        let deadline = Duration::from_millis(context.manifest.limits.timeout_ms);
         let input = authorize_path(context, &self.0.input, false)?;
         let output = authorize_path(context, &self.0.output, false)?;
         if input == output {
@@ -287,94 +622,57 @@ impl PreparedAction for FixtureTransformPrepared {
             .root
             .resolve_existing(&input)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
-        let input_metadata = fs::metadata(&input_path)
-            .map_err(|error| ActionFailure::failed("input_metadata_failed", error.to_string()))?;
-        if !input_metadata.is_file()
-            || input_metadata.len() > context.manifest.limits.max_artifact_bytes
-        {
-            return Err(ActionFailure::blocked(
-                "artifact_limit_blocked",
-                "transform input is not a bounded regular file",
-            ));
+        let mut bytes = read_file_bounded(&input_path, context.manifest.limits.max_artifact_bytes)
+            .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
+        match self.0.transform {
+            TransformKind::UppercaseAscii => bytes.make_ascii_uppercase(),
+            TransformKind::ReverseBytes => bytes.reverse(),
+        }
+        if started.elapsed() >= deadline {
+            return Err(ActionFailure {
+                status: TaskStatus::TimedOut,
+                code: "transform_timeout",
+                message: "the bounded in-process transform exceeded its deadline".to_string(),
+            });
         }
         let target = context
             .root
             .prepare_new_file(&output)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
-
-        let process = match run_fixed_transform(
-            context.runner_executable,
-            context.root.path(),
-            &input,
-            &output,
-            self.0.transform.as_arg(),
-            &context.manifest.limits,
-        ) {
-            Ok(process) => process,
-            Err(error) => {
-                context.root.rollback_prepared(&target);
-                return Err(ActionFailure::failed("fixed_process_failed", error));
-            }
-        };
-
-        let mut receipt_ids = Vec::new();
-        let mut output_bytes = None;
-        if let Ok(path) = context.root.resolve_existing(&output) {
-            let bytes = match read_file_bounded(&path, context.manifest.limits.max_artifact_bytes) {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    context.root.rollback_prepared(&target);
-                    return Err(ActionFailure::failed("transform_output_invalid", error));
-                }
-            };
-            let receipt_id = store_receipt(
-                context,
-                receipt_paths(target.relative.clone(), &bytes, &target.created_directories),
-            )?;
-            receipt_ids.push(receipt_id);
-            output_bytes = Some(bytes);
-        } else if !target.created_directories.is_empty() {
-            let receipt_id =
-                store_receipt(context, owned_directories(&target.created_directories))?;
-            receipt_ids.push(receipt_id);
-        }
-
-        let status = if process.timed_out {
+        let intent = begin_receipt(
+            context,
+            receipt_paths(target.relative.clone(), &bytes, &target.created_directories),
+        )?;
+        context
+            .root
+            .write_new(&target, &bytes, &intent)
+            .map_err(|error| ActionFailure::failed("transform_write_failed", error))?;
+        let receipt_id = commit_receipt(context, &intent)?;
+        let timed_out = started.elapsed() >= deadline;
+        let status = if timed_out {
             TaskStatus::TimedOut
-        } else if process.exit_code == Some(0) && output_bytes.is_some() {
-            TaskStatus::Success
-        } else if output_bytes.is_some() {
-            TaskStatus::Partial
         } else {
-            TaskStatus::Failed
-        };
-        let error = match status {
-            TaskStatus::Success => None,
-            TaskStatus::TimedOut => Some(ErrorRecord {
-                code: "fixed_process_timeout".to_string(),
-                message: "the fixed transform exceeded its deadline".to_string(),
-            }),
-            _ => Some(ErrorRecord {
-                code: "fixed_process_exit".to_string(),
-                message: format!("fixed transform exited with {:?}", process.exit_code),
-            }),
+            TaskStatus::Success
         };
         Ok(ActionOutcome {
             status,
             output: json!({
-                "artifact": output_bytes.as_ref().map(|_| output),
-                "sha256": output_bytes.as_ref().map(|bytes| crate::contract::sha256_hex(bytes)),
-                "size": output_bytes.as_ref().map(Vec::len),
-                "exit_code": process.exit_code,
+                "artifact": output,
+                "sha256": crate::contract::sha256_hex(&bytes),
+                "size": bytes.len(),
                 "transform": self.0.transform.as_arg(),
+                "implementation": "in_process_reviewed_transform",
             }),
-            stdout: process.stdout,
-            stderr: process.stderr,
-            receipt_ids,
+            stdout: BoundedOutput::default(),
+            stderr: BoundedOutput::default(),
+            receipt_ids: vec![receipt_id],
             cleanup: None,
-            error,
+            error: timed_out.then(|| ErrorRecord {
+                code: "transform_timeout".to_string(),
+                message: "the completed bounded transform exceeded its deadline".to_string(),
+            }),
             limitations: vec![
-                "The action can spawn only this runner's private fixed transform helper."
+                "The transform is compiled into the runner and exposes no process subcommand."
                     .to_string(),
             ],
         })
@@ -383,19 +681,20 @@ impl PreparedAction for FixtureTransformPrepared {
 
 struct FixtureTransformAction;
 static FIXTURE_TRANSFORM_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
-    action_id: "sandbox.fixture.transform.v1",
-    behavior_ids: &["sandbox.fixture.transform.v1"],
-    platforms: ALL_PLATFORMS,
-    capabilities: &[
-        Capability::FilesystemRead,
-        Capability::FilesystemWrite,
-        Capability::ProcessSpawn,
-    ],
-    safety_tier: SafetyTier::Safe,
-    filesystem_effect: true,
-    network_effect: false,
-    process_effect: true,
-    cleanup_receipt: true,
+    ..reviewed_descriptor! {
+        id: "sandbox.fixture.transform.v1",
+        behavior_ids: &["sandbox.fixture.transform.v1"],
+        summary: "Apply one compiled in-process transform to a bounded sandbox file.",
+        schema: fixture_transform_schema,
+        capabilities: &[Capability::FilesystemRead, Capability::FilesystemWrite],
+        tier: SafetyTier::Safe,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "file_create" }],
+        cleanup: Some("sandbox.cleanup.v1"),
+        limits: TASK_LIMITS,
+        effects: (true, false, false),
+        receipt: true,
+    }
 };
 impl Action for FixtureTransformAction {
     fn descriptor(&self) -> &'static ActionDescriptor {
@@ -478,15 +777,20 @@ impl PreparedAction for DiscoveryListPrepared {
 
 struct DiscoveryListAction;
 static DISCOVERY_LIST_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
-    action_id: "sandbox.discovery.list.v1",
-    behavior_ids: &["sandbox.discovery.list.v1"],
-    platforms: ALL_PLATFORMS,
-    capabilities: &[Capability::FilesystemRead],
-    safety_tier: SafetyTier::Safe,
-    filesystem_effect: false,
-    network_effect: false,
-    process_effect: false,
-    cleanup_receipt: false,
+    ..reviewed_descriptor! {
+        id: "sandbox.discovery.list.v1",
+        behavior_ids: &["sandbox.discovery.list.v1"],
+        summary: "List one sandbox directory without recursion.",
+        schema: discovery_list_schema,
+        capabilities: &[Capability::FilesystemRead],
+        tier: SafetyTier::Safe,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "directory_enumeration" }],
+        cleanup: None,
+        limits: TASK_LIMITS,
+        effects: (false, false, false),
+        receipt: false,
+    }
 };
 impl Action for DiscoveryListAction {
     fn descriptor(&self) -> &'static ActionDescriptor {
@@ -547,15 +851,20 @@ impl PreparedAction for DiscoveryMetadataPrepared {
 
 struct DiscoveryMetadataAction;
 static DISCOVERY_METADATA_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
-    action_id: "sandbox.discovery.metadata.v1",
-    behavior_ids: &["sandbox.discovery.metadata.v1"],
-    platforms: ALL_PLATFORMS,
-    capabilities: &[Capability::FilesystemRead],
-    safety_tier: SafetyTier::Safe,
-    filesystem_effect: false,
-    network_effect: false,
-    process_effect: false,
-    cleanup_receipt: false,
+    ..reviewed_descriptor! {
+        id: "sandbox.discovery.metadata.v1",
+        behavior_ids: &["sandbox.discovery.metadata.v1"],
+        summary: "Inspect metadata and optionally hash one bounded sandbox file.",
+        schema: discovery_metadata_schema,
+        capabilities: &[Capability::FilesystemRead],
+        tier: SafetyTier::Safe,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "file_read" }],
+        cleanup: None,
+        limits: TASK_LIMITS,
+        effects: (false, false, false),
+        receipt: false,
+    }
 };
 impl Action for DiscoveryMetadataAction {
     fn descriptor(&self) -> &'static ActionDescriptor {
@@ -563,6 +872,627 @@ impl Action for DiscoveryMetadataAction {
     }
     fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
         Ok(Box::new(DiscoveryMetadataPrepared(parse_params(params)?)))
+    }
+}
+
+// -------------------------------------------------------------------------
+// endpoint.discovery.system.v1
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SystemDiscoveryParams {}
+
+struct SystemDiscoveryPrepared;
+
+impl PreparedAction for SystemDiscoveryPrepared {
+    fn execute(
+        self: Box<Self>,
+        _context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        let byte_order = if cfg!(target_endian = "little") {
+            "little"
+        } else {
+            "big"
+        };
+        Ok(ActionOutcome::success(json!({
+            "operating_system": std::env::consts::OS,
+            "architecture": std::env::consts::ARCH,
+            "family": std::env::consts::FAMILY,
+            "logical_processors": std::thread::available_parallelism().map(|value| value.get()).unwrap_or(1),
+            "pointer_width_bits": usize::BITS,
+            "byte_order": byte_order,
+        })))
+    }
+}
+
+struct SystemDiscoveryAction;
+static SYSTEM_DISCOVERY_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    ..reviewed_descriptor! {
+        id: "endpoint.discovery.system.v1",
+        behavior_ids: &["endpoint.discovery.system.v1"],
+        summary: "Report bounded operating-system and architecture facts from compiled Rust APIs.",
+        schema: system_discovery_schema,
+        capabilities: &[Capability::SystemDiscovery],
+        tier: SafetyTier::Safe,
+        targets: &["endpoint", "sandbox", "container"],
+        hints: &[ObservationHint { source: "runner", signal: "system_discovery" }],
+        cleanup: None,
+        limits: TASK_LIMITS,
+        effects: (false, false, false),
+        receipt: false,
+    }
+};
+impl Action for SystemDiscoveryAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        &SYSTEM_DISCOVERY_DESCRIPTOR
+    }
+
+    fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        let _: SystemDiscoveryParams = parse_params(params)?;
+        Ok(Box::new(SystemDiscoveryPrepared))
+    }
+}
+
+// -------------------------------------------------------------------------
+// endpoint.discovery.processes.v1
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProcessDiscoveryParams {
+    max_entries: usize,
+}
+
+struct ProcessDiscoveryPrepared(ProcessDiscoveryParams);
+
+fn parse_tasklist_csv(line: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut characters = line.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '"' if quoted && characters.peek() == Some(&'"') => {
+                current.push('"');
+                characters.next();
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                values.push(current);
+                current = String::new();
+            }
+            _ => current.push(character),
+        }
+    }
+    values.push(current);
+    values
+}
+
+fn process_record(line: &str, format: &str) -> Value {
+    if format == "tasklist-csv" {
+        let values = parse_tasklist_csv(line);
+        return json!({
+            "name": values.first().cloned().unwrap_or_default(),
+            "pid": values.get(1).cloned().unwrap_or_default(),
+        });
+    }
+    let mut values = line.split_whitespace();
+    json!({
+        "pid": values.next().unwrap_or_default(),
+        "parent_pid": values.next().unwrap_or_default(),
+        "name": values.collect::<Vec<_>>().join(" "),
+    })
+}
+
+impl PreparedAction for ProcessDiscoveryPrepared {
+    fn execute(
+        self: Box<Self>,
+        context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        if self.0.max_entries == 0 || self.0.max_entries > context.manifest.limits.max_files {
+            return Err(ActionFailure::blocked(
+                "process_count_limit_blocked",
+                "max_entries is zero or exceeds the manifest file/item limit",
+            ));
+        }
+        let process = run_process_discovery(&context.manifest.limits, self.0.max_entries)
+            .map_err(|error| ActionFailure::failed("process_discovery_failed", error))?;
+        let mut lines = process
+            .stdout
+            .text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty());
+        let records = lines
+            .by_ref()
+            .take(self.0.max_entries)
+            .map(|line| process_record(line, process.output_format))
+            .collect::<Vec<_>>();
+        let entry_limit_reached = lines.next().is_some();
+        let status = if process.timed_out {
+            TaskStatus::TimedOut
+        } else if process.exit_code != Some(0) {
+            TaskStatus::Failed
+        } else if process.stdout.truncated || entry_limit_reached {
+            TaskStatus::Partial
+        } else {
+            TaskStatus::Success
+        };
+        Ok(ActionOutcome {
+            status,
+            output: json!({
+                "format": process.output_format,
+                "entries": records,
+                "truncated": process.stdout.truncated || entry_limit_reached,
+                "exit_code": process.exit_code,
+            }),
+            stdout: process.stdout,
+            stderr: process.stderr,
+            receipt_ids: Vec::new(),
+            cleanup: None,
+            error: match status {
+                TaskStatus::Success | TaskStatus::Partial => None,
+                TaskStatus::TimedOut => Some(ErrorRecord {
+                    code: "process_discovery_timeout".to_string(),
+                    message: "the reviewed process inventory exceeded its deadline".to_string(),
+                }),
+                _ => Some(ErrorRecord {
+                    code: "process_discovery_exit".to_string(),
+                    message: format!("the reviewed process inventory exited with {:?}", process.exit_code),
+                }),
+            },
+            limitations: vec![
+                "The executable and argument vector are selected by the compiled runner for the current platform."
+                    .to_string(),
+            ],
+        })
+    }
+}
+
+struct ProcessDiscoveryAction;
+static PROCESS_DISCOVERY_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    ..reviewed_descriptor! {
+        id: "endpoint.discovery.processes.v1",
+        behavior_ids: &["endpoint.discovery.processes.v1"],
+        summary: "Enumerate bounded process identity fields through one compiled platform adapter.",
+        schema: process_discovery_schema,
+        capabilities: &[Capability::ProcessDiscovery, Capability::ProcessSpawn],
+        tier: SafetyTier::Safe,
+        targets: &["endpoint", "sandbox", "container"],
+        hints: &[ObservationHint { source: "process", signal: "process_inventory" }],
+        cleanup: None,
+        limits: TASK_LIMITS,
+        effects: (false, false, true),
+        receipt: false,
+    }
+};
+impl Action for ProcessDiscoveryAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        &PROCESS_DISCOVERY_DESCRIPTOR
+    }
+
+    fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        Ok(Box::new(ProcessDiscoveryPrepared(parse_params(params)?)))
+    }
+}
+
+// -------------------------------------------------------------------------
+// sandbox.discovery.recursive.v1
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecursiveDiscoveryParams {
+    path: String,
+    max_entries: usize,
+    max_depth: usize,
+}
+
+struct RecursiveDiscoveryPrepared(RecursiveDiscoveryParams);
+
+fn record_recursive_error(errors: &mut Vec<String>, suppressed: &mut usize, error: String) {
+    if errors.len() < MAX_RECURSIVE_ERRORS {
+        errors.push(error);
+    } else {
+        *suppressed = suppressed.saturating_add(1);
+    }
+}
+
+impl PreparedAction for RecursiveDiscoveryPrepared {
+    fn execute(
+        self: Box<Self>,
+        context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        let root_relative = authorize_path(context, &self.0.path, true)?;
+        if self.0.max_entries == 0
+            || self.0.max_entries > context.manifest.limits.max_files
+            || self.0.max_entries > MAX_RECURSIVE_ENTRIES
+        {
+            return Err(ActionFailure::blocked(
+                "file_count_limit_blocked",
+                "max_entries is zero or exceeds a manifest or runner limit",
+            ));
+        }
+        if self.0.max_depth == 0 || self.0.max_depth > MAX_RECURSIVE_DEPTH {
+            return Err(ActionFailure::blocked(
+                "directory_depth_limit_blocked",
+                "max_depth is zero or exceeds the runner recursion limit",
+            ));
+        }
+        let root = context
+            .root
+            .resolve_existing(&root_relative)
+            .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        if !fs::metadata(&root)
+            .map_err(|error| ActionFailure::failed("discovery_failed", error.to_string()))?
+            .is_dir()
+        {
+            return Err(ActionFailure::refused(
+                "invalid_action_params",
+                "recursive discovery path is not a directory",
+            ));
+        }
+
+        let started = Instant::now();
+        let deadline = Duration::from_millis(context.manifest.limits.timeout_ms);
+        let mut queue = VecDeque::from([(root_relative.clone(), 0_usize)]);
+        let mut records = Vec::new();
+        let mut errors = Vec::new();
+        let mut suppressed_errors = 0_usize;
+        let mut skipped_names = 0_usize;
+        let mut truncated = false;
+        let mut timed_out = false;
+
+        'walk: while let Some((directory_relative, depth)) = queue.pop_front() {
+            if started.elapsed() >= deadline {
+                timed_out = true;
+                break;
+            }
+            let directory = match context.root.resolve_existing(&directory_relative) {
+                Ok(path) => path,
+                Err(error) => {
+                    record_recursive_error(
+                        &mut errors,
+                        &mut suppressed_errors,
+                        format!("{directory_relative}: {error}"),
+                    );
+                    continue;
+                }
+            };
+            let iterator = match fs::read_dir(directory) {
+                Ok(iterator) => iterator,
+                Err(error) => {
+                    record_recursive_error(
+                        &mut errors,
+                        &mut suppressed_errors,
+                        format!("{directory_relative}: {error}"),
+                    );
+                    continue;
+                }
+            };
+            if records.len() == self.0.max_entries {
+                truncated = true;
+                break;
+            }
+            let retained_limit = self
+                .0
+                .max_entries
+                .saturating_sub(records.len())
+                .saturating_add(1);
+            let mut entries = BTreeMap::new();
+            for entry in iterator {
+                if started.elapsed() >= deadline {
+                    timed_out = true;
+                    break 'walk;
+                }
+                match entry {
+                    Ok(entry) => {
+                        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                            skipped_names = skipped_names.saturating_add(1);
+                            continue;
+                        };
+                        if name.eq_ignore_ascii_case(".bluefire") {
+                            continue;
+                        }
+                        entries.insert(name, entry);
+                        if entries.len() > retained_limit {
+                            entries.pop_last();
+                            truncated = true;
+                        }
+                    }
+                    Err(error) => record_recursive_error(
+                        &mut errors,
+                        &mut suppressed_errors,
+                        format!("{directory_relative}: {error}"),
+                    ),
+                }
+            }
+            for (name, entry) in entries {
+                if records.len() == self.0.max_entries {
+                    truncated = true;
+                    break 'walk;
+                }
+                let child_raw = if directory_relative == "." {
+                    name
+                } else {
+                    format!("{directory_relative}/{name}")
+                };
+                let child_relative = match normalize_relative(&child_raw, false) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        skipped_names = skipped_names.saturating_add(1);
+                        continue;
+                    }
+                };
+                let metadata = match fs::symlink_metadata(entry.path()) {
+                    Ok(metadata) => metadata,
+                    Err(error) => {
+                        record_recursive_error(
+                            &mut errors,
+                            &mut suppressed_errors,
+                            format!("{child_relative}: {error}"),
+                        );
+                        continue;
+                    }
+                };
+                let child_depth = depth.saturating_add(1);
+                let kind = if metadata.file_type().is_symlink() {
+                    "link_blocked"
+                } else if metadata.is_file() {
+                    "file"
+                } else if metadata.is_dir() {
+                    "directory"
+                } else {
+                    "other"
+                };
+                records.push(json!({
+                    "path": child_relative,
+                    "kind": kind,
+                    "size": metadata.len(),
+                    "depth": child_depth,
+                }));
+                if metadata.is_dir()
+                    && !metadata.file_type().is_symlink()
+                    && child_depth < self.0.max_depth
+                {
+                    queue.push_back((child_relative, child_depth));
+                }
+            }
+        }
+
+        let status = if timed_out && records.is_empty() {
+            TaskStatus::TimedOut
+        } else if timed_out || !errors.is_empty() || suppressed_errors != 0 {
+            TaskStatus::Partial
+        } else {
+            TaskStatus::Success
+        };
+        Ok(ActionOutcome {
+            status,
+            output: json!({
+                "path": root_relative,
+                "entries": records,
+                "truncated": truncated,
+                "skipped_unsupported_names": skipped_names,
+                "errors": errors,
+                "suppressed_errors": suppressed_errors,
+            }),
+            stdout: BoundedOutput::default(),
+            stderr: BoundedOutput::default(),
+            receipt_ids: Vec::new(),
+            cleanup: None,
+            error: (status != TaskStatus::Success).then(|| ErrorRecord {
+                code: if timed_out {
+                    "recursive_discovery_timeout"
+                } else {
+                    "recursive_discovery_partial"
+                }
+                .to_string(),
+                message: "recursive discovery returned a bounded partial result".to_string(),
+            }),
+            limitations: Vec::new(),
+        })
+    }
+}
+
+struct RecursiveDiscoveryAction;
+static RECURSIVE_DISCOVERY_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    ..reviewed_descriptor! {
+        id: "sandbox.discovery.recursive.v1",
+        behavior_ids: &["sandbox.discovery.recursive.v1"],
+        summary: "Recursively enumerate one authorized sandbox subtree with explicit count and depth bounds.",
+        schema: recursive_discovery_schema,
+        capabilities: &[Capability::FilesystemRead],
+        tier: SafetyTier::Safe,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "recursive_directory_enumeration" }],
+        cleanup: None,
+        limits: RECURSIVE_LIMITS,
+        effects: (false, false, false),
+        receipt: false,
+    }
+};
+impl Action for RecursiveDiscoveryAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        &RECURSIVE_DISCOVERY_DESCRIPTOR
+    }
+
+    fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        Ok(Box::new(RecursiveDiscoveryPrepared(parse_params(params)?)))
+    }
+}
+
+// -------------------------------------------------------------------------
+// sandbox.archive.tar.v1
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ArchiveTarParams {
+    inputs: Vec<String>,
+    destination: String,
+}
+
+struct ArchiveTarPrepared(ArchiveTarParams);
+
+fn write_tar_octal(field: &mut [u8], value: u64) -> Result<(), String> {
+    let width = field
+        .len()
+        .checked_sub(1)
+        .ok_or_else(|| "tar numeric field has no terminator space".to_string())?;
+    let encoded = format!("{value:0width$o}", width = width);
+    if encoded.len() > width {
+        return Err("tar numeric field exceeds its deterministic width".to_string());
+    }
+    field[..width].copy_from_slice(encoded.as_bytes());
+    field[width] = 0;
+    Ok(())
+}
+
+fn tar_header(name: &str, size: usize) -> Result<[u8; 512], String> {
+    if name.len() > 100 {
+        return Err("archive input path exceeds the deterministic ustar name limit".to_string());
+    }
+    let mut header = [0_u8; 512];
+    header[..name.len()].copy_from_slice(name.as_bytes());
+    write_tar_octal(&mut header[100..108], 0o644)?;
+    write_tar_octal(&mut header[108..116], 0)?;
+    write_tar_octal(&mut header[116..124], 0)?;
+    write_tar_octal(&mut header[124..136], size as u64)?;
+    write_tar_octal(&mut header[136..148], 0)?;
+    header[148..156].fill(b' ');
+    header[156] = b'0';
+    header[257..263].copy_from_slice(b"ustar\0");
+    header[263..265].copy_from_slice(b"00");
+    header[265..273].copy_from_slice(b"bluefire");
+    header[297..305].copy_from_slice(b"bluefire");
+    let checksum = header.iter().map(|byte| *byte as u64).sum::<u64>();
+    let encoded = format!("{checksum:06o}\0 ");
+    header[148..156].copy_from_slice(encoded.as_bytes());
+    Ok(header)
+}
+
+fn build_deterministic_tar(files: &[(String, Vec<u8>)], max_bytes: u64) -> Result<Vec<u8>, String> {
+    let mut archive = Vec::new();
+    for (name, bytes) in files {
+        let padded = bytes.len().div_ceil(512).saturating_mul(512);
+        let projected = archive
+            .len()
+            .saturating_add(512)
+            .saturating_add(padded)
+            .saturating_add(1_024);
+        if projected as u64 > max_bytes {
+            return Err("deterministic archive exceeds the artifact byte limit".to_string());
+        }
+        archive.extend_from_slice(&tar_header(name, bytes.len())?);
+        archive.extend_from_slice(bytes);
+        archive.resize(archive.len() + padded.saturating_sub(bytes.len()), 0);
+    }
+    archive.resize(archive.len() + 1_024, 0);
+    Ok(archive)
+}
+
+impl PreparedAction for ArchiveTarPrepared {
+    fn execute(
+        self: Box<Self>,
+        context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        if self.0.inputs.is_empty() || self.0.inputs.len() > context.manifest.limits.max_files {
+            return Err(ActionFailure::blocked(
+                "file_count_limit_blocked",
+                "archive inputs are empty or exceed the manifest file limit",
+            ));
+        }
+        let destination = authorize_path(context, &self.0.destination, false)?;
+        let mut normalized = Vec::new();
+        let mut unique = BTreeSet::new();
+        for input in &self.0.inputs {
+            let input = authorize_path(context, input, false)?;
+            if input == destination {
+                return Err(ActionFailure::blocked(
+                    "path_rejected",
+                    "archive destination cannot also be an input",
+                ));
+            }
+            if !unique.insert(input.clone()) {
+                return Err(ActionFailure::refused(
+                    "invalid_action_params",
+                    "archive inputs must not contain duplicates",
+                ));
+            }
+            normalized.push(input);
+        }
+        normalized.sort();
+
+        let mut files = Vec::new();
+        let mut input_total = 0_u64;
+        for input in normalized {
+            let path = context
+                .root
+                .resolve_existing(&input)
+                .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+            let remaining = context
+                .manifest
+                .limits
+                .max_artifact_bytes
+                .saturating_sub(input_total);
+            let bytes = read_file_bounded(&path, remaining)
+                .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
+            input_total = input_total.saturating_add(bytes.len() as u64);
+            files.push((input, bytes));
+        }
+        let archive = build_deterministic_tar(&files, context.manifest.limits.max_artifact_bytes)
+            .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
+        let target = context
+            .root
+            .prepare_new_file(&destination)
+            .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        let intent = begin_receipt(
+            context,
+            receipt_paths(
+                target.relative.clone(),
+                &archive,
+                &target.created_directories,
+            ),
+        )?;
+        context
+            .root
+            .write_new(&target, &archive, &intent)
+            .map_err(|error| ActionFailure::failed("archive_write_failed", error))?;
+        let receipt_id = commit_receipt(context, &intent)?;
+        Ok(ActionOutcome::success(json!({
+            "artifact": target.relative,
+            "format": "ustar",
+            "entry_count": files.len(),
+            "input_bytes": input_total,
+            "size": archive.len(),
+            "sha256": crate::contract::sha256_hex(&archive),
+        }))
+        .with_receipt(receipt_id))
+    }
+}
+
+struct ArchiveTarAction;
+static ARCHIVE_TAR_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    ..reviewed_descriptor! {
+        id: "sandbox.archive.tar.v1",
+        behavior_ids: &["sandbox.archive.tar.v1"],
+        summary: "Create a deterministic uncompressed ustar archive from bounded sandbox files.",
+        schema: archive_tar_schema,
+        capabilities: &[Capability::FilesystemRead, Capability::FilesystemWrite],
+        tier: SafetyTier::Controlled,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "archive_create" }],
+        cleanup: Some("sandbox.cleanup.v1"),
+        limits: TASK_LIMITS,
+        effects: (true, false, false),
+        receipt: true,
+    }
+};
+impl Action for ArchiveTarAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        &ARCHIVE_TAR_DESCRIPTOR
+    }
+
+    fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        Ok(Box::new(ArchiveTarPrepared(parse_params(params)?)))
     }
 }
 
@@ -597,10 +1527,9 @@ impl PreparedAction for CollectionStagePrepared {
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
         let created_directories = probe.created_directories;
 
-        let mut owned = Vec::new();
-        let mut staged = Vec::new();
+        let mut plans = Vec::new();
         let mut errors = Vec::new();
-        let mut total_bytes = 0_u64;
+        let mut planned_bytes = 0_u64;
         for (index, input) in self.0.inputs.iter().enumerate() {
             let normalized = match authorize_path(context, input, false) {
                 Ok(path) => path,
@@ -620,7 +1549,7 @@ impl PreparedAction for CollectionStagePrepared {
                 .manifest
                 .limits
                 .max_artifact_bytes
-                .saturating_sub(total_bytes);
+                .saturating_sub(planned_bytes);
             let bytes = match read_file_bounded(&source, remaining) {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -637,12 +1566,34 @@ impl PreparedAction for CollectionStagePrepared {
                     continue;
                 }
             };
-            if let Err(error) = context.root.write_new(&target, &bytes) {
+            planned_bytes = planned_bytes.saturating_add(bytes.len() as u64);
+            plans.push((normalized, target, bytes));
+        }
+        let mut owned = plans
+            .iter()
+            .map(|(_, target, bytes)| owned_file(target.relative.clone(), bytes))
+            .collect::<Vec<_>>();
+        owned.extend(owned_directories(&created_directories));
+        let intent = if owned.is_empty() {
+            None
+        } else {
+            Some(begin_receipt(context, owned)?)
+        };
+
+        let mut staged = Vec::new();
+        let mut total_bytes = 0_u64;
+        for (normalized, target, bytes) in plans {
+            let Some(intent) = intent.as_ref() else {
+                return Err(ActionFailure::failed(
+                    "receipt_persistence_failed",
+                    "collection mutation has no durable receipt intent",
+                ));
+            };
+            if let Err(error) = context.root.write_new(&target, &bytes, intent) {
                 errors.push(format!("{normalized}: {error}"));
                 continue;
             }
             total_bytes = total_bytes.saturating_add(bytes.len() as u64);
-            owned.push(owned_file(target.relative.clone(), &bytes));
             staged.push(json!({
                 "source": normalized,
                 "artifact": target.relative,
@@ -650,11 +1601,9 @@ impl PreparedAction for CollectionStagePrepared {
                 "size": bytes.len(),
             }));
         }
-        owned.extend(owned_directories(&created_directories));
-        let receipt_id = if owned.is_empty() {
-            None
-        } else {
-            Some(store_receipt(context, owned)?)
+        let receipt_id = match intent.as_ref() {
+            Some(intent) => Some(commit_receipt(context, intent)?),
+            None => None,
         };
         let status = if errors.is_empty() {
             TaskStatus::Success
@@ -685,15 +1634,20 @@ impl PreparedAction for CollectionStagePrepared {
 
 struct CollectionStageAction;
 static COLLECTION_STAGE_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
-    action_id: "sandbox.collection.stage.v1",
-    behavior_ids: &["sandbox.collection.stage.v1"],
-    platforms: ALL_PLATFORMS,
-    capabilities: &[Capability::FilesystemRead, Capability::FilesystemWrite],
-    safety_tier: SafetyTier::Controlled,
-    filesystem_effect: true,
-    network_effect: false,
-    process_effect: false,
-    cleanup_receipt: true,
+    ..reviewed_descriptor! {
+        id: "sandbox.collection.stage.v1",
+        behavior_ids: &["sandbox.collection.stage.v1"],
+        summary: "Copy a bounded set of sandbox files into a deterministic staging directory.",
+        schema: collection_stage_schema,
+        capabilities: &[Capability::FilesystemRead, Capability::FilesystemWrite],
+        tier: SafetyTier::Controlled,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "file_create" }],
+        cleanup: Some("sandbox.cleanup.v1"),
+        limits: TASK_LIMITS,
+        effects: (true, false, false),
+        receipt: true,
+    }
 };
 impl Action for CollectionStageAction {
     fn descriptor(&self) -> &'static ActionDescriptor {
@@ -716,17 +1670,116 @@ struct NetworkLoopbackParams {
 
 struct NetworkLoopbackPrepared(NetworkLoopbackParams);
 
-fn read_socket_bounded(stream: &mut TcpStream, limit: usize) -> Result<BoundedOutput, String> {
+fn remaining_deadline(started: Instant, budget: Duration) -> Result<Duration, String> {
+    budget
+        .checked_sub(started.elapsed())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| "the network action exceeded its monotonic deadline".to_string())
+}
+
+fn write_socket_with_deadline(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    started: Instant,
+    budget: Duration,
+) -> Result<(), ActionFailure> {
+    while !bytes.is_empty() {
+        let remaining = remaining_deadline(started, budget)
+            .map_err(|error| ActionFailure::timed_out("loopback_timeout", error))?;
+        stream.set_write_timeout(Some(remaining)).map_err(|error| {
+            ActionFailure::failed("loopback_timeout_setup_failed", error.to_string())
+        })?;
+        match stream.write(bytes) {
+            Ok(0) => {
+                return Err(ActionFailure::failed(
+                    "loopback_write_failed",
+                    "loopback socket stopped accepting bytes",
+                ));
+            }
+            Ok(count) => bytes = &bytes[count..],
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(ActionFailure::timed_out(
+                    "loopback_timeout",
+                    "the loopback write exceeded its monotonic deadline",
+                ));
+            }
+            Err(error) => {
+                return Err(ActionFailure::failed(
+                    "loopback_write_failed",
+                    error.to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_socket_bounded(
+    stream: &mut TcpStream,
+    limit: usize,
+    started: Instant,
+    budget: Duration,
+) -> Result<(BoundedOutput, bool), String> {
     let mut retained = Vec::with_capacity(limit.min(16 * 1024));
     let mut total = 0_u64;
     let mut buffer = [0_u8; 8 * 1024];
+    let mut timed_out = false;
     loop {
-        match stream.read(&mut buffer) {
+        let remaining = match remaining_deadline(started, budget) {
+            Ok(remaining) => remaining,
+            Err(_) => {
+                timed_out = true;
+                break;
+            }
+        };
+        stream
+            .set_read_timeout(Some(remaining))
+            .map_err(|error| format!("cannot update loopback read deadline: {error}"))?;
+        let retained_remaining = limit.saturating_sub(retained.len());
+        let read_limit = if retained_remaining == 0 {
+            1
+        } else {
+            retained_remaining.min(buffer.len())
+        };
+        match stream.read(&mut buffer[..read_limit]) {
             Ok(0) => break,
             Ok(count) => {
                 total = total.saturating_add(count as u64);
                 let remaining = limit.saturating_sub(retained.len());
                 retained.extend_from_slice(&buffer[..count.min(remaining)]);
+                if retained.len() == limit {
+                    let probe_remaining = remaining_deadline(started, budget);
+                    if let Ok(probe_remaining) = probe_remaining {
+                        stream
+                            .set_read_timeout(Some(probe_remaining))
+                            .map_err(|error| {
+                                format!("cannot update loopback read deadline: {error}")
+                            })?;
+                        match stream.read(&mut buffer[..1]) {
+                            Ok(0) => {}
+                            Ok(count) => total = total.saturating_add(count as u64),
+                            Err(error)
+                                if matches!(
+                                    error.kind(),
+                                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                                ) =>
+                            {
+                                timed_out = true;
+                            }
+                            Err(error) => {
+                                return Err(format!("cannot read loopback response: {error}"))
+                            }
+                        }
+                    } else {
+                        timed_out = true;
+                    }
+                    break;
+                }
             }
             Err(error)
                 if matches!(
@@ -734,16 +1787,20 @@ fn read_socket_bounded(stream: &mut TcpStream, limit: usize) -> Result<BoundedOu
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
-                break
+                timed_out = true;
+                break;
             }
             Err(error) => return Err(format!("cannot read loopback response: {error}")),
         }
     }
-    Ok(BoundedOutput {
-        text: String::from_utf8_lossy(&retained).into_owned(),
-        total_bytes: total,
-        truncated: total > retained.len() as u64,
-    })
+    Ok((
+        BoundedOutput {
+            text: String::from_utf8_lossy(&retained).into_owned(),
+            total_bytes: total,
+            truncated: total > retained.len() as u64,
+        },
+        timed_out,
+    ))
 }
 
 impl PreparedAction for NetworkLoopbackPrepared {
@@ -751,6 +1808,8 @@ impl PreparedAction for NetworkLoopbackPrepared {
         self: Box<Self>,
         context: &ActionContext<'_>,
     ) -> Result<ActionOutcome, ActionFailure> {
+        let started = Instant::now();
+        let budget = Duration::from_millis(context.manifest.limits.timeout_ms);
         let artifact = authorize_path(context, &self.0.artifact, false)?;
         // This authorization intentionally occurs before constructing or
         // connecting a socket. A refused destination has no network effect.
@@ -762,16 +1821,22 @@ impl PreparedAction for NetworkLoopbackPrepared {
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
         let body = read_file_bounded(&artifact_path, context.manifest.limits.max_artifact_bytes)
             .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
-        let timeout = Duration::from_millis(context.manifest.limits.timeout_ms);
         let socket = SocketAddr::new(ip, self.0.destination.port);
-        let mut stream = TcpStream::connect_timeout(&socket, timeout)
-            .map_err(|error| ActionFailure::failed("loopback_connect_failed", error.to_string()))?;
-        stream
-            .set_read_timeout(Some(timeout))
-            .and_then(|_| stream.set_write_timeout(Some(timeout)))
-            .map_err(|error| {
-                ActionFailure::failed("loopback_timeout_setup_failed", error.to_string())
-            })?;
+        let mut stream = TcpStream::connect_timeout(
+            &socket,
+            remaining_deadline(started, budget)
+                .map_err(|error| ActionFailure::timed_out("loopback_timeout", error))?,
+        )
+        .map_err(|error| {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ) {
+                ActionFailure::timed_out("loopback_timeout", error.to_string())
+            } else {
+                ActionFailure::failed("loopback_connect_failed", error.to_string())
+            }
+        })?;
         let request = format!(
             "POST /bluefire/v1/artifact HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/octet-stream\r\nX-BlueFire-SHA256: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             self.0.destination.host,
@@ -779,21 +1844,37 @@ impl PreparedAction for NetworkLoopbackPrepared {
             crate::contract::sha256_hex(&body),
             body.len(),
         );
+        write_socket_with_deadline(&mut stream, request.as_bytes(), started, budget)?;
+        write_socket_with_deadline(&mut stream, &body, started, budget)?;
+        let flush_budget = remaining_deadline(started, budget)
+            .map_err(|error| ActionFailure::timed_out("loopback_timeout", error))?;
         stream
-            .write_all(request.as_bytes())
-            .and_then(|_| stream.write_all(&body))
-            .and_then(|_| stream.flush())
+            .set_write_timeout(Some(flush_budget))
+            .map_err(|error| {
+                ActionFailure::failed("loopback_timeout_setup_failed", error.to_string())
+            })?;
+        stream
+            .flush()
             .map_err(|error| ActionFailure::failed("loopback_write_failed", error.to_string()))?;
+        remaining_deadline(started, budget)
+            .map_err(|error| ActionFailure::timed_out("loopback_timeout", error))?;
         let _ = stream.shutdown(Shutdown::Write);
-        let response = read_socket_bounded(&mut stream, context.manifest.limits.max_stdout_bytes)
-            .map_err(|error| ActionFailure::failed("loopback_read_failed", error))?;
+        let (response, timed_out) = read_socket_bounded(
+            &mut stream,
+            context.manifest.limits.max_stdout_bytes,
+            started,
+            budget,
+        )
+        .map_err(|error| ActionFailure::failed("loopback_read_failed", error))?;
         let status_code = response
             .text
             .lines()
             .next()
             .and_then(|line| line.split_whitespace().nth(1))
             .and_then(|code| code.parse::<u16>().ok());
-        let status = if status_code.is_some_and(|code| (200..300).contains(&code)) {
+        let status = if timed_out {
+            TaskStatus::TimedOut
+        } else if status_code.is_some_and(|code| (200..300).contains(&code)) {
             TaskStatus::Success
         } else {
             TaskStatus::Failed
@@ -811,13 +1892,16 @@ impl PreparedAction for NetworkLoopbackPrepared {
             stderr: BoundedOutput::default(),
             receipt_ids: Vec::new(),
             cleanup: None,
-            error: if status == TaskStatus::Success {
-                None
-            } else {
-                Some(ErrorRecord {
+            error: match status {
+                TaskStatus::Success => None,
+                TaskStatus::TimedOut => Some(ErrorRecord {
+                    code: "loopback_timeout".to_string(),
+                    message: "the loopback action exceeded its monotonic deadline".to_string(),
+                }),
+                _ => Some(ErrorRecord {
                     code: "loopback_response_failed".to_string(),
                     message: "loopback receiver did not return a 2xx response".to_string(),
-                })
+                }),
             },
             limitations: vec![
                 "Literal loopback IP only; DNS, redirects, and proxy environment variables are not used."
@@ -829,15 +1913,20 @@ impl PreparedAction for NetworkLoopbackPrepared {
 
 struct NetworkLoopbackAction;
 static NETWORK_LOOPBACK_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
-    action_id: "sandbox.network.loopback.v1",
-    behavior_ids: &["sandbox.network.loopback.v1"],
-    platforms: ALL_PLATFORMS,
-    capabilities: &[Capability::FilesystemRead, Capability::NetworkLoopback],
-    safety_tier: SafetyTier::Controlled,
-    filesystem_effect: false,
-    network_effect: true,
-    process_effect: false,
-    cleanup_receipt: false,
+    ..reviewed_descriptor! {
+        id: "sandbox.network.loopback.v1",
+        behavior_ids: &["sandbox.network.loopback.v1"],
+        summary: "Send one bounded artifact to an exact literal loopback HTTP sink.",
+        schema: network_loopback_schema,
+        capabilities: &[Capability::FilesystemRead, Capability::NetworkLoopback],
+        tier: SafetyTier::Controlled,
+        targets: &["sandbox", "loopback_service"],
+        hints: &[ObservationHint { source: "network_fixture", signal: "http_request" }],
+        cleanup: None,
+        limits: TASK_LIMITS,
+        effects: (false, true, false),
+        receipt: false,
+    }
 };
 impl Action for NetworkLoopbackAction {
     fn descriptor(&self) -> &'static ActionDescriptor {
@@ -877,14 +1966,15 @@ impl PreparedAction for ExportLocalPrepared {
             .root
             .prepare_new_file(&destination)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
-        context
-            .root
-            .write_new(&target, &bytes)
-            .map_err(|error| ActionFailure::failed("export_write_failed", error))?;
-        let receipt_id = store_receipt(
+        let intent = begin_receipt(
             context,
             receipt_paths(target.relative.clone(), &bytes, &target.created_directories),
         )?;
+        context
+            .root
+            .write_new(&target, &bytes, &intent)
+            .map_err(|error| ActionFailure::failed("export_write_failed", error))?;
+        let receipt_id = commit_receipt(context, &intent)?;
         Ok(ActionOutcome::success(json!({
             "source": source,
             "artifact": target.relative,
@@ -897,19 +1987,20 @@ impl PreparedAction for ExportLocalPrepared {
 
 struct ExportLocalAction;
 static EXPORT_LOCAL_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
-    action_id: "sandbox.export.local.v1",
-    behavior_ids: &["sandbox.export.local.v1"],
-    platforms: ALL_PLATFORMS,
-    capabilities: &[
-        Capability::FilesystemRead,
-        Capability::FilesystemWrite,
-        Capability::ExportLocal,
-    ],
-    safety_tier: SafetyTier::Controlled,
-    filesystem_effect: true,
-    network_effect: false,
-    process_effect: false,
-    cleanup_receipt: true,
+    ..reviewed_descriptor! {
+        id: "sandbox.export.local.v1",
+        behavior_ids: &["sandbox.export.local.v1"],
+        summary: "Copy one bounded artifact into an approved sandbox-local export path.",
+        schema: export_local_schema,
+        capabilities: &[Capability::FilesystemRead, Capability::FilesystemWrite, Capability::ExportLocal],
+        tier: SafetyTier::Controlled,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "file_create" }],
+        cleanup: Some("sandbox.cleanup.v1"),
+        limits: TASK_LIMITS,
+        effects: (true, false, false),
+        receipt: true,
+    }
 };
 impl Action for ExportLocalAction {
     fn descriptor(&self) -> &'static ActionDescriptor {
@@ -917,6 +2008,106 @@ impl Action for ExportLocalAction {
     }
     fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
         Ok(Box::new(ExportLocalPrepared(parse_params(params)?)))
+    }
+}
+
+// -------------------------------------------------------------------------
+// sandbox.restricted.persistence-marker.v1
+
+const PERSISTENCE_MARKER_PATH: &str = "restricted/persistence-marker.json";
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PersistenceMarkerLabel {
+    PersistenceDetectionCanary,
+    ControlValidation,
+}
+
+impl PersistenceMarkerLabel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PersistenceDetectionCanary => "persistence_detection_canary",
+            Self::ControlValidation => "control_validation",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RestrictedPersistenceMarkerParams {
+    label: PersistenceMarkerLabel,
+}
+
+struct RestrictedPersistenceMarkerPrepared(RestrictedPersistenceMarkerParams);
+
+impl PreparedAction for RestrictedPersistenceMarkerPrepared {
+    fn execute(
+        self: Box<Self>,
+        context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        let destination = authorize_path(context, PERSISTENCE_MARKER_PATH, false)?;
+        let document = json!({
+            "schema_version": "bluefire.persistence-detection-canary/v1",
+            "kind": "non_executable_marker",
+            "label": self.0.label.as_str(),
+            "executable": false,
+        });
+        let bytes = format!("{}\n", crate::contract::canonical_json(&document)).into_bytes();
+        if bytes.len() as u64 > context.manifest.limits.max_artifact_bytes {
+            return Err(ActionFailure::blocked(
+                "artifact_limit_blocked",
+                "the deterministic persistence marker exceeds the manifest artifact limit",
+            ));
+        }
+        let target = context
+            .root
+            .prepare_new_file(&destination)
+            .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        let intent = begin_receipt(
+            context,
+            receipt_paths(target.relative.clone(), &bytes, &target.created_directories),
+        )?;
+        context
+            .root
+            .write_new(&target, &bytes, &intent)
+            .map_err(|error| ActionFailure::failed("persistence_marker_write_failed", error))?;
+        let receipt_id = commit_receipt(context, &intent)?;
+        Ok(ActionOutcome::success(json!({
+            "artifact": PERSISTENCE_MARKER_PATH,
+            "sha256": format!("sha256:{}", crate::contract::sha256_hex(&bytes)),
+            "label": self.0.label.as_str(),
+            "executable": false,
+        }))
+        .with_receipt(receipt_id))
+    }
+}
+
+struct RestrictedPersistenceMarkerAction;
+static RESTRICTED_PERSISTENCE_MARKER_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    ..reviewed_descriptor! {
+        id: "sandbox.restricted.persistence-marker.v1",
+        behavior_ids: &["sandbox.restricted.persistence-marker.v1"],
+        summary: "Create one deterministic non-executable persistence-detection canary inside the sandbox.",
+        schema: restricted_persistence_marker_schema,
+        capabilities: &[Capability::FilesystemWrite, Capability::SandboxRestricted],
+        tier: SafetyTier::Restricted,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "persistence_marker_create" }],
+        cleanup: Some("sandbox.cleanup.v1"),
+        limits: TASK_LIMITS,
+        effects: (true, false, false),
+        receipt: true,
+    }
+};
+impl Action for RestrictedPersistenceMarkerAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        &RESTRICTED_PERSISTENCE_MARKER_DESCRIPTOR
+    }
+
+    fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        Ok(Box::new(RestrictedPersistenceMarkerPrepared(parse_params(
+            params,
+        )?)))
     }
 }
 
@@ -948,11 +2139,22 @@ impl PreparedAction for CleanupPrepared {
             requested_receipts: self.0.receipt_ids.len(),
             ..CleanupReport::default()
         };
+        let mut loaded = Vec::new();
+        let mut seen = BTreeSet::new();
         for receipt_id in &self.0.receipt_ids {
+            if !seen.insert(receipt_id.clone()) {
+                report.errors.push(format!(
+                    "{receipt_id}: cleanup receipt IDs must not contain duplicates"
+                ));
+                continue;
+            }
             let record = match context.root.load_receipt(receipt_id) {
                 Ok(Some(record)) => record,
                 Ok(None) => {
                     report.already_absent_receipts.push(receipt_id.clone());
+                    if let Err(error) = context.root.delete_receipt(receipt_id) {
+                        report.errors.push(format!("{receipt_id}: {error}"));
+                    }
                     continue;
                 }
                 Err(error) => {
@@ -966,6 +2168,16 @@ impl PreparedAction for CleanupPrepared {
                 ));
                 continue;
             }
+            loaded.push((receipt_id.clone(), record));
+        }
+        loaded.sort_by(|left, right| {
+            right
+                .1
+                .created_at
+                .cmp(&left.1.created_at)
+                .then_with(|| right.0.cmp(&left.0))
+        });
+        for (receipt_id, record) in loaded {
             let mut receipt_failed = false;
             for owned in &record.paths {
                 match context.root.remove_owned(owned) {
@@ -979,9 +2191,15 @@ impl PreparedAction for CleanupPrepared {
                             .push(format!("{}: {error}", owned.relative_path));
                     }
                 }
+                if let Err(error) = context.root.remove_staging_for_owned(&receipt_id, owned) {
+                    receipt_failed = true;
+                    report
+                        .errors
+                        .push(format!("{} staging: {error}", owned.relative_path));
+                }
             }
             if !receipt_failed {
-                if let Err(error) = context.root.delete_receipt(receipt_id) {
+                if let Err(error) = context.root.delete_receipt(&receipt_id) {
                     report.errors.push(format!("{receipt_id}: {error}"));
                 }
             }
@@ -1016,15 +2234,20 @@ impl PreparedAction for CleanupPrepared {
 
 struct CleanupAction;
 static CLEANUP_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
-    action_id: "sandbox.cleanup.v1",
-    behavior_ids: &["sandbox.cleanup.v1"],
-    platforms: ALL_PLATFORMS,
-    capabilities: &[Capability::FilesystemWrite, Capability::Cleanup],
-    safety_tier: SafetyTier::Safe,
-    filesystem_effect: true,
-    network_effect: false,
-    process_effect: false,
-    cleanup_receipt: false,
+    ..reviewed_descriptor! {
+        id: "sandbox.cleanup.v1",
+        behavior_ids: &["sandbox.cleanup.v1"],
+        summary: "Remove only hash-checked objects named by runner-owned receipts.",
+        schema: cleanup_schema,
+        capabilities: &[Capability::FilesystemWrite, Capability::Cleanup],
+        tier: SafetyTier::Safe,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "file_delete" }],
+        cleanup: None,
+        limits: TASK_LIMITS,
+        effects: (true, false, false),
+        receipt: false,
+    }
 };
 impl Action for CleanupAction {
     fn descriptor(&self) -> &'static ActionDescriptor {
@@ -1039,19 +2262,30 @@ static FIXTURE_CREATE: FixtureCreateAction = FixtureCreateAction;
 static FIXTURE_TRANSFORM: FixtureTransformAction = FixtureTransformAction;
 static DISCOVERY_LIST: DiscoveryListAction = DiscoveryListAction;
 static DISCOVERY_METADATA: DiscoveryMetadataAction = DiscoveryMetadataAction;
+static SYSTEM_DISCOVERY: SystemDiscoveryAction = SystemDiscoveryAction;
+static PROCESS_DISCOVERY: ProcessDiscoveryAction = ProcessDiscoveryAction;
+static RECURSIVE_DISCOVERY: RecursiveDiscoveryAction = RecursiveDiscoveryAction;
+static ARCHIVE_TAR: ArchiveTarAction = ArchiveTarAction;
 static COLLECTION_STAGE: CollectionStageAction = CollectionStageAction;
 static NETWORK_LOOPBACK: NetworkLoopbackAction = NetworkLoopbackAction;
 static EXPORT_LOCAL: ExportLocalAction = ExportLocalAction;
+static RESTRICTED_PERSISTENCE_MARKER: RestrictedPersistenceMarkerAction =
+    RestrictedPersistenceMarkerAction;
 static CLEANUP: CleanupAction = CleanupAction;
 
-static REGISTRY: [&'static dyn Action; 8] = [
+static REGISTRY: [&'static dyn Action; 13] = [
     &FIXTURE_CREATE,
     &FIXTURE_TRANSFORM,
     &DISCOVERY_LIST,
     &DISCOVERY_METADATA,
+    &SYSTEM_DISCOVERY,
+    &PROCESS_DISCOVERY,
+    &RECURSIVE_DISCOVERY,
+    &ARCHIVE_TAR,
     &COLLECTION_STAGE,
     &NETWORK_LOOPBACK,
     &EXPORT_LOCAL,
+    &RESTRICTED_PERSISTENCE_MARKER,
     &CLEANUP,
 ];
 
@@ -1090,13 +2324,51 @@ mod tests {
             "sandbox.fixture.transform.v1",
             "sandbox.discovery.list.v1",
             "sandbox.discovery.metadata.v1",
+            "endpoint.discovery.system.v1",
+            "endpoint.discovery.processes.v1",
+            "sandbox.discovery.recursive.v1",
+            "sandbox.archive.tar.v1",
             "sandbox.collection.stage.v1",
             "sandbox.network.loopback.v1",
             "sandbox.export.local.v1",
+            "sandbox.restricted.persistence-marker.v1",
             "sandbox.cleanup.v1",
         ]);
         assert_eq!(actual, expected);
         assert_eq!(actual.len(), registered_actions().len());
+    }
+
+    #[test]
+    fn inventory_exposes_versioned_machine_readable_sdk_contracts() {
+        for descriptor in inventory() {
+            let value = serde_json::to_value(&descriptor).unwrap();
+            assert_eq!(value["schema_version"], ACTION_SDK_SCHEMA_VERSION);
+            assert_eq!(value["action_version"], "1.0.0");
+            assert_eq!(value["parameter_schema"]["type"], "object");
+            assert_eq!(value["parameter_schema"]["additionalProperties"], false);
+            assert!(value["target_types"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty()));
+            assert!(value["observation_hints"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty()));
+            assert_eq!(value["readiness"], "ready");
+            assert_eq!(value["provenance"]["license"], "MIT");
+        }
+    }
+
+    #[test]
+    fn deterministic_tar_has_ustar_header_and_stable_bytes() {
+        let files = vec![
+            ("fixtures/a.txt".to_string(), b"alpha".to_vec()),
+            ("fixtures/b.txt".to_string(), b"beta".to_vec()),
+        ];
+        let first = build_deterministic_tar(&files, 16 * 1024).unwrap();
+        let second = build_deterministic_tar(&files, 16 * 1024).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(&first[257..263], b"ustar\0");
+        assert_eq!(first.len() % 512, 0);
+        assert!(first[first.len() - 1_024..].iter().all(|byte| *byte == 0));
     }
 
     #[test]

@@ -56,8 +56,11 @@ pub enum Capability {
     FilesystemRead,
     FilesystemWrite,
     ProcessSpawn,
+    ProcessDiscovery,
+    SystemDiscovery,
     NetworkLoopback,
     ExportLocal,
+    SandboxRestricted,
     Cleanup,
 }
 
@@ -413,6 +416,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&Capability::FilesystemWrite).unwrap(),
             r#""filesystem_write""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Capability::SandboxRestricted).unwrap(),
+            r#""sandbox_restricted""#
         );
         assert_eq!(
             serde_json::to_string(&SafetyTier::Controlled).unwrap(),

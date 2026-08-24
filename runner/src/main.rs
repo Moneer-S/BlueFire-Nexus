@@ -74,6 +74,10 @@ fn real_main() -> Result<i32, String> {
             let response = json!({
                 "schema_version": INVENTORY_SCHEMA_VERSION,
                 "runner": "bluefire-rust-runner",
+                "runner_id": "bluefire-rust-runner.v1",
+                "runner_version": env!("CARGO_PKG_VERSION"),
+                "action_sdk_version": bluefire_runner::ACTION_SDK_SCHEMA_VERSION,
+                "receipt_protocol": bluefire_runner::RECEIPT_PROTOCOL_VERSION,
                 "platform": bluefire_runner::Platform::current(),
                 "actions": inventory(),
             });
@@ -85,10 +89,6 @@ fn real_main() -> Result<i32, String> {
             Ok(0)
         }
         "execute" => execute_command(&args[1..]),
-        "__private-transform" => {
-            bluefire_runner::process::private_transform(&args[1..])?;
-            Ok(0)
-        }
         _ => Err(usage().to_string()),
     }
 }

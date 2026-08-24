@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use serde::de::DeserializeOwned;
@@ -34,23 +34,12 @@ impl fmt::Display for RunnerError {
 
 impl std::error::Error for RunnerError {}
 
-#[derive(Debug, Clone)]
-pub struct Runner {
-    executable: PathBuf,
-}
+#[derive(Debug, Clone, Default)]
+pub struct Runner;
 
 impl Runner {
     pub fn new() -> Result<Self, RunnerError> {
-        let executable = std::env::current_exe().map_err(|error| {
-            RunnerError(format!("cannot identify the runner executable: {error}"))
-        })?;
-        Ok(Self { executable })
-    }
-
-    /// Test and embedding hook. The selected executable still receives only
-    /// the private fixed transform subcommand and its fixed typed arguments.
-    pub fn with_executable(executable: PathBuf) -> Self {
-        Self { executable }
+        Ok(Self)
     }
 
     pub fn execute(&self, manifest: ExecutionManifest, profile: RunnerProfile) -> TaskResult {
@@ -100,7 +89,6 @@ impl Runner {
             manifest: &manifest,
             profile: &profile,
             root: &root,
-            runner_executable: &self.executable,
         };
         match prepared.execute(&context) {
             Ok(outcome) => outcome_result(&manifest, &profile, started_at, outcome),
