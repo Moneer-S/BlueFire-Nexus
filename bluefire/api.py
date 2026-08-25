@@ -68,7 +68,10 @@ _SECURITY_HEADERS = {
         "media-src 'none'; "
         "object-src 'none'; "
         "script-src 'self'; "
-        "style-src 'self'; "
+        # Radix Dialog computes one scroll-lock stylesheet from the local
+        # scrollbar width. Its content hash is platform-dependent, so styles
+        # permit inline CSS while scripts remain strictly self-hosted.
+        "style-src 'self' 'unsafe-inline'; "
         "style-src-attr 'unsafe-inline'; "
         "worker-src 'none'"
     ),
@@ -138,7 +141,16 @@ class PlatformService(Protocol):
         """Return one strict persisted detection candidate."""
 
     def upsert_detection_hypothesis(self, request: JsonObject) -> JsonResult:
-        """Create or update one unprogressed hypothesis."""
+        """Create one immutable candidate definition or return its exact duplicate."""
+
+    def clone_detection_candidate(self, candidate_id: str, request: JsonObject) -> JsonResult:
+        """Clone one candidate into a new hypothesis revision."""
+
+    def tune_detection_candidate(self, candidate_id: str, request: JsonObject) -> JsonResult:
+        """Tune one candidate into a new hypothesis revision."""
+
+    def compare_detection_candidates(self, candidate_id: str, request: JsonObject) -> JsonResult:
+        """Compare two candidates from the same revision lineage."""
 
     def parse_detection_candidate(self, candidate_id: str, request: JsonObject) -> JsonResult:
         """Parse or compile one detection candidate."""
@@ -563,6 +575,15 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 self._method_not_allowed("GET")
             else:
                 operations = {
+                    "clone": lambda: self.platform_server.service.clone_detection_candidate(
+                        candidate_id, body
+                    ),
+                    "tune": lambda: self.platform_server.service.tune_detection_candidate(
+                        candidate_id, body
+                    ),
+                    "compare": lambda: self.platform_server.service.compare_detection_candidates(
+                        candidate_id, body
+                    ),
                     "parse": lambda: self.platform_server.service.parse_detection_candidate(
                         candidate_id, body
                     ),
@@ -579,7 +600,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                         candidate_id, body
                     ),
                 }
-                self._dispatch(operations[detection_action])
+                self._dispatch(
+                    operations[detection_action],
+                    success_status=(
+                        HTTPStatus.CREATED
+                        if detection_action in {"clone", "tune"}
+                        else HTTPStatus.OK
+                    ),
+                )
             return
         if path == f"{API_PREFIX}/settings":
             if self._management_query_free():
@@ -1073,6 +1101,9 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return (candidate_id, None)
         action = parts[1]
         if action not in {
+            "clone",
+            "tune",
+            "compare",
             "parse",
             "exercise-fixtures",
             "exercise-observed",

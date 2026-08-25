@@ -88,6 +88,18 @@ class StubService:
         self.calls.append(("upsert_detection_hypothesis", request))
         return {"candidate": {"id": DETECTION_ID}}
 
+    def clone_detection_candidate(self, candidate_id: str, request: Mapping[str, Any]):
+        self.calls.append(("clone_detection_candidate", candidate_id, request))
+        return {"candidate": {"id": candidate_id}}
+
+    def tune_detection_candidate(self, candidate_id: str, request: Mapping[str, Any]):
+        self.calls.append(("tune_detection_candidate", candidate_id, request))
+        return {"candidate": {"id": candidate_id}}
+
+    def compare_detection_candidates(self, candidate_id: str, request: Mapping[str, Any]):
+        self.calls.append(("compare_detection_candidates", candidate_id, request))
+        return {"candidate": {"id": candidate_id}}
+
     def parse_detection_candidate(self, candidate_id: str, request: Mapping[str, Any]):
         self.calls.append(("parse_detection_candidate", candidate_id, request))
         return {"candidate": {"id": candidate_id}}
@@ -436,6 +448,9 @@ def test_detection_lab_routes_dispatch_only_explicit_lifecycle_operations() -> N
         assert service.calls[-1] == ("upsert_detection_hypothesis", body)
 
         actions = {
+            "clone": "clone_detection_candidate",
+            "tune": "tune_detection_candidate",
+            "compare": "compare_detection_candidates",
             "parse": "parse_detection_candidate",
             "exercise-fixtures": "exercise_detection_fixtures",
             "exercise-observed": "exercise_detection_observed",
@@ -449,7 +464,7 @@ def test_detection_lab_routes_dispatch_only_explicit_lifecycle_operations() -> N
                 f"/api/v1/detections/{DETECTION_ID}/{action}",
                 body=body,
             )
-            assert status == 200
+            assert status == (201 if action in {"clone", "tune"} else 200)
             assert json_body(payload)
             assert service.calls[-1] == (expected_call, DETECTION_ID, body)
 
@@ -957,6 +972,8 @@ def test_static_assets_have_strict_security_headers_and_head_support() -> None:
             )
             assert "default-src 'self'" in headers["Content-Security-Policy"]
             assert "object-src 'none'" in headers["Content-Security-Policy"]
+            assert "script-src 'self';" in headers["Content-Security-Policy"]
+            assert "style-src 'self' 'unsafe-inline'" in headers["Content-Security-Policy"]
             assert "style-src-attr 'unsafe-inline'" in headers["Content-Security-Policy"]
 
         status, headers, payload = request(server, "HEAD", "/ui/app.js")
