@@ -2,6 +2,7 @@ import hashlib
 import json
 import socket
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -36,12 +37,16 @@ def _exchange(receiver: LoopbackArtifactReceiver, request: bytes) -> tuple[int, 
     with socket.create_connection((receiver.host, receiver.port), timeout=2.0) as connection:
         connection.sendall(request)
         connection.shutdown(socket.SHUT_WR)
-        response = bytearray()
-        while True:
-            chunk = connection.recv(64 * 1024)
-            if not chunk:
-                break
-            response.extend(chunk)
+        return _read_response(connection)
+
+
+def _read_response(connection: socket.socket) -> tuple[int, dict[str, Any]]:
+    response = bytearray()
+    while True:
+        chunk = connection.recv(64 * 1024)
+        if not chunk:
+            break
+        response.extend(chunk)
     head, body = bytes(response).split(b"\r\n\r\n", 1)
     status = int(head.split(b"\r\n", 1)[0].split(b" ")[1])
     return status, json.loads(body)
@@ -241,6 +246,45 @@ def test_receiver_stops_cleanly_after_bounded_idle_timeout() -> None:
 
     assert summary["reason"] == "idle_timeout"
     assert summary["connections_handled"] == 0
+
+
+def test_receiver_enforces_one_aggregate_request_deadline_for_slow_clients() -> None:
+    receiver = LoopbackArtifactReceiver(
+        ReceiverConfig(
+            port=0,
+            max_requests=1,
+            max_connections=1,
+            request_timeout_seconds=0.2,
+            idle_timeout_seconds=1.0,
+        )
+    )
+    thread, summaries = _serve_in_thread(receiver)
+
+    started = time.monotonic()
+    with socket.create_connection((receiver.host, receiver.port), timeout=1.0) as connection:
+        connection.settimeout(1.0)
+        connection.sendall(b"P")
+        time.sleep(0.08)
+        connection.sendall(b"O")
+        time.sleep(0.08)
+        connection.sendall(b"S")
+        response = _read_response(connection)
+
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+    assert time.monotonic() - started < 0.8
+    status, payload = response
+    assert status == 408
+    assert payload == {"accepted": False, "error": "request_timeout"}
+    assert summaries == [
+        {
+            "schema_version": "bluefire.loopback-receiver-summary.v1",
+            "reason": "max_connections",
+            "connections_handled": 1,
+            "requests_accepted": 0,
+            "requests_refused": 1,
+        }
+    ]
 
 
 def test_receiver_stops_cleanly_on_explicit_stop() -> None:

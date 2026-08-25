@@ -20,7 +20,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Mapping, TextIO, cast
+from typing import Mapping, TextIO, cast
 
 ARTIFACT_PATH = "/bluefire/v1/artifact"
 DEFAULT_MAX_BODY_BYTES = 5 * 1024 * 1024
@@ -76,6 +76,54 @@ class _ProtocolRefusal(Exception):
         super().__init__(code)
         self.status = status
         self.code = code
+
+
+class _DeadlineReader:
+    """Read one request without allowing byte trickling to reset its deadline."""
+
+    def __init__(self, connection: socket.socket, deadline: float) -> None:
+        self._connection = connection
+        self._deadline = deadline
+        self._buffer = bytearray()
+
+    def _receive(self, maximum: int) -> bytes:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise _ProtocolRefusal(408, "request_timeout")
+        self._connection.settimeout(remaining)
+        try:
+            return self._connection.recv(maximum)
+        except (TimeoutError, socket.timeout) as exc:
+            raise _ProtocolRefusal(408, "request_timeout") from exc
+
+    def readline(self, limit: int) -> bytes:
+        while True:
+            newline = self._buffer.find(b"\n")
+            if newline >= 0:
+                end = newline + 1
+                line = bytes(self._buffer[:end])
+                del self._buffer[:end]
+                return line
+            if len(self._buffer) >= limit:
+                line = bytes(self._buffer[:limit])
+                del self._buffer[:limit]
+                return line
+            chunk = self._receive(min(4096, limit - len(self._buffer)))
+            if not chunk:
+                line = bytes(self._buffer)
+                self._buffer.clear()
+                return line
+            self._buffer.extend(chunk)
+
+    def read(self, maximum: int) -> bytes:
+        if maximum <= 0:
+            return b""
+        if self._buffer:
+            length = min(maximum, len(self._buffer))
+            chunk = bytes(self._buffer[:length])
+            del self._buffer[:length]
+            return chunk
+        return self._receive(maximum)
 
 
 class _ReceiverStorage:
@@ -174,12 +222,11 @@ class _ReceiverHandler(socketserver.BaseRequestHandler):
         connection = cast(socket.socket, self.request)
         server.connections_handled += 1
         try:
-            connection.settimeout(server.config.request_timeout_seconds)
+            deadline = time.monotonic() + server.config.request_timeout_seconds
             peer = ipaddress.ip_address(connection.getpeername()[0])
             if not peer.is_loopback:
                 raise _ProtocolRefusal(403, "peer_not_loopback")
-            with connection.makefile("rb") as stream:
-                response = _receive_request(server, stream)
+            response = _receive_request(server, _DeadlineReader(connection, deadline))
             server.requests_accepted += 1
         except _ProtocolRefusal as exc:
             response = _json_response(exc.status, {"accepted": False, "error": exc.code})
@@ -193,7 +240,7 @@ class _ReceiverHandler(socketserver.BaseRequestHandler):
             pass
 
 
-def _receive_request(server: _LoopbackTCPServer, stream: BinaryIO) -> bytes:
+def _receive_request(server: _LoopbackTCPServer, stream: _DeadlineReader) -> bytes:
     request_line = _read_crlf_line(
         stream,
         limit=_MAX_REQUEST_LINE_BYTES,
@@ -257,7 +304,7 @@ def _receive_request(server: _LoopbackTCPServer, stream: BinaryIO) -> bytes:
     )
 
 
-def _read_headers(stream: BinaryIO) -> dict[str, str]:
+def _read_headers(stream: _DeadlineReader) -> dict[str, str]:
     headers: dict[str, str] = {}
     total = 0
     for _ in range(_MAX_HEADER_COUNT + 1):
@@ -289,7 +336,7 @@ def _read_headers(stream: BinaryIO) -> dict[str, str]:
 
 
 def _read_crlf_line(
-    stream: BinaryIO,
+    stream: _DeadlineReader,
     *,
     limit: int,
     overflow_status: int,
@@ -303,7 +350,7 @@ def _read_crlf_line(
     return line[:-2]
 
 
-def _read_exact(stream: BinaryIO, length: int) -> bytes:
+def _read_exact(stream: _DeadlineReader, length: int) -> bytes:
     body = bytearray()
     while len(body) < length:
         chunk = stream.read(min(64 * 1024, length - len(body)))
@@ -321,6 +368,7 @@ def _json_response(status: int, payload: Mapping[str, object]) -> bytes:
         403: "Forbidden",
         404: "Not Found",
         405: "Method Not Allowed",
+        408: "Request Timeout",
         411: "Length Required",
         413: "Content Too Large",
         414: "URI Too Long",
