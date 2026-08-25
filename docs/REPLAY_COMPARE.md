@@ -26,7 +26,7 @@ Supported declared variants are:
 
 - restart from a step;
 - swap one step to a declared or contract-compatible behavior;
-- replace one step's complete typed parameter object through the UI/API;
+- merge partial typed parameter changes into one step through the UI/API;
 - change autonomy (`off`, `assist`, `auto`);
 - change AI provider;
 - change runner profile;
@@ -45,13 +45,13 @@ bluefire --runs-dir .bluefire-runs replay RUN_ID \
 
 For an Execute replay, also supply the current explicit scope and approval as required.
 
-The local UI and API expose typed parameter replay through `parameter_overrides`; the current CLI does not have a parameter-override flag. Every replacement object is validated against the selected behavior before planning.
+The local UI and API expose typed parameter replay through `parameter_overrides`; the current CLI does not have a parameter-override flag. Each step object is a partial change merged into the source parameters, and the complete merged object is validated against the selected behavior before planning.
 
 Execute replay preserves every untouched source action choice. An explicit action override must belong to the replayed step behavior and be enabled by the current exact profile. When a compatible behavior swap has no explicit action override, BlueFire drops only that step's obsolete source action and deterministically resolves the replacement behavior's enabled action. The resulting full map is recorded in lineage and receives a fresh exact approval.
 
 ### Restart from node
 
-BlueFire seeds normalized artifacts from completed source steps before the selected start. The new run validates the scenario and bindings again. Prior runner-owned files may no longer exist or may belong to a different sandbox; Execute preflight/adapter/runner must refuse unusable or out-of-scope state. Treat restart as a convenience for controlled, preserved labs—not proof that old effects are present.
+BlueFire seeds normalized artifact metadata from completed source steps before the selected start. It does not materialize a content-addressed trusted checkpoint into a fresh Execute workspace. The new run validates the scenario and bindings again; prior runner-owned files may no longer exist or may belong to a different sandbox, so Execute preflight/adapter/runner must refuse unusable or out-of-scope state. Treat restart as a convenience for controlled, preserved labs—not proof that old effects are present.
 
 ### Node substitution
 

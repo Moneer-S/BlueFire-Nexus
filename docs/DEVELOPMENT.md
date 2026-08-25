@@ -32,8 +32,10 @@ python -m pip install -e ".[dev]"
 Optional maintained detection adapters:
 
 ```bash
-python -m pip install "pysigma==1.4.0" "yara-python==4.5.4"
+python -m pip install "pysigma==1.5.0" "yara-python==4.5.4"
 ```
+
+The upstream v4.5.5 source tag is retained as research provenance; 4.5.4 is the latest installable PyPI adapter build.
 
 Do not install project dependencies globally. Keep test run stores, databases, sandboxes, caches, and build artifacts untracked.
 
@@ -83,6 +85,11 @@ pnpm test
 pnpm build
 pnpm test:e2e
 ```
+
+Chromium is the required default browser. For a local Firefox smoke after installing the pinned
+Playwright browser, set `BLUEFIRE_CROSS_BROWSER=1` (PowerShell:
+`$env:BLUEFIRE_CROSS_BROWSER = "1"`) before `pnpm test:e2e`; the same journeys then run in both
+browsers.
 
 `pnpm dev` serves the live API-backed development UI on loopback and proxies `/api` to `127.0.0.1:8765`. `pnpm dev:demo` uses deterministic sanitized browser data and refuses Execute. `pnpm build` replaces `bluefire/ui` with production assets.
 

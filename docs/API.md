@@ -20,7 +20,7 @@ Do not expose this API through a reverse proxy, tunnel, port forward, or contain
 | Method | Path | Result |
 |---|---|---|
 | GET | `/api/v1/catalog` | Modes, autonomy/provider metadata, behaviors, actions, profiles |
-| GET | `/api/v1/scenarios` | Packaged scenario documents |
+| GET | `/api/v1/scenarios` | Authoritative active durable scenario documents |
 | GET | `/api/v1/settings` | Secret-safe local settings |
 | POST | `/api/v1/settings/{setting_key}` | Upsert one setting |
 | GET, POST | `/api/v1/scenario-versions` | List active saved versions or save a scenario version |
@@ -44,6 +44,9 @@ Do not expose this API through a reverse proxy, tunnel, port forward, or contain
 | POST | `/api/v1/detections/{candidate_id}/exercise-observed` | Exercise immutable observed run evidence |
 | POST | `/api/v1/detections/{candidate_id}/evaluate-benign` | Evaluate bounded benign fixtures and notes |
 | POST | `/api/v1/detections/{candidate_id}/reject` | Explicitly reject a non-terminal candidate |
+| POST | `/api/v1/detections/{candidate_id}/clone` | Create a new immutable same-semantics revision |
+| POST | `/api/v1/detections/{candidate_id}/tune` | Create a new immutable rule-semantics revision |
+| POST | `/api/v1/detections/{candidate_id}/compare` | Compare two revisions from one lineage |
 | POST | `/api/v1/scenarios/validate` | Validated graph and issues |
 | POST | `/api/v1/runs/preflight` | Plan, policy/readiness, scope, approval, cleanup, AI metadata |
 | POST | `/api/v1/runs` | Submit a durable run job (`202`) |
@@ -229,17 +232,27 @@ Accepting an Execute proposal does **not** release execution. Because the source
 }
 ```
 
-`exact: true` cannot be combined with a variant. `parameter_overrides` maps step IDs to complete parameter objects that are revalidated against the replayed behavior. Execute replay preserves the source plan's action choices for untouched steps. An explicit `action_implementations` override is validated against the replayed behavior and current profile and is recorded in lineage. A compatible behavior swap without an explicit action override deterministically re-resolves only the swapped step and records that change. Every Execute replay receives a fresh exact approval bound to the resulting choices; the source approval is never reused. Execute replay additionally needs target scope and inline approval. Replay currently remains synchronous within its POST request; it is not submitted through the background job controller.
+`exact: true` cannot be combined with a variant. `parameter_overrides` maps step IDs to partial parameter changes; each object is merged into the source step parameters and the complete merged result is revalidated against the replayed behavior. Execute replay preserves the source plan's action choices for untouched steps. An explicit `action_implementations` override is validated against the replayed behavior and current profile and is recorded in lineage. A compatible behavior swap without an explicit action override deterministically re-resolves only the swapped step and records that change. Every Execute replay receives a fresh exact approval bound to the resulting choices; the source approval is never reused. Execute replay additionally needs target scope and inline approval. Replay currently remains synchronous within its POST request; it is not submitted through the background job controller.
 
 ### Product settings
 
-`POST /api/v1/settings/{setting_key}` requires exactly:
+The only writable setting is `ui.preferences`. `POST /api/v1/settings/ui.preferences` requires
+exactly this versioned, non-authoritative document:
 
 ```json
-{"value": {"theme": "dark"}}
+{
+  "value": {
+    "schema_version": "bluefire.ui-preferences.v1",
+    "theme": "dark",
+    "effect_mode": "simulate",
+    "autonomy": "off"
+  }
+}
 ```
 
-Keys are lowercase stable identifiers up to 200 characters. Values may be any JSON value, but every secret-shaped field must be null or an exact environment reference such as `{"env":"BLUEFIRE_API_KEY"}`. Unknown envelope fields and plaintext secrets are rejected.
+Unknown setting keys, missing or extra preference fields, unknown schema versions, and invalid enum
+values are rejected. These preferences never define profile, scope, action, runner, approval,
+cleanup, budget, collector, detection-backend, provider, model, endpoint, or credential authority.
 
 ### Saved scenario versions
 
@@ -279,6 +292,8 @@ Upsert an item with exactly `document` and optional lowercase stable `status`:
 
 Resource IDs use the same stable lowercase identifier rule as setting keys. Unknown kinds, extra path segments, query parameters, duplicate/unknown envelope fields, malformed IDs, and plaintext secret values are rejected. A generic save remains metadata-only: it does not dynamically install code, register a behavior, activate a collector, or expand runner authority. `active` and `inactive` are reserved statuses for runner profiles and model providers and cannot be supplied through generic upsert.
 
+Research sources use the stricter `bluefire.research-source.v1` document and only `draft` or `pinned` status. A saved document is immutable for its resource ID: an exact draft may be promoted to `pinned`, but it cannot be demoted or replaced, and changed metadata requires a new source ID. Its `reference_url` must be HTTPS and contain the declared non-moving pin. BlueFire does not fetch the URL or hash remote bytes; the resource digest and any detection `source_digest` bind the validated registered metadata document.
+
 Detection is the exception to generic resource writes. `GET /api/v1/resources/detections` remains a compatibility read, but generic detection POST returns `409 detection_lifecycle_required`; all detection changes must use the explicit lifecycle routes below.
 
 ### Detection Lab lifecycle
@@ -298,7 +313,7 @@ Create a behavior-linked hypothesis with exactly the required identity fields an
 }
 ```
 
-`POST /api/v1/detections` derives the candidate ID from behavior, language, logsource, and selection. It can update only a candidate that is still a hypothesis; it cannot reset a progressed or rejected candidate. Every accepted operation appends a bounded lifecycle row containing action, prior/current state, outcome, input digest, timestamp, and immutable run ID when applicable.
+`POST /api/v1/detections` derives an origin candidate ID from behavior, language, logsource, and selection. The definition is immutable: submitting the exact same definition is idempotent, while any changed definition returns `409 detection_revision_required`. Use `/clone` to create a new same-semantics revision or `/tune` to change selection/logsource semantics. Every v2 candidate records its revision number, stable root ID, parent ID, revision kind, and definition digest; revision numbers are allocated atomically per lineage. Every accepted lifecycle operation appends a bounded row containing action, prior/current state, outcome, input digest, timestamp, and immutable run ID when applicable.
 
 Parsing uses an exact `{}` body for `internal`, and `{"source":"..."}` for Sigma, YARA/YARA-L, and SPL. Internal uses the maintained structured matcher, Sigma uses pySigma, and YARA uses YARA-Python with includes disabled and warnings treated as errors. SPL has only a structural checker: success records the bounded source and checker result but deliberately remains `hypothesis`. Missing authoritative adapters return `503` without advancing state; parser/compiler rejection is persisted as `rejected`.
 
@@ -314,6 +329,8 @@ Malicious and benign fixture actions accept explicitly named JSON fixtures, at m
 Observed exercise accepts only `{"run_id":"...","evidence_ids":["evidence-..."]}`. The run must be finalized, its bundle manifest must verify, each evidence content/record/identity hash is recomputed, and every selected record must have `observed` provenance. Callers cannot submit evidence inline. YARA bytes cannot be inferred from JSON evidence, and SPL is not authoritative, so observed JSON exercise is limited to internal and normalized Sigma selection semantics.
 
 Candidate source, fixtures, notes, field drift, match counts, and lifecycle history are persisted in the `detection` resource with status equal to the honest candidate state. ProductStore's recursive secret-shaped-field rules apply to every persisted candidate; arbitrary commands, paths to execute, dynamic imports, and backend execution configuration are not accepted by these routes.
+
+`POST /api/v1/detections/{candidate_id}/compare` accepts exactly `{"candidate_id":"..."}` and requires both definitions to share a revision root. The content-derived result compares source attribution and registered public-baseline metadata, rule digests, predicted/observed fields and drift, lifecycle history, malicious fixtures, observed evidence/run IDs, and benign fixtures/notes. It does not fetch or execute a public rule corpus.
 
 Plugin resources use the stricter `bluefire.plugin.v1` contract documented in [Plugin SDK](PLUGIN_SDK.md). Their save envelope contains exactly `document`; caller-supplied status and unknown manifest fields such as entry points, commands, or free-form execution configuration are rejected. The manifest ID must equal the route ID. Status is derived from `enabled` and `trust`, then changed only through the explicit plugin activation/deactivation routes.
 

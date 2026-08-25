@@ -169,8 +169,8 @@ These screenshots come from the Python-backed local service with sanitized fixtu
 
 | Detection Lab | Runner inventory | AI Planner |
 | --- | --- | --- |
-| ![Detection candidate lifecycle and parser health](docs/assets/screenshots/detection-lab.png) | ![Sanitized Rust runner health and action inventory](docs/assets/screenshots/runners.png) | ![Bounded AI Planner with an unsaved registered-contract draft](docs/assets/screenshots/ai-planner.png) |
-| Parser readiness and lifecycle stages distinguish hypotheses from completed validation. | Stored-profile probing exposes readiness and allowlisted action IDs without browser-visible paths or secrets. | Provider metadata, authority boundaries, and an explicitly unsaved, unauthorized graph draft stay separate. |
+| ![Immutable detection revision lineage and reviewed public-baseline binding](docs/assets/screenshots/detection-lab.png) | ![Sanitized Rust runner health and action inventory](docs/assets/screenshots/runners.png) | ![Bounded AI Planner with an unsaved registered-contract draft](docs/assets/screenshots/ai-planner.png) |
+| Immutable origin/clone/tune lineage and pinned public-baseline choices remain explicit. | Stored-profile probing exposes readiness and allowlisted action IDs without browser-visible paths or secrets. | Provider metadata, authority boundaries, and an explicitly unsaved, unauthorized graph draft stay separate. |
 
 For frontend development:
 
@@ -218,6 +218,33 @@ $env:BLUEFIRE_RUNNER_BINARY = (Resolve-Path .\runner\target\release\bluefire-run
 $env:BLUEFIRE_SANDBOX_ROOT = (New-Item -ItemType Directory -Force .\.bluefire-sandbox).FullName
 ```
 
+Provision the reviewed loopback receiver in a separate terminal before an Execute run that uses
+`sandbox.network.loopback.v1`:
+
+```bash
+bluefire receiver --host 127.0.0.1 --port 4317 \
+  --max-requests 1 --max-connections 16 \
+  --max-body-bytes 5242880 --idle-timeout 120
+```
+
+The receiver binds a literal loopback address only, accepts exactly
+`POST /bluefire/v1/artifact`, verifies the declared length and `X-BlueFire-SHA256`, and treats the
+body as opaque bytes. It does not execute, forward, or redirect content. By default it transiently
+buffers at most `--max-body-bytes` for digest verification and does not persist the body. To preserve
+the artifact, explicitly add `--storage-dir /tmp/bluefire-receiver-artifacts-SESSION`; the dedicated
+directory must be empty on first use and is then marked and used only for content-addressed receiver
+files. Never choose a repository, personal, shared, or production directory. The readiness record
+reports the bound
+host and port without reporting a filesystem path. `--max-requests` counts accepted artifacts, so a
+malformed request does not consume the intended Execute slot; `--max-connections` separately caps
+all accepted TCP connections, including refusals. The runner treats a 2xx response as success only
+when its bounded JSON acknowledgement has the expected schema, accepted flag, exact byte count,
+echoed artifact digest, and boolean storage result.
+
+The approved action binds the literal host and port, but it does not authenticate the receiver
+process identity or a receiver session. A successful acknowledgement is therefore not proof of
+remote transport, authenticated service identity, or mutual authentication.
+
 Check inventory and preflight before approval:
 
 ```bash
@@ -263,10 +290,16 @@ The base configuration uses `deterministic-offline.v1`. To use the included Open
 export OPENAI_API_KEY="..."          # Linux/macOS
 # Windows PowerShell: $env:OPENAI_API_KEY = "..."
 
-bluefire scenario preview scenarios/ai_adaptive_safe_chain.yaml \
+bluefire --runs-dir .bluefire-runs scenario run scenarios/ai_adaptive_safe_chain.yaml \
   --autonomy assist \
   --ai-provider openai-responses.v1
 ```
+
+Unlike `scenario preview`, this Simulate run can construct the selected provider and request a
+bounded runtime proposal after an observed step outcome. Preview validates configuration only and
+does not contact a model endpoint. A real provider call still depends on operator credentials and
+network access; offline tests use a fake transport and do not certify endpoint connectivity or model
+quality.
 
 Provider configuration lives under `ai.providers` in `config/bluefire.example.yaml`. The YAML stores the environment-variable name, endpoint, model, timeout, retry count, output-token limit, and redaction policy—not the secret value. If credentials are missing, the provider times out, or structured output is invalid, BlueFire uses the deterministic fallback and records that fact.
 
@@ -297,7 +330,7 @@ Compare two or more runs; the first is the baseline:
 bluefire --runs-dir .bluefire-runs compare BASELINE_RUN_ID CANDIDATE_RUN_ID
 ```
 
-Comparison reports path and first-block divergence, outcome counts, objective state, evidence provenance, detection lifecycle/matches, telemetry, policy/control states, cleanup, autonomy/provider, AI proposal application, budgets, duration, and coarse improvement/regression signals. A reported delta is not proof that the declared change caused it. See [Replay and compare](docs/REPLAY_COMPARE.md).
+Comparison reports path and first-block divergence, outcome counts, objective state, evidence provenance, detection lifecycle/matches, telemetry, policy/control states, cleanup, autonomy/provider, AI proposal application, budgets, duration, and coarse improvement/regression signals. It does not yet compute planner-decision deltas, predicted-versus-observed field drift, declared defense-change lineage, target-scope differences, or action-implementation inventory differences. A reported delta is not proof that the declared change caused it. See [Replay and compare](docs/REPLAY_COMPARE.md).
 
 ## Evidence and Detection Lab
 
@@ -315,9 +348,11 @@ Detection candidates move through `hypothesis` → `parsed` → `fixture_exercis
 For authoritative parser/compiler adapters:
 
 ```bash
-python -m pip install "pysigma==1.4.0" "yara-python==4.5.4"
+python -m pip install "pysigma==1.5.0" "yara-python==4.5.4"
 python -m pytest tests_platform/test_detections.py
 ```
+
+The installable YARA adapter is pinned to the latest published PyPI build, 4.5.4. The research registry separately tracks the upstream source tag v4.5.5; a source tag is not reported as an installable package version.
 
 - Sigma uses pySigma parsing and records parser version/errors.
 - YARA uses YARA-Python compilation with includes disabled and warnings as errors, then bounded fixture matching.
@@ -328,7 +363,7 @@ See [Evidence model](docs/EVIDENCE_MODEL.md) and [Detection Lab](docs/DETECTION_
 
 ## Research provenance
 
-The built-in registry records source, authority, public URL, version/pin, retrieval date, license, relationship (`imported`, `adapted`, `inspired`, or `comparative`), intended use, and cache policy. It currently references MITRE ATT&CK Enterprise data 19.1, Sigma specification 2.1.0, pySigma 1.4.0, and yara-python 4.5.4. External datasets and corpora are not vendored.
+The built-in registry records source, authority, a pin-bearing HTTPS reference, version/pin, retrieval date, license, relationship (`imported`, `adapted`, `inspired`, or `comparative`), intended use, and cache policy. The registry validates that the URL contains the declared non-moving pin, but it does not fetch remote bytes or prove that a remote tag or URL target cannot move. It currently references MITRE ATT&CK Enterprise data 19.2 at commit `6cda5ad8462c79e14fbb872f4e09059b18e0cfc4`, Sigma specification 2.1.0, pySigma 1.5.0, yara-python 4.5.5, and an Atomic Red Team comparative snapshot at commit `6132b92779873cb0d05bef07ba0a480d47eb1cc8`. External datasets, scripts, and corpora are not vendored or executed.
 
 ## Supported platforms
 
@@ -373,7 +408,7 @@ Security and release checks should also include detect-secrets/Gitleaks, staged-
 
 ## Documentation
 
-- [User guide](docs/USER_GUIDE.md)
+- [User guide](docs/USER_GUIDE.md) and [command-line reference](docs/CLI.md)
 - [Architecture](docs/ARCHITECTURE.md) and [execution model](docs/EXECUTION_MODEL.md)
 - [Threat model](docs/THREAT_MODEL.md) and [responsible use](docs/RESPONSIBLE_USE.md)
 - [Runner deployment](docs/RUNNER_DEPLOYMENT.md) and [runner profiles](docs/RUNNER_PROFILES.md)
@@ -389,14 +424,19 @@ Security and release checks should also include detect-secrets/Gitleaks, staged-
 - BlueFire is local-first and pre-1.0. The API is loopback-only and has no remote authentication layer.
 - The Rust runner is built separately; the Python package does not download, install, enroll, or run it as a service.
 - Remote transport, mutual authentication, runner enrollment/revocation, and signed task/profile artifacts are not implemented.
+- The loopback artifact receiver verifies a digest-bound acknowledgement but does not authenticate the receiver process or session.
+- Runner readiness binds the probed binary digest and inventory, but BlueFire does not provide OS code signing or eliminate the local binary time-of-check/time-of-use interval before launch.
 - The action pack is intentionally bounded to runner-owned fixtures, discovery, staging/archive, local export, loopback transport, and cleanup. It has no general shell or arbitrary program execution.
+- Plugin activation inventories reviewed metadata only; it does not download/load a package or add dynamic behaviors/actions.
 - One restricted persistence-detection canary is available only through a dedicated narrow profile; real host persistence changes and the credential, lateral-movement, and defense-evasion research families remain unavailable for Execute.
 - Built-in independent observation is limited to declared sandbox files and disposable JSONL fixtures. Optional audit/SIEM collectors report unavailable until separately implemented and configured.
 - The Detection Lab backend offers candidate and validator primitives; backend-specific Sigma conversion and production SPL validation are not included.
+- Real-account AI transport is not part of offline acceptance, and no single dynamically verified product journey currently demonstrates Auto mutation through replay and comparison.
+- Restart-from-node replay carries normalized prior artifact metadata but does not materialize a content-addressed trusted checkpoint in a fresh Execute workspace.
 - Bundle/event hashes detect modification but are not digital signatures or proof of who produced a bundle.
 - Browser-only preview preferences are not canonical execution configuration. Durable settings, versioned scenarios, runner profiles, runner records, model providers, plugins, research sources, collectors, and detection backends use the loopback API; trust preflight, approval, run, and bundle records for execution authority.
 
-Roadmap work should close these explicit gaps rather than add aliases, broad provider catalogs, unreviewed action count, or a third run mode.
+These are explicit acceptance gaps. Close them before broadening provider catalogs, adding unreviewed actions, or introducing another run mode.
 
 ## Responsible use and license
 

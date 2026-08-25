@@ -4,7 +4,7 @@ BlueFire's detection model is evidence-driven. A rendered rule is a hypothesis u
 
 ## Candidate contract
 
-A `bluefire.detection.v1` candidate records:
+A newly created `bluefire.detection.v2` candidate records (`v1` is accepted only when reading legacy origins):
 
 - behavior ID, title, target language, and log source;
 - structured selection and optional rule source;
@@ -15,6 +15,7 @@ A `bluefire.detection.v1` candidate records:
 - match counts, known misses, false-positive notes, tuning decisions, and limitations;
 - bounded malicious/benign fixture documents and provenance;
 - lifecycle state and an ordered, input-digested transition history.
+- immutable revision number, lineage root/parent IDs, revision kind, and definition digest.
 
 Supported target language labels are `internal`, `sigma`, `yara`/`yara-l`, and `spl`.
 
@@ -31,9 +32,26 @@ Supported target language labels are `internal`, `sigma`, `yara`/`yara-l`, and `
 
 The lifecycle prevents unsupported jumps. An external-language candidate cannot use the built-in structured matcher to claim parsing. `observed_exercised` includes only evidence IDs that actually matched, not every record evaluated.
 
-The persisted API is the lifecycle authority. Hypotheses are created through `POST /api/v1/detections`; parse, malicious-fixture, observed-evidence, benign, and rejection operations use the named candidate action routes documented in [Local API](API.md). Generic detection resource writes are refused so a client cannot assert an advanced status or erase history. Candidate IDs are derived from behavior, language, logsource, and selection, while the stored resource status must exactly equal the candidate state.
+The persisted API is the lifecycle authority. Hypotheses are created through `POST /api/v1/detections`; parse, malicious-fixture, observed-evidence, benign, and rejection operations use the named candidate action routes documented in [Local API](API.md). Generic detection resource writes are refused so a client cannot assert an advanced status or erase history. An origin ID is derived from behavior, language, logsource, and selection. Clone/tune IDs also bind the definition digest, atomically allocated revision, lineage root, parent, and revision kind. Definitions never update in place; an exact origin create is idempotent and any change requires an explicit clone or tune. The stored resource status must exactly equal the candidate state.
 
 Each accepted action appends an ordered history record with the previous/current state, honest outcome, timestamp, and a digest of the bounded input. Observed exercise also records the source run ID. The service rehydrates every stored candidate through the strict contract and verifies the resource digest, ID, and status before a subsequent action.
+
+## Immutable revisions
+
+Clone retains the source rule semantics and requires a research reason; optional title, provenance,
+known-miss, public-baseline, and predicted-field changes create a new revision. Tune additionally
+requires a changed `selection` or `logsource`. Both operations allocate the next revision atomically,
+retain the selected parent, and start a new hypothesis without changing the parent lifecycle.
+
+Revision comparison accepts one candidate ID and requires both candidates to share the same lineage
+root:
+
+```json
+{"candidate_id": "detection-child-id"}
+```
+
+The response identity and digest cover the complete comparison snapshot, including lifecycle state;
+comparison does not mutate either revision.
 
 ## Backend status
 
@@ -46,9 +64,11 @@ Each accepted action appends an ordered history record with the previous/current
 Install the pinned optional adapters into the project virtual environment:
 
 ```bash
-python -m pip install "pysigma==1.4.0" "yara-python==4.5.4"
+python -m pip install "pysigma==1.5.0" "yara-python==4.5.4"
 python -m pytest tests_platform/test_detections.py
 ```
+
+The installable YARA adapter uses the latest published PyPI build, 4.5.4. The pinned research-source record separately tracks upstream source tag v4.5.5 and does not claim that tag is available from PyPI.
 
 If an optional package is absent, the candidate remains a hypothesis. Do not catch that condition and mark it parsed.
 
@@ -93,7 +113,7 @@ Treat predicted-only fields as a telemetry dependency or mapping problem before 
 
 ## Public baselines
 
-Public rules are research references, not automatic evasion targets. Preserve source, version/commit, retrieval date, license, and the candidate relationship. Baseline comparison reports candidate-only, baseline-only, overlap, and incremental candidate matches over the same named fixtures.
+Public rules are research references, not automatic evasion targets. Preserve source, version/commit, retrieval date, license, and the candidate relationship. The current revision comparison reports changes to registered public-baseline metadata alongside the two candidates' own malicious/benign fixture, observed-evidence, field, rule, and lifecycle deltas. It does not fetch a public corpus, execute a public rule, or compute candidate-only/baseline-only public-rule hit sets.
 
 BlueFire's built-in research registry references MITRE ATT&CK, Sigma specification, pySigma, and yara-python. It does not synchronize SigmaHQ, Elastic, Splunk, or commercial rule corpora.
 

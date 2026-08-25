@@ -1,6 +1,6 @@
 # User guide
 
-This guide covers normal local operation. Begin with Simulate. Use Execute only after reading [Runner deployment](RUNNER_DEPLOYMENT.md), [Runner profiles](RUNNER_PROFILES.md), and [Responsible use](RESPONSIBLE_USE.md).
+This guide covers normal local operation. Begin with Simulate. Use Execute only after reading [Runner deployment](RUNNER_DEPLOYMENT.md), [Runner profiles](RUNNER_PROFILES.md), and [Responsible use](RESPONSIBLE_USE.md). For exact command syntax and JSON request-file contracts, see the [command-line reference](CLI.md).
 
 ## Start the application
 
@@ -17,20 +17,47 @@ Open `http://127.0.0.1:8765`. The UI, CLI, and HTTP API use the same `BlueFireSe
 | Area | Use it for |
 |---|---|
 | Overview | Readiness, recent runs, evidence mix, and next actions |
-| Scenarios | Browse the six packaged graphs and open one for editing/running |
-| Builder | Edit typed nodes, parameters, bindings, outcomes, alternates, and layout |
-| Runs | Configure, preflight, start, and review run records |
+| Getting Started | Follow live readiness checks from scenario selection through durable review |
+| Scenarios | Browse the six seeded versioned graphs and open the authoritative active definition for editing/running |
+| Builder | Edit typed nodes, parameters, bindings, outcomes, alternates, and route-depth layout; use focus mode and commands |
+| Runs | Configure, preflight, start, and open durable run history or deep links |
 | Compare | Select a baseline and one or more candidate runs |
 | Behaviors | Inspect contracts, readiness, observables, provenance, and limitations |
 | Runner Profiles / Runners | Inspect scope and capability policy or runner readiness |
 | Actions | Inspect logical actions and the Rust inventory boundary |
-| Detection Lab | Review lifecycle state, fixtures, fields, and baseline notes |
+| Detection Lab | Create, clone, tune, exercise, reject, and compare immutable candidate revisions |
 | Research Sources | Inspect pins, licenses, relationships, and cache policy |
 | AI Planner | Select autonomy/provider and review planner decisions |
-| Settings | Manage browser-side defaults, theme, and declarative import/export |
+| Settings | Manage theme plus browser-side effect/autonomy preferences; inspect backend settings authority |
 | Help | Concepts and common readiness failures |
 
 Management resources and saved scenario versions are durable local backend records. The unsaved working graph remains a browser draft until it is validated and saved. A control is authoritative only when it appears in backend preflight and the finalized run bundle. The browser never writes an arbitrary local path or plaintext secret value.
+
+## Getting started
+
+Open **Getting Started** from the navigation or the Overview empty state. It reads live service, scenario, run-history, and Detection Lab readiness rather than presenting a static success checklist. Follow its four links in order:
+
+1. choose a scenario and read its purpose, limitations, and provenance;
+2. open Builder and validate typed nodes, routes, artifact bindings, and cleanup;
+3. configure a deterministic Simulate preflight with AI Off and resolve every finding;
+4. open the durable result and review evidence, limitations, and cleanup.
+
+The walkthrough does not claim that Execute is ready merely because Simulate works. Execute remains unavailable until a current runner identity, inventory, platform, sandbox probe, profile, scope, policy, and exact approval all bind successfully.
+
+## Work in Builder
+
+Builder edits the browser's unsaved working graph. Drag or select registered behaviors, connect typed artifact ports and outcome routes, inspect node parameters, and validate before saving a durable scenario version. Metadata-only behaviors remain labeled and cannot imply Execute support.
+
+For a large graph:
+
+- use **Auto layout** to arrange nodes by outcome-route depth;
+- use **Fit graph** or **Fit selection** to restore context;
+- collapse the behavior palette or inspector independently;
+- enter graph focus mode and press `Esc` to leave it;
+- open **Commands** or press `Ctrl+K` / `Cmd+K` for layout, panel, focus, validation, undo, and redo actions;
+- review the confirmation before deleting selected nodes or edges; a confirmed change can be undone.
+
+Graph export downloads a local JSON copy. It does not save, validate, authorize, or execute the graph.
 
 ## Choose and validate a scenario
 
@@ -87,6 +114,18 @@ Review the exact plan, target scope, actions, tiers, capabilities, budgets, expe
 
 The local approval identity is an audit label for the current OS user, not organizational authorization or authentication.
 
+### Real loopback primary path
+
+The canonical sandbox research chain's network step has a real, bounded primary path. Before an authorized Execute run that uses `sandbox.network.loopback.v1`, start the built-in receiver in a separate unprivileged terminal:
+
+```bash
+bluefire receiver --host 127.0.0.1 --port 4317 \
+  --max-requests 1 --max-connections 16 \
+  --max-body-bytes 5242880 --idle-timeout 120
+```
+
+It accepts only the exact loopback artifact route, verifies length and SHA-256, and treats the body as opaque bytes. `--max-requests` counts verified artifacts while `--max-connections` separately bounds accepted and refused connections. Default operation transiently buffers at most the configured body limit and does not persist the body. `--storage-dir` is an explicit opt-in to an empty, dedicated, receiver-owned directory with content-addressed filenames. The runner also verifies the acknowledgement schema, byte count, and echoed digest. The approved host and port do not authenticate the receiver process/session, so the receiver is not remote runner transport, authentication, or a general HTTP server. Without a ready receiver, the primary network action can fail and the scenario may follow only its declared alternate; do not report that alternate as a successful primary-path exercise. See [Runner deployment](RUNNER_DEPLOYMENT.md#provision-the-loopback-receiver) and the [CLI reference](CLI.md#loopback-artifact-receiver).
+
 ## Preflight
 
 Do not interpret the presence of a Run button as readiness. Preflight reports:
@@ -128,6 +167,8 @@ After completion, review:
 - provider/model/fallback metadata;
 - limitations and bundle digest.
 
+The Runs page stores history in the backend, not only in browser memory. Open `/runs/RUN_ID` for a durable review link; it can be bookmarked or reloaded as long as the same product database and run store are available. The page keeps modeled evidence separate from real runner output, shows human-readable summary rows, and leaves raw JSON collapsed for detailed inspection. A missing run returns a real not-found state rather than reconstructing a browser demo.
+
 Validate the bundle before sharing or comparison:
 
 ```bash
@@ -166,10 +207,22 @@ The first run is the baseline. Treat `improved`, `regressed`, and `mixed` as sum
 3. Exercise deterministic malicious fixtures.
 4. Link only independently `observed` evidence for observed exercise.
 5. Evaluate benign fixtures and record false-positive notes.
-6. Compare with attributed public baselines.
-7. Retain field drift, known misses, and tuning decisions.
+6. Clone an immutable candidate when a new editable revision should retain the same semantics, or tune it when selection/log-source semantics change.
+7. Compare revisions from the same lineage and review source, rule, fields, lifecycle, malicious-fixture, observed-evidence, and benign-fixture deltas.
+8. Compare with attributed public baselines.
+9. Retain field drift, known misses, and tuning decisions.
 
-The UI can create and inspect local drafts. Backend parser/compiler functionality is provided by `ExternalDetectionValidator`; a disabled UI button is not evidence that validation ran. See [Detection Lab](DETECTION_LAB.md).
+The Detection Lab UI creates strict hypotheses, exposes clone/tune as new content-addressed revisions, and compares siblings without overwriting their parents. Its public-baseline selector uses only registered pinned Research Source records and preserves the digest of the validated registered metadata document, pin, version, license review, relationship, and comparison use. That digest is not a hash of fetched external bytes; BlueFire does not fetch the reference. The CLI exposes the same lifecycle through `bluefire detections ...`; see the [detection command reference](CLI.md#detection-lab).
+
+Backend parser/compiler functionality is provided by `ExternalDetectionValidator`; rendered source or an enabled browser button is not evidence that validation ran. Trust the persisted candidate state, backend name/version, ordered lifecycle history, and immutable definition/lineage digests. See [Detection Lab](DETECTION_LAB.md).
+
+## Settings authority
+
+The Settings page controls three browser concerns: theme, the preferred effect mode, and preferred AI autonomy. Theme is applied and restored in the browser; all three preferences can hydrate from and save to the secret-safe `ui.preferences` backend setting. Effect/autonomy values are only starting choices for a run.
+
+Settings do not control safety tier, target scope, runner profile policy, capabilities, action allowlists, approvals, cleanup, budgets, runner endpoint, identity, inventory, or readiness. Those values come from validated backend resources and the selected profile, and the exact effective values must appear in preflight and the run bundle. Browser preferences are not substitutes for canonical configuration.
+
+Use `bluefire settings list` to inspect durable records and `bluefire settings set ui.preferences document.json` for the exact versioned preference object. Other setting keys and authority fields are rejected. Never store credentials or local secret values there.
 
 ## Common problems
 
@@ -204,3 +257,17 @@ Stop further runs in that sandbox. Preserve the runner's receipt state, inspect 
 ### Interrupted job
 
 Do not treat an interrupted Execute job as resumable authority. Startup first reconciles the exact privately bound workspace and publishes a recovery audit record. Once recovery is settled, use Retry to create a new job; Execute retry always repeats preflight and requires a fresh one-time approval.
+
+## Current boundaries
+
+BlueFire is local-first and pre-1.0. Keep these limits visible when interpreting a successful workflow:
+
+- the API and artifact receiver bind loopback; remote transport, TLS/mTLS, runner enrollment/revocation, service installation, and signed task/profile/result artifacts are not implemented;
+- the runner action pack is bounded and has no general shell or arbitrary program execution;
+- only the narrow sandbox persistence-detection canary is available under its dedicated restricted profile; real host persistence plus credential, lateral-movement, and defense-evasion Execute families remain unavailable;
+- built-in independent observation is limited to declared sandbox files and disposable JSONL fixtures; optional audit/SIEM collectors remain unavailable until separately implemented and configured;
+- plugins are declarative metadata only and do not load Python entry points or add connector capabilities;
+- Detection Lab does not include backend-specific Sigma conversion, production SPL validation, or automatic public-corpus synchronization;
+- hashes establish bundle consistency, not a digital signature or producer identity.
+
+See the README's [current limitations](../README.md#current-limitations), [Threat model](THREAT_MODEL.md), and [Responsible use](RESPONSIBLE_USE.md) before broadening any lab.

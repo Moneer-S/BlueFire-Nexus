@@ -117,10 +117,15 @@ export OPENAI_API_KEY="..."          # Linux/macOS
 Then select autonomy/provider:
 
 ```bash
-bluefire scenario preview scenarios/ai_adaptive_safe_chain.yaml \
+bluefire --runs-dir .bluefire-runs scenario run scenarios/ai_adaptive_safe_chain.yaml \
   --autonomy assist \
   --ai-provider openai-responses.v1
 ```
+
+This Simulate run can construct the provider and request a bounded proposal after an observed step
+outcome. `scenario preview` only validates provider metadata during preflight; it does not construct
+the provider or contact its endpoint. A successful live call therefore requires operator-supplied
+credentials and network access and is not established by the offline fake-transport tests.
 
 Use Auto only after the same scenario/provider has been reviewed in Assist and the runner profile is appropriately narrow.
 
@@ -182,5 +187,6 @@ Each proposal record retains run/current-step/outcome, autonomy, exact state/pla
 - Runtime AI cannot propose detections or arbitrary replay edits. Objective drafting remains an unsaved, separately validated contract.
 - No monetary cost calculation/budget is implemented; output tokens, attempts, response bytes, and time are bounded.
 - The Responses HTTP path is tested with deterministic fake transport; a real account/network call requires operator credentials and infrastructure and is not part of offline tests.
+- No single dynamically verified product journey currently proves a real-provider Auto mutation followed by replay and comparison; those mechanisms have separate deterministic tests.
 
 These limits keep product claims aligned with the current implementation while preserving a safe path for future expansion.

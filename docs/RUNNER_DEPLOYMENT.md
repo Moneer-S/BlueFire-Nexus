@@ -50,6 +50,49 @@ $env:BLUEFIRE_SANDBOX_ROOT = (New-Item -ItemType Directory -Force .\.bluefire-sa
 
 The YAML contains only `{env: VARIABLE_NAME}` references. Values are resolved by the service at the boundary that needs them and are not serialized into config responses.
 
+## Provision the loopback receiver
+
+The canonical sandbox research chain sends its network artifact to literal loopback port `4317`.
+Start the bounded built-in receiver in a separate unprivileged terminal before previewing and
+approving that Execute path:
+
+```bash
+bluefire receiver --host 127.0.0.1 --port 4317 \
+  --max-requests 1 --max-connections 16 \
+  --max-body-bytes 5242880 --idle-timeout 120
+```
+
+The command exits after the accepted-artifact limit, total-connection limit, or idle timeout and
+also closes cleanly on interruption. `--max-requests` counts only verified, accepted artifacts; a
+malformed or refused request does not consume that success slot. `--max-connections` bounds all TCP
+connections so repeated refusals still terminate the session.
+It accepts only `POST /bluefire/v1/artifact`, requires `Content-Length` and a matching lowercase
+`X-BlueFire-SHA256`, and never interprets, executes, redirects, or forwards the body. Header lines,
+aggregate headers, body size, request duration, idle duration, accepted artifacts, and total
+connections are independently bounded. It produces no request-body or filesystem-path logs. The
+runner accepts network success only when a bounded 2xx JSON response reports schema
+`bluefire.loopback-receiver-result.v1`, `accepted: true`, the exact received byte count, the sent
+artifact digest, and a boolean storage result; an arbitrary 2xx or 204 response fails the action.
+
+The default transiently buffers at most `--max-body-bytes` for digest verification and does not
+persist the body. Persistent receipt of bytes is opt-in:
+
+```bash
+bluefire receiver --host 127.0.0.1 --port 4317 \
+  --max-requests 1 --max-connections 16 \
+  --storage-dir /tmp/bluefire-receiver-artifacts-SESSION
+```
+
+On first use the storage directory must be empty. The receiver marks it as receiver-owned and writes
+only content-addressed names beneath that resolved root, without overwriting an existing artifact.
+Do not use a personal, repository, shared, or production directory.
+
+The Execute approval and runner manifest bind the literal destination host and port. They do not
+authenticate the receiver process identity or establish a receiver session. Consequently, even a
+valid digest-bound acknowledgement proves neither remote transport nor authenticated/mutually
+authenticated service identity. This local receiver is a controlled lab fixture, not a remote
+transport or authentication mechanism.
+
 ## Check compatibility
 
 ```bash
