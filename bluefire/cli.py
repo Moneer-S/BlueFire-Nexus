@@ -369,7 +369,7 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
             return service.detection_candidate(args.candidate_id)
         if args.detection_command == "create":
             return service.upsert_detection_hypothesis(_json_object(args.document))
-        request = _json_object(args.document) if args.document is not None else {}
+        detection_request = _json_object(args.document) if args.document is not None else {}
         operations = {
             "parse": service.parse_detection_candidate,
             "exercise-fixtures": service.exercise_detection_fixtures,
@@ -380,7 +380,7 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
             "tune": service.tune_detection_candidate,
             "compare": service.compare_detection_candidates,
         }
-        return operations[args.detection_command](args.candidate_id, request)
+        return operations[args.detection_command](args.candidate_id, detection_request)
     if args.command == "settings":
         if args.settings_command == "list":
             return service.settings()
@@ -391,13 +391,13 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
         if args.resource_command == "get":
             return service.resource(args.kind, args.resource_id)
         if args.resource_command == "save":
-            request: dict[str, Any] = {"document": _json_object(args.document)}
+            resource_request: dict[str, Any] = {"document": _json_object(args.document)}
             if args.status is not None:
-                request["status"] = args.status
+                resource_request["status"] = args.status
             return service.save_resource(
                 args.kind,
                 args.resource_id,
-                request,
+                resource_request,
             )
         if args.resource_command == "activate":
             return service.activate_resource(args.kind, args.resource_id, {})

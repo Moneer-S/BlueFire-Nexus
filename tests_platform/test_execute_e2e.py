@@ -146,7 +146,7 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
         assert receiver_result == {
             "schema_version": "bluefire.loopback-receiver-summary.v1",
             "reason": "max_requests",
-                "connections_handled": 1,
+            "connections_handled": 1,
             "requests_accepted": 1,
             "requests_refused": 0,
         }
