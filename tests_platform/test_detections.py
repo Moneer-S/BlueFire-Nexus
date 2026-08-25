@@ -96,6 +96,45 @@ def test_detection_candidate_rehydration_is_strict_and_identity_bound() -> None:
     with pytest.raises(DetectionError, match="unknown fields"):
         DetectionCandidate.from_mapping({**document, "unreviewed": True})
 
+    changed_definition = {**document, "title": "Tampered immutable title"}
+    with pytest.raises(DetectionError, match="definition_digest"):
+        DetectionCandidate.from_mapping(changed_definition)
+
+
+def test_public_baseline_contract_is_exact_and_definition_bound() -> None:
+    baseline = {
+        "schema_version": "bluefire.public-baseline.v1",
+        "research_source_id": "research.atomic-red-team.v1",
+        "source_digest": "sha256:" + "a" * 64,
+        "pin": "6132b92779873cb0d05bef07ba0a480d47eb1cc8",  # pragma: allowlist secret
+        "version": "2026-08-24 snapshot",
+        "license": "MIT",
+        "license_review": "reviewed",
+        "relationship": "comparative",
+        "use": "comparison",
+    }
+    candidate = DetectionCandidate.hypothesis(
+        behavior_id="collection.stage_fixture.v1",
+        title="Source-linked baseline",
+        target_language="internal",
+        logsource={"category": "file_event"},
+        selection={"path|contains": "staged/"},
+        provenance={"source": "operator", "license": "MIT"},
+        public_baselines=[baseline],
+    )
+
+    assert candidate.public_baselines == (baseline,)
+    with pytest.raises(DetectionError, match="exactly"):
+        DetectionCandidate.hypothesis(
+            behavior_id="collection.stage_fixture.v1",
+            title="Invalid baseline",
+            target_language="internal",
+            logsource={"category": "file_event"},
+            selection={"path|contains": "staged/"},
+            provenance={"source": "operator", "license": "MIT"},
+            public_baselines=[{**baseline, "notes": "arbitrary"}],
+        )
+
 
 def test_nonmatching_malicious_fixture_rejects_candidate() -> None:
     pipeline = DetectionPipeline()

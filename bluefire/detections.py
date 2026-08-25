@@ -20,6 +20,11 @@ _CANDIDATE_FIELDS = frozenset(
     {
         "schema_version",
         "candidate_id",
+        "revision",
+        "revision_root_id",
+        "parent_candidate_id",
+        "revision_kind",
+        "definition_digest",
         "behavior_id",
         "title",
         "target_language",
@@ -48,7 +53,25 @@ _CANDIDATE_FIELDS = frozenset(
         "lifecycle_history",
     }
 )
-_REQUIRED_CANDIDATE_FIELDS = _CANDIDATE_FIELDS - {
+_REVISION_FIELDS = frozenset(
+    {
+        "revision",
+        "revision_root_id",
+        "parent_candidate_id",
+        "revision_kind",
+        "definition_digest",
+    }
+)
+_REQUIRED_CANDIDATE_FIELDS_V1 = (
+    _CANDIDATE_FIELDS
+    - _REVISION_FIELDS
+    - {
+        "malicious_fixtures",
+        "benign_fixtures",
+        "lifecycle_history",
+    }
+)
+_REQUIRED_CANDIDATE_FIELDS_V2 = _CANDIDATE_FIELDS - {
     "malicious_fixtures",
     "benign_fixtures",
     "lifecycle_history",
@@ -129,14 +152,99 @@ def _string_mapping(
     return result
 
 
-def _string_mapping_rows(
-    value: Any, context: str, *, maximum: int
-) -> tuple[Mapping[str, str], ...]:
-    if not isinstance(value, list) or len(value) > maximum:
-        raise DetectionError(f"{context} must be a list of at most {maximum} objects")
-    return tuple(
-        _string_mapping(row, f"{context}[{index}]", maximum=32) for index, row in enumerate(value)
+@dataclass(frozen=True, slots=True)
+class PublicBaselineReference:
+    schema_version: str
+    research_source_id: str
+    source_digest: str
+    pin: str
+    version: str
+    license: str
+    license_review: str
+    relationship: str
+    use: str
+
+    @classmethod
+    def from_mapping(
+        cls, value: Any, context: str = "public baseline"
+    ) -> "PublicBaselineReference":
+        fields = {
+            "schema_version",
+            "research_source_id",
+            "source_digest",
+            "pin",
+            "version",
+            "license",
+            "license_review",
+            "relationship",
+            "use",
+        }
+        if not isinstance(value, Mapping) or set(value) != fields:
+            raise DetectionError(f"{context} must contain exactly the reviewed baseline fields")
+        if value.get("schema_version") != "bluefire.public-baseline.v1":
+            raise DetectionError(f"{context}.schema_version is unsupported")
+        source_digest = _bounded_string(
+            value.get("source_digest"), f"{context}.source_digest", maximum=71
+        )
+        digest_value = source_digest.removeprefix("sha256:")
+        if (
+            not source_digest.startswith("sha256:")
+            or len(source_digest) != 71
+            or any(character not in "0123456789abcdef" for character in digest_value)
+        ):
+            raise DetectionError(f"{context}.source_digest is invalid")
+        license_review = _bounded_string(
+            value.get("license_review"), f"{context}.license_review", maximum=40
+        )
+        if license_review not in {"reviewed", "conditional", "prohibited"}:
+            raise DetectionError(f"{context}.license_review is invalid")
+        relationship = _bounded_string(
+            value.get("relationship"), f"{context}.relationship", maximum=40
+        )
+        if relationship not in {"imported", "adapted", "inspired", "comparative"}:
+            raise DetectionError(f"{context}.relationship is invalid")
+        use = _bounded_string(value.get("use"), f"{context}.use", maximum=40)
+        if use != "comparison":
+            raise DetectionError(f"{context}.use must be comparison")
+        return cls(
+            schema_version="bluefire.public-baseline.v1",
+            research_source_id=_bounded_string(
+                value.get("research_source_id"), f"{context}.research_source_id", maximum=200
+            ),
+            source_digest=source_digest,
+            pin=_bounded_string(value.get("pin"), f"{context}.pin", maximum=200),
+            version=_bounded_string(value.get("version"), f"{context}.version", maximum=200),
+            license=_bounded_string(value.get("license"), f"{context}.license", maximum=200),
+            license_review=license_review,
+            relationship=relationship,
+            use=use,
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "schema_version": self.schema_version,
+            "research_source_id": self.research_source_id,
+            "source_digest": self.source_digest,
+            "pin": self.pin,
+            "version": self.version,
+            "license": self.license,
+            "license_review": self.license_review,
+            "relationship": self.relationship,
+            "use": self.use,
+        }
+
+
+def _public_baseline_rows(value: Any) -> tuple[Mapping[str, str], ...]:
+    if not isinstance(value, list) or len(value) > 32:
+        raise DetectionError("public_baselines must be a list of at most 32 objects")
+    rows = tuple(
+        PublicBaselineReference.from_mapping(row, f"public_baselines[{index}]").to_dict()
+        for index, row in enumerate(value)
     )
+    source_ids = [row["research_source_id"] for row in rows]
+    if len(source_ids) != len(set(source_ids)):
+        raise DetectionError("public_baselines must not repeat a research source")
+    return rows
 
 
 def _string_rows(
@@ -219,6 +327,8 @@ def _history_rows(value: Any) -> tuple[Mapping[str, Any], ...]:
     allowed = required | {"run_id"}
     actions = {
         "hypothesis_upsert",
+        "revision_clone",
+        "revision_tune",
         "parse",
         "exercise_fixtures",
         "exercise_observed",
@@ -286,7 +396,7 @@ def _history_rows(value: Any) -> tuple[Mapping[str, Any], ...]:
             if (
                 from_state is not None
                 or to_state != DetectionState.HYPOTHESIS.value
-                or action_value != "hypothesis_upsert"
+                or action_value not in {"hypothesis_upsert", "revision_clone", "revision_tune"}
                 or outcome_value != "created"
             ):
                 raise DetectionError("lifecycle_history must begin with hypothesis creation")
@@ -319,6 +429,14 @@ def _history_rows(value: Any) -> tuple[Mapping[str, Any], ...]:
         action_states: dict[str, tuple[set[str | None], set[str]]] = {
             "hypothesis_upsert": (
                 {None, DetectionState.HYPOTHESIS.value},
+                {DetectionState.HYPOTHESIS.value},
+            ),
+            "revision_clone": (
+                {None},
+                {DetectionState.HYPOTHESIS.value},
+            ),
+            "revision_tune": (
+                {None},
                 {DetectionState.HYPOTHESIS.value},
             ),
             "parse": (
@@ -395,10 +513,95 @@ _ALLOWED_TRANSITIONS: dict[DetectionState, frozenset[DetectionState]] = {
 }
 
 
+def _origin_candidate_id(
+    *,
+    behavior_id: str,
+    target_language: str,
+    logsource: Mapping[str, str],
+    selection: Mapping[str, Any],
+) -> str:
+    identity = content_hash(
+        {
+            "behavior_id": behavior_id,
+            "target_language": target_language,
+            "logsource": dict(logsource),
+            "selection": dict(selection),
+        }
+    )
+    return "detection-" + identity.removeprefix("sha256:")[:20]
+
+
+def _definition_digest(
+    *,
+    revision: int,
+    revision_root_id: str,
+    parent_candidate_id: str | None,
+    revision_kind: str,
+    behavior_id: str,
+    title: str,
+    target_language: str,
+    logsource: Mapping[str, str],
+    selection: Mapping[str, Any],
+    public_baselines: Sequence[Mapping[str, str]],
+    known_misses: Sequence[str],
+    provenance: Mapping[str, str],
+    predicted_fields: Sequence[str],
+) -> str:
+    return content_hash(
+        {
+            "revision": revision,
+            "revision_root_id": revision_root_id,
+            "parent_candidate_id": parent_candidate_id,
+            "revision_kind": revision_kind,
+            "behavior_id": behavior_id,
+            "title": title,
+            "target_language": target_language,
+            "logsource": dict(logsource),
+            "selection": dict(selection),
+            "public_baselines": [dict(row) for row in public_baselines],
+            "known_misses": list(known_misses),
+            "provenance": dict(provenance),
+            "predicted_fields": list(predicted_fields),
+        }
+    )
+
+
+def _revision_candidate_id(
+    *,
+    definition_digest: str,
+    revision: int,
+    revision_root_id: str,
+    parent_candidate_id: str,
+    revision_kind: str,
+) -> str:
+    identity = content_hash(
+        {
+            "definition_digest": definition_digest,
+            "revision": revision,
+            "revision_root_id": revision_root_id,
+            "parent_candidate_id": parent_candidate_id,
+            "revision_kind": revision_kind,
+        }
+    )
+    return "detection-" + identity.removeprefix("sha256:")[:20]
+
+
+def _valid_candidate_id(value: Any, context: str) -> str:
+    candidate_id = _bounded_string(value, context, maximum=30)
+    if not candidate_id.startswith("detection-") or len(candidate_id) != 30:
+        raise DetectionError(f"{context} is invalid")
+    return candidate_id
+
+
 @dataclass(frozen=True, slots=True)
 class DetectionCandidate:
     schema_version: str
     candidate_id: str
+    revision: int
+    revision_root_id: str
+    parent_candidate_id: str | None
+    revision_kind: str
+    definition_digest: str
     behavior_id: str
     title: str
     target_language: str
@@ -438,37 +641,115 @@ class DetectionCandidate:
         provenance: Mapping[str, str],
         known_misses: Iterable[str] = (),
         public_baselines: Iterable[Mapping[str, str]] = (),
+        predicted_fields: Iterable[str] = (),
+        tuning_decisions: Iterable[str] = (),
+        revision: int = 1,
+        revision_root_id: str | None = None,
+        parent_candidate_id: str | None = None,
+        revision_kind: str = "origin",
     ) -> "DetectionCandidate":
         if target_language not in _LANGUAGES:
             raise DetectionError(f"unsupported detection language: {target_language}")
         if not behavior_id or not title or not selection:
             raise DetectionError("detection hypotheses require behavior, title, and selection")
-        identity = content_hash(
-            {
-                "behavior_id": behavior_id,
-                "target_language": target_language,
-                "logsource": dict(logsource),
-                "selection": dict(selection),
-            }
+        stable_behavior_id = _bounded_string(behavior_id, "behavior_id", maximum=200)
+        stable_title = _bounded_string(title, "title", maximum=300)
+        stable_logsource = _string_mapping(logsource, "logsource", maximum=32)
+        stable_selection = _structured_mapping(
+            selection, "selection", maximum_bytes=_MAX_STRUCTURED_BYTES
         )
-        return cls(
-            schema_version="bluefire.detection.v1",
-            candidate_id="detection-" + identity.removeprefix("sha256:")[:20],
-            behavior_id=behavior_id,
-            title=title,
+        if len(stable_selection) > 64:
+            raise DetectionError("selection must contain between 1 and 64 fields")
+        stable_provenance = _string_mapping(provenance, "provenance", maximum=32)
+        stable_baselines = _public_baseline_rows(list(public_baselines))
+        stable_misses = _string_rows(
+            list(known_misses),
+            "known_misses",
+            maximum=_MAX_NOTES,
+            item_maximum=_MAX_NOTE_LENGTH,
+        )
+        stable_predicted_fields = _string_rows(
+            list(predicted_fields), "predicted_fields", maximum=256
+        )
+        stable_tuning_decisions = _string_rows(
+            list(tuning_decisions),
+            "tuning_decisions",
+            maximum=_MAX_NOTES,
+            item_maximum=_MAX_NOTE_LENGTH,
+        )
+        if (
+            isinstance(revision, bool)
+            or not isinstance(revision, int)
+            or not 1 <= revision <= 2**31 - 1
+        ):
+            raise DetectionError("revision must be a positive 32-bit integer")
+        if revision_kind not in {"origin", "clone", "tune"}:
+            raise DetectionError("revision_kind is invalid")
+        origin_id = _origin_candidate_id(
+            behavior_id=stable_behavior_id,
             target_language=target_language,
-            logsource=dict(logsource),
-            selection=dict(selection),
+            logsource=stable_logsource,
+            selection=stable_selection,
+        )
+        if revision_kind == "origin":
+            if revision != 1 or revision_root_id is not None or parent_candidate_id is not None:
+                raise DetectionError("origin revisions cannot declare parent lineage")
+            candidate_id = origin_id
+            stable_root_id = candidate_id
+            stable_parent_id = None
+        else:
+            if revision < 2 or revision_root_id is None or parent_candidate_id is None:
+                raise DetectionError("clone and tune revisions require explicit parent lineage")
+            stable_root_id = _valid_candidate_id(revision_root_id, "revision_root_id")
+            stable_parent_id = _valid_candidate_id(parent_candidate_id, "parent_candidate_id")
+            candidate_id = ""
+        definition_digest = _definition_digest(
+            revision=revision,
+            revision_root_id=stable_root_id,
+            parent_candidate_id=stable_parent_id,
+            revision_kind=revision_kind,
+            behavior_id=stable_behavior_id,
+            title=stable_title,
+            target_language=target_language,
+            logsource=stable_logsource,
+            selection=stable_selection,
+            public_baselines=stable_baselines,
+            known_misses=stable_misses,
+            provenance=stable_provenance,
+            predicted_fields=stable_predicted_fields,
+        )
+        if stable_parent_id is not None:
+            candidate_id = _revision_candidate_id(
+                definition_digest=definition_digest,
+                revision=revision,
+                revision_root_id=stable_root_id,
+                parent_candidate_id=stable_parent_id,
+                revision_kind=revision_kind,
+            )
+        return cls(
+            schema_version="bluefire.detection.v2",
+            candidate_id=candidate_id,
+            revision=revision,
+            revision_root_id=stable_root_id,
+            parent_candidate_id=stable_parent_id,
+            revision_kind=revision_kind,
+            definition_digest=definition_digest,
+            behavior_id=stable_behavior_id,
+            title=stable_title,
+            target_language=target_language,
+            logsource=stable_logsource,
+            selection=stable_selection,
             parser_backend={},
-            public_baselines=tuple(dict(row) for row in public_baselines),
+            public_baselines=stable_baselines,
             malicious_fixture_ids=(),
             observed_evidence_ids=(),
             benign_fixture_ids=(),
-            known_misses=tuple(known_misses),
+            known_misses=stable_misses,
             false_positive_notes=(),
-            tuning_decisions=(),
+            tuning_decisions=stable_tuning_decisions,
             state=DetectionState.HYPOTHESIS,
-            provenance=dict(provenance),
+            provenance=stable_provenance,
+            predicted_fields=stable_predicted_fields,
         )
 
     @classmethod
@@ -482,8 +763,22 @@ class DetectionCandidate:
 
         if not isinstance(value, Mapping):
             raise DetectionError("detection candidate must be an object")
+        schema_version = value.get("schema_version")
+        if schema_version == "bluefire.detection.v1":
+            required_fields = _REQUIRED_CANDIDATE_FIELDS_V1
+            legacy_revision_fields = sorted(set(value) & _REVISION_FIELDS)
+            if legacy_revision_fields:
+                raise DetectionError(
+                    "invalid detection candidate fields (unknown fields: "
+                    + ", ".join(legacy_revision_fields)
+                    + ")"
+                )
+        elif schema_version == "bluefire.detection.v2":
+            required_fields = _REQUIRED_CANDIDATE_FIELDS_V2
+        else:
+            raise DetectionError("unsupported detection candidate schema version")
         fields = set(value)
-        missing = sorted(_REQUIRED_CANDIDATE_FIELDS - fields)
+        missing = sorted(required_fields - fields)
         unknown = sorted(fields - _CANDIDATE_FIELDS)
         if missing or unknown:
             details = []
@@ -492,13 +787,8 @@ class DetectionCandidate:
             if unknown:
                 details.append("unknown fields: " + ", ".join(unknown))
             raise DetectionError("invalid detection candidate fields (" + "; ".join(details) + ")")
-        if value.get("schema_version") != "bluefire.detection.v1":
-            raise DetectionError("unsupported detection candidate schema version")
-
         behavior_id = _bounded_string(value.get("behavior_id"), "behavior_id", maximum=200)
-        candidate_id = _bounded_string(value.get("candidate_id"), "candidate_id", maximum=200)
-        if not candidate_id.startswith("detection-") or len(candidate_id) != 30:
-            raise DetectionError("candidate_id is invalid")
+        candidate_id = _valid_candidate_id(value.get("candidate_id"), "candidate_id")
         title = _bounded_string(value.get("title"), "title", maximum=300)
         target_language = _bounded_string(
             value.get("target_language"), "target_language", maximum=20
@@ -511,20 +801,6 @@ class DetectionCandidate:
         )
         if not selection or len(selection) > 64:
             raise DetectionError("selection must contain between 1 and 64 fields")
-        expected_id = (
-            "detection-"
-            + content_hash(
-                {
-                    "behavior_id": behavior_id,
-                    "target_language": target_language,
-                    "logsource": logsource,
-                    "selection": selection,
-                }
-            ).removeprefix("sha256:")[:20]
-        )
-        if candidate_id != expected_id:
-            raise DetectionError("candidate_id does not match the candidate identity")
-
         state_raw = value.get("state")
         try:
             state = DetectionState(state_raw)
@@ -533,9 +809,7 @@ class DetectionCandidate:
         parser_backend = _string_mapping(
             value.get("parser_backend"), "parser_backend", maximum=16, allow_empty=True
         )
-        public_baselines = _string_mapping_rows(
-            value.get("public_baselines"), "public_baselines", maximum=32
-        )
+        public_baselines = _public_baseline_rows(value.get("public_baselines"))
         malicious_fixture_ids = _string_rows(
             value.get("malicious_fixture_ids"), "malicious_fixture_ids", maximum=256
         )
@@ -587,6 +861,88 @@ class DetectionCandidate:
         benign_fixtures = _fixture_rows(value.get("benign_fixtures", []), "benign_fixtures")
         lifecycle_history = _history_rows(value.get("lifecycle_history", []))
 
+        if schema_version == "bluefire.detection.v1":
+            revision = 1
+            revision_root_id = candidate_id
+            parent_candidate_id = None
+            revision_kind = "origin"
+            stored_definition_digest = None
+        else:
+            revision = _bounded_count(value.get("revision"), "revision")
+            if revision == 0:
+                raise DetectionError("revision must be a positive 32-bit integer")
+            revision_root_id = _valid_candidate_id(
+                value.get("revision_root_id"), "revision_root_id"
+            )
+            parent_value = value.get("parent_candidate_id")
+            parent_candidate_id = (
+                None
+                if parent_value is None
+                else _valid_candidate_id(parent_value, "parent_candidate_id")
+            )
+            revision_kind = _bounded_string(value.get("revision_kind"), "revision_kind", maximum=20)
+            if revision_kind not in {"origin", "clone", "tune"}:
+                raise DetectionError("revision_kind is invalid")
+            stored_definition_digest = _bounded_string(
+                value.get("definition_digest"), "definition_digest", maximum=71
+            )
+            digest_value = stored_definition_digest.removeprefix("sha256:")
+            if (
+                not stored_definition_digest.startswith("sha256:")
+                or len(stored_definition_digest) != 71
+                or any(character not in "0123456789abcdef" for character in digest_value)
+            ):
+                raise DetectionError("definition_digest is invalid")
+
+        definition_digest = _definition_digest(
+            revision=revision,
+            revision_root_id=revision_root_id,
+            parent_candidate_id=parent_candidate_id,
+            revision_kind=revision_kind,
+            behavior_id=behavior_id,
+            title=title,
+            target_language=target_language,
+            logsource=logsource,
+            selection=selection,
+            public_baselines=public_baselines,
+            known_misses=known_misses,
+            provenance=provenance,
+            predicted_fields=predicted_fields,
+        )
+        if stored_definition_digest is not None and stored_definition_digest != definition_digest:
+            raise DetectionError(
+                "definition_digest does not match the immutable candidate definition"
+            )
+        if revision_kind == "origin":
+            expected_id = _origin_candidate_id(
+                behavior_id=behavior_id,
+                target_language=target_language,
+                logsource=logsource,
+                selection=selection,
+            )
+            if (
+                revision != 1
+                or parent_candidate_id is not None
+                or revision_root_id != candidate_id
+                or candidate_id != expected_id
+            ):
+                raise DetectionError("candidate_id does not match the origin candidate identity")
+        else:
+            if revision < 2 or parent_candidate_id is None:
+                raise DetectionError("clone and tune revisions require explicit parent lineage")
+            expected_id = _revision_candidate_id(
+                definition_digest=definition_digest,
+                revision=revision,
+                revision_root_id=revision_root_id,
+                parent_candidate_id=parent_candidate_id,
+                revision_kind=revision_kind,
+            )
+            if candidate_id != expected_id or candidate_id in {
+                revision_root_id,
+                parent_candidate_id,
+            }:
+                raise DetectionError("candidate_id does not match the candidate revision identity")
+
         if state is DetectionState.REJECTED and not rejection_reason:
             raise DetectionError("a rejected candidate requires a rejection reason")
         if state is not DetectionState.REJECTED and rejection_reason is not None:
@@ -605,8 +961,13 @@ class DetectionCandidate:
             raise DetectionError("benign fixture documents do not match their IDs")
 
         return cls(
-            schema_version="bluefire.detection.v1",
+            schema_version="bluefire.detection.v2",
             candidate_id=candidate_id,
+            revision=revision,
+            revision_root_id=revision_root_id,
+            parent_candidate_id=parent_candidate_id,
+            revision_kind=revision_kind,
+            definition_digest=definition_digest,
             behavior_id=behavior_id,
             title=title,
             target_language=target_language,
@@ -646,6 +1007,11 @@ class DetectionCandidate:
         return {
             "schema_version": self.schema_version,
             "candidate_id": self.candidate_id,
+            "revision": self.revision,
+            "revision_root_id": self.revision_root_id,
+            "parent_candidate_id": self.parent_candidate_id,
+            "revision_kind": self.revision_kind,
+            "definition_digest": self.definition_digest,
             "behavior_id": self.behavior_id,
             "title": self.title,
             "target_language": self.target_language,
@@ -1087,4 +1453,5 @@ __all__ = [
     "ExternalDetectionValidator",
     "DetectionPipeline",
     "DetectionState",
+    "PublicBaselineReference",
 ]

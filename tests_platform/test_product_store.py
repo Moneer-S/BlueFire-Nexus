@@ -8,6 +8,7 @@ import pytest
 
 from bluefire.ai import AIProposal
 from bluefire.contracts import load_scenario
+from bluefire.detections import DetectionCandidate
 from bluefire.product_store import ProductStore, ProductStoreError
 from bluefire.util import content_hash
 
@@ -81,7 +82,7 @@ def test_store_migrates_and_persists_secret_safe_settings(tmp_path: Path) -> Non
     path = tmp_path / "state" / "bluefire.db"
     store = ProductStore(path)
 
-    assert store.schema_version == 4
+    assert store.schema_version == 5
     store.set_setting(
         "ai.provider",
         {"endpoint": "https://api.example.test/v1", "api_key": {"env": "BLUEFIRE_API_KEY"}},
@@ -140,6 +141,63 @@ def test_resources_round_trip_and_reject_plaintext_credentials(tmp_path: Path) -
         )
 
 
+def test_failed_detection_revision_builder_does_not_reserve_an_ordinal(
+    tmp_path: Path,
+) -> None:
+    store = ProductStore(tmp_path / "bluefire.db")
+    origin = DetectionCandidate.hypothesis(
+        behavior_id="sandbox.collection.stage.v1",
+        title="Origin",
+        target_language="internal",
+        logsource={"category": "file_event", "product": "generic"},
+        selection={"path|contains": "staged/"},
+        provenance={"source": "operator-authored", "license": "MIT"},
+    )
+    store.save_resource(
+        "detection",
+        origin.candidate_id,
+        origin.to_dict(),
+        status=origin.state.value,
+    )
+
+    def fail_builder(_revision: int) -> dict[str, object]:
+        raise RuntimeError("simulated builder failure")
+
+    with pytest.raises(RuntimeError, match="simulated builder failure"):
+        store.save_detection_revision(
+            origin.candidate_id,
+            fail_builder,
+            max_revisions=8,
+        )
+
+    def valid_builder(revision: int) -> dict[str, object]:
+        return DetectionCandidate.hypothesis(
+            behavior_id=origin.behavior_id,
+            title="First durable clone",
+            target_language=origin.target_language,
+            logsource=origin.logsource,
+            selection=origin.selection,
+            provenance=origin.provenance,
+            revision=revision,
+            revision_root_id=origin.candidate_id,
+            parent_candidate_id=origin.candidate_id,
+            revision_kind="clone",
+        ).to_dict()
+
+    saved = store.save_detection_revision(
+        origin.candidate_id,
+        valid_builder,
+        max_revisions=8,
+    )
+
+    assert saved["document"]["revision"] == 2
+    with sqlite3.connect(store.path) as connection:
+        rows = connection.execute(
+            "SELECT revision FROM detection_revisions ORDER BY revision"
+        ).fetchall()
+    assert rows == [(1,), (2,)]
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -164,6 +222,48 @@ def test_nested_secret_shaped_fields_cannot_persist_plaintext(
         {"nested": {field: {"env": "BLUEFIRE_TEST_CREDENTIAL"}}},
     )
     assert stored["value"]["nested"][field] == {"env": "BLUEFIRE_TEST_CREDENTIAL"}
+
+
+@pytest.mark.parametrize(
+    "credential",
+    [
+        "ghp_FAKECREDENTIALVALUE123456789",  # pragma: allowlist secret
+        "github_pat_FAKE_CREDENTIAL_VALUE_123456789",  # pragma: allowlist secret
+        "sk-FAKECREDENTIALVALUE1234567890",  # pragma: allowlist secret
+        "xoxb-FAKE-CREDENTIAL-1234567890",  # pragma: allowlist secret
+        "AKIAFAKECREDENTIAL12",  # pragma: allowlist secret
+        "eyJFAKEHEADER.eyJFAKEPAYLOAD.eyJFAKESIGNATURE",  # pragma: allowlist secret
+        "-----BEGIN PRIVATE KEY-----\nFAKE\n-----END PRIVATE KEY-----",  # pragma: allowlist secret
+        "https://operator:plaintext@example.test/v1",  # pragma: allowlist secret
+    ],
+)
+def test_credential_shaped_values_cannot_hide_under_benign_fields(
+    tmp_path: Path,
+    credential: str,
+) -> None:
+    store = ProductStore(tmp_path / "bluefire.db")
+
+    with pytest.raises(ProductStoreError, match="credential-shaped plaintext value"):
+        store.save_resource(
+            "collector",
+            "collector.secret-scan.v1",
+            {"label": credential},
+        )
+
+
+def test_secret_value_scan_allows_noncredential_near_misses(tmp_path: Path) -> None:
+    store = ProductStore(tmp_path / "bluefire.db")
+    saved = store.save_resource(
+        "collector",
+        "collector.safe-values.v1",
+        {
+            "label": "sk-short",
+            "endpoint": "https://collector.example.test/v1",
+            "opaque_identifier": "eyJ.not-a-jwt",
+        },
+    )
+
+    assert saved["document"]["label"] == "sk-short"
 
 
 def test_schema_v1_database_migrates_to_claimable_approvals(tmp_path: Path) -> None:
@@ -194,7 +294,7 @@ def test_schema_v1_database_migrates_to_claimable_approvals(tmp_path: Path) -> N
 
     store = ProductStore(path)
 
-    assert store.schema_version == 4
+    assert store.schema_version == 5
     columns = {
         row[1] for row in sqlite3.connect(path).execute("PRAGMA table_info(approval_requests)")
     }

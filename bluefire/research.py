@@ -123,7 +123,14 @@ class ResearchSource:
         pin = data["pin"]
         if not isinstance(pin, str) or not pin.strip():
             raise ResearchSourceError(f"{context}.pin must be a non-empty version or commit")
+        pin = pin.strip()
+        if pin.casefold() in {"head", "latest", "main", "master", "trunk"}:
+            raise ResearchSourceError(f"{context}.pin must be an immutable version or commit")
         reference_url = _https_url(data["reference_url"], f"{context}.reference_url")
+        if pin not in urlparse(reference_url).path:
+            raise ResearchSourceError(
+                f"{context}.reference_url must include its exact immutable pin"
+            )
         license_url = _https_url(data["license_url"], f"{context}.license_url")
         retrieved_at = _string(data["retrieved_at"], f"{context}.retrieved_at")
         try:
@@ -152,7 +159,7 @@ class ResearchSource:
             authority=_string(data["authority"], f"{context}.authority"),
             reference_url=reference_url,
             version=_string(data["version"], f"{context}.version"),
-            pin=pin.strip(),
+            pin=pin,
             retrieved_at=retrieved_at,
             license=_string(data["license"], f"{context}.license"),
             license_url=license_url,

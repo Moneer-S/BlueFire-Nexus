@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Iterator
+from threading import Barrier
+from typing import Iterator, Mapping
 
 import pytest
 
 from bluefire.api import APIError
 from bluefire.evidence import EvidenceProvenance, EvidenceRecord
 from bluefire.service import BlueFireService
+from bluefire.util import content_hash
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -50,7 +55,33 @@ def _candidate_document(response: object) -> dict[str, object]:
     return document
 
 
-def _finalized_observed_run(service: BlueFireService) -> tuple[str, EvidenceRecord]:
+def _public_baseline(
+    service: BlueFireService,
+    source_id: str = "research.atomic-red-team.v1",
+) -> dict[str, str]:
+    resource = service.resource("research_source", source_id)["resource"]
+    assert isinstance(resource, Mapping)
+    document = resource["document"]
+    assert isinstance(document, Mapping)
+    assert resource["status"] == "pinned"
+    return {
+        "schema_version": "bluefire.public-baseline.v1",
+        "research_source_id": source_id,
+        "source_digest": str(resource["digest"]),
+        "pin": str(document["pin"]),
+        "version": str(document["version"]),
+        "license": str(document["license"]),
+        "license_review": str(document["license_review"]),
+        "relationship": str(document["relationship"]),
+        "use": "comparison",
+    }
+
+
+def _finalized_observed_run(
+    service: BlueFireService,
+    *,
+    path: str = "staged/a.txt",
+) -> tuple[str, EvidenceRecord]:
     handle = service.store.create_run(
         scenario={"schema_version": "test"},
         plan={"schema_version": "test"},
@@ -66,7 +97,7 @@ def _finalized_observed_run(service: BlueFireService) -> tuple[str, EvidenceReco
         producer="sandbox-observer.v1",
         runner_profile_id="profile.test",
         environment={"environment_type": "disposable"},
-        content={"artifact_type": "file_observation", "path": "staged/a.txt"},
+        content={"artifact_type": "file_observation", "path": path},
         target_scope_ref="runner-profile:profile.test",
     )
     service.store.finalize(
@@ -271,6 +302,443 @@ def test_explicit_rejection_is_terminal_and_audited(service: BlueFireService) ->
     with pytest.raises(APIError) as terminal:
         service.reject_detection_candidate(candidate_id, {"reason": "Reject twice."})
     assert terminal.value.status == 409
+
+
+def test_public_baselines_require_an_exact_registered_pinned_source(
+    service: BlueFireService,
+) -> None:
+    baseline = _public_baseline(service)
+    hypothesis = _hypothesis()
+    hypothesis["public_baselines"] = [baseline]
+
+    created = _candidate_document(service.upsert_detection_hypothesis(hypothesis))
+    assert created["public_baselines"] == [baseline]
+
+    source_id = baseline["research_source_id"]
+    source = service.resource("research_source", source_id)["resource"]
+    source_document = source["document"]
+    assert isinstance(source_document, Mapping)
+    with pytest.raises(APIError) as rewrite:
+        service.save_resource(
+            "research_source",
+            source_id,
+            {
+                "document": {
+                    **source_document,
+                    "notes": "Attempted rewrite after a detection bound this digest.",
+                },
+                "status": "pinned",
+            },
+        )
+    assert rewrite.value.status == 409
+    assert rewrite.value.code == "research_source_integrity_conflict"
+
+    with pytest.raises(APIError) as downgrade:
+        service.save_resource(
+            "research_source",
+            source_id,
+            {"document": source_document, "status": "draft"},
+        )
+    assert downgrade.value.status == 409
+    assert downgrade.value.code == "research_source_integrity_conflict"
+    assert _candidate_document(service.detection_candidate(str(created["candidate_id"]))) == created
+    assert service.resource("research_source", source_id)["resource"] == source
+
+    missing_source = _hypothesis()
+    missing_source["public_baselines"] = [{**baseline, "research_source_id": "research.missing.v1"}]
+    with pytest.raises(APIError) as missing:
+        service.upsert_detection_hypothesis(missing_source)
+    assert missing.value.status == 422
+    assert missing.value.code == "detection_baseline_source_missing"
+
+    mismatched_pin = _hypothesis()
+    mismatched_pin["public_baselines"] = [{**baseline, "pin": "not-the-registered-pin"}]
+    with pytest.raises(APIError) as mismatch:
+        service.upsert_detection_hypothesis(mismatched_pin)
+    assert mismatch.value.status == 422
+    assert mismatch.value.code == "detection_baseline_source_mismatch"
+
+    arbitrary = _hypothesis()
+    arbitrary["public_baselines"] = [{"name": "unlinked public corpus"}]
+    with pytest.raises(APIError) as invalid:
+        service.upsert_detection_hypothesis(arbitrary)
+    assert invalid.value.status == 400
+    assert invalid.value.code == "detection_public_baseline_invalid"
+
+
+def test_clone_tune_compare_and_revision_lineage_survive_restart(tmp_path: Path) -> None:
+    runs_dir = tmp_path / "runs"
+    product_db = tmp_path / "product.sqlite3"
+    first = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=product_db,
+    )
+    try:
+        root_hypothesis = _hypothesis()
+        root_hypothesis["public_baselines"] = [_public_baseline(first)]
+        root_id = str(
+            _candidate_document(first.upsert_detection_hypothesis(root_hypothesis))["candidate_id"]
+        )
+        first.parse_detection_candidate(root_id, {})
+        first.exercise_detection_fixtures(
+            root_id,
+            {
+                "fixtures": [
+                    {
+                        "fixture_id": "root-malicious",
+                        "artifact_type": "file_observation",
+                        "path": "staged/root.txt",
+                    }
+                ]
+            },
+        )
+        root_run_id, root_evidence = _finalized_observed_run(first)
+        first.exercise_detection_observed(
+            root_id,
+            {"run_id": root_run_id, "evidence_ids": [root_evidence.evidence_id]},
+        )
+        first.evaluate_detection_benign(
+            root_id,
+            {
+                "fixtures": [
+                    {
+                        "fixture_id": "root-benign",
+                        "artifact_type": "file_observation",
+                        "path": "documents/root.txt",
+                    }
+                ],
+                "notes": ["Root benign fixture did not match."],
+            },
+        )
+        root_snapshot = _candidate_document(first.detection_candidate(root_id))
+        assert (
+            _candidate_document(first.upsert_detection_hypothesis(root_hypothesis)) == root_snapshot
+        )
+        with pytest.raises(APIError) as immutable_definition:
+            first.upsert_detection_hypothesis(
+                {**root_hypothesis, "title": "Attempted in-place definition edit"}
+            )
+        assert immutable_definition.value.status == 409
+        assert immutable_definition.value.code == "detection_revision_required"
+
+        clone_document = _candidate_document(
+            first.clone_detection_candidate(root_id, {"reason": "Create an editable revision."})
+        )
+        clone_id = str(clone_document["candidate_id"])
+        assert clone_document["revision"] == 2
+        assert clone_document["revision_root_id"] == root_id
+        assert clone_document["parent_candidate_id"] == root_id
+        assert clone_document["revision_kind"] == "clone"
+        assert clone_document["state"] == "hypothesis"
+
+        tuned_document = _candidate_document(
+            first.tune_detection_candidate(
+                clone_id,
+                {
+                    "reason": "Narrow the staging path to the archive fixture.",
+                    "selection": {
+                        "artifact_type": "file_observation",
+                        "path|contains": "archive/",
+                    },
+                    "provenance": {
+                        "source": "operator-tuned",
+                        "license": "MIT",
+                    },
+                    "predicted_fields": ["artifact_type", "path", "user.name"],
+                },
+            )
+        )
+        tuned_id = str(tuned_document["candidate_id"])
+        assert tuned_document["revision"] == 3
+        assert tuned_document["revision_root_id"] == root_id
+        assert tuned_document["parent_candidate_id"] == clone_id
+        assert tuned_document["revision_kind"] == "tune"
+
+        first.parse_detection_candidate(tuned_id, {})
+        first.exercise_detection_fixtures(
+            tuned_id,
+            {
+                "fixtures": [
+                    {
+                        "fixture_id": "tuned-malicious",
+                        "artifact_type": "file_observation",
+                        "path": "archive/tuned.txt",
+                    }
+                ]
+            },
+        )
+        tuned_run_id, tuned_evidence = _finalized_observed_run(first, path="archive/tuned.txt")
+        first.exercise_detection_observed(
+            tuned_id,
+            {"run_id": tuned_run_id, "evidence_ids": [tuned_evidence.evidence_id]},
+        )
+        first.evaluate_detection_benign(
+            tuned_id,
+            {
+                "fixtures": [
+                    {
+                        "fixture_id": "tuned-benign",
+                        "artifact_type": "file_observation",
+                        "path": "documents/tuned.txt",
+                    }
+                ],
+                "notes": ["Tuned benign fixture did not match."],
+            },
+        )
+
+        comparison = first.compare_detection_candidates(root_id, {"candidate_id": tuned_id})
+        comparison_id = comparison["comparison_id"]
+        deltas = comparison["deltas"]
+        assert isinstance(deltas, Mapping)
+        assert comparison["revision_root_id"] == root_id
+        assert deltas["source"]["changed"] is True
+        assert "selection_digest" in deltas["rule"]["changed_fields"]
+        assert deltas["fields"]["predicted"]["added"] == ["user.name"]
+        assert deltas["lifecycle"]["changed"] is True
+        assert deltas["fixtures"]["added_fixture_ids"] == ["tuned-malicious"]
+        assert deltas["fixtures"]["removed_fixture_ids"] == ["root-malicious"]
+        assert deltas["observed"]["evidence_ids"]["added"] == [tuned_evidence.evidence_id]
+        assert deltas["observed"]["evidence_ids"]["removed"] == [root_evidence.evidence_id]
+        assert deltas["benign"]["added_fixture_ids"] == ["tuned-benign"]
+        assert deltas["benign"]["removed_fixture_ids"] == ["root-benign"]
+        assert _candidate_document(first.detection_candidate(root_id)) == root_snapshot
+
+        unrelated_hypothesis = _hypothesis()
+        unrelated_hypothesis["selection"] = {
+            "artifact_type": "file_observation",
+            "path|contains": "unrelated/",
+        }
+        unrelated_id = str(
+            _candidate_document(first.upsert_detection_hypothesis(unrelated_hypothesis))[
+                "candidate_id"
+            ]
+        )
+        with pytest.raises(APIError) as unrelated:
+            first.compare_detection_candidates(root_id, {"candidate_id": unrelated_id})
+        assert unrelated.value.code == "detection_revision_lineage_mismatch"
+    finally:
+        first.close()
+
+    restarted = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=product_db,
+    )
+    try:
+        candidates = {
+            str(resource["id"]): resource
+            for resource in restarted.detection_candidates()["candidates"]
+        }
+        assert {root_id, clone_id, tuned_id}.issubset(candidates)
+        assert _candidate_document(restarted.detection_candidate(clone_id))["revision"] == 2
+        assert _candidate_document(restarted.detection_candidate(tuned_id))["revision"] == 3
+        comparison = restarted.compare_detection_candidates(root_id, {"candidate_id": tuned_id})
+        assert comparison["candidate"]["candidate_id"] == tuned_id
+        assert comparison["comparison_id"] == comparison_id
+    finally:
+        restarted.close()
+
+
+def test_revision_ordinals_are_atomic_across_service_instances(tmp_path: Path) -> None:
+    runs_dir = tmp_path / "runs"
+    product_db = tmp_path / "product.sqlite3"
+    first = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=product_db,
+    )
+    second = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=product_db,
+    )
+    try:
+        root_id = str(
+            _candidate_document(first.upsert_detection_hypothesis(_hypothesis()))["candidate_id"]
+        )
+        barrier = Barrier(2)
+
+        def clone(service: BlueFireService, title: str) -> dict[str, object]:
+            barrier.wait()
+            return _candidate_document(
+                service.clone_detection_candidate(
+                    root_id,
+                    {"reason": f"Create concurrent revision {title}.", "title": title},
+                )
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(clone, first, "Concurrent A"),
+                executor.submit(clone, second, "Concurrent B"),
+            ]
+            documents = [future.result() for future in futures]
+
+        assert sorted(int(document["revision"]) for document in documents) == [2, 3]
+        assert len({str(document["candidate_id"]) for document in documents}) == 2
+        for document in documents:
+            assert (
+                _candidate_document(first.detection_candidate(str(document["candidate_id"])))
+                == document
+            )
+    finally:
+        first.close()
+        second.close()
+
+    restarted = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=product_db,
+    )
+    try:
+        fourth = _candidate_document(
+            restarted.clone_detection_candidate(
+                root_id,
+                {"reason": "Continue the durable lineage.", "title": "Revision four"},
+            )
+        )
+        assert fourth["revision"] == 4
+        revisions = sorted(
+            int(resource["document"]["revision"])
+            for resource in restarted.detection_candidates()["candidates"]
+        )
+        assert revisions == [1, 2, 3, 4]
+    finally:
+        restarted.close()
+
+
+def test_migration_backfills_mixed_v1_v2_lineage_without_rewriting_documents(
+    tmp_path: Path,
+) -> None:
+    runs_dir = tmp_path / "runs"
+    product_db = tmp_path / "product.sqlite3"
+    first = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=product_db,
+    )
+    root_id = str(
+        _candidate_document(first.upsert_detection_hypothesis(_hypothesis()))["candidate_id"]
+    )
+    clone = _candidate_document(
+        first.clone_detection_candidate(root_id, {"reason": "Persist a v2 child."})
+    )
+    clone_id = str(clone["candidate_id"])
+    root = _candidate_document(first.detection_candidate(root_id))
+    first.close()
+
+    legacy_root = dict(root)
+    legacy_root["schema_version"] = "bluefire.detection.v1"
+    for field in (
+        "revision",
+        "revision_root_id",
+        "parent_candidate_id",
+        "revision_kind",
+        "definition_digest",
+    ):
+        legacy_root.pop(field)
+    document_json = json.dumps(
+        legacy_root,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    with sqlite3.connect(product_db) as connection:
+        connection.execute(
+            """
+            UPDATE resources SET document_json = ?, digest = ?
+            WHERE kind = 'detection' AND resource_id = ?
+            """,
+            (document_json, content_hash(legacy_root), root_id),
+        )
+        connection.execute("DROP TABLE detection_revisions")
+        connection.execute("DELETE FROM schema_migrations WHERE version = 5")
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (4, 'legacy')"
+        )
+
+    restarted = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=product_db,
+    )
+    try:
+        fetched_root = _candidate_document(restarted.detection_candidate(root_id))
+        fetched_clone = _candidate_document(restarted.detection_candidate(clone_id))
+        assert fetched_root["schema_version"] == "bluefire.detection.v1"
+        assert fetched_root["candidate_id"] == root_id
+        assert "revision" not in fetched_root
+        assert fetched_clone["revision"] == 2
+
+        third = _candidate_document(
+            restarted.clone_detection_candidate(
+                root_id,
+                {"reason": "Allocate after migration backfill."},
+            )
+        )
+        assert third["revision"] == 3
+    finally:
+        restarted.close()
+
+    with sqlite3.connect(product_db) as connection:
+        persisted_schema = json.loads(
+            connection.execute(
+                """
+                SELECT document_json FROM resources
+                WHERE kind = 'detection' AND resource_id = ?
+                """,
+                (root_id,),
+            ).fetchone()[0]
+        )["schema_version"]
+    assert persisted_schema == "bluefire.detection.v1"
+
+
+def test_comparison_id_changes_with_lifecycle_snapshot_and_survives_restart(
+    tmp_path: Path,
+) -> None:
+    runs_dir = tmp_path / "runs"
+    product_db = tmp_path / "product.sqlite3"
+    first = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=product_db,
+    )
+    try:
+        root_id = str(
+            _candidate_document(first.upsert_detection_hypothesis(_hypothesis()))["candidate_id"]
+        )
+        clone = _candidate_document(
+            first.clone_detection_candidate(root_id, {"reason": "Compare lifecycle states."})
+        )
+        clone_id = str(clone["candidate_id"])
+        initial = first.compare_detection_candidates(root_id, {"candidate_id": clone_id})
+        repeated = first.compare_detection_candidates(root_id, {"candidate_id": clone_id})
+        assert repeated["comparison_id"] == initial["comparison_id"]
+
+        first.parse_detection_candidate(clone_id, {})
+        progressed = first.compare_detection_candidates(root_id, {"candidate_id": clone_id})
+        assert progressed["comparison_id"] != initial["comparison_id"]
+        assert (
+            progressed["baseline"]["definition_digest"] == initial["baseline"]["definition_digest"]
+        )
+        assert (
+            progressed["candidate"]["definition_digest"]
+            == initial["candidate"]["definition_digest"]
+        )
+    finally:
+        first.close()
+
+    restarted = BlueFireService(
+        project_root=ROOT,
+        runs_dir=runs_dir,
+        product_db_path=product_db,
+    )
+    try:
+        stable = restarted.compare_detection_candidates(root_id, {"candidate_id": clone_id})
+        assert stable["comparison_id"] == progressed["comparison_id"]
+    finally:
+        restarted.close()
 
 
 def test_sigma_and_yara_use_authoritative_installed_backends(

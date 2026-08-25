@@ -35,7 +35,7 @@ def seed_product_metadata(
     counts: Counter[str] = Counter()
     for scenario in scenarios:
         registry.validate_scenario(scenario)
-        store.save_scenario(scenario.to_dict())
+        store.save_scenario(scenario.to_dict(), activate=False)
         counts["scenario"] += 1
 
     for action_id in registry.action_ids:
@@ -44,6 +44,7 @@ def seed_product_metadata(
             action_id,
             registry.get_action(action_id).to_dict(),
             status="registered",
+            replace_existing=False,
         )
         counts["action"] += 1
 
@@ -97,6 +98,7 @@ def seed_product_metadata(
             descriptor.id,
             descriptor.to_dict(),
             status="available_per_run" if built_in else "not_configured",
+            replace_existing=False,
         )
         counts["collector"] += 1
 
@@ -106,6 +108,7 @@ def seed_product_metadata(
             source.id,
             source.to_dict(),
             status="pinned",
+            replace_existing=False,
         )
         counts["research_source"] += 1
 
@@ -121,6 +124,7 @@ def seed_product_metadata(
             backend_ids[name],
             {"name": name, **dict(health)},
             status="ready" if ready else "unavailable",
+            replace_existing=False,
         )
         counts["detection_backend"] += 1
 

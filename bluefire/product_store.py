@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping, cast
+from typing import Any, Callable, Iterator, Mapping, cast
 
 from .ai import (
     MUTATING_PROPOSAL_TYPES,
@@ -36,7 +36,19 @@ class ProductStoreError(ValueError):
     """Raised when product metadata or a state transition is invalid."""
 
 
-SCHEMA_VERSION = 4
+class ResearchSourceIntegrityError(ProductStoreError):
+    """Raised when a persisted research-source identity would be rewritten."""
+
+
+class DetectionRevisionIntegrityError(ProductStoreError):
+    """Raised when an immutable detection revision identity conflicts."""
+
+
+class DetectionRevisionLimitError(DetectionRevisionIntegrityError):
+    """Raised when a detection lineage has reached its configured bound."""
+
+
+SCHEMA_VERSION = 5
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PROPOSAL_RECORD_ID = re.compile(r"^proposal-review-[0-9a-f]{32}$")
@@ -57,6 +69,15 @@ _SECRET_FIELDS = {
     "secrets",
     "token",
 }
+_CREDENTIAL_VALUE_PATTERNS = (
+    re.compile(r"\A(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}\Z"),
+    re.compile(r"\Ask-[A-Za-z0-9_-]{20,}\Z"),
+    re.compile(r"\Axox[baprs]-[A-Za-z0-9-]{10,}\Z"),
+    re.compile(r"\AAKIA[0-9A-Z]{16}\Z"),
+    re.compile(r"\AeyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\Z"),
+    re.compile(r"-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----"),
+    re.compile(r"\A[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@"),
+)
 _RESOURCE_KINDS = {
     "action",
     "collector",
@@ -138,6 +159,13 @@ def _safe_document(value: Any, *, context: str = "document") -> Any:
         raise ProductStoreError(f"{context} must contain only JSON values") from exc
 
     def inspect(item: Any, path: str) -> None:
+        if isinstance(item, str):
+            if any(pattern.search(item) for pattern in _CREDENTIAL_VALUE_PATTERNS):
+                raise ProductStoreError(
+                    f"{path} contains a credential-shaped plaintext value; "
+                    "use an environment-variable reference"
+                )
+            return
         if isinstance(item, list):
             for index, child in enumerate(item):
                 inspect(child, f"{path}[{index}]")
@@ -190,6 +218,37 @@ def _safe_document(value: Any, *, context: str = "document") -> Any:
 
     inspect(cloned, context)
     return cloned
+
+
+def _detection_revision_identity(
+    document: Mapping[str, Any],
+    *,
+    strict: bool,
+) -> tuple[str, int, str] | None:
+    """Return candidate, ordinal, and root identities for a v1/v2 document."""
+
+    schema_version = document.get("schema_version")
+    if schema_version not in {"bluefire.detection.v1", "bluefire.detection.v2"}:
+        if strict:
+            raise DetectionRevisionIntegrityError(
+                "detection revisions require a supported v1 or v2 document"
+            )
+        return None
+    try:
+        candidate_id = _identifier(document.get("candidate_id"), "detection candidate ID")
+        if schema_version == "bluefire.detection.v1":
+            return candidate_id, 1, candidate_id
+        revision = document.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0:
+            raise DetectionRevisionIntegrityError("detection revision must be a positive integer")
+        revision_root_id = _identifier(
+            document.get("revision_root_id"), "detection revision root ID"
+        )
+        return candidate_id, revision, revision_root_id
+    except ProductStoreError:
+        if strict:
+            raise
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +369,14 @@ class ProductStore:
                     PRIMARY KEY (kind, resource_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS detection_revisions (
+                    revision_root_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL CHECK (revision > 0),
+                    candidate_id TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (revision_root_id, revision)
+                );
+
                 CREATE TABLE IF NOT EXISTS approval_requests (
                     approval_id TEXT PRIMARY KEY,
                     run_id TEXT NOT NULL,
@@ -399,6 +466,11 @@ class ProductStore:
                     updated_at TEXT NOT NULL
                 );
                 """)
+            # sqlite3.executescript commits a pending transaction before running
+            # its script. Re-enter one write transaction so schema inspection,
+            # backfill, and the migration marker commit atomically.
+            if not connection.in_transaction:
+                connection.execute("BEGIN IMMEDIATE")
             current = connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
             if current is not None and int(current) > SCHEMA_VERSION:
                 raise ProductStoreError("product database schema is newer than this application")
@@ -408,11 +480,83 @@ class ProductStore:
             }
             if "claimed_at" not in columns:
                 connection.execute("ALTER TABLE approval_requests ADD COLUMN claimed_at TEXT")
+            self._backfill_detection_revisions(connection)
             if current is None or int(current) < SCHEMA_VERSION:
                 connection.execute(
                     "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                     (SCHEMA_VERSION, utc_now()),
                 )
+
+    @classmethod
+    def _backfill_detection_revisions(cls, connection: sqlite3.Connection) -> None:
+        """Index readable legacy/v2 resources without rewriting their documents."""
+
+        rows = connection.execute("""
+            SELECT resource_id, document_json, created_at
+            FROM resources WHERE kind = 'detection'
+            ORDER BY created_at, resource_id
+            """).fetchall()
+        for row in rows:
+            try:
+                document = json.loads(str(row["document_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(document, Mapping):
+                continue
+            identity = _detection_revision_identity(document, strict=False)
+            if identity is None or identity[0] != str(row["resource_id"]):
+                continue
+            cls._register_detection_revision(
+                connection,
+                candidate_id=identity[0],
+                revision=identity[1],
+                revision_root_id=identity[2],
+                created_at=str(row["created_at"]),
+            )
+
+    @staticmethod
+    def _register_detection_revision(
+        connection: sqlite3.Connection,
+        *,
+        candidate_id: str,
+        revision: int,
+        revision_root_id: str,
+        created_at: str,
+    ) -> None:
+        ordinal = connection.execute(
+            """
+            SELECT candidate_id FROM detection_revisions
+            WHERE revision_root_id = ? AND revision = ?
+            """,
+            (revision_root_id, revision),
+        ).fetchone()
+        if ordinal is not None and str(ordinal["candidate_id"]) != candidate_id:
+            raise DetectionRevisionIntegrityError(
+                "persisted detection lineage contains a duplicate revision ordinal"
+            )
+        candidate = connection.execute(
+            """
+            SELECT revision_root_id, revision FROM detection_revisions
+            WHERE candidate_id = ?
+            """,
+            (candidate_id,),
+        ).fetchone()
+        if candidate is not None and (
+            str(candidate["revision_root_id"]) != revision_root_id
+            or int(candidate["revision"]) != revision
+        ):
+            raise DetectionRevisionIntegrityError(
+                "persisted detection candidate has conflicting revision identities"
+            )
+        connection.execute(
+            """
+            INSERT INTO detection_revisions(
+                revision_root_id, revision, candidate_id, created_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(revision_root_id, revision) DO NOTHING
+            """,
+            (revision_root_id, revision, candidate_id, created_at),
+        )
 
     @property
     def schema_version(self) -> int:
@@ -460,7 +604,22 @@ class ProductStore:
             for row in rows
         ]
 
-    def save_scenario(self, value: Mapping[str, Any]) -> Mapping[str, Any]:
+    def save_scenario(
+        self,
+        value: Mapping[str, Any],
+        *,
+        activate: bool = True,
+    ) -> Mapping[str, Any]:
+        """Persist one content-addressed version and optionally select it.
+
+        Explicit product-management saves activate the persisted version.  Built-in
+        bootstrap imports pass ``activate=False`` so an unseen packaged version is
+        added without replacing an operator-selected head.  A scenario with no head
+        is still activated on first import.
+        """
+
+        if not isinstance(activate, bool):
+            raise ProductStoreError("scenario activation choice must be boolean")
         scenario = ScenarioDefinition.from_mapping(value)
         document = scenario.to_dict()
         digest = content_hash(document)
@@ -498,15 +657,26 @@ class ProductStore:
                         created_at,
                     ),
                 )
-            connection.execute(
-                """
-                INSERT INTO scenario_heads(scenario_id, active_version, updated_at) VALUES (?, ?, ?)
-                ON CONFLICT(scenario_id) DO UPDATE SET
-                    active_version = excluded.active_version,
-                    updated_at = excluded.updated_at
-                """,
-                (scenario.id, version, now),
-            )
+            if activate:
+                connection.execute(
+                    """
+                    INSERT INTO scenario_heads(scenario_id, active_version, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(scenario_id) DO UPDATE SET
+                        active_version = excluded.active_version,
+                        updated_at = excluded.updated_at
+                    """,
+                    (scenario.id, version, now),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO scenario_heads(scenario_id, active_version, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(scenario_id) DO NOTHING
+                    """,
+                    (scenario.id, version, now),
+                )
         return {
             "scenario_id": scenario.id,
             "title": scenario.title,
@@ -568,21 +738,80 @@ class ProductStore:
         resource_id: str,
         document: Mapping[str, Any],
         *,
-        status: str = "ready",
+        status: str | None = None,
+        replace_existing: bool = True,
     ) -> Mapping[str, Any]:
         if kind not in _RESOURCE_KINDS:
             raise ProductStoreError("resource kind is unsupported")
         stable_id = _identifier(resource_id, f"{kind} ID")
-        if not isinstance(status, str) or not status.strip():
+        persisted_status = "draft" if kind == "research_source" else "ready"
+        if status is not None:
+            persisted_status = status
+        if not isinstance(persisted_status, str) or not persisted_status.strip():
             raise ProductStoreError("resource status is required")
+        persisted_status = persisted_status.strip()
+        if kind == "research_source" and persisted_status not in {"draft", "pinned"}:
+            raise ResearchSourceIntegrityError("research source status must be draft or pinned")
+        if not isinstance(replace_existing, bool):
+            raise ProductStoreError("resource replacement choice must be boolean")
         payload = _safe_document(document, context=f"{kind}.{stable_id}")
+        detection_identity = (
+            _detection_revision_identity(payload, strict=True) if kind == "detection" else None
+        )
+        if detection_identity is not None and detection_identity[0] != stable_id:
+            raise DetectionRevisionIntegrityError(
+                "detection resource ID does not match its candidate identity"
+            )
         digest = content_hash(payload)
+        document_json = _canonical_json(payload)
         now = utc_now()
         with self._connection(write=True) as connection:
             row = connection.execute(
-                "SELECT created_at FROM resources WHERE kind = ? AND resource_id = ?",
+                "SELECT * FROM resources WHERE kind = ? AND resource_id = ?",
                 (kind, stable_id),
             ).fetchone()
+            if row is not None and kind == "research_source":
+                if str(row["document_json"]) != document_json:
+                    raise ResearchSourceIntegrityError(
+                        "research source documents are immutable; use a new research source ID"
+                    )
+                current_status = str(row["status"])
+                if current_status == "pinned" and persisted_status != "pinned":
+                    raise ResearchSourceIntegrityError(
+                        "a pinned research source cannot be downgraded"
+                    )
+                if current_status not in {"draft", "pinned"}:
+                    raise ResearchSourceIntegrityError(
+                        "the existing research source has an invalid persisted status"
+                    )
+                if not replace_existing:
+                    return self._resource_row(row)
+                if current_status == persisted_status:
+                    return self._resource_row(row)
+
+                # The only mutable field for an existing research source is the
+                # one-way review state. BEGIN IMMEDIATE serializes this exact
+                # compare-and-promote operation across store instances/processes.
+                connection.execute(
+                    """
+                    UPDATE resources SET status = ?, updated_at = ?
+                    WHERE kind = ? AND resource_id = ? AND status = 'draft'
+                    """,
+                    (persisted_status, now, kind, stable_id),
+                )
+                promoted = connection.execute(
+                    "SELECT * FROM resources WHERE kind = ? AND resource_id = ?",
+                    (kind, stable_id),
+                ).fetchone()
+                if promoted is None:
+                    raise ProductStoreError("research source promotion was not persisted")
+                return self._resource_row(promoted)
+            if row is not None and not replace_existing:
+                return self._resource_row(row)
+            if detection_identity is not None and row is None and detection_identity[1] != 1:
+                raise DetectionRevisionIntegrityError(
+                    "new detection revisions require atomic lineage allocation"
+                )
             created_at = str(row["created_at"]) if row else now
             connection.execute(
                 """
@@ -598,22 +827,134 @@ class ProductStore:
                 (
                     kind,
                     stable_id,
-                    _canonical_json(payload),
+                    document_json,
                     digest,
-                    status.strip(),
+                    persisted_status,
                     created_at,
                     now,
                 ),
             )
+            if detection_identity is not None:
+                self._register_detection_revision(
+                    connection,
+                    candidate_id=detection_identity[0],
+                    revision=detection_identity[1],
+                    revision_root_id=detection_identity[2],
+                    created_at=created_at,
+                )
         return {
             "kind": kind,
             "id": stable_id,
-            "status": status.strip(),
+            "status": persisted_status,
             "digest": digest,
             "created_at": created_at,
             "updated_at": now,
             "document": payload,
         }
+
+    def save_detection_revision(
+        self,
+        revision_root_id: str,
+        build_document: Callable[[int], Mapping[str, Any]],
+        *,
+        max_revisions: int,
+    ) -> Mapping[str, Any]:
+        """Allocate and persist one immutable revision in a single write transaction."""
+
+        stable_root_id = _identifier(revision_root_id, "detection revision root ID")
+        if not callable(build_document):
+            raise DetectionRevisionIntegrityError("detection revision builder must be callable")
+        if (
+            isinstance(max_revisions, bool)
+            or not isinstance(max_revisions, int)
+            or max_revisions < 2
+        ):
+            raise DetectionRevisionIntegrityError("detection revision bound is invalid")
+
+        with self._connection(write=True) as connection:
+            lineage = connection.execute(
+                """
+                SELECT COUNT(*) AS count, COALESCE(MAX(revision), 0) AS maximum
+                FROM detection_revisions WHERE revision_root_id = ?
+                """,
+                (stable_root_id,),
+            ).fetchone()
+            count = int(lineage["count"])
+            maximum = int(lineage["maximum"])
+            if count == 0:
+                raise DetectionRevisionIntegrityError(
+                    "detection revision root is not durably indexed"
+                )
+            if count >= max_revisions or maximum >= max_revisions:
+                raise DetectionRevisionLimitError(
+                    f"detection revision lineage is limited to {max_revisions} definitions"
+                )
+
+            revision = maximum + 1
+            document = build_document(revision)
+            payload = _safe_document(
+                document,
+                context=f"detection revision {stable_root_id}.{revision}",
+            )
+            if not isinstance(payload, Mapping):
+                raise DetectionRevisionIntegrityError(
+                    "detection revision builder must return a JSON object"
+                )
+            candidate_id, document_revision, document_root_id = cast(
+                tuple[str, int, str],
+                _detection_revision_identity(payload, strict=True),
+            )
+            if document_revision != revision or document_root_id != stable_root_id:
+                raise DetectionRevisionIntegrityError(
+                    "allocated detection revision does not match its document identity"
+                )
+            if connection.execute(
+                "SELECT 1 FROM resources WHERE kind = 'detection' AND resource_id = ?",
+                (candidate_id,),
+            ).fetchone():
+                raise DetectionRevisionIntegrityError(
+                    "allocated detection candidate identity already exists"
+                )
+
+            status = payload.get("state")
+            if not isinstance(status, str) or not status:
+                raise DetectionRevisionIntegrityError(
+                    "detection revision document has no persisted lifecycle state"
+                )
+            document_json = _canonical_json(payload)
+            digest = content_hash(payload)
+            created_at = utc_now()
+            connection.execute(
+                """
+                INSERT INTO resources(
+                    kind, resource_id, document_json, digest, status, created_at, updated_at
+                ) VALUES ('detection', ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    candidate_id,
+                    document_json,
+                    digest,
+                    status,
+                    created_at,
+                    created_at,
+                ),
+            )
+            self._register_detection_revision(
+                connection,
+                candidate_id=candidate_id,
+                revision=revision,
+                revision_root_id=stable_root_id,
+                created_at=created_at,
+            )
+            row = connection.execute(
+                "SELECT * FROM resources WHERE kind = 'detection' AND resource_id = ?",
+                (candidate_id,),
+            ).fetchone()
+            if row is None:
+                raise DetectionRevisionIntegrityError(
+                    "allocated detection revision was not persisted"
+                )
+            return self._resource_row(row)
 
     def get_resource(self, kind: str, resource_id: str) -> Mapping[str, Any]:
         stable_id = _identifier(resource_id, f"{kind} ID")
@@ -640,18 +981,19 @@ class ProductStore:
                     "SELECT * FROM resources WHERE kind = ? AND resource_id = ?",
                     (kind, resource_id),
                 ).fetchall()
-        return [
-            {
-                "kind": row["kind"],
-                "id": row["resource_id"],
-                "status": row["status"],
-                "digest": row["digest"],
-                "created_at": row["created_at"],
-                "updated_at": row["updated_at"],
-                "document": json.loads(row["document_json"]),
-            }
-            for row in rows
-        ]
+        return [self._resource_row(row) for row in rows]
+
+    @staticmethod
+    def _resource_row(row: sqlite3.Row) -> Mapping[str, Any]:
+        return {
+            "kind": row["kind"],
+            "id": row["resource_id"],
+            "status": row["status"],
+            "digest": row["digest"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "document": json.loads(row["document_json"]),
+        }
 
     def create_approval_request(
         self,
@@ -1498,8 +1840,11 @@ def _timestamp(value: str) -> datetime:
 
 __all__ = [
     "ApprovalRequest",
+    "DetectionRevisionIntegrityError",
+    "DetectionRevisionLimitError",
     "ProductStore",
     "ProductStoreError",
+    "ResearchSourceIntegrityError",
     "SCHEMA_VERSION",
     "utc_now",
 ]

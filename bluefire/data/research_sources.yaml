@@ -5,12 +5,12 @@ sources:
     name: MITRE ATT&CK Enterprise STIX data
     source_type: dataset
     authority: The MITRE Corporation
-    reference_url: https://github.com/mitre-attack/attack-stix-data/blob/master/enterprise-attack/enterprise-attack-19.1.json
-    version: "19.1"
-    pin: enterprise-attack-19.1.json
-    retrieved_at: "2026-08-24"
+    reference_url: https://github.com/mitre-attack/attack-stix-data/blob/6cda5ad8462c79e14fbb872f4e09059b18e0cfc4/enterprise-attack/enterprise-attack-19.2.json
+    version: "19.2"
+    pin: 6cda5ad8462c79e14fbb872f4e09059b18e0cfc4  # pragma: allowlist secret -- public Git commit
+    retrieved_at: "2026-08-25"
     license: CC-BY-4.0
-    license_url: https://github.com/mitre-attack/attack-stix-data/blob/master/LICENSE.txt
+    license_url: https://github.com/mitre-attack/attack-stix-data/blob/6cda5ad8462c79e14fbb872f4e09059b18e0cfc4/LICENSE.txt
     license_review: reviewed
     relationship: comparative
     uses: [behavior_mapping, research_reference]
@@ -26,7 +26,7 @@ sources:
     reference_url: https://github.com/SigmaHQ/sigma-specification/tree/v2.1.0
     version: 2.1.0
     pin: v2.1.0
-    retrieved_at: "2026-08-24"
+    retrieved_at: "2026-08-25"
     license: LGPL-2.1-only
     license_url: https://github.com/SigmaHQ/sigma-specification/blob/v2.1.0/LICENSE
     license_review: reviewed
@@ -41,12 +41,12 @@ sources:
     name: pySigma
     source_type: software
     authority: SigmaHQ
-    reference_url: https://github.com/SigmaHQ/pySigma/tree/v1.4.0
-    version: 1.4.0
-    pin: v1.4.0
-    retrieved_at: "2026-08-24"
+    reference_url: https://github.com/SigmaHQ/pySigma/tree/v1.5.0
+    version: 1.5.0
+    pin: v1.5.0
+    retrieved_at: "2026-08-25"
     license: LGPL-2.1-only
-    license_url: https://github.com/SigmaHQ/pySigma/blob/v1.4.0/LICENSE
+    license_url: https://github.com/SigmaHQ/pySigma/blob/v1.5.0/LICENSE
     license_review: reviewed
     relationship: imported
     uses: [parser_validation]
@@ -59,15 +59,33 @@ sources:
     name: yara-python
     source_type: software
     authority: VirusTotal
-    reference_url: https://github.com/VirusTotal/yara-python/tree/v4.5.4
-    version: 4.5.4
-    pin: v4.5.4
-    retrieved_at: "2026-08-24"
+    reference_url: https://github.com/VirusTotal/yara-python/tree/v4.5.5
+    version: 4.5.5
+    pin: v4.5.5
+    retrieved_at: "2026-08-25"
     license: Apache-2.0
-    license_url: https://github.com/VirusTotal/yara-python/blob/v4.5.4/LICENSE
+    license_url: https://github.com/VirusTotal/yara-python/blob/v4.5.5/LICENSE
     license_review: reviewed
     relationship: imported
     uses: [parser_validation]
     cache_policy: external_only
     executable_content: true
     notes: The pinned Python binding compiles generated YARA candidates with includes disabled; no public YARA corpus is vendored.
+
+  - schema_version: bluefire.research-source.v1
+    id: research.atomic-red-team.v1
+    name: Atomic Red Team
+    source_type: rule_corpus
+    authority: Red Canary
+    reference_url: https://github.com/redcanaryco/atomic-red-team/tree/6132b92779873cb0d05bef07ba0a480d47eb1cc8
+    version: "2026-08-24 snapshot"
+    pin: 6132b92779873cb0d05bef07ba0a480d47eb1cc8  # pragma: allowlist secret -- public Git commit
+    retrieved_at: "2026-08-25"
+    license: MIT
+    license_url: https://github.com/redcanaryco/atomic-red-team/blob/6132b92779873cb0d05bef07ba0a480d47eb1cc8/LICENSE.txt
+    license_review: reviewed
+    relationship: comparative
+    uses: [behavior_mapping, comparison, research_reference]
+    cache_policy: metadata_only
+    executable_content: false
+    notes: The immutable public snapshot is a comparative behavior and detection-test reference only; no external scripts or corpus content are vendored or executed.
