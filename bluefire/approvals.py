@@ -42,6 +42,7 @@ def execution_approval_binding(
     autonomy: AutonomyLevel,
     ai_provider: Mapping[str, Any],
     context: Mapping[str, Any] | None = None,
+    runner_readiness: Mapping[str, Any] | None = None,
 ) -> Mapping[str, str]:
     """Hash every operator-reviewed input that may affect an Execute plan."""
 
@@ -68,6 +69,8 @@ def execution_approval_binding(
             scenario=scenario,
         ),
     }
+    if runner_readiness is not None:
+        state["runner_readiness"] = dict(runner_readiness)
     ranks = {"safe": 1, "controlled": 2, "restricted": 3}
     tiers: list[str] = []
     for step in scenario.steps:

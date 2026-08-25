@@ -16,10 +16,84 @@ from bluefire.config import load_config
 from bluefire.contracts import ContractError, ExecutionMode
 from bluefire.job_runtime import JobState
 from bluefire.orchestrator import Orchestrator
+from bluefire.runner_client import RunnerTransportError
+from bluefire.runner_contracts import current_platform
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
 
 ROOT = Path(__file__).resolve().parents[1]
+EXECUTE_PROFILE_ACTIONS = {
+    "endpoint.discovery.processes.v1",
+    "endpoint.discovery.system.v1",
+    "sandbox.archive.tar.v1",
+    "sandbox.cleanup.v1",
+    "sandbox.collection.stage.v1",
+    "sandbox.discovery.list.v1",
+    "sandbox.discovery.metadata.v1",
+    "sandbox.discovery.recursive.v1",
+    "sandbox.export.local.v1",
+    "sandbox.fixture.create.v1",
+    "sandbox.fixture.transform.v1",
+    "sandbox.network.loopback.v1",
+}
+
+
+def _ready_inventory(
+    *,
+    actions: set[str] | None = None,
+    runner_version: str = "test-1.0.0",
+) -> Mapping[str, Any]:
+    return {
+        "schema_version": "bluefire.runner-inventory.v1",
+        "runner_id": "bluefire-test-runner.v1",
+        "runner_version": runner_version,
+        "action_sdk_version": "bluefire.runner-action-sdk.v1",
+        "receipt_protocol": "bluefire.runner-receipt-wal.v2",
+        "platform": current_platform(),
+        "actions": [
+            {
+                "action_id": action_id,
+                "action_version": "1.0.0",
+                "readiness": "ready",
+            }
+            for action_id in sorted(actions or EXECUTE_PROFILE_ACTIONS)
+        ],
+    }
+
+
+class ReadyInventoryRunner:
+    def __init__(self, *, actions: set[str] | None = None) -> None:
+        self.actions = set(actions or EXECUTE_PROFILE_ACTIONS)
+        self.inventory_calls = 0
+        self.execute_calls = 0
+
+    def inventory(self) -> Mapping[str, Any]:
+        self.inventory_calls += 1
+        return _ready_inventory(actions=self.actions)
+
+    def execute(
+        self,
+        _manifest: Mapping[str, Any],
+        _profile: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        self.execute_calls += 1
+        raise RunnerTransportError("deliberate test runner has no action implementation")
+
+
+class PostApprovalReadinessRunner(ReadyInventoryRunner):
+    def __init__(self, failure: str) -> None:
+        super().__init__()
+        self.failure = failure
+
+    def inventory(self) -> Mapping[str, Any]:
+        self.inventory_calls += 1
+        if self.inventory_calls < 3:
+            return _ready_inventory(actions=self.actions)
+        if self.failure == "disconnect":
+            raise RunnerTransportError("connection failed at C:/sensitive/local/runner.sock")
+        return _ready_inventory(
+            actions=self.actions - {"sandbox.fixture.create.v1"},
+        )
 
 
 class CleanupOnlyRecoveryRunner:
@@ -408,7 +482,7 @@ def test_interrupted_execute_retry_requires_a_fresh_exact_approval(tmp_path: Pat
     service = BlueFireService(
         project_root=ROOT,
         runs_dir=tmp_path / "runs",
-        runner_factory=lambda _profile: (object(), sandbox),  # type: ignore[arg-type]
+        runner_factory=lambda _profile: (ReadyInventoryRunner(), sandbox),
     )
     profile = next(
         item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
@@ -449,7 +523,7 @@ def test_interrupted_execute_retry_refuses_an_unsettled_workspace(tmp_path: Path
     service = BlueFireService(
         project_root=ROOT,
         runs_dir=tmp_path / "runs",
-        runner_factory=lambda _profile: (CleanupOnlyRecoveryRunner(), sandbox),
+        runner_factory=lambda _profile: (ReadyInventoryRunner(), sandbox),
     )
     profile = next(
         item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
@@ -461,34 +535,31 @@ def test_interrupted_execute_retry_refuses_an_unsettled_workspace(tmp_path: Path
         "autonomy": "off",
         "target_scope": {"scope_refs": list(profile.scope)},
     }
-    preflight = service.preflight(request)
-    binding = preflight["approval_binding"]
-    assert isinstance(binding, Mapping)
     pending = _pending_execute_approval(service, request)
     approved = service.product_store.approve(
         str(pending["approval_id"]),
         approved_by="retry-safety-test",
-        expected_state_digest=str(binding["state_digest"]),
-        expected_plan_digest=str(binding["plan_digest"]),
-        expected_target_scope_digest=str(binding["target_scope_digest"]),
+        expected_state_digest=str(pending["state_digest"]),
+        expected_plan_digest=str(pending["plan_digest"]),
+        expected_target_scope_digest=str(pending["target_scope_digest"]),
         expires_at=service._approval_execution_expires_at(profile),
     )
     consumed = service.product_store.consume_approval(
         str(pending["approval_id"]),
         nonce=str(approved["nonce"]),
-        expected_state_digest=str(binding["state_digest"]),
-        expected_plan_digest=str(binding["plan_digest"]),
-        expected_target_scope_digest=str(binding["target_scope_digest"]),
+        expected_state_digest=str(pending["state_digest"]),
+        expected_plan_digest=str(pending["plan_digest"]),
+        expected_target_scope_digest=str(pending["target_scope_digest"]),
     )
     claimed = service.product_store.claim_consumed_approval(
         str(pending["approval_id"]),
         nonce=str(consumed["nonce"]),
         approved_by="retry-safety-test",
-        expected_state_digest=str(binding["state_digest"]),
-        expected_plan_digest=str(binding["plan_digest"]),
-        expected_target_scope_digest=str(binding["target_scope_digest"]),
+        expected_state_digest=str(pending["state_digest"]),
+        expected_plan_digest=str(pending["plan_digest"]),
+        expected_target_scope_digest=str(pending["target_scope_digest"]),
         expected_profile_id=profile.id,
-        expected_maximum_tier=str(binding["maximum_tier"]),
+        expected_maximum_tier=str(pending["maximum_tier"]),
     )
     workspace = service._isolated_execution_sandbox(sandbox, claimed)
     service.product_store.bind_execution_workspace(
@@ -518,15 +589,17 @@ def test_execute_job_requires_separate_exact_approval_before_callback(
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
 
-    def unavailable_after_gate(_profile: object) -> tuple[object, Path]:
-        # Preflight only needs the configured boundary to exist. Once approved,
-        # the deliberately incomplete fake proves the callback was actually released.
-        return object(), sandbox
+    runner = ReadyInventoryRunner()
+
+    def unavailable_after_gate(_profile: object) -> tuple[ReadyInventoryRunner, Path]:
+        # Readiness is exact before review. The deliberately non-executing fake
+        # then proves the callback was released only after approval was claimed.
+        return runner, sandbox
 
     service = BlueFireService(
         project_root=ROOT,
         runs_dir=tmp_path / "runs",
-        runner_factory=unavailable_after_gate,  # type: ignore[arg-type]
+        runner_factory=unavailable_after_gate,
     )
     profile = next(
         item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
@@ -561,10 +634,138 @@ def test_execute_job_requires_separate_exact_approval_before_callback(
     assert approved["approval_request"]["status"] == "consumed"
     assert "nonce" not in approved["approval_request"]
 
-    failed = service.job_controller.wait(job_id, timeout=3)
-    assert failed["state"] == "failed"
+    settled = service.job_controller.wait(job_id, timeout=3)
+    assert settled["state"] == "completed"
+    assert runner.execute_calls > 0
     approval_id = str(submission["approval_request"]["approval_id"])
     assert service.product_store.get_approval_request(approval_id)["status"] == "claimed"
+    service.close()
+
+
+def test_execute_preflight_refuses_missing_enabled_action_without_side_effects(
+    tmp_path: Path,
+) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    runner = ReadyInventoryRunner(actions=EXECUTE_PROFILE_ACTIONS - {"sandbox.fixture.create.v1"})
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_factory=lambda _profile: (runner, sandbox),
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+
+    with pytest.raises(APIError) as refused:
+        service.submit_run(
+            {
+                "scenario_id": "scenario.sandbox.research.chain.v1",
+                "mode": "execute",
+                "runner_profile_id": profile.id,
+                "autonomy": "off",
+                "target_scope": {"scope_refs": list(profile.scope)},
+            }
+        )
+
+    assert refused.value.code == "preflight_refused"
+    assert refused.value.details == [
+        "Runner inventory is missing enabled action(s): sandbox.fixture.create.v1"
+    ]
+    assert not (sandbox / ".bluefire-executions").exists()
+    assert runner.execute_calls == 0
+    service.close()
+
+
+@pytest.mark.parametrize("sandbox_kind", ["missing", "file"])
+def test_execute_preflight_refuses_missing_or_unusable_sandbox_without_creating_it(
+    tmp_path: Path,
+    sandbox_kind: str,
+) -> None:
+    sandbox = tmp_path / "configured-sandbox"
+    if sandbox_kind == "file":
+        sandbox.write_text("not a directory", encoding="utf-8")
+    runner = ReadyInventoryRunner()
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_factory=lambda _profile: (runner, sandbox),
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+
+    with pytest.raises(APIError) as refused:
+        service.submit_run(
+            {
+                "scenario_id": "scenario.sandbox.research.chain.v1",
+                "mode": "execute",
+                "runner_profile_id": profile.id,
+                "autonomy": "off",
+                "target_scope": {"scope_refs": list(profile.scope)},
+            }
+        )
+
+    assert refused.value.code == "preflight_refused"
+    assert "sandbox" in " ".join(refused.value.details or []).casefold()
+    assert str(sandbox) not in " ".join(refused.value.details or [])
+    assert not sandbox.exists() if sandbox_kind == "missing" else sandbox.is_file()
+    assert runner.inventory_calls == 0
+    assert runner.execute_calls == 0
+    service.close()
+
+
+@pytest.mark.parametrize("failure", ["mutation", "disconnect"])
+def test_execute_fails_closed_on_post_approval_runner_change(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    runner = PostApprovalReadinessRunner(failure)
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_factory=lambda _profile: (runner, sandbox),
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    submission = service.submit_run(
+        {
+            "scenario_id": "scenario.sandbox.research.chain.v1",
+            "mode": "execute",
+            "runner_profile_id": profile.id,
+            "autonomy": "off",
+            "target_scope": {"scope_refs": list(profile.scope)},
+        }
+    )
+    readiness = submission["preflight"]["runner_readiness"]
+    assert readiness["runner_identity_digest"].startswith("sha256:")
+    assert readiness["inventory_digest"].startswith("sha256:")
+    assert readiness["freshness"]["max_age_seconds"] == 15 * 60
+    job_id = str(submission["job"]["job_id"])
+    service.job_controller.wait_for_state(
+        job_id,
+        {JobState.AWAITING_APPROVAL},
+        timeout=3,
+    )
+
+    service.approve_job(job_id, {"approved_by": "readiness-reviewer"})
+    failed = service.job_controller.wait(job_id, timeout=3)
+
+    assert failed["state"] == "failed"
+    assert failed["error"] == {
+        "code": "execution_callback_failed",
+        "message": "execution callback failed",
+        "exception_type": "APIError",
+    }
+    assert "sensitive/local" not in str(failed)
+    assert runner.inventory_calls == 3
+    assert runner.execute_calls == 0
+    approval_id = str(submission["approval_request"]["approval_id"])
+    assert service.product_store.get_approval_request(approval_id)["status"] == "claimed"
+    assert service.product_store.get_execution_workspace(approval_id)["state"] == "not_required"
     service.close()
 
 
@@ -589,7 +790,7 @@ def test_action_implementation_payload_is_strict_and_persisted_in_execute_job(
     service = BlueFireService(
         project_root=ROOT,
         runs_dir=tmp_path / "execute-runs",
-        runner_factory=lambda _profile: (object(), sandbox),  # type: ignore[arg-type]
+        runner_factory=lambda _profile: (ReadyInventoryRunner(), sandbox),
     )
     profile = next(
         item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE

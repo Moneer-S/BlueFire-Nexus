@@ -195,6 +195,7 @@ class Orchestrator:
         seed_artifacts: Mapping[str, Any] | None = None,
         checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
         action_implementations: Mapping[str, str] | None = None,
+        runner_readiness: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         execution_started = time.monotonic()
         if checkpoint is not None:
@@ -248,6 +249,7 @@ class Orchestrator:
                 autonomy=plan.autonomy,
                 ai_provider=plan.ai_provider,
                 context=approval_context,
+                runner_readiness=runner_readiness,
             )
             if self.approval_store is None:
                 raise OrchestrationError("Execute requires a durable approval verifier")
@@ -466,7 +468,17 @@ class Orchestrator:
                 action = self.registry.get_action(str(plan_step.action_id))
                 is_cleanup = action.id == "sandbox.cleanup.v1"
                 remaining = max((deadline or time.monotonic()) - time.monotonic(), 0.0)
-                available = remaining if is_cleanup else max(remaining - cleanup_reserve, 0.0)
+                # Cleanup is the compensating safety boundary. A runner call can
+                # return just beyond its requested timeout (scheduler jitter is
+                # especially visible on Windows), so preserve the configured
+                # cleanup slice even when the wall-clock deadline has just
+                # elapsed. The runner still receives the smaller, bounded
+                # cleanup timeout rather than the full run budget.
+                available = (
+                    max(remaining, cleanup_reserve)
+                    if is_cleanup
+                    else max(remaining - cleanup_reserve, 0.0)
+                )
                 action_timeout_ms = int(available * 1000)
                 step_budget_exhausted = action_timeout_ms < 1
                 budget_exhausted = budget_exhausted or step_budget_exhausted
@@ -755,6 +767,7 @@ class Orchestrator:
         autonomy: AutonomyLevel,
         ai_provider: Mapping[str, Any],
         approval_context: Mapping[str, Any] | None = None,
+        runner_readiness: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         """Reconcile only runner-owned receipts from one interrupted Execute run."""
 
@@ -777,6 +790,7 @@ class Orchestrator:
             autonomy=plan.autonomy,
             ai_provider=plan.ai_provider,
             context=approval_context,
+            runner_readiness=runner_readiness,
         )
         approved_by = approval_record.get("approved_by")
         validate_claimed_approval(

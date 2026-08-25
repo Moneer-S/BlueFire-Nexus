@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from bluefire.contracts import load_scenario
+from bluefire.receiver import LoopbackArtifactReceiver, ReceiverConfig
 from bluefire.runner_client import SubprocessRustRunner
 from bluefire.service import BlueFireService
 
@@ -75,22 +78,48 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
         runner_factory=lambda _profile: (runner, sandbox),
     )
     scenario = load_scenario(ROOT / "scenarios" / scenario_name)
-
-    result = service.run(
-        {
-            "scenario": scenario.to_dict(),
-            "mode": "execute",
-            "runner_profile_id": "sandbox-execute.v1",
-            "target_scope": {
-                "scope_refs": ["sandbox.workspace", "network.loopback", "export.local"]
-            },
-            "autonomy": "off",
-            "approval": {
-                "confirmed": True,
-                "approved_by": "integration-test-operator",
-            },
-        }
+    needs_receiver = any(
+        step.behavior_id == "sandbox.network.loopback.v1" for step in scenario.steps
     )
+    receiver = (
+        LoopbackArtifactReceiver(ReceiverConfig(port=4317, max_requests=1, idle_timeout_seconds=15))
+        if needs_receiver
+        else None
+    )
+    receiver_result: dict[str, Any] = {}
+    receiver_thread = (
+        threading.Thread(
+            target=lambda: receiver_result.update(receiver.serve()),
+            name="bluefire-e2e-loopback-receiver",
+        )
+        if receiver is not None
+        else None
+    )
+    if receiver_thread is not None:
+        receiver_thread.start()
+
+    try:
+        result = service.run(
+            {
+                "scenario": scenario.to_dict(),
+                "mode": "execute",
+                "runner_profile_id": "sandbox-execute.v1",
+                "target_scope": {
+                    "scope_refs": ["sandbox.workspace", "network.loopback", "export.local"]
+                },
+                "autonomy": "off",
+                "approval": {
+                    "confirmed": True,
+                    "approved_by": "integration-test-operator",
+                },
+            }
+        )
+    finally:
+        if receiver_thread is not None:
+            receiver_thread.join(timeout=5)
+        if receiver is not None and receiver_thread is not None and receiver_thread.is_alive():
+            receiver.close()
+            receiver_thread.join(timeout=2)
 
     rows = {row["step_id"]: row for row in result["steps"]}
     assert result["objective_reached"] is True
@@ -109,6 +138,18 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
     assert "nonce" not in result["approval"]
     assert service.store.validate_bundle(str(result["run_id"]))["valid"] is True
     assert not [path for path in sandbox.rglob("*") if path.is_file()]
+    if needs_receiver:
+        network_step = next(
+            row for row in result["steps"] if row["behavior_id"] == "sandbox.network.loopback.v1"
+        )
+        assert network_step["status"] == "success"
+        assert receiver_result == {
+            "schema_version": "bluefire.loopback-receiver-summary.v1",
+            "reason": "max_requests",
+                "connections_handled": 1,
+            "requests_accepted": 1,
+            "requests_refused": 0,
+        }
 
 
 @pytest.mark.skipif(

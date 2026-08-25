@@ -1670,6 +1670,18 @@ struct NetworkLoopbackParams {
 
 struct NetworkLoopbackPrepared(NetworkLoopbackParams);
 
+const LOOPBACK_RECEIVER_RESULT_SCHEMA_VERSION: &str = "bluefire.loopback-receiver-result.v1";
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoopbackReceiverResult {
+    schema_version: String,
+    accepted: bool,
+    bytes_received: u64,
+    sha256: String,
+    stored: bool,
+}
+
 fn remaining_deadline(started: Instant, budget: Duration) -> Result<Duration, String> {
     budget
         .checked_sub(started.elapsed())
@@ -1724,7 +1736,7 @@ fn read_socket_bounded(
     limit: usize,
     started: Instant,
     budget: Duration,
-) -> Result<(BoundedOutput, bool), String> {
+) -> Result<(Vec<u8>, BoundedOutput, bool), String> {
     let mut retained = Vec::with_capacity(limit.min(16 * 1024));
     let mut total = 0_u64;
     let mut buffer = [0_u8; 8 * 1024];
@@ -1793,14 +1805,102 @@ fn read_socket_bounded(
             Err(error) => return Err(format!("cannot read loopback response: {error}")),
         }
     }
-    Ok((
-        BoundedOutput {
-            text: String::from_utf8_lossy(&retained).into_owned(),
-            total_bytes: total,
-            truncated: total > retained.len() as u64,
-        },
-        timed_out,
-    ))
+    let output = BoundedOutput {
+        text: String::from_utf8_lossy(&retained).into_owned(),
+        total_bytes: total,
+        truncated: total > retained.len() as u64,
+    };
+    Ok((retained, output, timed_out))
+}
+
+fn loopback_response_status(response: &[u8]) -> Option<u16> {
+    let line_end = response.windows(2).position(|window| window == b"\r\n")?;
+    let status_line = std::str::from_utf8(&response[..line_end]).ok()?;
+    let mut parts = status_line.split_whitespace();
+    let version = parts.next()?;
+    let status = parts.next()?.parse::<u16>().ok()?;
+    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
+        return None;
+    }
+    Some(status)
+}
+
+fn validate_loopback_response(
+    response: &[u8],
+    truncated: bool,
+    expected_sha256: &str,
+    expected_bytes: usize,
+) -> Result<LoopbackReceiverResult, String> {
+    if truncated {
+        return Err("response exceeded the bounded output limit".to_string());
+    }
+    let separator = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| "response did not contain a complete HTTP header".to_string())?;
+    let header = std::str::from_utf8(&response[..separator])
+        .map_err(|_| "response header was not valid ASCII/UTF-8".to_string())?;
+    let body = &response[separator + 4..];
+    let status_code = loopback_response_status(response)
+        .ok_or_else(|| "response status line was invalid".to_string())?;
+    if !(200..300).contains(&status_code) {
+        return Err("receiver did not return a 2xx status".to_string());
+    }
+
+    let mut content_length = None;
+    let mut content_type_seen = false;
+    let mut content_type_is_json = false;
+    for line in header.split("\r\n").skip(1) {
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| "response contained an invalid header".to_string())?;
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("content-length") {
+            if content_length.is_some() {
+                return Err("response repeated Content-Length".to_string());
+            }
+            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+                return Err("response Content-Length was invalid".to_string());
+            }
+            content_length = Some(
+                value
+                    .parse::<usize>()
+                    .map_err(|_| "response Content-Length was invalid".to_string())?,
+            );
+        } else if name.eq_ignore_ascii_case("content-type") {
+            if content_type_seen {
+                return Err("response repeated Content-Type".to_string());
+            }
+            content_type_seen = true;
+            content_type_is_json = value.split(';').next().is_some_and(|media_type| {
+                media_type.trim().eq_ignore_ascii_case("application/json")
+            });
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("response transfer encoding is not supported".to_string());
+        }
+    }
+    if !content_type_is_json {
+        return Err("response Content-Type was not application/json".to_string());
+    }
+    if content_length != Some(body.len()) {
+        return Err("response Content-Length did not match the body".to_string());
+    }
+
+    let acknowledgement: LoopbackReceiverResult = serde_json::from_slice(body)
+        .map_err(|_| "response body was not the strict receiver JSON schema".to_string())?;
+    if acknowledgement.schema_version != LOOPBACK_RECEIVER_RESULT_SCHEMA_VERSION {
+        return Err("receiver acknowledgement schema version did not match".to_string());
+    }
+    if !acknowledgement.accepted {
+        return Err("receiver did not acknowledge the artifact".to_string());
+    }
+    if acknowledgement.sha256 != expected_sha256 {
+        return Err("receiver acknowledgement digest did not match".to_string());
+    }
+    if acknowledgement.bytes_received != expected_bytes as u64 {
+        return Err("receiver acknowledgement byte count did not match".to_string());
+    }
+    Ok(acknowledgement)
 }
 
 impl PreparedAction for NetworkLoopbackPrepared {
@@ -1821,6 +1921,7 @@ impl PreparedAction for NetworkLoopbackPrepared {
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
         let body = read_file_bounded(&artifact_path, context.manifest.limits.max_artifact_bytes)
             .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
+        let body_sha256 = crate::contract::sha256_hex(&body);
         let socket = SocketAddr::new(ip, self.0.destination.port);
         let mut stream = TcpStream::connect_timeout(
             &socket,
@@ -1841,7 +1942,7 @@ impl PreparedAction for NetworkLoopbackPrepared {
             "POST /bluefire/v1/artifact HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/octet-stream\r\nX-BlueFire-SHA256: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             self.0.destination.host,
             self.0.destination.port,
-            crate::contract::sha256_hex(&body),
+            body_sha256,
             body.len(),
         );
         write_socket_with_deadline(&mut stream, request.as_bytes(), started, budget)?;
@@ -1859,22 +1960,31 @@ impl PreparedAction for NetworkLoopbackPrepared {
         remaining_deadline(started, budget)
             .map_err(|error| ActionFailure::timed_out("loopback_timeout", error))?;
         let _ = stream.shutdown(Shutdown::Write);
-        let (response, timed_out) = read_socket_bounded(
+        let (response_bytes, response, timed_out) = read_socket_bounded(
             &mut stream,
             context.manifest.limits.max_stdout_bytes,
             started,
             budget,
         )
         .map_err(|error| ActionFailure::failed("loopback_read_failed", error))?;
-        let status_code = response
-            .text
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .and_then(|code| code.parse::<u16>().ok());
+        let status_code = loopback_response_status(&response_bytes);
+        let acknowledgement = if timed_out {
+            None
+        } else {
+            Some(validate_loopback_response(
+                &response_bytes,
+                response.truncated,
+                &body_sha256,
+                body.len(),
+            ))
+        };
+        let receiver_stored = acknowledgement
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .map(|result| result.stored);
         let status = if timed_out {
             TaskStatus::TimedOut
-        } else if status_code.is_some_and(|code| (200..300).contains(&code)) {
+        } else if acknowledgement.as_ref().is_some_and(Result::is_ok) {
             TaskStatus::Success
         } else {
             TaskStatus::Failed
@@ -1885,8 +1995,10 @@ impl PreparedAction for NetworkLoopbackPrepared {
                 "destination": self.0.destination,
                 "artifact": artifact,
                 "bytes_sent": body.len(),
-                "sha256": crate::contract::sha256_hex(&body),
+                "sha256": body_sha256,
                 "http_status": status_code,
+                "receiver_acknowledged": status == TaskStatus::Success,
+                "receiver_stored": receiver_stored,
             }),
             stdout: response,
             stderr: BoundedOutput::default(),
@@ -1900,11 +2012,20 @@ impl PreparedAction for NetworkLoopbackPrepared {
                 }),
                 _ => Some(ErrorRecord {
                     code: "loopback_response_failed".to_string(),
-                    message: "loopback receiver did not return a 2xx response".to_string(),
+                    message: format!(
+                        "loopback receiver acknowledgement failed: {}",
+                        acknowledgement
+                            .as_ref()
+                            .and_then(|result| result.as_ref().err())
+                            .map(String::as_str)
+                            .unwrap_or("response was invalid")
+                    ),
                 }),
             },
             limitations: vec![
                 "Literal loopback IP only; DNS, redirects, and proxy environment variables are not used."
+                    .to_string(),
+                "The receiver process identity and session are not authenticated; success proves only a digest-bound acknowledgement on the approved loopback host and port."
                     .to_string(),
             ],
         })

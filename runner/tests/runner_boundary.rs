@@ -871,6 +871,36 @@ fn network_scope_refusal_occurs_before_any_connect_attempt() {
     assert_eq!(result.evidence[0].kind, EvidenceKind::ControlBlocked);
 }
 
+fn loopback_acknowledgement(
+    request: &[u8],
+    status_code: u16,
+    reason: &str,
+    stored: bool,
+    digest_override: Option<&str>,
+) -> Vec<u8> {
+    let body_offset = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let artifact = &request[body_offset..];
+    let acknowledgement = serde_json::to_vec(&json!({
+        "schema_version": "bluefire.loopback-receiver-result.v1",
+        "accepted": true,
+        "bytes_received": artifact.len(),
+        "sha256": digest_override.map(str::to_string).unwrap_or_else(|| sha256_hex(artifact)),
+        "stored": stored,
+    }))
+    .unwrap();
+    let mut response = format!(
+        "HTTP/1.1 {status_code} {reason}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        acknowledgement.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(&acknowledgement);
+    response
+}
+
 #[test]
 fn loopback_action_uses_only_the_declared_ephemeral_receiver() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -882,7 +912,7 @@ fn loopback_action_uses_only_the_declared_ephemeral_receiver() {
         socket.read_to_end(&mut request).unwrap();
         assert!(request.starts_with(b"POST /bluefire/v1/artifact HTTP/1.1\r\n"));
         socket
-            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .write_all(&loopback_acknowledgement(&request, 200, "OK", false, None))
             .unwrap();
         request
     });
@@ -903,13 +933,102 @@ fn loopback_action_uses_only_the_declared_ephemeral_receiver() {
     seal_manifest(&mut request);
     let result = runner().execute(request, profile);
     assert_eq!(result.status, TaskStatus::Success);
-    assert_eq!(result.output["http_status"], 204);
+    assert_eq!(result.output["http_status"], 200);
+    assert_eq!(result.output["receiver_acknowledged"], true);
+    assert_eq!(result.output["receiver_stored"], false);
     assert_eq!(
         result.evidence[0].references[0],
         created.evidence[0].evidence_id
     );
     let received = receiver.join().unwrap();
     assert!(received.ends_with(b"bluefire-fixture-v1\nkind=telemetry-seed\n"));
+}
+
+#[test]
+fn loopback_action_rejects_arbitrary_2xx_without_digest_bound_json() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let receiver = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        socket.read_to_end(&mut request).unwrap();
+        socket
+            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .unwrap();
+    });
+
+    let root = TempDir::new().unwrap();
+    let destination = NetworkDestination {
+        host: "127.0.0.1".to_string(),
+        port,
+    };
+    let profile = profile(&root, vec![destination.clone()]);
+    assert_eq!(
+        create_fixture(&root, &profile, "network-unbound.txt").status,
+        TaskStatus::Success
+    );
+    let result = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.network.loopback.v1",
+            json!({"artifact": "network-unbound.txt", "destination": destination}),
+        ),
+        profile,
+    );
+
+    assert_eq!(result.status, TaskStatus::Failed);
+    assert_eq!(result.output["http_status"], 204);
+    assert_eq!(result.output["receiver_acknowledged"], false);
+    assert_eq!(result.error.unwrap().code, "loopback_response_failed");
+    receiver.join().unwrap();
+}
+
+#[test]
+fn loopback_action_rejects_acknowledgement_for_other_content() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let receiver = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        socket.read_to_end(&mut request).unwrap();
+        socket
+            .write_all(&loopback_acknowledgement(
+                &request,
+                200,
+                "OK",
+                false,
+                Some("0000000000000000000000000000000000000000000000000000000000000000"),
+            ))
+            .unwrap();
+    });
+
+    let root = TempDir::new().unwrap();
+    let destination = NetworkDestination {
+        host: "127.0.0.1".to_string(),
+        port,
+    };
+    let profile = profile(&root, vec![destination.clone()]);
+    assert_eq!(
+        create_fixture(&root, &profile, "network-wrong-ack.txt").status,
+        TaskStatus::Success
+    );
+    let result = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.network.loopback.v1",
+            json!({"artifact": "network-wrong-ack.txt", "destination": destination}),
+        ),
+        profile,
+    );
+
+    assert_eq!(result.status, TaskStatus::Failed);
+    assert_eq!(result.output["receiver_acknowledged"], false);
+    assert!(result
+        .error
+        .unwrap()
+        .message
+        .contains("digest did not match"));
+    receiver.join().unwrap();
 }
 
 #[test]
@@ -961,7 +1080,9 @@ fn disposable_vertical_slice_runs_real_steps_and_cleans_in_reverse_order() {
         let mut request = Vec::new();
         socket.read_to_end(&mut request).unwrap();
         socket
-            .write_all(b"HTTP/1.1 201 Created\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .write_all(&loopback_acknowledgement(
+                &request, 201, "Created", true, None,
+            ))
             .unwrap();
         request
     });
@@ -1043,6 +1164,8 @@ fn disposable_vertical_slice_runs_real_steps_and_cleans_in_reverse_order() {
     );
     assert_eq!(delivered.status, TaskStatus::Success);
     assert_eq!(delivered.output["http_status"], 201);
+    assert_eq!(delivered.output["receiver_acknowledged"], true);
+    assert_eq!(delivered.output["receiver_stored"], true);
     assert!(receiver
         .join()
         .unwrap()

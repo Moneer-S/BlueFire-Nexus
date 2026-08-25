@@ -21,16 +21,21 @@ from bluefire.job_runtime import JobState
 from bluefire.orchestrator import Orchestrator
 from bluefire.registry import BehaviorRegistry, load_builtin_registry
 from bluefire.run_store import RunStore
+from bluefire.runner_contracts import current_platform
 from bluefire.service import BlueFireService
 from bluefire.simulation import SimulationError, SimulationRegistry
 from bluefire.util import canonical_json_bytes
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTE_ACTIONS = {
+    "endpoint.discovery.processes.v1",
+    "endpoint.discovery.system.v1",
+    "sandbox.archive.tar.v1",
     "sandbox.fixture.create.v1",
     "sandbox.fixture.transform.v1",
     "sandbox.discovery.list.v1",
     "sandbox.discovery.metadata.v1",
+    "sandbox.discovery.recursive.v1",
     "sandbox.collection.stage.v1",
     "sandbox.network.loopback.v1",
     "sandbox.export.local.v1",
@@ -45,7 +50,19 @@ class ProposalLifecycleRunner:
     def inventory(self) -> Mapping[str, Any]:
         return {
             "schema_version": "bluefire.runner-inventory.v1",
-            "actions": [{"action_id": action_id} for action_id in sorted(EXECUTE_ACTIONS)],
+            "runner_id": "bluefire-proposal-test-runner.v1",
+            "runner_version": "test-1.0.0",
+            "action_sdk_version": "bluefire.runner-action-sdk.v1",
+            "receipt_protocol": "bluefire.runner-receipt-wal.v2",
+            "platform": current_platform(),
+            "actions": [
+                {
+                    "action_id": action_id,
+                    "action_version": "1.0.0",
+                    "readiness": "ready",
+                }
+                for action_id in sorted(EXECUTE_ACTIONS)
+            ],
         }
 
     def execute(

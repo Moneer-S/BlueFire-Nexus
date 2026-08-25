@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import stat
 import threading
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -59,11 +61,20 @@ from .job_runtime import (
 )
 from .orchestrator import OrchestrationError, Orchestrator
 from .plugins import PluginManifest, PluginManifestError, PluginTrust
-from .product_store import ProductStore, ProductStoreError
+from .product_store import ProductStore, ProductStoreError, ResearchSourceIntegrityError
 from .registry import BehaviorRegistry, RegistryError, load_builtin_registry
 from .replay import ReplayError, ReplayRequest, prepare_replay
+from .research import ResearchSource, ResearchSourceError
 from .run_store import RunStore, RunStoreError
-from .runner_client import RunnerTransport, RunnerTransportError, SubprocessRustRunner
+from .runner_client import (
+    InventoryBoundRunner,
+    RunnerReadinessError,
+    RunnerTransport,
+    RunnerTransportError,
+    SubprocessRustRunner,
+    canonical_runner_inventory,
+    runner_transport_identity,
+)
 from .runner_contracts import RunnerContractError, resolve_environment_path
 from .util import content_hash, file_hash
 
@@ -93,6 +104,8 @@ _RUNNER_PROBE_OUTPUT_LIMIT_BYTES = 256 * 1024
 _RUNNER_PROBE_MAX_ACTIONS = 512
 _RUNNER_PROBE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]*$")
 _STEP_IMPLEMENTATION_ID = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_EXECUTE_READINESS_KEY = "_execute_readiness"
+_EXECUTE_READINESS_MAX_AGE_SECONDS = 15 * 60
 
 
 def _default_ai_provider_factory(config: AIConfig, provider_id: str) -> AIProvider:
@@ -212,7 +225,15 @@ class BlueFireService:
 
     def scenarios(self) -> Mapping[str, Any]:
         scenarios = []
-        for scenario in self._scenarios:
+        saved_scenarios = sorted(
+            self.product_store.list_scenarios(),
+            key=lambda item: str(item.get("scenario_id", "")),
+        )
+        for saved in saved_scenarios:
+            document = saved.get("document")
+            if not isinstance(document, Mapping):
+                raise ProductStoreError("saved scenario document is invalid")
+            scenario = ScenarioDefinition.from_mapping(document)
             self.registry.validate_scenario(scenario)
             scenarios.append(scenario.to_dict())
         return {"schema_version": "bluefire.scenario-list.v1", "scenarios": scenarios}
@@ -297,8 +318,43 @@ class BlueFireService:
                 "setting_request_invalid",
                 "A setting update requires only value.",
             )
+        if stable_key != "ui.preferences":
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "setting_key_unsupported",
+                "Only the versioned ui.preferences setting is supported.",
+            )
+        value = request["value"]
+        if not isinstance(value, Mapping) or set(value) != {
+            "schema_version",
+            "theme",
+            "effect_mode",
+            "autonomy",
+        }:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "setting_value_invalid",
+                "UI preferences require only schema_version, theme, effect_mode, and autonomy.",
+            )
+        if (
+            value.get("schema_version") != "bluefire.ui-preferences.v1"
+            or value.get("theme") not in {"dark", "light", "system"}
+            or value.get("effect_mode") not in {"simulate", "execute"}
+            or value.get("autonomy") not in {"off", "assist", "auto"}
+        ):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "setting_value_invalid",
+                "UI preferences contain an unsupported schema, theme, mode, or autonomy.",
+            )
+        canonical_value = {
+            "schema_version": "bluefire.ui-preferences.v1",
+            "theme": value["theme"],
+            "effect_mode": value["effect_mode"],
+            "autonomy": value["autonomy"],
+        }
         try:
-            setting = self.product_store.set_setting(stable_key, request["value"])
+            setting = self.product_store.set_setting(stable_key, canonical_value)
         except ProductStoreError as exc:
             raise APIError(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -411,9 +467,30 @@ class BlueFireService:
         return self.detection_lab.candidate(candidate_id)
 
     def upsert_detection_hypothesis(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Create or update a candidate that has not advanced beyond hypothesis."""
+        """Create one immutable candidate definition or return its exact duplicate."""
 
         return self.detection_lab.upsert_hypothesis(request)
+
+    def clone_detection_candidate(
+        self, candidate_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Clone a candidate definition into a new hypothesis revision."""
+
+        return self.detection_lab.clone(candidate_id, request)
+
+    def tune_detection_candidate(
+        self, candidate_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Tune rule semantics into a new hypothesis revision."""
+
+        return self.detection_lab.tune(candidate_id, request)
+
+    def compare_detection_candidates(
+        self, candidate_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Compare two immutable definitions and their lifecycle evidence."""
+
+        return self.detection_lab.compare(candidate_id, request)
 
     def parse_detection_candidate(
         self, candidate_id: str, request: Mapping[str, Any]
@@ -478,7 +555,8 @@ class BlueFireService:
                 "resource_request_invalid",
                 "A resource update requires document and optional status only.",
             )
-        status = request.get("status", "ready")
+        default_status = "draft" if stable_kind == "research_source" else "ready"
+        status = request.get("status", default_status)
         if (
             not isinstance(status, str)
             or not 1 <= len(status) <= 64
@@ -495,6 +573,33 @@ class BlueFireService:
                 "resource_activation_required",
                 "Runtime resources must use the explicit activation or deactivation route.",
             )
+        document: Mapping[str, Any] = request["document"]
+        if stable_kind == "research_source":
+            try:
+                existing_source = self.product_store.get_resource(stable_kind, stable_id)
+            except ProductStoreError:
+                existing_source = None
+            if existing_source is not None and existing_source.get("document") != document:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "research_source_integrity_conflict",
+                    "The research source identity is immutable; promote the exact draft or use a new ID.",
+                    ["research source documents are immutable; " "use a new research source ID"],
+                )
+            try:
+                source = ResearchSource.from_mapping(document, "managed research source")
+                if source.id != stable_id:
+                    raise ResearchSourceError(
+                        "managed research source ID does not match its resource ID"
+                    )
+                document = source.to_dict()
+            except ResearchSourceError as exc:
+                raise APIError(
+                    HTTPStatus.UNPROCESSABLE_ENTITY,
+                    "research_source_invalid",
+                    "The pinned research source metadata was rejected.",
+                    [str(exc)],
+                ) from exc
         try:
             if stable_kind in _RUNTIME_RESOURCE_KINDS:
                 with self._runtime_configuration_lock:
@@ -516,16 +621,23 @@ class BlueFireService:
                     resource = self.product_store.save_resource(
                         stable_kind,
                         stable_id,
-                        request["document"],
+                        document,
                         status=persisted_status,
                     )
             else:
                 resource = self.product_store.save_resource(
                     stable_kind,
                     stable_id,
-                    request["document"],
+                    document,
                     status=status,
                 )
+        except ResearchSourceIntegrityError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "research_source_integrity_conflict",
+                "The research source identity is immutable; promote the exact draft or use a new ID.",
+                [str(exc)],
+            ) from exc
         except ProductStoreError as exc:
             raise APIError(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
@@ -746,13 +858,26 @@ class BlueFireService:
         approval = self._approval(request, required=False)
         runner: RunnerTransport | None = None
         runner_problem: str | None = None
+        runner_readiness: Mapping[str, Any] | None = None
         if mode is ExecutionMode.EXECUTE:
             try:
                 if profile is None:
                     raise RunnerContractError("an Execute runner profile must be selected")
-                runner, _sandbox = self.runner_factory(profile)
-            except (RunnerContractError, RunnerTransportError, OSError) as exc:
+                expected_readiness = request.get(_EXECUTE_READINESS_KEY)
+                if expected_readiness is not None and not isinstance(expected_readiness, Mapping):
+                    raise RunnerReadinessError(
+                        "Execute readiness binding is invalid; submit a new Execute request."
+                    )
+                runner, _sandbox, runner_readiness = self._execute_readiness_boundary(
+                    profile,
+                    expected=expected_readiness,
+                )
+            except RunnerReadinessError as exc:
                 runner_problem = str(exc)
+            except (RunnerContractError, RunnerTransportError, OSError, TypeError, ValueError):
+                runner_problem = (
+                    "Runner readiness could not be verified; check the selected profile and retry."
+                )
         orchestrator = Orchestrator(
             self.registry,
             self.store,
@@ -809,7 +934,14 @@ class BlueFireService:
             "policy": profile.cleanup_policy.value if profile else "simulate_only",
             "action_id": "sandbox.cleanup.v1",
         }
-        if mode is ExecutionMode.EXECUTE and profile is not None and not scope_problems:
+        report["runner_readiness"] = runner_readiness
+        if (
+            mode is ExecutionMode.EXECUTE
+            and profile is not None
+            and not scope_problems
+            and runner_problem is None
+            and runner_readiness is not None
+        ):
             target_scope = self._target_scope(request)
             report["approval_binding"] = execution_approval_binding(
                 registry=self.registry,
@@ -819,6 +951,7 @@ class BlueFireService:
                 target_scope=target_scope,
                 autonomy=autonomy,
                 ai_provider=provider,
+                runner_readiness=runner_readiness,
             )
             report["approval_envelope"] = execution_approval_envelope(
                 registry=self.registry,
@@ -856,6 +989,7 @@ class BlueFireService:
             )
         runner: RunnerTransport | None = None
         sandbox: Path | None = None
+        runner_readiness: Mapping[str, Any] | None = None
         execution_approval_id: str | None = None
         execution_workspace: Path | None = None
         if mode is ExecutionMode.EXECUTE:
@@ -866,12 +1000,25 @@ class BlueFireService:
                     "Execute requires an explicit runner profile.",
                 )
             try:
-                runner, sandbox = self.runner_factory(profile)
+                expected_readiness = request.get(_EXECUTE_READINESS_KEY)
+                if approval_record is not None and not isinstance(expected_readiness, Mapping):
+                    raise RunnerReadinessError(
+                        "Execute approval lacks runner readiness; submit a new Execute request."
+                    )
+                if expected_readiness is not None and not isinstance(expected_readiness, Mapping):
+                    raise RunnerReadinessError(
+                        "Execute readiness binding is invalid; submit a new Execute request."
+                    )
+                runner, sandbox, runner_readiness = self._execute_readiness_boundary(
+                    profile,
+                    expected=expected_readiness,
+                    for_dispatch=True,
+                )
             except (RunnerContractError, RunnerTransportError, OSError) as exc:
                 raise APIError(
                     HTTPStatus.CONFLICT,
                     "runner_unavailable",
-                    "The selected Rust runner is unavailable.",
+                    "The selected runner is not ready for Execute.",
                     [str(exc)],
                 ) from exc
         orchestrator = Orchestrator(
@@ -903,6 +1050,7 @@ class BlueFireService:
                     ai_provider=provider,
                     approved_by=approved_by,
                     orchestrator=orchestrator,
+                    runner_readiness=runner_readiness,
                     action_implementations=resolved_action_implementations,
                 )
                 if mode is ExecutionMode.EXECUTE and profile is not None and approved_by is not None
@@ -925,6 +1073,7 @@ class BlueFireService:
                     target_scope=self._target_scope(request),
                     autonomy=autonomy,
                     ai_provider=provider,
+                    runner_readiness=runner_readiness,
                     action_implementations=resolved_action_implementations,
                 )
             tracked_checkpoint = (
@@ -945,6 +1094,7 @@ class BlueFireService:
                 autonomy=autonomy,
                 ai_provider=provider,
                 action_implementations=resolved_action_implementations,
+                runner_readiness=runner_readiness,
                 checkpoint=tracked_checkpoint,
             )
             if execution_approval_id is not None and execution_workspace is not None:
@@ -962,6 +1112,12 @@ class BlueFireService:
             RunnerContractError,
             RunnerTransportError,
         ) as exc:
+            if execution_approval_id is not None and execution_workspace is not None:
+                self._settle_pre_dispatch_refusal(
+                    execution_approval_id,
+                    execution_workspace,
+                    expected_profile_id=profile.id if profile is not None else None,
+                )
             raise APIError(
                 HTTPStatus.CONFLICT,
                 "run_refused",
@@ -978,6 +1134,9 @@ class BlueFireService:
         # immutable job request is reviewed and approved through ``approve_job``.
         stored_request.pop("approval", None)
         stored_request.pop("approval_request_id", None)
+        # This is service-produced, sanitized approval context. A caller cannot
+        # nominate its own runner snapshot for a new review.
+        stored_request.pop(_EXECUTE_READINESS_KEY, None)
         approval_request: Mapping[str, Any] | None = None
         preflight: Mapping[str, Any] | None = None
         if mode is ExecutionMode.EXECUTE:
@@ -988,13 +1147,19 @@ class BlueFireService:
                 if item != "Explicit operator approval is required."
             ]
             binding = preflight.get("approval_binding")
-            if problems or not isinstance(binding, Mapping):
+            runner_readiness = preflight.get("runner_readiness")
+            if (
+                problems
+                or not isinstance(binding, Mapping)
+                or not isinstance(runner_readiness, Mapping)
+            ):
                 raise APIError(
                     HTTPStatus.CONFLICT,
                     "preflight_refused",
                     "The Execute request is not ready for operator review.",
                     problems or ["The exact approval binding could not be created."],
                 )
+            stored_request[_EXECUTE_READINESS_KEY] = dict(runner_readiness)
             profile = self._profile(stored_request.get("runner_profile_id"), mode)
             if profile is None:
                 raise APIError(
@@ -1407,7 +1572,10 @@ class BlueFireService:
             ]
             binding = preflight.get("approval_binding")
             if problems or not isinstance(binding, Mapping):
-                raise ProductStoreError("the reviewed request no longer passes preflight")
+                detail = "; ".join(problems[:8]) or "approval binding is unavailable"
+                raise ProductStoreError(
+                    "the reviewed request no longer passes Execute readiness: " + detail
+                )
             profile = self._profile(
                 stored_request.get("runner_profile_id"),
                 ExecutionMode.EXECUTE,
@@ -1442,7 +1610,15 @@ class BlueFireService:
                 expected_target_scope_digest=str(binding["target_scope_digest"]),
             )
             resumed = self.job_controller.approve(job_id, approval_ref=approval_id)
-        except (ProductStoreError, JobNotManaged, JobStateError, JobRuntimeError) as exc:
+        except (
+            ProductStoreError,
+            JobNotManaged,
+            JobStateError,
+            JobRuntimeError,
+            OrchestrationError,
+            RunnerContractError,
+            RunnerTransportError,
+        ) as exc:
             raise APIError(
                 HTTPStatus.CONFLICT,
                 "approval_refused",
@@ -1877,6 +2053,7 @@ class BlueFireService:
         if scope_problems:
             raise OrchestrationError("; ".join(scope_problems))
         runner: RunnerTransport | None = None
+        runner_readiness: Mapping[str, Any] | None = None
         if mode is ExecutionMode.EXECUTE:
             if profile is None:
                 raise OrchestrationError("Execute proposal continuation requires a profile")
@@ -1887,7 +2064,19 @@ class BlueFireService:
                 raise OrchestrationError(
                     "selected action is no longer enabled by the exact Execute profile"
                 )
-            runner, _sandbox = self.runner_factory(profile)
+            expected_readiness: Mapping[str, Any] | None = None
+            stored_resolution = review.get("resolution")
+            if isinstance(stored_resolution, Mapping):
+                stored_continuation = stored_resolution.get("continuation")
+                if isinstance(stored_continuation, Mapping):
+                    raw_readiness = stored_continuation.get("runner_readiness")
+                    if raw_readiness is not None and not isinstance(raw_readiness, Mapping):
+                        raise ProductStoreError("proposal continuation runner readiness is invalid")
+                    expected_readiness = raw_readiness
+            runner, _sandbox, runner_readiness = self._execute_readiness_boundary(
+                profile,
+                expected=expected_readiness,
+            )
         orchestrator = Orchestrator(
             self.registry,
             self.store,
@@ -1963,6 +2152,7 @@ class BlueFireService:
                 autonomy=prepared.autonomy,
                 ai_provider=provider,
                 context=approval_context,
+                runner_readiness=runner_readiness,
             )
             if mode is ExecutionMode.EXECUTE and profile is not None
             else None
@@ -1983,6 +2173,7 @@ class BlueFireService:
             "autonomy": prepared.autonomy.value,
             "ai_provider_id": provider_id,
             "replay": replay_record,
+            "runner_readiness": runner_readiness,
             "execute_approval_binding_digest": (
                 content_hash(binding) if binding is not None else None
             ),
@@ -1995,6 +2186,7 @@ class BlueFireService:
             "target_scope": target_scope,
             "replay": replay_record,
             "approval_context": approval_context,
+            "runner_readiness": runner_readiness,
             "approval_binding": binding,
             "action_implementations": resolved_actions,
             "audit": audit,
@@ -2022,6 +2214,7 @@ class BlueFireService:
         target_scope = prepared_context["target_scope"]
         replay_record = prepared_context["replay"]
         approval_context = prepared_context["approval_context"]
+        runner_readiness = prepared_context["runner_readiness"]
         action_implementations = prepared_context["action_implementations"]
         if not isinstance(action_implementations, Mapping) or not all(
             isinstance(step_id, str) and isinstance(action_id, str)
@@ -2045,7 +2238,13 @@ class BlueFireService:
             if approval_record.get("status") != "consumed":
                 raise ProductStoreError("fresh Execute approval was not consumed")
             approval_id = approval_id_value
-            runner, sandbox = self.runner_factory(profile)
+            if not isinstance(runner_readiness, Mapping):
+                raise ProductStoreError("fresh Execute runner readiness is unavailable")
+            runner, sandbox, runner_readiness = self._execute_readiness_boundary(
+                profile,
+                expected=runner_readiness,
+                for_dispatch=True,
+            )
             sandbox = self._isolated_execution_sandbox(sandbox, approval_record)
             self._bind_execution_workspace(
                 approval_record=approval_record,
@@ -2057,6 +2256,7 @@ class BlueFireService:
                 autonomy=prepared.autonomy,
                 ai_provider=provider,
                 approval_context=approval_context,
+                runner_readiness=runner_readiness,
                 action_implementations=action_implementations,
             )
         orchestrator = Orchestrator(
@@ -2082,6 +2282,7 @@ class BlueFireService:
             resume_from_step_id=prepared.resume_from_step_id,
             seed_artifacts=prepared.seed_artifacts,
             action_implementations=action_implementations,
+            runner_readiness=(runner_readiness if isinstance(runner_readiness, Mapping) else None),
             checkpoint=(
                 self._execution_checkpoint(approval_id, context.checkpoint)
                 if approval_id is not None
@@ -2144,6 +2345,9 @@ class BlueFireService:
                 approval_context = context.get("approval_context")
                 if approval_context is not None and not isinstance(approval_context, Mapping):
                     raise ProductStoreError("execution approval context is invalid")
+                runner_readiness = context.get("runner_readiness")
+                if runner_readiness is not None and not isinstance(runner_readiness, Mapping):
+                    raise ProductStoreError("execution runner readiness is invalid")
                 raw_action_implementations = context.get("action_implementations", {})
                 if not isinstance(raw_action_implementations, Mapping) or not all(
                     isinstance(step_id, str) and isinstance(action_id, str)
@@ -2274,6 +2478,7 @@ class BlueFireService:
                     autonomy=plan.autonomy,
                     ai_provider=plan.ai_provider,
                     context=approval_context,
+                    runner_readiness=runner_readiness,
                 )
                 renewed = self.product_store.renew_claimed_approval_for_cleanup(
                     approval_id,
@@ -2301,6 +2506,7 @@ class BlueFireService:
                             autonomy=autonomy,
                             ai_provider=provider,
                             approval_context=approval_context,
+                            runner_readiness=runner_readiness,
                         )
                     )
                     remaining = self._workspace_receipt_ids(
@@ -2426,6 +2632,7 @@ class BlueFireService:
         autonomy: AutonomyLevel,
         ai_provider: Mapping[str, Any],
         approval_context: Mapping[str, Any] | None = None,
+        runner_readiness: Mapping[str, Any] | None = None,
         action_implementations: Mapping[str, str] | None = None,
     ) -> Mapping[str, Any]:
         approval_id = approval_record.get("approval_id")
@@ -2444,6 +2651,9 @@ class BlueFireService:
                 "ai_provider": dict(ai_provider),
                 "approval_context": (
                     dict(approval_context) if approval_context is not None else None
+                ),
+                "runner_readiness": (
+                    dict(runner_readiness) if runner_readiness is not None else None
                 ),
                 "action_implementations": dict(action_implementations or {}),
             },
@@ -2495,8 +2705,41 @@ class BlueFireService:
             outcome=outcome,
         )
 
+    def _settle_pre_dispatch_refusal(
+        self,
+        approval_id: str,
+        workspace: Path,
+        *,
+        expected_profile_id: str | None,
+    ) -> None:
+        """Settle a claimed approval only when no run or receipt was produced."""
+
+        try:
+            if self._find_run_for_approval(approval_id) is not None:
+                return
+            if self._workspace_receipt_ids(
+                workspace,
+                expected_profile_id=expected_profile_id,
+            ):
+                return
+            self.product_store.transition_execution_workspace(
+                approval_id,
+                "not_required",
+                outcome={
+                    "schema_version": "bluefire.execution-settlement.v1",
+                    "status": "pre_dispatch_refused",
+                    "remaining_receipt_count": 0,
+                },
+            )
+        except (ProductStoreError, RunStoreError, RunnerContractError):
+            # Startup recovery remains authoritative if settlement cannot be
+            # proven without masking the original fail-closed refusal.
+            return
+
     @staticmethod
     def _runner_recovery_identity(runner: RunnerTransport) -> Mapping[str, Any]:
+        if isinstance(runner, InventoryBoundRunner):
+            return dict(runner.recovery_identity)
         identity: dict[str, Any] = {
             "schema_version": "bluefire.runner-recovery-identity.v1",
             "transport": f"{type(runner).__module__}.{type(runner).__qualname__}",
@@ -2764,10 +3007,14 @@ class BlueFireService:
                 raise ReplayError("; ".join(scope_problems))
             runner: RunnerTransport | None = None
             sandbox: Path | None = None
+            runner_readiness: Mapping[str, Any] | None = None
             if mode is ExecutionMode.EXECUTE:
                 if profile is None:
                     raise ReplayError("Execute replay requires an explicit runner profile")
-                runner, sandbox = self.runner_factory(profile)
+                runner, sandbox, runner_readiness = self._execute_readiness_boundary(
+                    profile,
+                    for_dispatch=True,
+                )
             orchestrator = Orchestrator(
                 self.registry,
                 self.store,
@@ -2809,6 +3056,7 @@ class BlueFireService:
                         "replay": replay_record,
                         "resume_from_step_id": prepared.resume_from_step_id,
                     },
+                    runner_readiness=runner_readiness,
                     action_implementations=resolved_replay_actions,
                 )
                 if mode is ExecutionMode.EXECUTE and profile is not None and approved_by is not None
@@ -2835,6 +3083,7 @@ class BlueFireService:
                     autonomy=autonomy,
                     ai_provider=provider,
                     approval_context=replay_approval_context,
+                    runner_readiness=runner_readiness,
                     action_implementations=resolved_replay_actions,
                 )
             else:
@@ -2856,6 +3105,7 @@ class BlueFireService:
                 resume_from_step_id=prepared.resume_from_step_id,
                 seed_artifacts=prepared.seed_artifacts,
                 action_implementations=resolved_replay_actions,
+                runner_readiness=runner_readiness,
                 checkpoint=(
                     self._execution_checkpoint(replay_approval_id, None)
                     if replay_approval_id is not None
@@ -2918,6 +3168,7 @@ class BlueFireService:
         approved_by: str,
         orchestrator: Orchestrator,
         context: Mapping[str, Any] | None = None,
+        runner_readiness: Mapping[str, Any] | None = None,
         action_implementations: Mapping[str, str] | None = None,
     ) -> Mapping[str, Any]:
         """Persist and consume a one-time approval bound to the reviewed envelope."""
@@ -2942,6 +3193,7 @@ class BlueFireService:
             autonomy=autonomy,
             ai_provider=ai_provider,
             context=context,
+            runner_readiness=runner_readiness,
         )
         intent_digest = content_hash(binding)
         expires_at = self._approval_review_expires_at()
@@ -3019,7 +3271,7 @@ class BlueFireService:
     def _environment_runner(self, profile: RunnerProfile) -> tuple[RunnerTransport, Path]:
         binary = resolve_environment_path(profile.runner_binary, must_exist=True)
         sandbox = resolve_environment_path(profile.sandbox_root, must_exist=False)
-        transport_root = self.store.root / ".runner-requests"
+        transport_root = self.store.root
         runner = SubprocessRustRunner(
             binary,
             transport_root,
@@ -3035,10 +3287,276 @@ class BlueFireService:
         binary = resolve_environment_path(profile.runner_binary, must_exist=True)
         return SubprocessRustRunner(
             binary,
-            self.store.root / ".runner-probes",
+            self.store.root,
             timeout_seconds=_RUNNER_PROBE_TIMEOUT_SECONDS,
             output_limit_bytes=_RUNNER_PROBE_OUTPUT_LIMIT_BYTES,
         )
+
+    def _execute_readiness_boundary(
+        self,
+        profile: RunnerProfile,
+        *,
+        expected: Mapping[str, Any] | None = None,
+        for_dispatch: bool = False,
+    ) -> tuple[RunnerTransport, Path, Mapping[str, Any]]:
+        """Probe or bind the exact non-mutating Execute readiness envelope."""
+
+        try:
+            if for_dispatch or self._runner_factory_supplied:
+                runner, sandbox = self.runner_factory(profile)
+            else:
+                runner = self._runner_probe_transport(profile)
+                sandbox = resolve_environment_path(profile.sandbox_root, must_exist=False)
+        except (
+            AttributeError,
+            RunnerContractError,
+            RunnerTransportError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise RunnerReadinessError(
+                "Runner inventory is unavailable; verify the selected runner and retry."
+            ) from exc
+
+        sandbox_readiness = self._sandbox_root_readiness(sandbox)
+        expected_snapshot = (
+            self._validated_execute_readiness(profile, expected) if expected is not None else None
+        )
+        if expected_snapshot is not None:
+            expected_sandbox = expected_snapshot.get("sandbox")
+            if expected_sandbox != sandbox_readiness:
+                raise RunnerReadinessError(
+                    "Sandbox readiness changed after review; submit a new Execute request."
+                )
+            if for_dispatch:
+                return (
+                    InventoryBoundRunner(
+                        runner,
+                        expected_inventory_digest=str(expected_snapshot["inventory_digest"]),
+                        expected_identity_digest=str(expected_snapshot["runner_identity_digest"]),
+                        recovery_identity=dict(expected_snapshot["recovery_identity"]),
+                    ),
+                    sandbox,
+                    expected_snapshot,
+                )
+
+        try:
+            raw_inventory = runner.inventory()
+            canonical_inventory = canonical_runner_inventory(raw_inventory)
+            identity = runner_transport_identity(runner, raw_inventory)
+        except (
+            AttributeError,
+            RunnerContractError,
+            RunnerTransportError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise RunnerReadinessError(
+                "Runner inventory is unavailable or invalid; verify the selected runner and retry."
+            ) from exc
+
+        action_rows = {
+            str(item["action_id"]): item
+            for item in canonical_inventory["actions"]
+            if isinstance(item, Mapping)
+        }
+        missing = sorted(set(profile.enabled_actions) - set(action_rows))
+        if missing:
+            raise RunnerReadinessError(
+                "Runner inventory is missing enabled action(s): " + ", ".join(missing)
+            )
+        unavailable = sorted(
+            action_id
+            for action_id in profile.enabled_actions
+            if action_rows[action_id].get("readiness") != "ready"
+        )
+        if unavailable:
+            raise RunnerReadinessError(
+                "Runner enabled action(s) are not ready: " + ", ".join(unavailable)
+            )
+        platform = str(canonical_inventory["platform"])
+        if platform not in profile.platforms:
+            raise RunnerReadinessError("Runner platform is outside the selected profile allowlist.")
+
+        cleanup = action_rows.get("sandbox.cleanup.v1")
+        recovery_identity = {
+            "schema_version": "bluefire.runner-recovery-identity.v1",
+            "transport": identity["transport"],
+            "inventory_status": "cleanup_available",
+            "cleanup_action_digest": content_hash(cleanup),
+            "receipt_protocol": canonical_inventory["receipt_protocol"],
+        }
+        binary_digest = identity.get("runner_binary_digest")
+        if isinstance(binary_digest, str):
+            recovery_identity["runner_binary_digest"] = binary_digest
+        observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        snapshot: Mapping[str, Any] = {
+            "schema_version": "bluefire.execute-readiness.v1",
+            "profile_id": profile.id,
+            "runner_identity": identity,
+            "runner_identity_digest": content_hash(identity),
+            "inventory_digest": content_hash(canonical_inventory),
+            "platform": platform,
+            "enabled_actions": [
+                dict(action_rows[action_id]) for action_id in sorted(profile.enabled_actions)
+            ],
+            "sandbox": sandbox_readiness,
+            "freshness": {
+                "observed_at": observed_at,
+                "max_age_seconds": _EXECUTE_READINESS_MAX_AGE_SECONDS,
+            },
+            "recovery_identity": recovery_identity,
+        }
+        if expected_snapshot is not None:
+            for field in (
+                "profile_id",
+                "runner_identity",
+                "runner_identity_digest",
+                "inventory_digest",
+                "platform",
+                "enabled_actions",
+                "sandbox",
+                "recovery_identity",
+            ):
+                if expected_snapshot.get(field) != snapshot.get(field):
+                    raise RunnerReadinessError(
+                        "Runner readiness changed after review; submit a new Execute request."
+                    )
+            return runner, sandbox, expected_snapshot
+        if for_dispatch:
+            runner = InventoryBoundRunner(
+                runner,
+                expected_inventory_digest=str(snapshot["inventory_digest"]),
+                expected_identity_digest=str(snapshot["runner_identity_digest"]),
+                recovery_identity=recovery_identity,
+            )
+        return runner, sandbox, snapshot
+
+    @staticmethod
+    def _sandbox_root_readiness(configured_root: str | Path) -> Mapping[str, Any]:
+        """Verify sandbox containment and writability without creating anything."""
+
+        candidate = Path(configured_root).expanduser()
+        try:
+            if not candidate.is_absolute() or candidate.is_symlink() or not candidate.exists():
+                raise RunnerReadinessError(
+                    "Configured sandbox root is missing or unsafe; create a dedicated directory."
+                )
+            if not candidate.is_dir():
+                raise RunnerReadinessError(
+                    "Configured sandbox root is unusable; select a writable directory."
+                )
+            resolved = candidate.resolve(strict=True)
+            mode = stat.S_IMODE(resolved.stat().st_mode)
+            write_bits = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+            if not mode & write_bits or not os.access(resolved, os.W_OK):
+                raise RunnerReadinessError(
+                    "Configured sandbox root is unusable; grant write access and retry."
+                )
+            execution_parent = resolved / ".bluefire-executions"
+            if execution_parent.is_symlink():
+                raise RunnerReadinessError(
+                    "Configured sandbox execution parent is unsafe; remove the symbolic link."
+                )
+            if execution_parent.exists():
+                if not execution_parent.is_dir():
+                    raise RunnerReadinessError("Configured sandbox execution parent is unusable.")
+                parent_mode = stat.S_IMODE(execution_parent.stat().st_mode)
+                if not parent_mode & write_bits or not os.access(execution_parent, os.W_OK):
+                    raise RunnerReadinessError(
+                        "Configured sandbox execution parent is not writable."
+                    )
+        except RunnerReadinessError:
+            raise
+        except OSError as exc:
+            raise RunnerReadinessError(
+                "Configured sandbox root could not be verified safely."
+            ) from exc
+        return {
+            "state": "ready",
+            "root_digest": content_hash({"resolved_sandbox_root": str(resolved)}),
+            "execution_parent": "ready",
+            "checked_without_creation": True,
+        }
+
+    @staticmethod
+    def _validated_execute_readiness(
+        profile: RunnerProfile,
+        value: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        required = {
+            "schema_version",
+            "profile_id",
+            "runner_identity",
+            "runner_identity_digest",
+            "inventory_digest",
+            "platform",
+            "enabled_actions",
+            "sandbox",
+            "freshness",
+            "recovery_identity",
+        }
+        if not isinstance(value, Mapping) or set(value) != required:
+            raise RunnerReadinessError(
+                "Execute readiness binding is invalid; submit a new Execute request."
+            )
+        identity = value.get("runner_identity")
+        freshness = value.get("freshness")
+        enabled_actions = value.get("enabled_actions")
+        sandbox = value.get("sandbox")
+        recovery_identity = value.get("recovery_identity")
+        if (
+            value.get("schema_version") != "bluefire.execute-readiness.v1"
+            or value.get("profile_id") != profile.id
+            or not isinstance(identity, Mapping)
+            or value.get("runner_identity_digest") != content_hash(identity)
+            or not isinstance(value.get("inventory_digest"), str)
+            or not str(value["inventory_digest"]).startswith("sha256:")
+            or value.get("platform") not in profile.platforms
+            or not isinstance(enabled_actions, list)
+            or not isinstance(sandbox, Mapping)
+            or not isinstance(freshness, Mapping)
+            or not isinstance(recovery_identity, Mapping)
+        ):
+            raise RunnerReadinessError(
+                "Execute readiness binding is invalid; submit a new Execute request."
+            )
+        action_ids = [
+            item.get("action_id") for item in enabled_actions if isinstance(item, Mapping)
+        ]
+        if (
+            action_ids != sorted(profile.enabled_actions)
+            or len(action_ids) != len(enabled_actions)
+            or any(
+                not isinstance(item, Mapping) or item.get("readiness") != "ready"
+                for item in enabled_actions
+            )
+        ):
+            raise RunnerReadinessError(
+                "Execute readiness action binding is invalid; submit a new Execute request."
+            )
+        observed = freshness.get("observed_at")
+        maximum_age = freshness.get("max_age_seconds")
+        if not isinstance(observed, str) or maximum_age != _EXECUTE_READINESS_MAX_AGE_SECONDS:
+            raise RunnerReadinessError(
+                "Execute readiness freshness is invalid; submit a new Execute request."
+            )
+        try:
+            observed_at = datetime.fromisoformat(observed.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RunnerReadinessError(
+                "Execute readiness freshness is invalid; submit a new Execute request."
+            ) from exc
+        if observed_at.tzinfo is None:
+            raise RunnerReadinessError(
+                "Execute readiness freshness is invalid; submit a new Execute request."
+            )
+        age = (datetime.now(timezone.utc) - observed_at.astimezone(timezone.utc)).total_seconds()
+        if age < -5 or age > _EXECUTE_READINESS_MAX_AGE_SECONDS:
+            raise RunnerReadinessError("Execute readiness expired; submit a new Execute request.")
+        return dict(value)
 
     @staticmethod
     def _sanitized_runner_probe(
@@ -3139,9 +3657,11 @@ class BlueFireService:
             return ScenarioDefinition.from_mapping(value)
         scenario_id = request.get("scenario_id")
         if isinstance(scenario_id, str):
-            for candidate in self._scenarios:
-                if candidate.id == scenario_id:
-                    return candidate
+            saved = self.product_store.get_scenario(scenario_id)
+            document = saved.get("document")
+            if not isinstance(document, Mapping):
+                raise ContractError("saved scenario document is invalid")
+            return ScenarioDefinition.from_mapping(document)
         raise ContractError("request must include a scenario object or known scenario_id")
 
     def _load_default_config(self, configured: str | Path | None) -> BlueFireConfig:
