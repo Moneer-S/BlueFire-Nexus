@@ -5,6 +5,53 @@ import type { RunConfiguration, RunRecord, Scenario } from "../types";
 const scenarioKey = "bluefire.local.scenario.v1";
 const settingsKey = "bluefire.local.run-config.v1";
 
+export const UI_PREFERENCE_SCHEMA_VERSION = "bluefire.ui-preferences.v1" as const;
+export type UiTheme = "dark" | "light" | "system";
+export interface UiPreferenceDocument {
+  schema_version: typeof UI_PREFERENCE_SCHEMA_VERSION;
+  theme: UiTheme;
+  effect_mode: "simulate" | "execute";
+  autonomy: "off" | "assist" | "auto";
+}
+
+const preferenceFields = new Set(["schema_version", "theme", "effect_mode", "autonomy"]);
+
+export function buildUiPreferenceDocument(theme: UiTheme, effectMode: RunConfiguration["mode"], autonomy: RunConfiguration["autonomy"]): UiPreferenceDocument {
+  return { schema_version: UI_PREFERENCE_SCHEMA_VERSION, theme, effect_mode: effectMode, autonomy };
+}
+
+export function parseUiPreferenceDocument(value: unknown): UiPreferenceDocument {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Preferences must be a JSON object.");
+  const document = value as Record<string, unknown>;
+  const unknown = Object.keys(document).filter((field) => !preferenceFields.has(field));
+  if (unknown.length) throw new Error(`Unsupported preference fields were not applied: ${unknown.join(", ")}. Only theme, effect_mode, and autonomy are allowed.`);
+  if (document.schema_version !== UI_PREFERENCE_SCHEMA_VERSION) throw new Error(`Unsupported preference schema. Expected ${UI_PREFERENCE_SCHEMA_VERSION}.`);
+  if (document.theme !== "dark" && document.theme !== "light" && document.theme !== "system") throw new Error("Preference theme must be dark, light, or system.");
+  if (document.effect_mode !== "simulate" && document.effect_mode !== "execute") throw new Error("Preference effect_mode must be simulate or execute.");
+  if (document.autonomy !== "off" && document.autonomy !== "assist" && document.autonomy !== "auto") throw new Error("Preference autonomy must be off, assist, or auto.");
+  return buildUiPreferenceDocument(document.theme, document.effect_mode, document.autonomy);
+}
+
+export function readBrowserUiPreferences(): UiPreferenceDocument | undefined {
+  try {
+    const value = window.localStorage.getItem(settingsKey);
+    return value ? parseUiPreferenceDocument(JSON.parse(value) as unknown) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writeBrowserUiPreferences(document: UiPreferenceDocument) {
+  window.localStorage.setItem(settingsKey, JSON.stringify(buildUiPreferenceDocument(document.theme, document.effect_mode, document.autonomy)));
+}
+
+export function readBrowserTheme(): UiTheme {
+  const preferences = readBrowserUiPreferences();
+  if (preferences) return preferences.theme;
+  const theme = window.localStorage.getItem("bluefire.theme");
+  return theme === "dark" || theme === "light" || theme === "system" ? theme : "dark";
+}
+
 const defaultRunConfig: RunConfiguration = {
   mode: "simulate", autonomy: "off", provider: "deterministic-offline.v1", model: "deterministic-planner.v1", endpoint: "",
   profileId: "sandbox-simulate.v1", runnerIds: [], scopeRefs: ["sandbox.workspace"], safetyTier: "controlled",
@@ -61,8 +108,8 @@ const ProductContext = createContext<ProductState | null>(null);
 export function ProductProvider({ children }: PropsWithChildren) {
   const [scenario, setScenarioState] = useState<Scenario>(() => readLocal(scenarioKey, structuredClone(demoScenario)));
   const [runConfig, setRunConfigState] = useState<RunConfiguration>(() => {
-    const stored = readLocal<Partial<RunConfiguration> & Record<string, unknown>>(settingsKey, {});
-    return { ...normalizeRunConfig(stored), approved: false, approvedBy: "" };
+    const preferences = readBrowserUiPreferences();
+    return { ...normalizeRunConfig({ mode: preferences?.effect_mode, autonomy: preferences?.autonomy }), approved: false, approvedBy: "" };
   });
   const [activeRun, setActiveRun] = useState<RunRecord | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -77,7 +124,7 @@ export function ProductProvider({ children }: PropsWithChildren) {
     return JSON.stringify(currentIntent) === JSON.stringify(nextIntent) ? normalized : nextIntent;
   });
   useEffect(() => { window.localStorage.setItem(scenarioKey, JSON.stringify(scenario)); }, [scenario]);
-  useEffect(() => { const { approved, approvedBy, endpoint, ...persistentConfig } = runConfig; void approved; void approvedBy; void endpoint; window.localStorage.setItem(settingsKey, JSON.stringify(persistentConfig)); }, [runConfig]);
+  useEffect(() => { writeBrowserUiPreferences(buildUiPreferenceDocument(readBrowserTheme(), runConfig.mode, runConfig.autonomy)); }, [runConfig.autonomy, runConfig.mode]);
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);

@@ -132,7 +132,7 @@ export const demoScenario: Scenario = {
     { from_step: "transport", outcome: "failed", to_step: "fallback" },
     { from_step: "fallback", outcome: "success", to_step: "cleanup" },
   ],
-  provenance: { source: "BlueFire seeded demo", license: "MIT", derived: false, notes: "Synthetic and sanitized." },
+  provenance: { source: "BlueFire seeded demo", reference: "demo.endpoint.validation.v1", license: "MIT", derived: false, notes: "Synthetic and sanitized." },
   limitations: ["Demo data is synthetic and does not claim runner execution."],
   layout: {
     place_fixture: { x: 40, y: 150 }, run_fixture: { x: 330, y: 40 }, discover: { x: 330, y: 250 },

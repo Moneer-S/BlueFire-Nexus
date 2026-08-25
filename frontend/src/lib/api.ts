@@ -1,4 +1,4 @@
-import type { AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
+import type { AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
 
 const API_ROOT = "/api/v1";
@@ -188,6 +188,18 @@ export const api = {
   async detectionAction(candidateId: string, action: "parse" | "exercise-fixtures" | "exercise-observed" | "evaluate-benign" | "reject", body: Record<string, unknown>): Promise<DetectionResourceEnvelope> {
     if (DEMO_MODE) throw new ApiError("Demo candidates do not run parser, fixture, evidence, or rejection lifecycle actions.", "demo_detection_action_refused", undefined, 409);
     return request(`/detections/${encodeURIComponent(candidateId)}/${action}`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async cloneDetection(candidateId: string, body: DetectionCloneRequest): Promise<DetectionResourceEnvelope> {
+    if (DEMO_MODE) throw new ApiError("Demo candidates cannot create durable immutable revisions.", "demo_detection_revision_refused", undefined, 409);
+    return request(`/detections/${encodeURIComponent(candidateId)}/clone`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async tuneDetection(candidateId: string, body: DetectionTuneRequest): Promise<DetectionResourceEnvelope> {
+    if (DEMO_MODE) throw new ApiError("Demo candidates cannot create durable immutable revisions.", "demo_detection_revision_refused", undefined, 409);
+    return request(`/detections/${encodeURIComponent(candidateId)}/tune`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async compareDetections(baselineCandidateId: string, candidateId: string): Promise<DetectionComparisonResponse> {
+    if (DEMO_MODE) throw new ApiError("Demo candidates cannot produce durable revision comparisons.", "demo_detection_comparison_refused", undefined, 409);
+    return request(`/detections/${encodeURIComponent(baselineCandidateId)}/compare`, { method: "POST", body: JSON.stringify({ candidate_id: candidateId }) });
   },
   async runs(): Promise<{ runs: RunRecord[] }> { return DEMO_MODE ? { runs: structuredClone(demoRuns) } : request("/runs"); },
   async runDetail(runId: string): Promise<RunRecord> {

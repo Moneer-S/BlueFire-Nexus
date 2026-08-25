@@ -40,6 +40,7 @@ describe("control-plane request contracts", () => {
       target_scope: { scope_refs: ["sandbox.workspace"] },
     });
     expect(payload.scenario).toMatchObject({ id: demoScenario.id, title: demoScenario.title });
+    expect(payload.scenario.provenance).toEqual({ source: "BlueFire seeded demo", reference: demoScenario.id, license: "MIT", derived: false, notes: "Synthetic and sanitized." });
     expect(payload).not.toHaveProperty("ai_enabled");
     expect(payload).not.toHaveProperty("autonomy_level");
     expect(payload).not.toHaveProperty("provider");
@@ -153,7 +154,7 @@ describe("control-plane request contracts", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await api.settings();
-    await api.saveSetting("ui.preferences", { theme: "dark", credential_reference: { env: "OPENAI_API_KEY" } });
+    await api.saveSetting("ui.preferences", { schema_version: "bluefire.ui-preferences.v1", theme: "dark", effect_mode: "simulate", autonomy: "off" });
     await api.saveScenarioVersion({ ...demoScenario, layout: { place_fixture: { x: 10, y: 20 } } });
     await api.resources("runner-profiles");
     await api.saveResource("runner-profiles", "local.profile.v1", { mode: "simulate" }, "draft");
@@ -165,7 +166,7 @@ describe("control-plane request contracts", () => {
       "/api/v1/resources/runner-profiles",
       "/api/v1/resources/runner-profiles/local.profile.v1",
     ]);
-    expect(JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))).toEqual({ value: { theme: "dark", credential_reference: { env: "OPENAI_API_KEY" } } });
+    expect(JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body))).toEqual({ value: { schema_version: "bluefire.ui-preferences.v1", theme: "dark", effect_mode: "simulate", autonomy: "off" } });
     const savedScenario = JSON.parse(String((fetchMock.mock.calls[2]?.[1] as RequestInit).body));
     expect(savedScenario.scenario).not.toHaveProperty("layout");
     expect(JSON.parse(String((fetchMock.mock.calls[4]?.[1] as RequestInit).body))).toEqual({ document: { mode: "simulate" }, status: "draft" });
@@ -198,6 +199,9 @@ describe("control-plane request contracts", () => {
     await api.detections();
     await api.upsertDetection({ behavior_id: "sandbox.collection.stage.v1" });
     await api.detectionAction("detection-0123456789abcdef0123", "parse", {});
+    await api.cloneDetection("detection-0123456789abcdef0123", { reason: "Branch reviewed source attribution.", title: "Reviewed clone" });
+    await api.tuneDetection("detection-0123456789abcdef0123", { reason: "Narrow the staged-path match.", selection: { "path|startswith": "staged/" }, logsource: { category: "file_event", product: "generic" } });
+    await api.compareDetections("detection-0123456789abcdef0123", "detection-fedcba9876543210fedc");
 
     const paths = fetchMock.mock.calls.map(([input]) => String(input));
     expect(paths).toContain("/api/v1/ai/drafts");
@@ -208,11 +212,20 @@ describe("control-plane request contracts", () => {
     expect(paths).toContain(`/api/v1/jobs/${review.job_id}/proposals/${review.proposal_record_id}/accept`);
     expect(paths).toContain("/api/v1/detection-lab/health");
     expect(paths).toContain("/api/v1/detections/detection-0123456789abcdef0123/parse");
+    expect(paths).toContain("/api/v1/detections/detection-0123456789abcdef0123/clone");
+    expect(paths).toContain("/api/v1/detections/detection-0123456789abcdef0123/tune");
+    expect(paths).toContain("/api/v1/detections/detection-0123456789abcdef0123/compare");
     const pluginSave = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/resources/plugins/plugin.local.v1") && !(String(input).endsWith("/activate")));
     expect(JSON.parse(String((pluginSave?.[1] as RequestInit).body))).toEqual({ document: { schema_version: "bluefire.plugin.v1" } });
     const decisionCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/accept"));
     expect(JSON.parse(String((decisionCall?.[1] as RequestInit).body))).toEqual({ decided_by: "reviewer", state_digest: review.state_digest, plan_digest: review.plan_digest, proposal_digest: review.proposal_digest });
     const draftCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/ai/drafts"));
     expect(JSON.parse(String((draftCall?.[1] as RequestInit).body))).toEqual({ objective: "Validate registered graph drafting", provider_id: "deterministic-offline.v1", max_nodes: 6, max_edges: 10 });
+    const cloneCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/detections/detection-0123456789abcdef0123/clone"));
+    const tuneCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/detections/detection-0123456789abcdef0123/tune"));
+    const compareCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/detections/detection-0123456789abcdef0123/compare"));
+    expect(JSON.parse(String((cloneCall?.[1] as RequestInit).body))).toEqual({ reason: "Branch reviewed source attribution.", title: "Reviewed clone" });
+    expect(JSON.parse(String((tuneCall?.[1] as RequestInit).body))).toEqual({ reason: "Narrow the staged-path match.", selection: { "path|startswith": "staged/" }, logsource: { category: "file_event", product: "generic" } });
+    expect(JSON.parse(String((compareCall?.[1] as RequestInit).body))).toEqual({ candidate_id: "detection-fedcba9876543210fedc" });
   });
 });

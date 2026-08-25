@@ -3,6 +3,7 @@ import { ArrowRight, Bot, CheckCircle2, FlaskConical, Network, Play, ShieldAlert
 import { Link } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
 import { useProduct } from "../state/ProductContext";
+import type { RunRecord } from "../types";
 import { Badge, Button, ErrorState, formatDate, LoadingState, PageHeader, Panel, PanelHeader, Stat, sentence } from "../components/Primitives";
 
 export function OverviewPage() {
@@ -48,7 +49,11 @@ export function OverviewPage() {
     </div>
     <Panel>
       <PanelHeader eyebrow="Feedback loop" title="Recent runs" detail="Replay after a defense change, then compare canonical evidence—not screenshots." actions={<Link to="/compare"><Button size="small">Open compare</Button></Link>} />
-      {recent.length ? <div className="table-scroll"><table><thead><tr><th>Run</th><th>Mode</th><th>Objective</th><th>Created</th><th>Status</th></tr></thead><tbody>{recent.map((run) => <tr key={run.run_id}><td><code>{run.run_id}</code>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</td><td><Badge tone={run.mode === "execute" ? "warning" : "info"}>{run.mode}</Badge></td><td>{run.objective ?? run.scenario_id ?? "Untitled experiment"}</td><td>{formatDate(run.created_at)}</td><td><Badge tone={run.status === "completed" ? "success" : "neutral"} dot>{run.status}</Badge></td></tr>)}</tbody></table></div> : <div className="inline-empty"><span>No canonical runs yet.</span><Link to="/runs">Start with Simulate</Link></div>}
+      {recent.length ? <div className="table-scroll"><table><thead><tr><th>Run</th><th>Mode</th><th>Objective</th><th>Created</th><th>Status</th></tr></thead><tbody>{recent.map((run) => <tr key={run.run_id}><td><Link to={runReviewPath(run.run_id)} aria-label={`Review run ${runLabel(run)} (${shortId(run.run_id)})`}><code title={run.run_id}>{shortId(run.run_id)}</code></Link>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</td><td><Badge tone={run.mode === "execute" ? "warning" : "info"}>{sentence(run.mode)}</Badge></td><td><Link to={runReviewPath(run.run_id)}>{runLabel(run)}</Link></td><td>{formatDate(run.created_at)}</td><td><Badge tone={run.status === "completed" ? "success" : "neutral"} dot>{sentence(run.status)}</Badge></td></tr>)}</tbody></table></div> : <div className="inline-empty"><span>No canonical runs yet.</span><Link to="/getting-started">Start the guided Simulate path</Link></div>}
     </Panel>
   </div>;
 }
+
+function runReviewPath(runId: string) { return `/runs/${encodeURIComponent(runId)}`; }
+function runLabel(run: Pick<RunRecord, "objective" | "scenario_id">) { return run.objective ?? run.scenario_id ?? "Untitled experiment"; }
+function shortId(value: string) { return value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }

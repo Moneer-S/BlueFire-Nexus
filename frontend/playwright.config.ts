@@ -5,6 +5,7 @@ export default defineConfig({
   globalSetup: "./tests/global-setup.ts",
   timeout: 30_000,
   fullyParallel: true,
+  workers: process.env.BLUEFIRE_CROSS_BROWSER ? 1 : undefined,
   retries: process.env.CI ? 2 : 0,
   reporter: "list",
   use: {
@@ -14,5 +15,8 @@ export default defineConfig({
   },
   projects: [
     { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    ...(process.env.BLUEFIRE_CROSS_BROWSER
+      ? [{ name: "firefox", use: { ...devices["Desktop Firefox"] } }]
+      : []),
   ],
 });

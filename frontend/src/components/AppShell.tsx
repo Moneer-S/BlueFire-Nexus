@@ -2,7 +2,7 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity, Bot, Boxes, Braces, BookOpen, ChevronLeft, FlaskConical, GitCompareArrows, HelpCircle,
-  Home, Menu, Network, PlaySquare, Puzzle, ScrollText, Settings, ShieldCheck, SlidersHorizontal, X,
+  Home, ListChecks, Menu, Network, PlaySquare, Puzzle, ScrollText, Settings, ShieldCheck, SlidersHorizontal, X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
@@ -11,7 +11,8 @@ import { Badge, IconButton } from "./Primitives";
 
 const groups = [
   { label: "Operate", items: [
-    { to: "/", label: "Overview", icon: Home }, { to: "/scenarios", label: "Scenarios", icon: ScrollText },
+    { to: "/", label: "Overview", icon: Home }, { to: "/getting-started", label: "Getting Started", icon: ListChecks },
+    { to: "/scenarios", label: "Scenarios", icon: ScrollText },
     { to: "/builder", label: "Scenario Builder", icon: Network }, { to: "/runs", label: "Runs", icon: PlaySquare },
     { to: "/compare", label: "Compare", icon: GitCompareArrows },
   ] },
@@ -38,7 +39,11 @@ export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, retry: 1, staleTime: 60_000 });
-  useEffect(() => setMobileOpen(false), [location.pathname]);
+  useEffect(() => {
+    setMobileOpen(false);
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    document.getElementById("main-content")?.scrollTo?.({ top: 0, left: 0, behavior: "auto" });
+  }, [location.pathname]);
   const current = groups.flatMap((group) => group.items).find((item) => item.to === location.pathname)?.label ?? "BlueFire Nexus";
 
   return <Tooltip.Provider delayDuration={350}>
@@ -46,7 +51,7 @@ export function AppShell() {
       <header className="mobile-header">
         <button aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button>
         <a className="brand" href="#/"><FlameMark/><span><strong>BlueFire Nexus</strong><small>Adaptive research platform</small></span></a>
-        <span className={`service-light ${catalog.isSuccess ? "ready" : catalog.isError ? "error" : "pending"}`} aria-label={catalog.isSuccess ? "Local service connected" : catalog.isError ? "Local service unavailable" : "Connecting"} />
+        <span role="img" className={`service-light ${catalog.isSuccess ? "ready" : catalog.isError ? "error" : "pending"}`} aria-label={catalog.isSuccess ? "Local service connected" : catalog.isError ? "Local service unavailable" : "Connecting"} />
       </header>
       <div className={`mobile-scrim ${mobileOpen ? "visible" : ""}`} onClick={() => setMobileOpen(false)} aria-hidden="true" />
       <aside className={`sidebar ${mobileOpen ? "mobile-open" : ""}`}>

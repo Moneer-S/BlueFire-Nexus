@@ -239,9 +239,42 @@ export interface EvidenceRecord {
   fields?: Record<string, unknown>;
 }
 
+export interface PublicBaselineReference {
+  schema_version: "bluefire.public-baseline.v1";
+  research_source_id: string;
+  source_digest: string;
+  pin: string;
+  version: string;
+  license: string;
+  license_review: "reviewed" | "conditional" | "prohibited";
+  relationship: "imported" | "adapted" | "inspired" | "comparative";
+  use: "comparison";
+}
+
+export interface DetectionLifecycleRecord {
+  sequence?: number;
+  action?: string;
+  from_state?: string | null;
+  to_state?: string;
+  outcome?: string;
+  input_digest?: string;
+  recorded_at?: string;
+  run_id?: string | null;
+  /** Legacy compatibility for v1 or run-linked candidate rows. */
+  prior_state?: string;
+  current_state?: string;
+  timestamp?: string;
+}
+
 export interface DetectionCandidate {
+  schema_version?: "bluefire.detection-candidate.v1" | "bluefire.detection-candidate.v2" | string;
   id?: string;
   candidate_id?: string;
+  revision?: number;
+  revision_root_id?: string;
+  parent_candidate_id?: string | null;
+  revision_kind?: "origin" | "clone" | "tune" | string;
+  definition_digest?: string;
   title?: string;
   behavior_id?: string;
   state: "hypothesis" | "parsed" | "fixture_exercised" | "observed_exercised" | "benign_evaluated" | "rejected" | string;
@@ -255,13 +288,22 @@ export interface DetectionCandidate {
   validation?: Record<string, unknown>;
   rule_source?: string | null;
   parser_backend?: { name?: string; version?: string };
+  public_baselines?: PublicBaselineReference[];
+  malicious_fixture_ids?: string[];
   malicious_fixtures?: Array<Record<string, unknown>>;
+  benign_fixture_ids?: string[];
   benign_fixtures?: Array<Record<string, unknown>>;
   observed_evidence_ids?: string[];
+  known_misses?: string[];
+  false_positive_notes?: string[];
+  tuning_decisions?: string[];
+  match_count?: number;
+  benign_match_count?: number;
+  rejection_reason?: string | null;
   predicted_fields?: string[];
   observed_fields?: string[];
   field_drift?: Record<string, string[]>;
-  lifecycle_history?: Array<{ sequence?: number; action?: string; prior_state?: string; current_state?: string; outcome?: string; timestamp?: string; run_id?: string | null }>;
+  lifecycle_history?: DetectionLifecycleRecord[];
 }
 
 export interface DetectionLabHealth {
@@ -279,6 +321,99 @@ export type DetectionResource = ManagedResource<DetectionCandidate & Record<stri
 export interface DetectionResourceEnvelope {
   schema_version: "bluefire.detection-resource.v1" | string;
   candidate: DetectionResource;
+}
+
+export interface DetectionCloneRequest {
+  reason: string;
+  title?: string;
+  provenance?: Record<string, unknown>;
+  known_misses?: string[];
+  public_baselines?: PublicBaselineReference[];
+  predicted_fields?: string[];
+}
+
+export interface DetectionTuneRequest extends DetectionCloneRequest {
+  selection: Record<string, unknown>;
+  logsource?: Record<string, unknown>;
+}
+
+export interface DetectionSetDelta {
+  added: string[];
+  removed: string[];
+  unchanged: string[];
+}
+
+export interface DetectionComparisonIdentity {
+  candidate_id: string;
+  revision: number;
+  revision_kind: string;
+  state: string;
+  definition_digest: string;
+}
+
+export interface DetectionComparisonResponse {
+  schema_version: "bluefire.detection-comparison.v1" | string;
+  comparison_id: string;
+  revision_root_id: string;
+  baseline: DetectionComparisonIdentity;
+  candidate: DetectionComparisonIdentity;
+  deltas: {
+    source: {
+      changed: boolean;
+      provenance: { baseline_digest: string; candidate_digest: string; changed: boolean };
+      public_baselines: {
+        changed: boolean;
+        added: PublicBaselineReference[];
+        removed: PublicBaselineReference[];
+        modified: Array<{ research_source_id: string; baseline: PublicBaselineReference; candidate: PublicBaselineReference }>;
+      };
+    };
+    rule: {
+      changed: boolean;
+      changed_fields: string[];
+      baseline: { target_language: string; logsource_digest: string; selection_digest: string; rule_source_digest: string | null };
+      candidate: { target_language: string; logsource_digest: string; selection_digest: string; rule_source_digest: string | null };
+    };
+    fields: {
+      changed: boolean;
+      predicted: DetectionSetDelta;
+      observed: DetectionSetDelta;
+      drift: { changed: boolean; baseline: Record<string, string[]>; candidate: Record<string, string[]> };
+    };
+    lifecycle: {
+      changed: boolean;
+      baseline_state: string;
+      candidate_state: string;
+      baseline_actions: string[];
+      candidate_actions: string[];
+      baseline_history_digest: string;
+      candidate_history_digest: string;
+    };
+    fixtures: {
+      changed: boolean;
+      added_fixture_ids: string[];
+      removed_fixture_ids: string[];
+      changed_fixture_ids: string[];
+      fixture_ids: DetectionSetDelta;
+      baseline_match_count: number;
+      candidate_match_count: number;
+    };
+    observed: {
+      changed: boolean;
+      evidence_ids: DetectionSetDelta;
+      run_ids: DetectionSetDelta;
+    };
+    benign: {
+      changed: boolean;
+      added_fixture_ids: string[];
+      removed_fixture_ids: string[];
+      changed_fixture_ids: string[];
+      fixture_ids: DetectionSetDelta;
+      notes: DetectionSetDelta;
+      baseline_match_count: number;
+      candidate_match_count: number;
+    };
+  };
 }
 
 export interface RunStep {
@@ -463,13 +598,23 @@ export interface ComparisonSummary {
   profile_id?: string;
   path: string[];
   outcomes: Record<string, string>;
+  outcome_counts?: Record<string, number>;
   first_blocked_step?: string | null;
   objective_reached?: boolean;
   evidence_provenance?: Record<string, number>;
   detection_states?: Record<string, number>;
+  detection_matches?: number;
+  benign_matches?: number;
   telemetry?: string[];
   controls?: string[];
   cleanup_success?: boolean | null;
+  policy_states?: Record<string, number>;
+  autonomy?: AutonomyLevel | string;
+  ai_provider_id?: string | null;
+  ai_proposal_count?: number;
+  ai_applications?: Record<string, number>;
+  remaining_budgets?: Record<string, number>;
+  duration_ms?: number | null;
   counterfactual_steps?: string[];
 }
 
@@ -482,10 +627,19 @@ export interface ComparisonDelta {
   cleanup_changed?: boolean;
   evidence_delta?: Record<string, number>;
   detection_delta?: Record<string, number>;
+  detection_match_delta?: number;
+  benign_match_delta?: number;
+  outcome_delta?: Record<string, number>;
   telemetry_added?: string[];
   telemetry_removed?: string[];
   controls_added?: string[];
   controls_removed?: string[];
+  autonomy_changed?: boolean;
+  ai_provider_changed?: boolean;
+  ai_proposal_delta?: number;
+  duration_delta_ms?: number | null;
+  assessment?: "improved" | "regressed" | "mixed" | "no_material_change" | string;
+  signals?: string[];
 }
 
 export interface ComparisonResponse {

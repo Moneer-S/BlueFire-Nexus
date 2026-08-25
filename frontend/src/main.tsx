@@ -4,10 +4,10 @@ import { createRoot } from "react-dom/client";
 import { HashRouter } from "react-router-dom";
 import "@xyflow/react/dist/style.css";
 import App from "./App";
-import { ProductProvider } from "./state/ProductContext";
+import { ProductProvider, readBrowserTheme } from "./state/ProductContext";
 import "./styles.css";
 
-const storedTheme = window.localStorage.getItem("bluefire.theme") ?? "dark";
+const storedTheme = readBrowserTheme();
 document.documentElement.dataset.theme = storedTheme === "system"
   ? window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"
   : storedTheme;

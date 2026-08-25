@@ -93,8 +93,12 @@ def test_execute_approval_is_ephemeral_and_operator_bound() -> None:
     assert "approved: false" in context
     assert 'approvedBy: ""' in context
     assert "clearApproval" in context
-    assert "const { approved, approvedBy, endpoint, ...persistentConfig } = runConfig" in context
-    assert "JSON.stringify(persistentConfig)" in context
+    assert (
+        'const preferenceFields = new Set(["schema_version", "theme", "effect_mode", "autonomy"])'
+        in context
+    )
+    assert "const preferences = readBrowserUiPreferences()" in context
+    assert "writeBrowserUiPreferences(buildUiPreferenceDocument" in context
     assert "Explicit one-time Execute approval" in runs
     assert "onSettled: clearApproval" in runs
     assert "I approve this exact immutable" in runs
@@ -136,7 +140,9 @@ def test_management_ui_uses_durable_secret_safe_routes() -> None:
         assert route in api
     assert "api.saveScenarioVersion(scenario)" in builder
     assert 'api.saveSetting("ui.preferences"' in settings
-    assert "const { approved, approvedBy, endpoint, ...runDefaults }" in settings
+    assert "buildUiPreferenceDocument(theme, runConfig.mode, runConfig.autonomy)" in settings
+    assert "parseUiPreferenceDocument" in settings
+    assert "No authority fields were accepted" in settings
     for kind in ('"runner-profiles"', '"runners"', '"plugins"', '"research-sources"'):
         assert f"api.saveResource({kind}" in catalog
     assert "api.upsertDetection(" in detection
@@ -178,7 +184,8 @@ def test_run_ui_separates_preview_preferences_from_canonical_preflight() -> None
     runs = (SOURCE_ROOT / "pages" / "Runs.tsx").read_text(encoding="utf-8")
     for copy in (
         "Profile-owned enforcement",
-        "Local research preferences",
+        "Browser intent",
+        "Unsupported browser overrides are intentionally not shown",
         "Canonical preflight",
         "Resolved canonical plan",
         "Plan digest",

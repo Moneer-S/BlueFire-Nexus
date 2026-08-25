@@ -11,6 +11,7 @@ import {
 } from "./pages/CatalogPages";
 import { ComparePage } from "./pages/Compare";
 import { DetectionLabPage } from "./pages/DetectionLab";
+import { GettingStartedPage } from "./pages/GettingStarted";
 import { OverviewPage } from "./pages/Overview";
 import { RunsPage } from "./pages/Runs";
 import { ScenariosPage } from "./pages/Scenarios";
@@ -21,9 +22,11 @@ export default function App() {
     <Routes>
       <Route element={<AppShell />}>
         <Route index element={<OverviewPage />} />
+        <Route path="getting-started" element={<GettingStartedPage />} />
         <Route path="scenarios" element={<ScenariosPage />} />
         <Route path="builder" element={<BuilderPage />} />
         <Route path="runs" element={<RunsPage />} />
+        <Route path="runs/:runId" element={<RunsPage />} />
         <Route path="compare" element={<ComparePage />} />
         <Route path="behaviors" element={<BehaviorsPage />} />
         <Route path="runner-profiles" element={<RunnerProfilesPage />} />
