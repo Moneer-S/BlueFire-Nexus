@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@11.19.0",
   "scripts": {
-    "dev": "vite --configLoader runner --host 127.0.0.1",
+    "dev": "vite --configLoader runner --host 127.0.0.1 --mode demo",
     "dev:demo": "vite --configLoader runner --host 127.0.0.1 --mode demo",
     "build:e2e": "vite build --configLoader runner --mode demo --outDir dist",
     "build": "tsc -b && vite build --configLoader runner",

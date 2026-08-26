@@ -1,13 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::env;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
+use hmac::{Hmac, Mac};
 use serde::de::DeserializeOwned;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
+use sha2::Sha256;
 
 use crate::contract::{
     BoundedOutput, Capability, CleanupReport, ErrorRecord, ExecutionManifest, NetworkDestination,
@@ -1670,16 +1673,144 @@ struct NetworkLoopbackParams {
 
 struct NetworkLoopbackPrepared(NetworkLoopbackParams);
 
-const LOOPBACK_RECEIVER_RESULT_SCHEMA_VERSION: &str = "bluefire.loopback-receiver-result.v1";
+const LOOPBACK_RECEIVER_CHALLENGE_SCHEMA_VERSION: &str = "bluefire.loopback-receiver-challenge.v1";
+const LOOPBACK_RECEIVER_REQUEST_SCHEMA_VERSION: &str = "bluefire.loopback-receiver-request.v1";
+const LOOPBACK_RECEIVER_RESULT_SCHEMA_VERSION: &str = "bluefire.loopback-receiver-result.v2";
+const LOOPBACK_RECEIVER_CHALLENGE_PATH: &str = "/bluefire/v1/challenge";
+const LOOPBACK_RECEIVER_ARTIFACT_PATH: &str = "/bluefire/v1/artifact";
+const LOOPBACK_RECEIVER_TASK_ID_ENV: &str = "BLUEFIRE_RECEIVER_TASK_ID";
+const LOOPBACK_RECEIVER_TASK_KEY_ENV: &str = "BLUEFIRE_RECEIVER_TASK_KEY";
+const LOOPBACK_RECEIVER_CHALLENGE_DOMAIN: &[u8] = b"bluefire.loopback-receiver.challenge.v1\0";
+const LOOPBACK_RECEIVER_REQUEST_DOMAIN: &[u8] = b"bluefire.loopback-receiver.request.v1\0";
+const LOOPBACK_RECEIVER_RESPONSE_DOMAIN: &[u8] = b"bluefire.loopback-receiver.response.v1\0";
+const LOOPBACK_RECEIVER_PROTOCOL_LIMIT: usize = 32 * 1024;
+
+type HmacSha256 = Hmac<Sha256>;
+
+struct LoopbackReceiverTaskAuthentication {
+    task_id: String,
+    task_key: [u8; 32],
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoopbackReceiverChallenge {
+    schema_version: String,
+    task_id: String,
+    session_id: String,
+    nonce: String,
+    host: String,
+    port: u16,
+    sha256: String,
+    content_length: usize,
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LoopbackReceiverResult {
     schema_version: String,
     accepted: bool,
+    task_id: String,
+    session_id: String,
     bytes_received: u64,
     sha256: String,
     stored: bool,
+}
+
+struct StrictLoopbackResponse {
+    status_code: u16,
+    body: Vec<u8>,
+    authentication: String,
+}
+
+fn valid_receiver_task_id(value: &str) -> bool {
+    (1..=200).contains(&value.len())
+        && value.is_ascii()
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+        })
+}
+
+fn valid_lower_hex_32(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn receiver_task_authentication() -> Result<LoopbackReceiverTaskAuthentication, ActionFailure> {
+    let task_id = env::var_os(LOOPBACK_RECEIVER_TASK_ID_ENV);
+    let task_key = env::var_os(LOOPBACK_RECEIVER_TASK_KEY_ENV);
+    // These are one-task capabilities. Remove them as soon as this process has
+    // copied and validated both values so child processes cannot inherit them.
+    env::remove_var(LOOPBACK_RECEIVER_TASK_ID_ENV);
+    env::remove_var(LOOPBACK_RECEIVER_TASK_KEY_ENV);
+    let (task_id, task_key) = match (task_id, task_key) {
+        (Some(task_id), Some(task_key)) => match (task_id.into_string(), task_key.into_string()) {
+            (Ok(task_id), Ok(task_key)) => (task_id, task_key),
+            _ => {
+                return Err(ActionFailure::blocked(
+                    "receiver_authentication_unavailable",
+                    "managed receiver authentication is unavailable",
+                ))
+            }
+        },
+        _ => {
+            return Err(ActionFailure::blocked(
+                "receiver_authentication_unavailable",
+                "managed receiver authentication is unavailable",
+            ))
+        }
+    };
+    if !valid_receiver_task_id(&task_id) || !valid_lower_hex_32(&task_key) {
+        return Err(ActionFailure::blocked(
+            "receiver_authentication_unavailable",
+            "managed receiver authentication is unavailable",
+        ));
+    }
+    let decoded = hex::decode(task_key).map_err(|_| {
+        ActionFailure::blocked(
+            "receiver_authentication_unavailable",
+            "managed receiver authentication is unavailable",
+        )
+    })?;
+    let task_key: [u8; 32] = decoded.try_into().map_err(|_| {
+        ActionFailure::blocked(
+            "receiver_authentication_unavailable",
+            "managed receiver authentication is unavailable",
+        )
+    })?;
+    Ok(LoopbackReceiverTaskAuthentication { task_id, task_key })
+}
+
+fn receiver_authentication_value(key: &[u8; 32], domain: &[u8], payload: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC-SHA256 accepts a 32-byte key");
+    mac.update(domain);
+    mac.update(payload);
+    format!("sha256:{}", hex::encode(mac.finalize().into_bytes()))
+}
+
+fn verify_receiver_authentication(
+    key: &[u8; 32],
+    domain: &[u8],
+    payloads: &[&[u8]],
+    authentication: &str,
+) -> bool {
+    let Some(encoded) = authentication.strip_prefix("sha256:") else {
+        return false;
+    };
+    if !valid_lower_hex_32(encoded) {
+        return false;
+    }
+    let Ok(candidate) = hex::decode(encoded) else {
+        return false;
+    };
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC-SHA256 accepts a 32-byte key");
+    mac.update(domain);
+    for payload in payloads {
+        mac.update(payload);
+    }
+    mac.verify_slice(&candidate).is_ok()
 }
 
 fn remaining_deadline(started: Instant, budget: Duration) -> Result<Duration, String> {
@@ -1816,21 +1947,50 @@ fn read_socket_bounded(
 fn loopback_response_status(response: &[u8]) -> Option<u16> {
     let line_end = response.windows(2).position(|window| window == b"\r\n")?;
     let status_line = std::str::from_utf8(&response[..line_end]).ok()?;
-    let mut parts = status_line.split_whitespace();
+    let mut parts = status_line.splitn(3, ' ');
     let version = parts.next()?;
-    let status = parts.next()?.parse::<u16>().ok()?;
-    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
+    let status_text = parts.next()?;
+    let reason = parts.next()?;
+    if version != "HTTP/1.1"
+        || status_text.len() != 3
+        || !status_text.bytes().all(|byte| byte.is_ascii_digit())
+        || reason.is_empty()
+        || reason.bytes().any(|byte| byte.is_ascii_control())
+    {
         return None;
     }
-    Some(status)
+    status_text.parse::<u16>().ok()
 }
 
-fn validate_loopback_response(
+fn valid_http_header_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.is_ascii()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+fn parse_authenticated_loopback_response(
     response: &[u8],
     truncated: bool,
-    expected_sha256: &str,
-    expected_bytes: usize,
-) -> Result<LoopbackReceiverResult, String> {
+) -> Result<StrictLoopbackResponse, String> {
     if truncated {
         return Err("response exceeded the bounded output limit".to_string());
     }
@@ -1839,54 +1999,156 @@ fn validate_loopback_response(
         .position(|window| window == b"\r\n\r\n")
         .ok_or_else(|| "response did not contain a complete HTTP header".to_string())?;
     let header = std::str::from_utf8(&response[..separator])
-        .map_err(|_| "response header was not valid ASCII/UTF-8".to_string())?;
-    let body = &response[separator + 4..];
+        .map_err(|_| "response header was not valid ASCII".to_string())?;
+    let header_bytes = header.as_bytes();
+    let invalid_line_break = header_bytes.iter().enumerate().any(|(index, byte)| {
+        (*byte == b'\r' && header_bytes.get(index + 1) != Some(&b'\n'))
+            || (*byte == b'\n'
+                && index
+                    .checked_sub(1)
+                    .and_then(|prior| header_bytes.get(prior))
+                    != Some(&b'\r'))
+    });
+    if !header.is_ascii() || invalid_line_break {
+        return Err("response header was invalid".to_string());
+    }
+    let body = response[separator + 4..].to_vec();
     let status_code = loopback_response_status(response)
         .ok_or_else(|| "response status line was invalid".to_string())?;
-    if !(200..300).contains(&status_code) {
-        return Err("receiver did not return a 2xx status".to_string());
-    }
 
-    let mut content_length = None;
-    let mut content_type_seen = false;
-    let mut content_type_is_json = false;
+    let mut headers = BTreeMap::new();
     for line in header.split("\r\n").skip(1) {
+        if line.is_empty() || line.starts_with([' ', '\t']) {
+            return Err("response contained an invalid header".to_string());
+        }
         let (name, value) = line
             .split_once(':')
             .ok_or_else(|| "response contained an invalid header".to_string())?;
-        let value = value.trim();
-        if name.eq_ignore_ascii_case("content-length") {
-            if content_length.is_some() {
-                return Err("response repeated Content-Length".to_string());
-            }
-            if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err("response Content-Length was invalid".to_string());
-            }
-            content_length = Some(
-                value
-                    .parse::<usize>()
-                    .map_err(|_| "response Content-Length was invalid".to_string())?,
-            );
-        } else if name.eq_ignore_ascii_case("content-type") {
-            if content_type_seen {
-                return Err("response repeated Content-Type".to_string());
-            }
-            content_type_seen = true;
-            content_type_is_json = value.split(';').next().is_some_and(|media_type| {
-                media_type.trim().eq_ignore_ascii_case("application/json")
-            });
-        } else if name.eq_ignore_ascii_case("transfer-encoding") {
-            return Err("response transfer encoding is not supported".to_string());
+        if !valid_http_header_name(name) {
+            return Err("response contained an invalid header".to_string());
+        }
+        let name = name.to_ascii_lowercase();
+        let value = value.trim_matches(' ');
+        if value.is_empty()
+            || value
+                .bytes()
+                .any(|byte| byte.is_ascii_control() || byte == 0x7f)
+            || headers.insert(name, value.to_string()).is_some()
+        {
+            return Err("response contained an invalid header".to_string());
         }
     }
-    if !content_type_is_json {
-        return Err("response Content-Type was not application/json".to_string());
+    let expected_names = BTreeSet::from([
+        "cache-control".to_string(),
+        "connection".to_string(),
+        "content-length".to_string(),
+        "content-type".to_string(),
+        "x-bluefire-authentication".to_string(),
+        "x-content-type-options".to_string(),
+    ]);
+    if headers.keys().cloned().collect::<BTreeSet<_>>() != expected_names {
+        return Err("response header set was invalid".to_string());
     }
-    if content_length != Some(body.len()) {
+    if headers.get("content-type").map(String::as_str) != Some("application/json; charset=utf-8")
+        || headers.get("cache-control").map(String::as_str) != Some("no-store")
+        || headers.get("x-content-type-options").map(String::as_str) != Some("nosniff")
+        || headers.get("connection").map(String::as_str) != Some("close")
+    {
+        return Err("response security headers were invalid".to_string());
+    }
+    let content_length_text = headers
+        .get("content-length")
+        .ok_or_else(|| "response Content-Length was missing".to_string())?;
+    if content_length_text.is_empty()
+        || !content_length_text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit())
+        || (content_length_text.len() > 1 && content_length_text.starts_with('0'))
+    {
+        return Err("response Content-Length was invalid".to_string());
+    }
+    let content_length = content_length_text
+        .parse::<usize>()
+        .map_err(|_| "response Content-Length was invalid".to_string())?;
+    if content_length != body.len() {
         return Err("response Content-Length did not match the body".to_string());
     }
+    let authentication = headers
+        .remove("x-bluefire-authentication")
+        .ok_or_else(|| "response authentication was missing".to_string())?;
+    Ok(StrictLoopbackResponse {
+        status_code,
+        body,
+        authentication,
+    })
+}
 
-    let acknowledgement: LoopbackReceiverResult = serde_json::from_slice(body)
+fn parse_canonical_json(body: &[u8], context: &str) -> Result<Value, String> {
+    let value: Value =
+        serde_json::from_slice(body).map_err(|_| format!("{context} was not strict JSON"))?;
+    if crate::contract::canonical_json(&value).as_bytes() != body {
+        return Err(format!("{context} was not canonical JSON"));
+    }
+    Ok(value)
+}
+
+fn validate_loopback_challenge(
+    response: &[u8],
+    truncated: bool,
+    authentication: &LoopbackReceiverTaskAuthentication,
+    destination: &NetworkDestination,
+) -> Result<LoopbackReceiverChallenge, String> {
+    let response = parse_authenticated_loopback_response(response, truncated)?;
+    if response.status_code != 200 {
+        return Err("receiver challenge did not return 200".to_string());
+    }
+    let value = parse_canonical_json(&response.body, "receiver challenge")?;
+    if !verify_receiver_authentication(
+        &authentication.task_key,
+        LOOPBACK_RECEIVER_CHALLENGE_DOMAIN,
+        &[&response.body],
+        &response.authentication,
+    ) {
+        return Err("receiver challenge authentication failed".to_string());
+    }
+    let challenge: LoopbackReceiverChallenge = serde_json::from_value(value)
+        .map_err(|_| "receiver challenge schema was invalid".to_string())?;
+    if challenge.schema_version != LOOPBACK_RECEIVER_CHALLENGE_SCHEMA_VERSION
+        || challenge.task_id != authentication.task_id
+        || !valid_lower_hex_32(&challenge.session_id)
+        || !valid_lower_hex_32(&challenge.nonce)
+        || challenge.host != destination.host
+        || challenge.port != destination.port
+    {
+        return Err("receiver challenge binding did not match".to_string());
+    }
+    Ok(challenge)
+}
+
+fn validate_loopback_acknowledgement(
+    response: &[u8],
+    truncated: bool,
+    authentication: &LoopbackReceiverTaskAuthentication,
+    request_authentication: &str,
+    challenge: &LoopbackReceiverChallenge,
+    expected_sha256: &str,
+    expected_bytes: usize,
+) -> Result<LoopbackReceiverResult, String> {
+    let response = parse_authenticated_loopback_response(response, truncated)?;
+    if !matches!(response.status_code, 200 | 201) {
+        return Err("receiver did not return an authenticated success status".to_string());
+    }
+    let value = parse_canonical_json(&response.body, "receiver acknowledgement")?;
+    if !verify_receiver_authentication(
+        &authentication.task_key,
+        LOOPBACK_RECEIVER_RESPONSE_DOMAIN,
+        &[request_authentication.as_bytes(), b"\0", &response.body],
+        &response.authentication,
+    ) {
+        return Err("receiver acknowledgement authentication failed".to_string());
+    }
+
+    let acknowledgement: LoopbackReceiverResult = serde_json::from_value(value)
         .map_err(|_| "response body was not the strict receiver JSON schema".to_string())?;
     if acknowledgement.schema_version != LOOPBACK_RECEIVER_RESULT_SCHEMA_VERSION {
         return Err("receiver acknowledgement schema version did not match".to_string());
@@ -1894,13 +2156,72 @@ fn validate_loopback_response(
     if !acknowledgement.accepted {
         return Err("receiver did not acknowledge the artifact".to_string());
     }
+    if acknowledgement.task_id != authentication.task_id
+        || acknowledgement.session_id != challenge.session_id
+    {
+        return Err("receiver acknowledgement task or session did not match".to_string());
+    }
     if acknowledgement.sha256 != expected_sha256 {
         return Err("receiver acknowledgement digest did not match".to_string());
     }
     if acknowledgement.bytes_received != expected_bytes as u64 {
         return Err("receiver acknowledgement byte count did not match".to_string());
     }
+    if (response.status_code == 201) != acknowledgement.stored {
+        return Err("receiver acknowledgement storage status did not match".to_string());
+    }
     Ok(acknowledgement)
+}
+
+fn loopback_authority(destination: &NetworkDestination) -> String {
+    if destination.host.contains(':') {
+        format!("[{}]:{}", destination.host, destination.port)
+    } else {
+        format!("{}:{}", destination.host, destination.port)
+    }
+}
+
+fn exchange_loopback_request(
+    socket: SocketAddr,
+    request_header: &[u8],
+    request_body: &[u8],
+    response_limit: usize,
+    started: Instant,
+    budget: Duration,
+) -> Result<(Vec<u8>, BoundedOutput, bool), ActionFailure> {
+    let mut stream = TcpStream::connect_timeout(
+        &socket,
+        remaining_deadline(started, budget)
+            .map_err(|error| ActionFailure::timed_out("loopback_timeout", error))?,
+    )
+    .map_err(|error| {
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ) {
+            ActionFailure::timed_out("loopback_timeout", "the loopback connect timed out")
+        } else {
+            ActionFailure::failed("loopback_connect_failed", "loopback connection failed")
+        }
+    })?;
+    write_socket_with_deadline(&mut stream, request_header, started, budget)?;
+    write_socket_with_deadline(&mut stream, request_body, started, budget)?;
+    let flush_budget = remaining_deadline(started, budget)
+        .map_err(|error| ActionFailure::timed_out("loopback_timeout", error))?;
+    stream.set_write_timeout(Some(flush_budget)).map_err(|_| {
+        ActionFailure::failed(
+            "loopback_timeout_setup_failed",
+            "loopback timeout setup failed",
+        )
+    })?;
+    stream.flush().map_err(|_| {
+        ActionFailure::failed("loopback_write_failed", "loopback socket write failed")
+    })?;
+    remaining_deadline(started, budget)
+        .map_err(|error| ActionFailure::timed_out("loopback_timeout", error))?;
+    let _ = stream.shutdown(Shutdown::Write);
+    read_socket_bounded(&mut stream, response_limit, started, budget)
+        .map_err(|_| ActionFailure::failed("loopback_read_failed", "loopback response failed"))
 }
 
 impl PreparedAction for NetworkLoopbackPrepared {
@@ -1915,6 +2236,10 @@ impl PreparedAction for NetworkLoopbackPrepared {
         // connecting a socket. A refused destination has no network effect.
         let ip = ensure_network_authorized(context.manifest, context.profile, &self.0.destination)
             .map_err(|error| ActionFailure::blocked("network_scope_blocked", error))?;
+        // The transport/watchdog supplies this exact pair through a scrubbed
+        // child environment. Missing, partial, malformed, or mismatched
+        // material blocks the action before the first connection attempt.
+        let receiver_authentication = receiver_task_authentication()?;
         let artifact_path = context
             .root
             .resolve_existing(&artifact)
@@ -1923,57 +2248,94 @@ impl PreparedAction for NetworkLoopbackPrepared {
             .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
         let body_sha256 = crate::contract::sha256_hex(&body);
         let socket = SocketAddr::new(ip, self.0.destination.port);
-        let mut stream = TcpStream::connect_timeout(
-            &socket,
-            remaining_deadline(started, budget)
-                .map_err(|error| ActionFailure::timed_out("loopback_timeout", error))?,
-        )
-        .map_err(|error| {
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-            ) {
-                ActionFailure::timed_out("loopback_timeout", error.to_string())
-            } else {
-                ActionFailure::failed("loopback_connect_failed", error.to_string())
-            }
-        })?;
-        let request = format!(
-            "POST /bluefire/v1/artifact HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/octet-stream\r\nX-BlueFire-SHA256: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            self.0.destination.host,
-            self.0.destination.port,
-            body_sha256,
+        let authority = loopback_authority(&self.0.destination);
+        let response_limit = context
+            .manifest
+            .limits
+            .max_stdout_bytes
+            .min(LOOPBACK_RECEIVER_PROTOCOL_LIMIT);
+
+        let challenge_request = format!(
+            "GET {LOOPBACK_RECEIVER_CHALLENGE_PATH} HTTP/1.1\r\nHost: {authority}\r\nX-BlueFire-Task-ID: {}\r\nX-BlueFire-SHA256: {body_sha256}\r\nX-BlueFire-Content-Length: {}\r\nConnection: close\r\n\r\n",
+            receiver_authentication.task_id,
             body.len(),
         );
-        write_socket_with_deadline(&mut stream, request.as_bytes(), started, budget)?;
-        write_socket_with_deadline(&mut stream, &body, started, budget)?;
-        let flush_budget = remaining_deadline(started, budget)
-            .map_err(|error| ActionFailure::timed_out("loopback_timeout", error))?;
-        stream
-            .set_write_timeout(Some(flush_budget))
-            .map_err(|error| {
-                ActionFailure::failed("loopback_timeout_setup_failed", error.to_string())
-            })?;
-        stream
-            .flush()
-            .map_err(|error| ActionFailure::failed("loopback_write_failed", error.to_string()))?;
-        remaining_deadline(started, budget)
-            .map_err(|error| ActionFailure::timed_out("loopback_timeout", error))?;
-        let _ = stream.shutdown(Shutdown::Write);
-        let (response_bytes, response, timed_out) = read_socket_bounded(
-            &mut stream,
-            context.manifest.limits.max_stdout_bytes,
+        let (challenge_bytes, challenge_output, challenge_timed_out) = exchange_loopback_request(
+            socket,
+            challenge_request.as_bytes(),
+            &[],
+            response_limit,
             started,
             budget,
+        )?;
+        if challenge_timed_out {
+            return Err(ActionFailure::timed_out(
+                "loopback_timeout",
+                "the authenticated receiver challenge exceeded its monotonic deadline",
+            ));
+        }
+        let challenge = validate_loopback_challenge(
+            &challenge_bytes,
+            challenge_output.truncated,
+            &receiver_authentication,
+            &self.0.destination,
         )
-        .map_err(|error| ActionFailure::failed("loopback_read_failed", error))?;
+        .map_err(|_| {
+            ActionFailure::failed(
+                "receiver_authentication_failed",
+                "the loopback receiver did not prove the expected managed session identity",
+            )
+        })?;
+        if challenge.sha256 != body_sha256 || challenge.content_length != body.len() {
+            return Err(ActionFailure::failed(
+                "receiver_authentication_failed",
+                "the loopback receiver challenge did not bind the exact artifact",
+            ));
+        }
+
+        let request_document = json!({
+            "schema_version": LOOPBACK_RECEIVER_REQUEST_SCHEMA_VERSION,
+            "method": "POST",
+            "path": LOOPBACK_RECEIVER_ARTIFACT_PATH,
+            "task_id": receiver_authentication.task_id,
+            "session_id": challenge.session_id,
+            "nonce": challenge.nonce,
+            "host": self.0.destination.host,
+            "port": self.0.destination.port,
+            "sha256": body_sha256,
+            "content_length": body.len(),
+        });
+        let request_document = crate::contract::canonical_json(&request_document);
+        let request_authentication = receiver_authentication_value(
+            &receiver_authentication.task_key,
+            LOOPBACK_RECEIVER_REQUEST_DOMAIN,
+            request_document.as_bytes(),
+        );
+        let artifact_request = format!(
+            "POST {LOOPBACK_RECEIVER_ARTIFACT_PATH} HTTP/1.1\r\nHost: {authority}\r\nContent-Type: application/octet-stream\r\nX-BlueFire-SHA256: {body_sha256}\r\nX-BlueFire-Task-ID: {}\r\nX-BlueFire-Session-ID: {}\r\nX-BlueFire-Nonce: {}\r\nX-BlueFire-Authentication: {request_authentication}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            receiver_authentication.task_id,
+            challenge.session_id,
+            challenge.nonce,
+            body.len(),
+        );
+        let (response_bytes, response, timed_out) = exchange_loopback_request(
+            socket,
+            artifact_request.as_bytes(),
+            &body,
+            response_limit,
+            started,
+            budget,
+        )?;
         let status_code = loopback_response_status(&response_bytes);
         let acknowledgement = if timed_out {
             None
         } else {
-            Some(validate_loopback_response(
+            Some(validate_loopback_acknowledgement(
                 &response_bytes,
                 response.truncated,
+                &receiver_authentication,
+                &request_authentication,
+                &challenge,
                 &body_sha256,
                 body.len(),
             ))
@@ -2025,7 +2387,9 @@ impl PreparedAction for NetworkLoopbackPrepared {
             limitations: vec![
                 "Literal loopback IP only; DNS, redirects, and proxy environment variables are not used."
                     .to_string(),
-                "The receiver process identity and session are not authenticated; success proves only a digest-bound acknowledgement on the approved loopback host and port."
+                "Success requires an active managed enrollment, an exact per-task HMAC capability, an authenticated ephemeral receiver session, a one-time challenge, and a digest- and length-bound acknowledgement."
+                    .to_string(),
+                "This same-user loopback protocol is not remote transport and does not authorize a different host, port, task, or receiver session."
                     .to_string(),
             ],
         })

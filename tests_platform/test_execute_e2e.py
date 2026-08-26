@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import threading
@@ -10,11 +11,13 @@ import pytest
 
 from bluefire.contracts import load_scenario
 from bluefire.receiver import LoopbackArtifactReceiver, ReceiverConfig
+from bluefire.receiver_auth import derive_receiver_task_key
 from bluefire.runner_client import SubprocessRustRunner
 from bluefire.service import BlueFireService
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_ENV = "BLUEFIRE_E2E_RUNNER"
+E2E_ENROLLMENT_KEY = bytes(range(32))
 
 
 @pytest.mark.skipif(
@@ -70,6 +73,10 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
         tmp_path / "transport",
         timeout_seconds=30.0,
         output_limit_bytes=4 * 1024 * 1024,
+        receiver_task_key_factory=lambda task_id: derive_receiver_task_key(
+            E2E_ENROLLMENT_KEY,
+            task_id,
+        ),
     )
     service = BlueFireService(
         project_root=ROOT,
@@ -82,7 +89,13 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
         step.behavior_id == "sandbox.network.loopback.v1" for step in scenario.steps
     )
     receiver = (
-        LoopbackArtifactReceiver(ReceiverConfig(port=4317, max_requests=1, idle_timeout_seconds=15))
+        LoopbackArtifactReceiver(
+            ReceiverConfig(
+                authentication_key=E2E_ENROLLMENT_KEY,
+                port=4317,
+                max_requests=1,
+            )
+        )
         if needs_receiver
         else None
     )
@@ -142,11 +155,12 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
         network_step = next(
             row for row in result["steps"] if row["behavior_id"] == "sandbox.network.loopback.v1"
         )
-        assert network_step["status"] == "success"
+        assert network_step["status"] == "success", json.dumps(network_step, indent=2)
         assert receiver_result == {
             "schema_version": "bluefire.loopback-receiver-summary.v1",
             "reason": "max_requests",
-            "connections_handled": 1,
+            "connections_handled": 2,
+            "challenges_issued": 1,
             "requests_accepted": 1,
             "requests_refused": 0,
         }

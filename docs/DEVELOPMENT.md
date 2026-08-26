@@ -91,7 +91,7 @@ Playwright browser, set `BLUEFIRE_CROSS_BROWSER=1` (PowerShell:
 `$env:BLUEFIRE_CROSS_BROWSER = "1"`) before `pnpm test:e2e`; the same journeys then run in both
 browsers.
 
-`pnpm dev` serves the live API-backed development UI on loopback and proxies `/api` to `127.0.0.1:8765`. `pnpm dev:demo` uses deterministic sanitized browser data and refuses Execute. `pnpm build` replaces `bluefire/ui` with production assets.
+`pnpm dev` and `pnpm dev:demo` are the deterministic sanitized hot-reload surface and refuse Execute. They deliberately expose no live API proxy: the production one-use browser capability and session cookie are bound to the Python listener's exact origin. For live control-plane testing, run `pnpm build`, launch `bluefire ui`, and open the exact capability-bearing URL printed after bind. `pnpm build` replaces `bluefire/ui` with production assets.
 
 Before accepting UI changes, test keyboard navigation, focus/dialog behavior, loading/error/empty/refusal states, graph editing, preflight, run review, approval, replay/compare, settings import/export, axe checks, responsive layouts, and no console errors.
 

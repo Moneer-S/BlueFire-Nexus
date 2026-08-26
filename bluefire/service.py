@@ -51,6 +51,7 @@ from .config import (
 from .contracts import ContractError, ExecutionMode, ScenarioDefinition, load_scenario
 from .detection_lab import DetectionLabService
 from .job_runtime import (
+    JobCancelled,
     JobContext,
     JobNotManaged,
     JobQueueFull,
@@ -66,16 +67,18 @@ from .registry import BehaviorRegistry, RegistryError, load_builtin_registry
 from .replay import ReplayError, ReplayRequest, prepare_replay
 from .research import ResearchSource, ResearchSourceError
 from .run_store import RunStore, RunStoreError
+from .runner_bootstrap import RUNNER_ID, managed_product_root
 from .runner_client import (
     InventoryBoundRunner,
     RunnerReadinessError,
+    RunnerTaskCancelled,
     RunnerTransport,
     RunnerTransportError,
-    SubprocessRustRunner,
     canonical_runner_inventory,
     runner_transport_identity,
 )
-from .runner_contracts import RunnerContractError, resolve_environment_path
+from .runner_contracts import RunnerContractError
+from .runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError
 from .util import content_hash, file_hash
 
 RunnerFactory = Callable[[RunnerProfile], tuple[RunnerTransport, Path]]
@@ -99,8 +102,6 @@ _MANAGED_RESOURCE_KINDS = frozenset(
     }
 )
 _RUNTIME_RESOURCE_KINDS = frozenset({"model_provider", "runner_profile"})
-_RUNNER_PROBE_TIMEOUT_SECONDS = 10.0
-_RUNNER_PROBE_OUTPUT_LIMIT_BYTES = 256 * 1024
 _RUNNER_PROBE_MAX_ACTIONS = 512
 _RUNNER_PROBE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]*$")
 _STEP_IMPLEMENTATION_ID = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
@@ -129,6 +130,7 @@ class BlueFireService:
         registry: BehaviorRegistry | None = None,
         config: BlueFireConfig | None = None,
         runner_factory: RunnerFactory | None = None,
+        runner_lifecycle: ManagedRunnerLifecycle | None = None,
         ai_provider_factory: AIProviderFactory | None = None,
         ai_draft_provider_factory: AIDraftProviderFactory | None = None,
     ) -> None:
@@ -140,8 +142,8 @@ class BlueFireService:
         self.config = config or self._load_default_config(config_path)
         self.store = RunStore(runs_dir or Path.cwd() / ".bluefire-runs")
         self.recovered_runs = self.store.recover_interrupted_runs()
-        self._runner_factory_supplied = runner_factory is not None
-        self.runner_factory = runner_factory or self._environment_runner
+        self.runner_lifecycle = runner_lifecycle or ManagedRunnerLifecycle(managed_product_root())
+        self.runner_factory = runner_factory or self._managed_runner
         self.ai_provider_factory = ai_provider_factory or _default_ai_provider_factory
         self.ai_draft_provider_factory = (
             ai_draft_provider_factory or _default_ai_draft_provider_factory
@@ -584,7 +586,7 @@ class BlueFireService:
                     HTTPStatus.CONFLICT,
                     "research_source_integrity_conflict",
                     "The research source identity is immutable; promote the exact draft or use a new ID.",
-                    ["research source documents are immutable; " "use a new research source ID"],
+                    ["research source documents are immutable; use a new research source ID"],
                 )
             try:
                 source = ResearchSource.from_mapping(document, "managed research source")
@@ -820,6 +822,115 @@ class BlueFireService:
             return unavailable
         return self._sanitized_runner_probe(profile, inventory)
 
+    def runner_status(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
+        """Return path-free managed-runner state without starting or bootstrapping it."""
+
+        selected = self._runner_lifecycle_profile(profile_id)
+        try:
+            return self.runner_lifecycle.status(
+                profile_id=selected.id if selected is not None else None
+            )
+        except RunnerLifecycleError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "runner_lifecycle_unavailable",
+                "Managed runner status could not be verified.",
+                [str(exc)],
+            ) from exc
+
+    def bootstrap_runner(
+        self,
+        *,
+        profile_id: str | None = None,
+        allow_upgrade: bool = False,
+    ) -> Mapping[str, Any]:
+        """Explicitly install/verify the packaged runner and local enrollment."""
+
+        if type(allow_upgrade) is not bool:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "runner_bootstrap_invalid",
+                "Runner upgrade confirmation must be boolean.",
+            )
+        self._runner_lifecycle_profile(profile_id)
+        profiles = tuple(
+            profile for profile in self._runner_profiles() if profile.mode is ExecutionMode.EXECUTE
+        )
+        if not profiles:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "runner_profile_unavailable",
+                "No Execute runner profile is available for enrollment.",
+            )
+        try:
+            return self.runner_lifecycle.bootstrap(
+                allowed_profile_ids=tuple(profile.id for profile in profiles),
+                allow_upgrade=allow_upgrade,
+            )
+        except RunnerLifecycleError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "runner_bootstrap_refused",
+                "Managed runner bootstrap was refused.",
+                [str(exc)],
+            ) from exc
+
+    def start_runner(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
+        selected = self._runner_lifecycle_profile(profile_id)
+        try:
+            return self.runner_lifecycle.start(
+                profile_id=selected.id if selected is not None else None
+            )
+        except RunnerLifecycleError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "runner_start_refused",
+                "Managed runner start was refused.",
+                [str(exc)],
+            ) from exc
+
+    def stop_runner(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
+        selected = self._runner_lifecycle_profile(profile_id)
+        try:
+            return self.runner_lifecycle.stop(
+                profile_id=selected.id if selected is not None else None
+            )
+        except RunnerLifecycleError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "runner_stop_refused",
+                "Managed runner stop was refused.",
+                [str(exc)],
+            ) from exc
+
+    def revoke_runner(self) -> Mapping[str, Any]:
+        try:
+            return self.runner_lifecycle.revoke()
+        except RunnerLifecycleError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "runner_revoke_refused",
+                "Managed runner trust revocation was refused.",
+                [str(exc)],
+            ) from exc
+
+    def remove_runner(self, *, confirm_runner_id: str) -> Mapping[str, Any]:
+        if confirm_runner_id != RUNNER_ID:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "runner_remove_confirmation_invalid",
+                "Runner removal requires the exact managed runner ID.",
+            )
+        try:
+            return self.runner_lifecycle.remove(confirm_runner_id=confirm_runner_id)
+        except RunnerLifecycleError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "runner_remove_refused",
+                "Managed runner removal was refused.",
+                [str(exc)],
+            ) from exc
+
     def validate(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
             scenario = self._scenario(request)
@@ -967,6 +1078,7 @@ class BlueFireService:
         request: Mapping[str, Any],
         *,
         checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> Mapping[str, Any]:
         scenario = self._scenario_or_api_error(request)
         mode = self._mode(request)
@@ -1096,6 +1208,7 @@ class BlueFireService:
                 action_implementations=resolved_action_implementations,
                 runner_readiness=runner_readiness,
                 checkpoint=tracked_checkpoint,
+                cancel_event=cancel_event,
             )
             if execution_approval_id is not None and execution_workspace is not None:
                 self._complete_execution_workspace(
@@ -1106,6 +1219,14 @@ class BlueFireService:
                 )
             self._index_run(result)
             return result
+        except RunnerTaskCancelled as exc:
+            if cancel_event is not None and cancel_event.is_set():
+                raise JobCancelled("job runner task cancellation was confirmed") from exc
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "runner_task_cancelled",
+                "The runner task was cancelled after its process tree stopped.",
+            ) from exc
         except (
             OrchestrationError,
             ProductStoreError,
@@ -1735,26 +1856,38 @@ class BlueFireService:
         progress = context.progress_snapshot()
         proposal_record_id = progress.get("proposal_record_id")
         context.checkpoint({"phase": "running", "completed_steps": 0})
-        if isinstance(proposal_record_id, str):
-            review = self.product_store.get_ai_proposal_review(proposal_record_id)
-            if review.get("job_id") != context.job_id or review.get("status") != "accepted":
-                raise ProductStoreError("accepted proposal continuation is unavailable")
-            result = self._run_ai_proposal_continuation(
-                context,
-                request,
-                review,
-            )
-        else:
-            result = self.run(request, checkpoint=context.checkpoint)
+        try:
+            if isinstance(proposal_record_id, str):
+                review = self.product_store.get_ai_proposal_review(proposal_record_id)
+                if review.get("job_id") != context.job_id or review.get("status") != "accepted":
+                    raise ProductStoreError("accepted proposal continuation is unavailable")
+                result = self._run_ai_proposal_continuation(
+                    context,
+                    request,
+                    review,
+                )
+            else:
+                result = self.run(
+                    request,
+                    checkpoint=context.checkpoint,
+                    cancel_event=context.cancellation_event,
+                )
+        except RunnerTaskCancelled as exc:
+            if context.cancellation_event.is_set():
+                raise JobCancelled("job runner task cancellation was confirmed") from exc
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "runner_task_cancelled",
+                "The runner task was cancelled after its process tree stopped.",
+            ) from exc
         run_id = str(result["run_id"])
-        context.checkpoint(
-            {
-                "run_id": run_id,
-                "run_status": result.get("status"),
-                "completed_steps": len(result.get("steps", [])),
-            }
-        )
+        terminal_progress = {
+            "run_id": run_id,
+            "run_status": result.get("status"),
+            "completed_steps": len(result.get("steps", [])),
+        }
         if result.get("status") == "awaiting_approval":
+            context.checkpoint(terminal_progress)
             proposals = result.get("ai_proposals")
             pending = (
                 next(
@@ -1792,10 +1925,46 @@ class BlueFireService:
         return JobResult(
             result_ref=run_id,
             progress={
+                **terminal_progress,
                 "proposal_status": (
                     "continued" if isinstance(proposal_record_id, str) else "not_requested"
-                )
+                ),
             },
+            completion_confirmed=self._job_completion_is_durably_settled(result),
+        )
+
+    def _job_completion_is_durably_settled(self, result: Mapping[str, Any]) -> bool:
+        """Prove the callback and every required cleanup obligation are terminal."""
+
+        cleanup = result.get("cleanup")
+        if (
+            not isinstance(cleanup, Mapping)
+            or type(cleanup.get("outstanding_receipt_count")) is not int
+            or cleanup.get("outstanding_receipt_count") != 0
+        ):
+            return False
+        mode = result.get("mode")
+        if mode == ExecutionMode.SIMULATE.value:
+            return True
+        if mode != ExecutionMode.EXECUTE.value:
+            return False
+        approval = result.get("approval")
+        approval_id = approval.get("approval_id") if isinstance(approval, Mapping) else None
+        run_id = result.get("run_id")
+        if not isinstance(approval_id, str) or not isinstance(run_id, str):
+            return False
+        try:
+            workspace = self.product_store.get_execution_workspace(approval_id)
+        except ProductStoreError:
+            return False
+        outcome = workspace.get("outcome")
+        return bool(
+            workspace.get("state") == "completed"
+            and workspace.get("run_id") == run_id
+            and isinstance(outcome, Mapping)
+            and outcome.get("status") == "completed"
+            and type(outcome.get("remaining_receipt_count")) is int
+            and outcome.get("remaining_receipt_count") == 0
         )
 
     @staticmethod
@@ -2288,6 +2457,7 @@ class BlueFireService:
                 if approval_id is not None
                 else context.checkpoint
             ),
+            cancel_event=context.cancellation_event,
         )
         if approval_id is not None and sandbox is not None:
             self._complete_execution_workspace(
@@ -3268,29 +3438,19 @@ class BlueFireService:
             summary["bundle_digest"] = bundle_digest
         self.product_store.index_run(summary)
 
-    def _environment_runner(self, profile: RunnerProfile) -> tuple[RunnerTransport, Path]:
-        binary = resolve_environment_path(profile.runner_binary, must_exist=True)
-        sandbox = resolve_environment_path(profile.sandbox_root, must_exist=False)
-        transport_root = self.store.root
-        runner = SubprocessRustRunner(
-            binary,
-            transport_root,
-            timeout_seconds=float(profile.budgets.max_seconds + 5),
-            output_limit_bytes=min(max(profile.budgets.max_bytes, 4096), 4 * 1024 * 1024),
-        )
-        return runner, sandbox
+    def _managed_runner(self, profile: RunnerProfile) -> tuple[RunnerTransport, Path]:
+        """Bind an already-running authenticated host; never mutate lifecycle state."""
+
+        try:
+            return self.runner_lifecycle.client_for_profile(profile.id)
+        except RunnerLifecycleError:
+            raise RunnerReadinessError(
+                "Managed runner is not authenticated and ready; use an explicit lifecycle action."
+            ) from None
 
     def _runner_probe_transport(self, profile: RunnerProfile) -> RunnerTransport:
-        if self._runner_factory_supplied:
-            runner, _sandbox = self.runner_factory(profile)
-            return runner
-        binary = resolve_environment_path(profile.runner_binary, must_exist=True)
-        return SubprocessRustRunner(
-            binary,
-            self.store.root,
-            timeout_seconds=_RUNNER_PROBE_TIMEOUT_SECONDS,
-            output_limit_bytes=_RUNNER_PROBE_OUTPUT_LIMIT_BYTES,
-        )
+        runner, _sandbox = self.runner_factory(profile)
+        return runner
 
     def _execute_readiness_boundary(
         self,
@@ -3302,11 +3462,7 @@ class BlueFireService:
         """Probe or bind the exact non-mutating Execute readiness envelope."""
 
         try:
-            if for_dispatch or self._runner_factory_supplied:
-                runner, sandbox = self.runner_factory(profile)
-            else:
-                runner = self._runner_probe_transport(profile)
-                sandbox = resolve_environment_path(profile.sandbox_root, must_exist=False)
+            runner, sandbox = self.runner_factory(profile)
         except (
             AttributeError,
             RunnerContractError,
@@ -3818,6 +3974,24 @@ class BlueFireService:
     def _runner_profiles(self) -> tuple[RunnerProfile, ...]:
         with self._runtime_configuration_lock:
             return self._runtime_runner_profiles
+
+    def _runner_lifecycle_profile(self, profile_id: str | None) -> RunnerProfile | None:
+        if profile_id is None:
+            return None
+        if not isinstance(profile_id, str) or not profile_id:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "profile_invalid",
+                "profile_id must be a non-empty string or null.",
+            )
+        profile = self._profile(profile_id, ExecutionMode.EXECUTE)
+        if profile is None:
+            raise APIError(
+                HTTPStatus.NOT_FOUND,
+                "profile_not_found",
+                "Runner profile was not found.",
+            )
+        return profile
 
     def _runtime_ai(self) -> AIConfig:
         with self._runtime_configuration_lock:

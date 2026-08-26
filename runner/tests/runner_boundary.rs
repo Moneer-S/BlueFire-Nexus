@@ -4,11 +4,13 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration as StdDuration, Instant};
 
 use bluefire_runner::contract::{
-    sha256_hex, MANIFEST_SCHEMA_VERSION, PROFILE_SCHEMA_VERSION, RESULT_SCHEMA_VERSION,
+    canonical_json, sha256_hex, MANIFEST_SCHEMA_VERSION, PROFILE_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION,
 };
 use bluefire_runner::safety::{owned_directories, owned_file, SafeRoot};
 use bluefire_runner::{
@@ -17,9 +19,15 @@ use bluefire_runner::{
     RunnerProfile, SafetyTier, TargetScope, TaskResult, TaskStatus,
 };
 use chrono::Duration;
+use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
+use sha2::Sha256;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static RECEIVER_ENV_LOCK: Mutex<()> = Mutex::new(());
+const RECEIVER_TASK_ID: &str =
+    "execute-1111111111111111111111111111111111111111111111111111111111111111";
+const RECEIVER_TASK_KEY: [u8; 32] = [0x42; 32];
 
 struct TempDir {
     path: PathBuf,
@@ -871,51 +879,295 @@ fn network_scope_refusal_occurs_before_any_connect_attempt() {
     assert_eq!(result.evidence[0].kind, EvidenceKind::ControlBlocked);
 }
 
+fn receiver_hmac(domain: &[u8], payloads: &[&[u8]]) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(&RECEIVER_TASK_KEY).unwrap();
+    mac.update(domain);
+    for payload in payloads {
+        mac.update(payload);
+    }
+    format!("sha256:{}", hex::encode(mac.finalize().into_bytes()))
+}
+
+fn request_header(request: &[u8], expected_name: &str) -> String {
+    let separator = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap();
+    let header = std::str::from_utf8(&request[..separator]).unwrap();
+    header
+        .split("\r\n")
+        .skip(1)
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case(expected_name)
+                .then(|| value.trim().to_string())
+        })
+        .unwrap()
+}
+
+fn request_body(request: &[u8]) -> &[u8] {
+    let offset = request
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    &request[offset..]
+}
+
+fn read_http_request(socket: &mut std::net::TcpStream) -> Vec<u8> {
+    let mut request = Vec::new();
+    socket.read_to_end(&mut request).unwrap();
+    request
+}
+
+fn authenticated_http_response(
+    status_code: u16,
+    reason: &str,
+    body: &[u8],
+    authentication: &str,
+) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 {status_code} {reason}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\nX-BlueFire-Authentication: {authentication}\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    response
+}
+
+fn loopback_challenge(request: &[u8], port: u16, authentication_override: Option<&str>) -> Vec<u8> {
+    let sha256 = request_header(request, "x-bluefire-sha256");
+    let content_length = request_header(request, "x-bluefire-content-length")
+        .parse::<usize>()
+        .unwrap();
+    loopback_challenge_bound(
+        port,
+        "127.0.0.1",
+        RECEIVER_TASK_ID,
+        &"1".repeat(64),
+        &"2".repeat(64),
+        (&sha256, content_length),
+        authentication_override,
+    )
+}
+
+fn loopback_challenge_bound(
+    port: u16,
+    host: &str,
+    task_id: &str,
+    session_id: &str,
+    nonce: &str,
+    artifact_binding: (&str, usize),
+    authentication_override: Option<&str>,
+) -> Vec<u8> {
+    let (sha256, content_length) = artifact_binding;
+    let document = json!({
+        "schema_version": "bluefire.loopback-receiver-challenge.v1",
+        "task_id": task_id,
+        "session_id": session_id,
+        "nonce": nonce,
+        "host": host,
+        "port": port,
+        "sha256": sha256,
+        "content_length": content_length,
+    });
+    let body = canonical_json(&document).into_bytes();
+    let authentication = authentication_override
+        .map(str::to_string)
+        .unwrap_or_else(|| receiver_hmac(b"bluefire.loopback-receiver.challenge.v1\0", &[&body]));
+    authenticated_http_response(200, "OK", &body, &authentication)
+}
+
 fn loopback_acknowledgement(
     request: &[u8],
     status_code: u16,
     reason: &str,
     stored: bool,
     digest_override: Option<&str>,
+    authentication_override: Option<&str>,
 ) -> Vec<u8> {
-    let body_offset = request
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .unwrap()
-        + 4;
-    let artifact = &request[body_offset..];
-    let acknowledgement = serde_json::to_vec(&json!({
-        "schema_version": "bluefire.loopback-receiver-result.v1",
+    let artifact = request_body(request);
+    let task_id = request_header(request, "x-bluefire-task-id");
+    let session_id = request_header(request, "x-bluefire-session-id");
+    let request_authentication = request_header(request, "x-bluefire-authentication");
+    let acknowledgement = canonical_json(&json!({
+        "schema_version": "bluefire.loopback-receiver-result.v2",
         "accepted": true,
+        "task_id": task_id,
+        "session_id": session_id,
         "bytes_received": artifact.len(),
         "sha256": digest_override.map(str::to_string).unwrap_or_else(|| sha256_hex(artifact)),
         "stored": stored,
     }))
-    .unwrap();
-    let mut response = format!(
-        "HTTP/1.1 {status_code} {reason}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        acknowledgement.len()
-    )
     .into_bytes();
-    response.extend_from_slice(&acknowledgement);
-    response
+    let authentication = authentication_override
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            receiver_hmac(
+                b"bluefire.loopback-receiver.response.v1\0",
+                &[request_authentication.as_bytes(), b"\0", &acknowledgement],
+            )
+        });
+    authenticated_http_response(status_code, reason, &acknowledgement, &authentication)
+}
+
+fn assert_authenticated_artifact_request(request: &[u8], port: u16) {
+    let artifact = request_body(request);
+    let digest = request_header(request, "x-bluefire-sha256");
+    assert_eq!(digest, sha256_hex(artifact));
+    let task_id = request_header(request, "x-bluefire-task-id");
+    let session_id = request_header(request, "x-bluefire-session-id");
+    let nonce = request_header(request, "x-bluefire-nonce");
+    let content_length = request_header(request, "content-length")
+        .parse::<usize>()
+        .unwrap();
+    assert_eq!(content_length, artifact.len());
+    let document = canonical_json(&json!({
+        "schema_version": "bluefire.loopback-receiver-request.v1",
+        "method": "POST",
+        "path": "/bluefire/v1/artifact",
+        "task_id": task_id,
+        "session_id": session_id,
+        "nonce": nonce,
+        "host": "127.0.0.1",
+        "port": port,
+        "sha256": digest,
+        "content_length": content_length,
+    }));
+    assert_eq!(
+        request_header(request, "x-bluefire-authentication"),
+        receiver_hmac(
+            b"bluefire.loopback-receiver.request.v1\0",
+            &[document.as_bytes()],
+        )
+    );
+}
+
+struct ReceiverEnvironment {
+    prior_task_id: Option<std::ffi::OsString>,
+    prior_task_key: Option<std::ffi::OsString>,
+}
+
+impl Drop for ReceiverEnvironment {
+    fn drop(&mut self) {
+        match self.prior_task_id.take() {
+            Some(value) => std::env::set_var("BLUEFIRE_RECEIVER_TASK_ID", value),
+            None => std::env::remove_var("BLUEFIRE_RECEIVER_TASK_ID"),
+        }
+        match self.prior_task_key.take() {
+            Some(value) => std::env::set_var("BLUEFIRE_RECEIVER_TASK_KEY", value),
+            None => std::env::remove_var("BLUEFIRE_RECEIVER_TASK_KEY"),
+        }
+    }
+}
+
+fn execute_network_with_authentication(
+    request: ExecutionManifest,
+    profile: RunnerProfile,
+    task_id: &str,
+    task_key: &[u8; 32],
+) -> TaskResult {
+    let _lock = RECEIVER_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _environment = ReceiverEnvironment {
+        prior_task_id: std::env::var_os("BLUEFIRE_RECEIVER_TASK_ID"),
+        prior_task_key: std::env::var_os("BLUEFIRE_RECEIVER_TASK_KEY"),
+    };
+    std::env::set_var("BLUEFIRE_RECEIVER_TASK_ID", task_id);
+    std::env::set_var("BLUEFIRE_RECEIVER_TASK_KEY", hex::encode(task_key));
+    runner().execute(request, profile)
+}
+
+fn execute_authenticated_network(request: ExecutionManifest, profile: RunnerProfile) -> TaskResult {
+    execute_network_with_authentication(request, profile, RECEIVER_TASK_ID, &RECEIVER_TASK_KEY)
+}
+
+fn execute_network_without_authentication(
+    request: ExecutionManifest,
+    profile: RunnerProfile,
+    partial_key: Option<&str>,
+) -> TaskResult {
+    let _lock = RECEIVER_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _environment = ReceiverEnvironment {
+        prior_task_id: std::env::var_os("BLUEFIRE_RECEIVER_TASK_ID"),
+        prior_task_key: std::env::var_os("BLUEFIRE_RECEIVER_TASK_KEY"),
+    };
+    std::env::remove_var("BLUEFIRE_RECEIVER_TASK_ID");
+    match partial_key {
+        Some(value) => std::env::set_var("BLUEFIRE_RECEIVER_TASK_KEY", value),
+        None => std::env::remove_var("BLUEFIRE_RECEIVER_TASK_KEY"),
+    }
+    runner().execute(request, profile)
+}
+
+fn network_case(port: u16) -> (TempDir, ExecutionManifest, RunnerProfile) {
+    let root = TempDir::new().unwrap();
+    let destination = NetworkDestination {
+        host: "127.0.0.1".to_string(),
+        port,
+    };
+    let profile = profile(&root, vec![destination.clone()]);
+    assert_eq!(
+        create_fixture(&root, &profile, "network-auth.txt").status,
+        TaskStatus::Success
+    );
+    let request = manifest(
+        &profile,
+        "sandbox.network.loopback.v1",
+        json!({"artifact": "network-auth.txt", "destination": destination}),
+    );
+    (root, request, profile)
+}
+
+fn serve_authenticated_receiver(
+    listener: TcpListener,
+    status_code: u16,
+    reason: &'static str,
+    stored: bool,
+    digest_override: Option<&'static str>,
+) -> thread::JoinHandle<Vec<u8>> {
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let (mut challenge_socket, peer) = listener.accept().unwrap();
+        assert!(peer.ip().is_loopback());
+        let challenge_request = read_http_request(&mut challenge_socket);
+        assert!(challenge_request.starts_with(b"GET /bluefire/v1/challenge HTTP/1.1\r\n"));
+        assert_eq!(
+            request_header(&challenge_request, "x-bluefire-task-id"),
+            RECEIVER_TASK_ID
+        );
+        challenge_socket
+            .write_all(&loopback_challenge(&challenge_request, port, None))
+            .unwrap();
+        drop(challenge_socket);
+
+        let (mut artifact_socket, peer) = listener.accept().unwrap();
+        assert!(peer.ip().is_loopback());
+        let artifact_request = read_http_request(&mut artifact_socket);
+        assert!(artifact_request.starts_with(b"POST /bluefire/v1/artifact HTTP/1.1\r\n"));
+        assert_authenticated_artifact_request(&artifact_request, port);
+        artifact_socket
+            .write_all(&loopback_acknowledgement(
+                &artifact_request,
+                status_code,
+                reason,
+                stored,
+                digest_override,
+                None,
+            ))
+            .unwrap();
+        artifact_request
+    })
 }
 
 #[test]
 fn loopback_action_uses_only_the_declared_ephemeral_receiver() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let receiver = thread::spawn(move || {
-        let (mut socket, peer) = listener.accept().unwrap();
-        assert!(peer.ip().is_loopback());
-        let mut request = Vec::new();
-        socket.read_to_end(&mut request).unwrap();
-        assert!(request.starts_with(b"POST /bluefire/v1/artifact HTTP/1.1\r\n"));
-        socket
-            .write_all(&loopback_acknowledgement(&request, 200, "OK", false, None))
-            .unwrap();
-        request
-    });
+    let receiver = serve_authenticated_receiver(listener, 200, "OK", false, None);
 
     let root = TempDir::new().unwrap();
     let destination = NetworkDestination {
@@ -931,7 +1183,7 @@ fn loopback_action_uses_only_the_declared_ephemeral_receiver() {
     );
     request.evidence_refs = vec![created.evidence[0].evidence_id.clone()];
     seal_manifest(&mut request);
-    let result = runner().execute(request, profile);
+    let result = execute_authenticated_network(request, profile);
     assert_eq!(result.status, TaskStatus::Success);
     assert_eq!(result.output["http_status"], 200);
     assert_eq!(result.output["receiver_acknowledged"], true);
@@ -945,17 +1197,188 @@ fn loopback_action_uses_only_the_declared_ephemeral_receiver() {
 }
 
 #[test]
-fn loopback_action_rejects_arbitrary_2xx_without_digest_bound_json() {
+fn loopback_action_without_exact_task_environment_never_connects() {
+    for partial_key in [None, Some(&"a".repeat(64))] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (_root, request, profile) = network_case(port);
+
+        let result = execute_network_without_authentication(
+            request,
+            profile,
+            partial_key.map(String::as_str),
+        );
+
+        assert_eq!(result.status, TaskStatus::ControlBlocked);
+        assert_eq!(
+            result.error.unwrap().code,
+            "receiver_authentication_unavailable"
+        );
+        listener.set_nonblocking(true).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+}
+
+#[test]
+fn loopback_action_refuses_tampered_challenge_before_artifact_transmission() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let receiver = thread::spawn(move || {
         let (mut socket, _) = listener.accept().unwrap();
-        let mut request = Vec::new();
-        socket.read_to_end(&mut request).unwrap();
+        let request = read_http_request(&mut socket);
         socket
-            .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .write_all(&loopback_challenge(
+                &request,
+                port,
+                Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+            ))
+            .unwrap();
+        request
+    });
+    let (_root, request, profile) = network_case(port);
+
+    let result = execute_authenticated_network(request, profile);
+
+    assert_eq!(result.status, TaskStatus::Failed);
+    assert_eq!(result.error.unwrap().code, "receiver_authentication_failed");
+    let received = receiver.join().unwrap();
+    assert!(received.starts_with(b"GET /bluefire/v1/challenge HTTP/1.1\r\n"));
+    assert!(!received.windows(8).any(|window| window == b"artifact"));
+}
+
+#[test]
+fn loopback_action_refuses_cross_task_challenge() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let receiver = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let request = read_http_request(&mut socket);
+        socket
+            .write_all(&loopback_challenge(&request, port, None))
+            .unwrap();
+        request
+    });
+    let (_root, request, profile) = network_case(port);
+    let other_task = format!("execute-{}", "2".repeat(64));
+
+    let result =
+        execute_network_with_authentication(request, profile, &other_task, &RECEIVER_TASK_KEY);
+
+    assert_eq!(result.status, TaskStatus::Failed);
+    assert_eq!(result.error.unwrap().code, "receiver_authentication_failed");
+    assert_eq!(
+        request_header(&receiver.join().unwrap(), "x-bluefire-task-id"),
+        other_task
+    );
+}
+
+#[test]
+fn loopback_action_refuses_authenticated_challenge_for_another_listener() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let wrong_port = if port == u16::MAX { port - 1 } else { port + 1 };
+    let receiver = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let request = read_http_request(&mut socket);
+        let sha256 = request_header(&request, "x-bluefire-sha256");
+        let content_length = request_header(&request, "x-bluefire-content-length")
+            .parse::<usize>()
+            .unwrap();
+        socket
+            .write_all(&loopback_challenge_bound(
+                wrong_port,
+                "127.0.0.1",
+                RECEIVER_TASK_ID,
+                &"1".repeat(64),
+                &"2".repeat(64),
+                (&sha256, content_length),
+                None,
+            ))
             .unwrap();
     });
+    let (_root, request, profile) = network_case(port);
+
+    let result = execute_authenticated_network(request, profile);
+
+    assert_eq!(result.status, TaskStatus::Failed);
+    assert_eq!(result.error.unwrap().code, "receiver_authentication_failed");
+    receiver.join().unwrap();
+}
+
+#[test]
+fn loopback_action_refuses_tampered_acknowledgement_authentication() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let receiver = thread::spawn(move || {
+        let (mut challenge_socket, _) = listener.accept().unwrap();
+        let challenge_request = read_http_request(&mut challenge_socket);
+        challenge_socket
+            .write_all(&loopback_challenge(&challenge_request, port, None))
+            .unwrap();
+        drop(challenge_socket);
+        let (mut artifact_socket, _) = listener.accept().unwrap();
+        let artifact_request = read_http_request(&mut artifact_socket);
+        artifact_socket
+            .write_all(&loopback_acknowledgement(
+                &artifact_request,
+                200,
+                "OK",
+                false,
+                None,
+                Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
+            ))
+            .unwrap();
+    });
+    let (_root, request, profile) = network_case(port);
+
+    let result = execute_authenticated_network(request, profile);
+
+    assert_eq!(result.status, TaskStatus::Failed);
+    assert_eq!(result.output["receiver_acknowledged"], false);
+    assert!(result
+        .error
+        .unwrap()
+        .message
+        .contains("authentication failed"));
+    receiver.join().unwrap();
+}
+
+#[test]
+fn loopback_action_refuses_response_header_smuggling_and_does_not_leak_secrets() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let receiver = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        let request = read_http_request(&mut socket);
+        let response = loopback_challenge(&request, port, None);
+        let separator = response
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap();
+        let mut smuggled = response[..separator].to_vec();
+        smuggled.extend_from_slice(b"\r\nContent-Length: 0");
+        smuggled.extend_from_slice(&response[separator..]);
+        socket.write_all(&smuggled).unwrap();
+    });
+    let (_root, request, profile) = network_case(port);
+
+    let result = execute_authenticated_network(request, profile);
+
+    assert_eq!(result.status, TaskStatus::Failed);
+    let serialized = serde_json::to_string(&result).unwrap();
+    assert!(!serialized.contains(&hex::encode(RECEIVER_TASK_KEY)));
+    assert_eq!(result.error.unwrap().code, "receiver_authentication_failed");
+    receiver.join().unwrap();
+}
+
+#[test]
+fn loopback_action_rejects_arbitrary_2xx_without_digest_bound_json() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let receiver = serve_authenticated_receiver(listener, 204, "No Content", false, None);
 
     let root = TempDir::new().unwrap();
     let destination = NetworkDestination {
@@ -967,7 +1390,7 @@ fn loopback_action_rejects_arbitrary_2xx_without_digest_bound_json() {
         create_fixture(&root, &profile, "network-unbound.txt").status,
         TaskStatus::Success
     );
-    let result = runner().execute(
+    let result = execute_authenticated_network(
         manifest(
             &profile,
             "sandbox.network.loopback.v1",
@@ -987,20 +1410,13 @@ fn loopback_action_rejects_arbitrary_2xx_without_digest_bound_json() {
 fn loopback_action_rejects_acknowledgement_for_other_content() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let receiver = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        let mut request = Vec::new();
-        socket.read_to_end(&mut request).unwrap();
-        socket
-            .write_all(&loopback_acknowledgement(
-                &request,
-                200,
-                "OK",
-                false,
-                Some("0000000000000000000000000000000000000000000000000000000000000000"),
-            ))
-            .unwrap();
-    });
+    let receiver = serve_authenticated_receiver(
+        listener,
+        200,
+        "OK",
+        false,
+        Some("0000000000000000000000000000000000000000000000000000000000000000"),
+    );
 
     let root = TempDir::new().unwrap();
     let destination = NetworkDestination {
@@ -1012,7 +1428,7 @@ fn loopback_action_rejects_acknowledgement_for_other_content() {
         create_fixture(&root, &profile, "network-wrong-ack.txt").status,
         TaskStatus::Success
     );
-    let result = runner().execute(
+    let result = execute_authenticated_network(
         manifest(
             &profile,
             "sandbox.network.loopback.v1",
@@ -1036,9 +1452,16 @@ fn loopback_trickle_response_cannot_extend_the_monotonic_deadline() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let receiver = thread::spawn(move || {
+        let (mut challenge_socket, _) = listener.accept().unwrap();
+        let challenge_request = read_http_request(&mut challenge_socket);
+        assert!(challenge_request.starts_with(b"GET /bluefire/v1/challenge HTTP/1.1\r\n"));
+        challenge_socket
+            .write_all(&loopback_challenge(&challenge_request, port, None))
+            .unwrap();
+        drop(challenge_socket);
         let (mut socket, _) = listener.accept().unwrap();
-        let mut request = Vec::new();
-        socket.read_to_end(&mut request).unwrap();
+        let request = read_http_request(&mut socket);
+        assert!(request.starts_with(b"POST /bluefire/v1/artifact HTTP/1.1\r\n"));
         for byte in b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n" {
             if socket.write_all(&[*byte]).is_err() {
                 break;
@@ -1065,7 +1488,7 @@ fn loopback_trickle_response_cannot_extend_the_monotonic_deadline() {
     request.limits.timeout_ms = 80;
     seal_manifest(&mut request);
     let started = Instant::now();
-    let result = runner().execute(request, profile);
+    let result = execute_authenticated_network(request, profile);
     assert_eq!(result.status, TaskStatus::TimedOut);
     assert!(started.elapsed() < StdDuration::from_millis(500));
     receiver.join().unwrap();
@@ -1075,17 +1498,7 @@ fn loopback_trickle_response_cannot_extend_the_monotonic_deadline() {
 fn disposable_vertical_slice_runs_real_steps_and_cleans_in_reverse_order() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let receiver = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        let mut request = Vec::new();
-        socket.read_to_end(&mut request).unwrap();
-        socket
-            .write_all(&loopback_acknowledgement(
-                &request, 201, "Created", true, None,
-            ))
-            .unwrap();
-        request
-    });
+    let receiver = serve_authenticated_receiver(listener, 201, "Created", true, None);
 
     let root = TempDir::new().unwrap();
     let destination = NetworkDestination {
@@ -1154,7 +1567,7 @@ fn disposable_vertical_slice_runs_real_steps_and_cleans_in_reverse_order() {
         .unwrap()
         .to_string();
 
-    let delivered = runner().execute(
+    let delivered = execute_authenticated_network(
         manifest(
             &profile,
             "sandbox.network.loopback.v1",

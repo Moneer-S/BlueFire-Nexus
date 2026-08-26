@@ -123,7 +123,10 @@ _JOB_TRANSITIONS = {
         "interrupted",
     },
     "paused": {"running", "cancelling", "cancelled", "failed", "interrupted"},
-    "cancelling": {"cancelled", "failed", "interrupted"},
+    # A separately supervised effect may report a durable terminal result while
+    # an operator cancellation races with that acknowledgement.  Only the job
+    # controller's explicit confirmed-completion path uses this transition.
+    "cancelling": {"cancelled", "completed", "failed", "interrupted"},
     "interrupted": {"planning", "cancelling", "failed"},
     "cancelled": set(),
     "completed": set(),
@@ -1448,9 +1451,12 @@ class ProductStore:
         progress: Mapping[str, Any] | None = None,
         result_ref: str | None = None,
         error: Mapping[str, Any] | None = None,
+        completion_confirmed: bool = False,
     ) -> Mapping[str, Any]:
         if state not in _JOB_STATES:
             raise ProductStoreError("job state is invalid")
+        if type(completion_confirmed) is not bool:
+            raise ProductStoreError("job completion confirmation is invalid")
         with self._connection(write=True) as connection:
             row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
             if row is None:
@@ -1458,6 +1464,14 @@ class ProductStore:
             current = str(row["state"])
             if state != current and state not in _JOB_TRANSITIONS[current]:
                 raise ProductStoreError(f"job cannot transition from {current} to {state}")
+            if current == "cancelling" and state == "completed" and not completion_confirmed:
+                raise ProductStoreError("a cancelling job requires confirmed durable completion")
+            if completion_confirmed and (
+                state != "completed" or current not in {"running", "cancelling"}
+            ):
+                raise ProductStoreError(
+                    "job completion confirmation is invalid for this transition"
+                )
             next_progress = (
                 _safe_document(progress, context=f"job.{job_id}.progress")
                 if progress is not None

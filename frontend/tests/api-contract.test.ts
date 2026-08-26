@@ -140,6 +140,39 @@ describe("control-plane request contracts", () => {
     expect(approval).toEqual({ approved_by: "operator-a" });
   });
 
+  it("uses exact managed-runner lifecycle routes and confirmation bodies", async () => {
+    const status = { schema_version: "bluefire.runner-lifecycle-status.v1", state: "stopped", runner_id: "bluefire-rust-runner.v1", profile_id: "sandbox-execute.v1", loopback_only: true, enrollment: "active", process: "absent", runner: null, health: null } as const;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      void _input; void _init;
+      return new Response(JSON.stringify(status), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.runnerStatus();
+    await api.bootstrapRunner("sandbox-execute.v1", true);
+    await api.startRunner("sandbox-execute.v1");
+    await api.stopRunner("sandbox-execute.v1");
+    await api.revokeRunner();
+    await api.removeRunner("bluefire-rust-runner.v1");
+
+    expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+      "/api/v1/runner",
+      "/api/v1/runner/bootstrap",
+      "/api/v1/runner/start",
+      "/api/v1/runner/stop",
+      "/api/v1/runner/revoke",
+      "/api/v1/runner/remove",
+    ]);
+    const bodies = fetchMock.mock.calls.slice(1).map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+    expect(bodies).toEqual([
+      { profile_id: "sandbox-execute.v1", allow_upgrade: true },
+      { profile_id: "sandbox-execute.v1" },
+      { profile_id: "sandbox-execute.v1" },
+      {},
+      { confirm_runner_id: "bluefire-rust-runner.v1" },
+    ]);
+  });
+
   it("persists secret-safe settings, versioned scenarios, and allowlisted resources", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       void _init;

@@ -33,7 +33,7 @@ Changing AI autonomy, a scenario parameter, or a UI control does not change thes
 
 Python owns contracts, catalog lookup, graph validation, planning, policy evaluation, manifest construction, result normalization, evidence storage, detection lifecycle, replay, comparison, CLI, API, and UI.
 
-Python does not implement behavior actions. SubprocessRustRunner may start only one preconfigured, existing absolute runner binary with a fixed argument grammar. The transport rejects executable-content fields such as generic commands, shells, scripts, payloads, interpreters, and binaries.
+Python does not implement behavior actions. Explicit managed bootstrap verifies one platform-native runner artifact and records its exact digest/inventory; the separately hosted same-user process may invoke only that binary with a fixed argument grammar. The authenticated transport rejects executable-content fields such as generic commands, shells, scripts, payloads, interpreters, and binaries.
 
 Logical behavior parameters and typed artifact bindings are not passed directly to the runner. RunnerActionAdapter is the only translation boundary. It maps each known action ID to a fixed sealed executor schema and rejects unknown actions, unknown parameters, absolute paths, traversal, and unresolved artifact references.
 
@@ -87,9 +87,9 @@ A SHA-256 manifest field records expected bytes; it does not establish publisher
 
 ## API and UI
 
-The packaged HTTP server accepts loopback bind addresses only. It enforces same-origin mutation requests, bounded JSON bodies, duplicate-key and non-finite-number rejection, fixed static-asset routes, and restrictive browser security headers.
+The packaged HTTP server accepts loopback bind addresses only. Static assets are public, while every API request requires a bounded local browser-session cookie. The CLI issues a 384-bit one-use URL-fragment capability only after bind; the browser strips it before any request and exchanges it once, while the server retains only its digest. The server also enforces exact Host and same-origin mutation requests, bounded JSON bodies, duplicate-key and non-finite-number rejection, fixed static-asset routes, and restrictive browser security headers.
 
-Loopback binding reduces exposure but is not authentication. Do not expose the service through a reverse proxy, port forward, container publish rule, or tunnel without adding an independently reviewed authentication and authorization layer.
+The browser session is same-user local protection, not remote authentication, authorization, or multi-user identity. Do not expose the service through a reverse proxy, port forward, container publish rule, or tunnel without adding an independently reviewed remote authentication and authorization layer.
 
 The UI is an adapter over the same service-side validation and policy path as the CLI. Browser controls do not directly dispatch runner actions.
 
@@ -119,12 +119,12 @@ Run bundles may still contain environment descriptions, scenario parameters, tel
 
 ## Known limitations
 
-- The Python wheel does not contain or install the Rust runner.
-- Execute availability depends on a locally built compatible runner and a passing inventory/preflight check.
+- Compatible platform-specific wheels contain one manifest-bound native Rust runner artifact; they do not download executable content. Explicit bootstrap verifies and installs that artifact, while source-development overrides remain operator-controlled.
+- Execute availability depends on verified bootstrap, active local enrollment, authenticated managed-host readiness, compatible inventory, profile/policy/preflight, and exact approval checks.
 - The thirteen current actions are a bounded endpoint/sandbox pack, not general endpoint, cloud, identity, or enterprise-network emulation.
 - Four `research.*` catalog entries remain metadata-only. A separate persistence-detection canary can Simulate or Execute one fixed non-executable marker inside a runner-owned sandbox under the dedicated restricted profile; it does not change host persistence.
 - No configured remote telemetry collector, SIEM connector, or general network target support ships in the maintained baseline.
-- Current runner transport is a local subprocess; remote enrollment, mutual authentication, revocation, encrypted transport, signed tasks, and a persistent replay cache are not implemented.
+- Runner transport is a separately hosted same-user loopback service with local enrollment/revocation, TLS 1.3 mutual authentication, enrollment-bound task authentication, and a durable duplicate/cancellation/recovery ledger. Cross-host transport/enrollment, an external code-signing trust chain, and asymmetric signed task/profile/result artifacts are not implemented.
 - Runtime AI proposals do not yet tune detections or create replay experiments, and graph edge choice is deliberately limited to the exact registered edge for the observed outcome.
 - Bundle hashes and request/profile digests detect mismatch; they are not cryptographic identity signatures.
 - Historical Git objects may contain unsupported direct-effect implementations; do not restore or invoke them as runner actions.
@@ -148,6 +148,6 @@ Never include live credentials, customer data, or unauthorized target informatio
 
 ## Verification for maintainers
 
-Before release, run the active Python, Rust, frontend, browser, and security checks documented in README.md. Also inspect the built wheel to confirm that it contains only the `bluefire` package, catalog and packaged data YAML, and built UI assets.
+Before release, run the active Python, Rust, frontend, browser, and security checks documented in README.md. Also inspect the built platform wheel to confirm that it contains only the intended `bluefire` package, catalog/config/scenario data, built UI assets, and the exact manifest-bound native runner artifact for that wheel tag—never repository tests, source build output, credentials, local paths, or unrelated executables.
 
 Do not describe an action, platform, parser, detector, or isolation property as verified unless its applicable tests ran successfully in the release environment.

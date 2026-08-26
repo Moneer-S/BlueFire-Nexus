@@ -10,8 +10,8 @@ A runner profile is the maximum authority available to one Simulate or Execute e
 | `mode` | Exactly `simulate` or `execute` |
 | `environment_type` | `disposable`, `persistent_lab`, `cloud_lab`, or `custom` |
 | `platforms` | Allowed `windows`, `linux`, and/or `macos` platform identifiers |
-| `runner_binary` | Environment-variable reference for the local runner path |
-| `sandbox_root` | Environment-variable reference for the existing runner root |
+| `runner_binary` | Declarative environment-variable reference retained for an explicit source-development/custom transport override |
+| `sandbox_root` | Declarative environment-variable reference for an explicit operator-owned disposable sandbox override |
 | `scope` | Named maximum scope references |
 | `network_allowlist` | Canonical CIDR networks with explicit prefixes |
 | `capabilities` | Granted semantic and effect capabilities |
@@ -24,6 +24,8 @@ A runner profile is the maximum authority available to one Simulate or Execute e
 | `secrets` | Named environment-variable references only |
 
 Unknown fields, duplicate values, non-canonical networks, invalid environment names, and an Execute profile without approval are rejected.
+
+For the default managed lifecycle, these fields do not let a scenario or browser select a process path. `runner bootstrap` chooses the exact verified packaged artifact (or an operator-set source-development override), records its digest and inventory, and uses an owner-private managed sandbox unless the reviewed sandbox override is present. `runner start` then launches that exact bootstrap record and binds the selected profile through local enrollment and authenticated transport. Status and profile probes never bootstrap or start a process.
 
 ## Shipped profiles
 

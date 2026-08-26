@@ -9,7 +9,20 @@ from typing import Any, Iterator, Mapping
 
 import pytest
 
-from bluefire.api import APIError, BlueFireHTTPServer, PlatformService, create_server, serve
+import bluefire.api as api_module
+from bluefire.api import (
+    BROWSER_BOOTSTRAP_HEADER,
+    BROWSER_BOOTSTRAP_LIFETIME_SECONDS,
+    BROWSER_SESSION_COOKIE,
+    BROWSER_SESSION_LIFETIME_SECONDS,
+    APIError,
+    BlueFireHTTPServer,
+    PlatformService,
+    browser_console_url,
+    create_server,
+    generate_browser_bootstrap_capability,
+    serve,
+)
 
 RUN_ID = "run-20260823T120000Z-0123456789abcdef"
 JOB_ID = "job-0123456789abcdef0123456789abcdef"
@@ -142,6 +155,35 @@ class StubService:
         self.calls.append(("probe_runner_profile", resource_id, request))
         return {"profile_id": resource_id, "health": {"state": "ready"}}
 
+    def runner_status(self, *, profile_id: str | None = None):
+        self.calls.append(("runner_status", profile_id))
+        return {"state": "ready", "profile_id": profile_id}
+
+    def bootstrap_runner(
+        self,
+        *,
+        profile_id: str | None = None,
+        allow_upgrade: bool = False,
+    ):
+        self.calls.append(("bootstrap_runner", profile_id, allow_upgrade))
+        return {"state": "stopped", "profile_id": profile_id}
+
+    def start_runner(self, *, profile_id: str | None = None):
+        self.calls.append(("start_runner", profile_id))
+        return {"state": "ready", "profile_id": profile_id}
+
+    def stop_runner(self, *, profile_id: str | None = None):
+        self.calls.append(("stop_runner", profile_id))
+        return {"state": "stopped", "profile_id": profile_id}
+
+    def revoke_runner(self):
+        self.calls.append(("revoke_runner",))
+        return {"state": "revoked"}
+
+    def remove_runner(self, *, confirm_runner_id: str):
+        self.calls.append(("remove_runner", confirm_runner_id))
+        return {"state": "unbootstrapped"}
+
     def validate(self, request: Mapping[str, Any]):
         self.calls.append(("validate", request))
         return {"valid": True}
@@ -245,12 +287,32 @@ def running_server(
     service: StubService | None = None,
     *,
     max_request_body: int = 1024,
+    authenticate: bool = True,
+    bootstrap_capability: str | None = None,
 ) -> Iterator[tuple[BlueFireHTTPServer, StubService]]:
     target = service or StubService()
-    server = create_server(target, host="127.0.0.1", port=0, max_request_body=max_request_body)
+    capability = bootstrap_capability or generate_browser_bootstrap_capability()
+    server = create_server(
+        target,
+        browser_bootstrap_capability=capability,
+        host="127.0.0.1",
+        port=0,
+        max_request_body=max_request_body,
+    )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        if authenticate:
+            status, headers, payload = request(
+                server,
+                "POST",
+                "/api/v1/session",
+                extra_headers={BROWSER_BOOTSTRAP_HEADER: capability},
+                authenticated=False,
+            )
+            assert status == 204
+            assert payload == b""
+            server._test_browser_cookie = headers["Set-Cookie"].split(";", 1)[0]  # type: ignore[attr-defined]
         yield server, target
     finally:
         server.shutdown()
@@ -267,6 +329,7 @@ def request(
     content_type: str = "application/json",
     origin: str | None = "same",
     extra_headers: Mapping[str, str] | None = None,
+    authenticated: bool = True,
 ) -> tuple[int, Mapping[str, str], bytes]:
     port = server.server_address[1]
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
@@ -274,6 +337,10 @@ def request(
         None if body is None else (body if isinstance(body, bytes) else json.dumps(body).encode())
     )
     headers = dict(extra_headers or {})
+    if authenticated and path.startswith("/api/v1") and path.split("?", 1)[0] != "/api/v1/session":
+        cookie = getattr(server, "_test_browser_cookie", None)
+        if cookie is not None:
+            headers.setdefault("Cookie", cookie)
     if payload is not None:
         headers["Content-Type"] = content_type
     if method == "POST" and origin is not None:
@@ -294,9 +361,22 @@ def json_body(payload: bytes) -> Mapping[str, Any]:
 
 def test_loopback_binding_is_mandatory() -> None:
     service = StubService()
+    capability = generate_browser_bootstrap_capability()
     for host in ("0.0.0.0", "::", "example.test", ""):
         with pytest.raises(ValueError, match="loopback"):
-            create_server(service, host=host, port=0)
+            create_server(
+                service,
+                browser_bootstrap_capability=capability,
+                host=host,
+                port=0,
+            )
+
+
+def test_browser_console_url_refuses_an_unresolved_ephemeral_port() -> None:
+    capability = generate_browser_bootstrap_capability()
+
+    with pytest.raises(ValueError, match="non-zero listener port"):
+        browser_console_url("127.0.0.1", 0, capability)
 
 
 def test_stub_implements_the_complete_platform_service_protocol() -> None:
@@ -317,9 +397,373 @@ def test_serve_closes_owned_service_workers(monkeypatch: pytest.MonkeyPatch) -> 
     service.close = lambda: closed.__setitem__("service", True)  # type: ignore[attr-defined]
     monkeypatch.setattr("bluefire.api.create_server", lambda *args, **kwargs: ImmediateServer())
 
-    serve(service)
+    serve(service, browser_bootstrap_capability=generate_browser_bootstrap_capability())
 
     assert closed == {"server": True, "service": True}
+
+
+def test_serve_announces_only_after_bind_and_before_serving(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = StubService()
+    events: list[str] = []
+
+    class BoundServer:
+        server_address = ("127.0.0.1", 49321)
+
+        def serve_forever(self) -> None:
+            events.append("serve")
+
+        def server_close(self) -> None:
+            events.append("server_close")
+
+    service.close = lambda: events.append("service_close")  # type: ignore[attr-defined]
+    monkeypatch.setattr("bluefire.api.create_server", lambda *args, **kwargs: BoundServer())
+
+    serve(
+        service,
+        browser_bootstrap_capability=generate_browser_bootstrap_capability(),
+        host="127.0.0.1",
+        port=0,
+        on_ready=lambda server: events.append(f"ready:{server.server_address[1]}"),
+    )
+
+    assert events == ["ready:49321", "serve", "server_close", "service_close"]
+
+
+def test_serve_bind_failure_closes_service_without_announcing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = StubService()
+    events: list[str] = []
+    service.close = lambda: events.append("service_close")  # type: ignore[attr-defined]
+
+    def fail_bind(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("bind failed")
+
+    monkeypatch.setattr("bluefire.api.create_server", fail_bind)
+
+    with pytest.raises(OSError, match="bind failed"):
+        serve(
+            service,
+            browser_bootstrap_capability=generate_browser_bootstrap_capability(),
+            on_ready=lambda _server: events.append("ready"),
+        )
+
+    assert events == ["service_close"]
+
+
+def test_serve_readiness_callback_failure_closes_bound_server_and_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = StubService()
+    events: list[str] = []
+
+    class BoundServer:
+        server_address = ("127.0.0.1", 49321)
+
+        def serve_forever(self) -> None:
+            events.append("serve")
+
+        def server_close(self) -> None:
+            events.append("server_close")
+
+    service.close = lambda: events.append("service_close")  # type: ignore[attr-defined]
+    monkeypatch.setattr("bluefire.api.create_server", lambda *args, **kwargs: BoundServer())
+
+    def fail_ready(_server: Any) -> None:
+        events.append("ready")
+        raise RuntimeError("announcement failed")
+
+    with pytest.raises(RuntimeError, match="announcement failed"):
+        serve(
+            service,
+            browser_bootstrap_capability=generate_browser_bootstrap_capability(),
+            on_ready=fail_ready,
+        )
+
+    assert events == ["ready", "server_close", "service_close"]
+
+
+def test_static_assets_are_public_but_local_api_requires_a_browser_session() -> None:
+    with running_server(authenticate=False) as (server, service):
+        status, _, payload = request(server, "GET", "/", authenticated=False)
+        assert status == 200
+        assert payload
+
+        status, _, payload = request(
+            server,
+            "GET",
+            "/api/v1/catalog",
+            authenticated=False,
+        )
+        assert status == 401
+        assert json_body(payload)["error"]["code"] == "browser_session_required"
+
+        status, headers, payload = request(
+            server,
+            "POST",
+            "/api/v1/scenarios/validate",
+            body={"untrusted": True},
+            authenticated=False,
+        )
+        assert status == 401
+        assert headers["Connection"] == "close"
+        assert json_body(payload)["error"]["code"] == "browser_session_required"
+        assert not service.calls
+
+
+def test_browser_bootstrap_is_single_use_and_sets_a_strict_bounded_cookie(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    capability = generate_browser_bootstrap_capability()
+    with running_server(
+        authenticate=False,
+        bootstrap_capability=capability,
+    ) as (server, service):
+        invalid = generate_browser_bootstrap_capability()
+        status, _, payload = request(
+            server,
+            "POST",
+            "/api/v1/session",
+            extra_headers={BROWSER_BOOTSTRAP_HEADER: invalid},
+            authenticated=False,
+        )
+        assert status == 401
+        assert capability.encode() not in payload
+
+        status, headers, payload = request(
+            server,
+            "POST",
+            "/api/v1/session",
+            extra_headers={BROWSER_BOOTSTRAP_HEADER: capability},
+            authenticated=False,
+        )
+        assert status == 204
+        assert payload == b""
+        cookie_header = headers["Set-Cookie"]
+        cookie = cookie_header.split(";", 1)[0]
+        attributes = set(cookie_header.split("; ")[1:])
+        assert cookie.startswith(f"{BROWSER_SESSION_COOKIE}=")
+        assert attributes == {
+            "HttpOnly",
+            f"Max-Age={BROWSER_SESSION_LIFETIME_SECONDS}",
+            "Path=/api/v1",
+            "SameSite=Strict",
+        }
+        assert "Domain=" not in cookie_header
+        assert "Secure" not in attributes
+        assert "__Host-" not in cookie_header
+        assert capability not in cookie_header
+        assert capability not in repr(vars(service))
+        assert capability not in repr(vars(server))
+
+        status, _, payload = request(
+            server,
+            "GET",
+            "/api/v1/session",
+            extra_headers={"Cookie": cookie},
+            authenticated=False,
+        )
+        assert status == 204
+        assert payload == b""
+
+        status, _, replay_payload = request(
+            server,
+            "POST",
+            "/api/v1/session",
+            extra_headers={BROWSER_BOOTSTRAP_HEADER: capability},
+            authenticated=False,
+        )
+        assert status == 401
+        assert capability.encode() not in replay_payload
+        assert not service.calls
+
+    captured = capsys.readouterr()
+    assert capability not in captured.out
+    assert capability not in captured.err
+
+
+def test_browser_bootstrap_query_and_body_are_refused_without_being_read() -> None:
+    capability = generate_browser_bootstrap_capability()
+    with running_server(
+        authenticate=False,
+        bootstrap_capability=capability,
+    ) as (server, service):
+        port = server.server_address[1]
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        connection.putrequest("POST", f"/api/v1/session?capability={capability}")
+        connection.putheader("Origin", f"http://127.0.0.1:{port}")
+        connection.putheader(BROWSER_BOOTSTRAP_HEADER, capability)
+        connection.putheader("Content-Length", "1048576")
+        connection.putheader("Content-Type", "application/octet-stream")
+        connection.endheaders()
+        response = connection.getresponse()
+        payload = response.read()
+        response_headers = dict(response.getheaders())
+        connection.close()
+
+        assert response.status == 400
+        assert response_headers["Connection"] == "close"
+        assert json_body(payload)["error"]["code"] == "browser_session_bootstrap_invalid"
+        assert capability.encode() not in payload
+        assert not service.calls
+
+
+def test_concurrent_browser_bootstrap_exchange_has_exactly_one_winner() -> None:
+    capability = generate_browser_bootstrap_capability()
+    with running_server(
+        authenticate=False,
+        bootstrap_capability=capability,
+    ) as (server, service):
+        barrier = threading.Barrier(8)
+        results: list[tuple[int, Mapping[str, str], bytes]] = []
+        result_lock = threading.Lock()
+
+        def exchange() -> None:
+            barrier.wait(timeout=3)
+            result = request(
+                server,
+                "POST",
+                "/api/v1/session",
+                extra_headers={BROWSER_BOOTSTRAP_HEADER: capability},
+                authenticated=False,
+            )
+            with result_lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=exchange) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert sorted(status for status, _, _ in results) == [204] + [401] * 7
+        assert sum("Set-Cookie" in headers for _, headers, _ in results) == 1
+        assert all(capability.encode() not in payload for _, _, payload in results)
+        assert not service.calls
+
+
+def test_bootstrap_and_browser_sessions_expire_without_service_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [100.0]
+    monkeypatch.setattr(api_module.time, "monotonic", lambda: now[0])
+
+    expired_capability = generate_browser_bootstrap_capability()
+    with running_server(
+        authenticate=False,
+        bootstrap_capability=expired_capability,
+    ) as (server, service):
+        now[0] += BROWSER_BOOTSTRAP_LIFETIME_SECONDS
+        status, _, _ = request(
+            server,
+            "POST",
+            "/api/v1/session",
+            extra_headers={BROWSER_BOOTSTRAP_HEADER: expired_capability},
+            authenticated=False,
+        )
+        assert status == 401
+        assert not service.calls
+
+    now[0] = 1_000.0
+    capability = generate_browser_bootstrap_capability()
+    with running_server(
+        authenticate=False,
+        bootstrap_capability=capability,
+    ) as (server, service):
+        status, headers, _ = request(
+            server,
+            "POST",
+            "/api/v1/session",
+            extra_headers={BROWSER_BOOTSTRAP_HEADER: capability},
+            authenticated=False,
+        )
+        assert status == 204
+        cookie = headers["Set-Cookie"].split(";", 1)[0]
+        now[0] += BROWSER_SESSION_LIFETIME_SECONDS
+        port = server.server_address[1]
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        connection.putrequest("POST", "/api/v1/scenarios/validate")
+        connection.putheader("Origin", f"http://127.0.0.1:{port}")
+        connection.putheader("Cookie", cookie)
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("Content-Length", "1048576")
+        connection.endheaders()
+        response = connection.getresponse()
+        payload = response.read()
+        response_headers = dict(response.getheaders())
+        connection.close()
+        assert response.status == 401
+        assert response_headers["Connection"] == "close"
+        assert json_body(payload)["error"]["code"] == "browser_session_required"
+        assert not service.calls
+
+
+def test_browser_session_cookie_parsing_is_exact_and_duplicate_safe() -> None:
+    with running_server() as (server, service):
+        valid_cookie = server._test_browser_cookie  # type: ignore[attr-defined]
+        session_value = valid_cookie.split("=", 1)[1]
+        malformed = (
+            f"{valid_cookie}; {valid_cookie}",
+            f"{BROWSER_SESSION_COOKIE}=not-the-session",
+            f'{BROWSER_SESSION_COOKIE}="{session_value}"',
+            f"theme=dark, {valid_cookie}",
+            f"broken; {valid_cookie}",
+        )
+        for cookie in malformed:
+            status, _, payload = request(
+                server,
+                "GET",
+                "/api/v1/catalog",
+                extra_headers={"Cookie": cookie},
+                authenticated=False,
+            )
+            assert status == 401
+            assert json_body(payload)["error"]["code"] == "browser_session_required"
+
+        status, _, _ = request(
+            server,
+            "GET",
+            "/api/v1/session",
+            extra_headers={"Cookie": f"theme=dark; {valid_cookie}"},
+            authenticated=False,
+        )
+        assert status == 204
+
+        port = server.server_address[1]
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        connection.putrequest("GET", "/api/v1/catalog")
+        connection.putheader("Cookie", valid_cookie)
+        connection.putheader("Cookie", valid_cookie)
+        connection.endheaders()
+        response = connection.getresponse()
+        payload = response.read()
+        connection.close()
+        assert response.status == 401
+        assert json_body(payload)["error"]["code"] == "browser_session_required"
+        assert not service.calls
+
+
+def test_unauthenticated_post_is_rejected_before_waiting_for_its_declared_body() -> None:
+    with running_server(authenticate=False) as (server, service):
+        port = server.server_address[1]
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        connection.putrequest("POST", "/api/v1/scenarios/validate")
+        connection.putheader("Origin", f"http://127.0.0.1:{port}")
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("Content-Length", "1048576")
+        connection.endheaders()
+        response = connection.getresponse()
+        payload = response.read()
+        response_headers = dict(response.getheaders())
+        connection.close()
+
+    assert response.status == 401
+    assert response_headers["Connection"] == "close"
+    assert json_body(payload)["error"]["code"] == "browser_session_required"
+    assert not service.calls
 
 
 def test_get_routes_dispatch_to_the_injected_service() -> None:
@@ -398,6 +842,73 @@ def test_post_routes_forward_json_objects_without_orchestration() -> None:
 
         assert ("upsert_setting", "ui.preferences", body) in service.calls
         assert ("save_resource", "collector", RESOURCE_ID, body) in service.calls
+
+
+def test_runner_routes_dispatch_only_explicit_managed_lifecycle_actions() -> None:
+    profile_id = "sandbox-execute.v1"
+    with running_server() as (server, service):
+        status, _, payload = request(server, "GET", "/api/v1/runner")
+        assert status == 200
+        assert json_body(payload)["state"] == "ready"
+
+        actions = [
+            (
+                "bootstrap",
+                {"profile_id": profile_id, "allow_upgrade": True},
+                ("bootstrap_runner", profile_id, True),
+            ),
+            ("start", {"profile_id": profile_id}, ("start_runner", profile_id)),
+            ("stop", {"profile_id": profile_id}, ("stop_runner", profile_id)),
+            ("revoke", {}, ("revoke_runner",)),
+            (
+                "remove",
+                {"confirm_runner_id": "bluefire-rust-runner.v1"},
+                ("remove_runner", "bluefire-rust-runner.v1"),
+            ),
+        ]
+        for action, body, expected_call in actions:
+            status, _, payload = request(
+                server,
+                "POST",
+                f"/api/v1/runner/{action}",
+                body=body,
+            )
+            assert status == 200
+            assert json_body(payload)["state"]
+            assert service.calls[-1] == expected_call
+
+        assert service.calls[0] == ("runner_status", None)
+
+
+@pytest.mark.parametrize(
+    ("action", "body"),
+    [
+        ("bootstrap", {"unknown": True}),
+        ("start", {"allow_upgrade": True}),
+        ("stop", {"confirm_runner_id": "wrong-boundary"}),
+        ("revoke", {"profile_id": "sandbox-execute.v1"}),
+        ("remove", {}),
+        (
+            "remove",
+            {"confirm_runner_id": "bluefire-rust-runner.v1", "extra": True},
+        ),
+    ],
+)
+def test_runner_routes_reject_ambiguous_action_bodies(
+    action: str,
+    body: Mapping[str, Any],
+) -> None:
+    with running_server() as (server, service):
+        status, _, payload = request(
+            server,
+            "POST",
+            f"/api/v1/runner/{action}",
+            body=body,
+        )
+
+    assert status == 400
+    assert json_body(payload)["error"]["code"] == "runner_action_invalid"
+    assert not service.calls
 
 
 def test_ai_graph_draft_route_forwards_only_to_the_service_boundary() -> None:
@@ -852,6 +1363,7 @@ def test_content_length_is_required_for_post() -> None:
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
         connection.putrequest("POST", "/api/v1/scenarios/validate")
         connection.putheader("Origin", f"http://127.0.0.1:{port}")
+        connection.putheader("Cookie", server._test_browser_cookie)  # type: ignore[attr-defined]
         connection.putheader("Content-Type", "application/json")
         connection.endheaders()
         response = connection.getresponse()
@@ -878,6 +1390,7 @@ def test_security_sensitive_duplicate_headers_are_rejected(
         connection.putrequest("POST", "/api/v1/scenarios/validate")
         headers = {
             "Origin": f"http://127.0.0.1:{port}",
+            "Cookie": server._test_browser_cookie,  # type: ignore[attr-defined]
             "Content-Type": "application/json",
             "Content-Length": "2",
         }

@@ -8,10 +8,22 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .api import APIError, serve
+from .api import (
+    APIError,
+    browser_console_url,
+    generate_browser_bootstrap_capability,
+    serve,
+)
 from .config import AutonomyLevel, RunnerProfile
 from .contracts import ExecutionMode, load_scenario
-from .receiver import DEFAULT_MAX_BODY_BYTES, ReceiverConfig, run_loopback_receiver
+from .receiver import (
+    DEFAULT_IDLE_TIMEOUT_SECONDS,
+    DEFAULT_MAX_BODY_BYTES,
+    ReceiverConfig,
+    run_loopback_receiver,
+)
+from .runner_bootstrap import managed_product_root
+from .runner_trust import RunnerTrustError, load_local_enrollment
 from .service import BlueFireService
 
 _RESOURCE_KINDS = (
@@ -75,21 +87,45 @@ def _parser() -> argparse.ArgumentParser:
         "--max-connections",
         type=int,
         default=16,
-        help="All TCP connections, including refusals, before exit",
+        help="All TCP connections before exit; at least twice --max-requests",
     )
     receiver.add_argument("--max-body-bytes", type=int, default=DEFAULT_MAX_BODY_BYTES)
     receiver.add_argument("--request-timeout", type=float, default=5.0)
-    receiver.add_argument("--idle-timeout", type=float, default=60.0)
+    receiver.add_argument("--idle-timeout", type=float, default=DEFAULT_IDLE_TIMEOUT_SECONDS)
     receiver.add_argument(
         "--storage-dir",
         type=Path,
         help="Explicit receiver-owned directory for content-addressed artifact storage",
     )
 
-    runner = commands.add_parser("runner", help="Inspect the Rust runner")
+    runner = commands.add_parser("runner", help="Manage the authenticated local runner")
     runner_commands = runner.add_subparsers(dest="runner_command", required=True)
-    runner_status = runner_commands.add_parser("status", help="Read runner inventory")
+    runner_status = runner_commands.add_parser("status", help="Read managed lifecycle status")
     runner_status.add_argument("--profile")
+    runner_bootstrap = runner_commands.add_parser(
+        "bootstrap", help="Install, verify, and enroll the packaged runner"
+    )
+    runner_bootstrap.add_argument("--profile")
+    runner_bootstrap.add_argument(
+        "--allow-upgrade",
+        action="store_true",
+        help="Confirm a clean compatible runner upgrade",
+    )
+    runner_start = runner_commands.add_parser(
+        "start", help="Start the separately hosted authenticated runner"
+    )
+    runner_start.add_argument("--profile")
+    runner_stop = runner_commands.add_parser("stop", help="Request authenticated runner shutdown")
+    runner_stop.add_argument("--profile")
+    runner_commands.add_parser("revoke", help="Revoke stopped runner trust")
+    runner_remove = runner_commands.add_parser(
+        "remove", help="Remove revoked trust and reconciled runner state"
+    )
+    runner_remove.add_argument(
+        "--confirm-runner-id",
+        required=True,
+        help="Exact runner ID required for destructive removal",
+    )
 
     runs = commands.add_parser("runs", help="Inspect immutable run bundles")
     runs_commands = runs.add_subparsers(dest="runs_command", required=True)
@@ -311,6 +347,7 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
     if args.command == "receiver":
         return run_loopback_receiver(
             ReceiverConfig(
+                authentication_key=_managed_receiver_authentication_key(),
                 host=args.host,
                 port=args.port,
                 max_requests=args.max_requests,
@@ -338,18 +375,43 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
             return service.preflight(payload)
         return service.run(payload)
     if args.command == "ui":
-        print(f"BlueFire local console: http://{args.host}:{args.port}", file=sys.stderr)
-        serve(service, host=args.host, port=args.port)
+        browser_capability = generate_browser_bootstrap_capability()
+
+        def announce_ready(server: Any) -> None:
+            address = server.server_address
+            if not isinstance(address, tuple) or len(address) < 2:
+                raise RuntimeError("The local console listener address is unavailable.")
+            launch_url = browser_console_url(
+                str(address[0]),
+                int(address[1]),
+                browser_capability,
+            )
+            print(f"BlueFire local console: {launch_url}", file=sys.stderr)
+            sys.stderr.flush()
+
+        serve(
+            service,
+            host=args.host,
+            port=args.port,
+            browser_bootstrap_capability=browser_capability,
+            on_ready=announce_ready,
+        )
         return None
     if args.command == "runner":
-        profile = _execute_profile(service, args.profile)
-        runner, sandbox = service.runner_factory(profile)
-        return {
-            "schema_version": "bluefire.runner-status.v1",
-            "profile_id": profile.id,
-            "sandbox_ready": sandbox.is_dir(),
-            "inventory": runner.inventory(),
-        }
+        if args.runner_command == "status":
+            return service.runner_status(profile_id=args.profile)
+        if args.runner_command == "bootstrap":
+            return service.bootstrap_runner(
+                profile_id=args.profile,
+                allow_upgrade=args.allow_upgrade,
+            )
+        if args.runner_command == "start":
+            return service.start_runner(profile_id=args.profile)
+        if args.runner_command == "stop":
+            return service.stop_runner(profile_id=args.profile)
+        if args.runner_command == "revoke":
+            return service.revoke_runner()
+        return service.remove_runner(confirm_runner_id=args.confirm_runner_id)
     if args.command == "runs":
         if args.runs_command == "list":
             return service.list()
@@ -482,6 +544,24 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
                 )
         return {"schema_version": "bluefire.research-status.v1", "items": rows}
     raise AssertionError("argparse returned an unknown command")
+
+
+def _managed_receiver_authentication_key() -> bytes:
+    """Load only active enrollment material without exposing its managed path."""
+
+    try:
+        enrollment = load_local_enrollment(
+            managed_product_root() / "enrollment",
+            require_active=True,
+        )
+        key = enrollment.hmac_key()
+    except (OSError, RunnerTrustError):
+        raise RuntimeError(
+            "Managed receiver authentication is unavailable; bootstrap and start an active runner enrollment first."
+        ) from None
+    if type(key) is not bytes or len(key) != 32:
+        raise RuntimeError("Managed receiver authentication is unavailable.")
+    return key
 
 
 def _execute_profile(service: BlueFireService, profile_id: str | None) -> RunnerProfile:

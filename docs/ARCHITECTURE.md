@@ -23,8 +23,9 @@ flowchart LR
     planner --> simulation[Simulation adapter]
     planner --> policy[Deny-by-default policy]
     policy --> adapter[RunnerActionAdapter]
-    adapter --> transport[Fixed local Rust transport]
-    transport --> runner[Reviewed Rust action registry]
+    adapter --> transport[Authenticated loopback runner transport]
+    transport --> host[Separate managed runner host]
+    host --> runner[Reviewed Rust action registry]
 
     simulation --> evidence[Evidence graph]
     runner --> evidence
@@ -50,7 +51,7 @@ The UI and CLI are adapters over the same service boundary. Neither browser stat
 | bluefire/planner.py | Deterministic plan compilation, outcome-edge selection, budget state, and compatible-alternate compilation | Policy bypass or action creation |
 | bluefire/policy.py | Deny-by-default Execute decisions and request-bound approval checks | Performing actions |
 | RunnerActionAdapter | Sole mapping from logical parameters and artifact bindings to a known Rust action's sealed parameters | Generic commands, arbitrary paths, or unknown actions |
-| bluefire/runner_client.py | Fixed invocation of one configured absolute runner binary and result-correlation checks | Shell execution or behavior implementation |
+| bluefire/runner_client.py, bluefire/runner_transport.py, bluefire/runner_host.py, and bluefire/runner_lifecycle.py | Authenticated loopback task transport, durable replay/cancellation state, exact managed-process ownership, and fixed invocation of one verified runner binary | Shell execution, cross-host exposure, or behavior implementation |
 | runner/ | Strict manifest/profile validation and compiled sandbox actions | Simulation, planning, UI, or arbitrary execution |
 | bluefire/evidence.py and bluefire/collectors.py | Provenance records, same-run evidence graph, bounded sandbox/fixture observation, health, and explicit gaps | Treating runner self-report as independent observation |
 | bluefire/detections.py | Detection lifecycle, internal matcher, pySigma/YARA adapters, SPL structural checks, fields and baselines | Claiming target-language production validity |
@@ -59,7 +60,7 @@ The UI and CLI are adapters over the same service boundary. Neither browser stat
 | bluefire/research.py | Strict pinned source/version/license/relationship registry | Fetching or executing external research |
 | bluefire/replay.py | Lineage, restart, and compatible behavior substitution | Mutating source runs through the replay API |
 | bluefire/comparison.py | Normalized run summaries and deltas | Causal inference |
-| bluefire/api.py and bluefire/ui/ | Loopback-only HTTP adapter and browser workspace | Authentication for remote exposure |
+| bluefire/api.py and bluefire/ui/ | Loopback-only HTTP adapter, one-use browser bootstrap exchange, bounded HttpOnly session, and browser workspace | Authentication for remote exposure or multi-user identity |
 | bluefire/plugins.py | Strict declarative plugin manifest inventory | Importing or executing third-party code |
 
 ## Contract model
@@ -125,13 +126,13 @@ Simulation must never instantiate SubprocessRustRunner. It must not label output
 
 Execute requires an explicit Execute profile. The service validates the scenario, compiles a plan, checks runner inventory, evaluates policy, obtains any required request-bound approval, translates logical inputs through RunnerActionAdapter, seals the manifest, and invokes the Rust runner.
 
-The transport uses an argument vector equivalent to:
+The service resolves the active local enrollment and exact Execute profile, then submits the sealed task to the separately hosted runner over literal loopback TLS 1.3. Mutual certificates bind the client and runner identities; an enrollment-derived authenticator also binds the task, profile, request hash, and expiry. The host durably reserves the task before invoking the verified Rust binary with an argument vector equivalent to:
 
 ~~~text
 bluefire-runner execute --manifest MANIFEST --profile PROFILE --json
 ~~~
 
-The binary path is configured rather than selected by a scenario. The child receives a bounded environment, fixed working directory, null standard input, time limit, and output-size limits. Result run, step, and action IDs must match the request.
+The managed bootstrap record, not a scenario, selects the exact binary. The child receives a bounded environment, fixed working directory, null standard input, time limit, output-size limits, watchdog containment, and durable cancellation state. Result run, step, behavior, action, runner, profile, platform, request, and policy identities must match the task. Duplicate task IDs are recovered from the identity-bound durable ledger rather than re-executed.
 
 The Rust runner then repeats the relevant validation. It recognizes only its compiled action inventory and refuses Simulate manifests. See [Execution model](EXECUTION_MODEL.md).
 
@@ -219,7 +220,7 @@ The loader has no entry-point discovery and no import hook. An inventory entry a
 
 The Python distribution discovers only bluefire packages. It includes catalog YAML, canonical configuration, six scenario defaults, research registry, and built UI assets as package data. Checkout config/scenario copies are parity-tested against `bluefire/data`; BlueFireService prefers checkout scenarios when present and otherwise uses package resources. Optional detection parsers remain separately installable. Package metadata reads the platform version from `bluefire.__version__`; Python, frontend, and Rust currently use the 0.1.0 baseline.
 
-The wheel does not include repository tests or the Rust runner binary. The runner is built and deployed separately so Execute availability remains explicit.
+The wheel does not include repository tests. Compatible platform-specific wheels include one manifest-bound native runner artifact; explicit bootstrap verifies and installs it into an owner-private per-user root before creating local enrollment. Source builds remain supported for development, and Execute availability remains explicit because status/readiness never bootstraps or starts the runner.
 
 ## Current limitations
 
@@ -227,7 +228,7 @@ The wheel does not include repository tests or the Rust runner binary. The runne
 - The four `research.*` entries remain metadata-only. A separate persistence-detection behavior has one fixed non-executable marker action under a dedicated restricted profile; no host persistence mechanism is shipped.
 - No configured remote telemetry collector, SIEM connector, cloud action, identity action, or general network target is part of the baseline.
 - Sigma/YARA validation requires optional pinned packages; production SPL/backend validation is not included.
-- Current runner transport is local subprocess only; remote enrollment/authentication/revocation and signed tasks are not implemented.
+- Runner transport is same-user loopback only. Local enrollment, revocation, TLS 1.3 mutual authentication, durable task replay protection, cancellation, and recovery are implemented; cross-host transport/enrollment and asymmetric signed task/profile/result artifacts are not.
 - Run hashes do not prove author identity.
-- Execute depends on local Rust build, inventory parity, profile configuration, policy, and approval; it is unavailable when any prerequisite fails.
+- Execute depends on a compatible verified native artifact (packaged or an explicit development override), active local enrollment, authenticated host readiness, inventory parity, profile configuration, policy, and approval; it is unavailable when any prerequisite fails.
 - Mutating runner actions durably record intent before effect, publish exact bytes without overwrite, and add a commit record after verification. Pending intents and staging files remain discoverable for tamper-safe cleanup after process interruption. Host or workspace loss can still destroy recovery state; preserve the runner-owned sandbox until reconciliation is complete.

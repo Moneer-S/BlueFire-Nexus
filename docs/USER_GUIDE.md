@@ -10,7 +10,7 @@ From an installed development checkout:
 bluefire --runs-dir .bluefire-runs ui --host 127.0.0.1 --port 8765
 ```
 
-Open `http://127.0.0.1:8765`. The UI, CLI, and HTTP API use the same `BlueFireService`, scenario validation, planner, policy, runner adapter, and run store.
+Open the exact one-use URL printed after the listener is ready. Its fragment capability is stripped before request dispatch and exchanged for a bounded HttpOnly local API session. Do not log or share that URL. A bare URL is accepted only when the browser already holds the session; otherwise relaunch with `bluefire ui`. The UI, CLI, and HTTP API use the same `BlueFireService`, scenario validation, planner, policy, runner adapter, and run store.
 
 ## Product areas
 
@@ -121,10 +121,10 @@ The canonical sandbox research chain's network step has a real, bounded primary 
 ```bash
 bluefire receiver --host 127.0.0.1 --port 4317 \
   --max-requests 1 --max-connections 16 \
-  --max-body-bytes 5242880 --idle-timeout 120
+  --max-body-bytes 5242880 --idle-timeout 300
 ```
 
-It accepts only the exact loopback artifact route, verifies length and SHA-256, and treats the body as opaque bytes. `--max-requests` counts verified artifacts while `--max-connections` separately bounds accepted and refused connections. Default operation transiently buffers at most the configured body limit and does not persist the body. `--storage-dir` is an explicit opt-in to an empty, dedicated, receiver-owned directory with content-addressed filenames. The runner also verifies the acknowledgement schema, byte count, and echoed digest. The approved host and port do not authenticate the receiver process/session, so the receiver is not remote runner transport, authentication, or a general HTTP server. Without a ready receiver, the primary network action can fail and the scenario may follow only its declared alternate; do not report that alternate as a successful primary-path exercise. See [Runner deployment](RUNNER_DEPLOYMENT.md#provision-the-loopback-receiver) and the [CLI reference](CLI.md#loopback-artifact-receiver).
+It loads only the active managed enrollment, issues an authenticated one-time challenge, and accepts only the exact loopback artifact route. The challenge, request, and acknowledgement bind the task, ephemeral session, nonce, listener, length, and SHA-256; the runner verifies each HMAC in constant time and treats the body as opaque bytes. `--max-requests` counts verified artifacts while `--max-connections` separately bounds accepted and refused connections and must be at least twice the accepted-artifact limit. Default operation transiently buffers at most the configured body limit and does not persist the body. `--storage-dir` is an explicit opt-in to an empty, dedicated, receiver-owned directory with content-addressed filenames. The default idle window is a bounded 300 seconds and remains explicitly configurable. This authenticates the same-user managed receiver session, but it is not remote transport or a general HTTP server. Without a ready receiver, the primary network action can fail and the scenario may follow only its declared alternate; do not report that alternate as a successful primary-path exercise. See [Runner deployment](RUNNER_DEPLOYMENT.md#provision-the-loopback-receiver) and the [CLI reference](CLI.md#loopback-artifact-receiver).
 
 ## Preflight
 
@@ -228,9 +228,12 @@ Use `bluefire settings list` to inspect durable records and `bluefire settings s
 
 ### Runner unavailable
 
-Confirm the environment references, binary existence, sandbox root, host platform, inventory schema, and profile/action parity:
+Read status first; it is inert and never repairs readiness implicitly. If the runner is unbootstrapped, explicitly bootstrap the compatible packaged artifact and local enrollment. If it is stopped, explicitly start the authenticated host. A stale process record must be reconciled with `runner stop`, not with upgrade. Then confirm host platform, artifact/inventory compatibility, active enrollment, authenticated transport, selected profile, and action parity:
 
 ```bash
+bluefire --config config/bluefire.example.yaml runner status --profile sandbox-execute.v1
+bluefire --config config/bluefire.example.yaml runner bootstrap --profile sandbox-execute.v1
+bluefire --config config/bluefire.example.yaml runner start --profile sandbox-execute.v1
 bluefire --config config/bluefire.example.yaml runner status --profile sandbox-execute.v1
 ```
 
@@ -262,7 +265,7 @@ Do not treat an interrupted Execute job as resumable authority. Startup first re
 
 BlueFire is local-first and pre-1.0. Keep these limits visible when interpreting a successful workflow:
 
-- the API and artifact receiver bind loopback; remote transport, TLS/mTLS, runner enrollment/revocation, service installation, and signed task/profile/result artifacts are not implemented;
+- the browser API and artifact receiver bind loopback; the artifact receiver uses active managed enrollment and per-task HMAC, while neither surface is remote transport;
 - the runner action pack is bounded and has no general shell or arbitrary program execution;
 - only the narrow sandbox persistence-detection canary is available under its dedicated restricted profile; real host persistence plus credential, lateral-movement, and defense-evasion Execute families remain unavailable;
 - built-in independent observation is limited to declared sandbox files and disposable JSONL fixtures; optional audit/SIEM collectors remain unavailable until separately implemented and configured;

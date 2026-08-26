@@ -35,13 +35,15 @@ flowchart TB
     OBS[Observed or fixture data] -->|untrusted content| AI[AI proposal provider]
     AI -->|untrusted structured proposal| VAL[Schema and allowlist validation]
     VAL --> PLAN[Deterministic planner and policy]
-    PLAN -->|sealed manifest/profile| RUN[Local Rust runner]
+    PLAN -->|sealed task/profile| TRANSPORT[Authenticated loopback transport]
+    TRANSPORT --> HOST[Separate managed runner host]
+    HOST --> RUN[Local Rust runner]
     RUN -->|self-reported executed evidence| STORE[Run store]
     COL[Independent collector] -->|observed or unknown evidence| STORE
     STORE --> UI[Review, replay, compare]
 ```
 
-The current runner transport is a local subprocess. Remote runner enrollment, mutual authentication, revocation, and encrypted remote transport are not shipped.
+The current runner transport is a separately hosted same-user loopback service. Local enrollment issues exact client/runner identities, TLS 1.3 provides mutual authentication and encryption, enrollment-derived authenticators bind tasks, and a durable ledger provides duplicate recovery and cancellation state. Cross-host transport or enrollment is not shipped.
 
 ## Assumptions
 
@@ -62,13 +64,13 @@ The current runner transport is a local subprocess. Remote runner enrollment, mu
 | Malicious plugin/action package | Plugin loader is manifest-only and never imports an entry point; Rust actions live in a static compiled registry | BlueFire does not provide a trusted third-party installer. Review source, license, digest, and build chain before adding code. |
 | Target-scope confusion | Execute requires explicit scope refs; service checks profile containment; adapter derives action scope; Python policy and runner enforce again | Scope names are local policy identifiers, not organizational authorization. Use distinct profiles per lab. |
 | Approval bypass | Shipped Execute profiles require approval; approval is short-lived and bound to request hash, action, profile, and scope digest | The local CLI confirmation trusts the caller's OS account and is not multi-user authentication. Do not expose the service. |
-| Runner impersonation | Runner path must resolve to one configured absolute binary; inventory and result identities are checked | The binary is not signed or remotely enrolled by BlueFire. Protect and verify it with OS/package controls. |
-| Task replay | Manifest/profile digests and request expiry detect changes and stale requests | The local runner has no persistent replay cache. An identical still-live manifest can be resubmitted by a compromised local process. |
+| Runner impersonation | Native package digest/platform/architecture/inventory verification; owner-private managed roots; exact local enrollment identities; TLS 1.3 mutual authentication; enrollment-bound process records and task authenticators; exact result correlation | BlueFire does not provide cross-host enrollment or an external code-signing trust chain. A compromised same-user control plane, runner binary, or OS remains authoritative inside that account. |
+| Task replay | Task/profile/request/policy identity binding; expiry; authenticated durable singleton ledger; exact duplicate-result recovery; task-ID collision refusal | A compromised enrolled control plane can authorize a new in-policy task. Preserve the managed ledger until every task and receipt is reconciled. |
 | Capability/tier expansion | Registry/profile intersection, allowlist, blocklist, exact capabilities, safety-tier checks, runner-side revalidation | A misconfigured broad profile is broad authority. Treat profile review as a security change. |
 | Path traversal or link escape | Relative normalized paths; drive/UNC/device/traversal rejection; canonical sandbox root; symlink/reparse refusal; create-new semantics | Filesystem race resistance depends on platform APIs and local account isolation. Keep the sandbox private and disposable. |
 | Unintended network access | Current action accepts literal loopback IP only; CIDR allowlist; no DNS, URL, redirect, or proxy | No general network testing ships. Do not modify the action/profile merely to bypass this boundary. |
 | Secret leakage | Config stores environment-variable names; browser has no plaintext-secret field; model redaction; safe API errors | Run artifacts can contain filenames, telemetry, or operator-entered text. Review before sharing and set retention controls externally. |
-| CSRF/host-header abuse | Loopback bind enforcement, exact Host validation, same-origin POST requirement, no permissive CORS, bounded bodies, restrictive browser headers | Loopback has no user authentication. Malicious software running as the same user remains in the threat model. |
+| CSRF/host-header abuse | Loopback bind enforcement, exact Host validation, same-origin mutation requirement, no permissive CORS, bounded bodies, restrictive browser headers, a one-use URL-fragment bootstrap capability, and a bounded strict HttpOnly API session cookie | The browser session is same-user local protection, not remote or multi-user identity. Malicious software controlling the same account or browser remains in the threat model. |
 | Log/UI injection | Structured JSON, bounded strings/output, React escaping, no request-path logging by default | Exported data may be opened in other tools. Treat evidence fields as untrusted and avoid unsafe rendering. |
 | Compromised runner | Runner cannot label evidence `observed`; results are identity-correlated; separate collectors; immutable bundle snapshots | A compromised runner can lie about its own execution and manipulate its sandbox. Independent telemetry is essential for high-confidence conclusions. |
 | Evidence tampering | Content-derived evidence IDs, same-run parent validation, hash-chained events, finalized file table and bundle hash | Hashes are not signatures. Anyone who can rewrite the whole store can recompute them. Protect or externally sign important bundles. |
@@ -92,7 +94,7 @@ The current runner transport is a local subprocess. Remote runner enrollment, mu
 
 - hostile multi-user or remote service exposure;
 - a compromised kernel, administrator/root account, Python process, or runner binary;
-- remote runner identity, transport encryption, enrollment, or revocation;
+- cross-host runner identity, transport, enrollment, or revocation;
 - digital signatures or non-repudiation for profiles, approvals, tasks, evidence, or bundles;
 - complete prevention of all filesystem time-of-check/time-of-use races;
 - production-grade SIEM, EDR, cloud, or identity collector correctness;

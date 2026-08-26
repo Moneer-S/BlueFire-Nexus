@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -14,10 +15,12 @@ from bluefire.api import APIError
 from bluefire.approvals import execution_approval_binding, public_approval_record
 from bluefire.config import load_config
 from bluefire.contracts import ContractError, ExecutionMode
-from bluefire.job_runtime import JobState
+from bluefire.job_runtime import JobCancelled, JobState
 from bluefire.orchestrator import Orchestrator
-from bluefire.runner_client import RunnerTransportError
+from bluefire.runner_bootstrap import RUNNER_ID
+from bluefire.runner_client import RunnerTaskCancelled, RunnerTransportError
 from bluefire.runner_contracts import current_platform
+from bluefire.runner_lifecycle import RunnerLifecycleError
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
 
@@ -94,6 +97,85 @@ class PostApprovalReadinessRunner(ReadyInventoryRunner):
         return _ready_inventory(
             actions=self.actions - {"sandbox.fixture.create.v1"},
         )
+
+
+class CancellableTaskRunner(ReadyInventoryRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.task_id: str | None = None
+        self.durable_result_path: Path | None = None
+
+    def execute_task(
+        self,
+        manifest: Mapping[str, Any],
+        profile: Mapping[str, Any],
+        *,
+        task_id: str,
+        cancel_event: threading.Event,
+        durable_result_path: str | Path,
+    ) -> Mapping[str, Any]:
+        self.execute_calls += 1
+        expected_hash = content_hash(
+            {"manifest": dict(manifest), "profile": dict(profile)}
+        ).removeprefix("sha256:")
+        assert task_id == f"execute-{expected_hash}"
+        self.task_id = task_id
+        self.durable_result_path = Path(durable_result_path)
+        self.started.set()
+        if not cancel_event.wait(3):
+            raise RunnerTransportError("test cancellation signal was not delivered")
+        raise RunnerTaskCancelled("test runner confirmed its task tree stopped")
+
+
+class RecordingRunnerLifecycle:
+    def __init__(self, runner: ReadyInventoryRunner, sandbox: Path) -> None:
+        self.runner = runner
+        self.sandbox = sandbox
+        self.calls: list[tuple[str, object]] = []
+        self.client_available = True
+
+    def status(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
+        self.calls.append(("status", profile_id))
+        return {
+            "schema_version": "bluefire.runner-lifecycle-status.v1",
+            "state": "ready",
+            "profile_id": profile_id,
+        }
+
+    def bootstrap(
+        self,
+        *,
+        allowed_profile_ids: tuple[str, ...],
+        allow_upgrade: bool,
+    ) -> Mapping[str, Any]:
+        self.calls.append(("bootstrap", (allowed_profile_ids, allow_upgrade)))
+        return self.status(profile_id=allowed_profile_ids[0])
+
+    def start(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
+        self.calls.append(("start", profile_id))
+        return self.status(profile_id=profile_id)
+
+    def stop(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
+        self.calls.append(("stop", profile_id))
+        return self.status(profile_id=profile_id)
+
+    def revoke(self) -> Mapping[str, Any]:
+        self.calls.append(("revoke", None))
+        return self.status()
+
+    def remove(self, *, confirm_runner_id: str) -> Mapping[str, Any]:
+        self.calls.append(("remove", confirm_runner_id))
+        return {
+            "schema_version": "bluefire.runner-lifecycle-status.v1",
+            "state": "unbootstrapped",
+        }
+
+    def client_for_profile(self, profile_id: str) -> tuple[ReadyInventoryRunner, Path]:
+        self.calls.append(("client_for_profile", profile_id))
+        if not self.client_available:
+            raise RunnerLifecycleError("managed runner is stopped")
+        return self.runner, self.sandbox
 
 
 class CleanupOnlyRecoveryRunner:
@@ -643,6 +725,196 @@ def test_execute_job_requires_separate_exact_approval_before_callback(
     approval_id = str(submission["approval_request"]["approval_id"])
     assert service.product_store.get_approval_request(approval_id)["status"] == "claimed"
     service.close()
+
+
+def test_managed_runner_lifecycle_is_inert_and_actions_are_explicit(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    lifecycle = RecordingRunnerLifecycle(ReadyInventoryRunner(), sandbox)
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_lifecycle=lifecycle,  # type: ignore[arg-type]
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+
+    assert lifecycle.calls == []
+    assert service.runner_status(profile_id=profile.id)["state"] == "ready"
+    service.bootstrap_runner(profile_id=profile.id, allow_upgrade=True)
+    service.start_runner(profile_id=profile.id)
+    service.stop_runner(profile_id=profile.id)
+    service.revoke_runner()
+    service.remove_runner(confirm_runner_id=RUNNER_ID)
+
+    bootstrap_call = next(value for action, value in lifecycle.calls if action == "bootstrap")
+    allowed_profiles, allow_upgrade = bootstrap_call
+    assert allow_upgrade is True
+    assert set(allowed_profiles) == {
+        item.id for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    }
+    assert ("start", profile.id) in lifecycle.calls
+    assert ("stop", profile.id) in lifecycle.calls
+    assert ("remove", RUNNER_ID) in lifecycle.calls
+    service.close()
+
+
+def test_default_runner_binding_never_bootstraps_or_starts_implicitly(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    lifecycle = RecordingRunnerLifecycle(ReadyInventoryRunner(), sandbox)
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_lifecycle=lifecycle,  # type: ignore[arg-type]
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    request = {
+        "scenario_id": "scenario.sandbox.research.chain.v1",
+        "mode": "execute",
+        "runner_profile_id": profile.id,
+        "autonomy": "off",
+        "target_scope": {"scope_refs": list(profile.scope)},
+    }
+
+    report = service.preflight(request)
+
+    assert report["runner_readiness"]["profile_id"] == profile.id
+    assert lifecycle.calls == [("client_for_profile", profile.id)]
+    service.close()
+
+
+def test_execute_job_cancel_reaches_exact_task_aware_runner(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    runner = CancellableTaskRunner()
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_factory=lambda _profile: (runner, sandbox),
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    submission = service.submit_run(
+        {
+            "scenario_id": "scenario.sandbox.research.chain.v1",
+            "mode": "execute",
+            "runner_profile_id": profile.id,
+            "autonomy": "off",
+            "target_scope": {"scope_refs": list(profile.scope)},
+        }
+    )
+    job_id = str(submission["job"]["job_id"])
+    service.job_controller.wait_for_state(
+        job_id,
+        {JobState.AWAITING_APPROVAL},
+        timeout=3,
+    )
+    service.approve_job(job_id, {"approved_by": "cancellation-reviewer"})
+    assert runner.started.wait(3)
+
+    cancelling = service.cancel_job(job_id)
+    cancelled = service.job_controller.wait(job_id, timeout=5)
+
+    assert cancelling["state"] == JobState.CANCELLING.value
+    assert cancelled["state"] == JobState.CANCELLED.value
+    assert runner.execute_calls == 1
+    assert runner.task_id is not None
+    assert runner.durable_result_path is not None
+    assert runner.durable_result_path.parent.name == ".bluefire-runner-results"
+    service.close()
+
+
+def test_execute_job_translates_runner_cancel_during_proposal_continuation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+    )
+    cancellation_event = threading.Event()
+    cancellation_event.set()
+
+    class ContinuationContext:
+        job_id = "job-" + "0" * 32
+
+        @staticmethod
+        def progress_snapshot() -> Mapping[str, Any]:
+            return {"proposal_record_id": "proposal-review-" + "0" * 32}
+
+        @staticmethod
+        def checkpoint(_progress: Mapping[str, Any]) -> None:
+            return None
+
+    context = ContinuationContext()
+    context.cancellation_event = cancellation_event  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        service.product_store,
+        "get_ai_proposal_review",
+        lambda _proposal_record_id: {"job_id": context.job_id, "status": "accepted"},
+    )
+
+    def cancel_continuation(*_args: object, **_kwargs: object) -> Mapping[str, Any]:
+        raise RunnerTaskCancelled("runner confirmed cancellation")
+
+    monkeypatch.setattr(service, "_run_ai_proposal_continuation", cancel_continuation)
+
+    with pytest.raises(JobCancelled, match="cancellation was confirmed"):
+        service._execute_job(context, {})  # type: ignore[arg-type]
+
+    service.close()
+
+
+def test_cleanup_pending_callback_cannot_override_cancellation_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+    run_id = "run-20260826T000000Z-" + "c" * 16
+
+    def cleanup_pending_run(
+        _request: Mapping[str, Any],
+        **_kwargs: object,
+    ) -> Mapping[str, Any]:
+        callback_started.set()
+        if not release_callback.wait(timeout=3):
+            raise AssertionError("test callback was not released")
+        return {
+            "schema_version": "bluefire.run-result.v1",
+            "run_id": run_id,
+            "status": "incomplete",
+            "mode": ExecutionMode.EXECUTE.value,
+            "steps": [],
+            "cleanup": {
+                "attempted": True,
+                "success": False,
+                "outstanding_receipt_count": 1,
+            },
+        }
+
+    monkeypatch.setattr(service, "run", cleanup_pending_run)
+    queued = service.job_controller.submit("scenario.run", {"mode": "execute"})
+    job_id = str(queued["job_id"])
+    try:
+        service.job_controller.wait_for_state(job_id, {JobState.RUNNING}, timeout=3)
+        assert callback_started.wait(timeout=3)
+        cancelling = service.cancel_job(job_id)
+        assert cancelling["state"] == JobState.CANCELLING.value
+        release_callback.set()
+        settled = service.job_controller.wait(job_id, timeout=3)
+        assert settled["state"] == JobState.CANCELLED.value
+        assert settled["result_ref"] is None
+        assert settled.get("completion_confirmed") is not True
+    finally:
+        release_callback.set()
+        service.close()
 
 
 def test_execute_preflight_refuses_missing_enabled_action_without_side_effects(

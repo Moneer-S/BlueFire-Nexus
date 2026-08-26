@@ -213,6 +213,35 @@ export interface RunnerProbe {
   health: { state: "ready" | "degraded" | "unavailable" | string; message: string; missing_actions?: string[] };
 }
 
+export interface RunnerLifecycleStatus {
+  schema_version: "bluefire.runner-lifecycle-status.v1" | string;
+  state: "unbootstrapped" | "stopped" | "ready" | "stale" | "unavailable" | string;
+  runner_id: string;
+  profile_id: string | null;
+  loopback_only: true;
+  enrollment: "absent" | "active" | "revoked" | "unavailable" | string;
+  process: "absent" | "authenticated" | "stale" | "unavailable" | string;
+  runner: {
+    source?: string;
+    product_version?: string;
+    runner_version?: string;
+    platform?: string;
+    architecture?: string;
+    managed_binary?: boolean;
+    managed_sandbox?: boolean;
+    inventory_schema?: string;
+    action_sdk_version?: string;
+    receipt_protocol?: string;
+  } | null;
+  health: {
+    transport?: string;
+    tls?: string;
+    runner_binary_digest?: string;
+    inventory_digest?: string;
+    accepting_execute?: boolean;
+  } | null;
+}
+
 export interface EvidenceRecord {
   schema_version?: string;
   evidence_id?: string;

@@ -51,8 +51,9 @@ Execute is unavailable unless every prerequisite succeeds:
 - the requested mode is execute;
 - an explicit Execute profile is selected;
 - the operator supplied an explicit target scope contained by that profile;
-- runner and sandbox-root environment references resolve to operator-provided local values;
-- the runner binary exists at an absolute path;
+- an explicit managed bootstrap has verified a compatible native artifact and created active local enrollment;
+- the separately hosted runner is mutually authenticated and ready for the exact Execute profile;
+- the managed or explicit operator sandbox is private, disposable, and passes exact readiness checks;
 - runner inventory uses the supported schema and contains compatible descriptors;
 - the scenario behavior exposes an action ID enabled by the profile;
 - action, profile, and current host platforms intersect;
@@ -195,12 +196,14 @@ For Simulate:
 For Execute:
 
 1. Confirm written authorization and sandbox ownership.
-2. Build and test the runner for the current platform.
-3. Set runner and sandbox-root environment references locally.
-4. Check bluefire runner status.
-5. Preview with mode execute and the explicit profile.
-6. Review actions, translated scope, capabilities, budgets, cleanup, and approval request hash.
-7. Approve only the exact reviewed request.
-8. Run, inspect refusal or result honestly, verify cleanup, and validate the bundle.
+2. Install a compatible platform-native package, or build and test an explicit source-development runner override.
+3. Set only any reviewed source-development binary or disposable-sandbox override; packaged bootstrap otherwise manages both beneath the private product root.
+4. Run `bluefire runner bootstrap --profile PROFILE_ID` to verify the artifact and establish local enrollment.
+5. Run `bluefire runner start --profile PROFILE_ID`, then require `bluefire runner status --profile PROFILE_ID` to report authenticated readiness.
+6. Preview with mode execute and the exact profile.
+7. Review actions, translated scope, capabilities, budgets, cleanup, and approval request hash.
+8. Approve only the exact reviewed request.
+9. Run, inspect refusal or result honestly, verify cleanup, and validate the bundle.
+10. Stop the managed host before revocation, upgrade, or confirmed removal.
 
 Never use a successful Simulate run, a preflight allow decision, or a bundle hash as proof that Execute occurred or that a defense observed it.

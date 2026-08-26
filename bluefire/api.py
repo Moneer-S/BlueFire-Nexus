@@ -8,17 +8,21 @@ on the same policy-enforcing control-plane path.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import mimetypes
 import re
+import secrets
 import socket
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 JsonObject = Mapping[str, Any]
@@ -28,6 +32,16 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_REQUEST_BODY = 1_048_576
 API_PREFIX = "/api/v1"
+
+BROWSER_BOOTSTRAP_FRAGMENT_KEY = "bluefire-session"
+BROWSER_BOOTSTRAP_HEADER = "X-BlueFire-Browser-Bootstrap"
+BROWSER_SESSION_COOKIE = "bluefire_session"
+BROWSER_BOOTSTRAP_LIFETIME_SECONDS = 5 * 60
+BROWSER_SESSION_LIFETIME_SECONDS = 8 * 60 * 60
+
+_BROWSER_TOKEN = re.compile(r"^[A-Za-z0-9_-]{64}$")
+_COOKIE_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+_COOKIE_VALUE = re.compile(r"^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]*$")
 
 _RUN_ID = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
 _JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
@@ -186,6 +200,29 @@ class PlatformService(Protocol):
     def probe_runner_profile(self, resource_id: str, request: JsonObject) -> JsonResult:
         """Return a sanitized bounded inventory probe for one stored runner profile."""
 
+    def runner_status(self, *, profile_id: str | None = None) -> JsonResult:
+        """Return path-free managed-runner lifecycle status."""
+
+    def bootstrap_runner(
+        self,
+        *,
+        profile_id: str | None = None,
+        allow_upgrade: bool = False,
+    ) -> JsonResult:
+        """Explicitly install, verify, and enroll the packaged runner."""
+
+    def start_runner(self, *, profile_id: str | None = None) -> JsonResult:
+        """Explicitly start the authenticated runner host."""
+
+    def stop_runner(self, *, profile_id: str | None = None) -> JsonResult:
+        """Request authenticated runner shutdown."""
+
+    def revoke_runner(self) -> JsonResult:
+        """Revoke trust for a stopped runner."""
+
+    def remove_runner(self, *, confirm_runner_id: str) -> JsonResult:
+        """Remove revoked trust after exact identity confirmation."""
+
     def validate(self, request: JsonObject) -> JsonResult:
         """Validate a scenario graph without executing it."""
 
@@ -264,8 +301,93 @@ class APIError(Exception):
     details: JsonResult | None = None
 
 
+def generate_browser_bootstrap_capability() -> str:
+    """Return a URL-fragment-safe capability with 384 bits of entropy."""
+
+    capability = secrets.token_urlsafe(48)
+    if _BROWSER_TOKEN.fullmatch(capability) is None:  # pragma: no cover - defensive invariant
+        raise RuntimeError("the browser bootstrap capability generator returned an invalid token")
+    return capability
+
+
+def browser_console_url(host: str, port: int, capability: str) -> str:
+    """Build the CLI launch URL without putting the capability in an HTTP request target."""
+
+    _validate_bind(host, port)
+    if port == 0:
+        raise ValueError("a browser console URL requires a non-zero listener port")
+    if _BROWSER_TOKEN.fullmatch(capability) is None:
+        raise ValueError("browser bootstrap capability is invalid")
+    address = (
+        f"[{host}]" if host != "localhost" and ipaddress.ip_address(host).version == 6 else host
+    )
+    return f"http://{address}:{port}/#{BROWSER_BOOTSTRAP_FRAGMENT_KEY}={capability}"
+
+
+class _BrowserSessionAuthority:
+    """Concurrency-safe, memory-only authority for one browser launch session."""
+
+    def __init__(self, bootstrap_capability: str) -> None:
+        if _BROWSER_TOKEN.fullmatch(bootstrap_capability) is None:
+            raise ValueError("browser bootstrap capability is invalid")
+        now = time.monotonic()
+        self._bootstrap_digest: bytes | None = hashlib.sha256(
+            bootstrap_capability.encode("ascii")
+        ).digest()
+        self._bootstrap_expires_at = now + BROWSER_BOOTSTRAP_LIFETIME_SECONDS
+        self._sessions: dict[bytes, float] = {}
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _digest(token: str) -> bytes:
+        return hashlib.sha256(token.encode("ascii")).digest()
+
+    def exchange(self, capability: str) -> str | None:
+        """Consume the exact launch capability and mint one bounded session."""
+
+        if _BROWSER_TOKEN.fullmatch(capability) is None:
+            return None
+        candidate_digest = self._digest(capability)
+        with self._lock:
+            now = time.monotonic()
+            expected_digest = self._bootstrap_digest
+            if expected_digest is None:
+                return None
+            if now >= self._bootstrap_expires_at:
+                self._bootstrap_digest = None
+                return None
+            if not secrets.compare_digest(candidate_digest, expected_digest):
+                return None
+            # Consume before generating or returning anything. Only one concurrent
+            # request can cross this boundary, even if entropy generation fails.
+            self._bootstrap_digest = None
+            session = secrets.token_urlsafe(48)
+            if _BROWSER_TOKEN.fullmatch(session) is None:  # pragma: no cover - invariant
+                return None
+            self._sessions = {
+                self._digest(session): now + BROWSER_SESSION_LIFETIME_SECONDS,
+            }
+            return session
+
+    def validates(self, session: str) -> bool:
+        """Return whether a syntactically exact session is present and unexpired."""
+
+        if _BROWSER_TOKEN.fullmatch(session) is None:
+            return False
+        digest = self._digest(session)
+        with self._lock:
+            now = time.monotonic()
+            expires_at = self._sessions.get(digest)
+            if expires_at is None:
+                return False
+            if now >= expires_at:
+                del self._sessions[digest]
+                return False
+            return True
+
+
 class BlueFireHTTPServer(ThreadingHTTPServer):
-    """Threaded local server carrying only immutable adapter configuration."""
+    """Threaded local server with adapter configuration and ephemeral browser sessions."""
 
     daemon_threads = True
     allow_reuse_address = True
@@ -278,10 +400,12 @@ class BlueFireHTTPServer(ThreadingHTTPServer):
         service: PlatformService,
         ui_root: Path,
         max_request_body: int,
+        browser_sessions: _BrowserSessionAuthority,
     ) -> None:
         self.service = service
         self.ui_root = ui_root
         self.max_request_body = max_request_body
+        self.browser_sessions = browser_sessions
         super().__init__(server_address, handler_class)
 
     def handle_error(self, request: Any, client_address: Any) -> None:
@@ -355,6 +479,12 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path in _STATIC_ROUTES:
             self._serve_asset(path, include_body=True)
             return
+        if self._is_api_path(path) and not self._require_browser_session():
+            return
+        if path == f"{API_PREFIX}/session":
+            if self._management_query_free():
+                self._send(HTTPStatus.NO_CONTENT, b"", "application/json; charset=utf-8")
+            return
         if path == f"{API_PREFIX}/ai/drafts":
             if self._management_query_free():
                 self._method_not_allowed("POST")
@@ -366,6 +496,19 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/scenario-versions":
             if self._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.scenario_versions())
+            return
+        if path == f"{API_PREFIX}/runner":
+            if self._management_query_free():
+                self._dispatch(lambda: self.platform_server.service.runner_status())
+            return
+        if path in {
+            f"{API_PREFIX}/runner/bootstrap",
+            f"{API_PREFIX}/runner/start",
+            f"{API_PREFIX}/runner/stop",
+            f"{API_PREFIX}/runner/revoke",
+            f"{API_PREFIX}/runner/remove",
+        }:
+            self._method_not_allowed("POST")
             return
         setting_key = self._setting_key(path)
         if setting_key is not None:
@@ -485,14 +628,81 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path in _STATIC_ROUTES:
             self._serve_asset(path, include_body=False)
             return
+        if self._is_api_path(path) and not self._require_browser_session():
+            return
         self._method_not_allowed("GET")
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
         path = self._request_path()
         if path is None or not self._validate_host() or not self._validate_same_origin():
             return
+        if path == f"{API_PREFIX}/session":
+            self._exchange_browser_session()
+            return
+        if self._is_api_path(path) and not self._require_browser_session(unread_body=True):
+            return
         body = self._read_json_object()
         if body is None:
+            return
+        if path == f"{API_PREFIX}/runner":
+            self._method_not_allowed("GET")
+            return
+        runner_action = path.removeprefix(f"{API_PREFIX}/runner/")
+        if runner_action in {"bootstrap", "start", "stop", "revoke", "remove"}:
+            profile_id = body.get("profile_id")
+            if runner_action == "bootstrap":
+                if set(body) - {"profile_id", "allow_upgrade"}:
+                    self._error(
+                        HTTPStatus.BAD_REQUEST,
+                        "runner_action_invalid",
+                        "Runner bootstrap accepts only profile_id and allow_upgrade.",
+                    )
+                    return
+                self._dispatch(
+                    lambda: self.platform_server.service.bootstrap_runner(
+                        profile_id=profile_id,
+                        allow_upgrade=body.get("allow_upgrade", False),
+                    )
+                )
+                return
+            if runner_action in {"start", "stop"}:
+                if set(body) - {"profile_id"}:
+                    self._error(
+                        HTTPStatus.BAD_REQUEST,
+                        "runner_action_invalid",
+                        "Runner start and stop accept only profile_id.",
+                    )
+                    return
+                operation = (
+                    self.platform_server.service.start_runner
+                    if runner_action == "start"
+                    else self.platform_server.service.stop_runner
+                )
+                self._dispatch(lambda: operation(profile_id=profile_id))
+                return
+            if runner_action == "revoke":
+                if body:
+                    self._error(
+                        HTTPStatus.BAD_REQUEST,
+                        "runner_action_invalid",
+                        "Runner revocation requires an empty JSON object.",
+                    )
+                    return
+                self._dispatch(lambda: self.platform_server.service.revoke_runner())
+                return
+            confirm_runner_id = body.get("confirm_runner_id")
+            if set(body) != {"confirm_runner_id"} or not isinstance(confirm_runner_id, str):
+                self._error(
+                    HTTPStatus.BAD_REQUEST,
+                    "runner_action_invalid",
+                    "Runner removal requires only confirm_runner_id.",
+                )
+                return
+            self._dispatch(
+                lambda: self.platform_server.service.remove_runner(
+                    confirm_runner_id=confirm_runner_id
+                )
+            )
             return
         if path == f"{API_PREFIX}/ai/drafts":
             if self._management_query_free():
@@ -697,19 +907,114 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         self._not_found()
 
     def do_OPTIONS(self) -> None:  # noqa: N802 - stdlib handler API
-        self._method_not_allowed("GET, HEAD, POST")
+        self._unsupported_method()
 
     def do_PUT(self) -> None:  # noqa: N802 - stdlib handler API
-        self._method_not_allowed("GET, HEAD, POST")
+        self._unsupported_method()
 
     def do_PATCH(self) -> None:  # noqa: N802 - stdlib handler API
-        self._method_not_allowed("GET, HEAD, POST")
+        self._unsupported_method()
 
     def do_DELETE(self) -> None:  # noqa: N802 - stdlib handler API
-        self._method_not_allowed("GET, HEAD, POST")
+        self._unsupported_method()
 
     def log_message(self, _format: str, *args: Any) -> None:
         """Do not leak local request paths to stderr by default."""
+
+    @staticmethod
+    def _is_api_path(path: str) -> bool:
+        return path == API_PREFIX or path.startswith(f"{API_PREFIX}/")
+
+    def _unsupported_method(self) -> None:
+        path = self._request_path()
+        if path is None or not self._validate_host():
+            return
+        if self._is_api_path(path) and not self._require_browser_session(unread_body=True):
+            return
+        self._method_not_allowed("GET, HEAD, POST")
+
+    def _request_session_cookie(self) -> str | None:
+        raw_headers = self.headers.get_all("Cookie", [])
+        if len(raw_headers) != 1 or len(raw_headers[0]) > 4096:
+            return None
+        cookies: dict[str, str] = {}
+        for raw_pair in raw_headers[0].split(";"):
+            pair = raw_pair.strip()
+            if not pair or "=" not in pair:
+                return None
+            name, value = pair.split("=", 1)
+            if (
+                name in cookies
+                or _COOKIE_NAME.fullmatch(name) is None
+                or _COOKIE_VALUE.fullmatch(value) is None
+            ):
+                return None
+            cookies[name] = value
+        return cookies.get(BROWSER_SESSION_COOKIE)
+
+    def _require_browser_session(self, *, unread_body: bool = False) -> bool:
+        session = self._request_session_cookie()
+        if session is not None and self.platform_server.browser_sessions.validates(session):
+            return True
+        reject = self._reject_unread_body if unread_body else self._error
+        reject(
+            HTTPStatus.UNAUTHORIZED,
+            "browser_session_required",
+            "A valid local browser session is required. Relaunch with `bluefire ui`.",
+        )
+        return False
+
+    def _exchange_browser_session(self) -> None:
+        parsed = urlsplit(self.path)
+        if parsed.query or parsed.fragment:
+            self._reject_unread_body(
+                HTTPStatus.BAD_REQUEST,
+                "browser_session_bootstrap_invalid",
+                "The browser session bootstrap request is invalid.",
+            )
+            return
+        if self.headers.get_all("Transfer-Encoding", []):
+            self._reject_unread_body(
+                HTTPStatus.BAD_REQUEST,
+                "browser_session_bootstrap_invalid",
+                "The browser session bootstrap request is invalid.",
+            )
+            return
+        raw_lengths = self.headers.get_all("Content-Length", [])
+        if len(raw_lengths) != 1 or raw_lengths[0] != "0":
+            self._reject_unread_body(
+                HTTPStatus.BAD_REQUEST,
+                "browser_session_bootstrap_invalid",
+                "The browser session bootstrap request is invalid.",
+            )
+            return
+        if self.headers.get_all("Content-Type", []):
+            self._reject_unread_body(
+                HTTPStatus.BAD_REQUEST,
+                "browser_session_bootstrap_invalid",
+                "The browser session bootstrap request is invalid.",
+            )
+            return
+        capabilities = self.headers.get_all(BROWSER_BOOTSTRAP_HEADER, [])
+        capability = capabilities[0] if len(capabilities) == 1 else ""
+        session = self.platform_server.browser_sessions.exchange(capability)
+        if session is None:
+            self._reject_unread_body(
+                HTTPStatus.UNAUTHORIZED,
+                "browser_session_bootstrap_refused",
+                "The browser launch capability is invalid, expired, or already used.",
+            )
+            return
+        cookie = (
+            f"{BROWSER_SESSION_COOKIE}={session}; HttpOnly; "
+            f"Max-Age={BROWSER_SESSION_LIFETIME_SECONDS}; Path={API_PREFIX}; SameSite=Strict"
+        )
+        self._send(
+            HTTPStatus.NO_CONTENT,
+            b"",
+            "application/json; charset=utf-8",
+            extra_headers={"Set-Cookie": cookie},
+        )
 
     def _request_path(self) -> str | None:
         try:
@@ -1337,6 +1642,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
 def create_server(
     service: PlatformService,
     *,
+    browser_bootstrap_capability: str,
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     ui_root: str | Path | None = None,
@@ -1350,6 +1656,7 @@ def create_server(
     if not 1 <= max_request_body <= 16 * 1024 * 1024:
         raise ValueError("max_request_body must be between 1 byte and 16 MiB")
     root = _validate_ui_root(ui_root)
+    browser_sessions = _BrowserSessionAuthority(browser_bootstrap_capability)
     server_type = (
         _BlueFireIPv6HTTPServer
         if host != "localhost" and ipaddress.ip_address(host).version == 6
@@ -1361,30 +1668,38 @@ def create_server(
         service=service,
         ui_root=root,
         max_request_body=max_request_body,
+        browser_sessions=browser_sessions,
     )
 
 
 def serve(
     service: PlatformService,
     *,
+    browser_bootstrap_capability: str,
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     ui_root: str | Path | None = None,
     max_request_body: int = MAX_REQUEST_BODY,
+    on_ready: Callable[[BlueFireHTTPServer], None] | None = None,
 ) -> None:
-    """Serve until interrupted; intended for the eventual CLI entry point."""
+    """Bind, announce readiness, and serve while always closing owned resources."""
 
-    server = create_server(
-        service,
-        host=host,
-        port=port,
-        ui_root=ui_root,
-        max_request_body=max_request_body,
-    )
+    server: BlueFireHTTPServer | None = None
     try:
+        server = create_server(
+            service,
+            browser_bootstrap_capability=browser_bootstrap_capability,
+            host=host,
+            port=port,
+            ui_root=ui_root,
+            max_request_body=max_request_body,
+        )
+        if on_ready is not None:
+            on_ready(server)
         server.serve_forever()
     finally:
-        server.server_close()
+        if server is not None:
+            server.server_close()
         close_service = getattr(service, "close", None)
         if callable(close_service):
             close_service()

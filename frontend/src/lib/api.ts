@@ -1,13 +1,60 @@
-import type { AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
+import type { AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
 
 const API_ROOT = "/api/v1";
+const BROWSER_BOOTSTRAP_FRAGMENT_KEY = "bluefire-session";
+const BROWSER_BOOTSTRAP_HEADER = "X-BlueFire-Browser-Bootstrap";
+const BROWSER_CAPABILITY = /^[A-Za-z0-9_-]{64}$/;
 export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
+export const BROWSER_SESSION_RELAUNCH_MESSAGE = "This local browser session is unavailable. Close this tab and relaunch BlueFire with `bluefire ui`.";
 
 export class ApiError extends Error {
   constructor(message: string, public readonly code = "request_failed", public readonly details?: unknown, public readonly status?: number) {
     super(message);
     this.name = "ApiError";
+  }
+}
+
+function consumeBrowserBootstrapFragment(): string | null {
+  const prefix = `#${BROWSER_BOOTSTRAP_FRAGMENT_KEY}=`;
+  if (!window.location.hash.startsWith(prefix)) return null;
+
+  const capability = window.location.hash.slice(prefix.length);
+  // A fragment is browser-local and is never sent in an HTTP request. Remove it
+  // before the first fetch, including malformed and failed bootstrap attempts.
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  if (!BROWSER_CAPABILITY.test(capability)) throw new Error("invalid browser bootstrap fragment");
+  return capability;
+}
+
+export async function establishBrowserSession(): Promise<void> {
+  if (DEMO_MODE) return;
+  try {
+    const capability = consumeBrowserBootstrapFragment();
+    let response = await fetch(`${API_ROOT}/session`, {
+      method: capability === null ? "GET" : "POST",
+      credentials: "same-origin",
+      cache: "no-store",
+      referrerPolicy: "no-referrer",
+      headers: capability === null
+        ? { Accept: "application/json" }
+        : { Accept: "application/json", [BROWSER_BOOTSTRAP_HEADER]: capability },
+    });
+    // Reopening the one-use launch URL in the same browser may replay the
+    // fragment while the HttpOnly session is still valid. Reuse that session
+    // without exposing it to JavaScript.
+    if (!response.ok && capability !== null) {
+      response = await fetch(`${API_ROOT}/session`, {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+        referrerPolicy: "no-referrer",
+        headers: { Accept: "application/json" },
+      });
+    }
+    if (!response.ok) throw new Error("browser session refused");
+  } catch {
+    throw new ApiError(BROWSER_SESSION_RELAUNCH_MESSAGE, "browser_session_unavailable", undefined, 401);
   }
 }
 
@@ -159,6 +206,30 @@ export const api = {
   async probeRunnerProfile(id: string): Promise<RunnerProbe> {
     if (DEMO_MODE) return { schema_version: "bluefire.runner-probe.v1", profile_id: id, version: null, platform: null, actions: [], health: { state: "unavailable", message: "Demo mode never probes a local runner." } };
     return request(`/resources/runner-profiles/${encodeURIComponent(id)}/probe`, { method: "POST", body: JSON.stringify({}) });
+  },
+  async runnerStatus(): Promise<RunnerLifecycleStatus> {
+    if (DEMO_MODE) return { schema_version: "bluefire.runner-lifecycle-status.v1", state: "unavailable", runner_id: "bluefire-rust-runner.v1", profile_id: null, loopback_only: true, enrollment: "absent", process: "absent", runner: null, health: null };
+    return request("/runner");
+  },
+  async bootstrapRunner(profileId?: string, allowUpgrade = false): Promise<RunnerLifecycleStatus> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot bootstrap a local runner.", "demo_runner_lifecycle_refused", undefined, 409);
+    return request("/runner/bootstrap", { method: "POST", body: JSON.stringify({ ...(profileId ? { profile_id: profileId } : {}), ...(allowUpgrade ? { allow_upgrade: true } : {}) }) }, 120_000);
+  },
+  async startRunner(profileId?: string): Promise<RunnerLifecycleStatus> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot start a local runner.", "demo_runner_lifecycle_refused", undefined, 409);
+    return request("/runner/start", { method: "POST", body: JSON.stringify(profileId ? { profile_id: profileId } : {}) }, 45_000);
+  },
+  async stopRunner(profileId?: string): Promise<RunnerLifecycleStatus> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot stop a local runner.", "demo_runner_lifecycle_refused", undefined, 409);
+    return request("/runner/stop", { method: "POST", body: JSON.stringify(profileId ? { profile_id: profileId } : {}) }, 45_000);
+  },
+  async revokeRunner(): Promise<RunnerLifecycleStatus> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot revoke local runner trust.", "demo_runner_lifecycle_refused", undefined, 409);
+    return request("/runner/revoke", { method: "POST", body: JSON.stringify({}) });
+  },
+  async removeRunner(confirmRunnerId: string): Promise<RunnerLifecycleStatus> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot remove local runner trust.", "demo_runner_lifecycle_refused", undefined, 409);
+    return request("/runner/remove", { method: "POST", body: JSON.stringify({ confirm_runner_id: confirmRunnerId }) });
   },
   async detectionHealth(): Promise<DetectionLabHealth> {
     if (DEMO_MODE) return { schema_version: "bluefire.detection-lab-health.v1", ready: true, persistence_ready: true, candidate_resources: [...demoResources.values()].filter((item) => item.kind === "detections").length, invalid_candidate_resources: 0, languages: { internal: { ready: true, authoritative: true, backend: "demo-structured-matcher", version: "fixture" }, sigma: { ready: false, authoritative: false, backend: "pySigma", version: null }, yara: { ready: false, authoritative: false, backend: "YARA-Python", version: null }, spl: { ready: true, authoritative: false, backend: "structural-only", version: "fixture", lifecycle_ceiling: "hypothesis" } }, limits: { source_bytes: 262144, fixture_bytes: 1048576, fixtures_per_action: 128, evidence_per_action: 128, notes_per_action: 128 } };

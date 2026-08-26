@@ -11,19 +11,36 @@ import hashlib
 import hmac
 import ipaddress
 import json
-import os
 import re
+import secrets
 import socket
 import socketserver
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, TextIO, cast
 
+from .receiver_auth import (
+    RESULT_SCHEMA_VERSION,
+    ReceiverAuthenticationError,
+    challenge_authentication,
+    challenge_document,
+    derive_receiver_task_key,
+    request_authentication,
+    request_document,
+    response_authentication,
+    validate_receiver_task_id,
+    verify_authentication,
+)
+from .runner_client import RunnerTransportError, _PinnedPrivateDirectory
+from .util import canonical_json_bytes
+
 ARTIFACT_PATH = "/bluefire/v1/artifact"
+CHALLENGE_PATH = "/bluefire/v1/challenge"
 DEFAULT_MAX_BODY_BYTES = 5 * 1024 * 1024
+DEFAULT_IDLE_TIMEOUT_SECONDS = 300.0
 MAX_CONFIGURED_BODY_BYTES = 64 * 1024 * 1024
 _MAX_REQUEST_LINE_BYTES = 1024
 _MAX_HEADER_LINE_BYTES = 4096
@@ -39,16 +56,19 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 class ReceiverConfig:
     """Validated bounds and bind settings for one receiver session."""
 
+    authentication_key: bytes = field(repr=False)
     host: str = "127.0.0.1"
     port: int = 4317
     max_requests: int = 1
     max_connections: int = 16
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     request_timeout_seconds: float = 5.0
-    idle_timeout_seconds: float = 60.0
+    idle_timeout_seconds: float = DEFAULT_IDLE_TIMEOUT_SECONDS
     storage_dir: Path | None = None
 
     def __post_init__(self) -> None:
+        if type(self.authentication_key) is not bytes or len(self.authentication_key) != 32:
+            raise ValueError("receiver authentication key must be exactly 32 bytes")
         try:
             address = ipaddress.ip_address(self.host)
         except ValueError as exc:
@@ -59,8 +79,10 @@ class ReceiverConfig:
             raise ValueError("receiver port must be between 0 and 65535")
         if not 1 <= self.max_requests <= 10_000:
             raise ValueError("receiver max_requests must be between 1 and 10000")
-        if not self.max_requests <= self.max_connections <= 10_000:
-            raise ValueError("receiver max_connections must be between max_requests and 10000")
+        if not 2 * self.max_requests <= self.max_connections <= 20_000:
+            raise ValueError(
+                "receiver max_connections must be between twice max_requests and 20000"
+            )
         if not 0 <= self.max_body_bytes <= MAX_CONFIGURED_BODY_BYTES:
             raise ValueError(
                 f"receiver max_body_bytes must be between 0 and {MAX_CONFIGURED_BODY_BYTES}"
@@ -76,6 +98,21 @@ class _ProtocolRefusal(Exception):
         super().__init__(code)
         self.status = status
         self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class _Challenge:
+    task_id: str
+    sha256: str
+    content_length: int
+    expires_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class _RequestResult:
+    response: bytes
+    accepted_artifact: bool = False
+    issued_challenge: bool = False
 
 
 class _DeadlineReader:
@@ -131,61 +168,62 @@ class _ReceiverStorage:
 
     def __init__(self, configured_dir: Path) -> None:
         configured_dir = configured_dir.absolute()
-        if configured_dir.exists():
-            if configured_dir.is_symlink() or not configured_dir.is_dir():
-                raise ValueError("receiver storage must be a non-symlink directory")
-        else:
-            configured_dir.mkdir(parents=True, mode=0o700)
+        try:
+            if configured_dir.exists():
+                if configured_dir.is_symlink() or not configured_dir.is_dir():
+                    raise ValueError("receiver storage must be a non-symlink directory")
+            else:
+                configured_dir.mkdir(parents=True, mode=0o700)
+        except OSError:
+            raise ValueError("receiver storage is unavailable or unsafe") from None
 
-        root = configured_dir.resolve(strict=True)
-        marker = root / _OWNER_MARKER
-        if marker.exists():
-            if marker.is_symlink() or not marker.is_file():
-                raise ValueError("receiver storage ownership marker is invalid")
-            if marker.stat().st_size != len(_OWNER_MARKER_CONTENT.encode("ascii")):
-                raise ValueError("receiver storage ownership marker is invalid")
-            try:
-                marker_content = marker.read_text(encoding="ascii")
-            except (OSError, UnicodeError) as exc:
-                raise ValueError("receiver storage ownership marker is unreadable") from exc
-            if marker_content != _OWNER_MARKER_CONTENT:
-                raise ValueError("receiver storage is not owned by this receiver protocol")
-        else:
-            if any(root.iterdir()):
-                raise ValueError("unmarked receiver storage must be empty")
-            try:
-                with marker.open("x", encoding="ascii", newline="\n") as stream:
-                    stream.write(_OWNER_MARKER_CONTENT)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            except FileExistsError as exc:
-                raise ValueError("receiver storage ownership marker changed during setup") from exc
-        self._root = root
+        marker_content = _OWNER_MARKER_CONTENT.encode("ascii")
+        directory = _PinnedPrivateDirectory(configured_dir)
+        try:
+            directory.__enter__()
+            if directory.has_name(_OWNER_MARKER):
+                try:
+                    observed = directory.read(_OWNER_MARKER, maximum=len(marker_content))
+                except OSError:
+                    raise ValueError("receiver storage ownership marker is invalid") from None
+                if observed != marker_content:
+                    raise ValueError("receiver storage is not owned by this receiver protocol")
+            else:
+                names = directory.names(maximum=1)
+                if names:
+                    raise ValueError("unmarked receiver storage must be empty")
+                try:
+                    directory.create(
+                        _OWNER_MARKER,
+                        marker_content,
+                        maximum=len(marker_content),
+                    )
+                except OSError:
+                    raise ValueError(
+                        "receiver storage ownership marker changed during setup"
+                    ) from None
+                if directory.names(maximum=1) != (_OWNER_MARKER,):
+                    raise ValueError("receiver storage changed during setup")
+        except ValueError:
+            directory.close()
+            raise
+        except (OSError, RunnerTransportError):
+            directory.close()
+            raise ValueError("receiver storage is unavailable or unsafe") from None
+        self._directory = directory
 
     def store(self, body: bytes, digest: str) -> bool:
-        target = self._root / f"sha256-{digest}.bin"
-        if not target.parent.resolve(strict=True) == self._root:
-            raise OSError("receiver storage containment check failed")
-        if target.exists():
-            raise OSError("receiver storage entry already exists")
-
-        created = False
-        try:
-            with target.open("xb") as stream:
-                created = True
-                stream.write(body)
-                stream.flush()
-                os.fsync(stream.fileno())
-        except FileExistsError:
-            raise OSError("receiver storage entry changed during write") from None
-        except OSError:
-            if created:
-                try:
-                    target.unlink()
-                except OSError:
-                    pass
-            raise
+        if _SHA256.fullmatch(digest) is None or hashlib.sha256(body).hexdigest() != digest:
+            raise OSError("receiver storage digest binding is invalid")
+        self._directory.create(
+            f"sha256-{digest}.bin",
+            body,
+            maximum=MAX_CONFIGURED_BODY_BYTES,
+        )
         return True
+
+    def close(self) -> None:
+        self._directory.close()
 
 
 class _LoopbackTCPServer(socketserver.TCPServer):
@@ -204,12 +242,24 @@ class _LoopbackTCPServer(socketserver.TCPServer):
         self.connections_handled = 0
         self.requests_accepted = 0
         self.requests_refused = 0
+        self.challenges_issued = 0
+        self.session_id = secrets.token_hex(32)
+        self.challenges: dict[str, _Challenge] = {}
         super().__init__(server_address, handler_class)
 
     def handle_error(self, request: object, client_address: object) -> None:
         # The default implementation prints tracebacks and local paths.  This
         # receiver reports only bounded protocol responses and aggregate counts.
         self.requests_refused += 1
+
+    def server_close(self) -> None:
+        try:
+            super().server_close()
+        finally:
+            storage = self.storage
+            self.storage = None
+            if storage is not None:
+                storage.close()
 
 
 class _LoopbackTCPServerV6(_LoopbackTCPServer):
@@ -226,8 +276,12 @@ class _ReceiverHandler(socketserver.BaseRequestHandler):
             peer = ipaddress.ip_address(connection.getpeername()[0])
             if not peer.is_loopback:
                 raise _ProtocolRefusal(403, "peer_not_loopback")
-            response = _receive_request(server, _DeadlineReader(connection, deadline))
-            server.requests_accepted += 1
+            result = _receive_request(server, _DeadlineReader(connection, deadline))
+            response = result.response
+            if result.accepted_artifact:
+                server.requests_accepted += 1
+            if result.issued_challenge:
+                server.challenges_issued += 1
         except _ProtocolRefusal as exc:
             response = _json_response(exc.status, {"accepted": False, "error": exc.code})
             server.requests_refused += 1
@@ -240,7 +294,7 @@ class _ReceiverHandler(socketserver.BaseRequestHandler):
             pass
 
 
-def _receive_request(server: _LoopbackTCPServer, stream: _DeadlineReader) -> bytes:
+def _receive_request(server: _LoopbackTCPServer, stream: _DeadlineReader) -> _RequestResult:
     request_line = _read_crlf_line(
         stream,
         limit=_MAX_REQUEST_LINE_BYTES,
@@ -259,10 +313,126 @@ def _receive_request(server: _LoopbackTCPServer, stream: _DeadlineReader) -> byt
         raise _ProtocolRefusal(505, "unsupported_http_version")
 
     headers = _read_headers(stream)
-    if method != "POST":
-        raise _ProtocolRefusal(405, "method_not_allowed")
+    if target == CHALLENGE_PATH:
+        if method != "GET":
+            raise _ProtocolRefusal(405, "method_not_allowed")
+        return _issue_challenge(server, headers)
     if target != ARTIFACT_PATH:
         raise _ProtocolRefusal(404, "path_not_found")
+    if method != "POST":
+        raise _ProtocolRefusal(405, "method_not_allowed")
+    return _receive_artifact(server, stream, headers)
+
+
+def _issue_challenge(
+    server: _LoopbackTCPServer,
+    headers: Mapping[str, str],
+) -> _RequestResult:
+    _validate_host_header(server, headers)
+    _validate_header_names(
+        headers,
+        required={
+            "host",
+            "x-bluefire-task-id",
+            "x-bluefire-sha256",
+            "x-bluefire-content-length",
+        },
+        allowed={
+            "host",
+            "x-bluefire-task-id",
+            "x-bluefire-sha256",
+            "x-bluefire-content-length",
+            "accept",
+            "connection",
+            "content-length",
+        },
+    )
+    if headers.get("content-length") not in {None, "0"}:
+        raise _ProtocolRefusal(400, "challenge_body_not_allowed")
+    task_id = headers.get("x-bluefire-task-id", "")
+    sha256 = headers.get("x-bluefire-sha256", "")
+    content_length_text = headers.get("x-bluefire-content-length", "")
+    try:
+        task_id = validate_receiver_task_id(task_id)
+        task_key = derive_receiver_task_key(server.config.authentication_key, task_id)
+        if (
+            _SHA256.fullmatch(sha256) is None
+            or not content_length_text.isascii()
+            or not content_length_text.isdecimal()
+            or (len(content_length_text) > 1 and content_length_text.startswith("0"))
+        ):
+            raise ReceiverAuthenticationError("receiver artifact binding is invalid")
+        content_length = int(content_length_text)
+        if content_length > MAX_CONFIGURED_BODY_BYTES:
+            raise ReceiverAuthenticationError("receiver artifact binding is invalid")
+    except ReceiverAuthenticationError as exc:
+        raise _ProtocolRefusal(401, "receiver_authentication_failed") from exc
+    if content_length > server.config.max_body_bytes:
+        raise _ProtocolRefusal(413, "body_too_large")
+
+    now = time.monotonic()
+    for nonce, challenge in tuple(server.challenges.items()):
+        if challenge.expires_at <= now:
+            del server.challenges[nonce]
+    nonce = secrets.token_hex(32)
+    server.challenges[nonce] = _Challenge(
+        task_id=task_id,
+        sha256=sha256,
+        content_length=content_length,
+        expires_at=now + min(max(server.config.request_timeout_seconds * 2, 2.0), 30.0),
+    )
+    document = challenge_document(
+        task_id=task_id,
+        session_id=server.session_id,
+        nonce=nonce,
+        host=str(server.server_address[0]),
+        port=int(server.server_address[1]),
+        sha256=sha256,
+        content_length=content_length,
+    )
+    body = canonical_json_bytes(document)
+    authentication = challenge_authentication(task_key, document)
+    return _RequestResult(
+        _json_response(
+            200,
+            document,
+            body=body,
+            extra_headers={"X-BlueFire-Authentication": authentication},
+        ),
+        issued_challenge=True,
+    )
+
+
+def _receive_artifact(
+    server: _LoopbackTCPServer,
+    stream: _DeadlineReader,
+    headers: Mapping[str, str],
+) -> _RequestResult:
+    _validate_host_header(server, headers)
+    _validate_header_names(
+        headers,
+        required={
+            "host",
+            "content-type",
+            "content-length",
+            "x-bluefire-sha256",
+            "x-bluefire-task-id",
+            "x-bluefire-session-id",
+            "x-bluefire-nonce",
+            "x-bluefire-authentication",
+        },
+        allowed={
+            "host",
+            "content-type",
+            "content-length",
+            "connection",
+            "x-bluefire-sha256",
+            "x-bluefire-task-id",
+            "x-bluefire-session-id",
+            "x-bluefire-nonce",
+            "x-bluefire-authentication",
+        },
+    )
     if "transfer-encoding" in headers:
         raise _ProtocolRefusal(400, "transfer_encoding_not_supported")
     if "content-encoding" in headers:
@@ -280,6 +450,39 @@ def _receive_request(server: _LoopbackTCPServer, stream: _DeadlineReader) -> byt
     expected_digest = headers.get("x-bluefire-sha256", "")
     if _SHA256.fullmatch(expected_digest) is None:
         raise _ProtocolRefusal(400, "invalid_sha256_header")
+
+    task_id = headers.get("x-bluefire-task-id", "")
+    session_id = headers.get("x-bluefire-session-id", "")
+    nonce = headers.get("x-bluefire-nonce", "")
+    supplied_authentication = headers.get("x-bluefire-authentication", "")
+    try:
+        task_key = derive_receiver_task_key(server.config.authentication_key, task_id)
+        request = request_document(
+            task_id=task_id,
+            session_id=session_id,
+            nonce=nonce,
+            host=str(server.server_address[0]),
+            port=int(server.server_address[1]),
+            sha256=expected_digest,
+            content_length=content_length,
+        )
+        expected_authentication = request_authentication(task_key, request)
+    except ReceiverAuthenticationError as exc:
+        raise _ProtocolRefusal(401, "receiver_authentication_failed") from exc
+    challenge = server.challenges.get(nonce)
+    if (
+        session_id != server.session_id
+        or challenge is None
+        or challenge.task_id != task_id
+        or challenge.sha256 != expected_digest
+        or challenge.content_length != content_length
+        or challenge.expires_at <= time.monotonic()
+        or not verify_authentication(supplied_authentication, expected_authentication)
+    ):
+        raise _ProtocolRefusal(401, "receiver_authentication_failed")
+    # A challenge is one-time even when the subsequent body is malformed.
+    del server.challenges[nonce]
+
     body = _read_exact(stream, content_length)
     actual_digest = hashlib.sha256(body).hexdigest()
     if not hmac.compare_digest(actual_digest, expected_digest):
@@ -292,16 +495,52 @@ def _receive_request(server: _LoopbackTCPServer, stream: _DeadlineReader) -> byt
         except OSError as exc:
             raise _ProtocolRefusal(500, "storage_failed") from exc
     status = 201 if stored else 200
-    return _json_response(
-        status,
-        {
-            "schema_version": "bluefire.loopback-receiver-result.v1",
-            "accepted": True,
-            "bytes_received": len(body),
-            "sha256": actual_digest,
-            "stored": stored,
-        },
+    result = {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "accepted": True,
+        "task_id": task_id,
+        "session_id": session_id,
+        "bytes_received": len(body),
+        "sha256": actual_digest,
+        "stored": stored,
+    }
+    response_body = canonical_json_bytes(result)
+    authentication = response_authentication(
+        task_key,
+        supplied_authentication,
+        response_body,
     )
+    return _RequestResult(
+        _json_response(
+            status,
+            result,
+            body=response_body,
+            extra_headers={"X-BlueFire-Authentication": authentication},
+        ),
+        accepted_artifact=True,
+    )
+
+
+def _validate_host_header(server: _LoopbackTCPServer, headers: Mapping[str, str]) -> None:
+    if headers.get("host") != _host_authority(server):
+        raise _ProtocolRefusal(421, "host_mismatch")
+
+
+def _host_authority(server: _LoopbackTCPServer) -> str:
+    host = str(server.server_address[0])
+    rendered = f"[{host}]" if ":" in host else host
+    return f"{rendered}:{int(server.server_address[1])}"
+
+
+def _validate_header_names(
+    headers: Mapping[str, str],
+    *,
+    required: set[str],
+    allowed: set[str],
+) -> None:
+    names = set(headers)
+    if not required.issubset(names) or not names.issubset(allowed):
+        raise _ProtocolRefusal(400, "invalid_header_set")
 
 
 def _read_headers(stream: _DeadlineReader) -> dict[str, str]:
@@ -326,10 +565,15 @@ def _read_headers(stream: _DeadlineReader) -> dict[str, str]:
         raw_name, raw_value = line.split(b":", 1)
         try:
             name = raw_name.decode("ascii").lower()
-            value = raw_value.decode("ascii").strip()
+            value = raw_value.decode("ascii").strip(" ")
         except UnicodeDecodeError as exc:
             raise _ProtocolRefusal(400, "invalid_header") from exc
-        if _HEADER_NAME.fullmatch(name) is None or name in headers:
+        if (
+            _HEADER_NAME.fullmatch(name) is None
+            or name in headers
+            or not value
+            or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
+        ):
             raise _ProtocolRefusal(400, "invalid_header")
         headers[name] = value
     raise _ProtocolRefusal(431, "too_many_headers")
@@ -360,11 +604,19 @@ def _read_exact(stream: _DeadlineReader, length: int) -> bytes:
     return bytes(body)
 
 
-def _json_response(status: int, payload: Mapping[str, object]) -> bytes:
+def _json_response(
+    status: int,
+    payload: Mapping[str, object],
+    *,
+    body: bytes | None = None,
+    extra_headers: Mapping[str, str] | None = None,
+) -> bytes:
     reason = {
         200: "OK",
         201: "Created",
         400: "Bad Request",
+        401: "Unauthorized",
+        421: "Misdirected Request",
         403: "Forbidden",
         404: "Not Found",
         405: "Method Not Allowed",
@@ -378,7 +630,7 @@ def _json_response(status: int, payload: Mapping[str, object]) -> bytes:
         500: "Internal Server Error",
         505: "HTTP Version Not Supported",
     }.get(status, "Error")
-    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    body = body if body is not None else canonical_json_bytes(dict(payload))
     headers = [
         f"HTTP/1.1 {status} {reason}",
         "Content-Type: application/json; charset=utf-8",
@@ -388,7 +640,9 @@ def _json_response(status: int, payload: Mapping[str, object]) -> bytes:
         "Connection: close",
     ]
     if status == 405:
-        headers.append("Allow: POST")
+        headers.append("Allow: GET, POST")
+    for name, value in (extra_headers or {}).items():
+        headers.append(f"{name}: {value}")
     return ("\r\n".join(headers) + "\r\n\r\n").encode("ascii") + body
 
 
@@ -399,12 +653,17 @@ class LoopbackArtifactReceiver:
         address = ipaddress.ip_address(config.host)
         storage = _ReceiverStorage(config.storage_dir) if config.storage_dir else None
         server_type = _LoopbackTCPServerV6 if address.version == 6 else _LoopbackTCPServer
-        self._server = server_type(
-            (config.host, config.port),
-            _ReceiverHandler,
-            config=config,
-            storage=storage,
-        )
+        try:
+            self._server = server_type(
+                (config.host, config.port),
+                _ReceiverHandler,
+                config=config,
+                storage=storage,
+            )
+        except BaseException:
+            if storage is not None:
+                storage.close()
+            raise
         self._config = config
         self._stopping = threading.Event()
         self._closed = False
@@ -446,6 +705,7 @@ class LoopbackArtifactReceiver:
             "schema_version": "bluefire.loopback-receiver-summary.v1",
             "reason": reason,
             "connections_handled": self._server.connections_handled,
+            "challenges_issued": self._server.challenges_issued,
             "requests_accepted": self._server.requests_accepted,
             "requests_refused": self._server.requests_refused,
         }
@@ -485,6 +745,7 @@ def run_loopback_receiver(
                 "max_connections": config.max_connections,
                 "max_body_bytes": config.max_body_bytes,
                 "storage": "receiver_owned" if config.storage_dir else "memory_only",
+                "authentication": "managed_task_hmac_sha256",
             }
             print(json.dumps(ready, separators=(",", ":"), sort_keys=True), file=ready_stream)
             ready_stream.flush()
@@ -493,6 +754,8 @@ def run_loopback_receiver(
 
 __all__ = [
     "ARTIFACT_PATH",
+    "CHALLENGE_PATH",
+    "DEFAULT_IDLE_TIMEOUT_SECONDS",
     "DEFAULT_MAX_BODY_BYTES",
     "LoopbackArtifactReceiver",
     "ReceiverConfig",

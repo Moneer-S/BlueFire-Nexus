@@ -7,11 +7,12 @@ BlueFire serves one loopback JSON API under `/api/v1`. Requests and responses us
 - Default listener: `http://127.0.0.1:8765`.
 - Non-loopback bind addresses are rejected.
 - Host must identify the current loopback listener and port.
+- Every API request requires a valid bounded local browser-session cookie. The packaged UI obtains it by exchanging the CLI's one-use 384-bit URL-fragment capability; the fragment is stripped before any request and the server stores only its digest.
 - Every POST requires an exact same-origin `Origin` header.
 - Request bodies require one numeric `Content-Length` and are limited to 1 MiB.
 - Duplicate JSON keys, non-finite numbers, transfer encoding, absolute request targets, traversal, backslashes, and NUL paths are rejected.
 - Responses use restrictive CSP, frame, referrer, permissions, and content-type headers.
-- No permissive CORS or remote authentication is provided.
+- Static UI assets are public, but the API is not. No permissive CORS or remote/multi-user authentication is provided.
 
 Do not expose this API through a reverse proxy, tunnel, port forward, or container publish rule without a separately reviewed authentication/authorization layer.
 
@@ -19,6 +20,7 @@ Do not expose this API through a reverse proxy, tunnel, port forward, or contain
 
 | Method | Path | Result |
 |---|---|---|
+| GET, POST | `/api/v1/session` | Validate an existing session or exchange one exact one-use bootstrap header with an empty body |
 | GET | `/api/v1/catalog` | Modes, autonomy/provider metadata, behaviors, actions, profiles |
 | GET | `/api/v1/scenarios` | Authoritative active durable scenario documents |
 | GET | `/api/v1/settings` | Secret-safe local settings |
@@ -31,6 +33,12 @@ Do not expose this API through a reverse proxy, tunnel, port forward, or contain
 | POST | `/api/v1/resources/runner-profiles/{resource_id}/activate` | Validate and activate a stored runner profile |
 | POST | `/api/v1/resources/runner-profiles/{resource_id}/deactivate` | Persistently withdraw a runner profile |
 | POST | `/api/v1/resources/runner-profiles/{resource_id}/probe` | Bounded, sanitized runner inventory/health probe |
+| GET | `/api/v1/runner` | Inert path-free managed-runner lifecycle status |
+| POST | `/api/v1/runner/bootstrap` | Explicitly verify/install the native artifact and create or safely upgrade local enrollment |
+| POST | `/api/v1/runner/start` | Start the separately hosted authenticated local runner |
+| POST | `/api/v1/runner/stop` | Request authenticated shutdown or reconcile an exact stale process record |
+| POST | `/api/v1/runner/revoke` | Revoke stopped local runner trust after safety checks |
+| POST | `/api/v1/runner/remove` | Remove revoked trust after exact runner-ID confirmation and reconciliation checks |
 | POST | `/api/v1/resources/model-providers/{resource_id}/activate` | Validate and select a stored AI provider |
 | POST | `/api/v1/resources/model-providers/{resource_id}/deactivate` | Persistently withdraw an AI provider |
 | POST | `/api/v1/resources/plugins/{resource_id}/activate` | Activate reviewed declarative plugin metadata |
@@ -346,7 +354,19 @@ Runner-profile and model-provider runtime changes use their explicit action rout
 
 Drafts and malformed documents never affect preflight or provider construction. An activated document becomes authoritative immediately and remains active after restart; `deactivate` persists `inactive` and removes it from normal selection. Active resources must be deactivated before their document can be edited. Editing an inactive document preserves its inactive status until a later successful activation. YAML configuration remains the baseline for resources without an activated or inactive persisted override.
 
-The runner probe accepts no path, executable, environment-variable name, or secret from the request. It looks up one stored, strictly validated profile, resolves only that profile's `runner_binary` environment reference, invokes the fixed runner `inventory --json` transport with a 10-second/256-KiB boundary, and returns only allowlisted version, platform, action ID/version/readiness, and health fields. Raw inventory fields, paths, stderr, and exception text are not returned. A custom embedded runner transport is responsible for honoring the same bounded inventory contract.
+The runner probe accepts no path, executable, environment-variable name, or secret from the request. It looks up one stored, strictly validated profile and contacts only the already-running managed host through its authenticated transport. It never bootstraps or starts a process. The response returns only allowlisted version, platform, action ID/version/readiness, and health fields; raw inventory fields, paths, stderr, credentials, and exception text are not returned. A custom embedded runner transport is responsible for honoring the same bounded inventory contract.
+
+Managed lifecycle routes accept only these exact JSON objects:
+
+```text
+POST /api/v1/runner/bootstrap  {"profile_id":"sandbox-execute.v1","allow_upgrade":false}
+POST /api/v1/runner/start      {"profile_id":"sandbox-execute.v1"}
+POST /api/v1/runner/stop       {"profile_id":"sandbox-execute.v1"}
+POST /api/v1/runner/revoke     {}
+POST /api/v1/runner/remove     {"confirm_runner_id":"bluefire-rust-runner.v1"}
+```
+
+`profile_id` may be omitted only when the configured Execute-profile choice is unambiguous. Bootstrap is explicit and verifies platform, architecture, artifact digest, inventory compatibility, private storage, and local trust. `allow_upgrade: true` is accepted only for a stopped, clean lifecycle and never bypasses task, receipt, trust, or artifact checks. Status is inert. Stop is the recovery path for a stale process record and may refuse while authenticated tasks are still draining. Revocation requires a stopped host and reconciled receipt/watchdog state. Removal requires the exact status-reported runner ID and refuses live or orphaned transport state. Responses never disclose managed paths, private keys, unlock material, task HMAC material, or raw process errors.
 
 ### Compare
 
@@ -380,18 +400,37 @@ Unknown, duplicate, signed, blank, non-decimal, or out-of-range values return `4
 
 Use the returned `next_sequence` as the next request's `after_sequence`. When `items` is empty, `next_sequence` remains the supplied cursor. This is bounded polling over immutable local records, not a live event stream.
 
-## curl examples
+## Authenticated curl diagnostics
+
+The supported operator surfaces are the CLI and the packaged browser. A bare curl request is intentionally refused. For a local diagnostic only, launch `bluefire ui`, take the 64-character value after `#bluefire-session=` from its exact one-use URL, and exchange it once into a private cookie jar. Do not put the capability in a URL, request body, shell history, log, or shared file.
+
+```bash
+umask 077
+COOKIE_JAR="$(mktemp)"
+read -r -s -p 'One-use BlueFire browser capability: ' BLUEFIRE_BROWSER_CAPABILITY
+printf '\n'
+curl --fail --silent --show-error \
+  -X POST \
+  -H 'Origin: http://127.0.0.1:8765' \
+  -H "X-BlueFire-Browser-Bootstrap: ${BLUEFIRE_BROWSER_CAPABILITY}" \
+  -H 'Content-Length: 0' \
+  -c "$COOKIE_JAR" \
+  http://127.0.0.1:8765/api/v1/session
+unset BLUEFIRE_BROWSER_CAPABILITY
+```
 
 Read catalog:
 
 ```bash
-curl --fail --silent http://127.0.0.1:8765/api/v1/catalog
+curl --fail --silent --show-error -b "$COOKIE_JAR" \
+  http://127.0.0.1:8765/api/v1/catalog
 ```
 
 Read up to 100 events after sequence 250:
 
 ```bash
 curl --fail --silent \
+  -b "$COOKIE_JAR" \
   'http://127.0.0.1:8765/api/v1/runs/RUN_ID/events?after_sequence=250&limit=100'
 ```
 
@@ -399,11 +438,14 @@ POST requests must send the matching Origin:
 
 ```bash
 curl --fail --silent \
+  -b "$COOKIE_JAR" \
   -H 'Origin: http://127.0.0.1:8765' \
   -H 'Content-Type: application/json' \
   --data '{"run_ids":["BASELINE_RUN_ID","CANDIDATE_RUN_ID"]}' \
   http://127.0.0.1:8765/api/v1/comparisons
 ```
+
+Delete the cookie jar when the diagnostic is complete: `rm -f -- "$COOKIE_JAR"`. Relaunch `bluefire ui` if the one-use exchange fails or the bounded session expires.
 
 ## Error contract
 

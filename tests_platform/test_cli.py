@@ -173,6 +173,119 @@ def test_cli_job_review_and_control_commands_use_durable_lifecycle(
     ]
 
 
+def test_cli_runner_commands_use_only_explicit_managed_lifecycle_actions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _RecordingService()
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    parser = _parser()
+
+    _execute(parser.parse_args(["runner", "status", "--profile", "sandbox-execute.v1"]))
+    _execute(
+        parser.parse_args(
+            [
+                "runner",
+                "bootstrap",
+                "--profile",
+                "sandbox-execute.v1",
+                "--allow-upgrade",
+            ]
+        )
+    )
+    _execute(parser.parse_args(["runner", "start", "--profile", "sandbox-execute.v1"]))
+    _execute(parser.parse_args(["runner", "stop", "--profile", "sandbox-execute.v1"]))
+    _execute(parser.parse_args(["runner", "revoke"]))
+    _execute(
+        parser.parse_args(["runner", "remove", "--confirm-runner-id", "bluefire-rust-runner.v1"])
+    )
+
+    assert service.calls == [
+        ("runner_status", (), {"profile_id": "sandbox-execute.v1"}),
+        (
+            "bootstrap_runner",
+            (),
+            {"profile_id": "sandbox-execute.v1", "allow_upgrade": True},
+        ),
+        ("start_runner", (), {"profile_id": "sandbox-execute.v1"}),
+        ("stop_runner", (), {"profile_id": "sandbox-execute.v1"}),
+        ("revoke_runner", (), {}),
+        (
+            "remove_runner",
+            (),
+            {"confirm_runner_id": "bluefire-rust-runner.v1"},
+        ),
+    ]
+
+
+def test_cli_ui_delivers_one_capability_only_in_the_launch_url_fragment(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    service = _RecordingService()
+    capability = "A" * 64
+    serve_calls: list[tuple[Any, dict[str, Any]]] = []
+
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    monkeypatch.setattr(cli, "generate_browser_bootstrap_capability", lambda: capability)
+
+    def record_serve(target: Any, **kwargs: Any) -> None:
+        on_ready = kwargs.pop("on_ready")
+        serve_calls.append((target, kwargs))
+
+        class BoundServer:
+            server_address = ("127.0.0.1", 49321)
+
+        on_ready(BoundServer())
+
+    monkeypatch.setattr(cli, "serve", record_serve)
+
+    result = _execute(_parser().parse_args(["ui", "--host", "127.0.0.1", "--port", "0"]))
+
+    assert result is None
+    assert serve_calls == [
+        (
+            service,
+            {
+                "host": "127.0.0.1",
+                "port": 0,
+                "browser_bootstrap_capability": capability,
+            },
+        )
+    ]
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == (
+        f"BlueFire local console: http://127.0.0.1:49321/#bluefire-session={capability}\n"
+    )
+    launch_url = output.err.partition(": ")[2].strip()
+    assert "?" not in launch_url.partition("#")[0]
+    assert capability not in launch_url.partition("#")[0]
+    assert capability not in repr(vars(service))
+
+
+def test_cli_ui_bind_failure_never_announces_the_capability(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    service = _RecordingService()
+    capability = "B" * 64
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    monkeypatch.setattr(cli, "generate_browser_bootstrap_capability", lambda: capability)
+
+    def fail_before_ready(_target: Any, **_kwargs: Any) -> None:
+        raise OSError("listener unavailable")
+
+    monkeypatch.setattr(cli, "serve", fail_before_ready)
+
+    with pytest.raises(OSError, match="listener unavailable"):
+        _execute(_parser().parse_args(["ui", "--port", "8765"]))
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == ""
+    assert capability not in output.out + output.err
+
+
 def test_cli_detection_commands_cover_the_full_immutable_lifecycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -222,6 +335,15 @@ def test_cli_receiver_does_not_initialize_the_control_plane(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[Any] = []
+    seen_enrollment: list[tuple[Path, bool]] = []
+
+    class ActiveEnrollment:
+        def hmac_key(self) -> bytes:
+            return b"r" * 32
+
+    def fake_enrollment(root: Path, *, require_active: bool = True) -> ActiveEnrollment:
+        seen_enrollment.append((root, require_active))
+        return ActiveEnrollment()
 
     def fake_receiver(config: Any) -> dict[str, Any]:
         seen.append(config)
@@ -232,6 +354,8 @@ def test_cli_receiver_does_not_initialize_the_control_plane(
 
     monkeypatch.setattr(cli, "run_loopback_receiver", fake_receiver)
     monkeypatch.setattr(cli, "_service", fail_service)
+    monkeypatch.setattr(cli, "managed_product_root", lambda: Path("managed-product"))
+    monkeypatch.setattr(cli, "load_local_enrollment", fake_enrollment)
 
     result = _execute(
         _parser().parse_args(
@@ -244,7 +368,7 @@ def test_cli_receiver_does_not_initialize_the_control_plane(
                 "--max-requests",
                 "2",
                 "--max-connections",
-                "3",
+                "4",
                 "--max-body-bytes",
                 "1024",
             ]
@@ -256,5 +380,31 @@ def test_cli_receiver_does_not_initialize_the_control_plane(
     assert seen[0].host == "127.0.0.1"
     assert seen[0].port == 0
     assert seen[0].max_requests == 2
-    assert seen[0].max_connections == 3
+    assert seen[0].max_connections == 4
     assert seen[0].max_body_bytes == 1024
+    assert seen[0].idle_timeout_seconds == 300.0
+    assert seen[0].authentication_key == b"r" * 32
+    assert seen_enrollment == [(Path("managed-product") / "enrollment", True)]
+
+
+def test_cli_receiver_sanitizes_inactive_or_unavailable_enrollment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive = Path("operator-secret") / "enrollment"
+    monkeypatch.setattr(cli, "managed_product_root", lambda: sensitive.parent)
+
+    def fail_enrollment(_root: Path, *, require_active: bool = True) -> Any:
+        assert require_active is True
+        raise cli.RunnerTrustError(f"cannot read {sensitive}")
+
+    monkeypatch.setattr(cli, "load_local_enrollment", fail_enrollment)
+    monkeypatch.setattr(
+        cli,
+        "run_loopback_receiver",
+        lambda _config: (_ for _ in ()).throw(AssertionError("receiver must not bind")),
+    )
+
+    with pytest.raises(RuntimeError, match="Managed receiver authentication is unavailable") as exc:
+        _execute(_parser().parse_args(["receiver", "--port", "0"]))
+
+    assert str(sensitive) not in str(exc.value)

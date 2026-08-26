@@ -151,7 +151,7 @@ The packaged UI uses the same loopback service as the CLI:
 bluefire --runs-dir .bluefire-runs ui --host 127.0.0.1 --port 8765
 ```
 
-Open `http://127.0.0.1:8765`. The service rejects non-loopback bind addresses. Loopback is a reduced exposure surface, not user authentication; do not publish it through a proxy, tunnel, or port forward.
+Open the exact one-use URL printed only after the listener is ready. Its 384-bit capability stays in the URL fragment, is removed before the first request, and is exchanged once for a strict eight-hour HttpOnly API cookie. A bare URL works only in a browser that already holds that session; otherwise relaunch with `bluefire ui`. The service rejects non-loopback binds. This is same-user local protection, not remote or multi-user authentication; do not publish it through a proxy, tunnel, or port forward, and do not copy the launch URL into logs or issue trackers.
 
 ### Product tour
 
@@ -170,7 +170,7 @@ These screenshots come from the Python-backed local service with sanitized fixtu
 | Detection Lab | Runner inventory | AI Planner |
 | --- | --- | --- |
 | ![Immutable detection revision lineage and reviewed public-baseline binding](docs/assets/screenshots/detection-lab.png) | ![Sanitized Rust runner health and action inventory](docs/assets/screenshots/runners.png) | ![Bounded AI Planner with an unsaved registered-contract draft](docs/assets/screenshots/ai-planner.png) |
-| Immutable origin/clone/tune lineage and pinned public-baseline choices remain explicit. | Stored-profile probing exposes readiness and allowlisted action IDs without browser-visible paths or secrets. | Provider metadata, authority boundaries, and an explicitly unsaved, unauthorized graph draft stay separate. |
+| Immutable origin/clone/tune lineage and pinned public-baseline choices remain explicit. | Managed lifecycle controls and authenticated readiness expose no browser-visible paths or credentials. | Provider metadata, authority boundaries, and an explicitly unsaved, unauthorized graph draft stay separate. |
 
 For frontend development:
 
@@ -180,7 +180,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-The Vite development server proxies `/api` to the Python service on `127.0.0.1:8765`. `pnpm build` writes production assets to `bluefire/ui` for packaging.
+`pnpm dev` is the sanitized demo-only hot-reload surface and refuses Execute. It deliberately has no live API proxy because the production browser-session exchange is bound to the Python listener's exact origin. For live control-plane testing, run `pnpm build`, launch `bluefire ui`, and open the exact capability-bearing URL printed by the CLI. The build writes production assets to `bluefire/ui` for packaging.
 
 ## First scenario walkthrough
 
@@ -196,7 +196,7 @@ The browser demo mode is explicitly synthetic and refuses Execute dispatch. For 
 
 ## Execute with the Rust runner
 
-Execute is opt-in and requires an existing runner-owned sandbox. Build the runner from source:
+Execute is opt-in and requires an explicit managed-runner bootstrap and start. A compatible platform-native wheel supplies the verified artifact. For source development, build the runner and use the environment override shown below:
 
 ```bash
 cargo build --release --manifest-path runner/Cargo.toml
@@ -218,18 +218,31 @@ $env:BLUEFIRE_RUNNER_BINARY = (Resolve-Path .\runner\target\release\bluefire-run
 $env:BLUEFIRE_SANDBOX_ROOT = (New-Item -ItemType Directory -Force .\.bluefire-sandbox).FullName
 ```
 
+Install or verify the exact artifact, establish local enrollment, and start the separately hosted authenticated runner before starting the receiver or requesting Execute:
+
+```bash
+bluefire --config config/bluefire.example.yaml runner bootstrap --profile sandbox-execute.v1
+bluefire --config config/bluefire.example.yaml runner start --profile sandbox-execute.v1
+bluefire --config config/bluefire.example.yaml runner status --profile sandbox-execute.v1
+```
+
+These are explicit lifecycle actions. `runner status` alone is inert and never bootstraps or starts a process.
+
 Provision the reviewed loopback receiver in a separate terminal before an Execute run that uses
 `sandbox.network.loopback.v1`:
 
 ```bash
 bluefire receiver --host 127.0.0.1 --port 4317 \
   --max-requests 1 --max-connections 16 \
-  --max-body-bytes 5242880 --idle-timeout 120
+  --max-body-bytes 5242880 --idle-timeout 300
 ```
 
-The receiver binds a literal loopback address only, accepts exactly
-`POST /bluefire/v1/artifact`, verifies the declared length and `X-BlueFire-SHA256`, and treats the
-body as opaque bytes. It does not execute, forward, or redirect content. By default it transiently
+The receiver requires the active managed runner enrollment and binds a literal loopback address
+only. The runner first obtains an authenticated, one-time
+`GET /bluefire/v1/challenge`, then sends exactly `POST /bluefire/v1/artifact`. The challenge,
+request, and acknowledgement bind the exact task, ephemeral receiver session, nonce, listener,
+declared length, and `X-BlueFire-SHA256`. The receiver treats the body as opaque bytes and does not
+execute, forward, or redirect content. By default it transiently
 buffers at most `--max-body-bytes` for digest verification and does not persist the body. To preserve
 the artifact, explicitly add `--storage-dir /tmp/bluefire-receiver-artifacts-SESSION`; the dedicated
 directory must be empty on first use and is then marked and used only for content-addressed receiver
@@ -237,13 +250,14 @@ files. Never choose a repository, personal, shared, or production directory. The
 reports the bound
 host and port without reporting a filesystem path. `--max-requests` counts accepted artifacts, so a
 malformed request does not consume the intended Execute slot; `--max-connections` separately caps
-all accepted TCP connections, including refusals. The runner treats a 2xx response as success only
-when its bounded JSON acknowledgement has the expected schema, accepted flag, exact byte count,
-echoed artifact digest, and boolean storage result.
+all accepted TCP connections, including refusals, and must be at least twice `--max-requests` so
+each possible success has a challenge and upload connection. The runner treats a 2xx response as success only
+when its bounded canonical JSON acknowledgement has the expected schema, accepted flag, exact task
+and session, byte count, echoed artifact digest, boolean storage result, and valid HMAC.
 
-The approved action binds the literal host and port, but it does not authenticate the receiver
-process identity or a receiver session. A successful acknowledgement is therefore not proof of
-remote transport, authenticated service identity, or mutual authentication.
+This authenticates the same-user managed receiver session; it remains a loopback lab protocol, not
+remote transport or authorization for another host, port, task, or session. The bounded idle default
+is 300 seconds and can be reduced explicitly for automation.
 
 Check inventory and preflight before approval:
 
@@ -370,11 +384,11 @@ The built-in registry records source, authority, a pin-bearing HTTPS reference, 
 | Surface | Current support |
 |---|---|
 | Python control plane | Python 3.10+ on Windows, Linux, and macOS-compatible environments |
-| Rust runner | Builds from source; action descriptors declare Windows, Linux, and macOS |
+| Rust runner | Verified platform-native artifact from a compatible package, with source builds supported for development; action descriptors declare Windows, Linux, and macOS |
 | System discovery | Compiled standard-library/platform APIs |
 | Process discovery | Windows Toolhelp API; fixed absolute `ps` adapter on Linux/macOS |
 | Network | Literal loopback IP only in the shipped action/profile |
-| Remote runner | Not shipped; current transport is a local subprocess |
+| Managed runner | Separate same-user loopback host with TLS 1.3 mutual authentication and local enrollment; cross-host runners are not shipped |
 | Sysmon/Event Log, auditd, PCAP, SIEM | Descriptor/readiness contracts only; no configured production adapter ships |
 | Cloud and identity execution | Not shipped |
 
@@ -421,10 +435,10 @@ Security and release checks should also include detect-secrets/Gitleaks, staged-
 
 ## Current limitations
 
-- BlueFire is local-first and pre-1.0. The API is loopback-only and has no remote authentication layer.
-- The Rust runner is built separately; the Python package does not download, install, enroll, or run it as a service.
-- Remote transport, mutual authentication, runner enrollment/revocation, and signed task/profile artifacts are not implemented.
-- The loopback artifact receiver verifies a digest-bound acknowledgement but does not authenticate the receiver process or session.
+- BlueFire is local-first and pre-1.0. The API requires a same-user browser session on loopback but has no remote or multi-user authentication layer.
+- Compatible platform-native packages include a manifest-bound Rust runner. Explicit `bluefire runner bootstrap` verifies and installs it in the private per-user product root and creates local enrollment; `runner start`/`stop` manage a separately hosted per-user process, not an operating-system service or daemon installer.
+- Local runner transport uses TLS 1.3 mutual authentication plus enrollment-bound message authentication, and the managed lifecycle implements local revocation and confirmed removal. Remote or cross-host transport/enrollment and asymmetric signed task/profile/result artifacts are not shipped.
+- The loopback artifact receiver authenticates an ephemeral same-user session with per-task managed-enrollment HMAC; it is not remote transport or cross-user authorization.
 - Runner readiness binds the probed binary digest and inventory, but BlueFire does not provide OS code signing or eliminate the local binary time-of-check/time-of-use interval before launch.
 - The action pack is intentionally bounded to runner-owned fixtures, discovery, staging/archive, local export, loopback transport, and cleanup. It has no general shell or arbitrary program execution.
 - Plugin activation inventories reviewed metadata only; it does not download/load a package or add dynamic behaviors/actions.

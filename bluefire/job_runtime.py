@@ -17,7 +17,7 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from types import TracebackType
 from typing import Any, Callable, Iterable, Mapping, Protocol, Type
@@ -56,6 +56,7 @@ class JobStore(Protocol):
         progress: Mapping[str, Any] | None = None,
         result_ref: str | None = None,
         error: Mapping[str, Any] | None = None,
+        completion_confirmed: bool = False,
     ) -> Mapping[str, Any]: ...
 
     def get_job(self, job_id: str) -> Mapping[str, Any]: ...
@@ -98,6 +99,7 @@ class JobResult:
     result_ref: str | None = None
     progress: Mapping[str, Any] | None = None
     awaiting_approval: bool = False
+    completion_confirmed: bool = False
 
 
 ExecutionResult = JobResult | str | None
@@ -114,6 +116,7 @@ class _JobControl:
     approval_rejected: bool = False
     pause_requested: bool = False
     cancel_requested: bool = False
+    cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
     future: Future[None] | None = None
     slot_released: bool = False
 
@@ -139,6 +142,12 @@ class JobContext:
     def cancellation_requested(self) -> bool:
         with self._controller._condition:
             return self._control.cancel_requested
+
+    @property
+    def cancellation_event(self) -> threading.Event:
+        """Return the shared signal used to interrupt one bounded external task."""
+
+        return self._control.cancel_event
 
     @property
     def pause_requested(self) -> bool:
@@ -398,6 +407,7 @@ class RunJobController:
                     "restart recovery must resolve it"
                 )
             control.cancel_requested = True
+            control.cancel_event.set()
             control.pause_requested = False
             if state in {
                 JobState.QUEUED,
@@ -510,6 +520,31 @@ class RunJobController:
             while True:
                 result = control.callback(context, control.request)
                 normalized = _normalise_result(result)
+                if normalized.completion_confirmed:
+                    # A callback may set this only after the external operation
+                    # and its required cleanup are durably terminal.  That exact
+                    # proof wins a cancellation request which raced with the
+                    # callback return boundary.
+                    with self._condition:
+                        state = self._state(self._store.get_job(control.job_id))
+                        if state in TERMINAL_JOB_STATES:
+                            return
+                        if normalized.progress is not None:
+                            self._transition(
+                                control.job_id,
+                                state,
+                                progress=normalized.progress,
+                                merge_progress=True,
+                            )
+                        self._transition(
+                            control.job_id,
+                            JobState.COMPLETED,
+                            progress={"phase": JobState.COMPLETED.value},
+                            merge_progress=True,
+                            result_ref=normalized.result_ref,
+                            completion_confirmed=True,
+                        )
+                        return
                 # The callback-return boundary is also cooperative: a pause or
                 # cancellation request that raced with return is honored before a
                 # terminal state can be persisted.
@@ -662,6 +697,7 @@ class RunJobController:
         merge_progress: bool = False,
         result_ref: str | None = None,
         error: Mapping[str, Any] | None = None,
+        completion_confirmed: bool = False,
     ) -> Mapping[str, Any]:
         next_progress = progress
         if progress is not None and merge_progress:
@@ -675,6 +711,7 @@ class RunJobController:
             progress=next_progress,
             result_ref=result_ref,
             error=error,
+            completion_confirmed=completion_confirmed,
         )
         self._condition.notify_all()
         return snapshot
@@ -735,6 +772,10 @@ def _normalise_result(value: ExecutionResult) -> JobResult:
             raise JobRuntimeError("result reference contains an invalid control character")
     if not isinstance(result.awaiting_approval, bool):
         raise JobRuntimeError("awaiting_approval must be boolean")
+    if not isinstance(result.completion_confirmed, bool):
+        raise JobRuntimeError("completion_confirmed must be boolean")
+    if result.awaiting_approval and result.completion_confirmed:
+        raise JobRuntimeError("an approval wait cannot be a confirmed completion")
     return result
 
 

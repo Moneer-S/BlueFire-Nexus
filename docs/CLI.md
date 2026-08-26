@@ -308,10 +308,10 @@ bluefire receiver \
   --max-connections 16 \
   --max-body-bytes 5242880 \
   --request-timeout 5 \
-  --idle-timeout 120
+  --idle-timeout 300
 ```
 
-The receiver initializes no control plane or product database. It accepts only `POST /bluefire/v1/artifact` from loopback with `Content-Type: application/octet-stream`, a decimal `Content-Length`, and a matching lowercase-hex `X-BlueFire-SHA256`. Request line, headers, body, request duration, idle duration, accepted-artifact count, and total connection count are independently bounded. A refused connection does not consume the verified-artifact slot, while `--max-connections` prevents unbounded refusal traffic. The body is never interpreted, executed, redirected, or forwarded, and readiness/summary logs do not include its content or a storage path.
+The receiver initializes no control plane or product database, but it does require the active enrollment at the fixed managed product root. It accepts an authenticated one-time `GET /bluefire/v1/challenge` followed by exactly `POST /bluefire/v1/artifact` from loopback with `Content-Type: application/octet-stream`, a decimal `Content-Length`, and a matching lowercase-hex `X-BlueFire-SHA256`. The HMAC chain binds the exact transport task, ephemeral receiver session, nonce, listener host/port, digest, and length. Request line, headers, body, aggregate request duration, idle duration, accepted-artifact count, and total connection count are independently bounded. A refused connection does not consume the verified-artifact slot, while `--max-connections` prevents unbounded refusal traffic and must be at least twice `--max-requests` to reserve the challenge plus upload connection for every possible accepted artifact. The body is never interpreted, executed, redirected, or forwarded, and readiness/summary logs do not include its content, enrollment key, or storage path. The bounded idle default is 300 seconds; `--idle-timeout` remains an explicit override.
 
 Default operation transiently buffers at most `--max-body-bytes` for digest verification and does
 not persist the body. Persistence is explicit:
@@ -322,7 +322,7 @@ bluefire receiver --host 127.0.0.1 --port 4317 \
   --storage-dir /tmp/bluefire-receiver-artifacts-SESSION
 ```
 
-The storage directory must be empty on first use, is marked as receiver-owned, and receives only non-overwriting content-addressed files. Use a disposable dedicated directory, not a repository, personal, shared, or production path. The server exits after its accepted-artifact limit, connection cap, idle timeout, or interruption. The runner validates the bounded acknowledgement schema, accepted flag, exact byte count, echoed digest, and storage boolean before recording transport success. The approved host and port do not authenticate the receiver process or session, so this remains a local test receiver—not remote runner transport or an authenticated service.
+The storage directory must be empty on first use, is marked as receiver-owned, and receives only non-overwriting content-addressed files. Use a disposable dedicated directory, not a repository, personal, shared, or production path. The server exits after its accepted-artifact limit, connection cap, idle timeout, or interruption. The runner records transport success only after strict, bounded parsing and constant-time verification of the authenticated acknowledgement, including its task/session, byte count, digest, and storage result. This authenticates the same-user managed receiver session; it remains a local lab receiver, not remote transport or authority for a different host, port, task, or session.
 
 See [Runner deployment](RUNNER_DEPLOYMENT.md) for the complete Execute setup and cleanup model.
 
@@ -368,16 +368,31 @@ bluefire --runs-dir .bluefire-runs compare BASELINE_RUN_ID CANDIDATE_RUN_ID
 
 Comparison retains path, outcome, evidence, detection, telemetry, controls, cleanup, AI, budget, duration, and replay-lineage deltas. Improvement/regression labels are descriptive signals, not causal proof. See [Replay and compare](REPLAY_COMPARE.md).
 
-## Other inspection commands
+## Managed runner lifecycle
+
+Lifecycle operations are explicit and local:
 
 ```bash
 bluefire --config config/bluefire.example.yaml runner status --profile sandbox-execute.v1
+bluefire --config config/bluefire.example.yaml runner bootstrap --profile sandbox-execute.v1
+bluefire --config config/bluefire.example.yaml runner bootstrap --profile sandbox-execute.v1 --allow-upgrade
+bluefire --config config/bluefire.example.yaml runner start --profile sandbox-execute.v1
+bluefire --config config/bluefire.example.yaml runner stop --profile sandbox-execute.v1
+bluefire --config config/bluefire.example.yaml runner revoke
+bluefire --config config/bluefire.example.yaml runner remove --confirm-runner-id bluefire-rust-runner.v1
+```
+
+`runner status` is an inert, path-free read and never bootstraps or starts a process. Bootstrap verifies and installs the exact packaged artifact, or an explicit source-development override, before creating local enrollment. `--allow-upgrade` is a separate operator confirmation and succeeds only while the host is stopped and all task, receipt, trust, and artifact gates are clean. Start launches the separate same-user loopback host and requires authenticated readiness. Stop requests authenticated shutdown; it is also the safe reconciliation path for a stale process record. Revocation requires a stopped host with no unresolved watchdog or receipt obligations. Removal requires the complete status-reported runner ID and refuses live or orphaned transport state. Lifecycle output omits managed paths and credentials.
+
+## Other inspection commands
+
+```bash
 bluefire plugins inventory
 bluefire research status
 bluefire ui --host 127.0.0.1 --port 8765
 ```
 
-Runner status is a live local inventory/readiness probe. `plugins inventory` reports the static loader boundary and does not read saved/active manifests; use `resources list plugin` or the local API/UI for managed plugin metadata. Research status lists metadata-only behaviors; it does not download or execute public research. The UI and API bind loopback only.
+`plugins inventory` reports the static loader boundary and does not read saved/active manifests; use `resources list plugin` or the local API/UI for managed plugin metadata. Research status lists metadata-only behaviors; it does not download or execute public research. The UI and API bind loopback only. `bluefire ui` prints its one-use capability URL only after a successful bind; open that exact URL, do not log or share it, and relaunch if the local browser session is absent or expired.
 
 ## JSON request-file rules
 
@@ -391,4 +406,4 @@ Treat request files as reviewed inputs:
 - store only sanitized fixtures and evidence intended for the lab;
 - validate finalized run bundles before replay, comparison, or sharing.
 
-The CLI does not add remote authentication, mutual TLS, runner enrollment/revocation, signed artifacts, general shell execution, production collectors, or production SIEM validation. Those remain explicit product limitations.
+The CLI manages same-user local enrollment, revocation, and TLS 1.3 mutual authentication for the separately hosted loopback runner. It does not add cross-host transport or enrollment, asymmetric signed artifacts, general shell execution, production collectors, or production SIEM validation. Those remain explicit product limitations.

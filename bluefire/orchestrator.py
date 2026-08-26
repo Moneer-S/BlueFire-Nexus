@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -39,7 +40,11 @@ from .policy import ApprovalState, PolicyDecision, PolicyEngine, PolicyStatus
 from .registry import BehaviorRegistry, RegistryError
 from .run_store import RunHandle, RunStore
 from .runner_adapter import AdaptedAction, RunnerActionAdapter, RunnerAdapterError
-from .runner_client import RunnerTransport, RunnerTransportError
+from .runner_client import (
+    RunnerTaskCancelled,
+    RunnerTransport,
+    RunnerTransportError,
+)
 from .runner_contracts import build_execution_manifest, build_runner_profile, current_platform
 from .simulation import SimulationError, SimulationRegistry
 from .util import content_hash
@@ -194,6 +199,7 @@ class Orchestrator:
         resume_from_step_id: str | None = None,
         seed_artifacts: Mapping[str, Any] | None = None,
         checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
+        cancel_event: threading.Event | None = None,
         action_implementations: Mapping[str, str] | None = None,
         runner_readiness: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
@@ -331,6 +337,7 @@ class Orchestrator:
                 receipt_ids=receipt_ids,
                 execution_started=execution_started,
                 checkpoint=checkpoint,
+                cancel_event=cancel_event,
             )
         except BaseException:
             if (
@@ -373,6 +380,7 @@ class Orchestrator:
         receipt_ids: list[str],
         execution_started: float,
         checkpoint: Callable[[Mapping[str, Any]], None] | None,
+        cancel_event: threading.Event | None,
     ) -> Mapping[str, Any]:
         evidence = EvidenceGraph()
         artifacts: dict[str, Any] = dict(seed_artifacts or {})
@@ -495,6 +503,7 @@ class Orchestrator:
                     authorized_target_scope=authorized_target_scope,
                     receipt_ids=receipt_ids,
                     action_timeout_ms=action_timeout_ms,
+                    cancel_event=cancel_event,
                 )
                 policy_rows.append(decision.to_dict())
                 if plan_step.action_id == "sandbox.cleanup.v1":
@@ -1477,6 +1486,7 @@ class Orchestrator:
         authorized_target_scope: Mapping[str, Any],
         receipt_ids: list[str],
         action_timeout_ms: int | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> tuple[dict[str, Any], tuple[EvidenceRecord, ...], PolicyDecision, tuple[str, ...]]:
         action = self.registry.get_action(str(step.action_id))
         if action_timeout_ms is not None and action_timeout_ms < 1:
@@ -1591,10 +1601,38 @@ class Orchestrator:
 
         assert self.runner is not None
         try:
-            runner_result = self.runner.execute(manifest, runner_profile)
+            execute_task = getattr(self.runner, "execute_task", None)
+            wrapped_runner = getattr(self.runner, "runner", None)
+            wrapped_supports_tasks = wrapped_runner is None or callable(
+                getattr(wrapped_runner, "execute_task", None)
+            )
+            if callable(execute_task) and wrapped_supports_tasks:
+                request_hash = content_hash(
+                    {"manifest": dict(manifest), "profile": dict(runner_profile)}
+                )
+                task_id = "execute-" + request_hash.removeprefix("sha256:")
+                runner_result = execute_task(
+                    manifest,
+                    runner_profile,
+                    task_id=task_id,
+                    cancel_event=cancel_event or threading.Event(),
+                    durable_result_path=(
+                        self.store.root / ".bluefire-runner-results" / f"{task_id}.json"
+                    ),
+                )
+            else:
+                runner_result = self.runner.execute(manifest, runner_profile)
             self._validate_runner_result(manifest, runner_profile, runner_result)
             returned_receipts = self._validated_receipt_ids(runner_result.get("receipt_ids", []))
             self._validate_cleanup_result(manifest, runner_result)
+        except RunnerTaskCancelled:
+            for receipt_id in self._discover_runner_receipts(
+                observer.root,
+                expected_profile_id=profile.id,
+            ):
+                if receipt_id not in receipt_ids:
+                    receipt_ids.append(receipt_id)
+            raise
         except RunnerTransportError as exc:
             discovered_receipts = self._discover_runner_receipts(
                 observer.root,

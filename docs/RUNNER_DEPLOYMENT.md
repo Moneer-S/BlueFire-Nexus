@@ -1,10 +1,10 @@
 # Runner deployment
 
-The Rust runner is BlueFire's execution authority. The Python package does not bundle, download, install, or start it as a service. Current transport is a local subprocess invoked with a fixed argument vector.
+The Rust runner is BlueFire's execution authority. Compatible platform-native wheels include a manifest-bound runner artifact. Explicit `bluefire runner bootstrap` verifies its platform, architecture, size, digest, and inventory before installing it in an owner-private per-user root and creating local enrollment. `bluefire runner start` launches a separate unprivileged per-user host process; it never installs an operating-system service or daemon. The control plane reaches that host only over literal loopback with TLS 1.3 mutual authentication, enrollment-bound request authentication, and a durable task ledger. Managed bootstrap never downloads executable content.
 
 ## Requirements
 
-- A current stable Rust toolchain supported by `rust-toolchain.toml`.
+- A compatible platform-native wheel, or the pinned Rust toolchain from `rust-toolchain.toml` for source-development builds.
 - An unprivileged local account.
 - A dedicated existing sandbox root containing no personal or production data.
 - A reviewed Execute runner profile.
@@ -12,7 +12,7 @@ The Rust runner is BlueFire's execution authority. The Python package does not b
 
 Do not run the runner as administrator/root, install it as a system service, or point the sandbox at a home directory, repository root, system directory, network share, or cloud-synced personal folder.
 
-## Build and verify
+## Build and verify from source
 
 ```bash
 cargo fmt --manifest-path runner/Cargo.toml -- --check
@@ -28,6 +28,22 @@ cargo run --release --manifest-path runner/Cargo.toml -- inventory --json
 ```
 
 Inventory schema is `bluefire.runner-inventory.v1`. Each action descriptor uses `bluefire.runner-action-sdk.v1` and declares its version, compatible behaviors, platforms, JSON parameter schema, capabilities, tier, target types, observation hints, cleanup relationship, limit classes, readiness, provenance, effects, and receipt behavior.
+
+Packaged operators do not need a Rust toolchain. Bootstrap the verified native artifact, create local trust, and start the separately hosted runner explicitly:
+
+```bash
+bluefire --config config/bluefire.example.yaml runner bootstrap --profile sandbox-execute.v1
+bluefire --config config/bluefire.example.yaml runner start --profile sandbox-execute.v1
+bluefire --config config/bluefire.example.yaml runner status --profile sandbox-execute.v1
+```
+
+`runner status` is inert: it never installs or starts anything. A ready status includes only path-free authenticated health and inventory metadata. Stop the host before revocation; removal additionally requires the exact runner ID returned by status:
+
+```bash
+bluefire --config config/bluefire.example.yaml runner stop --profile sandbox-execute.v1
+bluefire --config config/bluefire.example.yaml runner revoke
+bluefire --config config/bluefire.example.yaml runner remove --confirm-runner-id RUNNER_ID
+```
 
 ## Prepare a sandbox
 
@@ -59,20 +75,27 @@ approving that Execute path:
 ```bash
 bluefire receiver --host 127.0.0.1 --port 4317 \
   --max-requests 1 --max-connections 16 \
-  --max-body-bytes 5242880 --idle-timeout 120
+  --max-body-bytes 5242880 --idle-timeout 300
 ```
 
 The command exits after the accepted-artifact limit, total-connection limit, or idle timeout and
 also closes cleanly on interruption. `--max-requests` counts only verified, accepted artifacts; a
 malformed or refused request does not consume that success slot. `--max-connections` bounds all TCP
-connections so repeated refusals still terminate the session.
-It accepts only `POST /bluefire/v1/artifact`, requires `Content-Length` and a matching lowercase
-`X-BlueFire-SHA256`, and never interprets, executes, redirects, or forwards the body. Header lines,
+connections so repeated refusals still terminate the session; it must be at least twice
+`--max-requests` to budget one challenge and one upload connection per possible success.
+It loads the active enrollment from the fixed managed product root. The runner first obtains an
+authenticated one-time `GET /bluefire/v1/challenge`, then sends only
+`POST /bluefire/v1/artifact` with `Content-Length` and a matching lowercase
+`X-BlueFire-SHA256`. The HMAC chain binds the exact transport task, ephemeral session, nonce,
+listener host/port, digest, and length. The receiver never interprets, executes, redirects, or
+forwards the body. Header lines,
 aggregate headers, body size, request duration, idle duration, accepted artifacts, and total
 connections are independently bounded. It produces no request-body or filesystem-path logs. The
-runner accepts network success only when a bounded 2xx JSON response reports schema
-`bluefire.loopback-receiver-result.v1`, `accepted: true`, the exact received byte count, the sent
-artifact digest, and a boolean storage result; an arbitrary 2xx or 204 response fails the action.
+runner accepts network success only when a bounded canonical 2xx JSON response reports schema
+`bluefire.loopback-receiver-result.v2`, `accepted: true`, the exact task/session and received byte
+count, the sent artifact digest, a boolean storage result, and a valid request-bound HMAC; an
+arbitrary 2xx or 204 response fails the action. The bounded idle default is 300 seconds and remains
+an explicit CLI override.
 
 The default transiently buffers at most `--max-body-bytes` for digest verification and does not
 persist the body. Persistent receipt of bytes is opt-in:
@@ -87,11 +110,10 @@ On first use the storage directory must be empty. The receiver marks it as recei
 only content-addressed names beneath that resolved root, without overwriting an existing artifact.
 Do not use a personal, repository, shared, or production directory.
 
-The Execute approval and runner manifest bind the literal destination host and port. They do not
-authenticate the receiver process identity or establish a receiver session. Consequently, even a
-valid digest-bound acknowledgement proves neither remote transport nor authenticated/mutually
-authenticated service identity. This local receiver is a controlled lab fixture, not a remote
-transport or authentication mechanism.
+The Execute approval and runner manifest bind the literal destination host and port. The managed
+runner adds an exact per-task capability and the receiver proves an ephemeral same-user session
+before artifact transmission. This does not authorize a different host, port, task, or session and
+does not turn the local receiver into remote transport or cross-user service authentication.
 
 ## Check compatibility
 
@@ -180,6 +202,6 @@ Runner evidence can be `executed` or `control_blocked`; it cannot be `observed`.
 
 ## Not implemented
 
-The current runner does not provide remote transport, TLS, mutual authentication, enrollment, revocation, a daemon/service installer, signed manifests/profiles/results, or a persistent task replay cache. Do not expose the local binary through an ad hoc network wrapper.
+The managed runner is local and same-user only. Cross-host transport or enrollment, a daemon/service installer, asymmetric signatures or non-repudiation for manifests/profiles/results, and general arbitrary execution are not provided. Do not republish the loopback host or wrap the runner with an ad hoc remote service.
 
 See [Action SDK](ACTION_SDK.md), [Runner profiles](RUNNER_PROFILES.md), and [`runner/README.md`](../runner/README.md) for contract details.

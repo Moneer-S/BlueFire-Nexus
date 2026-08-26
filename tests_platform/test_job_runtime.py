@@ -30,6 +30,7 @@ class RecordingStore(ProductStore):
         progress: Mapping[str, Any] | None = None,
         result_ref: str | None = None,
         error: Mapping[str, Any] | None = None,
+        completion_confirmed: bool = False,
     ) -> Mapping[str, Any]:
         snapshot = super().transition_job(
             job_id,
@@ -37,6 +38,7 @@ class RecordingStore(ProductStore):
             progress=progress,
             result_ref=result_ref,
             error=error,
+            completion_confirmed=completion_confirmed,
         )
         self.transition_states.append(state)
         return snapshot
@@ -227,6 +229,58 @@ def test_running_cancellation_is_cooperative_and_durable(tmp_path: Path) -> None
 
     assert cancelled["state"] == JobState.CANCELLED.value
     assert callback_exited.is_set()
+
+
+def test_running_cancellation_sets_shared_external_signal(tmp_path: Path) -> None:
+    store = ProductStore(tmp_path / "bluefire.db")
+    signal_observed = threading.Event()
+
+    def execute(context: JobContext, request: Mapping[str, Any]) -> None:
+        assert not context.cancellation_event.is_set()
+        assert context.cancellation_event.wait(2)
+        signal_observed.set()
+        context.checkpoint()
+
+    with RunJobController(store, execute, max_workers=1) as controller:
+        queued = controller.submit("scenario.run", {"mode": "execute"})
+        job_id = _job_id(queued)
+        controller.wait_for_state(job_id, {JobState.RUNNING}, timeout=2)
+        assert controller.cancel(job_id)["state"] == JobState.CANCELLING.value
+        cancelled = controller.wait(job_id, timeout=2)
+
+    assert signal_observed.is_set()
+    assert cancelled["state"] == JobState.CANCELLED.value
+
+
+def test_durably_confirmed_completion_wins_cancellation_race(tmp_path: Path) -> None:
+    store = ProductStore(tmp_path / "bluefire.db")
+    effect_completed = threading.Event()
+    return_result = threading.Event()
+
+    def execute(context: JobContext, request: Mapping[str, Any]) -> JobResult:
+        effect_completed.set()
+        assert return_result.wait(2)
+        return JobResult(
+            result_ref="run-confirmed",
+            progress={"effect_state": "completed"},
+            completion_confirmed=True,
+        )
+
+    with RunJobController(store, execute, max_workers=1) as controller:
+        queued = controller.submit("scenario.run", {"mode": "execute"})
+        job_id = _job_id(queued)
+        controller.wait_for_state(job_id, {JobState.RUNNING}, timeout=2)
+        assert effect_completed.wait(1)
+        assert controller.cancel(job_id)["state"] == JobState.CANCELLING.value
+        return_result.set()
+        completed = controller.wait(job_id, timeout=2)
+
+    assert completed["state"] == JobState.COMPLETED.value
+    assert completed["result_ref"] == "run-confirmed"
+    assert completed["progress"] == {
+        "effect_state": "completed",
+        "phase": JobState.COMPLETED.value,
+    }
 
 
 def test_queued_cancellation_never_invokes_callback(tmp_path: Path) -> None:

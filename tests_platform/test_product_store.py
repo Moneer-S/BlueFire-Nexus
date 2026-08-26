@@ -432,6 +432,27 @@ def test_jobs_have_strict_transitions_and_restart_recovery(tmp_path: Path) -> No
         store.transition_job(str(job["job_id"]), "completed")
 
 
+def test_cancelling_job_requires_explicit_durable_completion_proof(tmp_path: Path) -> None:
+    store = ProductStore(tmp_path / "bluefire.db")
+    job = store.create_job("scenario.run", {"mode": "execute"})
+    job_id = str(job["job_id"])
+    store.transition_job(job_id, "planning")
+    store.transition_job(job_id, "running")
+    store.transition_job(job_id, "cancelling")
+
+    with pytest.raises(ProductStoreError, match="confirmed durable completion"):
+        store.transition_job(job_id, "completed")
+
+    completed = store.transition_job(
+        job_id,
+        "completed",
+        result_ref="run-example-01",
+        completion_confirmed=True,
+    )
+    assert completed["state"] == "completed"
+    assert completed["result_ref"] == "run-example-01"
+
+
 def test_ai_proposal_reviews_bind_exact_digests_and_are_one_time(tmp_path: Path) -> None:
     store = ProductStore(tmp_path / "bluefire.db")
     job = store.create_job("scenario.run", {"mode": "simulate"})
