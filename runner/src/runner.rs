@@ -250,10 +250,6 @@ fn reviewed_program_constants(opcode: &str) -> Option<BTreeMap<String, Value>> {
             "content_template".to_string(),
             Value::String("telemetry-seed".to_string()),
         )]),
-        "sandbox.fixture.transform.v1" => BTreeMap::from([(
-            "transform".to_string(),
-            Value::String("uppercase-ascii".to_string()),
-        )]),
         "sandbox.network.loopback.v1" => {
             BTreeMap::from([("method".to_string(), Value::String("POST".to_string()))])
         }
@@ -268,7 +264,8 @@ fn reviewed_program_constants(opcode: &str) -> Option<BTreeMap<String, Value>> {
         | "sandbox.discovery.list.v1"
         | "sandbox.discovery.metadata.v1"
         | "sandbox.discovery.recursive.v1"
-        | "sandbox.export.local.v1" => BTreeMap::new(),
+        | "sandbox.export.local.v1"
+        | "sandbox.fixture.transform.v1" => BTreeMap::new(),
         _ => return None,
     };
     Some(constants)
@@ -1052,7 +1049,8 @@ mod tests {
             binding.clone(),
             json!({
                 "path": "fixtures/package-alias.txt",
-                "content_template": "telemetry-seed"
+                "content_template": "telemetry-seed",
+                "record_count": 1
             }),
         );
 

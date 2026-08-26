@@ -251,16 +251,45 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
         behavior_id=create_action.id,
         action=create_action,
         runner_profile=profile,
-        params={"path": "fixtures/smoke.txt", "content_template": "telemetry-seed"},
-        filesystem_scope=("fixtures/smoke.txt",),
+        params={
+            "path": "fixtures/smoke.jsonl",
+            "content_template": "telemetry-seed",
+            "record_count": 1,
+        },
+        filesystem_scope=("fixtures/smoke.jsonl",),
         approval_record=None,
     )
     created = runner.execute(create, profile)
     receipts = created.get("receipt_ids")
     if created.get("status") != "success" or not isinstance(receipts, list) or len(receipts) != 1:
         raise RuntimeError("installed runner did not create a receipt-bound fixture")
-    if not (sandbox / "fixtures" / "smoke.txt").is_file():
+    fixture_path = sandbox / "fixtures" / "smoke.jsonl"
+    if not fixture_path.is_file():
         raise RuntimeError("installed runner did not create the expected sandbox fixture")
+    expected_record = {
+        "record_id": "synthetic-001",
+        "synthetic": True,
+        "template": "telemetry-seed",
+        "value": "telemetry-value-001",
+    }
+    expected_fixture = (
+        json.dumps(expected_record, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    fixture_bytes = fixture_path.read_bytes()
+    create_output = created.get("output")
+    if (
+        fixture_bytes != expected_fixture
+        or not isinstance(create_output, Mapping)
+        or set(create_output)
+        != {"artifact", "sha256", "size", "template", "record_count", "format"}
+        or create_output.get("artifact") != "fixtures/smoke.jsonl"
+        or create_output.get("template") != "telemetry-seed"
+        or create_output.get("record_count") != 1
+        or create_output.get("format") != "jsonl"
+        or create_output.get("size") != len(expected_fixture)
+        or create_output.get("sha256") != hashlib.sha256(expected_fixture).hexdigest()
+    ):
+        raise RuntimeError("installed runner did not satisfy the fixture-create v2 contract")
 
     cleanup_action = ActionDefinition(
         schema_version="bluefire.action.v1",
@@ -289,7 +318,26 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
     )
     cleaned = runner.execute(cleanup, profile)
     remaining_files = [path for path in sandbox.rglob("*") if path.is_file()]
-    if cleaned.get("status") != "success" or remaining_files:
+    cleanup_report = cleaned.get("cleanup")
+    requested_receipts = (
+        cleanup_report.get("requested_receipts") if isinstance(cleanup_report, Mapping) else None
+    )
+    verified_receipts = (
+        cleanup_report.get("verified_receipts") if isinstance(cleanup_report, Mapping) else None
+    )
+    if (
+        cleaned.get("status") != "success"
+        or not isinstance(cleanup_report, Mapping)
+        or cleaned.get("output") != cleanup_report
+        or type(requested_receipts) is not int
+        or requested_receipts != 1
+        or cleanup_report.get("verification_performed") is not True
+        or type(verified_receipts) is not int
+        or verified_receipts != 1
+        or cleanup_report.get("errors") != []
+        or cleanup_report.get("retained_paths") != []
+        or remaining_files
+    ):
         raise RuntimeError("installed runner cleanup did not reconcile the sandbox to zero files")
 
     signed_alias = _smoke_signed_package_alias(runner, work_root)

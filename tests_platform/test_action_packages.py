@@ -21,6 +21,7 @@ from bluefire.action_packages import (
     MAX_ENVELOPE_BYTES,
     MAX_JSON_DEPTH,
     MAX_STRING_CHARS,
+    SUPPORTED_RUNNER_ACTION_VERSIONS,
     ActionPackageError,
     SemVer,
     audit_action_package,
@@ -672,7 +673,6 @@ def test_package_revision_requires_immutable_full_identity(revision: str) -> Non
     [
         "sandbox.archive.tar.v1",
         "sandbox.fixture.create.v1",
-        "sandbox.fixture.transform.v1",
         "sandbox.network.loopback.v1",
         "sandbox.restricted.persistence-marker.v1",
     ],
@@ -684,3 +684,21 @@ def test_program_constants_cannot_fall_back_to_unsigned_defaults(opcode: str) ->
 
     with pytest.raises(ActionPackageError, match="must explicitly bind reviewed fields"):
         _signed(private_key, payload=payload)
+
+
+def test_runner_contract_versions_fail_closed_across_breaking_semantic_schemas() -> None:
+    assert SUPPORTED_RUNNER_ACTION_VERSIONS == {
+        "endpoint.discovery.processes.v1": "1.0.0",
+        "endpoint.discovery.system.v1": "1.0.0",
+        "sandbox.archive.tar.v1": "1.0.0",
+        "sandbox.cleanup.v1": "1.1.0",
+        "sandbox.collection.stage.v1": "2.0.0",
+        "sandbox.discovery.list.v1": "2.0.0",
+        "sandbox.discovery.metadata.v1": "2.0.0",
+        "sandbox.discovery.recursive.v1": "1.0.0",
+        "sandbox.export.local.v1": "2.0.0",
+        "sandbox.fixture.create.v1": "2.0.0",
+        "sandbox.fixture.transform.v1": "2.0.0",
+        "sandbox.network.loopback.v1": "1.0.0",
+        "sandbox.restricted.persistence-marker.v1": "1.0.0",
+    }

@@ -26,6 +26,8 @@ from bluefire.runner_bootstrap import (
     parse_runner_manifest,
     validate_runner_inventory,
 )
+from bluefire.runner_client import canonical_runner_inventory
+from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_VERSIONS
 from tools.stage_native_runner import stage_native_runner
 
 PRODUCT_VERSION = "0.1.0"
@@ -67,9 +69,60 @@ def _inventory(**changes: Any) -> Mapping[str, Any]:
         "action_sdk_version": ACTION_SDK_VERSION,
         "receipt_protocol": RECEIPT_PROTOCOL_VERSION,
         "platform": PLATFORM,
-        "actions": [],
+        "actions": [
+            {
+                "schema_version": ACTION_SDK_VERSION,
+                "action_id": action_id,
+                "action_version": action_version,
+                "readiness": "ready",
+            }
+            for action_id, action_version in BUILTIN_RUNNER_ACTION_VERSIONS.items()
+        ],
     }
     value.update(changes)
+    return value
+
+
+def _corrupt_inventory(corruption: str) -> Mapping[str, Any]:
+    value = copy.deepcopy(dict(_inventory()))
+    actions = value["actions"]
+    assert isinstance(actions, list)
+    if corruption == "empty":
+        actions.clear()
+    elif corruption == "missing":
+        actions.pop()
+    elif corruption == "extra":
+        actions.append(
+            {
+                "schema_version": ACTION_SDK_VERSION,
+                "action_id": "sandbox.unreviewed.v1",
+                "action_version": "1.0.0",
+                "readiness": "ready",
+            }
+        )
+    elif corruption == "duplicate":
+        actions.append(copy.deepcopy(actions[0]))
+    elif corruption == "wrong_version":
+        actions[0]["action_version"] = "9.0.0"
+    elif corruption == "not_ready":
+        actions[0]["readiness"] = "structural"
+    elif corruption == "missing_action_schema":
+        actions[0].pop("schema_version")
+    else:
+        canonical = copy.deepcopy(dict(canonical_runner_inventory(value)))
+        canonical_actions = canonical["actions"]
+        assert isinstance(canonical_actions, list)
+        if corruption == "missing_source_digest":
+            canonical.pop("source_digest")
+        elif corruption == "malformed_source_digest":
+            canonical["source_digest"] = "sha256:invalid"
+        elif corruption == "missing_contract_digest":
+            canonical_actions[0].pop("contract_digest")
+        elif corruption == "malformed_contract_digest":
+            canonical_actions[0]["contract_digest"] = "sha256:invalid"
+        else:  # pragma: no cover - guarded by the parametrization above.
+            raise AssertionError(f"unknown inventory corruption: {corruption}")
+        return canonical
     return value
 
 
@@ -236,6 +289,31 @@ def test_inventory_must_match_manifest_compatibility(field: str, value: str) -> 
         validate_runner_inventory(_inventory(**{field: value}), _manifest())
 
 
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "empty",
+        "missing",
+        "extra",
+        "duplicate",
+        "wrong_version",
+        "not_ready",
+        "missing_action_schema",
+        "missing_source_digest",
+        "malformed_source_digest",
+        "missing_contract_digest",
+        "malformed_contract_digest",
+    ],
+)
+def test_inventory_requires_the_exact_ready_versioned_builtin_contracts(
+    corruption: str,
+) -> None:
+    inventory = _corrupt_inventory(corruption)
+
+    with pytest.raises(RunnerBootstrapError, match="invalid inventory"):
+        validate_runner_inventory(inventory, _manifest())
+
+
 def test_environment_override_is_explicit_and_sandbox_still_has_managed_fallback(
     tmp_path: Path,
 ) -> None:
@@ -303,6 +381,28 @@ def test_staging_helper_writes_only_verified_platform_specific_assets(tmp_path: 
     assert json.loads((output / MANIFEST_FILENAME).read_text(encoding="utf-8")) == (
         manifest.to_dict()
     )
+    assert not list(output.glob("*.tmp"))
+
+
+def test_staging_refuses_a_non_authoritative_inventory_before_copy(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    runner = source_root / FILENAME
+    runner.write_bytes(_fake_pe())
+    output = tmp_path / "stage"
+
+    with pytest.raises(RunnerBootstrapError, match="invalid inventory"):
+        stage_native_runner(
+            runner.resolve(),
+            output,
+            platform_name=PLATFORM,
+            architecture=ARCHITECTURE,
+            product_version=PRODUCT_VERSION,
+            inventory=_corrupt_inventory("duplicate"),
+        )
+
+    assert not (output / FILENAME).exists()
+    assert not (output / MANIFEST_FILENAME).exists()
     assert not list(output.glob("*.tmp"))
 
 

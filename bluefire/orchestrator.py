@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from .ai import AIProposalRequest, AIProvider, AIProviderError, ProposalType
@@ -44,10 +47,157 @@ from .runner_client import (
     RunnerTaskCancelled,
     RunnerTransport,
     RunnerTransportError,
+    _PinnedPrivateDirectory,
 )
 from .runner_contracts import build_execution_manifest, build_runner_profile, current_platform
+from .runner_inventory import (
+    RunnerInventoryAuthorityError,
+    validate_builtin_action_inventory,
+)
 from .simulation import SimulationError, SimulationRegistry
 from .util import content_hash
+
+_RECEIPT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "receipt_id",
+        "request_hash",
+        "action_id",
+        "runner_profile_id",
+        "workspace_id",
+        "created_at",
+        "paths",
+    }
+)
+_RECEIPT_COMMIT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "receipt_id",
+        "runner_profile_id",
+        "workspace_id",
+        "committed_at",
+    }
+)
+_OWNED_PATH_FIELDS = frozenset({"relative_path", "kind", "sha256", "size"})
+_LOWER_HEX_DIGEST = frozenset("0123456789abcdef")
+_MAX_DISCOVERED_RECEIPTS = 512
+_MAX_RECEIPT_BYTES = 256 * 1024
+_MAX_RECOVERY_FILES = 512
+_MAX_RECOVERY_FILE_BYTES = 1024 * 1024 * 1024 * 1024
+
+
+def _is_lower_hex_digest(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in _LOWER_HEX_DIGEST for character in value)
+    )
+
+
+def _safe_receipt_path(value: Any) -> str | None:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 4096
+        or "\\" in value
+        or ":" in value
+        or any(ord(character) < 32 for character in value)
+    ):
+        return None
+    candidate = PurePosixPath(value)
+    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
+        return None
+    for component in candidate.parts:
+        trimmed = component.rstrip(". ")
+        base = trimmed.split(".", 1)[0].upper()
+        if (
+            component.casefold() == ".bluefire"
+            or component.endswith((".", " "))
+            or base in {"CON", "PRN", "AUX", "NUL"}
+            or (
+                len(base) == 4
+                and (base.startswith("COM") or base.startswith("LPT"))
+                and base[-1] in "123456789"
+            )
+        ):
+            return None
+    normalized = candidate.as_posix()
+    return normalized if normalized == value else None
+
+
+def _valid_owned_receipt_paths(paths: Any, *, max_files: int, max_bytes: int) -> bool:
+    if not isinstance(paths, list) or not paths or len(paths) > min(max_files * 8, 4096):
+        return False
+    seen: set[str] = set()
+    files: list[str] = []
+    directories: list[str] = []
+    total_size = 0
+    for raw in paths:
+        if not isinstance(raw, dict) or set(raw) != _OWNED_PATH_FIELDS:
+            return False
+        relative = _safe_receipt_path(raw.get("relative_path"))
+        kind = raw.get("kind")
+        if relative is None or relative in seen or kind not in {"file", "directory"}:
+            return False
+        seen.add(relative)
+        if kind == "file":
+            digest = raw.get("sha256")
+            size = raw.get("size")
+            if (
+                not _is_lower_hex_digest(digest)
+                or isinstance(size, bool)
+                or not isinstance(size, int)
+                or not 0 <= size <= max_bytes
+            ):
+                return False
+            files.append(relative)
+            total_size += size
+        else:
+            if raw.get("sha256") is not None or raw.get("size") is not None:
+                return False
+            directories.append(relative)
+    if not files or len(files) > max_files or total_size > max_files * max_bytes:
+        return False
+    return all(any(file.startswith(directory + "/") for file in files) for directory in directories)
+
+
+def _decode_receipt_document(payload: bytes) -> dict[str, Any]:
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    def reject_non_finite(value: str) -> None:
+        raise ValueError(f"non-finite JSON number: {value}")
+
+    try:
+        document = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=reject_duplicate_keys,
+            parse_constant=reject_non_finite,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
+        raise RunnerTransportError("runner receipt could not be decoded") from exc
+    if not isinstance(document, dict):
+        raise RunnerTransportError("runner receipt record is invalid")
+    return document
+
+
+def _workspace_id_candidates(sandbox_root: Path) -> frozenset[str]:
+    resolved = sandbox_root.resolve(strict=True)
+    spellings = {str(resolved)}
+    if os.name == "nt":
+        raw = str(resolved)
+        if raw.startswith("\\\\"):
+            spellings.add("\\\\?\\UNC\\" + raw[2:])
+        elif not raw.startswith("\\\\?\\"):
+            spellings.add("\\\\?\\" + raw)
+    return frozenset(
+        hashlib.sha256(spelling.replace("\\", "/").encode("utf-8")).hexdigest()
+        for spelling in spellings
+    )
 
 
 class OrchestrationError(ValueError):
@@ -1699,6 +1849,23 @@ class Orchestrator:
             return row, (record,), decision, ()
 
         assert self.runner is not None
+        receipt_limits = manifest.get("limits")
+        if not isinstance(receipt_limits, Mapping):
+            raise OrchestrationError("runner manifest has no receipt recovery limits")
+
+        def discover_current_receipts(*, require_commit: bool = False) -> tuple[str, ...]:
+            return self._discover_runner_receipts(
+                observer.root,
+                expected_profile_id=profile.id,
+                expected_request_hash=str(manifest["request_hash"]),
+                expected_action_id=str(manifest["action_id"]),
+                require_commit=require_commit,
+                max_files=receipt_limits.get("max_files"),
+                max_bytes=receipt_limits.get("max_artifact_bytes"),
+            )
+
+        pre_dispatch_receipts = discover_current_receipts()
+        pre_dispatch_committed_receipts = discover_current_receipts(require_commit=True)
         try:
             execute_task = getattr(self.runner, "execute_task", None)
             wrapped_runner = getattr(self.runner, "runner", None)
@@ -1723,23 +1890,48 @@ class Orchestrator:
                 runner_result = self.runner.execute(manifest, runner_profile)
             self._validate_runner_result(manifest, runner_profile, runner_result)
             returned_receipts = self._validated_receipt_ids(runner_result.get("receipt_ids", []))
-            self._validate_cleanup_result(manifest, runner_result)
-        except RunnerTaskCancelled:
-            for receipt_id in self._discover_runner_receipts(
-                observer.root,
-                expected_profile_id=profile.id,
+            if any(
+                receipt_id in pre_dispatch_committed_receipts for receipt_id in returned_receipts
             ):
+                raise RunnerTransportError("runner returned a pre-existing receipt as a new effect")
+            discovered_request_receipts = discover_current_receipts()
+            committed_request_receipts = discover_current_receipts(require_commit=True)
+            if any(
+                receipt_id not in committed_request_receipts for receipt_id in returned_receipts
+            ):
+                raise RunnerTransportError(
+                    "runner returned a receipt without a committed current-request binding"
+                )
+            self._validate_cleanup_result(manifest, runner_result)
+            runner_status = str(runner_result.get("status"))
+            new_committed_receipts = tuple(
+                receipt_id
+                for receipt_id in committed_request_receipts
+                if receipt_id not in pre_dispatch_committed_receipts
+            )
+            if (
+                adapted.observable_paths
+                and runner_status in {"success", "partial", "timed_out"}
+                and not new_committed_receipts
+            ):
+                raise RunnerTransportError(
+                    "runner reported a mutating outcome without a committed cleanup receipt"
+                )
+        except RunnerTaskCancelled:
+            for receipt_id in discover_current_receipts():
                 if receipt_id not in receipt_ids:
                     receipt_ids.append(receipt_id)
             raise
         except RunnerTransportError as exc:
-            discovered_receipts = self._discover_runner_receipts(
-                observer.root,
-                expected_profile_id=profile.id,
-            )
+            discovered_receipts = discover_current_receipts()
             for receipt_id in discovered_receipts:
                 if receipt_id not in receipt_ids:
                     receipt_ids.append(receipt_id)
+            new_discovered_receipts = tuple(
+                receipt_id
+                for receipt_id in discovered_receipts
+                if receipt_id not in pre_dispatch_receipts
+            )
             record = EvidenceRecord.create(
                 run_id=run_id,
                 step_id=step.step_id,
@@ -1763,30 +1955,25 @@ class Orchestrator:
                 evidence_ids=(record.evidence_id,),
                 execution_disposition="execute",
                 policy=decision.to_dict(),
-                receipts=discovered_receipts,
+                receipts=new_discovered_receipts,
                 error={"code": "runner_transport_failed", "message": str(exc)},
             )
-            return row, (record,), decision, discovered_receipts
+            return row, (record,), decision, new_discovered_receipts
         except BaseException:
-            for receipt_id in self._discover_runner_receipts(
-                observer.root,
-                expected_profile_id=profile.id,
-            ):
+            for receipt_id in discover_current_receipts():
                 if receipt_id not in receipt_ids:
                     receipt_ids.append(receipt_id)
             raise
 
-        for receipt_id in returned_receipts:
+        for receipt_id in discovered_request_receipts:
             if receipt_id not in receipt_ids:
                 receipt_ids.append(receipt_id)
-        discovered_receipts = self._discover_runner_receipts(
-            observer.root,
-            expected_profile_id=profile.id,
+        new_committed_receipts = tuple(
+            receipt_id
+            for receipt_id in committed_request_receipts
+            if receipt_id not in pre_dispatch_committed_receipts
         )
-        for receipt_id in discovered_receipts:
-            if receipt_id not in receipt_ids:
-                receipt_ids.append(receipt_id)
-        effective_receipts = tuple(dict.fromkeys((*returned_receipts, *discovered_receipts)))
+        effective_receipts = tuple(dict.fromkeys((*returned_receipts, *new_committed_receipts)))
 
         runner_status = str(runner_result.get("status"))
         outcome = self._runner_outcome(runner_status)
@@ -1952,7 +2139,9 @@ class Orchestrator:
         refs = ["sandbox.workspace"]
         if adapted.network_destinations:
             refs.append("network.loopback")
-        if adapted.params.get("destination") == "exports/bundle.bin":
+        if any(
+            path == "exports" or path.startswith("exports/") for path in adapted.filesystem_scope
+        ):
             refs.append("export.local")
         result: dict[str, Any] = {"scope_refs": refs}
         if adapted.network_destinations:
@@ -2185,7 +2374,7 @@ class Orchestrator:
             if Orchestrator._runner_opcode(step) != "sandbox.network.loopback.v1":
                 continue
             port = step.parameters.get("port", 4317)
-            if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
                 raise OrchestrationError("loopback scenario port is invalid")
             rows.append({"host": "127.0.0.1", "port": port})
         unique = {(str(row["host"]), int(row["port"])): row for row in rows}
@@ -2193,42 +2382,37 @@ class Orchestrator:
 
     @staticmethod
     def _validate_inventory(plan: ExecutionPlan, inventory: Mapping[str, Any]) -> None:
-        if inventory.get("schema_version") != "bluefire.runner-inventory.v1":
-            raise OrchestrationError("Rust runner inventory schema is unsupported")
-        raw_actions = inventory.get("actions")
-        if not isinstance(raw_actions, list):
-            raise OrchestrationError("Rust runner inventory has no action list")
-        available = {
-            str(row.get("action_id"))
-            for row in raw_actions
-            if isinstance(row, Mapping) and isinstance(row.get("action_id"), str)
-        }
-        requested = {
-            str(Orchestrator._runner_opcode(step)) for step in plan.steps if step.action_id
-        }
-        missing = sorted(requested - available)
-        if missing:
-            raise OrchestrationError("Rust runner lacks planned actions: " + ", ".join(missing))
+        requested: set[str] = set()
+        for step in plan.steps:
+            if not step.action_id:
+                continue
+            opcode = Orchestrator._runner_opcode(step)
+            if opcode is None:
+                raise OrchestrationError("Execute plan has an unreviewed native action")
+            requested.add(opcode)
+        try:
+            validate_builtin_action_inventory(
+                inventory,
+                required_action_ids=requested,
+            )
+        except RunnerInventoryAuthorityError:
+            raise OrchestrationError(
+                "Rust runner inventory does not satisfy the planned action contracts"
+            ) from None
 
     @staticmethod
     def _validate_cleanup_inventory(inventory: Mapping[str, Any]) -> None:
         """Require only the registered cleanup contract during crash recovery."""
 
-        if inventory.get("schema_version") != "bluefire.runner-inventory.v1":
-            raise OrchestrationError("Rust runner inventory schema is unsupported")
-        raw_actions = inventory.get("actions")
-        if not isinstance(raw_actions, list):
-            raise OrchestrationError("Rust runner inventory has no action list")
-        cleanup = next(
-            (
-                row
-                for row in raw_actions
-                if isinstance(row, Mapping) and row.get("action_id") == "sandbox.cleanup.v1"
-            ),
-            None,
-        )
-        if cleanup is None or cleanup.get("readiness") == "unavailable":
-            raise OrchestrationError("Rust runner lacks an available cleanup action")
+        try:
+            validate_builtin_action_inventory(
+                inventory,
+                required_action_ids={"sandbox.cleanup.v1"},
+            )
+        except RunnerInventoryAuthorityError:
+            raise OrchestrationError(
+                "Rust runner inventory does not satisfy the cleanup action contract"
+            ) from None
 
     @staticmethod
     def _validate_runner_result(
@@ -2275,71 +2459,137 @@ class Orchestrator:
         sandbox_root: Path,
         *,
         expected_profile_id: str | None = None,
+        expected_request_hash: str | None = None,
+        expected_action_id: str | None = None,
+        require_commit: bool = False,
+        max_files: int = _MAX_RECOVERY_FILES,
+        max_bytes: int = _MAX_RECOVERY_FILE_BYTES,
     ) -> tuple[str, ...]:
+        if (expected_request_hash is None) != (expected_action_id is None):
+            raise RunnerTransportError("runner receipt request filter is incomplete")
+        if (
+            not isinstance(require_commit, bool)
+            or isinstance(max_files, bool)
+            or not isinstance(max_files, int)
+            or not 1 <= max_files <= _MAX_RECOVERY_FILES
+            or isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or not 1 <= max_bytes <= _MAX_RECOVERY_FILE_BYTES
+        ):
+            raise RunnerTransportError("runner receipt discovery limits are invalid")
         receipt_root = sandbox_root / ".bluefire" / "receipts"
-        if not receipt_root.exists():
+        try:
+            receipt_root.lstat()
+        except FileNotFoundError:
             return ()
-        if receipt_root.is_symlink() or not receipt_root.is_dir():
-            raise RunnerTransportError("runner receipt directory is unsafe")
-        resolved = receipt_root.resolve(strict=True)
-        if resolved.parent.parent != sandbox_root.resolve(strict=True):
-            raise RunnerTransportError("runner receipt directory escaped the sandbox")
-        receipt_rows: list[tuple[datetime, str]] = []
-        for entry in receipt_root.iterdir():
-            receipt_id = entry.stem
-            if (
-                entry.is_symlink()
-                or entry.suffix != ".json"
-                or len(receipt_id) != 64
-                or any(character not in "0123456789abcdef" for character in receipt_id)
-            ):
-                raise RunnerTransportError("runner receipt entry is unsafe")
-            receipt_bytes: bytes | None = None
-            receipt_size: int | None = None
-            for attempt in range(5):
-                try:
-                    if not entry.is_file():
-                        raise OSError("receipt metadata is not yet readable")
-                    receipt_size = entry.stat().st_size
-                    receipt_bytes = entry.read_bytes()
-                    break
-                except OSError:
-                    if attempt == 4:
+        except OSError as exc:
+            raise RunnerTransportError("runner receipt directory could not be inspected") from exc
+        try:
+            workspace_ids = _workspace_id_candidates(sandbox_root)
+            with contextlib.ExitStack() as stack:
+                pinned = stack.enter_context(_PinnedPrivateDirectory(receipt_root))
+                pinned_commits: _PinnedPrivateDirectory | None = None
+                if require_commit:
+                    commit_root = sandbox_root / ".bluefire" / "receipt-commits"
+                    try:
+                        commit_root.lstat()
+                    except FileNotFoundError:
+                        return ()
+                    except OSError as exc:
                         raise RunnerTransportError(
-                            "runner receipt could not be read after a bounded retry"
-                        ) from None
-                    time.sleep(0.01)
-            assert receipt_size is not None and receipt_bytes is not None
-            if receipt_size > 256 * 1024 or len(receipt_bytes) > 256 * 1024:
-                raise RunnerTransportError("runner receipt exceeds its storage bound")
-            try:
-                payload = json.loads(receipt_bytes.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise RunnerTransportError("runner receipt could not be decoded") from exc
-            if (
-                not isinstance(payload, Mapping)
-                or payload.get("schema_version") != "bluefire.receipt/v1"
-                or payload.get("receipt_id") != receipt_id
-                or not isinstance(payload.get("action_id"), str)
-                or not isinstance(payload.get("runner_profile_id"), str)
-                or not isinstance(payload.get("paths"), list)
-            ):
-                raise RunnerTransportError("runner receipt record is invalid")
-            if (
-                expected_profile_id is not None
-                and payload.get("runner_profile_id") != expected_profile_id
-            ):
-                raise RunnerTransportError("runner receipt belongs to another profile")
-            created_at = payload.get("created_at")
-            if not isinstance(created_at, str):
-                raise RunnerTransportError("runner receipt timestamp is invalid")
-            try:
-                parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-            except ValueError as exc:
-                raise RunnerTransportError("runner receipt timestamp is invalid") from exc
-            if parsed.tzinfo is None:
-                raise RunnerTransportError("runner receipt timestamp is not timezone-aware")
-            receipt_rows.append((parsed.astimezone(timezone.utc), receipt_id))
+                            "runner receipt commit directory could not be inspected"
+                        ) from exc
+                    pinned_commits = stack.enter_context(_PinnedPrivateDirectory(commit_root))
+                names = pinned.names(maximum=_MAX_DISCOVERED_RECEIPTS)
+                receipt_rows: list[tuple[datetime, str]] = []
+                for name in names:
+                    entry = Path(name)
+                    receipt_id = entry.stem
+                    if entry.suffix != ".json" or not _is_lower_hex_digest(receipt_id):
+                        raise RunnerTransportError("runner receipt entry is unsafe")
+                    try:
+                        receipt_bytes = pinned.read(name, maximum=_MAX_RECEIPT_BYTES)
+                    except (OSError, RunnerTransportError) as exc:
+                        raise RunnerTransportError(
+                            "runner receipt could not be read safely"
+                        ) from exc
+                    payload = _decode_receipt_document(receipt_bytes)
+                    workspace_id = payload.get("workspace_id")
+                    created_at = payload.get("created_at")
+                    if (
+                        set(payload) != _RECEIPT_FIELDS
+                        or payload.get("schema_version") != "bluefire.receipt/v1"
+                        or payload.get("receipt_id") != receipt_id
+                        or not isinstance(payload.get("request_hash"), str)
+                        or not isinstance(payload.get("action_id"), str)
+                        or not isinstance(payload.get("runner_profile_id"), str)
+                        or workspace_id not in workspace_ids
+                        or not isinstance(created_at, str)
+                        or not 1 <= len(created_at) <= 128
+                        or not _valid_owned_receipt_paths(
+                            payload.get("paths"), max_files=max_files, max_bytes=max_bytes
+                        )
+                    ):
+                        raise RunnerTransportError("runner receipt record is invalid")
+                    identity = {
+                        "schema_version": "bluefire.receipt/v1",
+                        "request_hash": payload["request_hash"],
+                        "action_id": payload["action_id"],
+                        "runner_profile_id": payload["runner_profile_id"],
+                        "workspace_id": workspace_id,
+                        "created_at": created_at,
+                        "paths": payload["paths"],
+                    }
+                    if content_hash(identity) != f"sha256:{receipt_id}":
+                        raise RunnerTransportError("runner receipt content digest is invalid")
+                    if (
+                        expected_profile_id is not None
+                        and payload.get("runner_profile_id") != expected_profile_id
+                    ):
+                        raise RunnerTransportError("runner receipt belongs to another profile")
+                    if expected_request_hash is not None and (
+                        payload.get("request_hash") != expected_request_hash
+                        or payload.get("action_id") != expected_action_id
+                    ):
+                        continue
+                    if pinned_commits is not None:
+                        try:
+                            commit_bytes = pinned_commits.read(
+                                f"{receipt_id}.json", maximum=_MAX_RECEIPT_BYTES
+                            )
+                        except FileNotFoundError:
+                            continue
+                        except (OSError, RunnerTransportError) as exc:
+                            raise RunnerTransportError(
+                                "runner receipt commit could not be read safely"
+                            ) from exc
+                        commit = _decode_receipt_document(commit_bytes)
+                        committed_at = commit.get("committed_at")
+                        if (
+                            set(commit) != _RECEIPT_COMMIT_FIELDS
+                            or commit.get("schema_version") != "bluefire.receipt-commit/v1"
+                            or commit.get("receipt_id") != receipt_id
+                            or commit.get("runner_profile_id") != payload.get("runner_profile_id")
+                            or commit.get("workspace_id") != workspace_id
+                            or not isinstance(committed_at, str)
+                            or not 1 <= len(committed_at) <= 128
+                        ):
+                            raise RunnerTransportError("runner receipt commit record is invalid")
+                    try:
+                        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    except ValueError as exc:
+                        raise RunnerTransportError("runner receipt timestamp is invalid") from exc
+                    if parsed.tzinfo is None:
+                        raise RunnerTransportError("runner receipt timestamp is not timezone-aware")
+                    receipt_rows.append((parsed.astimezone(timezone.utc), receipt_id))
+        except FileNotFoundError:
+            raise RunnerTransportError(
+                "runner receipt directory changed during inspection"
+            ) from None
+        except RunnerTransportError:
+            raise
+        except OSError as exc:
+            raise RunnerTransportError("runner receipt directory could not be read") from exc
         receipt_rows.sort()
         return tuple(receipt_id for _created_at, receipt_id in receipt_rows)
 
@@ -2361,6 +2611,40 @@ class Orchestrator:
         cleanup = result.get("cleanup")
         if not isinstance(cleanup, Mapping):
             raise RunnerTransportError("cleanup result is missing its cleanup report")
+        expected_cleanup_fields = {
+            "requested_receipts",
+            "removed_paths",
+            "already_absent_receipts",
+            "retained_paths",
+            "errors",
+            "verification_performed",
+            "verified_removed_paths",
+            "verified_absent_paths",
+            "verified_receipts",
+        }
+        if set(cleanup) != expected_cleanup_fields:
+            raise RunnerTransportError("cleanup report shape is invalid")
+        for field in (
+            "removed_paths",
+            "already_absent_receipts",
+            "retained_paths",
+            "errors",
+        ):
+            values = cleanup.get(field)
+            if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+                raise RunnerTransportError("cleanup report lists are invalid")
+        for field in (
+            "requested_receipts",
+            "verified_removed_paths",
+            "verified_absent_paths",
+            "verified_receipts",
+        ):
+            value = cleanup.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise RunnerTransportError("cleanup verification counters are invalid")
+        output = result.get("output")
+        if not isinstance(output, Mapping) or dict(output) != dict(cleanup):
+            raise RunnerTransportError("cleanup output does not match its authoritative report")
         params = manifest.get("params")
         requested = params.get("receipt_ids") if isinstance(params, Mapping) else None
         if not isinstance(requested, list):
@@ -2371,6 +2655,10 @@ class Orchestrator:
             raise RunnerTransportError("cleanup report does not cover every requested receipt")
         if cleanup.get("errors") != [] or cleanup.get("retained_paths") != []:
             raise RunnerTransportError("cleanup reported success with retained artifacts")
+        if cleanup.get("verification_performed") is not True:
+            raise RunnerTransportError("cleanup success lacks verified postconditions")
+        if cleanup.get("verified_receipts") != len(requested):
+            raise RunnerTransportError("cleanup did not verify every requested receipt")
 
     @staticmethod
     def _build_detections(records: Sequence[EvidenceRecord]) -> tuple[DetectionCandidate, ...]:
@@ -2391,7 +2679,7 @@ class Orchestrator:
                 {
                     "fixture_id": "fixture-staging-positive.v1",
                     "artifact_type": "file_observation",
-                    "path": "staged/000-fixture.txt",
+                    "path": "staged/bundle.jsonl",
                 }
             ],
         )
@@ -2402,7 +2690,7 @@ class Orchestrator:
                 {
                     "fixture_id": "fixture-benign-source.v1",
                     "artifact_type": "file_observation",
-                    "path": "fixtures/input.txt",
+                    "path": "fixtures/input.jsonl",
                 }
             ],
             notes=("Benign source fixture should not match the staging-path candidate.",),

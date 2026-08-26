@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -22,9 +23,13 @@ from bluefire.orchestrator import Orchestrator
 from bluefire.registry import BehaviorRegistry, load_builtin_registry
 from bluefire.run_store import RunStore
 from bluefire.runner_contracts import current_platform
+from bluefire.runner_inventory import (
+    BUILTIN_RUNNER_ACTION_VERSIONS,
+    RUNNER_ACTION_SDK_SCHEMA_VERSION,
+)
 from bluefire.service import BlueFireService
 from bluefire.simulation import SimulationError, SimulationRegistry
-from bluefire.util import canonical_json_bytes
+from bluefire.util import canonical_json_bytes, content_hash
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTE_ACTIONS = {
@@ -41,11 +46,70 @@ EXECUTE_ACTIONS = {
     "sandbox.export.local.v1",
     "sandbox.cleanup.v1",
 }
+SECURE_RECEIPT_EXECUTION_TIMEOUT = 60
+
+
+def _write_bound_receipt(
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> str:
+    sandbox_root = Path(str(profile["sandbox_root"]))
+    receipt_root = sandbox_root / ".bluefire" / "receipts"
+    receipt_root.mkdir(parents=True, exist_ok=True)
+    workspace_id = hashlib.sha256(
+        str(sandbox_root.resolve(strict=True)).replace("\\", "/").encode("utf-8")
+    ).hexdigest()
+    action_id = str(manifest["action_id"])
+    params = manifest.get("params")
+    params = params if isinstance(params, Mapping) else {}
+    if action_id == "sandbox.fixture.create.v1":
+        owned_path = str(params.get("path", "fixtures/input.jsonl"))
+    elif action_id == "sandbox.fixture.transform.v1":
+        owned_path = str(params.get("output", "fixtures/transformed.jsonl"))
+    elif action_id == "sandbox.collection.stage.v1":
+        owned_path = f"staged/bundle.{params.get('bundle_format', 'jsonl')}"
+    else:
+        owned_path = f"exports/{params.get('retention_label', 'ephemeral')}/bundle.bin"
+    identity = {
+        "schema_version": "bluefire.receipt/v1",
+        "request_hash": manifest["request_hash"],
+        "action_id": action_id,
+        "runner_profile_id": profile["profile_id"],
+        "workspace_id": workspace_id,
+        "created_at": "2026-08-24T00:00:00Z",
+        "paths": [
+            {
+                "relative_path": owned_path,
+                "kind": "file",
+                "sha256": "0" * 64,
+                "size": 0,
+            }
+        ],
+    }
+    receipt_id = content_hash(identity).removeprefix("sha256:")
+    (receipt_root / f"{receipt_id}.json").write_bytes(
+        canonical_json_bytes({"receipt_id": receipt_id, **identity})
+    )
+    commit_root = sandbox_root / ".bluefire" / "receipt-commits"
+    commit_root.mkdir(parents=True, exist_ok=True)
+    (commit_root / f"{receipt_id}.json").write_bytes(
+        canonical_json_bytes(
+            {
+                "schema_version": "bluefire.receipt-commit/v1",
+                "receipt_id": receipt_id,
+                "runner_profile_id": profile["profile_id"],
+                "workspace_id": workspace_id,
+                "committed_at": "2026-08-24T00:00:01Z",
+            }
+        )
+    )
+    return receipt_id
 
 
 class ProposalLifecycleRunner:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.record_count = 6
 
     def inventory(self) -> Mapping[str, Any]:
         return {
@@ -57,8 +121,9 @@ class ProposalLifecycleRunner:
             "platform": current_platform(),
             "actions": [
                 {
+                    "schema_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
                     "action_id": action_id,
-                    "action_version": "1.0.0",
+                    "action_version": BUILTIN_RUNNER_ACTION_VERSIONS[action_id],
                     "readiness": "ready",
                 }
                 for action_id in sorted(EXECUTE_ACTIONS)
@@ -72,32 +137,107 @@ class ProposalLifecycleRunner:
     ) -> Mapping[str, Any]:
         action_id = str(manifest["action_id"])
         self.calls.append(action_id)
+        if action_id == "sandbox.fixture.create.v1":
+            self.record_count = int(manifest["params"].get("record_count", 6))
         outputs: dict[str, Mapping[str, Any]] = {
-            "sandbox.fixture.create.v1": {"artifact": "fixtures/input.txt"},
-            "sandbox.fixture.transform.v1": {"artifact": "fixtures/transformed.txt"},
-            "sandbox.discovery.list.v1": {"entries": ["fixtures/transformed.txt"]},
-            "sandbox.discovery.metadata.v1": {"size_bytes": 16},
-            "sandbox.collection.stage.v1": {
-                "staged": [
+            "sandbox.fixture.create.v1": {
+                "artifact": "fixtures/input.jsonl",
+                "sha256": "1" * 64,
+                "size": 128,
+                "template": "telemetry-seed",
+                "record_count": self.record_count,
+                "format": "jsonl",
+            },
+            "sandbox.fixture.transform.v1": {
+                "artifact": "fixtures/transformed.jsonl",
+                "sha256": "2" * 64,
+                "size": 128,
+                "record_count": self.record_count,
+                "redact_values": manifest["params"].get("redact_values", True),
+                "redacted_value_count": (
+                    self.record_count if manifest["params"].get("redact_values", True) else 0
+                ),
+                "format": "jsonl",
+                "implementation": "in_process_reviewed_jsonl_transform",
+            },
+            "sandbox.discovery.list.v1": {
+                "path": "fixtures/transformed.jsonl",
+                "entries": [
                     {
-                        "artifact": "staged/000-transformed.txt",
-                        "sha256": "sha256:stage",
+                        "path": "fixtures/transformed.jsonl",
+                        "name": "transformed.jsonl",
+                        "kind": "file",
+                        "size": 16,
                     }
-                ]
+                ],
+                "returned_entries": 1,
+                "target_cardinality": "one",
+            },
+            "sandbox.discovery.metadata.v1": {
+                "entries": [
+                    {
+                        "path": "fixtures/transformed.jsonl",
+                        "name": "transformed.jsonl",
+                        "kind": "file",
+                        "size": 16,
+                        "readonly": True,
+                    }
+                ],
+                "path": "fixtures/transformed.jsonl",
+                "returned_entries": 1,
+                "target_cardinality": "one",
+            },
+            "sandbox.collection.stage.v1": {
+                "artifact": f"staged/bundle.{manifest['params'].get('bundle_format', 'jsonl')}",
+                "format": manifest["params"].get("bundle_format", "jsonl"),
+                "record_count": self.record_count,
+                "size": 16,
+                "sha256": "3" * 64,
+                "input_count": 1,
+                "accepted_input_count": 1,
+                "rejected_input_count": 0,
+                "complete": True,
             },
             "sandbox.network.loopback.v1": {"bytes_sent": 16},
-            "sandbox.export.local.v1": {"artifact": "exports/bundle.bin"},
-            "sandbox.cleanup.v1": {
-                "removed_receipts": list(manifest["params"].get("receipt_ids", []))
+            "sandbox.export.local.v1": {
+                "artifact": (
+                    f"exports/{manifest['params'].get('retention_label', 'ephemeral')}/bundle.bin"
+                ),
+                "source": manifest["params"].get("source"),
+                "size": 16,
+                "retention_label": manifest["params"].get("retention_label", "ephemeral"),
+                "sha256": "4" * 64,
+                "destination_policy": "runner_fixed_retention_destination",
             },
+            "sandbox.cleanup.v1": {},
         }
         mutating = {
-            "sandbox.fixture.create.v1": "a" * 64,
-            "sandbox.fixture.transform.v1": "b" * 64,
-            "sandbox.collection.stage.v1": "c" * 64,
-            "sandbox.export.local.v1": "d" * 64,
+            "sandbox.fixture.create.v1",
+            "sandbox.fixture.transform.v1",
+            "sandbox.collection.stage.v1",
+            "sandbox.export.local.v1",
         }
-        receipts = [mutating[action_id]] if action_id in mutating else []
+        receipts = [_write_bound_receipt(manifest, profile)] if action_id in mutating else []
+        cleanup_report = None
+        if action_id == "sandbox.cleanup.v1":
+            requested = list(manifest["params"].get("receipt_ids", []))
+            receipt_root = Path(str(profile["sandbox_root"])) / ".bluefire" / "receipts"
+            commit_root = Path(str(profile["sandbox_root"])) / ".bluefire" / "receipt-commits"
+            for receipt_id in requested:
+                (receipt_root / f"{receipt_id}.json").unlink(missing_ok=True)
+                (commit_root / f"{receipt_id}.json").unlink(missing_ok=True)
+            cleanup_report = {
+                "requested_receipts": len(requested),
+                "removed_paths": [],
+                "already_absent_receipts": [],
+                "retained_paths": [],
+                "errors": [],
+                "verification_performed": True,
+                "verified_removed_paths": 0,
+                "verified_absent_paths": 0,
+                "verified_receipts": len(requested),
+            }
+            outputs[action_id] = cleanup_report
         return {
             "schema_version": "bluefire.runner-result.v1",
             "request_id": manifest["request_id"],
@@ -116,17 +256,7 @@ class ProposalLifecycleRunner:
             "stderr": {"bytes": 0, "truncated": False},
             "evidence": [{"kind": "proposal-lifecycle-fake", "status": "success"}],
             "receipt_ids": receipts,
-            "cleanup": (
-                {
-                    "requested_receipts": len(manifest["params"].get("receipt_ids", [])),
-                    "removed_paths": [],
-                    "already_absent_receipts": [],
-                    "retained_paths": [],
-                    "errors": [],
-                }
-                if action_id == "sandbox.cleanup.v1"
-                else None
-            ),
+            "cleanup": cleanup_report,
             "error": None,
             "limitations": ["Structured fake; no side effect occurred."],
         }
@@ -723,7 +853,7 @@ def test_execute_proposal_acceptance_requires_a_fresh_exact_approval(tmp_path: P
     proposal_gate = service.job_controller.wait_for_state(
         job_id,
         {JobState.AWAITING_APPROVAL},
-        timeout=5,
+        timeout=SECURE_RECEIPT_EXECUTION_TIMEOUT,
     )
     proposal_record_id = str(proposal_gate["progress"]["proposal_record_id"])
     review = service.proposal_review(job_id, proposal_record_id)
@@ -767,7 +897,7 @@ def test_execute_proposal_acceptance_requires_a_fresh_exact_approval(tmp_path: P
 
     approved = service.approve_job(job_id, {"approved_by": "fresh-execute-reviewer"})
     assert approved["approval_request"]["approval_id"] == fresh_approval_id
-    completed = service.job_controller.wait(job_id, timeout=5)
+    completed = service.job_controller.wait(job_id, timeout=SECURE_RECEIPT_EXECUTION_TIMEOUT)
     assert completed["state"] == "completed"
     assert service.product_store.get_approval_request(fresh_approval_id)["status"] == "claimed"
     continuation = service.detail(str(completed["result_ref"]))
@@ -791,7 +921,7 @@ def test_auto_applies_registered_typed_parameter_change_in_simulate(tmp_path: Pa
     result = service.run(_request("auto"))
 
     transformed = next(row for row in result["steps"] if row["step_id"] == "transform_fixture")
-    assert transformed["artifacts"]["fixture"]["redacted"] is False
+    assert transformed["artifacts"]["fixture"]["redact_values"] is False
     proposal = next(
         item
         for item in result["ai_proposals"]
@@ -895,7 +1025,7 @@ def test_execute_registered_action_change_gets_fresh_approval_and_full_replay(
     gate = service.job_controller.wait_for_state(
         job_id,
         {JobState.AWAITING_APPROVAL},
-        timeout=5,
+        timeout=SECURE_RECEIPT_EXECUTION_TIMEOUT,
     )
     review = service.proposal_review(job_id, str(gate["progress"]["proposal_record_id"]))
     proposal = review["record"]["proposal"]
@@ -920,7 +1050,7 @@ def test_execute_registered_action_change_gets_fresh_approval_and_full_replay(
     assert continuation_audit["replay"]["execute_fresh_workspace_full_replay"] is True
 
     service.approve_job(job_id, {"approved_by": "fresh-reviewer"})
-    completed = service.job_controller.wait(job_id, timeout=5)
+    completed = service.job_controller.wait(job_id, timeout=SECURE_RECEIPT_EXECUTION_TIMEOUT)
     assert completed["state"] == "completed", completed["error"]
     result = service.detail(str(completed["result_ref"]))
     discovery_plan = next(

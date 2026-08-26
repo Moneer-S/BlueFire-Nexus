@@ -18,8 +18,8 @@ use crate::contract::{
 };
 use crate::process::run_process_discovery;
 use crate::safety::{
-    ensure_network_authorized, ensure_path_authorized, hash_file, normalize_relative,
-    owned_directories, owned_file, read_file_bounded, OwnedPath, ReceiptIntent, SafeRoot,
+    ensure_network_authorized, ensure_path_authorized, normalize_relative, owned_directories,
+    owned_file, read_file_bounded, OwnedPath, ReceiptIntent, SafeRoot,
 };
 
 const ALL_PLATFORMS: &[Platform] = &[Platform::Windows, Platform::Linux, Platform::Macos];
@@ -27,6 +27,7 @@ pub const ACTION_SDK_SCHEMA_VERSION: &str = "bluefire.runner-action-sdk.v1";
 const MAX_RECURSIVE_DEPTH: usize = 16;
 const MAX_RECURSIVE_ENTRIES: usize = 4_096;
 const MAX_RECURSIVE_ERRORS: usize = 64;
+const MAX_SYNTHETIC_RECORDS: usize = 100;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -270,13 +271,14 @@ fn fixture_create_schema() -> Value {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
-        "required": ["path", "content_template"],
+        "required": ["path", "content_template", "record_count"],
         "properties": {
             "path": {"type": "string", "minLength": 1},
             "content_template": {
                 "type": "string",
                 "enum": ["telemetry-seed", "harmless-document", "empty"]
-            }
+            },
+            "record_count": {"type": "integer", "minimum": 1, "maximum": MAX_SYNTHETIC_RECORDS}
         }
     })
 }
@@ -286,11 +288,11 @@ fn fixture_transform_schema() -> Value {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
-        "required": ["input", "output", "transform"],
+        "required": ["input", "output", "redact_values"],
         "properties": {
             "input": {"type": "string", "minLength": 1},
             "output": {"type": "string", "minLength": 1},
-            "transform": {"type": "string", "enum": ["uppercase-ascii", "reverse-bytes"]}
+            "redact_values": {"type": "boolean"}
         }
     })
 }
@@ -300,10 +302,9 @@ fn discovery_list_schema() -> Value {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
-        "required": ["path", "max_entries"],
+        "required": ["path"],
         "properties": {
-            "path": {"type": "string", "minLength": 1},
-            "max_entries": {"type": "integer", "minimum": 1}
+            "path": {"type": "string", "minLength": 1}
         }
     })
 }
@@ -314,7 +315,9 @@ fn discovery_metadata_schema() -> Value {
         "type": "object",
         "additionalProperties": false,
         "required": ["path"],
-        "properties": {"path": {"type": "string", "minLength": 1}}
+        "properties": {
+            "path": {"type": "string", "minLength": 1}
+        }
     })
 }
 
@@ -323,10 +326,17 @@ fn collection_stage_schema() -> Value {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
-        "required": ["inputs", "destination_directory"],
+        "required": ["inputs", "destination_directory", "bundle_format"],
         "properties": {
-            "inputs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
-            "destination_directory": {"type": "string", "minLength": 1}
+            "inputs": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
+                "uniqueItems": true,
+                "items": {"type": "string", "minLength": 1}
+            },
+            "destination_directory": {"type": "string", "minLength": 1},
+            "bundle_format": {"type": "string", "enum": ["jsonl", "json"]}
         }
     })
 }
@@ -345,7 +355,7 @@ fn network_loopback_schema() -> Value {
                 "required": ["host", "port"],
                 "properties": {
                     "host": {"type": "string", "enum": ["127.0.0.1", "::1"]},
-                    "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+                    "port": {"type": "integer", "minimum": 1024, "maximum": 65535}
                 }
             }
         }
@@ -357,10 +367,10 @@ fn export_local_schema() -> Value {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "additionalProperties": false,
-        "required": ["source", "destination"],
+        "required": ["source", "retention_label"],
         "properties": {
             "source": {"type": "string", "minLength": 1},
-            "destination": {"type": "string", "minLength": 1}
+            "retention_label": {"type": "string", "enum": ["ephemeral", "review"]}
         }
     })
 }
@@ -451,6 +461,7 @@ fn archive_tar_schema() -> Value {
 macro_rules! reviewed_descriptor {
     (
         id: $id:literal,
+        version: $version:literal,
         behavior_ids: $behavior_ids:expr,
         summary: $summary:literal,
         schema: $schema:expr,
@@ -467,7 +478,7 @@ macro_rules! reviewed_descriptor {
         ActionDescriptor {
             schema_version: ACTION_SDK_SCHEMA_VERSION,
             action_id: $id,
-            action_version: "1.0.0",
+            action_version: $version,
             behavior_ids: $behavior_ids,
             summary: $summary,
             platforms: ALL_PLATFORMS,
@@ -499,11 +510,97 @@ enum FixtureTemplate {
     Empty,
 }
 
+impl FixtureTemplate {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TelemetrySeed => "telemetry-seed",
+            Self::HarmlessDocument => "harmless-document",
+            Self::Empty => "empty",
+        }
+    }
+
+    fn record(self, index: usize) -> Value {
+        let value = match self {
+            Self::TelemetrySeed => format!("telemetry-value-{index:03}"),
+            Self::HarmlessDocument => format!("document-value-{index:03}"),
+            Self::Empty => String::new(),
+        };
+        json!({
+            "record_id": format!("synthetic-{index:03}"),
+            "synthetic": true,
+            "template": self.as_str(),
+            "value": value,
+        })
+    }
+}
+
+fn validated_synthetic_record_object(
+    record: Value,
+    line_number: usize,
+    record_ordinal: usize,
+    error_code: &'static str,
+) -> Result<serde_json::Map<String, Value>, ActionFailure> {
+    let object = record.as_object().ok_or_else(|| {
+        ActionFailure::failed(
+            error_code,
+            format!("synthetic JSONL record {line_number} is not an object"),
+        )
+    })?;
+    const EXPECTED_FIELDS: [&str; 4] = ["record_id", "synthetic", "template", "value"];
+    if object.len() != EXPECTED_FIELDS.len()
+        || EXPECTED_FIELDS
+            .iter()
+            .any(|field| !object.contains_key(*field))
+    {
+        return Err(ActionFailure::failed(
+            error_code,
+            format!(
+                "synthetic JSONL record {line_number} does not match the reviewed fixture schema"
+            ),
+        ));
+    }
+    let record_id = object["record_id"].as_str().ok_or_else(|| {
+        ActionFailure::failed(
+            error_code,
+            format!("synthetic JSONL record {line_number} has an invalid record identifier"),
+        )
+    })?;
+    if record_id != format!("synthetic-{record_ordinal:03}")
+        || object["synthetic"] != Value::Bool(true)
+    {
+        return Err(ActionFailure::failed(
+            error_code,
+            format!("synthetic JSONL record {line_number} has an invalid synthetic identity"),
+        ));
+    }
+    let template = object["template"].as_str();
+    let expected_value = match template {
+        Some("telemetry-seed") => format!("telemetry-value-{record_ordinal:03}"),
+        Some("harmless-document") => format!("document-value-{record_ordinal:03}"),
+        Some("empty") => String::new(),
+        _ => {
+            return Err(ActionFailure::failed(
+                error_code,
+                format!("synthetic JSONL record {line_number} has an invalid reviewed value shape"),
+            ));
+        }
+    };
+    let value = object["value"].as_str();
+    if !matches!(value, Some("synthetic-redacted")) && value != Some(expected_value.as_str()) {
+        return Err(ActionFailure::failed(
+            error_code,
+            format!("synthetic JSONL record {line_number} is not a generated fixture value"),
+        ));
+    }
+    Ok(object.clone())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FixtureCreateParams {
     path: String,
     content_template: FixtureTemplate,
+    record_count: usize,
 }
 
 struct FixtureCreatePrepared(FixtureCreateParams);
@@ -513,16 +610,38 @@ impl PreparedAction for FixtureCreatePrepared {
         self: Box<Self>,
         context: &ActionContext<'_>,
     ) -> Result<ActionOutcome, ActionFailure> {
+        if !(1..=MAX_SYNTHETIC_RECORDS).contains(&self.0.record_count) {
+            return Err(ActionFailure::blocked(
+                "record_count_limit_blocked",
+                "record_count must be between 1 and 100",
+            ));
+        }
+        let started = Instant::now();
+        let deadline = Duration::from_millis(context.manifest.limits.timeout_ms);
         let path = authorize_path(context, &self.0.path, false)?;
-        let bytes: &[u8] = match self.0.content_template {
-            FixtureTemplate::TelemetrySeed => b"bluefire-fixture-v1\nkind=telemetry-seed\n",
-            FixtureTemplate::HarmlessDocument => b"BlueFire Nexus disposable sandbox fixture.\n",
-            FixtureTemplate::Empty => b"",
-        };
+        let mut bytes = Vec::new();
+        for index in 1..=self.0.record_count {
+            if started.elapsed() >= deadline {
+                return Err(ActionFailure::timed_out(
+                    "fixture_create_timeout",
+                    "synthetic fixture generation exceeded its deadline",
+                ));
+            }
+            bytes.extend_from_slice(
+                crate::contract::canonical_json(&self.0.content_template.record(index)).as_bytes(),
+            );
+            bytes.push(b'\n');
+            if bytes.len() as u64 > context.manifest.limits.max_artifact_bytes {
+                return Err(ActionFailure::blocked(
+                    "artifact_limit_blocked",
+                    "the requested synthetic records exceed the manifest artifact limit",
+                ));
+            }
+        }
         if bytes.len() as u64 > context.manifest.limits.max_artifact_bytes {
             return Err(ActionFailure::blocked(
                 "artifact_limit_blocked",
-                "compiled-in fixture exceeds the manifest artifact limit",
+                "the requested synthetic records exceed the manifest artifact limit",
             ));
         }
         let target = context
@@ -531,22 +650,20 @@ impl PreparedAction for FixtureCreatePrepared {
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
         let intent = begin_receipt(
             context,
-            receipt_paths(target.relative.clone(), bytes, &target.created_directories),
+            receipt_paths(target.relative.clone(), &bytes, &target.created_directories),
         )?;
         context
             .root
-            .write_new(&target, bytes, &intent)
+            .write_new(&target, &bytes, &intent)
             .map_err(|error| ActionFailure::failed("fixture_write_failed", error))?;
         let receipt_id = commit_receipt(context, &intent)?;
         Ok(ActionOutcome::success(json!({
             "artifact": target.relative,
-            "sha256": crate::contract::sha256_hex(bytes),
+            "sha256": crate::contract::sha256_hex(&bytes),
             "size": bytes.len(),
-            "template": match self.0.content_template {
-                FixtureTemplate::TelemetrySeed => "telemetry-seed",
-                FixtureTemplate::HarmlessDocument => "harmless-document",
-                FixtureTemplate::Empty => "empty",
-            }
+            "template": self.0.content_template.as_str(),
+            "record_count": self.0.record_count,
+            "format": "jsonl",
         }))
         .with_receipt(receipt_id))
     }
@@ -556,6 +673,7 @@ struct FixtureCreateAction;
 static FIXTURE_CREATE_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "sandbox.fixture.create.v1",
+        version: "2.0.0",
         behavior_ids: &["sandbox.fixture.create.v1"],
         summary: "Create one deterministic fixture inside the runner-owned sandbox.",
         schema: fixture_create_schema,
@@ -582,28 +700,12 @@ impl Action for FixtureCreateAction {
 // -------------------------------------------------------------------------
 // sandbox.fixture.transform.v1
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum TransformKind {
-    UppercaseAscii,
-    ReverseBytes,
-}
-
-impl TransformKind {
-    fn as_arg(&self) -> &'static str {
-        match self {
-            Self::UppercaseAscii => "uppercase-ascii",
-            Self::ReverseBytes => "reverse-bytes",
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FixtureTransformParams {
     input: String,
     output: String,
-    transform: TransformKind,
+    redact_values: bool,
 }
 
 struct FixtureTransformPrepared(FixtureTransformParams);
@@ -627,11 +729,99 @@ impl PreparedAction for FixtureTransformPrepared {
             .root
             .resolve_existing(&input)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
-        let mut bytes = read_file_bounded(&input_path, context.manifest.limits.max_artifact_bytes)
-            .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
-        match self.0.transform {
-            TransformKind::UppercaseAscii => bytes.make_ascii_uppercase(),
-            TransformKind::ReverseBytes => bytes.reverse(),
+        let input_bytes =
+            read_file_bounded(&input_path, context.manifest.limits.max_artifact_bytes)
+                .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
+        let text = std::str::from_utf8(&input_bytes).map_err(|error| {
+            ActionFailure::failed(
+                "fixture_parse_failed",
+                format!("fixture is not UTF-8 JSONL: {error}"),
+            )
+        })?;
+        let mut bytes = Vec::with_capacity(input_bytes.len());
+        let mut record_count = 0_usize;
+        let mut redacted_value_count = 0_usize;
+        let mut fixture_template: Option<String> = None;
+        let mut source_redacted: Option<bool> = None;
+        for (line_index, line) in text.lines().enumerate() {
+            if started.elapsed() >= deadline {
+                return Err(ActionFailure::timed_out(
+                    "transform_timeout",
+                    "the bounded in-process transform exceeded its deadline",
+                ));
+            }
+            if line.trim().is_empty() {
+                return Err(ActionFailure::failed(
+                    "fixture_parse_failed",
+                    format!("fixture JSONL record {} is empty", line_index + 1),
+                ));
+            }
+            let record: Value = serde_json::from_str(line).map_err(|error| {
+                ActionFailure::failed(
+                    "fixture_parse_failed",
+                    format!(
+                        "fixture JSONL record {} is invalid: {error}",
+                        line_index + 1
+                    ),
+                )
+            })?;
+            let mut object = validated_synthetic_record_object(
+                record,
+                line_index + 1,
+                record_count + 1,
+                "fixture_parse_failed",
+            )?;
+            let template = object["template"]
+                .as_str()
+                .expect("validated synthetic template is a string");
+            let is_redacted = object["value"].as_str() == Some("synthetic-redacted");
+            if fixture_template
+                .as_deref()
+                .is_some_and(|expected| expected != template)
+                || source_redacted.is_some_and(|expected| expected != is_redacted)
+            {
+                return Err(ActionFailure::failed(
+                    "fixture_parse_failed",
+                    "fixture JSONL mixes templates or redaction states",
+                ));
+            }
+            fixture_template.get_or_insert_with(|| template.to_string());
+            source_redacted.get_or_insert(is_redacted);
+            record_count += 1;
+            if record_count > MAX_SYNTHETIC_RECORDS {
+                return Err(ActionFailure::blocked(
+                    "record_count_limit_blocked",
+                    "fixture JSONL exceeds the compiled synthetic record limit",
+                ));
+            }
+            if self.0.redact_values {
+                object.insert(
+                    "value".to_string(),
+                    Value::String("synthetic-redacted".to_string()),
+                );
+                redacted_value_count += 1;
+            }
+            let record = Value::Object(object);
+            bytes.extend_from_slice(crate::contract::canonical_json(&record).as_bytes());
+            bytes.push(b'\n');
+            if bytes.len() as u64 > context.manifest.limits.max_artifact_bytes {
+                return Err(ActionFailure::blocked(
+                    "artifact_limit_blocked",
+                    "canonical fixture output exceeds the manifest artifact limit",
+                ));
+            }
+        }
+        if record_count == 0 {
+            return Err(ActionFailure::failed(
+                "fixture_parse_failed",
+                "fixture JSONL contains no records",
+            ));
+        }
+        if self.0.redact_values && redacted_value_count != record_count {
+            return Err(ActionFailure::failed(
+                "fixture_parse_failed",
+                "reviewed redaction did not cover every synthetic record",
+            ));
         }
         if started.elapsed() >= deadline {
             return Err(ActionFailure {
@@ -665,8 +855,11 @@ impl PreparedAction for FixtureTransformPrepared {
                 "artifact": output,
                 "sha256": crate::contract::sha256_hex(&bytes),
                 "size": bytes.len(),
-                "transform": self.0.transform.as_arg(),
-                "implementation": "in_process_reviewed_transform",
+                "record_count": record_count,
+                "redact_values": self.0.redact_values,
+                "redacted_value_count": redacted_value_count,
+                "format": "jsonl",
+                "implementation": "in_process_reviewed_jsonl_transform",
             }),
             stdout: BoundedOutput::default(),
             stderr: BoundedOutput::default(),
@@ -677,7 +870,7 @@ impl PreparedAction for FixtureTransformPrepared {
                 message: "the completed bounded transform exceeded its deadline".to_string(),
             }),
             limitations: vec![
-                "The transform is compiled into the runner and exposes no process subcommand."
+                "The fixed JSONL transform is compiled into the runner and exposes no process subcommand."
                     .to_string(),
             ],
         })
@@ -688,8 +881,9 @@ struct FixtureTransformAction;
 static FIXTURE_TRANSFORM_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "sandbox.fixture.transform.v1",
+        version: "2.0.0",
         behavior_ids: &["sandbox.fixture.transform.v1"],
-        summary: "Apply one compiled in-process transform to a bounded sandbox file.",
+        summary: "Canonicalize and optionally redact one bounded synthetic JSONL fixture.",
         schema: fixture_transform_schema,
         capabilities: &[Capability::FilesystemRead, Capability::FilesystemWrite],
         tier: SafetyTier::Safe,
@@ -718,7 +912,6 @@ impl Action for FixtureTransformAction {
 #[serde(deny_unknown_fields)]
 struct DiscoveryListParams {
     path: String,
-    max_entries: usize,
 }
 
 struct DiscoveryListPrepared(DiscoveryListParams);
@@ -728,56 +921,26 @@ impl PreparedAction for DiscoveryListPrepared {
         self: Box<Self>,
         context: &ActionContext<'_>,
     ) -> Result<ActionOutcome, ActionFailure> {
-        let path = authorize_path(context, &self.0.path, true)?;
-        if self.0.max_entries == 0 || self.0.max_entries > context.manifest.limits.max_files {
-            return Err(ActionFailure::blocked(
-                "file_count_limit_blocked",
-                "max_entries is zero or exceeds the manifest file limit",
-            ));
-        }
-        let directory = context
+        let path = authorize_path(context, &self.0.path, false)?;
+        let absolute = context
             .root
             .resolve_existing(&path)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
-        if !fs::metadata(&directory)
-            .map_err(|error| ActionFailure::failed("discovery_failed", error.to_string()))?
-            .is_dir()
-        {
+        let metadata = fs::symlink_metadata(&absolute)
+            .map_err(|error| ActionFailure::failed("discovery_failed", error.to_string()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
             return Err(ActionFailure::refused(
                 "invalid_action_params",
-                "discovery list path is not a directory",
+                "discovery list requires the exact bound regular-file artifact",
             ));
         }
-        let mut entries = Vec::new();
-        let iterator = fs::read_dir(&directory)
-            .map_err(|error| ActionFailure::failed("discovery_failed", error.to_string()))?;
-        for entry in iterator {
-            if entries.len() == self.0.max_entries {
-                break;
-            }
-            let entry = entry
-                .map_err(|error| ActionFailure::failed("discovery_failed", error.to_string()))?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name == ".bluefire" {
-                continue;
-            }
-            let metadata = fs::symlink_metadata(entry.path())
-                .map_err(|error| ActionFailure::failed("discovery_failed", error.to_string()))?;
-            let kind = if metadata.file_type().is_symlink() {
-                "link-blocked"
-            } else if metadata.is_file() {
-                "file"
-            } else if metadata.is_dir() {
-                "directory"
-            } else {
-                "other"
-            };
-            entries.push(json!({"name": name, "kind": kind, "size": metadata.len()}));
-        }
-        entries.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
-        Ok(ActionOutcome::success(
-            json!({"path": path, "entries": entries}),
-        ))
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        Ok(ActionOutcome::success(json!({
+            "path": path.clone(),
+            "entries": [{"path": path, "name": name, "kind": "file", "size": metadata.len()}],
+            "returned_entries": 1,
+            "target_cardinality": "one",
+        })))
     }
 }
 
@@ -785,8 +948,9 @@ struct DiscoveryListAction;
 static DISCOVERY_LIST_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "sandbox.discovery.list.v1",
+        version: "2.0.0",
         behavior_ids: &["sandbox.discovery.list.v1"],
-        summary: "List one sandbox directory without recursion.",
+        summary: "List metadata for the exact bound sandbox fixture without sibling enumeration.",
         schema: discovery_list_schema,
         capabilities: &[Capability::FilesystemRead],
         tier: SafetyTier::Safe,
@@ -821,38 +985,32 @@ impl PreparedAction for DiscoveryMetadataPrepared {
         self: Box<Self>,
         context: &ActionContext<'_>,
     ) -> Result<ActionOutcome, ActionFailure> {
-        let path = authorize_path(context, &self.0.path, true)?;
+        let path = authorize_path(context, &self.0.path, false)?;
         let absolute = context
             .root
             .resolve_existing(&path)
             .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
-        let metadata = fs::metadata(&absolute)
+        let metadata = fs::symlink_metadata(&absolute)
             .map_err(|error| ActionFailure::failed("metadata_failed", error.to_string()))?;
-        let mut limitations = Vec::new();
-        let digest = if metadata.is_file()
-            && metadata.len() <= context.manifest.limits.max_artifact_bytes
-        {
-            Some(
-                hash_file(&absolute, context.manifest.limits.max_artifact_bytes)
-                    .map_err(|error| ActionFailure::failed("metadata_hash_failed", error))?,
-            )
-        } else {
-            if metadata.is_file() {
-                limitations.push(
-                    "File hash omitted because the file exceeds the artifact limit.".to_string(),
-                );
-            }
-            None
-        };
-        let mut outcome = ActionOutcome::success(json!({
-            "path": path,
-            "kind": if metadata.is_file() { "file" } else if metadata.is_dir() { "directory" } else { "other" },
-            "size": metadata.len(),
-            "readonly": metadata.permissions().readonly(),
-            "sha256": digest,
-        }));
-        outcome.limitations = limitations;
-        Ok(outcome)
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(ActionFailure::refused(
+                "invalid_action_params",
+                "metadata inspection requires the exact bound regular-file artifact",
+            ));
+        }
+        let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+        Ok(ActionOutcome::success(json!({
+            "path": path.clone(),
+            "entries": [{
+                "path": path,
+                "name": name,
+                "kind": "file",
+                "size": metadata.len(),
+                "readonly": metadata.permissions().readonly(),
+            }],
+            "returned_entries": 1,
+            "target_cardinality": "one",
+        })))
     }
 }
 
@@ -860,8 +1018,9 @@ struct DiscoveryMetadataAction;
 static DISCOVERY_METADATA_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "sandbox.discovery.metadata.v1",
+        version: "2.0.0",
         behavior_ids: &["sandbox.discovery.metadata.v1"],
-        summary: "Inspect metadata and optionally hash one bounded sandbox file.",
+        summary: "Inspect metadata for the exact bound sandbox fixture without opening its contents.",
         schema: discovery_metadata_schema,
         capabilities: &[Capability::FilesystemRead],
         tier: SafetyTier::Safe,
@@ -917,6 +1076,7 @@ struct SystemDiscoveryAction;
 static SYSTEM_DISCOVERY_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "endpoint.discovery.system.v1",
+        version: "1.0.0",
         behavior_ids: &["endpoint.discovery.system.v1"],
         summary: "Report bounded operating-system and architecture facts from compiled Rust APIs.",
         schema: system_discovery_schema,
@@ -1061,6 +1221,7 @@ struct ProcessDiscoveryAction;
 static PROCESS_DISCOVERY_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "endpoint.discovery.processes.v1",
+        version: "1.0.0",
         behavior_ids: &["endpoint.discovery.processes.v1"],
         summary: "Enumerate bounded process identity fields through one compiled platform adapter.",
         schema: process_discovery_schema,
@@ -1307,6 +1468,7 @@ struct RecursiveDiscoveryAction;
 static RECURSIVE_DISCOVERY_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "sandbox.discovery.recursive.v1",
+        version: "1.0.0",
         behavior_ids: &["sandbox.discovery.recursive.v1"],
         summary: "Recursively enumerate one authorized sandbox subtree with explicit count and depth bounds.",
         schema: recursive_discovery_schema,
@@ -1484,6 +1646,7 @@ struct ArchiveTarAction;
 static ARCHIVE_TAR_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "sandbox.archive.tar.v1",
+        version: "1.0.0",
         behavior_ids: &["sandbox.archive.tar.v1"],
         summary: "Create a deterministic uncompressed ustar archive from bounded sandbox files.",
         schema: archive_tar_schema,
@@ -1511,11 +1674,35 @@ impl Action for ArchiveTarAction {
 // -------------------------------------------------------------------------
 // sandbox.collection.stage.v1
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum BundleFormat {
+    Jsonl,
+    Json,
+}
+
+impl BundleFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Jsonl => "jsonl",
+            Self::Json => "json",
+        }
+    }
+
+    fn filename(self) -> &'static str {
+        match self {
+            Self::Jsonl => "bundle.jsonl",
+            Self::Json => "bundle.json",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CollectionStageParams {
     inputs: Vec<String>,
     destination_directory: String,
+    bundle_format: BundleFormat,
 }
 
 struct CollectionStagePrepared(CollectionStageParams);
@@ -1525,120 +1712,208 @@ impl PreparedAction for CollectionStagePrepared {
         self: Box<Self>,
         context: &ActionContext<'_>,
     ) -> Result<ActionOutcome, ActionFailure> {
-        if self.0.inputs.is_empty() || self.0.inputs.len() > context.manifest.limits.max_files {
+        let started = Instant::now();
+        let deadline = Duration::from_millis(context.manifest.limits.timeout_ms);
+        if self.0.inputs.len() != 1 || self.0.inputs.len() > context.manifest.limits.max_files {
             return Err(ActionFailure::blocked(
                 "file_count_limit_blocked",
-                "collection inputs are empty or exceed the manifest file limit",
+                "collection requires exactly one bound fixture input within the manifest file limit",
+            ));
+        }
+        let unique_inputs = self.0.inputs.iter().collect::<BTreeSet<_>>();
+        if unique_inputs.len() != self.0.inputs.len() {
+            return Err(ActionFailure::refused(
+                "invalid_action_params",
+                "collection inputs must not contain duplicates",
             ));
         }
         let destination = authorize_path(context, &self.0.destination_directory, false)?;
-        let probe_path = format!("{destination}/.bluefire-stage-probe");
-        let probe = context
-            .root
-            .prepare_new_file(&probe_path)
-            .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
-        let created_directories = probe.created_directories;
-
-        let mut plans = Vec::new();
-        let mut errors = Vec::new();
-        let mut planned_bytes = 0_u64;
-        for (index, input) in self.0.inputs.iter().enumerate() {
-            let normalized = match authorize_path(context, input, false) {
-                Ok(path) => path,
-                Err(error) => {
-                    errors.push(format!("{input}: {}", error.message));
-                    continue;
-                }
-            };
-            let source = match context.root.resolve_existing(&normalized) {
-                Ok(path) => path,
-                Err(error) => {
-                    errors.push(format!("{normalized}: {error}"));
-                    continue;
-                }
-            };
+        let bundle_relative = format!("{destination}/{}", self.0.bundle_format.filename());
+        let mut input_bytes = 0_u64;
+        let mut records = Vec::new();
+        let mut fixture_template: Option<String> = None;
+        let mut fixture_redacted: Option<bool> = None;
+        for input in &self.0.inputs {
+            if started.elapsed() >= deadline {
+                return Err(ActionFailure::timed_out(
+                    "collection_timeout",
+                    "collection parsing exceeded its deadline",
+                ));
+            }
+            let normalized = authorize_path(context, input, false)?;
+            let source = context
+                .root
+                .resolve_existing(&normalized)
+                .map_err(|error| ActionFailure::failed("collection_input_failed", error))?;
             let remaining = context
                 .manifest
                 .limits
                 .max_artifact_bytes
-                .saturating_sub(planned_bytes);
-            let bytes = match read_file_bounded(&source, remaining) {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    errors.push(format!("{normalized}: {error}"));
-                    continue;
+                .saturating_sub(input_bytes);
+            let bytes = read_file_bounded(&source, remaining)
+                .map_err(|error| ActionFailure::failed("collection_input_failed", error))?;
+            input_bytes = input_bytes.saturating_add(bytes.len() as u64);
+            let text = std::str::from_utf8(&bytes).map_err(|_| {
+                ActionFailure::failed(
+                    "collection_parse_failed",
+                    "collection input is not UTF-8 JSONL",
+                )
+            })?;
+            let initial_record_count = records.len();
+            for (line_index, line) in text.lines().enumerate() {
+                if started.elapsed() >= deadline {
+                    return Err(ActionFailure::timed_out(
+                        "collection_timeout",
+                        "collection parsing exceeded its deadline",
+                    ));
                 }
-            };
-            let name = normalized.rsplit('/').next().unwrap_or("artifact");
-            let staged_relative = format!("{destination}/{index:03}-{name}");
-            let target = match context.root.prepare_new_file(&staged_relative) {
-                Ok(target) => target,
-                Err(error) => {
-                    errors.push(format!("{normalized}: {error}"));
-                    continue;
+                if line.trim().is_empty() {
+                    return Err(ActionFailure::failed(
+                        "collection_parse_failed",
+                        format!("collection JSONL record {} is empty", line_index + 1),
+                    ));
                 }
-            };
-            planned_bytes = planned_bytes.saturating_add(bytes.len() as u64);
-            plans.push((normalized, target, bytes));
-        }
-        let mut owned = plans
-            .iter()
-            .map(|(_, target, bytes)| owned_file(target.relative.clone(), bytes))
-            .collect::<Vec<_>>();
-        owned.extend(owned_directories(&created_directories));
-        let intent = if owned.is_empty() {
-            None
-        } else {
-            Some(begin_receipt(context, owned)?)
-        };
-
-        let mut staged = Vec::new();
-        let mut total_bytes = 0_u64;
-        for (normalized, target, bytes) in plans {
-            let Some(intent) = intent.as_ref() else {
-                return Err(ActionFailure::failed(
-                    "receipt_persistence_failed",
-                    "collection mutation has no durable receipt intent",
-                ));
-            };
-            if let Err(error) = context.root.write_new(&target, &bytes, intent) {
-                errors.push(format!("{normalized}: {error}"));
-                continue;
+                if records.len() == MAX_SYNTHETIC_RECORDS {
+                    return Err(ActionFailure::blocked(
+                        "record_count_limit_blocked",
+                        "collection inputs exceed the compiled aggregate record limit",
+                    ));
+                }
+                let record = serde_json::from_str::<Value>(line).map_err(|_| {
+                    ActionFailure::failed(
+                        "collection_parse_failed",
+                        format!("collection JSONL record {} is invalid", line_index + 1),
+                    )
+                })?;
+                let object = validated_synthetic_record_object(
+                    record,
+                    line_index + 1,
+                    records.len() - initial_record_count + 1,
+                    "collection_parse_failed",
+                )?;
+                let template = object["template"]
+                    .as_str()
+                    .expect("validated synthetic template is a string");
+                let is_redacted = object["value"].as_str() == Some("synthetic-redacted");
+                if fixture_template
+                    .as_deref()
+                    .is_some_and(|expected| expected != template)
+                    || fixture_redacted.is_some_and(|expected| expected != is_redacted)
+                {
+                    return Err(ActionFailure::failed(
+                        "collection_parse_failed",
+                        "collection input mixes templates or redaction states",
+                    ));
+                }
+                fixture_template.get_or_insert_with(|| template.to_string());
+                fixture_redacted.get_or_insert(is_redacted);
+                records.push(Value::Object(object));
             }
-            total_bytes = total_bytes.saturating_add(bytes.len() as u64);
-            staged.push(json!({
-                "source": normalized,
-                "artifact": target.relative,
-                "sha256": crate::contract::sha256_hex(&bytes),
-                "size": bytes.len(),
-            }));
+            if records.len() == initial_record_count {
+                return Err(ActionFailure::failed(
+                    "collection_parse_failed",
+                    "collection input contains no JSONL records",
+                ));
+            }
         }
-        let receipt_id = match intent.as_ref() {
-            Some(intent) => Some(commit_receipt(context, intent)?),
-            None => None,
-        };
-        let status = if errors.is_empty() {
-            TaskStatus::Success
-        } else if !staged.is_empty() || !created_directories.is_empty() {
-            TaskStatus::Partial
-        } else {
-            TaskStatus::Failed
-        };
+
+        let record_count = records.len();
+        let mut bundle_bytes = Vec::new();
+        match self.0.bundle_format {
+            BundleFormat::Jsonl => {
+                for record in &records {
+                    if started.elapsed() >= deadline {
+                        return Err(ActionFailure::timed_out(
+                            "collection_timeout",
+                            "collection bundling exceeded its deadline",
+                        ));
+                    }
+                    let encoded = crate::contract::canonical_json(record);
+                    bundle_bytes.extend_from_slice(encoded.as_bytes());
+                    bundle_bytes.push(b'\n');
+                    if bundle_bytes.len() as u64 > context.manifest.limits.max_artifact_bytes {
+                        return Err(ActionFailure::blocked(
+                            "artifact_limit_blocked",
+                            "deterministic staging bundle exceeds the manifest artifact limit",
+                        ));
+                    }
+                }
+            }
+            BundleFormat::Json => {
+                bundle_bytes.extend_from_slice(b"{\"records\":[");
+                for (index, record) in records.iter().enumerate() {
+                    if started.elapsed() >= deadline {
+                        return Err(ActionFailure::timed_out(
+                            "collection_timeout",
+                            "collection bundling exceeded its deadline",
+                        ));
+                    }
+                    if index > 0 {
+                        bundle_bytes.push(b',');
+                    }
+                    let encoded = crate::contract::canonical_json(record);
+                    bundle_bytes.extend_from_slice(encoded.as_bytes());
+                    if bundle_bytes.len() as u64 > context.manifest.limits.max_artifact_bytes {
+                        return Err(ActionFailure::blocked(
+                            "artifact_limit_blocked",
+                            "deterministic staging bundle exceeds the manifest artifact limit",
+                        ));
+                    }
+                }
+                bundle_bytes
+                    .extend_from_slice(b"],\"schema_version\":\"bluefire.synthetic-bundle.v1\"}");
+                bundle_bytes.push(b'\n');
+            }
+        }
+        if bundle_bytes.len() as u64 > context.manifest.limits.max_artifact_bytes {
+            return Err(ActionFailure::blocked(
+                "artifact_limit_blocked",
+                "deterministic staging bundle exceeds the manifest artifact limit",
+            ));
+        }
+        if started.elapsed() >= deadline {
+            return Err(ActionFailure::timed_out(
+                "collection_timeout",
+                "collection bundling exceeded its deadline",
+            ));
+        }
+
+        let target = context
+            .root
+            .prepare_new_file(&bundle_relative)
+            .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        let intent = begin_receipt(
+            context,
+            receipt_paths(
+                target.relative.clone(),
+                &bundle_bytes,
+                &target.created_directories,
+            ),
+        )?;
+        context
+            .root
+            .write_new(&target, &bundle_bytes, &intent)
+            .map_err(|error| ActionFailure::failed("collection_write_failed", error))?;
+        let receipt_id = commit_receipt(context, &intent)?;
+        let digest = crate::contract::sha256_hex(&bundle_bytes);
         Ok(ActionOutcome {
-            status,
-            output: json!({"staged": staged, "errors": errors, "total_bytes": total_bytes}),
+            status: TaskStatus::Success,
+            output: json!({
+                "artifact": bundle_relative,
+                "format": self.0.bundle_format.as_str(),
+                "input_count": self.0.inputs.len(),
+                "accepted_input_count": self.0.inputs.len(),
+                "rejected_input_count": 0,
+                "record_count": record_count,
+                "sha256": digest,
+                "size": bundle_bytes.len(),
+                "complete": true,
+            }),
             stdout: BoundedOutput::default(),
             stderr: BoundedOutput::default(),
-            receipt_ids: receipt_id.into_iter().collect(),
+            receipt_ids: vec![receipt_id],
             cleanup: None,
-            error: if status == TaskStatus::Success {
-                None
-            } else {
-                Some(ErrorRecord {
-                    code: "collection_incomplete".to_string(),
-                    message: "one or more requested artifacts could not be staged".to_string(),
-                })
-            },
+            error: None,
             limitations: Vec::new(),
         })
     }
@@ -1648,8 +1923,9 @@ struct CollectionStageAction;
 static COLLECTION_STAGE_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "sandbox.collection.stage.v1",
+        version: "2.0.0",
         behavior_ids: &["sandbox.collection.stage.v1"],
-        summary: "Copy a bounded set of sandbox files into a deterministic staging directory.",
+        summary: "Aggregate bounded synthetic JSONL records into one deterministic JSON or JSONL bundle.",
         schema: collection_stage_schema,
         capabilities: &[Capability::FilesystemRead, Capability::FilesystemWrite],
         tier: SafetyTier::Controlled,
@@ -2410,6 +2686,7 @@ struct NetworkLoopbackAction;
 static NETWORK_LOOPBACK_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "sandbox.network.loopback.v1",
+        version: "1.0.0",
         behavior_ids: &["sandbox.network.loopback.v1"],
         summary: "Send one bounded artifact to an exact literal loopback HTTP sink.",
         schema: network_loopback_schema,
@@ -2436,11 +2713,34 @@ impl Action for NetworkLoopbackAction {
 // -------------------------------------------------------------------------
 // sandbox.export.local.v1
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum RetentionLabel {
+    Ephemeral,
+    Review,
+}
+
+impl RetentionLabel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ephemeral => "ephemeral",
+            Self::Review => "review",
+        }
+    }
+
+    fn destination(self) -> &'static str {
+        match self {
+            Self::Ephemeral => "exports/ephemeral/bundle.bin",
+            Self::Review => "exports/review/bundle.bin",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExportLocalParams {
     source: String,
-    destination: String,
+    retention_label: RetentionLabel,
 }
 
 struct ExportLocalPrepared(ExportLocalParams);
@@ -2451,7 +2751,7 @@ impl PreparedAction for ExportLocalPrepared {
         context: &ActionContext<'_>,
     ) -> Result<ActionOutcome, ActionFailure> {
         let source = authorize_path(context, &self.0.source, false)?;
-        let destination = authorize_path(context, &self.0.destination, false)?;
+        let destination = authorize_path(context, self.0.retention_label.destination(), false)?;
         let source_path = context
             .root
             .resolve_existing(&source)
@@ -2476,6 +2776,8 @@ impl PreparedAction for ExportLocalPrepared {
             "artifact": target.relative,
             "size": bytes.len(),
             "sha256": crate::contract::sha256_hex(&bytes),
+            "retention_label": self.0.retention_label.as_str(),
+            "destination_policy": "runner_fixed_retention_destination",
         }))
         .with_receipt(receipt_id))
     }
@@ -2485,8 +2787,9 @@ struct ExportLocalAction;
 static EXPORT_LOCAL_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "sandbox.export.local.v1",
+        version: "2.0.0",
         behavior_ids: &["sandbox.export.local.v1"],
-        summary: "Copy one bounded artifact into an approved sandbox-local export path.",
+        summary: "Copy one bounded artifact into a retention-labeled runner-owned export path.",
         schema: export_local_schema,
         capabilities: &[Capability::FilesystemRead, Capability::FilesystemWrite, Capability::ExportLocal],
         tier: SafetyTier::Controlled,
@@ -2583,6 +2886,7 @@ struct RestrictedPersistenceMarkerAction;
 static RESTRICTED_PERSISTENCE_MARKER_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "sandbox.restricted.persistence-marker.v1",
+        version: "1.0.0",
         behavior_ids: &["sandbox.restricted.persistence-marker.v1"],
         summary: "Create one deterministic non-executable persistence-detection canary inside the sandbox.",
         schema: restricted_persistence_marker_schema,
@@ -2637,6 +2941,9 @@ impl PreparedAction for CleanupPrepared {
             requested_receipts: self.0.receipt_ids.len(),
             ..CleanupReport::default()
         };
+        let mut verified_removed_paths = 0_usize;
+        let mut verified_absent_paths = 0_usize;
+        let mut verified_receipts = 0_usize;
         let mut loaded = Vec::new();
         let mut seen = BTreeSet::new();
         for receipt_id in &self.0.receipt_ids {
@@ -2649,9 +2956,31 @@ impl PreparedAction for CleanupPrepared {
             let record = match context.root.load_receipt(receipt_id) {
                 Ok(Some(record)) => record,
                 Ok(None) => {
+                    match context.root.receipt_commit_exists(receipt_id) {
+                        Ok(true) => {
+                            report.errors.push(format!(
+                                "{receipt_id}: receipt intent is missing while its durable commit remains"
+                            ));
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(error) => {
+                            report.errors.push(format!("{receipt_id}: {error}"));
+                            continue;
+                        }
+                    }
                     report.already_absent_receipts.push(receipt_id.clone());
-                    if let Err(error) = context.root.delete_receipt(receipt_id) {
-                        report.errors.push(format!("{receipt_id}: {error}"));
+                    match context.root.delete_receipt(receipt_id) {
+                        Ok(()) => match context.root.load_receipt(receipt_id) {
+                            Ok(None) => verified_receipts += 1,
+                            Ok(Some(_)) => report.errors.push(format!(
+                                "{receipt_id}: receipt remained after verified cleanup"
+                            )),
+                            Err(error) => report.errors.push(format!(
+                                "{receipt_id}: cannot verify receipt removal: {error}"
+                            )),
+                        },
+                        Err(error) => report.errors.push(format!("{receipt_id}: {error}")),
                     }
                     continue;
                 }
@@ -2678,9 +3007,28 @@ impl PreparedAction for CleanupPrepared {
         for (receipt_id, record) in loaded {
             let mut receipt_failed = false;
             for owned in &record.paths {
-                match context.root.remove_owned(owned) {
-                    Ok(Some(path)) => report.removed_paths.push(path),
-                    Ok(None) => {}
+                match context.root.remove_owned(&receipt_id, owned) {
+                    Ok(Some(path)) => match context.root.path_is_absent(&path) {
+                        Ok(true) => {
+                            verified_removed_paths += 1;
+                            report.removed_paths.push(path);
+                        }
+                        Ok(false) => {
+                            receipt_failed = true;
+                            report.retained_paths.push(path.clone());
+                            report
+                                .errors
+                                .push(format!("{path}: path remained after verified cleanup"));
+                        }
+                        Err(error) => {
+                            receipt_failed = true;
+                            report.retained_paths.push(path.clone());
+                            report
+                                .errors
+                                .push(format!("{path}: cannot verify path removal: {error}"));
+                        }
+                    },
+                    Ok(None) => verified_absent_paths += 1,
                     Err(error) => {
                         receipt_failed = true;
                         report.retained_paths.push(owned.relative_path.clone());
@@ -2697,8 +3045,17 @@ impl PreparedAction for CleanupPrepared {
                 }
             }
             if !receipt_failed {
-                if let Err(error) = context.root.delete_receipt(&receipt_id) {
-                    report.errors.push(format!("{receipt_id}: {error}"));
+                match context.root.delete_receipt(&receipt_id) {
+                    Ok(()) => match context.root.load_receipt(&receipt_id) {
+                        Ok(None) => verified_receipts += 1,
+                        Ok(Some(_)) => report.errors.push(format!(
+                            "{receipt_id}: receipt remained after verified cleanup"
+                        )),
+                        Err(error) => report.errors.push(format!(
+                            "{receipt_id}: cannot verify receipt removal: {error}"
+                        )),
+                    },
+                    Err(error) => report.errors.push(format!("{receipt_id}: {error}")),
                 }
             }
         }
@@ -2709,10 +3066,15 @@ impl PreparedAction for CleanupPrepared {
         } else {
             TaskStatus::Partial
         };
+        report.verification_performed = true;
+        report.verified_removed_paths = verified_removed_paths;
+        report.verified_absent_paths = verified_absent_paths;
+        report.verified_receipts = verified_receipts;
+        let output =
+            serde_json::to_value(&report).expect("cleanup report serialization cannot fail");
         Ok(ActionOutcome {
             status,
-            output: serde_json::to_value(&report)
-                .expect("cleanup report serialization cannot fail"),
+            output,
             stdout: BoundedOutput::default(),
             stderr: BoundedOutput::default(),
             receipt_ids: Vec::new(),
@@ -2734,6 +3096,7 @@ struct CleanupAction;
 static CLEANUP_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "sandbox.cleanup.v1",
+        version: "1.1.0",
         behavior_ids: &["sandbox.cleanup.v1"],
         summary: "Remove only hash-checked objects named by runner-owned receipts.",
         schema: cleanup_schema,
@@ -2842,7 +3205,17 @@ mod tests {
         for descriptor in inventory() {
             let value = serde_json::to_value(&descriptor).unwrap();
             assert_eq!(value["schema_version"], ACTION_SDK_SCHEMA_VERSION);
-            assert_eq!(value["action_version"], "1.0.0");
+            let expected_version = match descriptor.action_id {
+                "sandbox.cleanup.v1" => "1.1.0",
+                "sandbox.collection.stage.v1"
+                | "sandbox.discovery.list.v1"
+                | "sandbox.discovery.metadata.v1"
+                | "sandbox.export.local.v1"
+                | "sandbox.fixture.create.v1"
+                | "sandbox.fixture.transform.v1" => "2.0.0",
+                _ => "1.0.0",
+            };
+            assert_eq!(value["action_version"], expected_version);
             assert_eq!(value["parameter_schema"]["type"], "object");
             assert_eq!(value["parameter_schema"]["additionalProperties"], false);
             assert!(value["target_types"]
@@ -2877,7 +3250,7 @@ mod tests {
             .prepare(json!({
                 "input": "a",
                 "output": "b",
-                "transform": "uppercase-ascii",
+                "redact_values": true,
                 "command": "whoami"
             }))
             .err()

@@ -25,6 +25,10 @@ from bluefire.runner_client import (
     runner_watchdog_cancel_path,
     runner_watchdog_control_root,
 )
+from bluefire.runner_inventory import (
+    BUILTIN_RUNNER_ACTION_VERSIONS,
+    RUNNER_ACTION_SDK_SCHEMA_VERSION,
+)
 from bluefire.runner_transport import (
     AuthenticatedRunnerClient,
     AuthenticatedRunnerServer,
@@ -56,13 +60,14 @@ def _inventory() -> Mapping[str, Any]:
         "schema_version": "bluefire.runner-inventory.v1",
         "runner_id": "bluefire-rust-runner.v1",
         "runner_version": "0.1.0",
-        "action_sdk_version": "bluefire.runner-action-sdk.v1",
+        "action_sdk_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
         "receipt_protocol": "bluefire.runner-receipt-wal.v2",
         "platform": "windows",
         "actions": [
             {
+                "schema_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
                 "action_id": "sandbox.fixture.create.v1",
-                "action_version": "1.0.0",
+                "action_version": BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.fixture.create.v1"],
                 "readiness": "ready",
             }
         ],

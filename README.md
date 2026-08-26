@@ -49,7 +49,7 @@ BlueFire has exactly two run modes.
 | Profile | Simulate profile | Explicit Execute profile |
 | Scope | Modeled | Explicit operator scope, contained by the profile and runner |
 | Approval | Not an execution approval | Required by every shipped Execute profile |
-| Cleanup | Modeled | Receipt-owned, hash-checked cleanup |
+| Cleanup | Modeled | Receipt-bound, revalidated, and independently verified removal |
 
 AI does not create a third mode. Enabling `assist` or `auto` cannot widen target scope, raise the safety tier, change the runner profile, invent an action ID, or bypass approval.
 
@@ -69,19 +69,19 @@ AI does not create a third mode. Enabling `assist` or `auto` cannot widen target
 
 | Action | Tier | Purpose |
 |---|---|---|
-| `sandbox.fixture.create.v1` | safe | Create one deterministic file in the runner-owned sandbox |
-| `sandbox.fixture.transform.v1` | safe | Apply a compiled in-process transform to a bounded file |
-| `sandbox.discovery.list.v1` | safe | List a bounded sandbox directory |
-| `sandbox.discovery.metadata.v1` | safe | Read bounded metadata and, when eligible, a file digest |
+| `sandbox.fixture.create.v1` | safe | Create 1..100 exact deterministic JSONL records at `fixtures/input.jsonl` |
+| `sandbox.fixture.transform.v1` | safe | Validate and canonicalize the exact fixture schema, optionally replacing every value with the public `synthetic-redacted` placeholder |
+| `sandbox.discovery.list.v1` | safe | Return one metadata record for the exact bound fixture without enumerating siblings or reading contents |
+| `sandbox.discovery.metadata.v1` | safe | Return one metadata record, including read-only state, for the exact bound fixture without reading contents |
 | `endpoint.discovery.system.v1` | safe | Report OS and architecture facts from compiled APIs |
 | `endpoint.discovery.processes.v1` | safe | Return a bounded PID/name inventory through a native or fixed adapter |
 | `sandbox.discovery.recursive.v1` | safe | Traverse a runner-owned subtree without following links |
 | `sandbox.archive.tar.v1` | controlled | Build a deterministic uncompressed ustar archive from approved files |
-| `sandbox.collection.stage.v1` | controlled | Copy selected sandbox files into a controlled staging directory |
+| `sandbox.collection.stage.v1` | controlled | Validate exactly one bound fixture and create one deterministic JSON or JSONL bundle, failing before any write on input error |
 | `sandbox.network.loopback.v1` | controlled | POST one bounded artifact to a literal allowlisted loopback socket |
-| `sandbox.export.local.v1` | controlled | Create a bounded copy in the approved sandbox-local export area |
+| `sandbox.export.local.v1` | controlled | Create a temporary policy-labelled local copy at the runner-fixed `ephemeral` or `review` path; normal cleanup removes either |
 | `sandbox.restricted.persistence-marker.v1` | restricted | Write one fixed, non-executable persistence-detection canary inside a dedicated runner-owned sandbox |
-| `sandbox.cleanup.v1` | safe | Remove only receipt-owned, unchanged objects |
+| `sandbox.cleanup.v1` | safe | Quarantine, revalidate, and remove only receipt-bound objects, then return an authoritative verification report |
 
 The runner does not expose a generic command, shell, script, URL, hostname-resolution, proxy, redirect, dynamic-library, or Python-entry-point action. Process discovery on Linux and macOS uses one platform-selected absolute `ps` path and a fixed argument vector; it is not caller-selectable process execution.
 

@@ -306,6 +306,10 @@ pub struct CleanupReport {
     pub already_absent_receipts: Vec<String>,
     pub retained_paths: Vec<String>,
     pub errors: Vec<String>,
+    pub verification_performed: bool,
+    pub verified_removed_paths: usize,
+    pub verified_absent_paths: usize,
+    pub verified_receipts: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

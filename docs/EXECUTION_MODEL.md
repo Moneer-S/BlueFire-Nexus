@@ -73,7 +73,7 @@ The behavior/action catalog and Rust inventory serve different purposes.
 
 The logical catalog describes scenario-facing parameters and typed artifacts. It is stable across platforms and does not expose runner paths, process arguments, sockets, or receipt state.
 
-The Rust inventory describes executor-facing, action-specific parameter objects and effect capabilities. Those objects may contain bounded relative paths, fixed transform enums, literal loopback destinations, or receipt IDs after the control plane has resolved prior artifacts.
+The Rust inventory describes executor-facing, action-specific parameter objects and effect capabilities. Those objects may contain bounded relative paths, fixed template choices, reviewed booleans, literal loopback destinations, or receipt IDs after the control plane has resolved prior artifacts.
 
 RunnerActionAdapter is the only bridge. For each known action ID it:
 
@@ -138,7 +138,13 @@ The current Rust registry contains thirteen IDs:
 - sandbox.restricted.persistence-marker.v1
 - sandbox.cleanup.v1
 
-Their scope is deliberately narrow: create/transform deterministic fixtures; inspect bounded system, process, directory, recursive-file, and file-metadata facts; create a deterministic archive; stage sandbox artifacts; send one bounded artifact to a literal allowlisted loopback socket; copy an artifact to an approved sandbox-local export; write one fixed non-executable restricted-tier canary marker; and clean receipt-owned objects. The canary never changes host persistence settings.
+Their scope is deliberately narrow: create/transform deterministic fixtures; inspect one exact fixture's metadata plus bounded system, process, and recursive-file facts; create a deterministic archive; stage one fixture as one bundle; send one bounded artifact to a literal allowlisted loopback socket; create a temporary policy-labelled copy at a fixed runner-owned export path; write one fixed non-executable restricted-tier canary marker; and clean receipt-bound objects. The canary never changes host persistence settings.
+
+The fixture and staging contracts are exact rather than best-effort. Create writes 1..100 deterministic JSONL records to the adapter-derived `fixtures/input.jsonl`; every record has only `record_id`, `synthetic`, `template`, and `value`. Transform validates the full schema and generated values, canonicalizes the records, and uses a reviewed `redact_values` boolean. When enabled, it replaces every value with the public `synthetic-redacted` placeholder and reports the record and redaction counts.
+
+List and metadata descriptors are version `2.0.0` and accept only the exact fixture `path`. Each returns one regular-file metadata entry for that path; neither enumerates siblings nor opens or hashes content. Collection `2.0.0` accepts exactly one bound fixture, validates the complete input and all limits before creating an effect, and emits one deterministic JSONL or JSON bundle. Its top-level result reports artifact, format, input/accept/reject counts, record count, digest, size, and completion; it does not return a nested `staged` object or leave a partial bundle after an input failure.
+
+Export `2.0.0` derives `exports/ephemeral/bundle.bin` or `exports/review/bundle.bin` from the reviewed `retention_label`. Both are temporary, receipt-owned local copies. The label records policy classification only: `review` does not mean preserved or fallback-surviving, and normal scenario cleanup deletes both labels.
 
 The runner has no generic command, shell, URL, hostname resolution, redirect, proxy, dynamic library, or Python plugin action. Its transforms/templates are compiled choices. Process discovery uses Windows native APIs or one fixed platform-selected absolute `ps` adapter; callers cannot select a program or arguments.
 
@@ -166,9 +172,11 @@ The control plane also supports synthetic, counterfactual, and unknown provenanc
 
 ## Cleanup
 
-Create-new runner actions issue receipts in runner-owned state. Cleanup accepts receipt IDs, not caller-selected paths. Before removal it reloads the receipt and checks the owned object's type, size, and digest. Changed objects are retained and reported. Successful receipts are consumed; reusing a consumed receipt is idempotent.
+Create-new runner actions issue receipts in runner-owned state. Cleanup `1.1.0` accepts receipt IDs, not caller-selected paths. It reloads each receipt, atomically moves an owned path without replacement into private runner-state quarantine, revalidates type, size, and digest there, and only then deletes it. If another object appears at the public path, that replacement is left untouched and the post-removal verification makes cleanup fail visibly. Changed objects, malformed receipt state, permission errors, and other unverifiable conditions are retained or reported rather than treated as absence. Successful receipts are consumed; reusing a consumed receipt is idempotent.
 
-The control plane validates and records returned receipt IDs immediately after runner identity checks, before evidence, event, or planner processing. It keeps outstanding receipts in creation order and submits them to cleanup in reverse order. If later control-plane processing raises unexpectedly, it makes an emergency cleanup attempt through the same registered Rust cleanup action and then preserves the original exception. A claimed successful cleanup is accepted only when its report covers every requested receipt and lists no errors or retained paths.
+Cleanup holds the sandbox, source-parent, and staging directory chain while it moves, restores, removes, and verifies entries. Windows pins those names against rename and deletes the exact opened object by handle. Linux and macOS use descriptor-relative operations; their final quarantine unlink is basename-relative because POSIX has no portable unlink-by-open-file-descriptor primitive. Runner state is therefore enforced as effective-user-owned mode `0700`, identity mismatches fail closed, and the product does not claim protection from a hostile process running as the same OS user.
+
+The control plane authenticates and records returned receipts immediately after runner identity checks, before evidence, event, or planner processing. A successful, partial, or timed-out mutating result counts as cleanup-owned only when the receipt has the exact schema and bounded owned paths, matches the request, action, profile, and canonical workspace, recomputes to its filename digest, and has a matching durable commit. Valid uncommitted intents remain recovery evidence for failed or cancelled dispatches but cannot justify a successful mutation. The control plane keeps outstanding receipts in creation order and submits them to cleanup in reverse order. If later control-plane processing raises unexpectedly, it makes an emergency cleanup attempt through the same registered Rust cleanup action and then preserves the original exception. Cleanup returns the same authoritative report in the result's `output` and `cleanup` fields. A claimed success is accepted only when verification ran, the report covers every requested receipt, its verified counters are internally consistent, and it lists no errors or retained paths.
 
 Cleanup outcomes are first-class. partial and cleanup_failed remain visible in the step result, evidence, run bundle, and comparison view.
 

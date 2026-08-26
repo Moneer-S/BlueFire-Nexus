@@ -3,7 +3,7 @@ items:
   - schema_version: bluefire.action.v1
     id: sandbox.fixture.create.v1
     title: Create bounded sandbox fixture
-    purpose: Create deterministic fixture data inside a runner-owned workspace.
+    purpose: Create 1..100 exact deterministic JSONL records at the fixed runner-owned fixtures/input.jsonl path.
     safety_tier: safe
     capabilities: [sandbox.fixture, filesystem.write]
     platforms: [windows, linux, macos]
@@ -18,7 +18,7 @@ items:
         default: 6
         minimum: 1
         maximum: 100
-        description: Number of synthetic records to create.
+        description: Number of exact synthetic JSONL records to create at fixtures/input.jsonl.
     mutates: true
     cleanup_action_id: sandbox.cleanup.v1
     provenance: &authored
@@ -31,7 +31,7 @@ items:
   - schema_version: bluefire.action.v1
     id: sandbox.fixture.transform.v1
     title: Transform sandbox fixture
-    purpose: Normalize and redact fixture records without leaving the runner workspace.
+    purpose: Validate and canonicalize the exact fixture schema, optionally replacing every value with the public synthetic-redacted placeholder.
     safety_tier: safe
     capabilities: [sandbox.fixture, filesystem.read, filesystem.write]
     platforms: [windows, linux, macos]
@@ -45,15 +45,15 @@ items:
       - name: redact_values
         type: boolean
         default: true
-        description: Replace fixture values with deterministic placeholders.
+        description: When true, replace every accepted fixture value with the fixed public synthetic-redacted placeholder.
     mutates: true
     cleanup_action_id: sandbox.cleanup.v1
     provenance: *authored
 
   - schema_version: bluefire.action.v1
     id: sandbox.discovery.list.v1
-    title: List sandbox fixture metadata
-    purpose: Enumerate fixture records using the runner-owned artifact reference.
+    title: List exact sandbox fixture
+    purpose: Verify and describe the exact runner-owned fixture without enumerating siblings or contents.
     safety_tier: safe
     capabilities: [sandbox.discovery, filesystem.read]
     platforms: [windows, linux, macos]
@@ -64,21 +64,15 @@ items:
       - name: records
         type: artifact.sandbox.discovery.records.v1
         multiple: true
-    parameters: &action_discovery_parameters
-      - name: record_limit
-        type: integer
-        default: 25
-        minimum: 1
-        maximum: 100
-        description: Maximum number of fixture records returned.
+    parameters: []
     mutates: false
     cleanup_action_id: null
     provenance: *authored
 
   - schema_version: bluefire.action.v1
     id: sandbox.discovery.metadata.v1
-    title: Inspect sandbox fixture metadata
-    purpose: Produce the same typed discovery records through a metadata-oriented strategy.
+    title: Inspect exact sandbox fixture metadata
+    purpose: Produce the same exact-file discovery record through a metadata-oriented strategy.
     safety_tier: safe
     capabilities: [sandbox.discovery, filesystem.read]
     platforms: [windows, linux, macos]
@@ -89,7 +83,7 @@ items:
       - name: records
         type: artifact.sandbox.discovery.records.v1
         multiple: true
-    parameters: *action_discovery_parameters
+    parameters: []
     mutates: false
     cleanup_action_id: null
     provenance: *authored
@@ -185,7 +179,7 @@ items:
   - schema_version: bluefire.action.v1
     id: sandbox.collection.stage.v1
     title: Stage sandbox records
-    purpose: Package selected fixture records within the runner-owned workspace.
+    purpose: Validate exactly one bound fixture and create one deterministic JSON or JSONL bundle, failing before any write on input error.
     safety_tier: controlled
     capabilities: [sandbox.collection, filesystem.read, filesystem.write]
     platforms: [windows, linux, macos]
@@ -201,7 +195,7 @@ items:
         type: string
         default: jsonl
         enum: [jsonl, json]
-        description: Deterministic representation used for the fixture bundle.
+        description: Deterministic JSONL or JSON representation for the single validated fixture bundle.
     mutates: true
     cleanup_action_id: sandbox.cleanup.v1
     provenance: *authored
@@ -233,7 +227,7 @@ items:
   - schema_version: bluefire.action.v1
     id: sandbox.export.local.v1
     title: Export bundle locally
-    purpose: Preserve a bundle in the approved local export area when transport is blocked.
+    purpose: Create a temporary policy-labelled local copy at a fixed runner-owned export path; normal cleanup removes either label.
     safety_tier: controlled
     capabilities: [sandbox.export, filesystem.read, filesystem.write, export.local]
     platforms: [windows, linux, macos]
@@ -248,7 +242,7 @@ items:
         type: string
         default: ephemeral
         enum: [ephemeral, review]
-        description: Policy label, not a filesystem path.
+        description: Selects the temporary ephemeral or review path; it is a policy label, not a preservation promise or caller path.
     mutates: true
     cleanup_action_id: sandbox.cleanup.v1
     provenance: *authored
@@ -281,7 +275,7 @@ items:
   - schema_version: bluefire.action.v1
     id: sandbox.cleanup.v1
     title: Clean sandbox workspace
-    purpose: Remove runner-owned temporary artifacts and record the cleanup result.
+    purpose: Quarantine, revalidate, and remove receipt-bound temporary artifacts, then return an authoritative verification report.
     safety_tier: safe
     capabilities: [sandbox.cleanup, filesystem.write, cleanup]
     platforms: [windows, linux, macos]
@@ -295,7 +289,8 @@ items:
       - name: verify_removal
         type: boolean
         default: true
-        description: Ask the runner to verify cleanup within its owned workspace.
+        enum: [true]
+        description: Require the runner to verify receipt and path removal and report authoritative verification counters.
     mutates: true
     cleanup_action_id: null
     provenance: *authored

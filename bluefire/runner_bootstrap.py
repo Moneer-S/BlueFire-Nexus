@@ -24,13 +24,20 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 
 from . import __version__
+from .runner_inventory import (
+    BUILTIN_RUNNER_ACTION_IDS,
+    RUNNER_ACTION_SDK_SCHEMA_VERSION,
+    RUNNER_INVENTORY_SCHEMA_VERSION,
+    RunnerInventoryAuthorityError,
+    validate_builtin_action_inventory,
+)
 
 MANIFEST_SCHEMA_VERSION = "bluefire.native-runner-package.v1"
 BOOTSTRAP_STATUS_SCHEMA_VERSION = "bluefire.runner-bootstrap-status.v1"
 PRODUCT_NAME = "bluefire-nexus"
 RUNNER_ID = "bluefire-rust-runner.v1"
-INVENTORY_SCHEMA_VERSION = "bluefire.runner-inventory.v1"
-ACTION_SDK_VERSION = "bluefire.runner-action-sdk.v1"
+INVENTORY_SCHEMA_VERSION = RUNNER_INVENTORY_SCHEMA_VERSION
+ACTION_SDK_VERSION = RUNNER_ACTION_SDK_SCHEMA_VERSION
 RECEIPT_PROTOCOL_VERSION = "bluefire.runner-receipt-wal.v2"
 
 RUNNER_BINARY_ENV = "BLUEFIRE_RUNNER_BINARY"
@@ -323,8 +330,16 @@ def validate_runner_inventory(
         inventory.get(key) != expected for key, expected in required.items()
     ):
         raise RunnerBootstrapError("Runner health verification reported an incompatibility.")
-    if not isinstance(inventory.get("actions"), list):
-        raise RunnerBootstrapError("Runner health verification returned an invalid inventory.")
+    try:
+        validate_builtin_action_inventory(
+            inventory,
+            required_action_ids=BUILTIN_RUNNER_ACTION_IDS,
+            require_exact_catalog=True,
+        )
+    except RunnerInventoryAuthorityError:
+        raise RunnerBootstrapError(
+            "Runner health verification returned an invalid inventory."
+        ) from None
 
 
 def bootstrap_runner(

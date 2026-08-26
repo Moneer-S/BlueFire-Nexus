@@ -75,21 +75,29 @@ The logical catalog describes operator intent. It must not expose executor-only 
 
 | Action ID | Executor parameter object | Effect |
 |---|---|---|
-| `sandbox.fixture.create.v1` | `path`, compiled `content_template` enum | Create one new sandbox file |
-| `sandbox.fixture.transform.v1` | `input`, `output`, compiled `transform` enum | Bounded in-process transform |
-| `sandbox.discovery.list.v1` | `path`, `max_entries` | Bounded directory list |
-| `sandbox.discovery.metadata.v1` | `path` | Metadata and eligible digest |
+| `sandbox.fixture.create.v1` | `path`, compiled `content_template` enum, `record_count` (1..100) | Create one exact deterministic JSONL fixture |
+| `sandbox.fixture.transform.v1` | `input`, `output`, `redact_values` boolean | Validate and canonicalize the exact fixture schema, optionally replacing every value with `synthetic-redacted` |
+| `sandbox.discovery.list.v1` | `path` | Return one metadata record for the exact regular-file fixture; do not enumerate siblings or read contents |
+| `sandbox.discovery.metadata.v1` | `path` | Return one metadata record, including read-only state, for the exact regular-file fixture; do not read contents |
 | `endpoint.discovery.system.v1` | empty object | OS/architecture facts |
 | `endpoint.discovery.processes.v1` | `max_entries` | PID/name records through fixed platform adapter |
 | `sandbox.discovery.recursive.v1` | `path`, `max_entries`, `max_depth` | Non-link-following subtree inventory |
 | `sandbox.archive.tar.v1` | `inputs`, `destination` | Deterministic create-new ustar archive |
-| `sandbox.collection.stage.v1` | `inputs`, `destination_directory` | Bounded create-new copies |
+| `sandbox.collection.stage.v1` | `inputs` (exactly one), `destination_directory`, `bundle_format` (`jsonl` or `json`) | Validate the complete input before creating one deterministic bundle |
 | `sandbox.network.loopback.v1` | `artifact`, `destination {host, port}` | Fixed HTTP POST to literal loopback |
-| `sandbox.export.local.v1` | `source`, `destination` | Sandbox-local create-new copy |
+| `sandbox.export.local.v1` | `source`, `retention_label` (`ephemeral` or `review`) | Temporary create-new copy at a label-derived runner-owned path |
 | `sandbox.restricted.persistence-marker.v1` | `path`, compiled marker bytes | Fixed non-executable persistence-detection canary inside the runner-owned sandbox |
-| `sandbox.cleanup.v1` | `receipt_ids` | Revalidated receipt-owned deletion |
+| `sandbox.cleanup.v1` | `receipt_ids` | Receipt-bound quarantine, revalidation, removal, and authoritative verification report |
 
-The adapter—not scenario input—chooses path conventions, compiled transform/template values, destinations, and receipt IDs.
+The create, transform, exact-file discovery, collection, and export descriptors are implementation version `2.0.0`; cleanup is `1.1.0`. The other built-in descriptors remain `1.0.0`. Inventory consumers must validate those versions instead of inferring them from the stable `.v1` action IDs.
+
+The adapter—not scenario input—chooses the fixed create path `fixtures/input.jsonl`, the transformed path, the exact discovery path, destination directories, and receipt IDs. Logical input is deliberately smaller: create exposes `record_count`; transform exposes `redact_values`; list and metadata expose no parameters; collection exposes `bundle_format`; export exposes only `retention_label`; and cleanup requires `verify_removal: true`. The executor derives its typed path and receipt fields from bound artifacts and policy.
+
+Fixture create writes 1..100 canonical JSONL records whose exact fields are `record_id`, `synthetic`, `template`, and `value`. Transform rejects extra, missing, out-of-order, or unrecognized values before writing. With `redact_values: true`, every accepted record's `value` becomes the fixed public string `synthetic-redacted`; with `false`, accepted values remain unchanged.
+
+List and metadata receive only the exact bound fixture path and each return exactly one regular-file metadata entry. Neither action accepts a count limit, enumerates the fixture's directory, or hashes or otherwise opens file content. Collection receives exactly one such bound input, validates its complete JSONL record set and limits before creating `staged/bundle.jsonl` or `staged/bundle.json`, and reports one accepted input, zero rejected inputs, the preserved record count, digest, size, and `complete: true`. There is no nested `staged` result object and no partial bundle on an input error.
+
+Export maps `ephemeral` and `review` to separate fixed runner-owned paths. Both outputs are temporary, receipt-owned local copies; `review` is a policy classification, not a promise that the copy survives the scenario. Normal `always` cleanup deletes either label.
 
 ## Results and partial work
 
@@ -103,7 +111,7 @@ The adapter—not scenario input—chooses path conventions, compiled transform/
 - `timed_out`
 - `cleanup_failed`
 
-If an action creates any owned object before a partial result, it must return the corresponding receipt. Never convert partial or timeout into success to simplify graph routing.
+If an action creates any owned object before a partial result, it must return the corresponding committed receipt. The control plane authenticates its exact schema, bounds, request/action/profile/workspace binding, filename digest, and commit before treating a successful, partial, or timed-out mutation as cleanup-owned. A valid intent without a commit remains available only for failed or cancelled recovery. Never convert partial or timeout into success to simplify graph routing. Cleanup's `output` and `cleanup` fields carry the same authoritative report, including whether verification ran and counts for verified removed paths, verified absent paths, and removed receipts.
 
 ## Adding an action
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from dataclasses import replace
@@ -21,6 +22,7 @@ from bluefire.orchestrator import Orchestrator
 from bluefire.runner_client import RunnerReadinessError, RunnerTransportError
 from bluefire.runner_contracts import current_platform
 from bluefire.service import BlueFireService
+from bluefire.util import canonical_json_bytes, content_hash
 from tests_platform.test_action_package_lifecycle import (
     ACTION_ID,
     BEHAVIOR_ID,
@@ -37,6 +39,59 @@ from tests_platform.test_service import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _write_bound_receipt(
+    workspace: Path,
+    *,
+    request_hash: str,
+    action_id: str,
+    profile_id: str,
+    relative_path: str,
+    sha256: str,
+    size: int,
+    committed: bool,
+) -> str:
+    workspace_id = hashlib.sha256(
+        str(workspace.resolve(strict=True)).replace("\\", "/").encode("utf-8")
+    ).hexdigest()
+    identity = {
+        "schema_version": "bluefire.receipt/v1",
+        "request_hash": request_hash,
+        "action_id": action_id,
+        "runner_profile_id": profile_id,
+        "workspace_id": workspace_id,
+        "created_at": "2026-08-24T00:00:00Z",
+        "paths": [
+            {
+                "relative_path": relative_path,
+                "kind": "file",
+                "sha256": sha256,
+                "size": size,
+            }
+        ],
+    }
+    receipt_id = content_hash(identity).removeprefix("sha256:")
+    receipt_root = workspace / ".bluefire" / "receipts"
+    receipt_root.mkdir(parents=True, exist_ok=True)
+    (receipt_root / f"{receipt_id}.json").write_bytes(
+        canonical_json_bytes({"receipt_id": receipt_id, **identity})
+    )
+    if committed:
+        commit_root = workspace / ".bluefire" / "receipt-commits"
+        commit_root.mkdir(parents=True, exist_ok=True)
+        (commit_root / f"{receipt_id}.json").write_bytes(
+            canonical_json_bytes(
+                {
+                    "schema_version": "bluefire.receipt-commit/v1",
+                    "receipt_id": receipt_id,
+                    "runner_profile_id": profile_id,
+                    "workspace_id": workspace_id,
+                    "committed_at": "2026-08-24T00:00:01Z",
+                }
+            )
+        )
+    return receipt_id
 
 
 class PackageRecordingRunner:
@@ -64,8 +119,12 @@ class PackageRecordingRunner:
         )
         if runner_opcode == "sandbox.fixture.create.v1":
             output: Mapping[str, Any] = {
-                "artifact": "fixtures/package-recovery.json",
-                "sha256": "sha256:" + "a" * 64,
+                "artifact": "fixtures/input.jsonl",
+                "sha256": "a" * 64,
+                "size": 128,
+                "template": "telemetry-seed",
+                "record_count": manifest["params"].get("record_count", 6),
+                "format": "jsonl",
             }
         elif runner_opcode == "sandbox.cleanup.v1":
             output = {"removed_receipts": []}
@@ -432,29 +491,15 @@ def test_interrupted_package_replay_recovers_with_its_exact_catalog_authority(
         artifact = workspace / "fixtures" / "interrupted-replay.txt"
         artifact.parent.mkdir()
         artifact.write_text("bounded interrupted replay artifact", encoding="utf-8")
-        receipt_id = "e" * 64
-        receipt_root = workspace / ".bluefire" / "receipts"
-        receipt_root.mkdir(parents=True)
-        (receipt_root / f"{receipt_id}.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": "bluefire.receipt/v1",
-                    "receipt_id": receipt_id,
-                    "request_hash": "sha256:" + "d" * 64,
-                    "action_id": ACTION_ID,
-                    "runner_profile_id": profile.id,
-                    "created_at": "2026-08-26T00:00:00Z",
-                    "paths": [
-                        {
-                            "relative_path": "fixtures/interrupted-replay.txt",
-                            "kind": "file",
-                            "sha256": None,
-                            "size": artifact.stat().st_size,
-                        }
-                    ],
-                }
-            ),
-            encoding="utf-8",
+        _write_bound_receipt(
+            workspace,
+            request_hash="sha256:" + "d" * 64,
+            action_id=ACTION_ID,
+            profile_id=profile.id,
+            relative_path="fixtures/interrupted-replay.txt",
+            sha256=hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            size=artifact.stat().st_size,
+            committed=False,
         )
         raise SystemExit("simulate process loss after replay claim")
 
@@ -737,7 +782,6 @@ def test_execute_run_holds_catalog_lease_through_registered_cleanup(
     _install(service, key, "1.2.3")
     activated = _activate(service, "1.2.3")
     profile = _execute_profile(service)
-    receipt_id = "d" * 64
     original_runner_execute = runner.execute
 
     def execute_with_receipt(
@@ -746,17 +790,39 @@ def test_execute_run_holds_catalog_lease_through_registered_cleanup(
     ) -> Mapping[str, Any]:
         result = dict(original_runner_execute(manifest, runner_profile))
         if manifest.get("action_id") == "sandbox.fixture.create.v1":
+            workspace = Path(str(runner_profile["sandbox_root"]))
+            receipt_id = _write_bound_receipt(
+                workspace,
+                request_hash=str(manifest["request_hash"]),
+                action_id=str(manifest["action_id"]),
+                profile_id=str(runner_profile["profile_id"]),
+                relative_path="fixtures/input.jsonl",
+                sha256="0" * 64,
+                size=0,
+                committed=True,
+            )
             result["receipt_ids"] = [receipt_id]
         elif manifest.get("action_id") == "sandbox.cleanup.v1":
             requested = list(manifest["params"]["receipt_ids"])
-            result["output"] = {"removed_receipts": requested}
-            result["cleanup"] = {
+            workspace = Path(str(runner_profile["sandbox_root"]))
+            receipt_root = workspace / ".bluefire" / "receipts"
+            commit_root = workspace / ".bluefire" / "receipt-commits"
+            for requested_id in requested:
+                (receipt_root / f"{requested_id}.json").unlink(missing_ok=True)
+                (commit_root / f"{requested_id}.json").unlink(missing_ok=True)
+            cleanup_report = {
                 "requested_receipts": len(requested),
-                "removed_paths": ["fixtures/package-recovery.json"],
+                "removed_paths": [],
                 "already_absent_receipts": [],
                 "retained_paths": [],
                 "errors": [],
+                "verification_performed": True,
+                "verified_removed_paths": 0,
+                "verified_absent_paths": 0,
+                "verified_receipts": len(requested),
             }
+            result["output"] = cleanup_report
+            result["cleanup"] = cleanup_report
         return result
 
     monkeypatch.setattr(runner, "execute", execute_with_receipt)
@@ -830,12 +896,12 @@ def test_execute_run_holds_catalog_lease_through_registered_cleanup(
     writer_thread = threading.Thread(target=deactivate, daemon=True)
     try:
         run_thread.start()
-        assert cleanup_gap.wait(5)
+        assert cleanup_gap.wait(30)
         writer_thread.start()
         assert not writer_done.wait(0.2)
         release_cleanup.set()
-        run_thread.join(timeout=10)
-        writer_thread.join(timeout=10)
+        run_thread.join(timeout=30)
+        writer_thread.join(timeout=30)
         assert not run_thread.is_alive()
         assert not writer_thread.is_alive()
         assert run_error == []

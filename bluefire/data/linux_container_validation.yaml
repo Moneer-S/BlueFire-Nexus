@@ -47,8 +47,6 @@ steps:
     behavior_id: sandbox.discovery.list.v1
     alternates:
       - sandbox.discovery.metadata.v1
-    parameters:
-      record_limit: 30
     inputs:
       fixture:
         from_step: transform_fixture

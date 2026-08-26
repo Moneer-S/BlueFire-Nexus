@@ -3,7 +3,7 @@ items:
   - schema_version: bluefire.behavior.v1
     id: sandbox.fixture.create.v1
     title: Create deterministic fixture
-    purpose: Prepare bounded synthetic records in a runner-owned sandbox workspace.
+    purpose: Prepare 1..100 exact deterministic JSONL records at the fixed runner-owned fixtures/input.jsonl path.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -20,7 +20,7 @@ items:
         default: 6
         minimum: 1
         maximum: 100
-        description: Number of synthetic records to create.
+        description: Number of exact synthetic JSONL records to create at fixtures/input.jsonl.
     simulation_id: simulation.sandbox.fixture.create.v1
     action_ids: [sandbox.fixture.create.v1]
     telemetry: [sandbox.fixture.created]
@@ -36,7 +36,7 @@ items:
   - schema_version: bluefire.behavior.v1
     id: sandbox.fixture.transform.v1
     title: Transform deterministic fixture
-    purpose: Normalize and redact the synthetic fixture inside its sandbox workspace.
+    purpose: Validate and canonicalize the exact synthetic fixture schema, optionally replacing every value with the public synthetic-redacted placeholder.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -52,7 +52,7 @@ items:
       - name: redact_values
         type: boolean
         default: true
-        description: Replace fixture values with deterministic placeholders.
+        description: When true, replace every accepted fixture value with the fixed public synthetic-redacted placeholder.
     simulation_id: simulation.sandbox.fixture.transform.v1
     action_ids: [sandbox.fixture.transform.v1]
     telemetry: [sandbox.fixture.transformed]
@@ -62,8 +62,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.discovery.list.v1
-    title: List fixture records
-    purpose: Enumerate record metadata from a typed sandbox fixture artifact.
+    title: List exact fixture artifact
+    purpose: Verify and describe the exact typed sandbox fixture without enumerating siblings or contents.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -76,24 +76,18 @@ items:
       - name: records
         type: artifact.sandbox.discovery.records.v1
         multiple: true
-    parameters: &discovery_parameters
-      - name: record_limit
-        type: integer
-        default: 25
-        minimum: 1
-        maximum: 100
-        description: Maximum number of fixture records returned.
+    parameters: []
     simulation_id: simulation.sandbox.discovery.list.v1
     action_ids: [sandbox.discovery.list.v1]
     telemetry: [sandbox.discovery.listed]
-    detection_hints: [Record enumeration is confined to the bound fixture artifact.]
+    detection_hints: [Evidence contains one metadata record for the exact bound fixture; no sibling or content enumeration occurs.]
     provenance: *authored
-    limitations: [Does not enumerate the host filesystem.]
+    limitations: [Does not enumerate sibling paths, the host filesystem, or fixture contents.]
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.discovery.metadata.v1
-    title: Inspect fixture metadata
-    purpose: Produce discovery records through a compatible metadata-oriented strategy.
+    title: Inspect exact fixture metadata
+    purpose: Produce the same exact-file discovery record through a compatible metadata-oriented strategy.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -106,13 +100,13 @@ items:
       - name: records
         type: artifact.sandbox.discovery.records.v1
         multiple: true
-    parameters: *discovery_parameters
+    parameters: []
     simulation_id: simulation.sandbox.discovery.metadata.v1
     action_ids: [sandbox.discovery.metadata.v1]
     telemetry: [sandbox.discovery.metadata_inspected]
-    detection_hints: [Metadata inspection is confined to the bound fixture artifact.]
+    detection_hints: [Evidence contains one metadata record for the exact bound fixture without opening or hashing its contents.]
     provenance: *authored
-    limitations: [Compatible alternative to listing; it does not inspect host metadata.]
+    limitations: [Compatible exact-file alternative to listing; it does not inspect siblings, host metadata, or fixture contents.]
 
   - schema_version: bluefire.behavior.v1
     id: endpoint.discovery.system.v1
@@ -230,7 +224,7 @@ items:
   - schema_version: bluefire.behavior.v1
     id: sandbox.collection.stage.v1
     title: Stage selected fixture records
-    purpose: Package typed discovery records inside the runner-owned workspace.
+    purpose: Validate exactly one typed discovery record and create one deterministic JSON or JSONL bundle, failing before any write on input error.
     execution_state: action
     safety_tier: controlled
     platforms: [windows, linux, macos]
@@ -248,13 +242,13 @@ items:
         type: string
         default: jsonl
         enum: [jsonl, json]
-        description: Deterministic representation used for the fixture bundle.
+        description: Deterministic JSONL or JSON representation for the single validated fixture bundle.
     simulation_id: simulation.sandbox.collection.stage.v1
     action_ids: [sandbox.collection.stage.v1]
     telemetry: [sandbox.collection.staged]
     detection_hints: [Staging should link each output hash to its discovery-record parents.]
     provenance: *authored
-    limitations: [Accepts only typed synthetic discovery records.]
+    limitations: [Accepts exactly one bound regular-file fixture record and never leaves a partial bundle after input failure.]
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.network.loopback.v1
@@ -287,8 +281,8 @@ items:
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.export.local.v1
-    title: Export bundle to approved local storage
-    purpose: Preserve a synthetic bundle locally when the network step is blocked.
+    title: Create a temporary policy-labelled local copy
+    purpose: Create a temporary synthetic bundle copy at a fixed runner-owned ephemeral or review path; normal cleanup removes both labels.
     execution_state: action
     safety_tier: controlled
     platforms: [windows, linux, macos]
@@ -305,18 +299,18 @@ items:
         type: string
         default: ephemeral
         enum: [ephemeral, review]
-        description: Policy label, not a filesystem path.
+        description: Selects the temporary ephemeral or review path; it is a policy label, not a preservation promise or caller path.
     simulation_id: simulation.sandbox.export.local.v1
     action_ids: [sandbox.export.local.v1]
     telemetry: [sandbox.export.local_completed]
-    detection_hints: [Local export evidence should record the policy decision and bundle hash.]
+    detection_hints: [Local-copy evidence should record the temporary policy label, bundle hash, and cleanup receipt.]
     provenance: *authored
-    limitations: [The runner chooses the approved export location; no path is accepted.]
+    limitations: [The runner chooses the fixed local path; neither label survives normal cleanup and no caller path is accepted.]
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.cleanup.v1
     title: Clean runner-owned workspace
-    purpose: Remove temporary fixture artifacts and emit a cleanup receipt.
+    purpose: Quarantine, revalidate, and remove receipt-bound temporary artifacts, then emit an authoritative verification report.
     execution_state: action
     safety_tier: safe
     platforms: [windows, linux, macos]
@@ -332,13 +326,14 @@ items:
       - name: verify_removal
         type: boolean
         default: true
-        description: Ask the runner to verify cleanup within its owned workspace.
+        enum: [true]
+        description: Require the runner to verify receipt and path removal and report authoritative verification counters.
     simulation_id: simulation.sandbox.cleanup.v1
     action_ids: [sandbox.cleanup.v1]
     telemetry: [sandbox.cleanup.completed]
-    detection_hints: [Cleanup evidence should distinguish requested, completed, and partial states.]
+    detection_hints: [Cleanup evidence should include the authoritative requested, removed, absent, retained, error, and verification fields.]
     provenance: *authored
-    limitations: [Cannot name or remove paths outside the runner-owned workspace.]
+    limitations: [Cannot name arbitrary paths; a public-path replacement is left untouched and makes cleanup fail visibly.]
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.restricted.persistence-marker.v1

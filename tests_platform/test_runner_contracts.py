@@ -203,8 +203,12 @@ def test_execution_manifest_exactly_binds_profile_approval_and_hash(tmp_path: Pa
         behavior_id=action.id,
         action=action,
         runner_profile=runner_profile,
-        params={"path": "fixtures/input.txt", "content_template": "telemetry-seed"},
-        filesystem_scope=("fixtures/input.txt",),
+        params={
+            "path": "fixtures/input.jsonl",
+            "content_template": "telemetry-seed",
+            "record_count": 6,
+        },
+        filesystem_scope=("fixtures/input.jsonl",),
         evidence_refs=("evidence-parent",),
         approval_record={
             "approved_by": "operator@example.test",
@@ -251,7 +255,7 @@ def test_execution_manifest_exactly_binds_profile_approval_and_hash(tmp_path: Pa
     assert manifest["evidence_refs"] == ["evidence-parent"]
     assert manifest["limits"]["timeout_ms"] == 1_234
     assert manifest["target_scope"] == {
-        "filesystem": ["fixtures/input.txt"],
+        "filesystem": ["fixtures/input.jsonl"],
         "network": [],
     }
     approval = manifest["approval"]
@@ -443,11 +447,11 @@ def test_manifest_timestamps_match_rust_chrono_hash_normalization(tmp_path: Path
         action=action,
         runner_profile=runner_profile,
         params={
-            "input": "fixtures/input.txt",
-            "output": "fixtures/transformed.txt",
-            "transform": "uppercase-ascii",
+            "input": "fixtures/input.jsonl",
+            "output": "fixtures/transformed.jsonl",
+            "redact_values": True,
         },
-        filesystem_scope=("fixtures/input.txt", "fixtures/transformed.txt"),
+        filesystem_scope=("fixtures/input.jsonl", "fixtures/transformed.jsonl"),
         approval_record={
             "approved_by": "operator@example.test",
             "approved_at": "2026-08-23T07:00:00.123000-05:00",

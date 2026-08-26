@@ -58,9 +58,57 @@ impl TempDir {
     }
 }
 
+fn assert_no_workspace_artifacts(root: &Path) {
+    for entry in fs::read_dir(root).unwrap() {
+        let entry = entry.unwrap();
+        assert_eq!(
+            entry.file_name().to_string_lossy(),
+            ".bluefire",
+            "unexpected workspace artifact remained at {}",
+            entry.path().display()
+        );
+        let metadata = fs::symlink_metadata(entry.path()).unwrap();
+        assert!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "runner state is not a real directory"
+        );
+        for child in fs::read_dir(entry.path()).unwrap() {
+            let child = child.unwrap();
+            let name = child.file_name().to_string_lossy().into_owned();
+            assert!(
+                matches!(name.as_str(), "receipts" | "receipt-commits" | "staging"),
+                "unexpected runner state entry remained at {}",
+                child.path().display()
+            );
+            let metadata = fs::symlink_metadata(child.path()).unwrap();
+            assert!(
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "runner state child is not a real directory: {}",
+                child.path().display()
+            );
+            assert!(
+                fs::read_dir(child.path()).unwrap().next().is_none(),
+                "runner state child retained a file: {}",
+                child.path().display()
+            );
+        }
+    }
+}
+
 impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn directory_symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(target, link)
     }
 }
 
@@ -166,7 +214,7 @@ fn create_fixture(_root: &TempDir, profile: &RunnerProfile, path: &str) -> TaskR
     let request = manifest(
         profile,
         "sandbox.fixture.create.v1",
-        json!({"path": path, "content_template": "telemetry-seed"}),
+        json!({"path": path, "content_template": "telemetry-seed", "record_count": 1}),
     );
     runner().execute(request, profile.clone())
 }
@@ -213,6 +261,52 @@ fn valid_fixture_has_structured_provenance_and_receipt() {
 }
 
 #[test]
+fn fixture_record_count_is_bounded_and_creates_exact_deterministic_jsonl_records() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let result = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.fixture.create.v1",
+            json!({
+                "path": "fixtures/three.jsonl",
+                "content_template": "telemetry-seed",
+                "record_count": 3
+            }),
+        ),
+        profile.clone(),
+    );
+    assert_eq!(result.status, TaskStatus::Success);
+    assert_eq!(result.output["record_count"], 3);
+    assert_eq!(result.output["format"], "jsonl");
+    let records = fs::read_to_string(root.path().join("fixtures/three.jsonl")).unwrap();
+    let parsed = records
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(parsed.len(), 3);
+    assert_eq!(parsed[0]["record_id"], "synthetic-001");
+    assert_eq!(parsed[2]["value"], "telemetry-value-003");
+
+    for (record_count, path) in [(0, "fixtures/zero.jsonl"), (101, "fixtures/too-many.jsonl")] {
+        let blocked = runner().execute(
+            manifest(
+                &profile,
+                "sandbox.fixture.create.v1",
+                json!({
+                    "path": path,
+                    "content_template": "telemetry-seed",
+                    "record_count": record_count
+                }),
+            ),
+            profile.clone(),
+        );
+        assert_eq!(blocked.status, TaskStatus::ControlBlocked);
+        assert!(!root.path().join(path).exists());
+    }
+}
+
+#[test]
 fn simulate_unknown_action_and_unknown_parameter_never_execute() {
     let root = TempDir::new().unwrap();
     let profile = profile(&root, Vec::new());
@@ -220,7 +314,7 @@ fn simulate_unknown_action_and_unknown_parameter_never_execute() {
     let mut simulate = manifest(
         &profile,
         "sandbox.fixture.create.v1",
-        json!({"path": "simulate.txt", "content_template": "empty"}),
+        json!({"path": "simulate.txt", "content_template": "empty", "record_count": 1}),
     );
     simulate.mode = RunMode::Simulate;
     seal_manifest(&mut simulate);
@@ -231,7 +325,7 @@ fn simulate_unknown_action_and_unknown_parameter_never_execute() {
     let mut unknown = manifest(
         &profile,
         "sandbox.fixture.create.v1",
-        json!({"path": "unknown.txt", "content_template": "empty"}),
+        json!({"path": "unknown.txt", "content_template": "empty", "record_count": 1}),
     );
     unknown.action_id = "sandbox.not-registered.v1".to_string();
     unknown.behavior_id = "behavior.sandbox.unknown.v1".to_string();
@@ -247,6 +341,7 @@ fn simulate_unknown_action_and_unknown_parameter_never_execute() {
         json!({
             "path": "command.txt",
             "content_template": "empty",
+            "record_count": 1,
             "command": "whoami"
         }),
     );
@@ -262,7 +357,7 @@ fn platform_capability_tier_allowlist_and_control_block_are_authoritative() {
     let base_manifest = manifest(
         &base_profile,
         "sandbox.fixture.create.v1",
-        json!({"path": "blocked.txt", "content_template": "empty"}),
+        json!({"path": "blocked.txt", "content_template": "empty", "record_count": 1}),
     );
 
     let mut wrong_platform = base_manifest.clone();
@@ -346,7 +441,7 @@ fn target_scope_path_traversal_and_resource_expansion_are_blocked() {
     let mut expanded_scope = manifest(
         &profile,
         "sandbox.fixture.create.v1",
-        json!({"path": "approved/a.txt", "content_template": "empty"}),
+        json!({"path": "approved/a.txt", "content_template": "empty", "record_count": 1}),
     );
     expanded_scope.target_scope.filesystem = vec![".".to_string()];
     seal_manifest(&mut expanded_scope);
@@ -358,7 +453,7 @@ fn target_scope_path_traversal_and_resource_expansion_are_blocked() {
     let mut traversal = manifest(
         &profile,
         "sandbox.fixture.create.v1",
-        json!({"path": "../escape.txt", "content_template": "empty"}),
+        json!({"path": "../escape.txt", "content_template": "empty", "record_count": 1}),
     );
     traversal.target_scope.filesystem = vec!["approved".to_string()];
     traversal.limits.timeout_ms = 100;
@@ -371,7 +466,7 @@ fn target_scope_path_traversal_and_resource_expansion_are_blocked() {
     let mut timeout = manifest(
         &profile,
         "sandbox.fixture.create.v1",
-        json!({"path": "approved/timeout.txt", "content_template": "empty"}),
+        json!({"path": "approved/timeout.txt", "content_template": "empty", "record_count": 1}),
     );
     timeout.limits.timeout_ms = 101;
     seal_manifest(&mut timeout);
@@ -392,7 +487,7 @@ fn approval_is_bound_to_the_normalized_request() {
     let request = manifest(
         &profile,
         "sandbox.fixture.create.v1",
-        json!({"path": "approved.txt", "content_template": "empty"}),
+        json!({"path": "approved.txt", "content_template": "empty", "record_count": 1}),
     );
     assert_eq!(
         runner().execute(request.clone(), profile.clone()).status,
@@ -455,7 +550,7 @@ fn fixed_transform_is_in_process_and_has_no_caller_executable() {
         json!({
             "input": "input.txt",
             "output": "output.txt",
-            "transform": "uppercase-ascii"
+            "redact_values": true
         }),
     );
     seal_manifest(&mut request);
@@ -464,10 +559,159 @@ fn fixed_transform_is_in_process_and_has_no_caller_executable() {
     assert!(result.stdout.text.is_empty());
     assert_eq!(
         result.output["implementation"],
-        "in_process_reviewed_transform"
+        "in_process_reviewed_jsonl_transform"
     );
     let bytes = fs::read(root.path().join("output.txt")).unwrap();
-    assert_eq!(bytes, b"BLUEFIRE-FIXTURE-V1\nKIND=TELEMETRY-SEED\n");
+    assert_eq!(
+        bytes,
+        b"{\"record_id\":\"synthetic-001\",\"synthetic\":true,\"template\":\"telemetry-seed\",\"value\":\"synthetic-redacted\"}\n"
+    );
+}
+
+#[test]
+fn fixed_transform_false_canonicalizes_and_preserves_synthetic_values() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    assert_eq!(
+        create_fixture(&root, &profile, "input.jsonl").status,
+        TaskStatus::Success
+    );
+    let original = fs::read(root.path().join("input.jsonl")).unwrap();
+    let result = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.fixture.transform.v1",
+            json!({
+                "input": "input.jsonl",
+                "output": "preserved.jsonl",
+                "redact_values": false
+            }),
+        ),
+        profile,
+    );
+    assert_eq!(result.status, TaskStatus::Success);
+    assert_eq!(result.output["redact_values"], false);
+    assert_eq!(result.output["redacted_value_count"], 0);
+    assert_eq!(
+        fs::read(root.path().join("preserved.jsonl")).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn transform_rejects_non_generated_values_and_misaligned_record_ids_before_writing() {
+    for (name, bytes) in [
+        (
+            "malicious-value",
+            b"{\"record_id\":\"synthetic-001\",\"synthetic\":true,\"template\":\"telemetry-seed\",\"value\":\"REAL_SECRET\"}\n".as_slice(),
+        ),
+        (
+            "misaligned-id",
+            b"{\"record_id\":\"synthetic-100\",\"synthetic\":true,\"template\":\"telemetry-seed\",\"value\":\"telemetry-value-100\"}\n".as_slice(),
+        ),
+    ] {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("input.jsonl"), bytes).unwrap();
+        let profile = profile(&root, Vec::new());
+        let result = runner().execute(
+            manifest(
+                &profile,
+                "sandbox.fixture.transform.v1",
+                json!({
+                    "input": "input.jsonl",
+                    "output": format!("{name}.jsonl"),
+                    "redact_values": true
+                }),
+            ),
+            profile,
+        );
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert!(!root.path().join(format!("{name}.jsonl")).exists());
+        assert!(result.receipt_ids.is_empty());
+    }
+}
+
+#[test]
+fn transform_and_collection_reject_mixed_fixture_identity_before_writing() {
+    for (name, bytes) in [
+        (
+            "mixed-template",
+            concat!(
+                "{\"record_id\":\"synthetic-001\",\"synthetic\":true,\"template\":\"telemetry-seed\",\"value\":\"telemetry-value-001\"}\n",
+                "{\"record_id\":\"synthetic-002\",\"synthetic\":true,\"template\":\"harmless-document\",\"value\":\"document-value-002\"}\n"
+            ),
+        ),
+        (
+            "mixed-redaction",
+            concat!(
+                "{\"record_id\":\"synthetic-001\",\"synthetic\":true,\"template\":\"telemetry-seed\",\"value\":\"telemetry-value-001\"}\n",
+                "{\"record_id\":\"synthetic-002\",\"synthetic\":true,\"template\":\"telemetry-seed\",\"value\":\"synthetic-redacted\"}\n"
+            ),
+        ),
+    ] {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("input.jsonl"), bytes).unwrap();
+        let profile = profile(&root, Vec::new());
+        let transformed = runner().execute(
+            manifest(
+                &profile,
+                "sandbox.fixture.transform.v1",
+                json!({
+                    "input": "input.jsonl",
+                    "output": format!("{name}-transform.jsonl"),
+                    "redact_values": true
+                }),
+            ),
+            profile.clone(),
+        );
+        assert_eq!(transformed.status, TaskStatus::Failed);
+        assert!(!root
+            .path()
+            .join(format!("{name}-transform.jsonl"))
+            .exists());
+
+        let collected = runner().execute(
+            manifest(
+                &profile,
+                "sandbox.collection.stage.v1",
+                json!({
+                    "inputs": ["input.jsonl"],
+                    "destination_directory": format!("{name}-stage"),
+                    "bundle_format": "jsonl"
+                }),
+            ),
+            profile,
+        );
+        assert_eq!(collected.status, TaskStatus::Failed);
+        assert!(!root
+            .path()
+            .join(format!("{name}-stage/bundle.jsonl"))
+            .exists());
+    }
+}
+
+#[test]
+fn transform_blocks_more_than_one_hundred_records_before_writing() {
+    let root = TempDir::new().unwrap();
+    let mut bytes = String::new();
+    for index in 1..=101 {
+        bytes.push_str(&format!(
+            "{{\"record_id\":\"synthetic-{index:03}\",\"synthetic\":true,\"template\":\"telemetry-seed\",\"value\":\"telemetry-value-{index:03}\"}}\n"
+        ));
+    }
+    fs::write(root.path().join("input.jsonl"), bytes).unwrap();
+    let profile = profile(&root, Vec::new());
+    let result = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.fixture.transform.v1",
+            json!({"input": "input.jsonl", "output": "output.jsonl", "redact_values": true}),
+        ),
+        profile,
+    );
+    assert_eq!(result.status, TaskStatus::ControlBlocked);
+    assert!(!root.path().join("output.jsonl").exists());
+    assert!(result.receipt_ids.is_empty());
 }
 
 #[test]
@@ -489,26 +733,126 @@ fn legacy_private_transform_subcommand_is_not_an_invokable_bypass() {
 }
 
 #[test]
-fn collection_partial_result_retains_a_cleanup_receipt() {
+fn collection_invalid_input_fails_closed_without_artifact_or_receipt() {
     let root = TempDir::new().unwrap();
     let profile = profile(&root, Vec::new());
     assert_eq!(
-        create_fixture(&root, &profile, "input.txt").status,
+        create_fixture(&root, &profile, "input.jsonl").status,
         TaskStatus::Success
     );
+    fs::write(
+        root.path().join("input.jsonl"),
+        b"{\"record_id\":\"synthetic-001\",\"synthetic\":true,\"template\":\"telemetry-seed\",\"value\":\"not-generated\"}\n",
+    )
+    .unwrap();
     let request = manifest(
         &profile,
         "sandbox.collection.stage.v1",
         json!({
-            "inputs": ["input.txt", "missing.txt"],
-            "destination_directory": "stage"
+            "inputs": ["input.jsonl"],
+            "destination_directory": "stage",
+            "bundle_format": "jsonl"
         }),
     );
     let result = runner().execute(request, profile);
-    assert_eq!(result.status, TaskStatus::Partial);
-    assert_eq!(result.receipt_ids.len(), 1);
-    assert!(root.path().join("stage/000-input.txt").is_file());
-    assert_eq!(result.evidence[0].kind, EvidenceKind::Executed);
+    assert_eq!(result.status, TaskStatus::Failed);
+    assert!(result.receipt_ids.is_empty());
+    assert!(!root.path().join("stage/bundle.jsonl").exists());
+}
+
+#[test]
+fn exact_metadata_and_collection_materialize_each_bundle_format() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    assert_eq!(
+        create_fixture(&root, &profile, "fixtures/b.jsonl").status,
+        TaskStatus::Success
+    );
+    assert_eq!(
+        create_fixture(&root, &profile, "fixtures/a.jsonl").status,
+        TaskStatus::Success
+    );
+
+    let metadata = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.discovery.metadata.v1",
+            json!({"path": "fixtures/a.jsonl"}),
+        ),
+        profile.clone(),
+    );
+    assert_eq!(metadata.status, TaskStatus::Success);
+    assert_eq!(metadata.output["returned_entries"], 1);
+    assert_eq!(metadata.output["entries"][0]["path"], "fixtures/a.jsonl");
+
+    let jsonl = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.collection.stage.v1",
+            json!({
+                "inputs": ["fixtures/a.jsonl"],
+                "destination_directory": "stage-jsonl",
+                "bundle_format": "jsonl"
+            }),
+        ),
+        profile.clone(),
+    );
+    assert_eq!(jsonl.status, TaskStatus::Success);
+    assert_eq!(jsonl.output["artifact"], "stage-jsonl/bundle.jsonl");
+    assert_eq!(jsonl.output["record_count"], 1);
+    assert_eq!(jsonl.output["complete"], true);
+    assert_eq!(
+        fs::read_to_string(root.path().join("stage-jsonl/bundle.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+
+    let json = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.collection.stage.v1",
+            json!({
+                "inputs": ["fixtures/b.jsonl"],
+                "destination_directory": "stage-json",
+                "bundle_format": "json"
+            }),
+        ),
+        profile.clone(),
+    );
+    assert_eq!(json.status, TaskStatus::Success);
+    assert_eq!(json.output["artifact"], "stage-json/bundle.json");
+    assert_eq!(json.output["complete"], true);
+    let document: Value =
+        serde_json::from_slice(&fs::read(root.path().join("stage-json/bundle.json")).unwrap())
+            .unwrap();
+    assert_eq!(document["schema_version"], "bluefire.synthetic-bundle.v1");
+    assert_eq!(document["records"].as_array().unwrap().len(), 1);
+
+    for label in ["ephemeral", "review"] {
+        let exported = runner().execute(
+            manifest(
+                &profile,
+                "sandbox.export.local.v1",
+                json!({
+                    "source": "stage-jsonl/bundle.jsonl",
+                    "retention_label": label
+                }),
+            ),
+            profile.clone(),
+        );
+        assert_eq!(exported.status, TaskStatus::Success);
+        assert_eq!(exported.output["retention_label"], label);
+        assert_eq!(
+            exported.output["artifact"],
+            format!("exports/{label}/bundle.bin")
+        );
+        assert!(root
+            .path()
+            .join(format!("exports/{label}/bundle.bin"))
+            .is_file());
+    }
 }
 
 #[test]
@@ -627,7 +971,7 @@ fn receipt_cleanup_is_idempotent_and_refuses_tampered_files() {
         json!({"receipt_ids": [receipt.clone()]}),
     );
     let result = runner().execute(cleanup.clone(), profile.clone());
-    assert_eq!(result.status, TaskStatus::Success);
+    assert_eq!(result.status, TaskStatus::Success, "{result:#?}");
     assert!(!root.path().join("owned.txt").exists());
     assert_eq!(
         runner().execute(cleanup, profile.clone()).status,
@@ -684,6 +1028,253 @@ fn cleanup_refuses_a_receipt_whose_owned_path_metadata_was_rewritten() {
 }
 
 #[test]
+fn cleanup_refuses_missing_receipt_intent_when_durable_commit_remains() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let created = create_fixture(&root, &profile, "orphan-guard.jsonl");
+    assert_eq!(created.status, TaskStatus::Success);
+    let receipt_id = created.receipt_ids[0].clone();
+    let receipt_path = root
+        .path()
+        .join(".bluefire/receipts")
+        .join(format!("{receipt_id}.json"));
+    let commit_path = root
+        .path()
+        .join(".bluefire/receipt-commits")
+        .join(format!("{receipt_id}.json"));
+    fs::remove_file(receipt_path).unwrap();
+    assert!(commit_path.is_file());
+
+    let result = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.cleanup.v1",
+            json!({"receipt_ids": [receipt_id]}),
+        ),
+        profile,
+    );
+    assert_eq!(result.status, TaskStatus::CleanupFailed);
+    assert!(root.path().join("orphan-guard.jsonl").is_file());
+    assert!(commit_path.is_file());
+    assert_eq!(result.cleanup.as_ref().unwrap().verified_receipts, 0);
+}
+
+#[test]
+fn cleanup_recovers_a_valid_object_left_in_receipt_bound_quarantine() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let relative = "recoverable-quarantine.jsonl";
+    let created = create_fixture(&root, &profile, relative);
+    assert_eq!(created.status, TaskStatus::Success);
+    let receipt_id = created.receipt_ids[0].clone();
+    let quarantine_identity = sha256_hex(format!("{receipt_id}\0{relative}").as_bytes());
+    let quarantine = root
+        .path()
+        .join(".bluefire/staging")
+        .join(format!("cleanup-{quarantine_identity}.quarantine"));
+    fs::rename(root.path().join(relative), &quarantine).unwrap();
+
+    let result = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.cleanup.v1",
+            json!({"receipt_ids": [receipt_id.clone()]}),
+        ),
+        profile,
+    );
+    assert_eq!(result.status, TaskStatus::Success);
+    assert!(!root.path().join(relative).exists());
+    assert!(!quarantine.exists());
+    assert!(!root
+        .path()
+        .join(".bluefire/receipts")
+        .join(format!("{receipt_id}.json"))
+        .exists());
+    assert_eq!(result.cleanup.as_ref().unwrap().verified_receipts, 1);
+}
+
+#[test]
+fn cleanup_restores_a_changed_quarantined_object_and_retains_recovery_evidence() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let relative = "changed-quarantine.jsonl";
+    let created = create_fixture(&root, &profile, relative);
+    assert_eq!(created.status, TaskStatus::Success);
+    let receipt_id = created.receipt_ids[0].clone();
+    let quarantine_identity = sha256_hex(format!("{receipt_id}\0{relative}").as_bytes());
+    let quarantine = root
+        .path()
+        .join(".bluefire/staging")
+        .join(format!("cleanup-{quarantine_identity}.quarantine"));
+    fs::rename(root.path().join(relative), &quarantine).unwrap();
+    fs::write(&quarantine, b"changed after quarantine").unwrap();
+
+    let result = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.cleanup.v1",
+            json!({"receipt_ids": [receipt_id.clone()]}),
+        ),
+        profile,
+    );
+    assert_eq!(result.status, TaskStatus::CleanupFailed);
+    assert_eq!(
+        fs::read(root.path().join(relative)).unwrap(),
+        b"changed after quarantine"
+    );
+    assert!(!quarantine.exists());
+    assert!(root
+        .path()
+        .join(".bluefire/receipts")
+        .join(format!("{receipt_id}.json"))
+        .exists());
+    assert!(root
+        .path()
+        .join(".bluefire/receipt-commits")
+        .join(format!("{receipt_id}.json"))
+        .exists());
+    assert!(result
+        .cleanup
+        .as_ref()
+        .unwrap()
+        .errors
+        .iter()
+        .any(|error| error.contains("restored without overwrite and retained")));
+}
+
+#[test]
+fn cleanup_never_follows_a_replaced_source_parent_to_a_matching_external_file() {
+    let root = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let relative = "replaced-parent/owned.jsonl";
+    let created = create_fixture(&root, &profile, relative);
+    assert_eq!(created.status, TaskStatus::Success);
+    let expected = fs::read(root.path().join(relative)).unwrap();
+
+    fs::remove_file(root.path().join(relative)).unwrap();
+    fs::remove_dir(root.path().join("replaced-parent")).unwrap();
+    fs::write(outside.path().join("owned.jsonl"), &expected).unwrap();
+    if let Err(error) = directory_symlink(outside.path(), &root.path().join("replaced-parent")) {
+        #[cfg(windows)]
+        if error.raw_os_error() == Some(1314) {
+            // Windows hosts without Developer Mode cannot create this attack
+            // fixture. The handle-lock unit test still exercises the Windows
+            // parent-swap defense without requiring symlink privilege.
+            return;
+        }
+        panic!("cannot create source-parent attack link: {error}");
+    }
+
+    let result = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.cleanup.v1",
+            json!({"receipt_ids": created.receipt_ids}),
+        ),
+        profile,
+    );
+    assert_eq!(result.status, TaskStatus::CleanupFailed, "{result:#?}");
+    assert_eq!(
+        fs::read(outside.path().join("owned.jsonl")).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn cleanup_never_follows_a_replaced_staging_parent() {
+    let root = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let created = create_fixture(&root, &profile, "staging-parent-guard.jsonl");
+    assert_eq!(created.status, TaskStatus::Success);
+    let outside_sentinel = outside.path().join("sentinel.bin");
+    fs::write(&outside_sentinel, b"outside-staging-sentinel").unwrap();
+
+    let staging = root.path().join(".bluefire/staging");
+    fs::remove_dir(&staging).unwrap();
+    if let Err(error) = directory_symlink(outside.path(), &staging) {
+        #[cfg(windows)]
+        if error.raw_os_error() == Some(1314) {
+            return;
+        }
+        panic!("cannot create staging-parent attack link: {error}");
+    }
+
+    let result = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.cleanup.v1",
+            json!({"receipt_ids": created.receipt_ids}),
+        ),
+        profile,
+    );
+    assert_eq!(result.status, TaskStatus::CleanupFailed, "{result:#?}");
+    assert_eq!(
+        fs::read(outside_sentinel).unwrap(),
+        b"outside-staging-sentinel"
+    );
+    assert!(root.path().join("staging-parent-guard.jsonl").is_file());
+}
+
+#[test]
+fn receipt_deletion_refuses_unreadable_staging_before_removing_recovery_metadata() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let created = create_fixture(&root, &profile, "staging-guard.jsonl");
+    assert_eq!(created.status, TaskStatus::Success);
+    let receipt_id = created.receipt_ids[0].clone();
+    let staging = root.path().join(".bluefire/staging");
+    fs::remove_dir(&staging).unwrap();
+    fs::write(&staging, b"not a directory").unwrap();
+
+    let safe_root = SafeRoot::open(root.path()).unwrap();
+    assert!(safe_root.delete_receipt(&receipt_id).is_err());
+    assert!(root
+        .path()
+        .join(".bluefire/receipts")
+        .join(format!("{receipt_id}.json"))
+        .exists());
+    assert!(root
+        .path()
+        .join(".bluefire/receipt-commits")
+        .join(format!("{receipt_id}.json"))
+        .exists());
+}
+
+#[test]
+fn receipt_deletion_retains_a_prefix_matching_stage_without_owned_path_proof() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let created = create_fixture(&root, &profile, "retained-unproven-stage.jsonl");
+    assert_eq!(created.status, TaskStatus::Success);
+    let receipt_id = &created.receipt_ids[0];
+    let unproven = root
+        .path()
+        .join(".bluefire/staging")
+        .join(format!("{receipt_id}-{}.stage", "f".repeat(64)));
+    fs::write(&unproven, b"not named by an authenticated owned-path entry").unwrap();
+
+    let safe_root = SafeRoot::open(root.path()).unwrap();
+    safe_root.delete_receipt(receipt_id).unwrap();
+
+    assert_eq!(
+        fs::read(&unproven).unwrap(),
+        b"not named by an authenticated owned-path entry"
+    );
+    assert!(!root
+        .path()
+        .join(".bluefire/receipts")
+        .join(format!("{receipt_id}.json"))
+        .exists());
+    assert!(!root
+        .path()
+        .join(".bluefire/receipt-commits")
+        .join(format!("{receipt_id}.json"))
+        .exists());
+}
+
+#[test]
 fn cleanup_refuses_a_valid_receipt_copied_into_another_workspace() {
     let source_root = TempDir::new().unwrap();
     let source_profile = profile(&source_root, Vec::new());
@@ -732,13 +1323,86 @@ fn cleanup_refuses_a_valid_receipt_copied_into_another_workspace() {
 }
 
 #[test]
+fn cleanup_rejects_a_receipt_missing_its_workspace_identity() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let created = create_fixture(&root, &profile, "missing-workspace.txt");
+    assert_eq!(created.status, TaskStatus::Success);
+    let receipt_id = &created.receipt_ids[0];
+    let receipt_path = root
+        .path()
+        .join(".bluefire/receipts")
+        .join(format!("{receipt_id}.json"));
+    let mut receipt: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    receipt
+        .as_object_mut()
+        .unwrap()
+        .remove("workspace_id")
+        .unwrap();
+    fs::write(&receipt_path, serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
+
+    let cleaned = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.cleanup.v1",
+            json!({"receipt_ids": [receipt_id]}),
+        ),
+        profile,
+    );
+    assert_eq!(cleaned.status, TaskStatus::CleanupFailed);
+    assert!(root.path().join("missing-workspace.txt").exists());
+    assert!(cleaned
+        .cleanup
+        .unwrap()
+        .errors
+        .iter()
+        .any(|error| error.contains("receipt schema is invalid")));
+}
+
+#[test]
+fn receipt_commit_rejects_a_missing_owned_output() {
+    let root = TempDir::new().unwrap();
+    let profile = profile(&root, Vec::new());
+    let request = manifest(
+        &profile,
+        "sandbox.fixture.create.v1",
+        json!({
+            "path": "vanished/output.jsonl",
+            "content_template": "telemetry-seed",
+            "record_count": 1
+        }),
+    );
+    let safe_root = SafeRoot::open(root.path()).unwrap();
+    let bytes = b"owned-before-commit\n";
+    let target = safe_root.prepare_new_file("vanished/output.jsonl").unwrap();
+    let mut owned = vec![owned_file(target.relative.clone(), bytes)];
+    owned.extend(owned_directories(&target.created_directories));
+    let intent = safe_root.begin_receipt(&request, &profile, owned).unwrap();
+    safe_root.write_new(&target, bytes, &intent).unwrap();
+    fs::remove_file(&target.absolute).unwrap();
+
+    let error = safe_root.commit_receipt(&intent, &profile).unwrap_err();
+    assert!(error.contains("receipt-owned path is missing during commit"));
+    assert!(!root
+        .path()
+        .join(".bluefire/receipt-commits")
+        .join(format!("{}.json", intent.id()))
+        .exists());
+    assert!(root
+        .path()
+        .join(".bluefire/receipts")
+        .join(format!("{}.json", intent.id()))
+        .is_file());
+}
+
+#[test]
 fn pending_wal_intent_is_discoverable_and_cleans_a_partially_published_action() {
     let root = TempDir::new().unwrap();
     let profile = profile(&root, Vec::new());
     let request = manifest(
         &profile,
         "sandbox.fixture.create.v1",
-        json!({"path": "partial/first.bin", "content_template": "empty"}),
+        json!({"path": "partial/first.bin", "content_template": "empty", "record_count": 1}),
     );
     let safe_root = SafeRoot::open(root.path()).unwrap();
     let first_bytes = b"first-published-effect";
@@ -786,7 +1450,7 @@ fn pending_wal_intent_is_discoverable_and_cleans_a_partially_published_action() 
         profile,
     );
     assert_eq!(cleaned.status, TaskStatus::Success, "{cleaned:#?}");
-    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+    assert_no_workspace_artifacts(root.path());
 }
 
 #[test]
@@ -796,7 +1460,7 @@ fn pending_wal_cleanup_removes_a_partial_runner_staging_effect() {
     let request = manifest(
         &profile,
         "sandbox.fixture.create.v1",
-        json!({"path": "partial-stage/output.bin", "content_template": "empty"}),
+        json!({"path": "partial-stage/output.bin", "content_template": "empty", "record_count": 1}),
     );
     let safe_root = SafeRoot::open(root.path()).unwrap();
     let bytes = b"complete-intended-content";
@@ -829,7 +1493,7 @@ fn pending_wal_cleanup_removes_a_partial_runner_staging_effect() {
     );
     assert_eq!(cleaned.status, TaskStatus::Success, "{cleaned:#?}");
     assert!(!staging.exists());
-    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+    assert_no_workspace_artifacts(root.path());
 }
 
 #[test]
@@ -852,7 +1516,7 @@ fn cleanup_enforces_receipt_lifo_even_when_the_request_is_oldest_first() {
         profile,
     );
     assert_eq!(cleaned.status, TaskStatus::Success, "{cleaned:#?}");
-    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+    assert_no_workspace_artifacts(root.path());
 }
 
 #[test]
@@ -1195,7 +1859,9 @@ fn loopback_action_uses_only_the_declared_ephemeral_receiver() {
         created.evidence[0].evidence_id
     );
     let received = receiver.join().unwrap();
-    assert!(received.ends_with(b"bluefire-fixture-v1\nkind=telemetry-seed\n"));
+    assert!(received.ends_with(
+        b"{\"record_id\":\"synthetic-001\",\"synthetic\":true,\"template\":\"telemetry-seed\",\"value\":\"telemetry-value-001\"}\n"
+    ));
 }
 
 #[test]
@@ -1510,7 +2176,7 @@ fn disposable_vertical_slice_runs_real_steps_and_cleans_in_reverse_order() {
     let profile = profile(&root, vec![destination.clone()]);
     let mut receipts = Vec::new();
 
-    let created = create_fixture(&root, &profile, "fixtures/input.txt");
+    let created = create_fixture(&root, &profile, "fixtures/input.jsonl");
     assert_eq!(created.status, TaskStatus::Success);
     receipts.extend(created.receipt_ids.clone());
 
@@ -1519,9 +2185,9 @@ fn disposable_vertical_slice_runs_real_steps_and_cleans_in_reverse_order() {
             &profile,
             "sandbox.fixture.transform.v1",
             json!({
-                "input": "fixtures/input.txt",
-                "output": "fixtures/transformed.txt",
-                "transform": "uppercase-ascii"
+                "input": "fixtures/input.jsonl",
+                "output": "fixtures/transformed.jsonl",
+                "redact_values": true
             }),
         ),
         profile.clone(),
@@ -1533,41 +2199,39 @@ fn disposable_vertical_slice_runs_real_steps_and_cleans_in_reverse_order() {
         manifest(
             &profile,
             "sandbox.discovery.list.v1",
-            json!({"path": "fixtures", "max_entries": 10}),
+            json!({"path": "fixtures/transformed.jsonl"}),
         ),
         profile.clone(),
     );
     assert_eq!(listed.status, TaskStatus::Success);
-    assert_eq!(listed.output["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(listed.output["entries"].as_array().unwrap().len(), 1);
 
     let metadata = runner().execute(
         manifest(
             &profile,
             "sandbox.discovery.metadata.v1",
-            json!({"path": "fixtures/transformed.txt"}),
+            json!({"path": "fixtures/transformed.jsonl"}),
         ),
         profile.clone(),
     );
     assert_eq!(metadata.status, TaskStatus::Success);
-    assert!(metadata.output["sha256"].as_str().is_some());
+    assert_eq!(metadata.output["entries"].as_array().unwrap().len(), 1);
 
     let staged = runner().execute(
         manifest(
             &profile,
             "sandbox.collection.stage.v1",
             json!({
-                "inputs": ["fixtures/transformed.txt"],
-                "destination_directory": "staged"
+                "inputs": ["fixtures/transformed.jsonl"],
+                "destination_directory": "staged",
+                "bundle_format": "jsonl"
             }),
         ),
         profile.clone(),
     );
     assert_eq!(staged.status, TaskStatus::Success);
     receipts.extend(staged.receipt_ids.clone());
-    let bundle = staged.output["staged"][0]["artifact"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let bundle = staged.output["artifact"].as_str().unwrap().to_string();
 
     let delivered = execute_authenticated_network(
         manifest(
@@ -1591,8 +2255,8 @@ fn disposable_vertical_slice_runs_real_steps_and_cleans_in_reverse_order() {
             &profile,
             "sandbox.export.local.v1",
             json!({
-                "source": "staged/000-transformed.txt",
-                "destination": "exports/bundle.bin"
+                "source": "staged/bundle.jsonl",
+                "retention_label": "ephemeral"
             }),
         ),
         profile.clone(),
@@ -1612,7 +2276,10 @@ fn disposable_vertical_slice_runs_real_steps_and_cleans_in_reverse_order() {
         profile,
     );
     assert_eq!(cleaned.status, TaskStatus::Success);
-    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+    assert_eq!(cleaned.output["verification_performed"], true);
+    assert!(cleaned.output["verified_removed_paths"].as_u64().unwrap() >= 1);
+    assert!(cleaned.output["verified_receipts"].as_u64().unwrap() >= 1);
+    assert_no_workspace_artifacts(root.path());
 }
 
 #[test]
@@ -1713,7 +2380,7 @@ fn restricted_persistence_marker_is_profile_and_capability_gated_then_cleans() {
         profile,
     );
     assert_eq!(cleaned.status, TaskStatus::Success, "{cleaned:#?}");
-    assert!(fs::read_dir(root.path()).unwrap().next().is_none());
+    assert_no_workspace_artifacts(root.path());
 }
 
 #[test]
@@ -1743,7 +2410,7 @@ fn inventory_and_execute_cli_emit_the_versioned_json_contract() {
     let request = manifest(
         &profile,
         "sandbox.fixture.create.v1",
-        json!({"path": "cli.txt", "content_template": "empty"}),
+        json!({"path": "cli.txt", "content_template": "empty", "record_count": 1}),
     );
     let documents = TempDir::new().unwrap();
     let manifest_path = documents.path().join("manifest.json");

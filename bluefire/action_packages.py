@@ -30,6 +30,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from .contracts import ActionDefinition, BehaviorDefinition, ContractError, ExecutionState
+from .runner_inventory import BUILTIN_RUNNER_ACTION_VERSIONS
 from .util import canonical_json_bytes
 
 
@@ -115,29 +116,11 @@ _FORBIDDEN_EXECUTION_FIELDS = frozenset(
 # These are the immutable v1 identifiers for already reviewed, compiled runner
 # operations. A later product may stop activating one, but removing it from
 # this v1 parser would make historical signed inventory unauditable.
-ALLOWED_PROGRAM_OPCODES = frozenset(
-    {
-        "endpoint.discovery.processes.v1",
-        "endpoint.discovery.system.v1",
-        "sandbox.archive.tar.v1",
-        "sandbox.cleanup.v1",
-        "sandbox.collection.stage.v1",
-        "sandbox.discovery.list.v1",
-        "sandbox.discovery.metadata.v1",
-        "sandbox.discovery.recursive.v1",
-        "sandbox.export.local.v1",
-        "sandbox.fixture.create.v1",
-        "sandbox.fixture.transform.v1",
-        "sandbox.network.loopback.v1",
-        "sandbox.restricted.persistence-marker.v1",
-    }
-)
+ALLOWED_PROGRAM_OPCODES = frozenset(BUILTIN_RUNNER_ACTION_VERSIONS)
 ALLOWED_PROGRAM_ADAPTERS: Mapping[str, frozenset[str]] = MappingProxyType(
     {ACTION_PROGRAM_ADAPTER: ALLOWED_PROGRAM_OPCODES}
 )
-SUPPORTED_RUNNER_ACTION_VERSIONS: Mapping[str, str] = MappingProxyType(
-    {opcode: "1.0.0" for opcode in ALLOWED_PROGRAM_OPCODES}
-)
+SUPPORTED_RUNNER_ACTION_VERSIONS: Mapping[str, str] = BUILTIN_RUNNER_ACTION_VERSIONS
 SUPPORTED_PLATFORMS = frozenset({"linux", "macos", "windows"})
 
 _ALLOWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, frozenset[str] | type[int] | type[bool]]] = (
@@ -155,9 +138,7 @@ _ALLOWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, frozenset[str] | type[int]
             "sandbox.fixture.create.v1": MappingProxyType(
                 {"content_template": frozenset({"telemetry-seed"})}
             ),
-            "sandbox.fixture.transform.v1": MappingProxyType(
-                {"transform": frozenset({"uppercase-ascii"})}
-            ),
+            "sandbox.fixture.transform.v1": MappingProxyType({}),
             "sandbox.network.loopback.v1": MappingProxyType({"method": frozenset({"POST"})}),
             "sandbox.restricted.persistence-marker.v1": MappingProxyType(
                 {"marker_kind": frozenset({"detection-canary"})}

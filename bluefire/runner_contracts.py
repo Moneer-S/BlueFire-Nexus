@@ -87,7 +87,7 @@ _REVIEWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, Any]] = {
     "sandbox.discovery.recursive.v1": {},
     "sandbox.export.local.v1": {},
     "sandbox.fixture.create.v1": {"content_template": "telemetry-seed"},
-    "sandbox.fixture.transform.v1": {"transform": "uppercase-ascii"},
+    "sandbox.fixture.transform.v1": {},
     "sandbox.network.loopback.v1": {"method": "POST"},
     "sandbox.restricted.persistence-marker.v1": {"marker_kind": "detection-canary"},
 }

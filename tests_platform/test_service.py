@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tempfile
@@ -20,6 +21,10 @@ from bluefire.orchestrator import Orchestrator
 from bluefire.runner_bootstrap import RUNNER_ID
 from bluefire.runner_client import RunnerTaskCancelled, RunnerTransportError
 from bluefire.runner_contracts import current_platform
+from bluefire.runner_inventory import (
+    BUILTIN_RUNNER_ACTION_VERSIONS,
+    RUNNER_ACTION_SDK_SCHEMA_VERSION,
+)
 from bluefire.runner_lifecycle import RunnerLifecycleError
 from bluefire.service import BlueFireService
 from bluefire.util import content_hash
@@ -55,8 +60,9 @@ def _ready_inventory(
         "platform": current_platform(),
         "actions": [
             {
+                "schema_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
                 "action_id": action_id,
-                "action_version": "1.0.0",
+                "action_version": BUILTIN_RUNNER_ACTION_VERSIONS[action_id],
                 "readiness": "ready",
             }
             for action_id in sorted(actions or EXECUTE_PROFILE_ACTIONS)
@@ -185,8 +191,16 @@ class CleanupOnlyRecoveryRunner:
     def inventory(self) -> Mapping[str, Any]:
         return {
             "schema_version": "bluefire.runner-inventory.v1",
+            "action_sdk_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
             "receipt_protocol": "bluefire.runner-receipt-wal.v2",
-            "actions": [{"action_id": "sandbox.cleanup.v1", "readiness": "ready"}],
+            "actions": [
+                {
+                    "schema_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
+                    "action_id": "sandbox.cleanup.v1",
+                    "action_version": BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.cleanup.v1"],
+                    "readiness": "ready",
+                }
+            ],
         }
 
     def execute(
@@ -211,6 +225,17 @@ class CleanupOnlyRecoveryRunner:
                     owned_path.rmdir()
                     removed_paths.append(str(owned["relative_path"]))
             receipt_path.unlink()
+        cleanup_report = {
+            "requested_receipts": len(receipt_ids),
+            "removed_paths": removed_paths,
+            "already_absent_receipts": [],
+            "retained_paths": [],
+            "errors": [],
+            "verification_performed": True,
+            "verified_removed_paths": len(removed_paths),
+            "verified_absent_paths": 0,
+            "verified_receipts": len(receipt_ids),
+        }
         return {
             "schema_version": "bluefire.runner-result.v1",
             "request_id": manifest["request_id"],
@@ -224,18 +249,12 @@ class CleanupOnlyRecoveryRunner:
             "policy_digest": profile["policy_digest"],
             "platform": profile["platform"],
             "status": "success",
-            "output": {"removed_receipts": receipt_ids},
+            "output": cleanup_report,
             "stdout": {"bytes": 0, "truncated": False},
             "stderr": {"bytes": 0, "truncated": False},
             "evidence": [{"kind": "restart-cleanup", "status": "success"}],
             "receipt_ids": [],
-            "cleanup": {
-                "requested_receipts": len(receipt_ids),
-                "removed_paths": removed_paths,
-                "already_absent_receipts": [],
-                "retained_paths": [],
-                "errors": [],
-            },
+            "cleanup": cleanup_report,
             "error": None,
             "limitations": [],
         }
@@ -468,27 +487,29 @@ def test_restart_cleanup_uses_exact_bound_workspace_and_audits_run_bundle(
     artifact = workspace / "fixtures" / "interrupted.txt"
     artifact.parent.mkdir()
     artifact.write_text("bounded test artifact", encoding="utf-8")
-    receipt_id = "f" * 64
     receipt_root = workspace / ".bluefire" / "receipts"
     receipt_root.mkdir(parents=True)
-    receipt = {
+    identity = {
         "schema_version": "bluefire.receipt/v1",
-        "receipt_id": receipt_id,
-        "request_hash": "sha256:interrupted",
+        "request_hash": "sha256:" + "1" * 64,
         "action_id": "sandbox.fixture.create.v1",
         "runner_profile_id": profile.id,
+        "workspace_id": hashlib.sha256(
+            str(workspace.resolve(strict=True)).replace("\\", "/").encode("utf-8")
+        ).hexdigest(),
         "created_at": "2026-08-24T00:00:00Z",
         "paths": [
             {
                 "relative_path": "fixtures/interrupted.txt",
                 "kind": "file",
-                "sha256": None,
+                "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
                 "size": artifact.stat().st_size,
             }
         ],
     }
+    receipt_id = content_hash(identity).removeprefix("sha256:")
     (receipt_root / f"{receipt_id}.json").write_text(
-        json.dumps(receipt),
+        json.dumps({"receipt_id": receipt_id, **identity}),
         encoding="utf-8",
     )
     service.close()

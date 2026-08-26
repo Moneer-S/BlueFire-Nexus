@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import time
 from dataclasses import replace
@@ -18,7 +19,12 @@ from bluefire.product_store import ProductStore
 from bluefire.registry import load_builtin_registry
 from bluefire.replay import ReplayRequest, prepare_replay
 from bluefire.run_store import RunStore
-from bluefire.runner_client import RunnerTransportError
+from bluefire.runner_client import RunnerTransportError, canonical_runner_inventory
+from bluefire.runner_inventory import (
+    BUILTIN_RUNNER_ACTION_VERSIONS,
+    RUNNER_ACTION_SDK_SCHEMA_VERSION,
+)
+from bluefire.util import content_hash
 
 ROOT = Path(__file__).resolve().parents[1]
 SCENARIO_PATH = ROOT / "scenarios" / "sandbox_research_chain.yaml"
@@ -48,9 +54,80 @@ def _execute_profile() -> RunnerProfile:
     )
 
 
+def _write_bound_receipt(
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    *,
+    request_hash: str | None = None,
+    action_id: str | None = None,
+    committed: bool = True,
+) -> str:
+    sandbox_root = Path(str(profile["sandbox_root"]))
+    receipt_root = sandbox_root / ".bluefire" / "receipts"
+    receipt_root.mkdir(parents=True, exist_ok=True)
+    workspace_id = hashlib.sha256(
+        str(sandbox_root.resolve(strict=True)).replace("\\", "/").encode("utf-8")
+    ).hexdigest()
+    effective_action_id = action_id or str(manifest["action_id"])
+    params = manifest.get("params")
+    params = params if isinstance(params, Mapping) else {}
+    if effective_action_id == "sandbox.fixture.create.v1":
+        owned_path = str(params.get("path", "fixtures/input.jsonl"))
+    elif effective_action_id == "sandbox.fixture.transform.v1":
+        owned_path = str(params.get("output", "fixtures/transformed.jsonl"))
+    elif effective_action_id == "sandbox.collection.stage.v1":
+        bundle_format = str(params.get("bundle_format", "jsonl"))
+        owned_path = f"staged/bundle.{bundle_format}"
+    elif effective_action_id == "sandbox.export.local.v1":
+        retention_label = str(params.get("retention_label", "ephemeral"))
+        owned_path = f"exports/{retention_label}/bundle.bin"
+    else:
+        owned_path = "fixtures/recovery.jsonl"
+    created_at = "2026-08-24T00:00:00Z"
+    identity = {
+        "schema_version": "bluefire.receipt/v1",
+        "request_hash": request_hash or manifest["request_hash"],
+        "action_id": effective_action_id,
+        "runner_profile_id": profile["profile_id"],
+        "workspace_id": workspace_id,
+        "created_at": created_at,
+        "paths": [
+            {
+                "relative_path": owned_path,
+                "kind": "file",
+                "sha256": "0" * 64,
+                "size": 0,
+            }
+        ],
+    }
+    receipt_id = content_hash(identity).removeprefix("sha256:")
+    receipt_path = receipt_root / f"{receipt_id}.json"
+    receipt_path.write_text(
+        json.dumps({"receipt_id": receipt_id, **identity}),
+        encoding="utf-8",
+    )
+    if committed:
+        commit_root = sandbox_root / ".bluefire" / "receipt-commits"
+        commit_root.mkdir(parents=True, exist_ok=True)
+        (commit_root / f"{receipt_id}.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "bluefire.receipt-commit/v1",
+                    "receipt_id": receipt_id,
+                    "runner_profile_id": profile["profile_id"],
+                    "workspace_id": workspace_id,
+                    "committed_at": "2026-08-24T00:00:01Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+    return receipt_id
+
+
 class StructuredFakeRunner:
     def __init__(self, *, network_status: str = "success") -> None:
         self.network_status = network_status
+        self.record_count = 6
         self.inventory_calls = 0
         self.calls: list[tuple[dict[str, Any], dict[str, Any]]] = []
 
@@ -58,7 +135,20 @@ class StructuredFakeRunner:
         self.inventory_calls += 1
         return {
             "schema_version": "bluefire.runner-inventory.v1",
-            "actions": [{"action_id": action_id} for action_id in sorted(ACTION_IDS)],
+            "runner_id": "bluefire-rust-runner.v1",
+            "runner_version": "0.1.0",
+            "action_sdk_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
+            "receipt_protocol": "bluefire.runner-receipt-wal.v2",
+            "platform": "windows",
+            "actions": [
+                {
+                    "schema_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
+                    "action_id": action_id,
+                    "action_version": BUILTIN_RUNNER_ACTION_VERSIONS[action_id],
+                    "readiness": "ready",
+                }
+                for action_id in sorted(ACTION_IDS)
+            ],
         }
 
     def execute(
@@ -71,38 +161,109 @@ class StructuredFakeRunner:
         self.calls.append((manifest_copy, profile_copy))
         action_id = str(manifest["action_id"])
         status = self.network_status if action_id == "sandbox.network.loopback.v1" else "success"
-        output = {
-            "sandbox.fixture.create.v1": {
-                "artifact": "fixtures/input.txt",
-                "sha256": "sha256:create",
-            },
-            "sandbox.fixture.transform.v1": {
-                "artifact": "fixtures/transformed.txt",
-                "sha256": "sha256:transform",
-            },
-            "sandbox.discovery.list.v1": {"entries": ["fixtures/transformed.txt"]},
-            "sandbox.discovery.metadata.v1": {"size_bytes": 16},
-            "sandbox.collection.stage.v1": {
-                "staged": [
+        if action_id == "sandbox.fixture.create.v1":
+            self.record_count = int(manifest["params"]["record_count"])
+            output = {
+                "artifact": manifest["params"]["path"],
+                "sha256": "1" * 64,
+                "size": 128,
+                "template": "telemetry-seed",
+                "record_count": manifest["params"]["record_count"],
+                "format": "jsonl",
+            }
+        elif action_id == "sandbox.fixture.transform.v1":
+            output = {
+                "artifact": manifest["params"]["output"],
+                "sha256": "2" * 64,
+                "size": 128,
+                "record_count": self.record_count,
+                "redact_values": manifest["params"]["redact_values"],
+                "redacted_value_count": (
+                    self.record_count if manifest["params"]["redact_values"] else 0
+                ),
+                "format": "jsonl",
+                "implementation": "in_process_reviewed_jsonl_transform",
+            }
+        elif action_id == "sandbox.discovery.list.v1":
+            output = {
+                "path": "fixtures/transformed.jsonl",
+                "entries": [
                     {
-                        "artifact": "staged/000-transformed.txt",
-                        "sha256": "sha256:stage",
+                        "path": "fixtures/transformed.jsonl",
+                        "name": "transformed.jsonl",
+                        "kind": "file",
+                        "size": 16,
                     }
-                ]
-            },
-            "sandbox.network.loopback.v1": {"bytes_sent": 16},
-            "sandbox.export.local.v1": {
-                "artifact": "exports/bundle.bin",
-                "sha256": "sha256:export",
-            },
-            "sandbox.cleanup.v1": {
-                "removed_receipts": list(manifest["params"].get("receipt_ids", []))
-            },
-        }[action_id]
-        receipts = [RECEIPT_IDS[action_id]] if action_id in RECEIPT_IDS else []
+                ],
+                "returned_entries": 1,
+                "target_cardinality": "one",
+            }
+        elif action_id == "sandbox.discovery.metadata.v1":
+            output = {
+                "entries": [
+                    {
+                        "path": "fixtures/transformed.jsonl",
+                        "name": "transformed.jsonl",
+                        "kind": "file",
+                        "size": 16,
+                        "readonly": True,
+                    }
+                ],
+                "path": "fixtures/transformed.jsonl",
+                "returned_entries": 1,
+                "target_cardinality": "one",
+            }
+        elif action_id == "sandbox.collection.stage.v1":
+            output = {
+                "artifact": f"staged/bundle.{manifest['params']['bundle_format']}",
+                "format": manifest["params"]["bundle_format"],
+                "record_count": self.record_count,
+                "size": 16,
+                "sha256": "3" * 64,
+                "input_count": 1,
+                "accepted_input_count": 1,
+                "rejected_input_count": 0,
+                "complete": True,
+            }
+        elif action_id == "sandbox.network.loopback.v1":
+            output = {"bytes_sent": 16}
+        elif action_id == "sandbox.export.local.v1":
+            output = {
+                "source": manifest["params"]["source"],
+                "artifact": (f"exports/{manifest['params']['retention_label']}/bundle.bin"),
+                "size": 16,
+                "retention_label": manifest["params"]["retention_label"],
+                "sha256": "4" * 64,
+                "destination_policy": "runner_fixed_retention_destination",
+            }
+        else:
+            requested = list(manifest["params"].get("receipt_ids", []))
+            output = {
+                "requested_receipts": len(requested),
+                "removed_paths": [],
+                "already_absent_receipts": [],
+                "retained_paths": [],
+                "errors": [],
+                "verification_performed": True,
+                "verified_removed_paths": 0,
+                "verified_absent_paths": 0,
+                "verified_receipts": len(requested),
+            }
+        receipts: list[str] = []
+        if action_id in RECEIPT_IDS:
+            receipt_id = _write_bound_receipt(manifest, profile)
+            RECEIPT_IDS[action_id] = receipt_id
+            receipts.append(receipt_id)
         error = None
         if status != "success":
             error = {"code": f"fake_{status}", "message": f"structured {status} result"}
+        if action_id == "sandbox.cleanup.v1":
+            receipt_root = Path(str(profile["sandbox_root"])) / ".bluefire" / "receipts"
+            commit_root = Path(str(profile["sandbox_root"])) / ".bluefire" / "receipt-commits"
+            for receipt_id in manifest["params"].get("receipt_ids", []):
+                (receipt_root / f"{receipt_id}.json").unlink(missing_ok=True)
+                (commit_root / f"{receipt_id}.json").unlink(missing_ok=True)
+        cleanup_report = output if action_id == "sandbox.cleanup.v1" else None
         return {
             "schema_version": "bluefire.runner-result.v1",
             "request_id": manifest["request_id"],
@@ -121,17 +282,7 @@ class StructuredFakeRunner:
             "stderr": {"bytes": 0, "truncated": False},
             "evidence": [{"kind": "fake-runner", "status": status}],
             "receipt_ids": receipts,
-            "cleanup": (
-                {
-                    "requested_receipts": len(manifest["params"].get("receipt_ids", [])),
-                    "removed_paths": list(manifest["params"].get("receipt_ids", [])),
-                    "already_absent_receipts": [],
-                    "retained_paths": [],
-                    "errors": [],
-                }
-                if action_id == "sandbox.cleanup.v1"
-                else None
-            ),
+            "cleanup": cleanup_report,
             "error": error,
             "limitations": ["Structured local fake; no runner side effect occurred."],
         }
@@ -204,6 +355,99 @@ def test_runner_result_identity_is_bound_to_the_exact_request(
         Orchestrator._validate_runner_result(manifest, profile, result)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("requested_receipts", True),
+        ("verified_receipts", True),
+        ("verified_removed_paths", True),
+        ("verified_absent_paths", False),
+    ],
+)
+def test_cleanup_success_rejects_boolean_receipt_and_verification_counters(
+    field: str, value: object
+) -> None:
+    cleanup: dict[str, object] = {
+        "requested_receipts": 1,
+        "removed_paths": [],
+        "already_absent_receipts": [],
+        "retained_paths": [],
+        "errors": [],
+        "verification_performed": True,
+        "verified_removed_paths": 0,
+        "verified_absent_paths": 1,
+        "verified_receipts": 1,
+    }
+    cleanup[field] = value
+    manifest = {
+        "action_id": "sandbox.cleanup.v1",
+        "params": {"receipt_ids": ["a" * 64]},
+    }
+    result = {
+        "status": "success",
+        "output": cleanup,
+        "cleanup": cleanup,
+    }
+
+    with pytest.raises(RunnerTransportError, match="cleanup"):
+        Orchestrator._validate_cleanup_result(manifest, result)
+
+
+def test_receipt_root_inspection_io_failure_is_a_transport_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    receipt_root = sandbox / ".bluefire" / "receipts"
+    original_lstat = Path.lstat
+
+    def fail_receipt_root_inspection(path: Path):
+        if path == receipt_root:
+            raise OSError("injected receipt root metadata failure")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", fail_receipt_root_inspection)
+    with pytest.raises(RunnerTransportError):
+        Orchestrator._discover_runner_receipts(
+            sandbox,
+            expected_profile_id="sandbox-execute.v1",
+        )
+
+
+def test_receipt_discovery_requires_full_identity_and_optional_commit(tmp_path: Path) -> None:
+    sandbox = tmp_path / "receipt-contract-sandbox"
+    sandbox.mkdir()
+    manifest = {
+        "request_hash": "sha256:" + "1" * 64,
+        "action_id": "sandbox.fixture.create.v1",
+        "params": {"path": "fixtures/input.jsonl"},
+    }
+    profile = {"sandbox_root": str(sandbox), "profile_id": "sandbox-execute.v1"}
+    receipt_id = _write_bound_receipt(manifest, profile, committed=False)
+    discovery = {
+        "expected_profile_id": profile["profile_id"],
+        "expected_request_hash": manifest["request_hash"],
+        "expected_action_id": manifest["action_id"],
+        "max_files": 32,
+        "max_bytes": 1024 * 1024,
+    }
+
+    assert Orchestrator._discover_runner_receipts(sandbox, **discovery) == (receipt_id,)
+    assert Orchestrator._discover_runner_receipts(sandbox, require_commit=True, **discovery) == ()
+
+    assert _write_bound_receipt(manifest, profile, committed=True) == receipt_id
+    assert Orchestrator._discover_runner_receipts(sandbox, require_commit=True, **discovery) == (
+        receipt_id,
+    )
+
+    receipt_path = sandbox / ".bluefire" / "receipts" / f"{receipt_id}.json"
+    tampered = json.loads(receipt_path.read_text(encoding="utf-8"))
+    tampered["paths"][0]["size"] = 1
+    receipt_path.write_text(json.dumps(tampered), encoding="utf-8")
+    with pytest.raises(RunnerTransportError, match="content digest"):
+        Orchestrator._discover_runner_receipts(sandbox, **discovery)
+
+
 class FailAfterFirstEffectStore(RunStore):
     def append_event(self, run_id: str, event_type: str, data: Mapping[str, Any]) -> None:
         if event_type == "step.completed" and data.get("action_id") == "sandbox.fixture.create.v1":
@@ -225,12 +469,18 @@ class IncompleteCleanupFakeRunner(StructuredFakeRunner):
                 "already_absent_receipts": [],
                 "retained_paths": [],
                 "errors": [],
+                "verification_performed": False,
+                "verified_removed_paths": 0,
+                "verified_absent_paths": 0,
+                "verified_receipts": 0,
             }
+            result["output"] = dict(result["cleanup"])
         return result
 
 
 class ReceiptThenTransportFailureRunner(StructuredFakeRunner):
     RECEIPT_ID = "e" * 64
+    UNRELATED_RECEIPT_ID = "f" * 64
 
     def __init__(self) -> None:
         super().__init__()
@@ -246,25 +496,38 @@ class ReceiptThenTransportFailureRunner(StructuredFakeRunner):
         if action_id != "sandbox.cleanup.v1" and not self.failed_once:
             self.failed_once = True
             self.calls.append((copy.deepcopy(dict(manifest)), copy.deepcopy(dict(profile))))
-            receipt_root.mkdir(parents=True)
-            receipt = {
-                "schema_version": "bluefire.receipt/v1",
-                "receipt_id": self.RECEIPT_ID,
-                "request_hash": manifest["request_hash"],
-                "action_id": action_id,
-                "runner_profile_id": profile["profile_id"],
-                "created_at": "2026-08-24T00:00:00Z",
-                "paths": [],
-            }
-            (receipt_root / f"{self.RECEIPT_ID}.json").write_text(
-                json.dumps(receipt),
-                encoding="utf-8",
+            self.RECEIPT_ID = _write_bound_receipt(manifest, profile, committed=False)
+            self.UNRELATED_RECEIPT_ID = _write_bound_receipt(
+                manifest,
+                profile,
+                request_hash="sha256:" + "9" * 64,
+                action_id="sandbox.fixture.transform.v1",
+                committed=False,
             )
             raise RunnerTransportError("injected result transport failure")
         if action_id == "sandbox.cleanup.v1":
             for receipt_id in manifest["params"]["receipt_ids"]:
                 (receipt_root / f"{receipt_id}.json").unlink(missing_ok=True)
         return super().execute(manifest, profile)
+
+
+class UncommittedSuccessRunner(StructuredFakeRunner):
+    def execute(
+        self,
+        manifest: Mapping[str, Any],
+        profile: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        result = super().execute(manifest, profile)
+        if manifest["action_id"] == "sandbox.fixture.create.v1":
+            for receipt_id in result["receipt_ids"]:
+                commit = (
+                    Path(str(profile["sandbox_root"]))
+                    / ".bluefire"
+                    / "receipt-commits"
+                    / f"{receipt_id}.json"
+                )
+                commit.unlink()
+        return result
 
 
 def _orchestrator(tmp_path: Path, runner: object) -> Orchestrator:
@@ -274,6 +537,122 @@ def _orchestrator(tmp_path: Path, runner: object) -> Orchestrator:
         runner=runner,  # type: ignore[arg-type]
         approval_store=ProductStore(tmp_path / "product.sqlite3"),
     )
+
+
+def _corrupt_runner_inventory(corruption: str, *, target: str) -> Mapping[str, Any]:
+    value = copy.deepcopy(dict(StructuredFakeRunner().inventory()))
+    actions = value["actions"]
+    assert isinstance(actions, list)
+    target_index = next(index for index, row in enumerate(actions) if row["action_id"] == target)
+    if corruption == "missing":
+        actions.pop(target_index)
+    elif corruption == "duplicate":
+        actions.append(copy.deepcopy(actions[target_index]))
+    elif corruption == "wrong_version":
+        actions[target_index]["action_version"] = "9.0.0"
+    elif corruption == "not_ready":
+        actions[target_index]["readiness"] = "structural"
+    elif corruption == "missing_action_schema":
+        actions[target_index].pop("schema_version")
+    elif corruption == "missing_inventory_action_schema":
+        value.pop("action_sdk_version")
+    else:
+        canonical = copy.deepcopy(dict(canonical_runner_inventory(value)))
+        canonical_actions = canonical["actions"]
+        assert isinstance(canonical_actions, list)
+        canonical_target = next(row for row in canonical_actions if row["action_id"] == target)
+        if corruption == "missing_source_digest":
+            canonical.pop("source_digest")
+        elif corruption == "malformed_source_digest":
+            canonical["source_digest"] = "sha256:invalid"
+        elif corruption == "missing_contract_digest":
+            canonical_target.pop("contract_digest")
+        elif corruption == "malformed_contract_digest":
+            canonical_target["contract_digest"] = "sha256:invalid"
+        else:  # pragma: no cover - guarded by the parametrizations below.
+            raise AssertionError(f"unknown inventory corruption: {corruption}")
+        return canonical
+    return value
+
+
+def test_inventory_gates_accept_raw_and_canonical_authoritative_contracts(
+    tmp_path: Path,
+) -> None:
+    runner = StructuredFakeRunner()
+    orchestrator = _orchestrator(tmp_path, runner)
+    plan = orchestrator.planner.compile(
+        load_scenario(SCENARIO_PATH),
+        mode=ExecutionMode.EXECUTE,
+        profile=_execute_profile(),
+    )
+    raw = runner.inventory()
+    canonical = canonical_runner_inventory(raw)
+
+    Orchestrator._validate_inventory(plan, raw)
+    Orchestrator._validate_inventory(plan, canonical)
+    Orchestrator._validate_cleanup_inventory(raw)
+    Orchestrator._validate_cleanup_inventory(canonical)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing",
+        "duplicate",
+        "wrong_version",
+        "not_ready",
+        "missing_action_schema",
+        "missing_inventory_action_schema",
+        "missing_source_digest",
+        "malformed_source_digest",
+        "missing_contract_digest",
+        "malformed_contract_digest",
+    ],
+)
+def test_planned_inventory_gate_rejects_non_authoritative_action_rows(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    orchestrator = _orchestrator(tmp_path, StructuredFakeRunner())
+    plan = orchestrator.planner.compile(
+        load_scenario(SCENARIO_PATH),
+        mode=ExecutionMode.EXECUTE,
+        profile=_execute_profile(),
+    )
+
+    with pytest.raises(OrchestrationError, match="planned action contracts"):
+        Orchestrator._validate_inventory(
+            plan,
+            _corrupt_runner_inventory(
+                corruption,
+                target="sandbox.fixture.create.v1",
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "missing",
+        "duplicate",
+        "wrong_version",
+        "not_ready",
+        "missing_action_schema",
+        "missing_inventory_action_schema",
+        "missing_contract_digest",
+        "malformed_contract_digest",
+    ],
+)
+def test_cleanup_recovery_inventory_gate_requires_the_exact_ready_contract(
+    corruption: str,
+) -> None:
+    with pytest.raises(OrchestrationError, match="cleanup action contract"):
+        Orchestrator._validate_cleanup_inventory(
+            _corrupt_runner_inventory(
+                corruption,
+                target="sandbox.cleanup.v1",
+            )
+        )
 
 
 def _approval_kwargs(
@@ -761,7 +1140,43 @@ def test_transport_failure_discovers_fsynced_receipt_and_forces_cleanup(
         "sandbox.fixture.create.v1",
         "sandbox.cleanup.v1",
     ]
+    cleanup_manifest = runner.calls[-1][0]
+    assert cleanup_manifest["params"]["receipt_ids"] == [runner.RECEIPT_ID]
     assert not (sandbox / ".bluefire" / "receipts" / f"{runner.RECEIPT_ID}.json").exists()
+    assert (sandbox / ".bluefire" / "receipts" / f"{runner.UNRELATED_RECEIPT_ID}.json").exists()
+
+
+def test_success_cannot_claim_an_uncommitted_receipt(tmp_path: Path) -> None:
+    runner = UncommittedSuccessRunner()
+    orchestrator = _orchestrator(tmp_path, runner)
+    scenario = load_scenario(SCENARIO_PATH)
+    profile = _execute_profile()
+
+    result = orchestrator.run(
+        scenario,
+        mode=ExecutionMode.EXECUTE,
+        profile=profile,
+        sandbox_root=tmp_path / "uncommitted-success-sandbox",
+        target_scope=FULL_TARGET_SCOPE,
+        **_approval_kwargs(
+            orchestrator,
+            scenario=scenario,
+            profile=profile,
+            target_scope=FULL_TARGET_SCOPE,
+        ),
+    )
+
+    rows = _rows_by_step(result)
+    create = rows["create_fixture"]
+    assert create["status"] == "failed"
+    assert create["error"]["code"] == "runner_transport_failed"
+    assert "committed" in create["error"]["message"]
+    assert create["receipts"]
+    assert rows["cleanup_workspace"]["status"] == "success"
+    assert [call[0]["action_id"] for call in runner.calls] == [
+        "sandbox.fixture.create.v1",
+        "sandbox.cleanup.v1",
+    ]
 
 
 def test_missing_independent_observation_is_explicit_unknown_evidence(tmp_path: Path) -> None:

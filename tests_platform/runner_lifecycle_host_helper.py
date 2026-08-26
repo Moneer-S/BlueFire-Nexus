@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from bluefire.runner_host import serve_managed_runner
+from bluefire.runner_inventory import (
+    BUILTIN_RUNNER_ACTION_VERSIONS,
+    RUNNER_ACTION_SDK_SCHEMA_VERSION,
+)
 from bluefire.secret_store import SecretStoreError
 
 _PREFIX = b"bluefire-process-test-only-v1\0"
@@ -48,13 +52,14 @@ class ProcessFixtureRunner:
             "schema_version": "bluefire.runner-inventory.v1",
             "runner_id": "bluefire-rust-runner.v1",
             "runner_version": "0.1.0",
-            "action_sdk_version": "bluefire.runner-action-sdk.v1",
+            "action_sdk_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
             "receipt_protocol": "bluefire.runner-receipt-wal.v2",
             "platform": self.platform_name,
             "actions": [
                 {
+                    "schema_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
                     "action_id": "sandbox.fixture.create.v1",
-                    "action_version": "1.0.0",
+                    "action_version": BUILTIN_RUNNER_ACTION_VERSIONS["sandbox.fixture.create.v1"],
                     "readiness": "ready",
                 }
             ],
