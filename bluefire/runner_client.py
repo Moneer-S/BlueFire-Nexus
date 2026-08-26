@@ -6,7 +6,9 @@ import json
 import math
 import os
 import re
+import secrets
 import signal
+import stat
 
 # Only the fixed, absolute Rust runner boundary uses subprocess.
 import subprocess  # nosec B404
@@ -16,7 +18,7 @@ import threading
 import time
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, BinaryIO, Mapping, Protocol, runtime_checkable
+from typing import Any, BinaryIO, Callable, Mapping, Protocol, cast, runtime_checkable
 
 from .util import canonical_json_bytes, content_hash, file_hash
 
@@ -26,6 +28,7 @@ _INVENTORY_MAX_BYTES = 2 * 1024 * 1024
 _INVENTORY_PLATFORMS = frozenset({"linux", "macos", "windows"})
 _ACTION_READINESS = frozenset({"ready", "structural", "unavailable"})
 _TASK_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+_RECEIVER_TASK_KEY = re.compile(r"^[0-9a-f]{64}$")
 _PROCESS_POLL_SECONDS = 0.025
 _PROCESS_TERM_GRACE_SECONDS = 2.0
 _PROCESS_KILL_GRACE_SECONDS = 5.0
@@ -35,6 +38,19 @@ _WATCHDOG_CONFIG_LIMIT_BYTES = 8 * 1024 * 1024
 _WATCHDOG_CONTROL_NAMES = frozenset({"config.json", "start", "cancel", "ready.json", "status.json"})
 _KILL_PROCESS_GROUP = getattr(os, "killpg", None)
 _FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
+_WINDOWS_GENERIC_READ = 0x80000000
+_WINDOWS_GENERIC_WRITE = 0x40000000
+_WINDOWS_DELETE = 0x00010000
+_WINDOWS_FILE_SHARE_READ = 0x00000001
+_WINDOWS_FILE_SHARE_WRITE = 0x00000002
+_WINDOWS_OPEN_EXISTING = 3
+_WINDOWS_CREATE_NEW = 1
+_WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WINDOWS_FILE_DISPOSITION_INFO = 4
+_RECEIVER_TASK_ID_ENV = "BLUEFIRE_RECEIVER_TASK_ID"
+_RECEIVER_TASK_KEY_ENV = "BLUEFIRE_RECEIVER_TASK_KEY"
+_RECEIVER_TASK_ENV_NAMES = frozenset({_RECEIVER_TASK_ID_ENV, _RECEIVER_TASK_KEY_ENV})
 
 FORBIDDEN_EXECUTION_KEYS = frozenset(
     {
@@ -64,12 +80,741 @@ class RunnerTaskCancelled(RunnerTransportError):
     """The complete runner process tree was confirmed stopped after cancellation."""
 
 
+class RunnerTaskTimedOut(RunnerTransportError):
+    """The complete runner process tree was confirmed stopped after a timeout."""
+
+
 class RunnerPendingResultExists(RunnerTransportError):
     """A prior task attempt left crash-recovery output that must be reconciled."""
 
 
 class RunnerDurableResultExists(RunnerTransportError):
     """A final task result already exists and was not overwritten."""
+
+
+def _validated_receiver_task_environment(
+    value: Mapping[str, str] | None,
+    *,
+    expected_task_id: str | None = None,
+) -> dict[str, str]:
+    if value is None or not value:
+        return {}
+    candidate = dict(value)
+    task_id = candidate.get(_RECEIVER_TASK_ID_ENV)
+    task_key = candidate.get(_RECEIVER_TASK_KEY_ENV)
+    if (
+        set(candidate) != _RECEIVER_TASK_ENV_NAMES
+        or not isinstance(task_id, str)
+        or _TASK_IDENTIFIER.fullmatch(task_id) is None
+        or (expected_task_id is not None and task_id != expected_task_id)
+        or not isinstance(task_key, str)
+        or _RECEIVER_TASK_KEY.fullmatch(task_key) is None
+    ):
+        raise RunnerTransportError("runner receiver authentication is invalid")
+    return {
+        _RECEIVER_TASK_ID_ENV: task_id,
+        _RECEIVER_TASK_KEY_ENV: task_key,
+    }
+
+
+def _consume_receiver_task_environment(*, expected_task_id: str) -> dict[str, str]:
+    present = frozenset(name for name in _RECEIVER_TASK_ENV_NAMES if name in os.environ)
+    candidate = {name: os.environ.pop(name) for name in present}
+    if not present:
+        return {}
+    if present != _RECEIVER_TASK_ENV_NAMES:
+        raise RunnerTransportError("runner receiver authentication is incomplete")
+    return _validated_receiver_task_environment(
+        candidate,
+        expected_task_id=expected_task_id,
+    )
+
+
+def _read_descriptor_bounded(descriptor: int, maximum: int) -> bytes:
+    if isinstance(maximum, bool) or maximum < 0:
+        raise OSError("invalid bounded read")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    payload = bytearray()
+    while len(payload) <= maximum:
+        block = os.read(descriptor, min(64 * 1024, maximum + 1 - len(payload)))
+        if not block:
+            break
+        payload.extend(block)
+    if len(payload) > maximum:
+        raise OSError("private file exceeds its size limit")
+    return bytes(payload)
+
+
+def _windows_open_descriptor(
+    path: Path,
+    *,
+    directory: bool,
+    write: bool = False,
+    delete: bool = False,
+    create: bool = False,
+) -> int:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    raw_path = os.path.abspath(os.fspath(path))
+    if raw_path.startswith("\\\\?\\"):
+        api_path = raw_path
+    elif raw_path.startswith("\\\\"):
+        api_path = "\\\\?\\UNC\\" + raw_path[2:]
+    else:
+        api_path = "\\\\?\\" + raw_path
+
+    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    access = _WINDOWS_GENERIC_READ
+    if write:
+        access |= _WINDOWS_GENERIC_WRITE
+    if delete:
+        access |= _WINDOWS_DELETE
+    flags = _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
+    if directory:
+        flags |= _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS
+    share = _WINDOWS_FILE_SHARE_READ | (_WINDOWS_FILE_SHARE_WRITE if directory else 0)
+    handle = create_file(
+        api_path,
+        access,
+        share,
+        None,
+        _WINDOWS_CREATE_NEW if create else _WINDOWS_OPEN_EXISTING,
+        flags,
+        None,
+    )
+    invalid = wintypes.HANDLE(-1).value
+    if handle == invalid:
+        error = ctypes.get_last_error()
+        if create and error in {80, 183}:
+            raise FileExistsError(error, "CreateFileW target exists", str(path))
+        if not create and error in {2, 3}:
+            raise FileNotFoundError(error, "CreateFileW target is absent", str(path))
+        raise OSError(error, "CreateFileW failed", str(path))
+    try:
+        return msvcrt.open_osfhandle(
+            int(handle),
+            (os.O_RDWR if write else os.O_RDONLY) | getattr(os, "O_BINARY", 0),
+        )
+    except BaseException:
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
+        raise
+
+
+def _windows_mark_delete_descriptor(descriptor: int) -> None:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class _Disposition(ctypes.Structure):
+        _fields_ = [("DeleteFile", wintypes.BOOL)]
+
+    set_information = ctypes.WinDLL("kernel32", use_last_error=True).SetFileInformationByHandle
+    set_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    set_information.restype = wintypes.BOOL
+    disposition = _Disposition(True)
+    if not set_information(
+        wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),
+        _WINDOWS_FILE_DISPOSITION_INFO,
+        ctypes.byref(disposition),
+        ctypes.sizeof(disposition),
+    ):
+        raise OSError(ctypes.get_last_error(), "handle deletion failed")
+
+
+def _windows_rename_descriptor(descriptor: int, root_descriptor: int, target_name: str) -> None:
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    if not target_name or Path(target_name).name != target_name:
+        raise OSError("invalid rename target")
+
+    class _IoStatusBlock(ctypes.Structure):
+        _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
+
+    class _FileRename(ctypes.Structure):
+        _fields_ = [
+            ("ReplaceIfExists", ctypes.c_ubyte),
+            ("RootDirectory", wintypes.HANDLE),
+            ("FileNameLength", wintypes.DWORD),
+            ("FileName", ctypes.c_wchar * len(target_name)),
+        ]
+
+    rename = _FileRename()
+    rename.ReplaceIfExists = 0
+    rename.RootDirectory = wintypes.HANDLE(msvcrt.get_osfhandle(root_descriptor))
+    rename.FileNameLength = len(target_name.encode("utf-16-le"))
+    rename.FileName = target_name
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    rename_file = ntdll.NtSetInformationFile
+    rename_file.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(_IoStatusBlock),
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        ctypes.c_int,
+    )
+    rename_file.restype = ctypes.c_long
+    status = _IoStatusBlock()
+    result = rename_file(
+        wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),
+        ctypes.byref(status),
+        ctypes.byref(rename),
+        ctypes.sizeof(rename),
+        10,  # FileRenameInformation
+    )
+    if result != 0:
+        if ctypes.c_ulong(result).value == 0xC0000035:  # STATUS_OBJECT_NAME_COLLISION
+            raise FileExistsError("handle rename target exists")
+        raise OSError(int(result), "handle rename failed")
+
+
+class _PinnedPrivateDirectory:
+    """Pin one exact private directory for bounded child-file operations."""
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        delete: bool = False,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> None:
+        self.path = path
+        self.delete = delete
+        self.expected_identity = expected_identity
+        self._descriptor: int | None = None
+        self._parent_descriptor: int | None = None
+        self._identity: tuple[int, int] | None = None
+
+    def __enter__(self) -> _PinnedPrivateDirectory:
+        from .runner_trust import RunnerTrustError, _is_link_or_reparse, _owner_private
+
+        if not self.path.is_absolute() or self.path.name in {"", ".", ".."}:
+            raise RunnerTransportError("private directory identity is invalid")
+        try:
+            if os.name == "nt":
+                self._descriptor = _windows_open_descriptor(
+                    self.path, directory=True, delete=self.delete
+                )
+            else:
+                flags = (
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                )
+                self._parent_descriptor = os.open(self.path.parent, flags)
+                self._descriptor = os.open(self.path.name, flags, dir_fd=self._parent_descriptor)
+            details = os.fstat(self._require_descriptor())
+            if (
+                not stat.S_ISDIR(details.st_mode)
+                or _is_link_or_reparse(self.path)
+                or (
+                    self.expected_identity is not None
+                    and (details.st_dev, details.st_ino) != self.expected_identity
+                )
+            ):
+                raise OSError("unsafe private directory")
+            self._identity = details.st_dev, details.st_ino
+            if os.name == "nt":
+                _owner_private(self.path, directory=True)
+            else:
+                getattr(os, "fchmod")(  # noqa: B009 - absent on Windows
+                    self._require_descriptor(), 0o700
+                )
+            self._validate_directory()
+            return self
+        except FileNotFoundError:
+            self.close()
+            raise
+        except (OSError, RunnerTrustError):
+            self.close()
+            raise RunnerTransportError("private directory is unavailable or unsafe") from None
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def _require_descriptor(self) -> int:
+        if self._descriptor is None:
+            raise OSError("private directory is closed")
+        return self._descriptor
+
+    def _validate_directory(self) -> None:
+        from .runner_trust import _is_link_or_reparse
+
+        descriptor = self._require_descriptor()
+        details = os.fstat(descriptor)
+        current = self.path.stat(follow_symlinks=False)
+        if (
+            self._identity is None
+            or _is_link_or_reparse(self.path)
+            or not stat.S_ISDIR(details.st_mode)
+            or not stat.S_ISDIR(current.st_mode)
+            or (details.st_dev, details.st_ino) != self._identity
+            or (current.st_dev, current.st_ino) != self._identity
+        ):
+            raise OSError("private directory identity changed")
+
+    def directory_identity(self) -> tuple[int, int]:
+        self._validate_directory()
+        if self._identity is None:
+            raise OSError("private directory identity is unavailable")
+        return self._identity
+
+    def close(self) -> None:
+        if self._descriptor is not None:
+            os.close(self._descriptor)
+            self._descriptor = None
+        if self._parent_descriptor is not None:
+            os.close(self._parent_descriptor)
+            self._parent_descriptor = None
+
+    @staticmethod
+    def _name(name: str) -> str:
+        if not name or Path(name).name != name:
+            raise OSError("invalid private child name")
+        return name
+
+    def names(self, *, maximum: int | None = None) -> tuple[str, ...]:
+        if maximum is not None and (isinstance(maximum, bool) or maximum < 0):
+            raise OSError("invalid private directory entry bound")
+        self._validate_directory()
+        iterator = (
+            os.scandir(self.path) if os.name == "nt" else os.scandir(self._require_descriptor())
+        )
+        names: list[str] = []
+        try:
+            with iterator:
+                for entry in iterator:
+                    if maximum is not None and len(names) >= maximum:
+                        raise OSError("private directory entry bound exceeded")
+                    names.append(entry.name)
+        finally:
+            self._validate_directory()
+        return tuple(names)
+
+    def has_name(self, name: str) -> bool:
+        name = self._name(name)
+        self._validate_directory()
+        try:
+            if os.name == "nt":
+                (self.path / name).stat(follow_symlinks=False)
+            else:
+                os.stat(name, dir_fd=self._require_descriptor(), follow_symlinks=False)
+        except FileNotFoundError:
+            self._validate_directory()
+            return False
+        self._validate_directory()
+        return True
+
+    def _open_existing(self, name: str, *, delete: bool = False) -> int:
+        name = self._name(name)
+        self._validate_directory()
+        if os.name == "nt":
+            return _windows_open_descriptor(self.path / name, directory=False, delete=delete)
+        return os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=self._require_descriptor(),
+        )
+
+    def _open_new(self, name: str) -> int:
+        name = self._name(name)
+        self._validate_directory()
+        if os.name == "nt":
+            return _windows_open_descriptor(
+                self.path / name,
+                directory=False,
+                write=True,
+                delete=True,
+                create=True,
+            )
+        return os.open(
+            name,
+            os.O_RDWR
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=self._require_descriptor(),
+        )
+
+    def _validate_file(
+        self,
+        name: str,
+        descriptor: int,
+        *,
+        maximum: int,
+        apply_permissions: bool = True,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> os.stat_result:
+        from .runner_trust import _is_link_or_reparse, _owner_private
+
+        name = self._name(name)
+        details = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_nlink != 1
+            or details.st_size < 0
+            or details.st_size > maximum
+            or (
+                expected_identity is not None
+                and (details.st_dev, details.st_ino) != expected_identity
+            )
+        ):
+            raise OSError("unsafe private file")
+        if apply_permissions:
+            if os.name == "nt":
+                _owner_private(self.path / name, directory=False)
+            else:
+                getattr(os, "fchmod")(descriptor, 0o600)  # noqa: B009 - absent on Windows
+        current = (
+            (self.path / name).stat(follow_symlinks=False)
+            if os.name == "nt"
+            else os.stat(name, dir_fd=self._require_descriptor(), follow_symlinks=False)
+        )
+        final = os.fstat(descriptor)
+        if (
+            _is_link_or_reparse(self.path / name)
+            or not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
+            or final.st_nlink != 1
+            or (current.st_dev, current.st_ino) != (details.st_dev, details.st_ino)
+            or (final.st_dev, final.st_ino) != (details.st_dev, details.st_ino)
+            or final.st_size > maximum
+        ):
+            raise OSError("private file identity changed")
+        return final
+
+    def read(self, name: str, *, maximum: int) -> bytes:
+        payload, _identity = self.read_with_identity(name, maximum=maximum)
+        return payload
+
+    def read_with_identity(
+        self,
+        name: str,
+        *,
+        maximum: int,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> tuple[bytes, tuple[int, int]]:
+        descriptor = self._open_existing(name)
+        try:
+            before = self._validate_file(
+                name,
+                descriptor,
+                maximum=maximum,
+                expected_identity=expected_identity,
+            )
+            payload = _read_descriptor_bounded(descriptor, maximum)
+            after = self._validate_file(
+                name,
+                descriptor,
+                maximum=maximum,
+                apply_permissions=False,
+                expected_identity=(before.st_dev, before.st_ino),
+            )
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise OSError("private file changed while read")
+            return payload, (before.st_dev, before.st_ino)
+        finally:
+            os.close(descriptor)
+
+    def file_identity(
+        self,
+        name: str,
+        *,
+        maximum: int,
+        apply_permissions: bool = True,
+    ) -> tuple[int, int]:
+        descriptor = self._open_existing(name)
+        try:
+            details = self._validate_file(
+                name,
+                descriptor,
+                maximum=maximum,
+                apply_permissions=apply_permissions,
+            )
+            return details.st_dev, details.st_ino
+        finally:
+            os.close(descriptor)
+
+    def create(self, name: str, payload: bytes, *, maximum: int) -> None:
+        if not 0 <= len(payload) <= maximum:
+            raise OSError("private payload exceeds its size limit")
+        name = self._name(name)
+        # Keep the Win32-facing ACL path short even when the pinned directory
+        # itself is near the legacy path limit. CREATE_NEW still makes the
+        # random 48-bit temporary name collision-safe and fail closed.
+        temporary = f".t-{secrets.token_hex(6)}"
+        descriptor = self._open_new(temporary)
+        written_ok = False
+        temporary_identity: tuple[int, int] | None = None
+        try:
+            self._validate_file(temporary, descriptor, maximum=maximum)
+            written = 0
+            while written < len(payload):
+                count = os.write(descriptor, payload[written:])
+                if count <= 0:
+                    raise OSError("short private file write")
+                written += count
+            os.fsync(descriptor)
+            details = self._validate_file(
+                temporary,
+                descriptor,
+                maximum=maximum,
+                apply_permissions=False,
+            )
+            temporary_identity = details.st_dev, details.st_ino
+            written_ok = True
+        finally:
+            if not written_ok:
+                try:
+                    if os.name == "nt":
+                        _windows_mark_delete_descriptor(descriptor)
+                    else:
+                        os.unlink(temporary, dir_fd=self._require_descriptor())
+                except OSError:
+                    pass
+            os.close(descriptor)
+        try:
+            if temporary_identity is None:
+                raise OSError("private temporary identity is unavailable")
+            self.promote(
+                temporary,
+                name,
+                maximum=maximum,
+                expected=payload,
+                permissions_already_private=True,
+                expected_identity=temporary_identity,
+            )
+        except BaseException:
+            try:
+                self.unlink(
+                    temporary,
+                    maximum=maximum,
+                    expected=payload,
+                    expected_identity=temporary_identity,
+                )
+            except OSError:
+                pass
+            raise
+
+    def open_new(self, name: str, *, maximum: int) -> _GuardedBinaryFile:
+        descriptor = self._open_new(name)
+        try:
+            self._validate_file(name, descriptor, maximum=maximum)
+            handle = os.fdopen(descriptor, "w+b", buffering=0)
+            return _GuardedBinaryFile(handle, self, name, maximum)
+        except BaseException:
+            try:
+                if os.name == "nt":
+                    _windows_mark_delete_descriptor(descriptor)
+                else:
+                    os.unlink(name, dir_fd=self._require_descriptor())
+            except OSError:
+                pass
+            os.close(descriptor)
+            self.close()
+            raise
+
+    def unlink(
+        self,
+        name: str,
+        *,
+        maximum: int,
+        expected: bytes | None = None,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> None:
+        descriptor = self._open_existing(name, delete=True)
+        try:
+            opened = self._validate_file(
+                name,
+                descriptor,
+                maximum=maximum,
+                expected_identity=expected_identity,
+            )
+            if expected is not None and _read_descriptor_bounded(descriptor, maximum) != expected:
+                raise OSError("private file content changed")
+            self._validate_file(
+                name,
+                descriptor,
+                maximum=maximum,
+                apply_permissions=False,
+                expected_identity=(opened.st_dev, opened.st_ino),
+            )
+            if os.name == "nt":
+                _windows_mark_delete_descriptor(descriptor)
+            else:
+                current = os.stat(name, dir_fd=self._require_descriptor(), follow_symlinks=False)
+                opened = os.fstat(descriptor)
+                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise OSError("private file identity changed")
+                os.unlink(name, dir_fd=self._require_descriptor())
+            self.sync()
+        finally:
+            os.close(descriptor)
+
+    def promote(
+        self,
+        source: str,
+        destination: str,
+        *,
+        maximum: int,
+        expected: bytes,
+        permissions_already_private: bool = False,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> None:
+        source = self._name(source)
+        destination = self._name(destination)
+        descriptor = self._open_existing(source, delete=True)
+        try:
+            source_details = self._validate_file(
+                source,
+                descriptor,
+                maximum=maximum,
+                apply_permissions=not permissions_already_private,
+                expected_identity=expected_identity,
+            )
+            if _read_descriptor_bounded(descriptor, maximum) != expected:
+                raise OSError("private promotion source changed")
+            if os.name == "nt":
+                _windows_rename_descriptor(descriptor, self._require_descriptor(), destination)
+                # A handle with DELETE access can transiently deny ordinary
+                # readers even after rename. Close it immediately after the
+                # handle-relative publication, then re-open and bind the final
+                # validation to the same file identity.
+                os.close(descriptor)
+                descriptor = -1
+                final_descriptor = self._open_existing(destination)
+                try:
+                    final_details = os.fstat(final_descriptor)
+                    if (final_details.st_dev, final_details.st_ino) != (
+                        source_details.st_dev,
+                        source_details.st_ino,
+                    ):
+                        raise OSError("private promotion target changed")
+                    self._validate_file(
+                        destination,
+                        final_descriptor,
+                        maximum=maximum,
+                        apply_permissions=False,
+                    )
+                finally:
+                    os.close(final_descriptor)
+            else:
+                os.link(
+                    source,
+                    destination,
+                    src_dir_fd=self._require_descriptor(),
+                    dst_dir_fd=self._require_descriptor(),
+                    follow_symlinks=False,
+                )
+                os.unlink(source, dir_fd=self._require_descriptor())
+                self._validate_file(
+                    destination,
+                    descriptor,
+                    maximum=maximum,
+                    apply_permissions=False,
+                )
+            self.sync()
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def sync(self) -> None:
+        if os.name != "nt":
+            os.fsync(self._require_descriptor())
+
+    def remove(self) -> None:
+        if self.names():
+            raise OSError("private directory is not empty")
+        descriptor = self._require_descriptor()
+        if os.name == "nt":
+            if not self.delete:
+                raise OSError("private directory delete was not authorized")
+            _windows_mark_delete_descriptor(descriptor)
+        else:
+            if self._parent_descriptor is None:
+                raise OSError("private parent directory is unavailable")
+            current = os.stat(
+                self.path.name,
+                dir_fd=self._parent_descriptor,
+                follow_symlinks=False,
+            )
+            if self._identity is None or (current.st_dev, current.st_ino) != self._identity:
+                raise OSError("private directory identity changed")
+            os.rmdir(self.path.name, dir_fd=self._parent_descriptor)
+            os.fsync(self._parent_descriptor)
+
+
+class _GuardedBinaryFile:
+    def __init__(
+        self,
+        handle: BinaryIO,
+        directory: _PinnedPrivateDirectory,
+        name: str,
+        maximum: int,
+    ) -> None:
+        self._handle = handle
+        self._directory = directory
+        self._name = name
+        self._maximum = maximum
+
+    def fileno(self) -> int:
+        return self._handle.fileno()
+
+    def write(self, payload: bytes) -> int:
+        return self._handle.write(payload)
+
+    def flush(self) -> None:
+        self._handle.flush()
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        return self._handle.seek(offset, whence)
+
+    def read(self, size: int = -1) -> bytes:
+        return self._handle.read(size)
+
+    def validate_identity(self) -> None:
+        self._directory._validate_file(
+            self._name,
+            self.fileno(),
+            maximum=self._maximum,
+            apply_permissions=False,
+        )
+
+    def identity(self) -> tuple[int, int]:
+        details = self._directory._validate_file(
+            self._name,
+            self.fileno(),
+            maximum=self._maximum,
+            apply_permissions=False,
+        )
+        return details.st_dev, details.st_ino
+
+    def close(self) -> None:
+        try:
+            self._handle.close()
+        finally:
+            self._directory.close()
 
 
 @runtime_checkable
@@ -236,6 +981,10 @@ class InventoryBoundRunner:
     def runner_binary(self) -> Any:
         return getattr(self.runner, "runner_binary", None)
 
+    @property
+    def runner_binary_digest(self) -> Any:
+        return getattr(self.runner, "runner_binary_digest", None)
+
     def inventory(self) -> Mapping[str, Any]:
         try:
             inventory = self.runner.inventory()
@@ -389,41 +1138,15 @@ def request_runner_task_cancel(
 ) -> None:
     """Durably request cancellation for an already-started watchdog task."""
 
-    from .runner_trust import RunnerTrustError, _is_link_or_reparse, _owner_private
-
     root = runner_watchdog_control_root(durable_result_path, task_id)
-    cancel_path = root / "cancel"
     try:
-        if _is_link_or_reparse(root) or not root.is_dir():
-            raise OSError("unsafe watchdog control directory")
-        resolved = root.resolve(strict=True)
-        if resolved != root or _is_link_or_reparse(resolved):
-            raise OSError("watchdog control identity changed")
-        _owner_private(resolved, directory=True)
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        try:
-            descriptor = os.open(cancel_path, flags, 0o600)
-        except FileExistsError:
-            if _is_link_or_reparse(cancel_path) or not cancel_path.is_file():
-                raise OSError("unsafe cancellation marker") from None
-            details = cancel_path.stat(follow_symlinks=False)
-            if details.st_nlink != 1 or cancel_path.read_bytes() != b"cancel\n":
-                raise OSError("invalid cancellation marker") from None
-            return
-        try:
-            os.write(descriptor, b"cancel\n")
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        _owner_private(cancel_path, directory=False)
-        if os.name != "nt":
-            directory = os.open(resolved, os.O_RDONLY)
+        with _PinnedPrivateDirectory(root) as pinned:
             try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-    except (OSError, RunnerTrustError):
+                pinned.create("cancel", b"cancel\n", maximum=32)
+            except FileExistsError:
+                if pinned.read("cancel", maximum=32) != b"cancel\n":
+                    raise OSError("invalid cancellation marker") from None
+    except (OSError, RunnerTransportError):
         raise RunnerTransportError("runner cancellation signal is unavailable") from None
 
 
@@ -433,48 +1156,52 @@ def cleanup_runner_watchdog_terminal_state(
 ) -> None:
     """Remove only a terminal watchdog record after durable task reconciliation."""
 
-    from .runner_trust import RunnerTrustError, _is_link_or_reparse, _owner_private
-
     root = runner_watchdog_control_root(durable_result_path, task_id)
-    status_path = root / "status.json"
-    try:
-        if _is_link_or_reparse(root) or not root.is_dir():
-            raise OSError("unsafe watchdog control directory")
-        resolved = root.resolve(strict=True)
-        if resolved != root or _is_link_or_reparse(resolved):
-            raise OSError("watchdog control identity changed")
-        _owner_private(resolved, directory=True)
-        entries = tuple(resolved.iterdir())
-        if len(entries) != 1 or entries[0].name != "status.json":
-            raise OSError("watchdog task is not terminal")
-        if _is_link_or_reparse(status_path) or not status_path.is_file():
-            raise OSError("unsafe watchdog status")
-        details = status_path.stat(follow_symlinks=False)
-        if details.st_nlink != 1 or details.st_size > 4096:
-            raise OSError("unsafe watchdog status")
-        _owner_private(status_path, directory=False)
-        status = SubprocessRustRunner._decode_json(
-            status_path.read_bytes(),
-            "runner watchdog status",
-        )
-        if (
-            status.get("schema_version") != "bluefire.runner-watchdog-status.v1"
-            or status.get("task_id") != task_id
-            or status.get("state") not in {"succeeded", "failed", "cancelled"}
-        ):
-            raise OSError("invalid watchdog status")
-        status_path.unlink()
-        resolved.rmdir()
-        if os.name != "nt":
-            descriptor = os.open(resolved.parent, os.O_RDONLY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-    except (OSError, RunnerTrustError, RunnerTransportError):
-        raise RunnerTransportError(
-            "runner watchdog state is not ready for reconciliation"
-        ) from None
+    deadline = time.monotonic() + 0.5
+    expected_status_identity: tuple[int, int] | None = None
+    expected_status_payload: bytes | None = None
+    while True:
+        try:
+            with _PinnedPrivateDirectory(root, delete=True) as pinned:
+                if pinned.names() != ("status.json",):
+                    raise OSError("watchdog task is not terminal")
+                payload, status_identity = pinned.read_with_identity(
+                    "status.json",
+                    maximum=4096,
+                    expected_identity=expected_status_identity,
+                )
+                if expected_status_identity is None:
+                    expected_status_identity = status_identity
+                    expected_status_payload = payload
+                elif (
+                    status_identity != expected_status_identity
+                    or payload != expected_status_payload
+                ):
+                    raise OSError("watchdog terminal status identity changed")
+                status = SubprocessRustRunner._decode_json(
+                    payload,
+                    "runner watchdog status",
+                )
+                if (
+                    status.get("schema_version") != "bluefire.runner-watchdog-status.v1"
+                    or status.get("task_id") != task_id
+                    or status.get("state") not in {"succeeded", "failed", "cancelled"}
+                ):
+                    raise OSError("invalid watchdog status")
+                pinned.unlink(
+                    "status.json",
+                    maximum=4096,
+                    expected=payload,
+                    expected_identity=status_identity,
+                )
+                pinned.remove()
+                return
+        except (OSError, RunnerTransportError):
+            if time.monotonic() >= deadline:
+                raise RunnerTransportError(
+                    "runner watchdog state is not ready for reconciliation"
+                ) from None
+            time.sleep(0.01)
 
 
 class SubprocessRustRunner:
@@ -487,6 +1214,7 @@ class SubprocessRustRunner:
         *,
         timeout_seconds: float = 35.0,
         output_limit_bytes: int = 2 * 1024 * 1024,
+        receiver_task_key_factory: Callable[[str], bytes] | None = None,
         _kill_child_on_job_close: bool = False,
     ) -> None:
         binary = Path(runner_binary).expanduser()
@@ -495,13 +1223,22 @@ class SubprocessRustRunner:
         root = Path(work_root).expanduser()
         root.mkdir(parents=True, exist_ok=True)
         self.runner_binary = binary.resolve(strict=True)
+        try:
+            self.runner_binary_digest = file_hash(self.runner_binary)
+        except OSError:
+            raise RunnerTransportError("Runner identity could not be verified.") from None
         self.work_root = root.resolve(strict=True)
         self.timeout_seconds = timeout_seconds
         self.output_limit_bytes = output_limit_bytes
+        self._receiver_task_key_factory = receiver_task_key_factory
         self._kill_child_on_job_close = bool(_kill_child_on_job_close)
         self._windows_jobs: dict[int, int] = {}
         self._windows_jobs_lock = threading.Lock()
-        if timeout_seconds <= 0 or output_limit_bytes < 4096:
+        if (
+            timeout_seconds <= 0
+            or not 4096 <= output_limit_bytes <= _WATCHDOG_CONFIG_LIMIT_BYTES
+            or (receiver_task_key_factory is not None and not callable(receiver_task_key_factory))
+        ):
             raise RunnerTransportError("runner transport bounds are invalid")
 
     def inventory(self) -> Mapping[str, Any]:
@@ -555,10 +1292,7 @@ class SubprocessRustRunner:
             )
 
         destination, pending = self._durable_paths(durable_result_path, task_id)
-        if pending.exists() or pending.is_symlink():
-            raise RunnerPendingResultExists(
-                "Runner pending result requires recovery before the task can start."
-            )
+        receiver_environment = self._receiver_environment(task_id)
         control_root = runner_watchdog_control_root(destination, task_id)
         config_path = control_root / "config.json"
         start_path = control_root / "start"
@@ -566,14 +1300,16 @@ class SubprocessRustRunner:
         try:
             self._prepare_watchdog_control(control_root)
             try:
-                binary_digest = file_hash(self.runner_binary)
+                current_binary_digest = file_hash(self.runner_binary)
             except OSError:
                 raise RunnerTransportError("Runner identity could not be verified.") from None
+            if current_binary_digest != self.runner_binary_digest:
+                raise RunnerTransportError("Runner identity changed after construction.")
             config = {
                 "schema_version": "bluefire.runner-watchdog-config.v1",
                 "task_id": task_id,
                 "runner_binary": str(self.runner_binary),
-                "runner_binary_digest": binary_digest,
+                "runner_binary_digest": self.runner_binary_digest,
                 "work_root": str(self.work_root),
                 "timeout_seconds": self.timeout_seconds,
                 "output_limit_bytes": self.output_limit_bytes,
@@ -586,7 +1322,16 @@ class SubprocessRustRunner:
                 canonical_json_bytes(config) + b"\n",
                 maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
             )
-            watchdog = self._spawn_watchdog(config_path)
+            try:
+                current_binary_digest = file_hash(self.runner_binary)
+            except OSError:
+                raise RunnerTransportError("Runner identity could not be verified.") from None
+            if current_binary_digest != self.runner_binary_digest:
+                raise RunnerTransportError("Runner identity changed before watchdog launch.")
+            watchdog = self._spawn_watchdog(
+                config_path,
+                receiver_environment=receiver_environment,
+            )
             # `_spawn_watchdog` returns only after Windows job assignment. The
             # watchdog refuses to launch Rust until this exclusive gate exists.
             self._write_private_control_file(start_path, b"start\n", maximum=32)
@@ -642,6 +1387,7 @@ class SubprocessRustRunner:
         task_id: str,
         cancel_event: threading.Event,
         durable_result_path: str | Path,
+        receiver_environment: Mapping[str, str] | None = None,
     ) -> Mapping[str, Any]:
         """Watchdog-only fixed-runner execution and durable-result commit."""
 
@@ -652,6 +1398,7 @@ class SubprocessRustRunner:
                 "Runner task did not start because cancellation was requested."
             )
         destination, pending = self._durable_paths(durable_result_path, task_id)
+        pending_identities: list[tuple[int, int]] = []
         try:
             with tempfile.TemporaryDirectory(prefix="request-", dir=self.work_root) as directory:
                 request_root = Path(directory)
@@ -659,7 +1406,7 @@ class SubprocessRustRunner:
                 profile_path = request_root / "profile.json"
                 manifest_path.write_bytes(canonical_json_bytes(manifest) + b"\n")
                 profile_path.write_bytes(canonical_json_bytes(profile) + b"\n")
-                output = self._invoke_task(
+                output, pending_identity = self._invoke_task(
                     [
                         str(self.runner_binary),
                         "execute",
@@ -671,92 +1418,81 @@ class SubprocessRustRunner:
                     ],
                     cancel_event=cancel_event,
                     pending_result_path=pending,
+                    identity_sink=pending_identities,
+                    receiver_environment=receiver_environment,
                 )
             result = self._validate_result(output, manifest, profile)
             self._promote_pending_result(
                 pending,
                 destination,
-                canonical_json_bytes(dict(result)) + b"\n",
+                pending_expected=output,
+                pending_identity=pending_identity,
+                final_payload=canonical_json_bytes(dict(result)) + b"\n",
             )
             return result
         except (RunnerDurableResultExists, RunnerPendingResultExists):
             raise
         except BaseException:
-            self._remove_pending_result(pending)
+            self._remove_pending_result(
+                pending,
+                expected_identity=(pending_identities[-1] if pending_identities else None),
+            )
             raise
 
     @staticmethod
     def _prepare_watchdog_control(root: Path) -> None:
-        from .runner_trust import RunnerTrustError, _is_link_or_reparse, _owner_private
-
         try:
             root.mkdir(mode=0o700, parents=False, exist_ok=False)
-            if _is_link_or_reparse(root) or not root.is_dir():
-                raise OSError("unsafe watchdog control directory")
-            resolved = root.resolve(strict=True)
-            if resolved != root or _is_link_or_reparse(resolved):
-                raise OSError("watchdog control identity changed")
-            _owner_private(resolved, directory=True)
+            created = root.stat(follow_symlinks=False)
+            with _PinnedPrivateDirectory(root, expected_identity=(created.st_dev, created.st_ino)):
+                pass
         except FileExistsError:
             raise RunnerPendingResultExists(
                 "Runner watchdog state requires reconciliation before the task can start."
             ) from None
-        except (OSError, RunnerTrustError):
+        except (OSError, RunnerTransportError):
             raise RunnerTransportError("runner watchdog state is unavailable") from None
 
     @staticmethod
     def _write_private_control_file(path: Path, payload: bytes, *, maximum: int) -> None:
-        from .runner_trust import RunnerTrustError, _is_link_or_reparse, _owner_private
-
         if not 0 < len(payload) <= maximum:
             raise RunnerTransportError("runner watchdog state exceeds its size limit")
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = -1
-        created = False
         try:
-            descriptor = os.open(path, flags, 0o600)
-            created = True
-            written = 0
-            while written < len(payload):
-                count = os.write(descriptor, payload[written:])
-                if count <= 0:
-                    raise OSError("short watchdog control write")
-                written += count
-            os.fsync(descriptor)
-            _owner_private(path, directory=False)
-            descriptor_state = os.fstat(descriptor)
-            path_state = path.stat(follow_symlinks=False)
-            if (
-                descriptor_state.st_nlink != 1
-                or path_state.st_nlink != 1
-                or _is_link_or_reparse(path)
-                or (descriptor_state.st_dev, descriptor_state.st_ino)
-                != (path_state.st_dev, path_state.st_ino)
-            ):
-                raise OSError("watchdog control identity changed")
-            if os.name != "nt":
-                parent_descriptor = os.open(path.parent, os.O_RDONLY)
-                try:
-                    os.fsync(parent_descriptor)
-                finally:
-                    os.close(parent_descriptor)
+            with _PinnedPrivateDirectory(path.parent) as pinned:
+                pinned.create(path.name, payload, maximum=maximum)
         except FileExistsError:
             raise RunnerPendingResultExists(
                 "Runner watchdog state requires reconciliation before the task can start."
             ) from None
-        except (OSError, RunnerTrustError):
-            if created:
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
+        except (OSError, RunnerTransportError):
             raise RunnerTransportError("runner watchdog state is unavailable") from None
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
 
-    def _spawn_watchdog(self, config_path: Path) -> subprocess.Popen[bytes]:
+    def _receiver_environment(self, task_id: str) -> dict[str, str]:
+        if not isinstance(task_id, str) or _TASK_IDENTIFIER.fullmatch(task_id) is None:
+            raise RunnerTransportError("runner task identity is invalid")
+        factory = self._receiver_task_key_factory
+        if factory is None:
+            return {}
+        try:
+            task_key = factory(task_id)
+        except BaseException:
+            raise RunnerTransportError("runner receiver authentication is unavailable") from None
+        if type(task_key) is not bytes or len(task_key) != 32:
+            raise RunnerTransportError("runner receiver authentication is invalid")
+        return _validated_receiver_task_environment(
+            {
+                _RECEIVER_TASK_ID_ENV: task_id,
+                _RECEIVER_TASK_KEY_ENV: task_key.hex(),
+            },
+            expected_task_id=task_id,
+        )
+
+    def _spawn_watchdog(
+        self,
+        config_path: Path,
+        *,
+        receiver_environment: Mapping[str, str],
+    ) -> subprocess.Popen[bytes]:
         try:
             interpreter = Path(sys.executable).resolve(strict=True)
             if not interpreter.is_file():
@@ -773,6 +1509,7 @@ class SubprocessRustRunner:
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            receiver_environment=receiver_environment,
         )
 
     def _await_watchdog(
@@ -830,9 +1567,8 @@ class SubprocessRustRunner:
         status_path = runner_watchdog_status_path(destination, task_id)
         status: Mapping[str, Any] | None = None
         try:
-            payload = status_path.read_bytes()
-            if len(payload) > 4096:
-                raise OSError("watchdog status is oversized")
+            with _PinnedPrivateDirectory(status_path.parent) as pinned:
+                payload = pinned.read(status_path.name, maximum=4096)
             status = self._decode_json(payload, "runner watchdog status")
         except (OSError, RunnerTransportError):
             status = None
@@ -846,14 +1582,16 @@ class SubprocessRustRunner:
         if code == "cancelled":
             raise RunnerTaskCancelled("Runner task was cancelled after its process tree stopped.")
         if code == "timed_out":
-            raise RunnerTransportError("Rust runner transport timed out")
+            raise RunnerTaskTimedOut("Runner task timed out after its process tree stopped.")
         if code == "output_limit":
             raise RunnerTransportError("Rust runner exceeded the transport output limit")
         if code == "durable_result_exists":
             raise RunnerDurableResultExists(
                 "Runner durable result already exists and requires reconciliation."
             )
-        if code == "pending_result_exists" or pending.exists():
+        pending_present = self._private_name_exists(pending)
+        destination_present = self._private_name_exists(destination)
+        if code == "pending_result_exists" or pending_present:
             raise RunnerPendingResultExists(
                 "Runner pending result requires recovery before the task can start."
             )
@@ -863,47 +1601,49 @@ class SubprocessRustRunner:
             raise RunnerTransportError("runner result is not valid UTF-8 JSON")
         if code == "invalid_result":
             raise RunnerTransportError("runner returned a result that did not match its request")
-        if state == "succeeded" or (status is None and destination.exists()):
+        if state == "succeeded" or (status is None and destination_present):
             output = self._read_private_result(destination)
             return self._validate_result(output, manifest, profile)
         raise RunnerTransportError("Runner watchdog failed before publishing a valid result")
 
     def _read_private_result(self, path: Path) -> bytes:
-        from .runner_trust import RunnerTrustError, _is_link_or_reparse, _owner_private
-
         try:
-            if _is_link_or_reparse(path) or not path.is_file():
-                raise OSError("unsafe durable result")
-            details = path.stat(follow_symlinks=False)
-            if details.st_nlink != 1 or details.st_size > self.output_limit_bytes:
-                raise OSError("unsafe durable result")
-            _owner_private(path, directory=False)
-            payload = path.read_bytes()
-            if len(payload) > self.output_limit_bytes:
-                raise OSError("unsafe durable result")
-            return payload
-        except (OSError, RunnerTrustError):
+            with _PinnedPrivateDirectory(path.parent) as pinned:
+                return pinned.read(path.name, maximum=self.output_limit_bytes)
+        except (OSError, RunnerTransportError):
+            raise RunnerTransportError("runner durable result is unavailable") from None
+
+    @staticmethod
+    def _private_name_exists(path: Path) -> bool:
+        try:
+            with _PinnedPrivateDirectory(path.parent) as pinned:
+                return pinned.has_name(path.name)
+        except (OSError, RunnerTransportError):
             raise RunnerTransportError("runner durable result is unavailable") from None
 
     @staticmethod
     def _cleanup_watchdog_control(root: Path) -> None:
-        from .runner_trust import _is_link_or_reparse
-
         try:
-            if not root.exists() or _is_link_or_reparse(root) or not root.is_dir():
-                return
-            entries = tuple(root.iterdir())
-            if any(
-                entry.name not in _WATCHDOG_CONTROL_NAMES
-                or _is_link_or_reparse(entry)
-                or not entry.is_file()
-                for entry in entries
-            ):
-                return
-            for entry in entries:
-                entry.unlink()
-            root.rmdir()
-        except OSError:
+            with _PinnedPrivateDirectory(root, delete=True) as pinned:
+                names = pinned.names()
+                if any(name not in _WATCHDOG_CONTROL_NAMES for name in names):
+                    return
+                identities = {
+                    name: pinned.file_identity(
+                        name,
+                        maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
+                        apply_permissions=False,
+                    )
+                    for name in names
+                }
+                for name, identity in identities.items():
+                    pinned.unlink(
+                        name,
+                        maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
+                        expected_identity=identity,
+                    )
+                pinned.remove()
+        except (OSError, RunnerTransportError):
             return
 
     def _validate_result(
@@ -999,13 +1739,21 @@ class SubprocessRustRunner:
         *,
         cancel_event: threading.Event,
         pending_result_path: Path,
-    ) -> bytes:
+        identity_sink: list[tuple[int, int]],
+        receiver_environment: Mapping[str, str] | None,
+    ) -> tuple[bytes, tuple[int, int]]:
         output = self._open_pending_result(pending_result_path)
+        guarded_output = cast(_GuardedBinaryFile, output)
+        identity_sink.append(guarded_output.identity())
         stderr = bytearray()
         overflow = threading.Event()
         process: subprocess.Popen[bytes] | None = None
         try:
-            process = self._spawn(argv, stdout=output)
+            process = self._spawn(
+                argv,
+                stdout=output,
+                receiver_environment=receiver_environment,
+            )
 
             def drain_stderr(stream: BinaryIO | None) -> None:
                 if stream is None:
@@ -1032,22 +1780,14 @@ class SubprocessRustRunner:
                     process,
                     cancel_event=cancel_event,
                     overflow=overflow,
-                    output_path=pending_result_path,
+                    output_descriptor=output.fileno(),
                 )
             finally:
                 reader.join(timeout=_PROCESS_KILL_GRACE_SECONDS)
             output.flush()
             os.fsync(output.fileno())
-            descriptor_state = os.fstat(output.fileno())
-            path_state = pending_result_path.stat(follow_symlinks=False)
-            if (
-                descriptor_state.st_nlink != 1
-                or path_state.st_nlink != 1
-                or pending_result_path.is_symlink()
-                or (descriptor_state.st_dev, descriptor_state.st_ino)
-                != (path_state.st_dev, path_state.st_ino)
-            ):
-                raise OSError("pending result identity changed")
+            guarded_output.validate_identity()
+            pending_identity = guarded_output.identity()
             output.seek(0)
             result_output = output.read(self.output_limit_bytes + 1)
         except BaseException as exc:
@@ -1064,15 +1804,11 @@ class SubprocessRustRunner:
         finally:
             output.close()
 
-        if (
-            overflow.is_set()
-            or self._file_exceeds_limit(pending_result_path)
-            or len(result_output) > self.output_limit_bytes
-        ):
+        if overflow.is_set() or len(result_output) > self.output_limit_bytes:
             raise RunnerTransportError("Rust runner exceeded the transport output limit")
         if return_code not in {0, 3, 4}:
             raise RunnerTransportError("Rust runner exited with an unexpected status")
-        return result_output
+        return result_output, pending_identity
 
     def _spawn(
         self,
@@ -1080,8 +1816,10 @@ class SubprocessRustRunner:
         *,
         stdout: int | BinaryIO | None,
         stderr: int | BinaryIO | None = subprocess.PIPE,
+        receiver_environment: Mapping[str, str] | None = None,
     ) -> subprocess.Popen[bytes]:
         environment: dict[str, str] = {"LC_ALL": "C", "LANG": "C"}
+        environment.update(_validated_receiver_task_environment(receiver_environment))
         options: dict[str, Any] = {}
         windows_job: int | None = None
         windows_suspended = False
@@ -1140,7 +1878,7 @@ class SubprocessRustRunner:
         *,
         cancel_event: threading.Event | None = None,
         overflow: threading.Event,
-        output_path: Path | None = None,
+        output_descriptor: int | None = None,
     ) -> int:
         deadline = time.monotonic() + self.timeout_seconds
         while True:
@@ -1157,9 +1895,18 @@ class SubprocessRustRunner:
                 if not released:
                     raise RunnerTransportError("Runner process tree state could not be released")
                 return return_code
-            if overflow.is_set() or (
-                output_path is not None and self._file_exceeds_limit(output_path)
-            ):
+            output_unsafe = False
+            if output_descriptor is not None:
+                try:
+                    details = os.fstat(output_descriptor)
+                    output_unsafe = (
+                        not stat.S_ISREG(details.st_mode)
+                        or details.st_nlink != 1
+                        or details.st_size > self.output_limit_bytes
+                    )
+                except OSError:
+                    output_unsafe = True
+            if overflow.is_set() or output_unsafe:
                 if not self._stop_process_tree(process):
                     raise RunnerTransportError("Runner process tree could not be stopped safely")
                 raise RunnerTransportError("Rust runner exceeded the transport output limit")
@@ -1585,18 +2332,12 @@ class SubprocessRustRunner:
         except (AttributeError, OSError, ValueError):
             raise RunnerTransportError("Windows process control is unavailable") from None
 
-    def _file_exceeds_limit(self, path: Path) -> bool:
-        try:
-            return path.stat().st_size > self.output_limit_bytes
-        except OSError:
-            return False
-
     def _durable_paths(
         self,
         durable_result_path: str | Path,
         task_id: str,
     ) -> tuple[Path, Path]:
-        from .runner_trust import RunnerTrustError, _is_link_or_reparse, _owner_private
+        from .runner_trust import _is_link_or_reparse
 
         destination = Path(durable_result_path).expanduser()
         if not destination.is_absolute() or destination.name in {"", ".", ".."}:
@@ -1606,6 +2347,7 @@ class SubprocessRustRunner:
             destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             if _is_link_or_reparse(destination.parent):
                 raise OSError("durable result parent is linked")
+            metadata = destination.parent.stat(follow_symlinks=False)
             parent = destination.parent.resolve(strict=True)
             if (
                 os.path.normcase(os.path.normpath(str(requested_parent)))
@@ -1614,118 +2356,106 @@ class SubprocessRustRunner:
                 or _is_link_or_reparse(parent)
             ):
                 raise OSError("durable result parent is not a directory")
-            _owner_private(parent, directory=True)
-            if _is_link_or_reparse(parent) or parent.resolve(strict=True) != parent:
-                raise OSError("durable result parent identity changed")
             destination = parent / destination.name
-            if destination.exists() or _is_link_or_reparse(destination):
-                raise RunnerDurableResultExists(
-                    "Runner durable result already exists and requires reconciliation."
-                )
+            pending = runner_pending_result_path(destination, task_id)
+            with _PinnedPrivateDirectory(
+                parent,
+                expected_identity=(metadata.st_dev, metadata.st_ino),
+            ) as pinned:
+                if pinned.has_name(destination.name):
+                    raise RunnerDurableResultExists(
+                        "Runner durable result already exists and requires reconciliation."
+                    )
+                if pinned.has_name(pending.name):
+                    raise RunnerPendingResultExists(
+                        "Runner pending result requires recovery before the task can start."
+                    )
         except RunnerDurableResultExists:
             raise
-        except (OSError, RunnerTrustError):
+        except RunnerPendingResultExists:
+            raise
+        except (OSError, RunnerTransportError):
             raise RunnerTransportError("runner durable result destination is unavailable") from None
-        return destination, runner_pending_result_path(destination, task_id)
+        return destination, pending
 
     @staticmethod
     def _open_pending_result(path: Path) -> BinaryIO:
-        from .runner_trust import RunnerTrustError, _is_link_or_reparse, _owner_private
-
-        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        handle: BinaryIO | None = None
-        remove_created = False
+        pinned = _PinnedPrivateDirectory(path.parent)
         try:
-            descriptor = os.open(path, flags, 0o600)
-            handle = os.fdopen(descriptor, "w+b", buffering=0)
-            remove_created = True
-            _owner_private(path, directory=False)
-            descriptor_state = os.fstat(descriptor)
-            path_state = path.stat(follow_symlinks=False)
-            if (
-                descriptor_state.st_nlink != 1
-                or path_state.st_nlink != 1
-                or _is_link_or_reparse(path)
-                or (descriptor_state.st_dev, descriptor_state.st_ino)
-                != (path_state.st_dev, path_state.st_ino)
-            ):
-                raise OSError("unsafe pending result")
-            return handle
+            pinned.__enter__()
+            return cast(
+                BinaryIO,
+                pinned.open_new(path.name, maximum=_WATCHDOG_CONFIG_LIMIT_BYTES),
+            )
         except FileExistsError:
+            pinned.close()
             raise RunnerPendingResultExists(
                 "Runner pending result requires recovery before the task can start."
             ) from None
-        except (OSError, RunnerTrustError):
-            if handle is not None:
-                handle.close()
-            if remove_created:
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
+        except (OSError, RunnerTransportError):
+            pinned.close()
             raise RunnerTransportError("runner pending result is unavailable") from None
 
     @staticmethod
-    def _promote_pending_result(pending: Path, destination: Path, validated: bytes) -> None:
-        from .runner_trust import RunnerTrustError, _is_link_or_reparse, _owner_private
-
+    def _promote_pending_result(
+        pending: Path,
+        destination: Path,
+        *,
+        pending_expected: bytes,
+        pending_identity: tuple[int, int],
+        final_payload: bytes,
+    ) -> None:
         final_created = False
-        handle: BinaryIO | None = None
         try:
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
-            flags |= getattr(os, "O_NOFOLLOW", 0)
-            descriptor = os.open(destination, flags, 0o600)
-            handle = os.fdopen(descriptor, "wb", buffering=0)
-            final_created = True
-            handle.write(validated)
-            handle.flush()
-            os.fsync(handle.fileno())
-            _owner_private(destination, directory=False)
-            descriptor_state = os.fstat(handle.fileno())
-            path_state = destination.stat(follow_symlinks=False)
-            if (
-                descriptor_state.st_nlink != 1
-                or path_state.st_nlink != 1
-                or _is_link_or_reparse(destination)
-                or (descriptor_state.st_dev, descriptor_state.st_ino)
-                != (path_state.st_dev, path_state.st_ino)
-            ):
-                raise OSError("durable result identity changed")
-            handle.close()
-            handle = None
-            if os.name != "nt":
-                descriptor = os.open(destination.parent, os.O_RDONLY)
-                try:
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
-            pending.unlink()
-            if os.name != "nt":
-                descriptor = os.open(destination.parent, os.O_RDONLY)
-                try:
-                    os.fsync(descriptor)
-                finally:
-                    os.close(descriptor)
+            if pending.parent != destination.parent:
+                raise OSError("durable result directories differ")
+            with _PinnedPrivateDirectory(destination.parent) as pinned:
+                checked, checked_identity = pinned.read_with_identity(
+                    pending.name,
+                    maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
+                    expected_identity=pending_identity,
+                )
+                if checked != pending_expected or checked_identity != pending_identity:
+                    raise OSError("runner pending result identity changed")
+                pinned.create(
+                    destination.name,
+                    final_payload,
+                    maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
+                )
+                final_created = True
+                pinned.unlink(
+                    pending.name,
+                    maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
+                    expected=pending_expected,
+                    expected_identity=pending_identity,
+                )
         except FileExistsError:
             raise RunnerDurableResultExists(
                 "Runner durable result already exists and requires reconciliation."
             ) from None
-        except (OSError, RunnerTrustError):
+        except (OSError, RunnerTransportError):
             if final_created:
                 raise RunnerDurableResultExists(
                     "Runner durable result may be committed and requires reconciliation."
                 ) from None
             raise RunnerTransportError("runner durable result could not be committed") from None
-        finally:
-            if handle is not None:
-                handle.close()
 
     @staticmethod
-    def _remove_pending_result(path: Path) -> None:
+    def _remove_pending_result(
+        path: Path,
+        *,
+        expected_identity: tuple[int, int] | None,
+    ) -> None:
+        if expected_identity is None:
+            return
         try:
-            path.unlink(missing_ok=True)
-        except OSError:
+            with _PinnedPrivateDirectory(path.parent) as pinned:
+                pinned.unlink(
+                    path.name,
+                    maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
+                    expected_identity=expected_identity,
+                )
+        except (OSError, RunnerTransportError):
             pass
 
     @staticmethod
@@ -1769,6 +2499,7 @@ __all__ = [
     "RunnerDurableResultExists",
     "RunnerPendingResultExists",
     "RunnerTaskCancelled",
+    "RunnerTaskTimedOut",
     "SubprocessRustRunner",
     "TaskAwareRunnerTransport",
     "canonical_runner_inventory",

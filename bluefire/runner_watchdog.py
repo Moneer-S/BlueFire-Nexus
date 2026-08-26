@@ -25,9 +25,11 @@ from .runner_client import (
     RunnerTaskCancelled,
     RunnerTransportError,
     SubprocessRustRunner,
+    _consume_receiver_task_environment,
+    _PinnedPrivateDirectory,
     runner_watchdog_control_root,
 )
-from .runner_trust import RunnerTrustError, _is_link_or_reparse, _owner_private
+from .runner_trust import _is_link_or_reparse
 from .util import canonical_json_bytes, file_hash
 
 _CONFIG_SCHEMA = "bluefire.runner-watchdog-config.v1"
@@ -66,6 +68,7 @@ class _WatchdogConfig:
     manifest: Mapping[str, Any]
     profile: Mapping[str, Any]
     control_root: Path
+    control: _PinnedPrivateDirectory
 
     @property
     def start_path(self) -> Path:
@@ -88,59 +91,20 @@ class _WatchdogConfig:
         return self.control_root / "config.json"
 
 
-def _read_private_file(path: Path, maximum: int) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
-    flags |= getattr(os, "O_NOFOLLOW", 0)
-    descriptor = -1
-    try:
-        descriptor = os.open(path, flags)
-        descriptor_state = os.fstat(descriptor)
-        path_state = path.stat(follow_symlinks=False)
-        if (
-            descriptor_state.st_nlink != 1
-            or path_state.st_nlink != 1
-            or descriptor_state.st_size > maximum
-            or _is_link_or_reparse(path)
-            or (descriptor_state.st_dev, descriptor_state.st_ino)
-            != (path_state.st_dev, path_state.st_ino)
-        ):
-            raise OSError("unsafe watchdog file")
-        chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = os.read(descriptor, min(64 * 1024, maximum + 1 - total))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-            if total > maximum:
-                raise OSError("oversized watchdog file")
-        return b"".join(chunks)
-    except OSError:
-        raise RunnerTransportError("runner watchdog state is unavailable") from None
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-
-
 def _load_config(path_argument: str) -> _WatchdogConfig:
     path = Path(path_argument)
     try:
         if not path.is_absolute() or path.name != "config.json":
             raise OSError("invalid watchdog configuration path")
-        if _is_link_or_reparse(path.parent) or not path.parent.is_dir():
-            raise OSError("unsafe watchdog control directory")
         control_root = path.parent.resolve(strict=True)
-        if control_root != path.parent or _is_link_or_reparse(control_root):
+        if control_root != path.parent:
             raise OSError("watchdog control identity changed")
-        _owner_private(control_root, directory=True)
-        if _is_link_or_reparse(path) or not path.is_file():
-            raise OSError("unsafe watchdog configuration")
-        _owner_private(path, directory=False)
-    except (OSError, RunnerTrustError):
+        with _PinnedPrivateDirectory(control_root) as pinned:
+            raw = pinned.read("config.json", maximum=_CONFIG_LIMIT_BYTES)
+            control_identity = pinned.directory_identity()
+    except (OSError, RunnerTransportError):
         raise RunnerTransportError("runner watchdog state is unavailable") from None
 
-    raw = _read_private_file(path, _CONFIG_LIMIT_BYTES)
     value = SubprocessRustRunner._decode_json(raw, "runner watchdog configuration")
     if set(value) != _CONFIG_KEYS or value.get("schema_version") != _CONFIG_SCHEMA:
         raise RunnerTransportError("runner watchdog configuration is invalid")
@@ -198,6 +162,16 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
     except (OSError, RunnerTransportError):
         raise RunnerTransportError("runner watchdog configuration is invalid") from None
 
+    control = _PinnedPrivateDirectory(
+        control_root,
+        expected_identity=control_identity,
+    )
+    try:
+        control.__enter__()
+    except (OSError, RunnerTransportError):
+        control.close()
+        raise RunnerTransportError("runner watchdog state is unavailable") from None
+
     return _WatchdogConfig(
         task_id=task_id,
         runner_binary=runner_binary,
@@ -209,36 +183,40 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
         manifest=manifest,
         profile=profile,
         control_root=control_root,
+        control=control,
     )
 
 
-def _write_private_json(path: Path, value: Mapping[str, Any]) -> None:
+def _write_private_json(
+    config: _WatchdogConfig,
+    name: str,
+    value: Mapping[str, Any],
+) -> None:
     payload = canonical_json_bytes(dict(value)) + b"\n"
     if len(payload) > _STATUS_LIMIT_BYTES:
         raise RunnerTransportError("runner watchdog status exceeds its size limit")
-    SubprocessRustRunner._write_private_control_file(
-        path,
-        payload,
-        maximum=_STATUS_LIMIT_BYTES,
-    )
-
-
-def _signal_exists(path: Path, expected: bytes) -> bool:
-    if not path.exists() and not path.is_symlink():
-        return False
     try:
-        return _read_private_file(path, 32) == expected
-    except RunnerTransportError:
+        config.control.create(name, payload, maximum=_STATUS_LIMIT_BYTES)
+    except (OSError, RunnerTransportError):
+        raise RunnerTransportError("runner watchdog state is unavailable") from None
+
+
+def _signal_exists(config: _WatchdogConfig, name: str, expected: bytes) -> bool:
+    try:
+        if not config.control.has_name(name):
+            return False
+        return config.control.read(name, maximum=32) == expected
+    except (OSError, RunnerTransportError):
         # An invalid object at a control name is treated as fail-closed cancel.
-        return path.name == "cancel"
+        return name == "cancel"
 
 
 def _wait_for_start(config: _WatchdogConfig) -> str:
     deadline = time.monotonic() + _START_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
-        if _signal_exists(config.cancel_path, b"cancel\n"):
+        if _signal_exists(config, "cancel", b"cancel\n"):
             return "cancelled"
-        if _signal_exists(config.start_path, b"start\n"):
+        if _signal_exists(config, "start", b"start\n"):
             return "started"
         time.sleep(_POLL_SECONDS)
     return "start_timeout"
@@ -260,20 +238,27 @@ def _classify_failure(error: RunnerTransportError) -> str:
 
 
 def _cleanup_private_inputs(config: _WatchdogConfig) -> None:
-    for path in (
-        config.config_path,
-        config.start_path,
-        config.cancel_path,
-        config.ready_path,
-    ):
+    for name in ("config.json", "start", "cancel", "ready.json"):
         try:
-            if path.exists() and not _is_link_or_reparse(path) and path.is_file():
-                path.unlink()
-        except OSError:
+            identity = config.control.file_identity(
+                name,
+                maximum=_CONFIG_LIMIT_BYTES,
+                apply_permissions=False,
+            )
+            config.control.unlink(
+                name,
+                maximum=_CONFIG_LIMIT_BYTES,
+                expected_identity=identity,
+            )
+        except (OSError, RunnerTransportError):
             continue
 
 
-def _run(config: _WatchdogConfig) -> tuple[str, str | None]:
+def _run(
+    config: _WatchdogConfig,
+    *,
+    receiver_environment: Mapping[str, str],
+) -> tuple[str, str | None]:
     gate = _wait_for_start(config)
     if gate == "cancelled":
         return "cancelled", "cancelled"
@@ -285,7 +270,7 @@ def _run(config: _WatchdogConfig) -> tuple[str, str | None]:
 
     def observe_cancel() -> None:
         while not stop_polling.is_set():
-            if _signal_exists(config.cancel_path, b"cancel\n"):
+            if _signal_exists(config, "cancel", b"cancel\n"):
                 cancel_event.set()
                 return
             stop_polling.wait(_POLL_SECONDS)
@@ -312,6 +297,7 @@ def _run(config: _WatchdogConfig) -> tuple[str, str | None]:
             task_id=config.task_id,
             cancel_event=cancel_event,
             durable_result_path=config.durable_result_path,
+            receiver_environment=receiver_environment,
         )
         return "succeeded", None
     except RunnerTaskCancelled:
@@ -337,10 +323,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = _load_config(arguments[0])
     except RunnerTransportError:
         return 65
+    try:
+        receiver_environment = _consume_receiver_task_environment(expected_task_id=config.task_id)
+    except RunnerTransportError:
+        config.control.close()
+        return 65
 
     try:
         _write_private_json(
-            config.ready_path,
+            config,
+            "ready.json",
             {
                 "schema_version": _READY_SCHEMA,
                 "task_id": config.task_id,
@@ -349,12 +341,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except RunnerTransportError:
         _cleanup_private_inputs(config)
+        config.control.close()
         return 66
 
     state = "failed"
     error_code: str | None = "watchdog_failure"
     try:
-        state, error_code = _run(config)
+        state, error_code = _run(
+            config,
+            receiver_environment=receiver_environment,
+        )
         status: dict[str, Any] = {
             "schema_version": _STATUS_SCHEMA,
             "task_id": config.task_id,
@@ -364,11 +360,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         if state == "succeeded":
             status["result_digest"] = file_hash(config.durable_result_path)
-        _write_private_json(config.status_path, status)
+        # A published terminal status is valid only after every live-control
+        # input is gone. The final cleanup in `finally` remains as a fail-safe.
+        _cleanup_private_inputs(config)
+        _write_private_json(config, "status.json", status)
     except (OSError, RunnerTransportError):
         return 67
     finally:
         _cleanup_private_inputs(config)
+        config.control.close()
 
     if state == "succeeded":
         return 0

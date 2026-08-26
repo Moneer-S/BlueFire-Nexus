@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 import pytest
 
+import bluefire.runner_client as runner_client_module
 from bluefire.runner_client import (
     RunnerDurableResultExists,
     RunnerPendingResultExists,
@@ -21,6 +22,7 @@ from bluefire.runner_client import (
     RunnerTransportError,
     SubprocessRustRunner,
     cleanup_runner_watchdog_terminal_state,
+    request_runner_task_cancel,
     runner_pending_result_path,
     runner_watchdog_control_root,
     runner_watchdog_ready_path,
@@ -138,6 +140,18 @@ for result_field, profile_field in profile_bindings.items():
     if profile_field in profile:
         result[result_field] = profile[profile_field]
 result.update(manifest.get("result_override", {}))
+if behavior == "receiver_environment":
+    receiver_key = os.environ.get("BLUEFIRE_RECEIVER_TASK_KEY", "")
+    result["receiver_environment"] = {
+        "names": sorted(
+            name for name in os.environ if name.startswith("BLUEFIRE_RECEIVER_")
+        ),
+        "task_id": os.environ.get("BLUEFIRE_RECEIVER_TASK_ID"),
+        "key_is_lower_hex_64": (
+            len(receiver_key) == 64
+            and all(character in "0123456789abcdef" for character in receiver_key)
+        ),
+    }
 sys.stdout.write(json.dumps(result, sort_keys=True) + "\n")
 sys.stdout.flush()
 """
@@ -285,6 +299,79 @@ def test_execute_task_promotes_complete_stdout_and_preserves_execute_contract(
     legacy = runner.execute(manifest, {})
     assert legacy == result
     assert not list(runner.work_root.glob("request-*"))
+
+
+def test_receiver_task_key_crosses_watchdog_only_through_fixed_scrubbed_environment(
+    tmp_path: Path,
+) -> None:
+    base = _runner(tmp_path)
+    derived_for: list[str] = []
+
+    def derive(task_id: str) -> bytes:
+        derived_for.append(task_id)
+        return b"\xab" * 32
+
+    runner = SubprocessRustRunner(
+        base.runner_binary,
+        base.work_root,
+        timeout_seconds=5,
+        output_limit_bytes=64 * 1024,
+        receiver_task_key_factory=derive,
+    )
+    task_id = "task-receiver-auth-01"
+    durable = (tmp_path / "durable" / "receiver-result.json").resolve()
+    result = runner.execute_task(
+        _manifest("receiver_environment"),
+        {},
+        task_id=task_id,
+        cancel_event=threading.Event(),
+        durable_result_path=durable,
+    )
+
+    assert derived_for == [task_id]
+    assert result["receiver_environment"] == {
+        "names": ["BLUEFIRE_RECEIVER_TASK_ID", "BLUEFIRE_RECEIVER_TASK_KEY"],
+        "task_id": task_id,
+        "key_is_lower_hex_64": True,
+    }
+    assert (b"ab" * 32) not in durable.read_bytes()
+    assert not runner_watchdog_control_root(durable, task_id).exists()
+
+
+def test_receiver_environment_is_consumed_and_invalid_key_factory_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BLUEFIRE_RECEIVER_TASK_ID", "task-consume-01")
+    monkeypatch.setenv("BLUEFIRE_RECEIVER_TASK_KEY", "a" * 64)
+    consumed = runner_client_module._consume_receiver_task_environment(
+        expected_task_id="task-consume-01"
+    )
+    assert consumed == {
+        "BLUEFIRE_RECEIVER_TASK_ID": "task-consume-01",
+        "BLUEFIRE_RECEIVER_TASK_KEY": "a" * 64,
+    }
+    assert "BLUEFIRE_RECEIVER_TASK_ID" not in os.environ
+    assert "BLUEFIRE_RECEIVER_TASK_KEY" not in os.environ
+
+    invalid_root = tmp_path / "invalid-factory"
+    invalid_root.mkdir()
+    base = _runner(invalid_root)
+    runner = SubprocessRustRunner(
+        base.runner_binary,
+        base.work_root,
+        receiver_task_key_factory=lambda _task_id: b"short",
+    )
+    durable = (tmp_path / "invalid-result.json").resolve()
+    with pytest.raises(RunnerTransportError, match="authentication is invalid"):
+        runner.execute_task(
+            _manifest(),
+            {},
+            task_id="task-invalid-receiver-key-01",
+            cancel_event=threading.Event(),
+            durable_result_path=durable,
+        )
+    assert not durable.exists()
 
 
 def test_execute_task_rejects_invalid_result_without_promoting_it(tmp_path: Path) -> None:
@@ -490,6 +577,144 @@ def test_pending_result_path_is_deterministic_and_task_id_cannot_select_a_path(
         runner_pending_result_path(Path("relative.json"), "task-01")
 
 
+def test_terminal_cleanup_refuses_hardlinked_status_without_touching_victim(
+    tmp_path: Path,
+) -> None:
+    durable = (tmp_path / "durable" / "result.json").resolve()
+    durable.parent.mkdir()
+    task_id = "task-hardlink-status-01"
+    control_root = runner_watchdog_control_root(durable, task_id)
+    control_root.mkdir()
+    payload = json.dumps(
+        {
+            "schema_version": "bluefire.runner-watchdog-status.v1",
+            "task_id": task_id,
+            "state": "cancelled",
+            "error_code": "cancelled",
+            "watchdog_pid": 123,
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+    victim = tmp_path / "victim-status.json"
+    victim.write_bytes(payload)
+    os.link(victim, control_root / "status.json")
+
+    with pytest.raises(RunnerTransportError, match="not ready for reconciliation"):
+        cleanup_runner_watchdog_terminal_state(durable, task_id)
+
+    assert victim.read_bytes() == payload
+    assert (control_root / "status.json").read_bytes() == payload
+
+
+def test_terminal_cleanup_identity_binding_preserves_same_content_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    durable = (tmp_path / "durable" / "result.json").resolve()
+    durable.parent.mkdir()
+    task_id = "task-status-victim-swap-01"
+    control_root = runner_watchdog_control_root(durable, task_id)
+    control_root.mkdir()
+    status_path = control_root / "status.json"
+    payload = json.dumps(
+        {
+            "schema_version": "bluefire.runner-watchdog-status.v1",
+            "task_id": task_id,
+            "state": "cancelled",
+            "error_code": "cancelled",
+            "watchdog_pid": 123,
+        },
+        sort_keys=True,
+    ).encode("utf-8")
+    status_path.write_bytes(payload)
+    victim = tmp_path / "same-content-victim.json"
+    victim.write_bytes(payload)
+    original_status = tmp_path / "original-status.json"
+    original_read = runner_client_module._PinnedPrivateDirectory.read_with_identity
+    swapped = False
+
+    def swap_after_read(
+        pinned: Any,
+        name: str,
+        *,
+        maximum: int,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> tuple[bytes, tuple[int, int]]:
+        nonlocal swapped
+        result = original_read(
+            pinned,
+            name,
+            maximum=maximum,
+            expected_identity=expected_identity,
+        )
+        if name == "status.json" and not swapped:
+            swapped = True
+            status_path.replace(original_status)
+            victim.replace(status_path)
+        return result
+
+    monkeypatch.setattr(
+        runner_client_module._PinnedPrivateDirectory,
+        "read_with_identity",
+        swap_after_read,
+    )
+
+    with pytest.raises(RunnerTransportError, match="not ready for reconciliation"):
+        cleanup_runner_watchdog_terminal_state(durable, task_id)
+
+    assert swapped is True
+    assert status_path.read_bytes() == payload
+    assert original_status.read_bytes() == payload
+
+
+def test_existing_oversized_cancel_marker_is_refused_with_bounded_read(
+    tmp_path: Path,
+) -> None:
+    durable = (tmp_path / "durable" / "result.json").resolve()
+    durable.parent.mkdir()
+    task_id = "task-oversized-cancel-01"
+    control_root = runner_watchdog_control_root(durable, task_id)
+    control_root.mkdir()
+    marker = control_root / "cancel"
+    with marker.open("wb") as handle:
+        handle.truncate(1024 * 1024)
+
+    with pytest.raises(RunnerTransportError, match="signal is unavailable"):
+        request_runner_task_cancel(durable, task_id)
+
+    assert marker.stat().st_size == 1024 * 1024
+
+
+def test_atomic_private_publication_uses_a_fixed_short_temporary_basename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = (tmp_path / "private-publication").resolve()
+    root.mkdir()
+    temporary_names: list[str] = []
+    pinned_type = runner_client_module._PinnedPrivateDirectory
+    original_open_new = pinned_type._open_new
+
+    def record_open_new(pinned: Any, name: str) -> int:
+        temporary_names.append(name)
+        return original_open_new(pinned, name)
+
+    monkeypatch.setattr(pinned_type, "_open_new", record_open_new)
+    with pinned_type(root) as pinned:
+        pinned.create(
+            "a-very-long-semantic-destination-name.json",
+            b"{}\n",
+            maximum=32,
+        )
+
+    assert len(temporary_names) == 1
+    temporary = temporary_names[0]
+    assert temporary.startswith(".t-")
+    assert len(temporary) == 15
+    assert all(character in "0123456789abcdef" for character in temporary[3:])
+    assert "destination" not in temporary
+
+
 def test_existing_pending_result_is_preserved_for_restart_reconciliation(tmp_path: Path) -> None:
     runner = _runner(tmp_path)
     durable = (tmp_path / "durable" / "result.json").resolve()
@@ -527,7 +752,7 @@ def test_atomic_promotion_refuses_racing_final_and_preserves_both_results(
             cancel_event=cancel_event,
             durable_result_path=durable,
         )
-        _wait_for_file(effect_marker)
+        _wait_for_file(effect_marker, timeout=15.0)
         sentinel = b"pre-existing-final"
         durable.write_bytes(sentinel)
         with pytest.raises(RunnerDurableResultExists, match="requires reconciliation"):
