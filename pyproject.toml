@@ -34,7 +34,7 @@ requires-python = ">=3.10"
 authors = [{ name = "BlueFire-Nexus Contributors" }]
 license = "MIT"
 license-files = ["LICENSE"]
-dependencies = ["PyYAML>=6.0.1,<7"]
+dependencies = ["PyYAML>=6.0.1,<7", "cryptography>=45,<47"]
 
 [project.scripts]
 bluefire = "bluefire.cli:main"
