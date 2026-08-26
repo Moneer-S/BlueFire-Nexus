@@ -2344,7 +2344,11 @@ def _write_private_bytes(path: Path, payload: bytes, *, replace: bool) -> None:
 
 
 def _persist_private_payload(path: Path, payload: bytes, *, replace: bool) -> None:
-    temporary = path.with_name(f".{path.name}.{secrets.token_hex(16)}.tmp")
+    # Keep the private staging basename independent of the destination.  Lifecycle
+    # destinations such as the one-use host-start gate already carry a 256-bit
+    # identifier; repeating that basename here can cross the legacy Windows path
+    # limit even when the final destination itself is valid.
+    temporary = path.with_name(f".bfstate-{secrets.token_hex(16)}.tmp")
     parent = path.parent.resolve(strict=True)
     if (
         _is_link_or_reparse(parent)

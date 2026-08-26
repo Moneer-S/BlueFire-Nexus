@@ -1704,7 +1704,7 @@ def test_lifecycle_state_temp_swap_preserves_victim_content_and_acl_target(
             delete_access: bool = True,
             share_delete: bool = False,
         ) -> tuple[int, tuple[int, ...]]:
-            if path.name.startswith(".state.bin.") and delete_access and not swapped:
+            if path.name.startswith(".bfstate-") and delete_access and not swapped:
                 os.replace(replacement, path)
                 swapped.append(path)
             return original_open(
@@ -1724,7 +1724,7 @@ def test_lifecycle_state_temp_swap_preserves_victim_content_and_acl_target(
             destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
             **kwargs: Any,
         ) -> None:
-            temporary = next(tmp_path.glob(".state.bin.*.tmp"))
+            temporary = next(tmp_path.glob(".bfstate-*.tmp"))
             if not swapped:
                 original_replace(replacement, temporary)
                 swapped.append(temporary)
@@ -1747,3 +1747,36 @@ def test_lifecycle_state_temp_swap_preserves_victim_content_and_acl_target(
     surviving_aliases = [candidate for candidate in (state_path, swapped[0]) if candidate.exists()]
     assert surviving_aliases
     assert all(candidate.read_bytes() == victim_payload for candidate in surviving_aliases)
+
+
+def test_lifecycle_private_publication_uses_a_fixed_short_temporary_basename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / ("destination-" + ("x" * 80) + ".json")
+    temporary_names: list[str] = []
+    publisher_name = (
+        "_windows_publish_private_payload" if os.name == "nt" else "_posix_publish_private_payload"
+    )
+    original_publisher = getattr(runner_lifecycle_module, publisher_name)
+
+    def recording_publisher(path: Path, temporary: Path, *args: Any) -> None:
+        temporary_names.append(temporary.name)
+        original_publisher(path, temporary, *args)
+
+    monkeypatch.setattr(runner_lifecycle_module, publisher_name, recording_publisher)
+
+    runner_lifecycle_module._write_private_bytes(  # noqa: SLF001
+        destination,
+        b"owned-state",
+        replace=False,
+    )
+
+    assert destination.read_bytes() == b"owned-state"
+    assert len(temporary_names) == 1
+    temporary = temporary_names[0]
+    assert temporary.startswith(".bfstate-")
+    assert temporary.endswith(".tmp")
+    assert len(temporary) == 45
+    assert all(character in "0123456789abcdef" for character in temporary[9:-4])
+    assert "destination" not in temporary
