@@ -100,10 +100,13 @@ class ProposalLifecycleRunner:
         receipts = [mutating[action_id]] if action_id in mutating else []
         return {
             "schema_version": "bluefire.runner-result.v1",
+            "request_id": manifest["request_id"],
             "run_id": manifest["run_id"],
             "step_id": manifest["step_id"],
             "behavior_id": manifest["behavior_id"],
             "action_id": action_id,
+            "runner_id": manifest["runner_id"],
+            "runner_profile_id": manifest["runner_profile_id"],
             "request_hash": manifest["request_hash"],
             "policy_digest": profile["policy_digest"],
             "platform": profile["platform"],

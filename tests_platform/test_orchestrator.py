@@ -105,10 +105,13 @@ class StructuredFakeRunner:
             error = {"code": f"fake_{status}", "message": f"structured {status} result"}
         return {
             "schema_version": "bluefire.runner-result.v1",
+            "request_id": manifest["request_id"],
             "run_id": manifest["run_id"],
             "step_id": manifest["step_id"],
             "behavior_id": manifest["behavior_id"],
             "action_id": action_id,
+            "runner_id": manifest["runner_id"],
+            "runner_profile_id": manifest["runner_profile_id"],
             "request_hash": manifest["request_hash"],
             "policy_digest": profile["policy_digest"],
             "platform": profile["platform"],
@@ -160,6 +163,45 @@ class RunnerMustNotBeCalled:
     ) -> Mapping[str, Any]:
         self.calls += 1
         raise AssertionError("Simulate must not dispatch a runner action")
+
+
+@pytest.mark.parametrize(
+    ("field", "forged"),
+    [
+        ("request_id", "request-forged"),
+        ("runner_id", "runner-forged.v1"),
+        ("runner_profile_id", "profile-forged.v1"),
+        ("platform", "linux" if _execute_profile().platforms[0] != "linux" else "windows"),
+    ],
+)
+def test_runner_result_identity_is_bound_to_the_exact_request(
+    field: str,
+    forged: str,
+) -> None:
+    manifest = {
+        "request_id": "request-exact",
+        "run_id": "run-exact",
+        "step_id": "step-exact",
+        "behavior_id": "behavior.exact.v1",
+        "action_id": "action.exact.v1",
+        "runner_id": "runner.exact.v1",
+        "runner_profile_id": "profile.exact.v1",
+        "request_hash": "sha256:" + "a" * 64,
+    }
+    profile = {
+        "platform": "windows",
+        "policy_digest": "sha256:" + "b" * 64,
+    }
+    result = {
+        "schema_version": "bluefire.runner-result.v1",
+        **manifest,
+        "platform": profile["platform"],
+        "policy_digest": profile["policy_digest"],
+    }
+    result[field] = forged
+
+    with pytest.raises(RunnerTransportError, match=field):
+        Orchestrator._validate_runner_result(manifest, profile, result)
 
 
 class FailAfterFirstEffectStore(RunStore):
