@@ -11,6 +11,7 @@ namespaces = false
 
 [tool.setuptools]
 include-package-data = false
+zip-safe = false
 
 [tool.setuptools.package-data]
 bluefire = [
@@ -19,6 +20,9 @@ bluefire = [
   "ui/*.css",
   "ui/*.html",
   "ui/*.js",
+  "native/*.json",
+  "native/bluefire-runner",
+  "native/bluefire-runner.exe",
 ]
 
 [project]
