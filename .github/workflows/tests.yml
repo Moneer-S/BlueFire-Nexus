@@ -100,7 +100,30 @@ jobs:
         run: python -m mypy bluefire
 
   package:
-    runs-on: ubuntu-latest
+    name: Native wheel - ${{ matrix.platform }} x86_64
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            architecture: x86_64
+            runner-path: runner/target/release/bluefire-runner
+            wheel-platform-tag: linux_x86_64
+            venv-python: bin/python
+          - os: windows-latest
+            platform: windows
+            architecture: x86_64
+            runner-path: runner/target/release/bluefire-runner.exe
+            wheel-platform-tag: win_amd64
+            venv-python: Scripts/python.exe
+          - os: macos-15-intel
+            platform: macos
+            architecture: x86_64
+            runner-path: runner/target/release/bluefire-runner
+            wheel-platform-tag: macosx_11_0_x86_64
+            venv-python: bin/python
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -116,27 +139,52 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install build
 
-      - name: Build package
-        run: python -m build
+      - name: Verify pinned Rust toolchain
+        run: rustup show
+
+      - name: Build release runner
+        run: cargo build --locked --release --manifest-path runner/Cargo.toml --bin bluefire-runner
+
+      - name: Stage verified native runner resources
+        run: >-
+          python tools/stage_native_runner.py
+          --runner "${{ github.workspace }}/${{ matrix.runner-path }}"
+          --output-root "${{ github.workspace }}/bluefire/native"
+          --platform "${{ matrix.platform }}"
+          --architecture "${{ matrix.architecture }}"
+
+      - name: Build platform wheel
+        run: python -m build --wheel
+
+      - name: Inspect wheel tag and native resources
+        run: >-
+          python tools/verify_packaged_runner.py inspect
+          --wheel-dir dist
+          --platform "${{ matrix.platform }}"
+          --architecture "${{ matrix.architecture }}"
+          --wheel-platform-tag "${{ matrix.wheel-platform-tag }}"
+          --report dist/package-inspection.json
 
       - name: Install wheel into a clean environment
         run: |
-          python -m venv "$RUNNER_TEMP/bluefire-wheel-smoke"
-          "$RUNNER_TEMP/bluefire-wheel-smoke/bin/python" -m pip install --upgrade pip
-          "$RUNNER_TEMP/bluefire-wheel-smoke/bin/python" -m pip install dist/*.whl
+          python -m venv "${{ runner.temp }}/bluefire-wheel-smoke"
+          python -c "import glob, os, subprocess; wheels = glob.glob(os.path.abspath('dist/*.whl')); assert len(wheels) == 1, wheels; executable = os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke', r'${{ matrix.venv-python }}'); subprocess.run([executable, '-m', 'pip', 'install', '--disable-pip-version-check', wheels[0]], check=True)"
+          python -c "import os, shutil; shutil.copyfile('tools/verify_packaged_runner.py', os.path.join(r'${{ runner.temp }}', 'verify_packaged_runner.py'))"
 
-      - name: Installed-wheel Simulate smoke outside the checkout
+      - name: Bootstrap and Execute from installed wheel outside checkout
         working-directory: ${{ runner.temp }}
-        run: |
-          "$RUNNER_TEMP/bluefire-wheel-smoke/bin/bluefire" --help
-          "$RUNNER_TEMP/bluefire-wheel-smoke/bin/bluefire" --runs-dir "$RUNNER_TEMP/bluefire-wheel-runs" scenario validate --scenario-id scenario.restricted.persistence-canary.v1
-          "$RUNNER_TEMP/bluefire-wheel-smoke/bin/bluefire" --runs-dir "$RUNNER_TEMP/bluefire-wheel-runs" scenario run --scenario-id scenario.restricted.persistence-canary.v1 --mode simulate --autonomy off
+        run: >-
+          python -c "import os, subprocess; executable = os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke', r'${{ matrix.venv-python }}'); subprocess.run([executable, '-I', os.path.join(r'${{ runner.temp }}', 'verify_packaged_runner.py'), 'smoke', '--work-root', os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke-state'), '--forbid-root', os.environ['GITHUB_WORKSPACE'], '--report', os.path.join(r'${{ runner.temp }}', 'installed-wheel-smoke.json')], check=True)"
 
-      - name: Upload distributions
+      - name: Upload wheel and verification reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: python-distributions
-          path: dist/*
+          name: bluefire-native-wheel-${{ matrix.platform }}-x86_64
+          path: |
+            dist/*.whl
+            dist/package-inspection.json
+            ${{ runner.temp }}/installed-wheel-smoke.json
+          if-no-files-found: error
 
   rust:
     name: Rust runner · ${{ matrix.os }}
