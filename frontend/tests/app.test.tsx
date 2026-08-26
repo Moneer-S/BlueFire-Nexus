@@ -272,6 +272,22 @@ describe("product application", () => {
     expect(technicalSummary.closest("details")).not.toHaveAttribute("open");
   });
 
+  it("keeps an in-flight replay record out of canonical comparison without crashing", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const fallback = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/runs") && init?.method !== "POST") return json({ schema_version: "bluefire.run-list.v1", runs: [{ schema_version: "1.0", run_id: "run-20300101T000000Z-aaaaaaaaaaaaaaaa", status: "created", created_at: "2030-01-01T00:00:00Z" }, ...demoRuns] });
+      return fallback(input, init);
+    });
+
+    renderApp("/compare");
+    expect(await screen.findByRole("heading", { name: "Measure what changed" })).toBeVisible();
+    expect(screen.getByText("Unavailable run records excluded")).toBeVisible();
+    expect(screen.getByText(/1 in-flight, interrupted, or integrity-failed run record is unavailable/)).toBeVisible();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(2);
+  });
+
   it("reviews immutable detection revisions, pinned public baselines, and complete deltas", async () => {
     const user = userEvent.setup();
     renderApp("/detection-lab");

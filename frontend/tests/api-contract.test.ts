@@ -103,12 +103,24 @@ describe("control-plane request contracts", () => {
     });
   });
 
-  it("gives the synchronous replay boundary a bounded 75-second timeout", async () => {
-    const timeoutSpy = vi.spyOn(window, "setTimeout");
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(demoRuns[0]), { status: 200, headers: { "Content-Type": "application/json" } })));
-    await api.replay("run-source", { exact: true });
-    expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 75_000);
-    timeoutSpy.mockRestore();
+  it("allows a seeded synchronous Execute replay to finish inside its bounded 180-second request", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+      const completion = window.setTimeout(() => resolve(new Response(JSON.stringify(demoRuns[0]), { status: 200, headers: { "Content-Type": "application/json" } })), 90_000);
+      init?.signal?.addEventListener("abort", () => { window.clearTimeout(completion); reject(new DOMException("aborted", "AbortError")); }, { once: true });
+    })));
+    try {
+      const replay = api.replay("run-source", { exact: true });
+      await vi.advanceTimersByTimeAsync(90_000);
+      await expect(replay).resolves.toMatchObject({ run_id: demoRuns[0]!.run_id });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("excludes unfinalized run metadata from canonical browser history", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ schema_version: "bluefire.run-list.v1", runs: [{ schema_version: "1.0", run_id: "run-20300101T000000Z-aaaaaaaaaaaaaaaa", status: "created", created_at: "2030-01-01T00:00:00Z" }, demoRuns[0]] }), { status: 200, headers: { "Content-Type": "application/json" } })));
+    await expect(api.runs()).resolves.toMatchObject({ runs: [demoRuns[0]], unavailable_run_count: 1 });
   });
 
   it("uses the durable job submission, approval, polling, and control routes", async () => {
@@ -141,6 +153,7 @@ describe("control-plane request contracts", () => {
   });
 
   it("uses exact managed-runner lifecycle routes and confirmation bodies", async () => {
+    const timeoutSpy = vi.spyOn(window, "setTimeout");
     const status = { schema_version: "bluefire.runner-lifecycle-status.v1", state: "stopped", runner_id: "bluefire-rust-runner.v1", profile_id: "sandbox-execute.v1", loopback_only: true, enrollment: "active", process: "absent", runner: null, health: null } as const;
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
       void _input; void _init;
@@ -171,6 +184,8 @@ describe("control-plane request contracts", () => {
       {},
       { confirm_runner_id: "bluefire-rust-runner.v1" },
     ]);
+    expect(timeoutSpy.mock.calls.map(([, timeout]) => timeout)).toEqual([20_000, 120_000, 45_000, 45_000, 135_000, 135_000]);
+    timeoutSpy.mockRestore();
   });
 
   it("persists secret-safe settings, versioned scenarios, and allowlisted resources", async () => {

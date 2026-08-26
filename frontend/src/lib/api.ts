@@ -5,6 +5,8 @@ const API_ROOT = "/api/v1";
 const BROWSER_BOOTSTRAP_FRAGMENT_KEY = "bluefire-session";
 const BROWSER_BOOTSTRAP_HEADER = "X-BlueFire-Browser-Bootstrap";
 const BROWSER_CAPABILITY = /^[A-Za-z0-9_-]{64}$/;
+const RUNNER_TRUST_MUTATION_TIMEOUT_MS = 135_000;
+const SYNCHRONOUS_REPLAY_TIMEOUT_MS = 180_000;
 export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
 export const BROWSER_SESSION_RELAUNCH_MESSAGE = "This local browser session is unavailable. Close this tab and relaunch BlueFire with `bluefire ui`.";
 
@@ -78,6 +80,34 @@ async function request<T>(path: string, options: RequestInit = {}, timeoutMs = 2
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+type CanonicalRunList = {
+  schema_version?: string;
+  runs: RunRecord[];
+  unavailable_run_count: number;
+};
+
+function isFinalizedRunRecord(value: unknown): value is RunRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const run = value as Partial<RunRecord>;
+  return typeof run.run_id === "string"
+    && (run.mode === "simulate" || run.mode === "execute")
+    && typeof run.status === "string"
+    && typeof run.finalized_at === "string"
+    && Array.isArray(run.steps);
+}
+
+function canonicalRunList(payload: unknown): CanonicalRunList {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new ApiError("Run history response was invalid.", "invalid_run_history");
+  const envelope = payload as { schema_version?: unknown; runs?: unknown };
+  if (!Array.isArray(envelope.runs)) throw new ApiError("Run history response was invalid.", "invalid_run_history");
+  const runs = envelope.runs.filter(isFinalizedRunRecord);
+  return {
+    ...(typeof envelope.schema_version === "string" ? { schema_version: envelope.schema_version } : {}),
+    runs,
+    unavailable_run_count: envelope.runs.length - runs.length,
+  };
 }
 
 function graphDocument(scenario: Scenario) {
@@ -225,11 +255,11 @@ export const api = {
   },
   async revokeRunner(): Promise<RunnerLifecycleStatus> {
     if (DEMO_MODE) throw new ApiError("Demo mode cannot revoke local runner trust.", "demo_runner_lifecycle_refused", undefined, 409);
-    return request("/runner/revoke", { method: "POST", body: JSON.stringify({}) });
+    return request("/runner/revoke", { method: "POST", body: JSON.stringify({}) }, RUNNER_TRUST_MUTATION_TIMEOUT_MS);
   },
   async removeRunner(confirmRunnerId: string): Promise<RunnerLifecycleStatus> {
     if (DEMO_MODE) throw new ApiError("Demo mode cannot remove local runner trust.", "demo_runner_lifecycle_refused", undefined, 409);
-    return request("/runner/remove", { method: "POST", body: JSON.stringify({ confirm_runner_id: confirmRunnerId }) });
+    return request("/runner/remove", { method: "POST", body: JSON.stringify({ confirm_runner_id: confirmRunnerId }) }, RUNNER_TRUST_MUTATION_TIMEOUT_MS);
   },
   async detectionHealth(): Promise<DetectionLabHealth> {
     if (DEMO_MODE) return { schema_version: "bluefire.detection-lab-health.v1", ready: true, persistence_ready: true, candidate_resources: [...demoResources.values()].filter((item) => item.kind === "detections").length, invalid_candidate_resources: 0, languages: { internal: { ready: true, authoritative: true, backend: "demo-structured-matcher", version: "fixture" }, sigma: { ready: false, authoritative: false, backend: "pySigma", version: null }, yara: { ready: false, authoritative: false, backend: "YARA-Python", version: null }, spl: { ready: true, authoritative: false, backend: "structural-only", version: "fixture", lifecycle_ceiling: "hypothesis" } }, limits: { source_bytes: 262144, fixture_bytes: 1048576, fixtures_per_action: 128, evidence_per_action: 128, notes_per_action: 128 } };
@@ -272,14 +302,19 @@ export const api = {
     if (DEMO_MODE) throw new ApiError("Demo candidates cannot produce durable revision comparisons.", "demo_detection_comparison_refused", undefined, 409);
     return request(`/detections/${encodeURIComponent(baselineCandidateId)}/compare`, { method: "POST", body: JSON.stringify({ candidate_id: candidateId }) });
   },
-  async runs(): Promise<{ runs: RunRecord[] }> { return DEMO_MODE ? { runs: structuredClone(demoRuns) } : request("/runs"); },
+  async runs(): Promise<CanonicalRunList> {
+    if (DEMO_MODE) return { runs: structuredClone(demoRuns), unavailable_run_count: 0 };
+    return canonicalRunList(await request<unknown>("/runs"));
+  },
   async runDetail(runId: string): Promise<RunRecord> {
     if (DEMO_MODE) {
       const run = demoRuns.find((item) => item.run_id === runId);
       if (!run) throw new ApiError("Demo run was not found.", "run_not_found", undefined, 404);
       return structuredClone(run);
     }
-    return request(`/runs/${encodeURIComponent(runId)}`);
+    const run = await request<unknown>(`/runs/${encodeURIComponent(runId)}`);
+    if (!isFinalizedRunRecord(run)) throw new ApiError("Run is not available as a finalized canonical record.", "run_not_finalized", undefined, 409);
+    return run;
   },
   async validate(scenario: Scenario): Promise<{ valid: boolean; issues: unknown[] }> {
     if (DEMO_MODE) return { valid: scenario.steps.length > 0 && scenario.steps.some((step) => step.id === scenario.start), issues: [] };
@@ -349,7 +384,9 @@ export const api = {
   },
   async replay(runId: string, body: Record<string, unknown>): Promise<RunRecord> {
     if (DEMO_MODE) return { ...structuredClone(demoRuns[0]!), run_id: `demo-replay-${Date.now()}`, replay: { source_run_id: runId, ...body }, is_demo: true };
-    return request(`/runs/${encodeURIComponent(runId)}/replays`, { method: "POST", body: JSON.stringify(body) }, 75_000);
+    // The endpoint returns only after the seeded 120-second Execute budget,
+    // bounded readiness/control work, persistence, and indexing complete.
+    return request(`/runs/${encodeURIComponent(runId)}/replays`, { method: "POST", body: JSON.stringify(body) }, SYNCHRONOUS_REPLAY_TIMEOUT_MS);
   },
   async compare(runIds: string[]): Promise<ComparisonResponse> {
     if (DEMO_MODE) return compareDemoRuns(runIds);
