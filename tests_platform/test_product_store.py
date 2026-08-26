@@ -82,7 +82,7 @@ def test_store_migrates_and_persists_secret_safe_settings(tmp_path: Path) -> Non
     path = tmp_path / "state" / "bluefire.db"
     store = ProductStore(path)
 
-    assert store.schema_version == 6
+    assert store.schema_version == 7
     store.set_setting(
         "ai.provider",
         {"endpoint": "https://api.example.test/v1", "api_key": {"env": "BLUEFIRE_API_KEY"}},
@@ -294,7 +294,7 @@ def test_schema_v1_database_migrates_to_claimable_approvals(tmp_path: Path) -> N
 
     store = ProductStore(path)
 
-    assert store.schema_version == 6
+    assert store.schema_version == 7
     columns = {
         row[1] for row in sqlite3.connect(path).execute("PRAGMA table_info(approval_requests)")
     }

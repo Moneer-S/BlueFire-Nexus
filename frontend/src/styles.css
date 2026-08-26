@@ -802,6 +802,55 @@ pre { max-width: 100%; margin: 0; overflow: auto; color: var(--muted-strong); fo
 .quick-links a:hover { border-color: var(--blue); background: rgba(56, 168, 255, 0.07); color: var(--text); }
 .quick-links svg { width: 17px; color: var(--blue-soft); }
 
+/* Signed action packages */
+.action-packages-page > .callout { max-width: none; }
+.package-stat-grid .stat > strong { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.catalog-authority-body { padding: 4px 18px 13px; }
+.catalog-authority-body code { display: block; overflow-wrap: anywhere; }
+.package-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; padding: 14px; }
+.package-card { min-width: 0; display: flex; flex-direction: column; gap: 13px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: rgba(3, 8, 16, 0.3); }
+.package-card > header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 11px; }
+.package-card > header > div:nth-child(2) { min-width: 0; }
+.package-card h3 { margin: 4px 0 2px; font-size: 0.88rem; overflow-wrap: anywhere; }
+.package-version { color: var(--muted); font-size: var(--font-caption); }
+.package-card .data-list { flex: 1; }
+.package-card .data-list dd > .badge + .badge { margin-left: 5px; }
+.package-card .data-list code { display: block; overflow-wrap: anywhere; }
+.block-detail { display: block; margin-top: 4px; color: var(--muted); font-size: var(--font-micro); line-height: 1.4; overflow-wrap: anywhere; }
+.package-chip-row, .package-card > footer, .publisher-list article > footer { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.package-card > footer { min-height: 34px; padding-top: 12px; border-top: 1px solid var(--line); }
+.package-action-note { display: inline-flex; align-items: center; gap: 7px; margin: 0; color: var(--muted); font-size: var(--font-caption); line-height: 1.4; }
+.package-action-note svg { width: 15px; flex: 0 0 auto; color: var(--amber); }
+.package-lower-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(350px, 0.9fr); gap: 14px; align-items: start; }
+.publisher-list { display: grid; gap: 10px; padding: 13px; }
+.publisher-list > article { min-width: 0; padding: 13px; border: 1px solid var(--line); border-radius: 10px; background: rgba(3, 8, 16, 0.3); }
+.publisher-list article > header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; margin-bottom: 8px; }
+.publisher-list article > header strong, .publisher-list article > header code { display: block; overflow-wrap: anywhere; }
+.publisher-list article > header strong { margin-bottom: 3px; font-size: var(--font-body-sm); }
+.publisher-list article > header code { color: var(--cyan); font-size: var(--font-micro); }
+.publisher-list article > footer { justify-content: flex-end; padding-top: 11px; border-top: 1px solid var(--line); }
+.package-event-list { list-style: none; display: grid; margin: 0; padding: 6px 14px 14px; }
+.package-event-list li { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 11px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.package-event-list li:last-child { border-bottom: 0; }
+.event-generation { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid rgba(56, 168, 255, 0.3); border-radius: 9px; background: rgba(56, 168, 255, 0.08); color: var(--blue-soft); font: 750 var(--font-micro) ui-monospace, SFMono-Regular, Consolas, monospace; }
+.package-event-list strong, .package-event-list code, .package-event-list small { display: block; }
+.package-event-list strong { font-size: var(--font-body-sm); }
+.package-event-list code { margin-top: 3px; color: var(--cyan); font-size: var(--font-micro); overflow-wrap: anywhere; }
+.package-event-list p { margin: 6px 0 3px; color: var(--muted-strong); font-size: var(--font-caption); line-height: 1.4; }
+.package-event-list small { color: var(--muted); font-size: var(--font-micro); }
+.exact-identity-box { min-width: 0; display: grid; grid-template-columns: minmax(120px, 0.34fr) minmax(0, 1fr); gap: 6px 10px; padding: 12px; border: 1px solid rgba(247, 184, 75, 0.25); border-radius: 9px; background: rgba(247, 184, 75, 0.055); }
+.exact-identity-box strong { grid-column: 1 / -1; margin-bottom: 4px; color: var(--amber-soft); font-size: var(--font-body-sm); overflow-wrap: anywhere; }
+.exact-identity-box span { color: var(--muted); font-size: var(--font-micro); text-transform: uppercase; }
+.exact-identity-box code { min-width: 0; color: var(--amber-soft); font-size: var(--font-micro); overflow-wrap: anywhere; }
+.package-confirm-check { padding: 11px; border: 1px solid var(--line); border-radius: 9px; background: rgba(3, 8, 16, 0.3); }
+.package-confirm-check > span { color: var(--muted-strong); }
+.publisher-dialog { width: min(620px, calc(100vw - 32px)); }
+.provenance-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.provenance-fields legend { padding: 0 5px; }
+.import-preview { display: grid; gap: 2px; }
+.import-preview > strong { margin: 0; }
+.import-preview > span:last-child { margin-top: 5px; }
+
 /* Responsive */
 @media (max-width: 1380px) {
   .builder-layout { grid-template-columns: 220px minmax(500px, 1fr); }
@@ -820,6 +869,7 @@ pre { max-width: 100%; margin: 0; overflow: auto; color: var(--muted-strong); fo
   .plan-preview { position: static; }
   .delta-grid { grid-template-columns: 1fr; }
   .fixture-grid { grid-template-columns: 1fr; }
+  .package-grid, .package-lower-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 900px) {
@@ -897,6 +947,12 @@ pre { max-width: 100%; margin: 0; overflow: auto; color: var(--muted-strong); fo
   .mission-panel > footer { align-items: flex-start; flex-direction: column; }
   .dialog-content { padding: 17px; }
   .trust-label { display: none; }
+  .package-grid { padding: 10px; }
+  .package-card > header, .publisher-list article > header, .package-event-list li { grid-template-columns: auto minmax(0, 1fr); }
+  .package-card > header .row-badges, .publisher-list article > header > .badge, .package-event-list li > .badge { grid-column: 2; justify-self: start; }
+  .package-card > footer .button, .publisher-list article > footer .button { flex: 1; }
+  .exact-identity-box, .provenance-fields { grid-template-columns: 1fr; }
+  .exact-identity-box strong { grid-column: 1; }
 }
 
 /* Operational typography scale: normal workflows never rely on sub-10px text. */

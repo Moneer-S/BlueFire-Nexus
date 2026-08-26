@@ -16,7 +16,7 @@ test("Detection Lab creates an honest hypothesis without simulating validation",
   expect(consoleErrors).toEqual([]);
 });
 
-test("plugin manifests remain declarative through activation and inventory", async ({ page }) => {
+test("legacy plugin manifests remain provenance-only while activation moves to signed packages", async ({ page }) => {
   await page.goto("./#/actions");
   await expect(page.getByRole("heading", { name: "Actions & plugins" })).toBeVisible();
   await page.getByRole("button", { name: "Add manifest" }).click();
@@ -26,9 +26,14 @@ test("plugin manifests remain declarative through activation and inventory", asy
   await page.getByRole("button", { name: "Save strict manifest" }).click();
 
   await expect(page.getByText(/plugin\.local-review\.v1 manifest saved as ready\. No package was downloaded or installed\./)).toBeVisible();
-  await page.getByRole("button", { name: "Activate metadata" }).click();
-  await expect(page.getByText(/Registration is metadata-only; executable loading and dynamic actions remain disabled\./)).toBeVisible();
-  await expect(page.getByText("Metadata-only activation")).toBeVisible();
-  await expect(page.getByText("plugin.local-review.v1", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("Disabled", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Activate metadata" })).toHaveCount(0);
+  await expect(page.getByText("Legacy metadata lifecycle retired")).toBeVisible();
+  await expect(
+    page.getByLabel("Primary navigation").getByRole("link", { name: "Action Packages" }),
+  ).toHaveAttribute("href", "#/action-packages");
+  const legacyManifest = page.locator("article").filter({ hasText: "plugin.local-review.v1" });
+  await expect(legacyManifest).toContainText("Provenance only");
+  await expect(
+    page.getByText("Executable loading", { exact: true }).locator("..").getByText("Disabled", { exact: true }),
+  ).toBeVisible();
 });

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
 
 from bluefire.comparison import compare_runs
 from bluefire.run_store import RunStore
+from bluefire.util import content_hash
+
+_UNBOUND = object()
 
 
 def _run(
@@ -14,11 +19,15 @@ def _run(
     detection_matches: int,
     benign_matches: int,
     autonomy: str,
+    catalog_authority: Any = _UNBOUND,
 ) -> str:
+    policy: dict[str, Any] = {"schema_version": "bluefire.run-policy.v1"}
+    if catalog_authority is not _UNBOUND:
+        policy["preflight"] = {"catalog_authority": catalog_authority}
     handle = store.create_run(
         scenario={"schema_version": "bluefire.scenario.v1", "id": "scenario.test.v1"},
         plan={"schema_version": "bluefire.plan.v1", "steps": []},
-        policy={"schema_version": "bluefire.run-policy.v1"},
+        policy=policy,
         profile=None,
     )
     evidence = [
@@ -60,6 +69,59 @@ def _run(
     return handle.run_id
 
 
+def _sha(character: str) -> str:
+    return "sha256:" + character * 64
+
+
+def _package(package_id: str, version: str, generation: int, character: str) -> dict[str, Any]:
+    return {
+        "package_id": package_id,
+        "package_version": version,
+        "package_digest": _sha(character),
+        "content_digest": _sha(chr(ord(character) + 1)),
+        "publisher_id": f"publisher.{package_id}",
+        "key_id": f"key.{package_id}",
+        "signer_fingerprint": _sha(chr(ord(character) + 2)),
+        "activated_generation": generation,
+        "runner_identity_digest": _sha("d"),
+        "runner_inventory_digest": _sha("e"),
+        "runner_platform": "windows-x86_64",
+        "behavior_ids": [f"{package_id}.behavior.v1"],
+        "action_ids": [f"{package_id}.action.v1"],
+    }
+
+
+def _authority(generation: int, packages: list[dict[str, Any]]) -> dict[str, Any]:
+    catalog_digest = _sha("a" if generation == 1 else "b")
+    action_bindings = [
+        {
+            "schema_version": "bluefire.runner-execution-binding.v1",
+            "catalog_generation": generation,
+            "catalog_digest": catalog_digest,
+            "logical_behavior_id": package["behavior_ids"][0],
+            "logical_action_id": package["action_ids"][0],
+            "package_id": package["package_id"],
+            "package_version": package["package_version"],
+            "package_digest": package["package_digest"],
+            "content_digest": package["content_digest"],
+            "program_digest": _sha("f"),
+            "runner_opcode": "sandbox.collect.v1",
+            "opcode_contract_digest": _sha("9"),
+            "constants": {"method": "metadata"},
+        }
+        for package in packages
+    ]
+    body = {
+        "schema_version": "bluefire.action-catalog-authority.v1",
+        "generation": generation,
+        "catalog_digest": catalog_digest,
+        "built_in_catalog_digest": _sha("0"),
+        "packages": packages,
+        "action_bindings": action_bindings,
+    }
+    return {**body, "authority_digest": content_hash(body)}
+
+
 def test_comparison_reports_evidence_detection_ai_and_assessment(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs")
     baseline = _run(
@@ -83,10 +145,175 @@ def test_comparison_reports_evidence_detection_ai_and_assessment(tmp_path: Path)
     delta = comparison["deltas"][0]
 
     assert comparison["summaries"][1]["evidence_provenance"] == {"observed": 3}
+    assert all(
+        summary["catalog_authority"]["state"] == "legacy_unbound"
+        for summary in comparison["summaries"]
+    )
     assert comparison["summaries"][1]["ai_proposal_count"] == 1
     assert comparison["summaries"][1]["ai_applications"] == {"recorded_for_review": 1}
     assert delta["evidence_delta"]["observed"] == 2
     assert delta["detection_match_delta"] == 1
     assert delta["benign_match_delta"] == -1
     assert delta["autonomy_changed"] is True
+    assert delta["material_configuration_changed"] is False
     assert delta["assessment"] == "improved"
+
+
+def test_comparison_reports_deterministic_catalog_authority_lineage(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    baseline_authority = _authority(1, [_package("alpha", "1.0.0", 1, "1")])
+    candidate_authority = _authority(
+        2,
+        [
+            _package("bravo", "1.0.0", 2, "4"),
+            _package("alpha", "2.0.0", 2, "7"),
+        ],
+    )
+    baseline = _run(
+        store,
+        objective=True,
+        observed=1,
+        detection_matches=1,
+        benign_matches=0,
+        autonomy="off",
+        catalog_authority=baseline_authority,
+    )
+    candidate = _run(
+        store,
+        objective=True,
+        observed=1,
+        detection_matches=1,
+        benign_matches=0,
+        autonomy="off",
+        catalog_authority=candidate_authority,
+    )
+
+    comparison = compare_runs(store, [baseline, candidate])
+    baseline_summary, candidate_summary = comparison["summaries"]
+    delta = comparison["deltas"][0]
+
+    assert baseline_summary["catalog_authority"] == {
+        "state": "bound",
+        "schema_version": "bluefire.action-catalog-authority.v1",
+        "generation": 1,
+        "catalog_digest": baseline_authority["catalog_digest"],
+        "authority_digest": baseline_authority["authority_digest"],
+        "authority_record_digest": content_hash(baseline_authority),
+        "package_count": 1,
+        "packages": [
+            {
+                key: baseline_authority["packages"][0][key]
+                for key in (
+                    "package_id",
+                    "package_version",
+                    "package_digest",
+                    "content_digest",
+                    "publisher_id",
+                    "key_id",
+                    "signer_fingerprint",
+                    "activated_generation",
+                )
+            }
+        ],
+    }
+    assert [
+        package["package_id"] for package in candidate_summary["catalog_authority"]["packages"]
+    ] == ["alpha", "bravo"]
+    assert "action_bindings" not in json.dumps(comparison)
+    assert "constants" not in json.dumps(comparison)
+    assert delta["catalog_authority_changed"] is True
+    assert delta["material_configuration_changed"] is True
+    assert delta["configuration_changes"] == ["catalog_authority"]
+    assert delta["signals"] == ["catalog_authority_changed"]
+    assert delta["catalog_authority_delta"] == {
+        "changed": True,
+        "fields_changed": [
+            "generation",
+            "catalog_digest",
+            "authority_digest",
+            "authority_record_digest",
+        ],
+        "from_state": "bound",
+        "to_state": "bound",
+        "from_generation": 1,
+        "to_generation": 2,
+        "generation_delta": 1,
+        "from_catalog_digest": baseline_authority["catalog_digest"],
+        "to_catalog_digest": candidate_authority["catalog_digest"],
+        "from_authority_digest": baseline_authority["authority_digest"],
+        "to_authority_digest": candidate_authority["authority_digest"],
+        "packages_added": [candidate_summary["catalog_authority"]["packages"][1]],
+        "packages_removed": [],
+        "packages_changed": [
+            {
+                "package_id": "alpha",
+                "from": baseline_summary["catalog_authority"]["packages"][0],
+                "to": candidate_summary["catalog_authority"]["packages"][0],
+            }
+        ],
+    }
+
+
+def test_comparison_preserves_legacy_and_sanitizes_malformed_authority(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    baseline = _run(
+        store,
+        objective=True,
+        observed=1,
+        detection_matches=1,
+        benign_matches=0,
+        autonomy="off",
+    )
+    malformed = {
+        "schema_version": "bluefire.action-catalog-authority.v1",
+        "generation": True,
+        "packages": 7,
+        "action_bindings": [],
+        "package_bytes": "must-not-appear",
+    }
+    candidate = _run(
+        store,
+        objective=True,
+        observed=1,
+        detection_matches=1,
+        benign_matches=0,
+        autonomy="off",
+        catalog_authority=malformed,
+    )
+
+    comparison = compare_runs(store, [baseline, candidate])
+    repeated = compare_runs(store, [baseline, candidate])
+    legacy_summary, malformed_summary = comparison["summaries"]
+    delta = comparison["deltas"][0]
+
+    assert comparison == repeated
+    assert legacy_summary["catalog_authority"]["state"] == "legacy_unbound"
+    assert malformed_summary["catalog_authority"] == {
+        "state": "malformed",
+        "schema_version": None,
+        "generation": None,
+        "catalog_digest": None,
+        "authority_digest": None,
+        "authority_record_digest": content_hash(malformed),
+        "package_count": 0,
+        "packages": [],
+        "error_codes": sorted(
+            {
+                "authority_digest_invalid",
+                "authority_digest_mismatch",
+                "authority_fields_invalid",
+                "built_in_catalog_digest_invalid",
+                "catalog_digest_invalid",
+                "generation_invalid",
+                "packages_invalid",
+            }
+        ),
+    }
+    assert "must-not-appear" not in json.dumps(comparison)
+    assert "package_bytes" not in json.dumps(comparison)
+    assert delta["catalog_authority_changed"] is True
+    assert delta["catalog_authority_delta"]["from_state"] == "legacy_unbound"
+    assert delta["catalog_authority_delta"]["to_state"] == "malformed"
+    assert delta["assessment"] == "mixed"

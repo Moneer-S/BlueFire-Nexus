@@ -48,6 +48,14 @@ _JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
 _DETECTION_ID = re.compile(r"^detection-[0-9a-f]{20}$")
 _PROPOSAL_RECORD_ID = re.compile(r"^proposal-review-[0-9a-f]{32}$")
 _MANAGEMENT_IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
+_ACTION_PACKAGE_VERSION = re.compile(
+    r"^(0|[1-9][0-9]*)\."
+    r"(0|[1-9][0-9]*)\."
+    r"(0|[1-9][0-9]*)"
+    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
+_SEMVER_CORE_MAX = (1 << 64) - 1
 _SCENARIO_VERSION = re.compile(r"^[1-9][0-9]{0,9}$")
 _RESOURCE_ROUTE_KINDS = {
     "actions": "action",
@@ -144,6 +152,51 @@ class PlatformService(Protocol):
         request: JsonObject,
     ) -> JsonResult:
         """Create or replace one secret-safe product resource."""
+
+    def action_packages(self) -> JsonResult:
+        """Return the audited signed action-package inventory."""
+
+    def action_package(self, package_id: str) -> JsonResult:
+        """Return one signed action package and its immutable history."""
+
+    def install_action_package(self, request: JsonObject) -> JsonResult:
+        """Verify and install one signed action-package version."""
+
+    def activate_action_package(
+        self,
+        package_id: str,
+        version: str,
+        request: JsonObject,
+    ) -> JsonResult:
+        """Activate one exact package version against the managed runner."""
+
+    def deactivate_action_package(
+        self,
+        package_id: str,
+        version: str,
+        request: JsonObject,
+    ) -> JsonResult:
+        """Deactivate one exact active package version."""
+
+    def remove_action_package(
+        self,
+        package_id: str,
+        version: str,
+        request: JsonObject,
+    ) -> JsonResult:
+        """Remove one exact inactive package version while retaining audit bytes."""
+
+    def trust_action_package_publisher(self, request: JsonObject) -> JsonResult:
+        """Enroll one exact publisher signing key in local trust."""
+
+    def transition_action_package_publisher(
+        self,
+        publisher_id: str,
+        key_id: str,
+        action: str,
+        request: JsonObject,
+    ) -> JsonResult:
+        """Suspend or revoke one exact publisher signing key."""
 
     def detection_health(self) -> JsonResult:
         """Return Detection Lab persistence and backend readiness."""
@@ -461,6 +514,20 @@ def _valid_management_identifier(value: str) -> bool:
     return 1 <= len(value) <= 200 and _MANAGEMENT_IDENTIFIER.fullmatch(value) is not None
 
 
+def _valid_action_package_version(value: str) -> bool:
+    if not 1 <= len(value) <= 128:
+        return False
+    match = _ACTION_PACKAGE_VERSION.fullmatch(value)
+    if match is None:
+        return False
+    if any(int(match.group(index)) > _SEMVER_CORE_MAX for index in (1, 2, 3)):
+        return False
+    prerelease = match.group(4)
+    return prerelease is None or not any(
+        part.isdigit() and len(part) > 1 and part.startswith("0") for part in prerelease.split(".")
+    )
+
+
 class BlueFireRequestHandler(BaseHTTPRequestHandler):
     """Strict request adapter; domain behavior remains in ``PlatformService``."""
 
@@ -492,6 +559,24 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/settings":
             if self._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.settings())
+            return
+        action_package_request = self._action_package_request(path)
+        if action_package_request is not None:
+            package_id, package_version, package_action = action_package_request
+            if package_id == "":
+                return
+            if package_version is not None or package_action is not None:
+                self._method_not_allowed("POST")
+            elif package_id is None:
+                self._dispatch(lambda: self.platform_server.service.action_packages())
+            else:
+                self._dispatch(lambda: self.platform_server.service.action_package(package_id))
+            return
+        action_package_publisher_request = self._action_package_publisher_request(path)
+        if action_package_publisher_request is not None:
+            publisher_id, _key_id, _action = action_package_publisher_request
+            if publisher_id != "":
+                self._method_not_allowed("POST")
             return
         if path == f"{API_PREFIX}/scenario-versions":
             if self._management_query_free():
@@ -630,6 +715,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if self._is_api_path(path) and not self._require_browser_session():
             return
+        action_package_allow = self._action_package_route_allow(path)
+        if action_package_allow is not None:
+            if action_package_allow:
+                self._method_not_allowed(action_package_allow)
+            return
         self._method_not_allowed("GET")
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
@@ -673,12 +763,12 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                         "Runner start and stop accept only profile_id.",
                     )
                     return
-                operation = (
+                runner_lifecycle_operation = (
                     self.platform_server.service.start_runner
                     if runner_action == "start"
                     else self.platform_server.service.stop_runner
                 )
-                self._dispatch(lambda: operation(profile_id=profile_id))
+                self._dispatch(lambda: runner_lifecycle_operation(profile_id=profile_id))
                 return
             if runner_action == "revoke":
                 if body:
@@ -707,6 +797,48 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/ai/drafts":
             if self._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.draft_ai_graph(body))
+            return
+        action_package_request = self._action_package_request(path)
+        if action_package_request is not None:
+            package_id, package_version, package_action = action_package_request
+            if package_id == "":
+                return
+            if package_id is None:
+                self._dispatch(
+                    lambda: self.platform_server.service.install_action_package(body),
+                    success_status=HTTPStatus.CREATED,
+                )
+            elif package_version is None or package_action is None:
+                self._method_not_allowed("GET")
+            else:
+                package_operations = {
+                    "activate": self.platform_server.service.activate_action_package,
+                    "deactivate": self.platform_server.service.deactivate_action_package,
+                    "remove": self.platform_server.service.remove_action_package,
+                }
+                package_operation = package_operations[package_action]
+                self._dispatch(lambda: package_operation(package_id, package_version, body))
+            return
+        action_package_publisher_request = self._action_package_publisher_request(path)
+        if action_package_publisher_request is not None:
+            publisher_id, key_id, action = action_package_publisher_request
+            if publisher_id == "":
+                return
+            if publisher_id is None:
+                self._dispatch(
+                    lambda: self.platform_server.service.trust_action_package_publisher(body),
+                    success_status=HTTPStatus.CREATED,
+                )
+            else:
+                assert key_id is not None and action is not None
+                self._dispatch(
+                    lambda: self.platform_server.service.transition_action_package_publisher(
+                        publisher_id,
+                        key_id,
+                        action,
+                        body,
+                    )
+                )
             return
         if path == f"{API_PREFIX}/scenario-versions":
             if self._management_query_free():
@@ -737,7 +869,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     "Resource lifecycle actions require an empty JSON object.",
                 )
                 return
-            operations = {
+            resource_operations = {
                 "activate": lambda: self.platform_server.service.activate_resource(
                     kind,
                     action_resource_id,
@@ -753,7 +885,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     body,
                 ),
             }
-            self._dispatch(operations[action])
+            self._dispatch(resource_operations[action])
             return
         resource_request = self._resource_request(path)
         if resource_request is not None:
@@ -784,7 +916,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             elif detection_action is None:
                 self._method_not_allowed("GET")
             else:
-                operations = {
+                detection_operations = {
                     "clone": lambda: self.platform_server.service.clone_detection_candidate(
                         candidate_id, body
                     ),
@@ -811,7 +943,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     ),
                 }
                 self._dispatch(
-                    operations[detection_action],
+                    detection_operations[detection_action],
                     success_status=(
                         HTTPStatus.CREATED
                         if detection_action in {"clone", "tune"}
@@ -843,7 +975,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             if proposal_record_id is None or proposal_action is None:
                 self._method_not_allowed("GET")
                 return
-            operations = {
+            proposal_operations = {
                 "accept": lambda: self.platform_server.service.accept_proposal_review(
                     proposal_job_id, proposal_record_id, body
                 ),
@@ -851,7 +983,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     proposal_job_id, proposal_record_id, body
                 ),
             }
-            self._dispatch(operations[proposal_action], success_status=HTTPStatus.ACCEPTED)
+            self._dispatch(
+                proposal_operations[proposal_action],
+                success_status=HTTPStatus.ACCEPTED,
+            )
             return
         job_action = self._job_action_request(path)
         if job_action is not None:
@@ -865,14 +1000,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     "Retry requires an empty JSON object.",
                 )
                 return
-            operations = {
+            job_operations = {
                 "approval": lambda: self.platform_server.service.approve_job(job_id, body),
                 "pause": lambda: self.platform_server.service.pause_job(job_id),
                 "resume": lambda: self.platform_server.service.resume_job(job_id),
                 "cancel": lambda: self.platform_server.service.cancel_job(job_id),
                 "retry": lambda: self.platform_server.service.retry_job(job_id),
             }
-            self._dispatch(operations[action], success_status=HTTPStatus.ACCEPTED)
+            self._dispatch(job_operations[action], success_status=HTTPStatus.ACCEPTED)
             return
         if path == f"{API_PREFIX}/comparisons":
             self._dispatch(lambda: self.platform_server.service.compare(body))
@@ -930,6 +1065,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path is None or not self._validate_host():
             return
         if self._is_api_path(path) and not self._require_browser_session(unread_body=True):
+            return
+        action_package_allow = self._action_package_route_allow(path)
+        if action_package_allow is not None:
+            if action_package_allow:
+                self._method_not_allowed(action_package_allow)
             return
         self._method_not_allowed("GET, HEAD, POST")
 
@@ -1280,6 +1420,122 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             )
             return False
         return True
+
+    def _action_package_request(
+        self,
+        path: str,
+    ) -> tuple[str | None, str | None, str | None] | None:
+        collection = f"{API_PREFIX}/action-packages"
+        if path == collection:
+            if not self._management_query_free():
+                return ("", None, None)
+            return (None, None, None)
+        prefix = collection + "/"
+        if not path.startswith(prefix):
+            return None
+        if not self._management_query_free():
+            return ("", None, None)
+        parts = path[len(prefix) :].split("/")
+        if len(parts) == 1 and parts[0]:
+            package_id = parts[0]
+            version = None
+            action = None
+        elif len(parts) == 4 and all(parts) and parts[1] == "versions":
+            package_id = parts[0]
+            version = parts[2]
+            action = parts[3]
+        else:
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_action_package_path",
+                "Action-package path is invalid.",
+            )
+            return ("", None, None)
+        if not _valid_management_identifier(package_id):
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_action_package_id",
+                "Action-package ID must be a stable lowercase identifier of at most 200 characters.",
+            )
+            return ("", None, None)
+        if version is None:
+            return (package_id, None, None)
+        if not _valid_action_package_version(version):
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_action_package_version",
+                "Action-package version must be canonical semantic versioning.",
+            )
+            return ("", None, None)
+        if action not in {"activate", "deactivate", "remove"}:
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_action_package_action",
+                "Action-package action must be activate, deactivate, or remove.",
+            )
+            return ("", None, None)
+        return (package_id, version, action)
+
+    def _action_package_publisher_request(
+        self,
+        path: str,
+    ) -> tuple[str | None, str | None, str | None] | None:
+        collection = f"{API_PREFIX}/action-package-publishers"
+        if path == collection:
+            if not self._management_query_free():
+                return ("", None, None)
+            return (None, None, None)
+        prefix = collection + "/"
+        if not path.startswith(prefix):
+            return None
+        if not self._management_query_free():
+            return ("", None, None)
+        parts = path[len(prefix) :].split("/")
+        if len(parts) != 4 or any(not part for part in parts) or parts[1] != "keys":
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_action_package_publisher_path",
+                "Action-package publisher path is invalid.",
+            )
+            return ("", None, None)
+        publisher_id, key_id, action = parts[0], parts[2], parts[3]
+        if not _valid_management_identifier(publisher_id):
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_action_package_publisher_id",
+                "Publisher ID must be a stable lowercase identifier of at most 200 characters.",
+            )
+            return ("", None, None)
+        if not _valid_management_identifier(key_id):
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_action_package_key_id",
+                "Publisher key ID must be a stable lowercase identifier of at most 200 characters.",
+            )
+            return ("", None, None)
+        if action not in {"suspend", "revoke"}:
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_action_package_publisher_action",
+                "Publisher trust action must be suspend or revoke.",
+            )
+            return ("", None, None)
+        return (publisher_id, key_id, action)
+
+    def _action_package_route_allow(self, path: str) -> str | None:
+        package_request = self._action_package_request(path)
+        if package_request is not None:
+            package_id, version, _action = package_request
+            if package_id == "":
+                return ""
+            if package_id is None:
+                return "GET, POST"
+            return "GET" if version is None else "POST"
+        publisher_request = self._action_package_publisher_request(path)
+        if publisher_request is not None:
+            publisher_id, _key_id, _action = publisher_request
+            return "" if publisher_id == "" else "POST"
+        return None
 
     def _setting_key(self, path: str) -> str | None:
         prefix = f"{API_PREFIX}/settings/"

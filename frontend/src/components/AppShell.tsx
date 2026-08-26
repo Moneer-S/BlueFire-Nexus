@@ -2,7 +2,7 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity, Bot, Boxes, Braces, BookOpen, ChevronLeft, FlaskConical, GitCompareArrows, HelpCircle,
-  Home, ListChecks, Menu, Network, PlaySquare, Puzzle, ScrollText, Settings, ShieldCheck, SlidersHorizontal, X,
+  Home, ListChecks, Menu, Network, PackageCheck, PlaySquare, Puzzle, ScrollText, Settings, ShieldCheck, SlidersHorizontal, X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
@@ -22,7 +22,7 @@ const groups = [
   ] },
   { label: "Infrastructure", items: [
     { to: "/runner-profiles", label: "Runner Profiles", icon: SlidersHorizontal }, { to: "/runners", label: "Runners", icon: Activity },
-    { to: "/actions", label: "Actions & Plugins", icon: Puzzle },
+    { to: "/actions", label: "Actions & Plugins", icon: Puzzle }, { to: "/action-packages", label: "Action Packages", icon: PackageCheck },
   ] },
   { label: "System", items: [
     { to: "/ai-planner", label: "AI Planner", icon: Bot }, { to: "/settings", label: "Settings", icon: Settings },

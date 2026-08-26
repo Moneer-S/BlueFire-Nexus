@@ -30,6 +30,10 @@ SCENARIO_ID = "scenario.example.v1"
 RESOURCE_ID = "collector.example.v1"
 PROPOSAL_ID = "proposal-review-0123456789abcdef0123456789abcdef"
 DETECTION_ID = "detection-0123456789abcdef0123"
+PACKAGE_ID = "package.managed.v1"
+PACKAGE_VERSION = "1.2.3"
+PUBLISHER_ID = "publisher.managed.v1"
+PUBLISHER_KEY_ID = "release-key.v1"
 
 
 class StubService:
@@ -84,6 +88,67 @@ class StubService:
     ):
         self.calls.append(("save_resource", kind, resource_id, request))
         return {"resource": {"kind": kind, "id": resource_id}}
+
+    def action_packages(self):
+        self.calls.append(("action_packages",))
+        return {"packages": [], "publishers": []}
+
+    def action_package(self, package_id: str):
+        self.calls.append(("action_package", package_id))
+        return {"package": {"package_id": package_id}}
+
+    def install_action_package(self, request: Mapping[str, Any]):
+        self.calls.append(("install_action_package", request))
+        return {"package": {"package_id": PACKAGE_ID, "version": PACKAGE_VERSION}}
+
+    def activate_action_package(
+        self,
+        package_id: str,
+        version: str,
+        request: Mapping[str, Any],
+    ):
+        self.calls.append(("activate_action_package", package_id, version, request))
+        return {"package": {"package_id": package_id, "version": version, "active": True}}
+
+    def deactivate_action_package(
+        self,
+        package_id: str,
+        version: str,
+        request: Mapping[str, Any],
+    ):
+        self.calls.append(("deactivate_action_package", package_id, version, request))
+        return {"package": {"package_id": package_id, "version": version, "active": False}}
+
+    def remove_action_package(
+        self,
+        package_id: str,
+        version: str,
+        request: Mapping[str, Any],
+    ):
+        self.calls.append(("remove_action_package", package_id, version, request))
+        return {"package": {"package_id": package_id, "version": version, "removed": True}}
+
+    def trust_action_package_publisher(self, request: Mapping[str, Any]):
+        self.calls.append(("trust_action_package_publisher", request))
+        return {"publisher": {"publisher_id": request.get("publisher_id")}}
+
+    def transition_action_package_publisher(
+        self,
+        publisher_id: str,
+        key_id: str,
+        action: str,
+        request: Mapping[str, Any],
+    ):
+        self.calls.append(
+            (
+                "transition_action_package_publisher",
+                publisher_id,
+                key_id,
+                action,
+                request,
+            )
+        )
+        return {"publisher": {"publisher_id": publisher_id, "key_id": key_id, "state": action}}
 
     def detection_health(self):
         self.calls.append(("detection_health",))
@@ -842,6 +907,240 @@ def test_post_routes_forward_json_objects_without_orchestration() -> None:
 
         assert ("upsert_setting", "ui.preferences", body) in service.calls
         assert ("save_resource", "collector", RESOURCE_ID, body) in service.calls
+
+
+def test_action_package_routes_dispatch_exact_lifecycle_authority() -> None:
+    install_body = {"envelope": {"schema_version": "bluefire.action-package.v1"}}
+    lifecycle_body = {"actor": "local-operator", "reason": "explicit-test"}
+    trust_body = {
+        "publisher_id": PUBLISHER_ID,
+        "key_id": PUBLISHER_KEY_ID,
+        "public_key": "test-key",
+    }
+    with running_server() as (server, service):
+        status, _, payload = request(server, "GET", "/api/v1/action-packages")
+        assert status == 200
+        assert json_body(payload)["packages"] == []
+        assert service.calls[-1] == ("action_packages",)
+
+        status, _, payload = request(
+            server,
+            "GET",
+            f"/api/v1/action-packages/{PACKAGE_ID}",
+        )
+        assert status == 200
+        assert json_body(payload)["package"]["package_id"] == PACKAGE_ID
+        assert service.calls[-1] == ("action_package", PACKAGE_ID)
+
+        status, _, _ = request(
+            server,
+            "POST",
+            "/api/v1/action-packages",
+            body=install_body,
+        )
+        assert status == 201
+        assert service.calls[-1] == ("install_action_package", install_body)
+
+        for action, operation in (
+            ("activate", "activate_action_package"),
+            ("deactivate", "deactivate_action_package"),
+            ("remove", "remove_action_package"),
+        ):
+            status, _, payload = request(
+                server,
+                "POST",
+                f"/api/v1/action-packages/{PACKAGE_ID}/versions/{PACKAGE_VERSION}/{action}",
+                body=lifecycle_body,
+            )
+            assert status == 200
+            assert json_body(payload)["package"]["version"] == PACKAGE_VERSION
+            assert service.calls[-1] == (
+                operation,
+                PACKAGE_ID,
+                PACKAGE_VERSION,
+                lifecycle_body,
+            )
+
+        status, _, _ = request(
+            server,
+            "POST",
+            "/api/v1/action-package-publishers",
+            body=trust_body,
+        )
+        assert status == 201
+        assert service.calls[-1] == ("trust_action_package_publisher", trust_body)
+
+        for action in ("suspend", "revoke"):
+            status, _, payload = request(
+                server,
+                "POST",
+                (
+                    f"/api/v1/action-package-publishers/{PUBLISHER_ID}"
+                    f"/keys/{PUBLISHER_KEY_ID}/{action}"
+                ),
+                body=lifecycle_body,
+            )
+            assert status == 200
+            assert json_body(payload)["publisher"]["state"] == action
+            assert service.calls[-1] == (
+                "transition_action_package_publisher",
+                PUBLISHER_ID,
+                PUBLISHER_KEY_ID,
+                action,
+                lifecycle_body,
+            )
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "expected_code"),
+    [
+        ("GET", "/api/v1/action-packages?active=true", "invalid_management_query"),
+        ("GET", "/api/v1/action-packages#inventory", "invalid_management_query"),
+        ("GET", "/api/v1/action-packages/Package.Upper", "invalid_action_package_id"),
+        (
+            "POST",
+            f"/api/v1/action-packages/{PACKAGE_ID}/versions/01.2.3/activate",
+            "invalid_action_package_version",
+        ),
+        (
+            "POST",
+            f"/api/v1/action-packages/{PACKAGE_ID}/versions/1.2.3-01/activate",
+            "invalid_action_package_version",
+        ),
+        (
+            "POST",
+            f"/api/v1/action-packages/{PACKAGE_ID}/versions/18446744073709551616.0.0/activate",
+            "invalid_action_package_version",
+        ),
+        (
+            "POST",
+            f"/api/v1/action-packages/{PACKAGE_ID}/versions/{PACKAGE_VERSION}/restart",
+            "invalid_action_package_action",
+        ),
+        (
+            "GET",
+            f"/api/v1/action-packages/{PACKAGE_ID}/versions/{PACKAGE_VERSION}",
+            "invalid_action_package_path",
+        ),
+        (
+            "POST",
+            "/api/v1/action-package-publishers/Publisher.Upper/keys/release-key.v1/suspend",
+            "invalid_action_package_publisher_id",
+        ),
+        (
+            "POST",
+            f"/api/v1/action-package-publishers/{PUBLISHER_ID}/keys/Key.Upper/suspend",
+            "invalid_action_package_key_id",
+        ),
+        (
+            "POST",
+            (f"/api/v1/action-package-publishers/{PUBLISHER_ID}" f"/keys/{PUBLISHER_KEY_ID}/trust"),
+            "invalid_action_package_publisher_action",
+        ),
+        (
+            "POST",
+            "/api/v1/action-package-publishers?scope=global",
+            "invalid_management_query",
+        ),
+    ],
+)
+def test_action_package_routes_reject_ambiguous_path_authority(
+    method: str,
+    path: str,
+    expected_code: str,
+) -> None:
+    with running_server() as (server, service):
+        status, _, payload = request(
+            server,
+            method,
+            path,
+            body={} if method == "POST" else None,
+        )
+
+    assert status == 400
+    assert json_body(payload)["error"]["code"] == expected_code
+    assert not service.calls
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "expected_allow"),
+    [
+        ("HEAD", "/api/v1/action-packages", "GET, POST"),
+        ("PUT", "/api/v1/action-packages", "GET, POST"),
+        ("POST", f"/api/v1/action-packages/{PACKAGE_ID}", "GET"),
+        ("HEAD", f"/api/v1/action-packages/{PACKAGE_ID}", "GET"),
+        (
+            "GET",
+            f"/api/v1/action-packages/{PACKAGE_ID}/versions/{PACKAGE_VERSION}/activate",
+            "POST",
+        ),
+        (
+            "DELETE",
+            f"/api/v1/action-packages/{PACKAGE_ID}/versions/{PACKAGE_VERSION}/remove",
+            "POST",
+        ),
+        ("GET", "/api/v1/action-package-publishers", "POST"),
+        ("PATCH", "/api/v1/action-package-publishers", "POST"),
+        (
+            "GET",
+            (
+                f"/api/v1/action-package-publishers/{PUBLISHER_ID}"
+                f"/keys/{PUBLISHER_KEY_ID}/suspend"
+            ),
+            "POST",
+        ),
+    ],
+)
+def test_action_package_routes_report_exact_allowed_methods(
+    method: str,
+    path: str,
+    expected_allow: str,
+) -> None:
+    with running_server() as (server, service):
+        status, headers, payload = request(
+            server,
+            method,
+            path,
+            body={} if method == "POST" else None,
+        )
+
+    assert status == 405
+    assert headers["Allow"] == expected_allow
+    if method == "HEAD":
+        assert payload == b""
+    else:
+        assert json_body(payload)["error"]["code"] == "method_not_allowed"
+    assert not service.calls
+
+
+def test_action_package_posts_keep_pre_body_browser_and_same_origin_guards() -> None:
+    with running_server() as (server, service):
+        status, _, payload = request(
+            server,
+            "POST",
+            "/api/v1/action-packages",
+            body={},
+            origin="http://example.test",
+        )
+        assert status == 403
+        assert json_body(payload)["error"]["code"] == "origin_rejected"
+
+        port = server.server_address[1]
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+        connection.putrequest("POST", "/api/v1/action-packages")
+        connection.putheader("Origin", f"http://127.0.0.1:{port}")
+        connection.putheader("Content-Type", "application/json")
+        connection.putheader("Content-Length", "1048576")
+        connection.endheaders()
+        response = connection.getresponse()
+        unauthorized_payload = response.read()
+        response_headers = dict(response.getheaders())
+        connection.close()
+
+    assert response.status == 401
+    assert response_headers["Connection"] == "close"
+    assert json_body(unauthorized_payload)["error"]["code"] == "browser_session_required"
+    assert not service.calls
 
 
 def test_runner_routes_dispatch_only_explicit_managed_lifecycle_actions() -> None:

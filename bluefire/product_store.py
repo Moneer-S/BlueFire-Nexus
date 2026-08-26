@@ -31,10 +31,16 @@ from .ai import (
     validate_persisted_proposal_record,
 )
 from .contracts import ScenarioDefinition
+from .local_lock import (
+    LocalLockError,
+    owner_private_database_lock,
+    pinned_regular_file_identity,
+    prepare_owner_private_database_file,
+)
 from .util import canonical_json_bytes, content_hash, json_clone
 
 if TYPE_CHECKING:
-    from .action_packages import VerifiedActionPackage
+    from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
 class ProductStoreError(ValueError):
@@ -61,7 +67,7 @@ class ActionPackageConflictError(ActionPackageIntegrityError):
     """Raised when an immutable package or publisher identity would be rewritten."""
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PACKAGE_VERSION = re.compile(
@@ -72,6 +78,11 @@ _ACTION_PACKAGE_VERSION = re.compile(
 _MAX_ACTION_PACKAGE_ENVELOPE_BYTES = 256 * 1024
 _MAX_ACTION_PACKAGE_ACTOR_CHARS = 128
 _MAX_OCCUPIED_PACKAGE_IDS = 4096
+_ACTION_PACKAGE_ACTIVATION_EVENT_ID = re.compile(r"^action-package-activation-[0-9a-f]{32}$")
+_ACTION_PACKAGE_ACTIVATION_CAUSES = {"operator", "trust_suspended", "trust_revoked"}
+_EMPTY_ACTION_PACKAGE_CATALOG_DIGEST = content_hash(
+    {"schema_version": "bluefire.active-action-package-catalog.v1", "packages": []}
+)
 _PROPOSAL_RECORD_ID = re.compile(r"^proposal-review-[0-9a-f]{32}$")
 _SOURCE_PROPOSAL_ID = re.compile(r"^proposal-[0-9a-f]{20}$")
 _ENVIRONMENT_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
@@ -409,25 +420,79 @@ class ProductStore:
 
     def __init__(self, path: str | Path) -> None:
         candidate = Path(path).expanduser()
-        if candidate.is_symlink():
-            raise ProductStoreError("product database cannot be a symbolic link")
-        if candidate.exists() and not candidate.is_file():
-            raise ProductStoreError("product database path must be a regular file")
         candidate.parent.mkdir(parents=True, exist_ok=True)
-        self.path = candidate.resolve()
+        try:
+            self.path, self._database_identity = prepare_owner_private_database_file(candidate)
+        except LocalLockError as exc:
+            raise ProductStoreError("product database must be a single-link regular file") from exc
         self._lock = threading.RLock()
-        self._migrate()
+        try:
+            with self.action_package_catalog_lease():
+                self._migrate()
+        except ProductStoreError:
+            raise
+        except (MemoryError, OSError, sqlite3.DatabaseError) as exc:
+            raise ProductStoreError("product database migration failed safely") from exc
+
+    @contextmanager
+    def action_package_catalog_lease(self) -> Iterator[None]:
+        """Serialize every package trust/lifecycle writer with native dispatch."""
+
+        try:
+            with owner_private_database_lock(
+                self.path,
+                expected=self._database_identity,
+            ):
+                yield
+        except LocalLockError as exc:
+            raise ProductStoreError(
+                "product database identity changed or is not a single-link regular file; "
+                "action-package catalog lease is unavailable"
+            ) from exc
+
+    @contextmanager
+    def action_package_catalog_dispatch_lease(
+        self,
+        expected_generation: int,
+        expected_catalog_digest: str,
+    ) -> Iterator[Mapping[str, Any]]:
+        """Reassert exact catalog authority inside a lease held through an effect."""
+
+        with self.action_package_catalog_lease():
+            snapshot = self.assert_action_package_catalog_snapshot(
+                expected_generation,
+                expected_catalog_digest,
+            )
+            yield snapshot
 
     @contextmanager
     def _connection(self, *, write: bool = False) -> Iterator[sqlite3.Connection]:
         with self._lock:
-            connection = sqlite3.connect(self.path, timeout=5.0)
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute("PRAGMA busy_timeout = 5000")
-            if write:
-                connection.execute("BEGIN IMMEDIATE")
             try:
+                pinned_regular_file_identity(
+                    self.path,
+                    expected=self._database_identity,
+                )
+            except LocalLockError as exc:
+                raise ProductStoreError(
+                    "product database identity changed or is not a single-link regular file"
+                ) from exc
+            connection = sqlite3.connect(self.path, timeout=5.0)
+            try:
+                try:
+                    pinned_regular_file_identity(
+                        self.path,
+                        expected=self._database_identity,
+                    )
+                except LocalLockError as exc:
+                    raise ProductStoreError(
+                        "product database identity changed or is not a single-link regular file"
+                    ) from exc
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute("PRAGMA busy_timeout = 5000")
+                if write:
+                    connection.execute("BEGIN IMMEDIATE")
                 yield connection
             except BaseException:
                 if write:
@@ -664,6 +729,9 @@ class ProductStore:
                 CREATE INDEX IF NOT EXISTS action_package_versions_publisher_idx
                     ON action_package_versions(publisher_id, key_id, installed_at);
 
+                CREATE UNIQUE INDEX IF NOT EXISTS action_package_versions_exact_identity_idx
+                    ON action_package_versions(package_id, version, package_digest);
+
                 CREATE TABLE IF NOT EXISTS action_package_heads (
                     package_id TEXT PRIMARY KEY,
                     installed_version TEXT NOT NULL,
@@ -691,6 +759,61 @@ class ProductStore:
 
                 CREATE INDEX IF NOT EXISTS action_package_lifecycle_events_package_idx
                     ON action_package_lifecycle_events(package_id, sequence);
+
+                CREATE TABLE IF NOT EXISTS action_package_activation_events (
+                    generation INTEGER PRIMARY KEY AUTOINCREMENT,
+                    previous_generation INTEGER NOT NULL CHECK (previous_generation >= 0),
+                    event_id TEXT NOT NULL UNIQUE,
+                    event_type TEXT NOT NULL
+                        CHECK (event_type IN ('activated', 'deactivated')),
+                    cause TEXT NOT NULL
+                        CHECK (cause IN ('operator', 'trust_suspended', 'trust_revoked')),
+                    package_id TEXT NOT NULL,
+                    from_version TEXT,
+                    from_package_digest TEXT,
+                    to_version TEXT,
+                    to_package_digest TEXT,
+                    previous_catalog_digest TEXT NOT NULL,
+                    catalog_digest TEXT NOT NULL,
+                    bluefire_version TEXT,
+                    runner_platform TEXT,
+                    runner_inventory_digest TEXT,
+                    runner_identity_digest TEXT,
+                    details_json TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    CHECK ((from_version IS NULL) = (from_package_digest IS NULL)),
+                    CHECK ((to_version IS NULL) = (to_package_digest IS NULL)),
+                    CHECK (
+                        (
+                            event_type = 'activated'
+                            AND cause = 'operator'
+                            AND to_version IS NOT NULL
+                            AND bluefire_version IS NOT NULL
+                            AND runner_platform IS NOT NULL
+                            AND runner_inventory_digest IS NOT NULL
+                            AND runner_identity_digest IS NOT NULL
+                        )
+                        OR
+                        (
+                            event_type = 'deactivated'
+                            AND from_version IS NOT NULL
+                            AND to_version IS NULL
+                            AND bluefire_version IS NULL
+                            AND runner_platform IS NULL
+                            AND runner_inventory_digest IS NULL
+                            AND runner_identity_digest IS NULL
+                        )
+                    ),
+                    FOREIGN KEY (package_id, from_version, from_package_digest)
+                        REFERENCES action_package_versions(package_id, version, package_digest),
+                    FOREIGN KEY (package_id, to_version, to_package_digest)
+                        REFERENCES action_package_versions(package_id, version, package_digest)
+                );
+
+                CREATE INDEX IF NOT EXISTS action_package_activation_events_package_idx
+                    ON action_package_activation_events(package_id, generation);
 
                 CREATE TABLE IF NOT EXISTS action_package_tombstones (
                     package_id TEXT NOT NULL,
@@ -724,6 +847,18 @@ class ProductStore:
                 BEFORE DELETE ON action_package_lifecycle_events
                 BEGIN
                     SELECT RAISE(ABORT, 'action-package lifecycle events are append-only');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS action_package_activation_events_no_update
+                BEFORE UPDATE ON action_package_activation_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'action-package activation events are append-only');
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS action_package_activation_events_no_delete
+                BEFORE DELETE ON action_package_activation_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'action-package activation events are append-only');
                 END;
 
                 CREATE TRIGGER IF NOT EXISTS action_package_tombstones_no_update
@@ -831,6 +966,16 @@ class ProductStore:
             }
             if "claimed_at" not in columns:
                 connection.execute("ALTER TABLE approval_requests ADD COLUMN claimed_at TEXT")
+            action_package_head_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(action_package_heads)").fetchall()
+            }
+            if "active_generation" not in action_package_head_columns:
+                connection.execute("""
+                    ALTER TABLE action_package_heads
+                    ADD COLUMN active_generation INTEGER
+                        REFERENCES action_package_activation_events(generation)
+                    """)
             self._backfill_detection_revisions(connection)
             if current is None or int(current) < 6:
                 self._migrate_legacy_plugin_metadata(connection)
@@ -1530,6 +1675,24 @@ class ProductStore:
         provenance: Mapping[str, Any],
         trusted_by: str,
     ) -> Mapping[str, Any]:
+        with self.action_package_catalog_lease():
+            return self._trust_action_package_publisher_locked(
+                publisher_id=publisher_id,
+                key_id=key_id,
+                public_key=public_key,
+                provenance=provenance,
+                trusted_by=trusted_by,
+            )
+
+    def _trust_action_package_publisher_locked(
+        self,
+        *,
+        publisher_id: str,
+        key_id: str,
+        public_key: Any,
+        provenance: Mapping[str, Any],
+        trusted_by: str,
+    ) -> Mapping[str, Any]:
         """Enroll one exact local publisher/key binding.
 
         A package envelope cannot create or modify this record.  Key bytes are
@@ -1717,6 +1880,24 @@ class ProductStore:
         actor: str,
         reason: str,
     ) -> Mapping[str, Any]:
+        with self.action_package_catalog_lease():
+            return self._transition_action_package_publisher_trust_locked(
+                publisher_id,
+                key_id,
+                trust_state=trust_state,
+                actor=actor,
+                reason=reason,
+            )
+
+    def _transition_action_package_publisher_trust_locked(
+        self,
+        publisher_id: str,
+        key_id: str,
+        *,
+        trust_state: str,
+        actor: str,
+        reason: str,
+    ) -> Mapping[str, Any]:
         stable_publisher_id = _identifier(publisher_id, "action-package publisher ID")
         stable_key_id = _identifier(key_id, "action-package publisher key ID")
         if trust_state not in {"suspended", "revoked"}:
@@ -1725,6 +1906,9 @@ class ProductStore:
         trusted_reason = _package_trust_reason(reason)
         now = utc_now()
         with self._connection(write=True) as connection:
+            # Audit before changing trust so the same transaction can append
+            # every required package deactivation against the exact old state.
+            catalog = self._audit_action_package_activation_events(connection)
             row = connection.execute(
                 self._trusted_action_package_publisher_select_sql()
                 + " WHERE p.publisher_id = ? AND p.key_id = ?",
@@ -1760,6 +1944,35 @@ class ProductStore:
             event_sequence = event.lastrowid
             if event_sequence is None:
                 raise ProductStoreError("action-package trust event was not persisted")
+            cause = "trust_suspended" if trust_state == "suspended" else "trust_revoked"
+            active_package_ids: list[str] = []
+            for package_id, active in catalog["packages"].items():
+                signer = connection.execute(
+                    """
+                    SELECT publisher_id, key_id FROM action_package_versions
+                    WHERE package_id = ? AND version = ? AND package_digest = ?
+                    """,
+                    (package_id, active["version"], active["package_digest"]),
+                ).fetchone()
+                if signer is None:
+                    raise ActionPackageIntegrityError(
+                        "active action-package signer binding is unavailable"
+                    )
+                if (signer["publisher_id"], signer["key_id"]) == (
+                    stable_publisher_id,
+                    stable_key_id,
+                ):
+                    active_package_ids.append(package_id)
+            for package_id in sorted(active_package_ids):
+                self._append_action_package_deactivation(
+                    connection,
+                    catalog,
+                    package_id,
+                    cause=cause,
+                    actor=trusted_actor,
+                    reason=trusted_reason,
+                    created_at=now,
+                )
             transitioned = connection.execute(
                 self._trusted_action_package_publisher_select_sql()
                 + " WHERE p.publisher_id = ? AND p.key_id = ?",
@@ -1871,6 +2084,22 @@ class ProductStore:
         occupied_behavior_ids: Collection[str] = (),
         occupied_action_ids: Collection[str] = (),
     ) -> Mapping[str, Any]:
+        with self.action_package_catalog_lease():
+            return self._install_action_package_locked(
+                verified,
+                installed_by=installed_by,
+                occupied_behavior_ids=occupied_behavior_ids,
+                occupied_action_ids=occupied_action_ids,
+            )
+
+    def _install_action_package_locked(
+        self,
+        verified: VerifiedActionPackage,
+        *,
+        installed_by: str,
+        occupied_behavior_ids: Collection[str] = (),
+        occupied_action_ids: Collection[str] = (),
+    ) -> Mapping[str, Any]:
         """Atomically persist one already-verified immutable package version.
 
         The verifier result is still cross-bound to its exact canonical bytes
@@ -1888,6 +2117,12 @@ class ProductStore:
         version = str(package["version"])
         now = utc_now()
         with self._connection(write=True) as connection:
+            installed_behaviors, installed_actions = self._permanent_action_package_occupied_ids(
+                connection,
+                excluding_package_id=package_id,
+            )
+            occupied_behaviors = tuple(sorted(set(occupied_behaviors) | installed_behaviors))
+            occupied_actions = tuple(sorted(set(occupied_actions) | installed_actions))
             trust_row = connection.execute(
                 self._trusted_action_package_publisher_select_sql()
                 + " WHERE p.publisher_id = ? AND p.key_id = ?",
@@ -2016,14 +2251,10 @@ class ProductStore:
                         "distinct action-package versions cannot share SemVer precedence"
                     )
 
-            head = connection.execute(
-                "SELECT installed_version, active_version FROM action_package_heads WHERE package_id = ?",
-                (package_id,),
-            ).fetchone()
-            if head is not None and head["active_version"] is not None:
-                raise ActionPackageIntegrityError(
-                    "action-package active state has no append-only activation event"
-                )
+            # Installation publishes a new immutable *installed* head only. An
+            # already-active older version remains authoritative until a
+            # separately verified activation event upgrades it.
+            self._audit_action_package_activation_events(connection)
             previous_version = self._derived_action_package_installed_head(connection, package_id)
             selected_as_installed_head = previous_version is None or new_precedence > SemVer.parse(
                 previous_version, "installed action-package version"
@@ -2101,6 +2332,75 @@ class ProductStore:
                 version,
                 include_bytes=True,
             )
+
+    @staticmethod
+    def _permanent_action_package_occupied_ids(
+        connection: sqlite3.Connection,
+        *,
+        excluding_package_id: str,
+    ) -> tuple[set[str], set[str]]:
+        """Rebuild immutable package ID occupancy inside the install transaction.
+
+        Tombstoned versions deliberately remain in ``action_package_versions``;
+        their behavior/action namespaces therefore remain permanently reserved.
+        """
+
+        behavior_ids: set[str] = set()
+        action_ids: set[str] = set()
+        rows = connection.execute(
+            """
+            SELECT package_id, version, manifest_json
+            FROM action_package_versions
+            WHERE package_id != ?
+            ORDER BY package_id, version
+            """,
+            (excluding_package_id,),
+        ).fetchall()
+        for row in rows:
+            try:
+                manifest = json.loads(str(row["manifest_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ActionPackageIntegrityError(
+                    "persisted action-package manifest is malformed"
+                ) from exc
+            if not isinstance(manifest, Mapping) or _canonical_json(manifest) != str(
+                row["manifest_json"]
+            ):
+                raise ActionPackageIntegrityError(
+                    "persisted action-package manifest is not canonical"
+                )
+            if (
+                manifest.get("package_id") != row["package_id"]
+                or manifest.get("version") != row["version"]
+            ):
+                raise ActionPackageIntegrityError(
+                    "persisted action-package manifest identity is mismatched"
+                )
+            try:
+                behavior_ids.update(
+                    _occupied_package_ids(
+                        manifest.get("behavior_ids"),
+                        "persisted action-package behavior IDs",
+                    )
+                )
+                action_ids.update(
+                    _occupied_package_ids(
+                        manifest.get("action_ids"),
+                        "persisted action-package action IDs",
+                    )
+                )
+            except ProductStoreError as exc:
+                raise ActionPackageIntegrityError(
+                    "persisted action-package ID inventory is malformed"
+                ) from exc
+            if (
+                len(behavior_ids) > _MAX_OCCUPIED_PACKAGE_IDS
+                or len(action_ids) > _MAX_OCCUPIED_PACKAGE_IDS
+            ):
+                raise ActionPackageIntegrityError(
+                    "persisted action-package ID inventory exceeds its bound"
+                )
+        return behavior_ids, action_ids
 
     @staticmethod
     def _validated_verified_action_package(
@@ -2227,6 +2527,995 @@ class ProductStore:
                 )
         return selected_text
 
+    @staticmethod
+    def _action_package_catalog_digest(
+        packages: Mapping[str, Mapping[str, Any]],
+    ) -> str:
+        return content_hash(
+            {
+                "schema_version": "bluefire.active-action-package-catalog.v1",
+                "packages": [
+                    {
+                        "package_id": package_id,
+                        "version": packages[package_id]["version"],
+                        "package_digest": packages[package_id]["package_digest"],
+                        "content_digest": packages[package_id]["content_digest"],
+                    }
+                    for package_id in sorted(packages)
+                ],
+            }
+        )
+
+    @staticmethod
+    def _action_package_activation_occupied_ids(
+        connection: sqlite3.Connection,
+        active_packages: Mapping[str, Mapping[str, Any]],
+        *,
+        excluding_package_id: str,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        from .registry import load_builtin_registry
+
+        registry = load_builtin_registry()
+        behavior_ids = set(registry.behavior_ids)
+        action_ids = set(registry.action_ids)
+        for package_id, active in active_packages.items():
+            if package_id == excluding_package_id:
+                continue
+            row = connection.execute(
+                """
+                SELECT manifest_json FROM action_package_versions
+                WHERE package_id = ? AND version = ? AND package_digest = ?
+                """,
+                (package_id, active["version"], active["package_digest"]),
+            ).fetchone()
+            if row is None:
+                raise ActionPackageIntegrityError(
+                    "active action-package version bytes are unavailable"
+                )
+            try:
+                manifest = json.loads(str(row["manifest_json"]))
+                package_behaviors = _occupied_package_ids(
+                    manifest["behavior_ids"], "persisted active package behavior IDs"
+                )
+                package_actions = _occupied_package_ids(
+                    manifest["action_ids"], "persisted active package action IDs"
+                )
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ActionPackageIntegrityError(
+                    "active action-package manifest is malformed"
+                ) from exc
+            behavior_ids.update(package_behaviors)
+            action_ids.update(package_actions)
+        return tuple(sorted(behavior_ids)), tuple(sorted(action_ids))
+
+    @classmethod
+    def _audit_action_package_activation_events(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        through_generation: int | None = None,
+    ) -> dict[str, Any]:
+        """Derive one exact active catalog solely from its append-only event chain."""
+
+        from .action_packages import ActionPackageError, verify_action_package_for_activation
+
+        if through_generation is not None and (
+            isinstance(through_generation, bool)
+            or not isinstance(through_generation, int)
+            or through_generation < 0
+        ):
+            raise ProductStoreError(
+                "action-package catalog generation must be a non-negative integer"
+            )
+        if through_generation is None:
+            rows = connection.execute(
+                "SELECT * FROM action_package_activation_events ORDER BY generation"
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT * FROM action_package_activation_events
+                WHERE generation <= ? ORDER BY generation
+                """,
+                (through_generation,),
+            ).fetchall()
+
+        generation = 0
+        catalog_digest = _EMPTY_ACTION_PACKAGE_CATALOG_DIGEST
+        packages: dict[str, dict[str, Any]] = {}
+        events: list[Mapping[str, Any]] = []
+        for row in rows:
+            event_generation = int(row["generation"])
+            try:
+                previous_catalog_digest = _exact_sha256_digest(
+                    row["previous_catalog_digest"],
+                    "persisted previous action-package catalog digest",
+                )
+                event_catalog_digest = _exact_sha256_digest(
+                    row["catalog_digest"], "persisted action-package catalog digest"
+                )
+                actor = _package_actor(row["actor"], "persisted action-package activation actor")
+                reason = _package_trust_reason(row["reason"])
+                details = json.loads(str(row["details_json"]))
+            except (ProductStoreError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise ActionPackageIntegrityError(
+                    "persisted action-package activation event is malformed"
+                ) from exc
+            if (
+                event_generation != generation + 1
+                or int(row["previous_generation"]) != generation
+                or previous_catalog_digest != catalog_digest
+                or _ACTION_PACKAGE_ACTIVATION_EVENT_ID.fullmatch(str(row["event_id"])) is None
+                or not isinstance(details, Mapping)
+                or _canonical_json(details) != str(row["details_json"])
+                or not isinstance(row["created_at"], str)
+                or not row["created_at"]
+            ):
+                raise ActionPackageIntegrityError(
+                    "action-package activation event chain failed its integrity check"
+                )
+
+            package_id = str(row["package_id"])
+            try:
+                _identifier(package_id, "persisted active action-package ID")
+            except ProductStoreError as exc:
+                raise ActionPackageIntegrityError(
+                    "persisted action-package activation event has an invalid package ID"
+                ) from exc
+            current = packages.get(package_id)
+            expected_from = (
+                (None, None) if current is None else (current["version"], current["package_digest"])
+            )
+            actual_from = (row["from_version"], row["from_package_digest"])
+            if actual_from != expected_from:
+                raise ActionPackageIntegrityError(
+                    "action-package activation event does not continue the derived package state"
+                )
+
+            event_type = str(row["event_type"])
+            cause = str(row["cause"])
+            if cause not in _ACTION_PACKAGE_ACTIVATION_CAUSES:
+                raise ActionPackageIntegrityError(
+                    "persisted action-package activation cause is invalid"
+                )
+            if event_type == "activated":
+                if cause != "operator":
+                    raise ActionPackageIntegrityError(
+                        "only an operator event can activate an action package"
+                    )
+                to_version = row["to_version"]
+                to_digest = row["to_package_digest"]
+                if (
+                    not isinstance(to_version, str)
+                    or _ACTION_PACKAGE_VERSION.fullmatch(to_version) is None
+                ):
+                    raise ActionPackageIntegrityError(
+                        "persisted activated action-package version is invalid"
+                    )
+                target_digest = _exact_sha256_digest(
+                    to_digest, "persisted activated action-package digest"
+                )
+                if expected_from == (to_version, target_digest):
+                    raise ActionPackageIntegrityError(
+                        "action-package activation history contains a no-op event"
+                    )
+                version_row = connection.execute(
+                    """
+                    SELECT v.*, p.public_key_bytes
+                    FROM action_package_versions AS v
+                    JOIN trusted_action_package_publishers AS p
+                      ON p.publisher_id = v.publisher_id AND p.key_id = v.key_id
+                    WHERE v.package_id = ? AND v.version = ? AND v.package_digest = ?
+                    """,
+                    (package_id, to_version, target_digest),
+                ).fetchone()
+                if version_row is None:
+                    raise ActionPackageIntegrityError(
+                        "activated action-package immutable version is unavailable"
+                    )
+                runner = details.get("runner")
+                if not isinstance(runner, Mapping) or not isinstance(
+                    runner.get("inventory"), Mapping
+                ):
+                    raise ActionPackageIntegrityError(
+                        "persisted action-package runner binding is malformed"
+                    )
+                occupied_behavior_ids, occupied_action_ids = (
+                    cls._action_package_activation_occupied_ids(
+                        connection,
+                        packages,
+                        excluding_package_id=package_id,
+                    )
+                )
+                try:
+                    independently_verified = verify_action_package_for_activation(
+                        bytes(version_row["canonical_envelope_bytes"]),
+                        trusted_signers={
+                            (str(version_row["publisher_id"]), str(version_row["key_id"])): bytes(
+                                version_row["public_key_bytes"]
+                            )
+                        },
+                        bluefire_version=str(row["bluefire_version"]),
+                        runner_inventory=cast(Mapping[str, Any], runner["inventory"]),
+                        runner_identity_digest=str(runner.get("identity_digest")),
+                        expected_catalog_generation=generation,
+                        expected_catalog_digest=catalog_digest,
+                        occupied_behavior_ids=occupied_behavior_ids,
+                        occupied_action_ids=occupied_action_ids,
+                    )
+                except (ActionPackageError, TypeError, ValueError) as exc:
+                    raise ActionPackageIntegrityError(
+                        "persisted action-package activation binding failed reverification"
+                    ) from exc
+                if (
+                    details != independently_verified.to_dict()
+                    or independently_verified.package.manifest.package_id != package_id
+                    or independently_verified.package.manifest.version != to_version
+                    or independently_verified.package.package_digest != target_digest
+                    or row["runner_platform"] != independently_verified.runner_platform
+                    or row["runner_inventory_digest"]
+                    != independently_verified.runner_inventory_digest
+                    or row["runner_identity_digest"]
+                    != independently_verified.runner_identity_digest
+                    or row["bluefire_version"] != independently_verified.bluefire_version
+                ):
+                    raise ActionPackageIntegrityError(
+                        "persisted action-package activation binding changed"
+                    )
+                packages[package_id] = {
+                    "version": to_version,
+                    "package_digest": target_digest,
+                    "content_digest": _exact_sha256_digest(
+                        version_row["content_digest"],
+                        "persisted active action-package content digest",
+                    ),
+                    "activation_generation": event_generation,
+                    "activation": dict(details),
+                    "verified_activation": independently_verified,
+                }
+            elif event_type == "deactivated":
+                if (
+                    current is None
+                    or row["to_version"] is not None
+                    or row["to_package_digest"] is not None
+                ):
+                    raise ActionPackageIntegrityError(
+                        "persisted action-package deactivation event is invalid"
+                    )
+                if any(
+                    row[name] is not None
+                    for name in (
+                        "bluefire_version",
+                        "runner_platform",
+                        "runner_inventory_digest",
+                        "runner_identity_digest",
+                    )
+                ):
+                    raise ActionPackageIntegrityError(
+                        "action-package deactivation event retained a runner binding"
+                    )
+                expected_details = {
+                    "schema_version": "bluefire.action-package-deactivation.v1",
+                    "cause": cause,
+                    "package_id": package_id,
+                    "version": current["version"],
+                    "package_digest": current["package_digest"],
+                    "expected_catalog_generation": generation,
+                    "expected_catalog_digest": catalog_digest,
+                }
+                if details != expected_details:
+                    raise ActionPackageIntegrityError(
+                        "persisted action-package deactivation binding changed"
+                    )
+                del packages[package_id]
+            else:
+                raise ActionPackageIntegrityError(
+                    "persisted action-package activation event type is invalid"
+                )
+
+            derived_digest = cls._action_package_catalog_digest(packages)
+            if event_catalog_digest != derived_digest:
+                raise ActionPackageIntegrityError(
+                    "action-package activation event catalog digest is invalid"
+                )
+            events.append(
+                {
+                    "schema_version": "bluefire.action-package-activation-event.v1",
+                    "generation": event_generation,
+                    "previous_generation": generation,
+                    "event_id": row["event_id"],
+                    "event_type": event_type,
+                    "cause": cause,
+                    "package_id": package_id,
+                    "from_version": row["from_version"],
+                    "from_package_digest": row["from_package_digest"],
+                    "to_version": row["to_version"],
+                    "to_package_digest": row["to_package_digest"],
+                    "previous_catalog_digest": catalog_digest,
+                    "catalog_digest": derived_digest,
+                    "actor": actor,
+                    "reason": reason,
+                    "details": dict(details),
+                    "created_at": row["created_at"],
+                }
+            )
+            generation = event_generation
+            catalog_digest = derived_digest
+
+        if through_generation is not None and generation != through_generation:
+            raise ProductStoreError("action-package catalog generation was not found")
+
+        # Only the current snapshot is compared with the mutable cache. Exact
+        # historical generations intentionally ignore today's projection,
+        # trust state, and tombstones while retaining their immutable bytes.
+        if through_generation is None:
+            head_rows = connection.execute(
+                "SELECT package_id, active_version, active_generation FROM action_package_heads"
+            ).fetchall()
+            projected_ids: set[str] = set()
+            for head in head_rows:
+                package_id = str(head["package_id"])
+                active = packages.get(package_id)
+                expected_version = None if active is None else active["version"]
+                expected_generation = None if active is None else active["activation_generation"]
+                if (
+                    head["active_version"] != expected_version
+                    or head["active_generation"] != expected_generation
+                ):
+                    raise ActionPackageIntegrityError(
+                        "action-package active head projection failed its event-chain audit"
+                    )
+                if active is not None:
+                    projected_ids.add(package_id)
+            if projected_ids != set(packages):
+                raise ActionPackageIntegrityError(
+                    "active action-package catalog has no matching head projection"
+                )
+            for package_id, active in packages.items():
+                current_row = connection.execute(
+                    """
+                    SELECT t.package_digest AS tombstone_digest, e.trust_state
+                    FROM action_package_versions AS v
+                    LEFT JOIN action_package_tombstones AS t
+                      ON t.package_id = v.package_id AND t.version = v.version
+                    JOIN action_package_publisher_trust_events AS e
+                      ON e.sequence = (
+                          SELECT MAX(latest.sequence)
+                          FROM action_package_publisher_trust_events AS latest
+                          WHERE latest.publisher_id = v.publisher_id
+                            AND latest.key_id = v.key_id
+                      )
+                    WHERE v.package_id = ? AND v.version = ? AND v.package_digest = ?
+                    """,
+                    (package_id, active["version"], active["package_digest"]),
+                ).fetchone()
+                if (
+                    current_row is None
+                    or current_row["tombstone_digest"] is not None
+                    or current_row["trust_state"] != "trusted"
+                ):
+                    raise ActionPackageIntegrityError(
+                        "current active action package is removed or no longer trusted"
+                    )
+        return {
+            "generation": generation,
+            "catalog_digest": catalog_digest,
+            "packages": packages,
+            "events": events,
+        }
+
+    @classmethod
+    def _action_package_activation_target_row(
+        cls,
+        connection: sqlite3.Connection,
+        package_id: str,
+        version: str,
+    ) -> sqlite3.Row:
+        row = connection.execute(
+            cls._action_package_select_sql() + " WHERE v.package_id = ? AND v.version = ?",
+            (package_id, version),
+        ).fetchone()
+        if row is None:
+            raise ProductStoreError("action-package version was not found")
+        if row["trusted_public_key_bytes"] is None:
+            raise ActionPackageIntegrityError(
+                "action-package signer is not enrolled in local publisher trust"
+            )
+        return cast(sqlite3.Row, row)
+
+    def prepare_action_package_activation(
+        self,
+        package_id: str,
+        version: str,
+        *,
+        runner_inventory: Mapping[str, Any],
+        runner_identity_digest: str,
+    ) -> VerifiedActionPackageActivation:
+        """Reverify and bind the exact installed head to one catalog/runner snapshot."""
+
+        from . import __version__
+        from .action_packages import ActionPackageError, verify_action_package_for_activation
+
+        stable_id = _identifier(package_id, "action-package ID")
+        if not isinstance(version, str) or _ACTION_PACKAGE_VERSION.fullmatch(version) is None:
+            raise ProductStoreError("action-package version must be canonical SemVer")
+        with self._connection() as connection:
+            catalog = self._audit_action_package_activation_events(connection)
+            row = self._action_package_activation_target_row(connection, stable_id, version)
+            if self._derived_action_package_installed_head(connection, stable_id) != version:
+                raise ActionPackageConflictError(
+                    "only the exact current installed package head can be activated"
+                )
+            if row["tombstone_package_digest"] is not None:
+                raise ActionPackageConflictError("a removed action-package version cannot activate")
+            trust = self._audit_action_package_publisher_trust(
+                connection, str(row["publisher_id"]), str(row["key_id"])
+            )
+            if trust["trust_state"] != "trusted":
+                raise ActionPackageIntegrityError(
+                    "action-package signer local trust is suspended or revoked"
+                )
+            occupied_behavior_ids, occupied_action_ids = (
+                self._action_package_activation_occupied_ids(
+                    connection,
+                    catalog["packages"],
+                    excluding_package_id=stable_id,
+                )
+            )
+            try:
+                return verify_action_package_for_activation(
+                    bytes(row["canonical_envelope_bytes"]),
+                    trusted_signers={
+                        (str(row["publisher_id"]), str(row["key_id"])): bytes(
+                            row["trusted_public_key_bytes"]
+                        )
+                    },
+                    bluefire_version=__version__,
+                    runner_inventory=runner_inventory,
+                    runner_identity_digest=runner_identity_digest,
+                    expected_catalog_generation=int(catalog["generation"]),
+                    expected_catalog_digest=str(catalog["catalog_digest"]),
+                    occupied_behavior_ids=occupied_behavior_ids,
+                    occupied_action_ids=occupied_action_ids,
+                )
+            except ActionPackageError as exc:
+                raise ActionPackageIntegrityError(
+                    "action package failed exact activation preflight"
+                ) from exc
+
+    def activate_action_package(
+        self,
+        activation: VerifiedActionPackageActivation,
+        *,
+        activated_by: str,
+        reason: str,
+    ) -> Mapping[str, Any]:
+        with self.action_package_catalog_lease():
+            return self._activate_action_package_locked(
+                activation,
+                activated_by=activated_by,
+                reason=reason,
+            )
+
+    def _activate_action_package_locked(
+        self,
+        activation: VerifiedActionPackageActivation,
+        *,
+        activated_by: str,
+        reason: str,
+    ) -> Mapping[str, Any]:
+        """Atomically publish one independently reverified activation generation."""
+
+        from . import __version__
+        from .action_packages import (
+            ActionPackageError,
+            VerifiedActionPackageActivation,
+            verify_action_package_for_activation,
+        )
+
+        if not isinstance(activation, VerifiedActionPackageActivation):
+            raise ActionPackageIntegrityError(
+                "action-package activation requires an exact verifier result"
+            )
+        package = self._validated_verified_action_package(activation.package)
+        actor = _package_actor(activated_by, "action-package activation actor")
+        activation_reason = _package_trust_reason(reason)
+        _exact_sha256_digest(
+            activation.expected_catalog_digest, "expected action-package catalog digest"
+        )
+        if activation.bluefire_version != __version__:
+            raise ActionPackageIntegrityError(
+                "action-package activation is not bound to this BlueFire Nexus version"
+            )
+        now = utc_now()
+        package_id = str(package["package_id"])
+        version = str(package["version"])
+        with self._connection(write=True) as connection:
+            catalog = self._audit_action_package_activation_events(connection)
+            if (
+                activation.expected_catalog_generation != catalog["generation"]
+                or activation.expected_catalog_digest != catalog["catalog_digest"]
+            ):
+                raise ActionPackageConflictError(
+                    "action-package catalog changed after activation preflight"
+                )
+            row = self._action_package_activation_target_row(connection, package_id, version)
+            if (
+                row["package_digest"] != package["package_digest"]
+                or row["content_digest"] != package["content_digest"]
+                or self._derived_action_package_installed_head(connection, package_id) != version
+            ):
+                raise ActionPackageConflictError(
+                    "action-package installed head changed after activation preflight"
+                )
+            if row["tombstone_package_digest"] is not None:
+                raise ActionPackageConflictError("a removed action-package version cannot activate")
+            trust = self._audit_action_package_publisher_trust(
+                connection, str(row["publisher_id"]), str(row["key_id"])
+            )
+            if trust["trust_state"] != "trusted":
+                raise ActionPackageIntegrityError(
+                    "action-package signer local trust is suspended or revoked"
+                )
+            occupied_behavior_ids, occupied_action_ids = (
+                self._action_package_activation_occupied_ids(
+                    connection,
+                    catalog["packages"],
+                    excluding_package_id=package_id,
+                )
+            )
+            try:
+                independently_verified = verify_action_package_for_activation(
+                    bytes(row["canonical_envelope_bytes"]),
+                    trusted_signers={
+                        (str(row["publisher_id"]), str(row["key_id"])): bytes(
+                            row["trusted_public_key_bytes"]
+                        )
+                    },
+                    bluefire_version=__version__,
+                    runner_inventory=activation.runner_inventory(),
+                    runner_identity_digest=activation.runner_identity_digest,
+                    expected_catalog_generation=int(catalog["generation"]),
+                    expected_catalog_digest=str(catalog["catalog_digest"]),
+                    occupied_behavior_ids=occupied_behavior_ids,
+                    occupied_action_ids=occupied_action_ids,
+                )
+            except ActionPackageError as exc:
+                raise ActionPackageIntegrityError(
+                    "action package failed independent activation reverification"
+                ) from exc
+            if independently_verified != activation:
+                raise ActionPackageIntegrityError(
+                    "action-package activation result changed before publication"
+                )
+
+            current = catalog["packages"].get(package_id)
+            if current is not None and (current["version"], current["package_digest"]) == (
+                version,
+                package["package_digest"],
+            ):
+                # A fresh exact preflight against the already-active binding is
+                # an idempotent retry. It does not fabricate a new generation.
+                return self._action_package_detail_from_connection(
+                    connection, package_id, version, include_bytes=True
+                )
+            from_version = None if current is None else current["version"]
+            from_digest = None if current is None else current["package_digest"]
+            next_packages = dict(catalog["packages"])
+            next_packages[package_id] = {
+                "version": version,
+                "package_digest": package["package_digest"],
+                "content_digest": package["content_digest"],
+            }
+            next_digest = self._action_package_catalog_digest(next_packages)
+            event = connection.execute(
+                """
+                INSERT INTO action_package_activation_events(
+                    previous_generation, event_id, event_type, cause, package_id,
+                    from_version, from_package_digest, to_version, to_package_digest,
+                    previous_catalog_digest, catalog_digest, bluefire_version,
+                    runner_platform, runner_inventory_digest, runner_identity_digest,
+                    details_json, actor, reason, created_at
+                ) VALUES (?, ?, 'activated', 'operator', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    catalog["generation"],
+                    f"action-package-activation-{uuid.uuid4().hex}",
+                    package_id,
+                    from_version,
+                    from_digest,
+                    version,
+                    package["package_digest"],
+                    catalog["catalog_digest"],
+                    next_digest,
+                    independently_verified.bluefire_version,
+                    independently_verified.runner_platform,
+                    independently_verified.runner_inventory_digest,
+                    independently_verified.runner_identity_digest,
+                    _canonical_json(independently_verified.to_dict()),
+                    actor,
+                    activation_reason,
+                    now,
+                ),
+            )
+            event_generation = event.lastrowid
+            if event_generation != int(catalog["generation"]) + 1:
+                raise ActionPackageIntegrityError(
+                    "action-package activation generation did not advance exactly once"
+                )
+            updated = connection.execute(
+                """
+                UPDATE action_package_heads
+                SET active_version = ?, active_generation = ?, updated_at = ?
+                WHERE package_id = ? AND installed_version = ?
+                """,
+                (version, event_generation, now, package_id, version),
+            )
+            if updated.rowcount != 1:
+                raise ActionPackageConflictError(
+                    "action-package installed head changed during activation"
+                )
+            return self._action_package_detail_from_connection(
+                connection, package_id, version, include_bytes=True
+            )
+
+    @classmethod
+    def _append_action_package_deactivation(
+        cls,
+        connection: sqlite3.Connection,
+        catalog: dict[str, Any],
+        package_id: str,
+        *,
+        cause: str,
+        actor: str,
+        reason: str,
+        created_at: str,
+    ) -> int:
+        if cause not in _ACTION_PACKAGE_ACTIVATION_CAUSES:
+            raise ProductStoreError("action-package deactivation cause is invalid")
+        current = catalog["packages"].get(package_id)
+        if current is None:
+            raise ActionPackageConflictError("action package is not active")
+        details = {
+            "schema_version": "bluefire.action-package-deactivation.v1",
+            "cause": cause,
+            "package_id": package_id,
+            "version": current["version"],
+            "package_digest": current["package_digest"],
+            "expected_catalog_generation": catalog["generation"],
+            "expected_catalog_digest": catalog["catalog_digest"],
+        }
+        next_packages = dict(catalog["packages"])
+        del next_packages[package_id]
+        next_digest = cls._action_package_catalog_digest(next_packages)
+        event = connection.execute(
+            """
+            INSERT INTO action_package_activation_events(
+                previous_generation, event_id, event_type, cause, package_id,
+                from_version, from_package_digest, to_version, to_package_digest,
+                previous_catalog_digest, catalog_digest, bluefire_version,
+                runner_platform, runner_inventory_digest, runner_identity_digest,
+                details_json, actor, reason, created_at
+            ) VALUES (?, ?, 'deactivated', ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?, ?)
+            """,
+            (
+                catalog["generation"],
+                f"action-package-activation-{uuid.uuid4().hex}",
+                cause,
+                package_id,
+                current["version"],
+                current["package_digest"],
+                catalog["catalog_digest"],
+                next_digest,
+                _canonical_json(details),
+                actor,
+                reason,
+                created_at,
+            ),
+        )
+        generation = event.lastrowid
+        if generation != int(catalog["generation"]) + 1:
+            raise ActionPackageIntegrityError(
+                "action-package deactivation generation did not advance exactly once"
+            )
+        updated = connection.execute(
+            """
+            UPDATE action_package_heads
+            SET active_version = NULL, active_generation = NULL, updated_at = ?
+            WHERE package_id = ? AND active_version = ? AND active_generation = ?
+            """,
+            (
+                created_at,
+                package_id,
+                current["version"],
+                current["activation_generation"],
+            ),
+        )
+        if updated.rowcount != 1:
+            raise ActionPackageIntegrityError(
+                "action-package active projection changed during deactivation"
+            )
+        catalog["generation"] = generation
+        catalog["catalog_digest"] = next_digest
+        catalog["packages"] = next_packages
+        return int(generation)
+
+    def deactivate_action_package(
+        self,
+        package_id: str,
+        version: str,
+        package_digest: str,
+        *,
+        expected_catalog_generation: int,
+        expected_catalog_digest: str,
+        deactivated_by: str,
+        reason: str,
+    ) -> Mapping[str, Any]:
+        with self.action_package_catalog_lease():
+            return self._deactivate_action_package_locked(
+                package_id,
+                version,
+                package_digest,
+                expected_catalog_generation=expected_catalog_generation,
+                expected_catalog_digest=expected_catalog_digest,
+                deactivated_by=deactivated_by,
+                reason=reason,
+            )
+
+    def _deactivate_action_package_locked(
+        self,
+        package_id: str,
+        version: str,
+        package_digest: str,
+        *,
+        expected_catalog_generation: int,
+        expected_catalog_digest: str,
+        deactivated_by: str,
+        reason: str,
+    ) -> Mapping[str, Any]:
+        stable_id = _identifier(package_id, "action-package ID")
+        if not isinstance(version, str) or _ACTION_PACKAGE_VERSION.fullmatch(version) is None:
+            raise ProductStoreError("action-package version must be canonical SemVer")
+        exact_digest = _exact_sha256_digest(package_digest, "action-package digest")
+        actor = _package_actor(deactivated_by, "action-package deactivation actor")
+        deactivation_reason = _package_trust_reason(reason)
+        expected_digest = _exact_sha256_digest(
+            expected_catalog_digest, "expected action-package catalog digest"
+        )
+        if (
+            isinstance(expected_catalog_generation, bool)
+            or not isinstance(expected_catalog_generation, int)
+            or expected_catalog_generation < 0
+        ):
+            raise ProductStoreError(
+                "expected action-package catalog generation must be non-negative"
+            )
+        with self._connection(write=True) as connection:
+            catalog = self._audit_action_package_activation_events(connection)
+            if (
+                catalog["generation"] != expected_catalog_generation
+                or catalog["catalog_digest"] != expected_digest
+            ):
+                raise ActionPackageConflictError(
+                    "action-package catalog changed before deactivation"
+                )
+            current = catalog["packages"].get(stable_id)
+            if current is None or (current["version"], current["package_digest"]) != (
+                version,
+                exact_digest,
+            ):
+                raise ActionPackageConflictError(
+                    "exact action-package activation is no longer current"
+                )
+            self._append_action_package_deactivation(
+                connection,
+                catalog,
+                stable_id,
+                cause="operator",
+                actor=actor,
+                reason=deactivation_reason,
+                created_at=utc_now(),
+            )
+            return self._action_package_detail_from_connection(
+                connection, stable_id, version, include_bytes=True
+            )
+
+    def remove_action_package(
+        self,
+        package_id: str,
+        version: str,
+        package_digest: str,
+        *,
+        expected_catalog_generation: int,
+        expected_catalog_digest: str,
+        removed_by: str,
+        reason: str,
+    ) -> Mapping[str, Any]:
+        with self.action_package_catalog_lease():
+            return self._remove_action_package_locked(
+                package_id,
+                version,
+                package_digest,
+                expected_catalog_generation=expected_catalog_generation,
+                expected_catalog_digest=expected_catalog_digest,
+                removed_by=removed_by,
+                reason=reason,
+            )
+
+    def _remove_action_package_locked(
+        self,
+        package_id: str,
+        version: str,
+        package_digest: str,
+        *,
+        expected_catalog_generation: int,
+        expected_catalog_digest: str,
+        removed_by: str,
+        reason: str,
+    ) -> Mapping[str, Any]:
+        """Tombstone one exact version without deleting its recovery/audit bytes."""
+
+        stable_id = _identifier(package_id, "action-package ID")
+        if not isinstance(version, str) or _ACTION_PACKAGE_VERSION.fullmatch(version) is None:
+            raise ProductStoreError("action-package version must be canonical SemVer")
+        exact_digest = _exact_sha256_digest(package_digest, "action-package digest")
+        actor = _package_actor(removed_by, "action-package removal actor")
+        removal_reason = _package_trust_reason(reason)
+        expected_digest = _exact_sha256_digest(
+            expected_catalog_digest, "expected action-package catalog digest"
+        )
+        if (
+            isinstance(expected_catalog_generation, bool)
+            or not isinstance(expected_catalog_generation, int)
+            or expected_catalog_generation < 0
+        ):
+            raise ProductStoreError(
+                "expected action-package catalog generation must be non-negative"
+            )
+        now = utc_now()
+        with self._connection(write=True) as connection:
+            catalog = self._audit_action_package_activation_events(connection)
+            if (
+                catalog["generation"] != expected_catalog_generation
+                or catalog["catalog_digest"] != expected_digest
+            ):
+                raise ActionPackageConflictError("action-package catalog changed before removal")
+            row = connection.execute(
+                """
+                SELECT package_digest FROM action_package_versions
+                WHERE package_id = ? AND version = ?
+                """,
+                (stable_id, version),
+            ).fetchone()
+            if row is None:
+                raise ProductStoreError("action-package version was not found")
+            if row["package_digest"] != exact_digest:
+                raise ActionPackageConflictError(
+                    "action-package removal digest does not match immutable bytes"
+                )
+            existing = connection.execute(
+                """
+                SELECT * FROM action_package_tombstones
+                WHERE package_id = ? AND version = ?
+                """,
+                (stable_id, version),
+            ).fetchone()
+            if existing is not None:
+                if existing["package_digest"] != exact_digest:
+                    raise ActionPackageIntegrityError(
+                        "action-package tombstone digest conflicts with immutable bytes"
+                    )
+                return self._action_package_detail_from_connection(
+                    connection, stable_id, version, include_bytes=True
+                )
+            current = catalog["packages"].get(stable_id)
+            if current is not None and (current["version"], current["package_digest"]) == (
+                version,
+                exact_digest,
+            ):
+                self._append_action_package_deactivation(
+                    connection,
+                    catalog,
+                    stable_id,
+                    cause="operator",
+                    actor=actor,
+                    reason=removal_reason,
+                    created_at=now,
+                )
+            connection.execute(
+                """
+                INSERT INTO action_package_tombstones(
+                    package_id, version, package_digest, removed_by, reason, removed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (stable_id, version, exact_digest, actor, removal_reason, now),
+            )
+            return self._action_package_detail_from_connection(
+                connection, stable_id, version, include_bytes=True
+            )
+
+    def get_action_package_catalog_snapshot(
+        self,
+        generation: int | None = None,
+        *,
+        include_bytes: bool = True,
+    ) -> Mapping[str, Any]:
+        """Return current or one exact historical generation, including tombstoned bytes."""
+
+        if not isinstance(include_bytes, bool):
+            raise ProductStoreError("include_bytes must be boolean")
+        with self._connection() as connection:
+            catalog = self._audit_action_package_activation_events(
+                connection, through_generation=generation
+            )
+            packages: list[Mapping[str, Any]] = []
+            for package_id in sorted(catalog["packages"]):
+                active = catalog["packages"][package_id]
+                detail = self._action_package_detail_from_connection(
+                    connection,
+                    package_id,
+                    str(active["version"]),
+                    include_bytes=include_bytes,
+                    catalog_audit=catalog,
+                )
+                item: dict[str, Any] = {
+                    "package_id": package_id,
+                    "version": active["version"],
+                    "package_digest": active["package_digest"],
+                    "content_digest": active["content_digest"],
+                    "activation_generation": active["activation_generation"],
+                    "activation": json_clone(active["activation"]),
+                    "verified_activation": active["verified_activation"],
+                    "publisher_id": detail["publisher_id"],
+                    "key_id": detail["key_id"],
+                    "signer_fingerprint": detail["signer_fingerprint"],
+                    "manifest": json_clone(detail["manifest"]),
+                    "tombstone": json_clone(detail["tombstone"]),
+                }
+                if include_bytes:
+                    item["canonical_envelope_bytes"] = detail["canonical_envelope_bytes"]
+                    item["canonical_content_bytes"] = detail["canonical_content_bytes"]
+                packages.append(item)
+            return {
+                "schema_version": "bluefire.active-action-package-catalog.v1",
+                "generation": int(catalog["generation"]),
+                "catalog_digest": str(catalog["catalog_digest"]),
+                "packages": packages,
+            }
+
+    def assert_action_package_catalog_snapshot(
+        self,
+        expected_generation: int,
+        expected_catalog_digest: str,
+    ) -> Mapping[str, Any]:
+        """Fail closed unless the *current* dispatch catalog matches exactly."""
+
+        expected_digest = _exact_sha256_digest(
+            expected_catalog_digest, "expected action-package catalog digest"
+        )
+        if (
+            isinstance(expected_generation, bool)
+            or not isinstance(expected_generation, int)
+            or expected_generation < 0
+        ):
+            raise ProductStoreError(
+                "expected action-package catalog generation must be non-negative"
+            )
+        snapshot = self.get_action_package_catalog_snapshot(include_bytes=True)
+        if (
+            snapshot["generation"] != expected_generation
+            or snapshot["catalog_digest"] != expected_digest
+        ):
+            raise ActionPackageConflictError(
+                "current action-package catalog does not match the approved generation"
+            )
+        return snapshot
+
+    def list_action_package_activation_events(self) -> list[Mapping[str, Any]]:
+        with self._connection() as connection:
+            catalog = self._audit_action_package_activation_events(connection)
+            return list(catalog["events"])
+
     def get_action_package(
         self,
         package_id: str,
@@ -2278,6 +3567,7 @@ class ProductStore:
     def list_action_package_versions(self, package_id: str) -> list[Mapping[str, Any]]:
         stable_id = _identifier(package_id, "action-package ID")
         with self._connection() as connection:
+            catalog = self._audit_action_package_activation_events(connection)
             derived_head = self._derived_action_package_installed_head(connection, stable_id)
             rows = connection.execute(
                 self._action_package_select_sql()
@@ -2289,6 +3579,9 @@ class ProductStore:
                     row,
                     include_bytes=False,
                     derived_installed_version=derived_head,
+                    derived_active=catalog["packages"].get(stable_id),
+                    catalog_generation=int(catalog["generation"]),
+                    catalog_digest=str(catalog["catalog_digest"]),
                     audited_trust=self._audit_action_package_publisher_trust(
                         connection, str(row["publisher_id"]), str(row["key_id"])
                     ),
@@ -2420,6 +3713,7 @@ class ProductStore:
                 v.*,
                 h.installed_version AS head_installed_version,
                 h.active_version AS head_active_version,
+                h.active_generation AS head_active_generation,
                 h.updated_at AS head_updated_at,
                 p.public_key_bytes AS trusted_public_key_bytes,
                 p.public_key_b64u AS trusted_public_key_b64u,
@@ -2457,6 +3751,7 @@ class ProductStore:
         version: str,
         *,
         include_bytes: bool,
+        catalog_audit: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         row = connection.execute(
             cls._action_package_select_sql() + " WHERE v.package_id = ? AND v.version = ?",
@@ -2464,12 +3759,20 @@ class ProductStore:
         ).fetchone()
         if row is None:
             raise ProductStoreError("action-package version was not found")
+        catalog = (
+            cls._audit_action_package_activation_events(connection)
+            if catalog_audit is None
+            else catalog_audit
+        )
         return cls._action_package_from_row(
             row,
             include_bytes=include_bytes,
             derived_installed_version=cls._derived_action_package_installed_head(
                 connection, package_id
             ),
+            derived_active=catalog["packages"].get(package_id),
+            catalog_generation=int(catalog["generation"]),
+            catalog_digest=str(catalog["catalog_digest"]),
             audited_trust=cls._audit_action_package_publisher_trust(
                 connection, str(row["publisher_id"]), str(row["key_id"])
             ),
@@ -2481,6 +3784,9 @@ class ProductStore:
         *,
         include_bytes: bool,
         derived_installed_version: str | None,
+        derived_active: Mapping[str, Any] | None,
+        catalog_generation: int,
+        catalog_digest: str,
         audited_trust: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         from .action_packages import (
@@ -2630,11 +3936,15 @@ class ProductStore:
                 "persisted action-package tombstone has a conflicting digest"
             )
         installed_head = derived_installed_version == row["version"]
-        if row["head_active_version"] is not None:
-            raise ActionPackageIntegrityError(
-                "action-package active state has no append-only activation event"
-            )
-        active = row["head_active_version"] == row["version"]
+        active_version = None if derived_active is None else derived_active["version"]
+        active_generation = (
+            None if derived_active is None else int(derived_active["activation_generation"])
+        )
+        active = (
+            derived_active is not None
+            and derived_active["version"] == row["version"]
+            and derived_active["package_digest"] == package_digest
+        )
         if tombstone_digest is not None:
             status = "removed"
         elif active:
@@ -2659,7 +3969,13 @@ class ProductStore:
             "installed_at": row["installed_at"],
             "installed_head": installed_head,
             "active": active,
-            "active_version": row["head_active_version"],
+            "active_version": active_version,
+            "active_generation": active_generation,
+            "activation": (
+                None if derived_active is None else json_clone(derived_active["activation"])
+            ),
+            "catalog_generation": catalog_generation,
+            "catalog_digest": catalog_digest,
             "trust": {
                 "state": publisher_trust_state,
                 "source": "local_operator",

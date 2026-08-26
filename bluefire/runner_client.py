@@ -16,9 +16,10 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import AbstractContextManager, contextmanager
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Mapping, Protocol, cast, runtime_checkable
+from typing import Any, BinaryIO, Callable, Iterator, Mapping, Protocol, cast, runtime_checkable
 
 from .util import canonical_json_bytes, content_hash, file_hash
 
@@ -971,11 +972,13 @@ class InventoryBoundRunner:
         expected_inventory_digest: str,
         expected_identity_digest: str,
         recovery_identity: Mapping[str, Any],
+        dispatch_lease: Callable[[], AbstractContextManager[Any]] | None = None,
     ) -> None:
         self.runner = runner
         self.expected_inventory_digest = expected_inventory_digest
         self.expected_identity_digest = expected_identity_digest
         self.recovery_identity = dict(recovery_identity)
+        self.dispatch_lease = dispatch_lease
 
     @property
     def runner_binary(self) -> Any:
@@ -1010,7 +1013,8 @@ class InventoryBoundRunner:
         profile: Mapping[str, Any],
     ) -> Mapping[str, Any]:
         self.inventory()
-        return self.runner.execute(manifest, profile)
+        with self._dispatch_authority():
+            return self.runner.execute(manifest, profile)
 
     def execute_task(
         self,
@@ -1024,19 +1028,43 @@ class InventoryBoundRunner:
         """Preserve the approval-time inventory gate for task-aware dispatch."""
 
         self.inventory()
-        operation = getattr(self.runner, "execute_task", None)
-        if not callable(operation):
-            raise RunnerTransportError("Runner transport does not support task-aware execution.")
-        result = operation(
-            manifest,
-            profile,
-            task_id=task_id,
-            cancel_event=cancel_event,
-            durable_result_path=durable_result_path,
-        )
+        with self._dispatch_authority():
+            operation = getattr(self.runner, "execute_task", None)
+            if not callable(operation):
+                raise RunnerTransportError(
+                    "Runner transport does not support task-aware execution."
+                )
+            result = operation(
+                manifest,
+                profile,
+                task_id=task_id,
+                cancel_event=cancel_event,
+                durable_result_path=durable_result_path,
+            )
         if not isinstance(result, Mapping):
             raise RunnerTransportError("runner result must be a JSON object")
         return result
+
+    @contextmanager
+    def _dispatch_authority(self) -> Iterator[None]:
+        if self.dispatch_lease is None:
+            yield
+            return
+        manager: AbstractContextManager[Any]
+        try:
+            manager = self.dispatch_lease()
+            manager.__enter__()
+        except Exception as exc:
+            raise RunnerReadinessError(
+                "Action-package catalog changed before dispatch; submit a new Execute request."
+            ) from exc
+        try:
+            # The lease remains held across the underlying effect. Release
+            # errors are handled by its owner-private close path and cannot be
+            # misreported as a pre-dispatch refusal after an effect occurred.
+            yield
+        finally:
+            manager.__exit__(None, None, None)
 
 
 def _inventory_token(value: Any, *, maximum: int) -> str | None:

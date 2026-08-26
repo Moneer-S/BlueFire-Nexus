@@ -116,6 +116,126 @@ export interface CatalogResponse {
   runner_profiles: RunnerProfile[];
 }
 
+export interface ActionPackageManifest {
+  package_id: string;
+  version: string;
+  compatibility: {
+    minimum_bluefire_version: string;
+    maximum_bluefire_version_exclusive: string;
+  };
+  license: { spdx_id: string; notice: string };
+  provenance: {
+    publisher_id: string;
+    source: string;
+    reference: string;
+    revision: string;
+  };
+  platforms: string[];
+  capabilities: string[];
+  safety_tiers: SafetyTier[];
+  behavior_ids: string[];
+  action_ids: string[];
+}
+
+export interface ActionPackageTrustSummary {
+  state: "trusted" | "suspended" | "revoked" | string;
+  source: string;
+  publisher_id: string;
+  key_id: string;
+  key_fingerprint: string;
+  trusted_by: string;
+  trusted_at: string;
+  event_sequence: number;
+  updated_at: string;
+  provenance: Record<string, unknown>;
+}
+
+export interface ActionPackageInstallation {
+  schema_version: "bluefire.action-package-installation.v1" | string;
+  package_id: string;
+  version: string;
+  status: "active" | "installed" | "superseded" | "removed" | string;
+  package_digest: string;
+  content_digest: string;
+  publisher_id: string;
+  key_id: string;
+  signer_fingerprint: string;
+  manifest: ActionPackageManifest;
+  installed_by: string;
+  installed_at: string;
+  installed_head: boolean;
+  active: boolean;
+  active_version: string | null;
+  active_generation: number | null;
+  catalog_generation: number;
+  catalog_digest: string;
+  trust: ActionPackageTrustSummary;
+  activation?: Record<string, unknown> | null;
+  tombstone?: { package_digest: string; removed_by: string; reason: string; removed_at: string } | null;
+}
+
+export interface ActionPackagePublisherTrust {
+  schema_version: "bluefire.action-package-publisher-trust.v1" | string;
+  publisher_id: string;
+  key_id: string;
+  public_key_b64u: string;
+  key_fingerprint: string;
+  provenance: Record<string, unknown>;
+  trust_state: "trusted" | "suspended" | "revoked" | string;
+  trust_source: "local_operator" | string;
+  trust_event_sequence: number;
+  trust_updated_at: string;
+  trusted_by: string;
+  trusted_at: string;
+}
+
+export interface ActionPackageCatalog {
+  schema_version: string;
+  generation: number;
+  catalog_digest: string;
+  authority_digest?: string;
+  built_in_catalog_digest?: string;
+  packages: Array<Record<string, unknown>>;
+  action_bindings?: Array<Record<string, unknown>>;
+}
+
+export interface ActionPackageActivationEvent {
+  schema_version?: string;
+  generation: number;
+  event_type?: string;
+  package_id?: string;
+  version?: string;
+  package_digest?: string;
+  actor?: string;
+  reason?: string;
+  created_at?: string;
+  catalog_digest?: string;
+  [key: string]: unknown;
+}
+
+export interface ActionPackageInventory {
+  schema_version: "bluefire.action-package-inventory.v1" | string;
+  packages: ActionPackageInstallation[];
+  publishers: ActionPackagePublisherTrust[];
+  catalog: ActionPackageCatalog;
+  activation_events: ActionPackageActivationEvent[];
+  execution_boundary?: "signed-reviewed-opcodes-only" | string;
+}
+
+export interface ActionPackagePublisherEnrollment {
+  publisher_id: string;
+  key_id: string;
+  public_key: string;
+  provenance: Record<string, unknown>;
+  trusted_by: string;
+}
+
+export interface ActionPackageCatalogIdentity {
+  package_digest: string;
+  expected_catalog_generation: number;
+  expected_catalog_digest: string;
+}
+
 export interface ArtifactBinding {
   from_step: string;
   artifact: string;

@@ -61,9 +61,10 @@ class PlanStep:
     required_capabilities: tuple[str, ...]
     safety_tier: SafetyTier
     alternates: tuple[str, ...]
+    execution_binding: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        document = {
             "step_id": self.step_id,
             "behavior_id": self.behavior_id,
             "action_id": self.action_id,
@@ -75,6 +76,9 @@ class PlanStep:
             "safety_tier": self.safety_tier.value,
             "alternates": list(self.alternates),
         }
+        if self.execution_binding is not None:
+            document["execution_binding"] = dict(self.execution_binding)
+        return document
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,8 +167,27 @@ class PlannerDecision:
 
 
 class DeterministicPlanner:
-    def __init__(self, registry: BehaviorRegistry) -> None:
+    def __init__(
+        self,
+        registry: BehaviorRegistry,
+        *,
+        action_bindings: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
+    ) -> None:
         self.registry = registry
+        self.action_bindings = {
+            (str(behavior_id), str(action_id)): dict(binding)
+            for (behavior_id, action_id), binding in (action_bindings or {}).items()
+        }
+        unknown = sorted(
+            (behavior_id, action_id)
+            for behavior_id, action_id in self.action_bindings
+            if behavior_id not in registry.behavior_ids or action_id not in registry.action_ids
+        )
+        if unknown:
+            raise PlannerError(
+                "execution bindings reference unregistered behavior/action pairs: "
+                + ", ".join(f"{behavior}/{action}" for behavior, action in unknown)
+            )
 
     def compile(
         self,
@@ -373,6 +396,12 @@ class DeterministicPlanner:
             required_capabilities=behavior.capabilities,
             safety_tier=behavior.safety_tier,
             alternates=scenario_step.alternates,
+            execution_binding=(
+                dict(self.action_bindings[(behavior.id, selected_action_id)])
+                if selected_action_id is not None
+                and (behavior.id, selected_action_id) in self.action_bindings
+                else None
+            ),
         )
 
     @staticmethod

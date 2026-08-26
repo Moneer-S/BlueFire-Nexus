@@ -7,7 +7,7 @@ import sqlite3
 import threading
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -172,6 +172,56 @@ def _verified(
     )
 
 
+def _verified_named_package(
+    store: ProductStore,
+    key: Ed25519PrivateKey,
+    *,
+    package_id: str,
+    version: str,
+    behavior_id: str,
+    action_id: str,
+) -> Any:
+    manifest = _manifest(version)
+    manifest["package_id"] = package_id
+    manifest["provenance"]["reference"] = f"urn:bluefire:test:store-package:{package_id}:{version}"
+    manifest["behavior_ids"] = [behavior_id]
+    manifest["action_ids"] = [action_id]
+    payload = _payload()
+    payload["behaviors"][0]["id"] = behavior_id
+    payload["behaviors"][0]["action_ids"] = [action_id]
+    payload["actions"][0]["definition"]["id"] = action_id
+    envelope = build_signed_action_package(
+        manifest=manifest,
+        payload=payload,
+        key_id=KEY_ID,
+        private_key=key,
+    )
+    return verify_action_package(
+        envelope,
+        trusted_signers=store.trusted_action_package_signers(),
+        bluefire_version="0.1.0",
+        platform="windows",
+    )
+
+
+def _runner_inventory(*, readiness: str = "ready") -> dict[str, Any]:
+    return {
+        "schema_version": "bluefire.runner-inventory.v1",
+        "runner_id": "bluefire-runner",
+        "runner_version": "0.1.0",
+        "action_sdk_version": "1.0.0",
+        "receipt_protocol": "bluefire.runner-receipt.v1",
+        "platform": "windows",
+        "actions": [
+            {
+                "action_id": "endpoint.discovery.system.v1",
+                "action_version": "1.0.0",
+                "readiness": readiness,
+            }
+        ],
+    }
+
+
 def _invalid_signature_result(verified: Any) -> Any:
     document = json.loads(verified.canonical_envelope_bytes)
     invalid_signature = base64.urlsafe_b64encode(b"\x00" * 64).rstrip(b"=").decode("ascii")
@@ -229,7 +279,7 @@ def test_v5_plugin_metadata_is_preserved_and_active_status_is_demoted(
 
     store = ProductStore(path)
 
-    assert store.schema_version == 6
+    assert store.schema_version == 7
     assert store.list_action_packages() == []
     assert store.get_resource("plugin", str(document["id"]))["status"] == "legacy_metadata"
     assert store.list_legacy_action_package_metadata() == [
@@ -735,6 +785,191 @@ def test_target_incompatible_package_can_be_staged_for_later_activation(tmp_path
     assert staged["manifest"]["platforms"] == ["linux"]
 
 
+def test_activation_upgrade_removal_and_exact_historical_recovery(tmp_path: Path) -> None:
+    path = tmp_path / "activation-history.sqlite3"
+    store = ProductStore(path)
+    key = Ed25519PrivateKey.generate()
+    _enroll(store, key)
+    first_install = store.install_action_package(
+        _verified(store, key, "1.2.3"), installed_by="operator"
+    )
+    first_preflight = store.prepare_action_package_activation(
+        PACKAGE_ID,
+        "1.2.3",
+        runner_inventory=_runner_inventory(),
+        runner_identity_digest="sha256:" + "1" * 64,
+    )
+
+    first_active = store.activate_action_package(
+        first_preflight, activated_by="operator", reason="publish reviewed package"
+    )
+    first_snapshot = store.get_action_package_catalog_snapshot()
+
+    assert first_active["active"] is True
+    assert first_active["active_generation"] == 1
+    assert first_snapshot["generation"] == 1
+    assert first_snapshot["packages"][0]["verified_activation"] == first_preflight
+    assert (
+        first_snapshot["packages"][0]["canonical_envelope_bytes"]
+        == first_install["canonical_envelope_bytes"]
+    )
+    retry_preflight = store.prepare_action_package_activation(
+        PACKAGE_ID,
+        "1.2.3",
+        runner_inventory=_runner_inventory(),
+        runner_identity_digest="sha256:" + "1" * 64,
+    )
+    retry = store.activate_action_package(
+        retry_preflight, activated_by="operator", reason="idempotent activation retry"
+    )
+    assert retry["active_generation"] == 1
+    assert len(store.list_action_package_activation_events()) == 1
+
+    store.install_action_package(_verified(store, key, "1.2.4"), installed_by="operator")
+    assert store.get_action_package(PACKAGE_ID, "1.2.3")["active"] is True
+    assert store.get_action_package(PACKAGE_ID)["active_version"] == "1.2.3"
+    second_preflight = store.prepare_action_package_activation(
+        PACKAGE_ID,
+        "1.2.4",
+        runner_inventory=_runner_inventory(),
+        runner_identity_digest="sha256:" + "2" * 64,
+    )
+    store.activate_action_package(
+        second_preflight, activated_by="operator", reason="upgrade reviewed package"
+    )
+    second_snapshot = store.get_action_package_catalog_snapshot()
+    assert second_snapshot["generation"] == 2
+    assert second_snapshot["packages"][0]["version"] == "1.2.4"
+
+    removed = store.remove_action_package(
+        PACKAGE_ID,
+        "1.2.4",
+        second_snapshot["packages"][0]["package_digest"],
+        expected_catalog_generation=second_snapshot["generation"],
+        expected_catalog_digest=second_snapshot["catalog_digest"],
+        removed_by="operator",
+        reason="retire reviewed package",
+    )
+    current = store.get_action_package_catalog_snapshot()
+    recovered_first = store.get_action_package_catalog_snapshot(1)
+    recovered_second = ProductStore(path).get_action_package_catalog_snapshot(2)
+
+    assert removed["status"] == "removed"
+    assert current["generation"] == 3
+    assert current["packages"] == []
+    assert recovered_first["packages"][0]["version"] == "1.2.3"
+    assert (
+        recovered_first["packages"][0]["canonical_envelope_bytes"]
+        == first_install["canonical_envelope_bytes"]
+    )
+    assert recovered_second["packages"][0]["version"] == "1.2.4"
+    assert recovered_second["packages"][0]["verified_activation"] == second_preflight
+    with pytest.raises(ActionPackageConflictError, match="approved generation"):
+        store.assert_action_package_catalog_snapshot(
+            second_snapshot["generation"], second_snapshot["catalog_digest"]
+        )
+    with pytest.raises(ProductStoreError, match="generation was not found"):
+        store.get_action_package_catalog_snapshot(99)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM action_package_versions WHERE package_id = ?", (PACKAGE_ID,)
+        ).fetchone() == (2,)
+
+
+def test_activation_preflight_is_stale_after_installed_head_changes(tmp_path: Path) -> None:
+    store = ProductStore(tmp_path / "stale-head.sqlite3")
+    key = Ed25519PrivateKey.generate()
+    _enroll(store, key)
+    store.install_action_package(_verified(store, key, "1.2.3"), installed_by="operator")
+    preflight = store.prepare_action_package_activation(
+        PACKAGE_ID,
+        "1.2.3",
+        runner_inventory=_runner_inventory(),
+        runner_identity_digest="sha256:" + "3" * 64,
+    )
+    store.install_action_package(_verified(store, key, "1.2.4"), installed_by="operator")
+
+    with pytest.raises(ActionPackageConflictError, match="installed head changed"):
+        store.activate_action_package(
+            preflight, activated_by="operator", reason="stale activation must fail"
+        )
+    assert store.list_action_package_activation_events() == []
+    assert store.get_action_package_catalog_snapshot()["generation"] == 0
+
+
+@pytest.mark.parametrize("transition", ["suspend", "revoke"])
+def test_trust_loss_atomically_deactivates_current_packages(
+    tmp_path: Path, transition: str
+) -> None:
+    path = tmp_path / f"trust-{transition}.sqlite3"
+    store = ProductStore(path)
+    key = Ed25519PrivateKey.generate()
+    _enroll(store, key)
+    store.install_action_package(_verified(store, key), installed_by="operator")
+    preflight = store.prepare_action_package_activation(
+        PACKAGE_ID,
+        "1.2.3",
+        runner_inventory=_runner_inventory(),
+        runner_identity_digest="sha256:" + "4" * 64,
+    )
+    store.activate_action_package(
+        preflight, activated_by="operator", reason="activate before trust transition"
+    )
+
+    if transition == "suspend":
+        store.suspend_action_package_publisher(
+            PUBLISHER_ID, KEY_ID, suspended_by="operator", reason="investigate signer"
+        )
+    else:
+        store.revoke_action_package_publisher(
+            PUBLISHER_ID, KEY_ID, revoked_by="operator", reason="retire signer"
+        )
+
+    restarted = ProductStore(path)
+    snapshot = restarted.get_action_package_catalog_snapshot()
+    events = restarted.list_action_package_activation_events()
+    assert snapshot["generation"] == 2
+    assert snapshot["packages"] == []
+    assert (
+        events[-1]["cause"]
+        == {
+            "suspend": "trust_suspended",
+            "revoke": "trust_revoked",
+        }[transition]
+    )
+    assert restarted.get_action_package(PACKAGE_ID)["active"] is False
+
+
+def test_activation_event_chain_and_projection_tampering_fail_closed(tmp_path: Path) -> None:
+    store = ProductStore(tmp_path / "activation-tamper.sqlite3")
+    key = Ed25519PrivateKey.generate()
+    _enroll(store, key)
+    store.install_action_package(_verified(store, key), installed_by="operator")
+    preflight = store.prepare_action_package_activation(
+        PACKAGE_ID,
+        "1.2.3",
+        runner_inventory=_runner_inventory(),
+        runner_identity_digest="sha256:" + "5" * 64,
+    )
+    store.activate_action_package(
+        preflight, activated_by="operator", reason="activate before tamper test"
+    )
+    with sqlite3.connect(store.path) as connection:
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute("DELETE FROM action_package_activation_events")
+        connection.execute(
+            "UPDATE action_package_heads SET active_version = NULL, active_generation = NULL"
+        )
+        connection.commit()
+
+    with pytest.raises(ActionPackageIntegrityError, match="projection"):
+        store.get_action_package_catalog_snapshot()
+    # Historical recovery is derived from immutable events and deliberately
+    # ignores today's mutable projection.
+    historical = store.get_action_package_catalog_snapshot(1)
+    assert historical["packages"][0]["verified_activation"] == preflight
+
+
 def test_future_schema_is_refused_without_mutating_database(tmp_path: Path) -> None:
     path = tmp_path / "future.sqlite3"
     with sqlite3.connect(path) as connection:
@@ -773,7 +1008,7 @@ def test_expected_digest_shape_and_schema_constraints_are_enforced(tmp_path: Pat
         store.install_action_package(malformed, installed_by="test-operator")
 
     with sqlite3.connect(store.path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (6,)
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (7,)
         tables = {
             str(row[0])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
@@ -783,6 +1018,113 @@ def test_expected_digest_shape_and_schema_constraints_are_enforced(tmp_path: Pat
         "action_package_versions",
         "action_package_heads",
         "action_package_lifecycle_events",
+        "action_package_activation_events",
         "action_package_tombstones",
         "legacy_action_package_metadata",
     }.issubset(tables)
+
+
+def test_install_reserves_ids_from_every_immutable_version_not_only_current_head(
+    tmp_path: Path,
+) -> None:
+    store = ProductStore(tmp_path / "permanent-reservations.sqlite3")
+    key = Ed25519PrivateKey.generate()
+    _enroll(store, key)
+    retired_behavior = "reservation.retired-behavior.v1"
+    retired_action = "reservation.retired-action.v1"
+
+    store.install_action_package(
+        _verified_named_package(
+            store,
+            key,
+            package_id="reservation.owner-a",
+            version="1.0.0",
+            behavior_id=retired_behavior,
+            action_id=retired_action,
+        ),
+        installed_by="reservation-test",
+    )
+    store.install_action_package(
+        _verified_named_package(
+            store,
+            key,
+            package_id="reservation.owner-a",
+            version="2.0.0",
+            behavior_id="reservation.current-behavior.v1",
+            action_id="reservation.current-action.v1",
+        ),
+        installed_by="reservation-test",
+    )
+
+    with pytest.raises(ActionPackageIntegrityError, match="independent local"):
+        store.install_action_package(
+            _verified_named_package(
+                store,
+                key,
+                package_id="reservation.owner-b",
+                version="1.0.0",
+                behavior_id=retired_behavior,
+                action_id=retired_action,
+            ),
+            installed_by="reservation-test",
+        )
+
+
+def test_two_product_stores_cannot_race_colliding_package_id_reservations(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "reservation-race.sqlite3"
+    first = ProductStore(database)
+    second = ProductStore(database)
+    key = Ed25519PrivateKey.generate()
+    _enroll(first, key)
+    packages = (
+        _verified_named_package(
+            first,
+            key,
+            package_id="reservation.racer-a",
+            version="1.0.0",
+            behavior_id="reservation.raced-behavior.v1",
+            action_id="reservation.raced-action.v1",
+        ),
+        _verified_named_package(
+            first,
+            key,
+            package_id="reservation.racer-b",
+            version="1.0.0",
+            behavior_id="reservation.raced-behavior.v1",
+            action_id="reservation.raced-action.v1",
+        ),
+    )
+    barrier = threading.Barrier(3)
+    outcomes: list[object] = []
+    outcomes_lock = threading.Lock()
+
+    def install(store: ProductStore, package: Any) -> None:
+        barrier.wait()
+        try:
+            outcome: object = store.install_action_package(
+                package,
+                installed_by="reservation-race-test",
+            )
+        except BaseException as exc:
+            outcome = exc
+        with outcomes_lock:
+            outcomes.append(outcome)
+
+    threads = (
+        threading.Thread(target=install, args=(first, packages[0]), daemon=True),
+        threading.Thread(target=install, args=(second, packages[1]), daemon=True),
+    )
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len([item for item in outcomes if isinstance(item, Mapping)]) == 1
+    failures = [item for item in outcomes if isinstance(item, BaseException)]
+    assert len(failures) == 1
+    assert isinstance(failures[0], ActionPackageIntegrityError)
+    assert len(first.list_action_packages()) == 1

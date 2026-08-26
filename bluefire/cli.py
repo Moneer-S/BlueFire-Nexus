@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import sys
 from pathlib import Path
@@ -37,6 +39,9 @@ _RESOURCE_KINDS = (
     "runner",
     "runner_profile",
 )
+
+_MAX_CLI_JSON_BYTES = 256 * 1024
+_MAX_PUBLIC_KEY_TEXT_BYTES = 128
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -126,6 +131,63 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help="Exact runner ID required for destructive removal",
     )
+
+    packages = commands.add_parser("packages", help="Manage signed declarative action packages")
+    package_commands = packages.add_subparsers(dest="package_command", required=True)
+    package_commands.add_parser(
+        "inventory", help="Show installed packages, publisher trust, and active catalog"
+    )
+    package_detail = package_commands.add_parser("detail", help="Show one installed action package")
+    package_detail.add_argument("package_id")
+
+    package_trust = package_commands.add_parser(
+        "trust-publisher", help="Enroll one exact local publisher key binding"
+    )
+    package_trust.add_argument("--publisher-id", required=True)
+    package_trust.add_argument("--key-id", required=True)
+    package_trust.add_argument("--public-key-file", type=Path, required=True)
+    package_trust.add_argument("--provenance-file", type=Path, required=True)
+    package_trust.add_argument("--trusted-by", required=True)
+
+    for command in ("suspend-publisher", "revoke-publisher"):
+        package_transition = package_commands.add_parser(
+            command,
+            help=f"{command.split('-', 1)[0].capitalize()} one publisher key binding",
+        )
+        package_transition.add_argument("publisher_id")
+        package_transition.add_argument("key_id")
+        package_transition.add_argument("--actor", required=True)
+        package_transition.add_argument("--reason", required=True)
+
+    package_install = package_commands.add_parser(
+        "install", help="Verify and install one signed package envelope"
+    )
+    package_install.add_argument("envelope_file", type=Path)
+    package_install.add_argument("--installed-by", required=True)
+
+    package_activate = package_commands.add_parser(
+        "activate", help="Activate one exact package version against a live runner"
+    )
+    package_activate.add_argument("package_id")
+    package_activate.add_argument("version")
+    package_activate.add_argument("--profile", required=True)
+    package_activate.add_argument("--activated-by", required=True)
+    package_activate.add_argument("--reason", required=True)
+
+    for command, actor_option in (
+        ("deactivate", "deactivated-by"),
+        ("remove", "removed-by"),
+    ):
+        package_transition = package_commands.add_parser(
+            command, help=f"{command.capitalize()} one exact package version"
+        )
+        package_transition.add_argument("package_id")
+        package_transition.add_argument("version")
+        package_transition.add_argument("--package-digest", required=True)
+        package_transition.add_argument("--catalog-generation", type=int, required=True)
+        package_transition.add_argument("--catalog-digest", required=True)
+        package_transition.add_argument(f"--{actor_option}", required=True)
+        package_transition.add_argument("--reason", required=True)
 
     runs = commands.add_parser("runs", help="Inspect immutable run bundles")
     runs_commands = runs.add_subparsers(dest="runs_command", required=True)
@@ -412,6 +474,64 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
         if args.runner_command == "revoke":
             return service.revoke_runner()
         return service.remove_runner(confirm_runner_id=args.confirm_runner_id)
+    if args.command == "packages":
+        if args.package_command == "inventory":
+            return service.action_packages()
+        if args.package_command == "detail":
+            return service.action_package(args.package_id)
+        if args.package_command == "trust-publisher":
+            return service.trust_action_package_publisher(
+                {
+                    "publisher_id": args.publisher_id,
+                    "key_id": args.key_id,
+                    "public_key": _public_key_bytes(args.public_key_file),
+                    "provenance": _json_object(args.provenance_file),
+                    "trusted_by": args.trusted_by,
+                }
+            )
+        if args.package_command in {"suspend-publisher", "revoke-publisher"}:
+            action = args.package_command.removesuffix("-publisher")
+            return service.transition_action_package_publisher(
+                args.publisher_id,
+                args.key_id,
+                action,
+                {"actor": args.actor, "reason": args.reason},
+            )
+        if args.package_command == "install":
+            return service.install_action_package(
+                {
+                    "envelope": _json_object(args.envelope_file),
+                    "installed_by": args.installed_by,
+                }
+            )
+        if args.package_command == "activate":
+            return service.activate_action_package(
+                args.package_id,
+                args.version,
+                {
+                    "runner_profile_id": args.profile,
+                    "activated_by": args.activated_by,
+                    "reason": args.reason,
+                },
+            )
+        package_lifecycle_request = {
+            "package_digest": args.package_digest,
+            "expected_catalog_generation": args.catalog_generation,
+            "expected_catalog_digest": args.catalog_digest,
+            f"{args.package_command}d_by": getattr(args, f"{args.package_command}d_by"),
+            "reason": args.reason,
+        }
+        if args.package_command == "deactivate":
+            return service.deactivate_action_package(
+                args.package_id,
+                args.version,
+                package_lifecycle_request,
+            )
+        return service.remove_action_package(
+            args.package_id,
+            args.version,
+            package_lifecycle_request,
+        )
     if args.command == "runs":
         if args.runs_command == "list":
             return service.list()
@@ -486,11 +606,19 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
             return service.proposal_reviews(args.job_id)
         if args.job_command == "proposal":
             return service.proposal_review(args.job_id, args.proposal_record_id)
-        request = _json_object(args.document)
+        proposal_review_request = _json_object(args.document)
         if args.job_command == "proposal-accept":
-            return service.accept_proposal_review(args.job_id, args.proposal_record_id, request)
+            return service.accept_proposal_review(
+                args.job_id,
+                args.proposal_record_id,
+                proposal_review_request,
+            )
         if args.job_command == "proposal-reject":
-            return service.reject_proposal_review(args.job_id, args.proposal_record_id, request)
+            return service.reject_proposal_review(
+                args.job_id,
+                args.proposal_record_id,
+                proposal_review_request,
+            )
     if args.command == "replay":
         replay_payload: dict[str, Any] = {
             "exact": args.exact,
@@ -590,12 +718,56 @@ def _action_implementation_arguments(values: Sequence[str]) -> Mapping[str, str]
 
 def _json_object(path: Path) -> Mapping[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"unable to read JSON object from {path.name}") from exc
+        value = json.loads(
+            _bounded_utf8_text(
+                path,
+                maximum_bytes=_MAX_CLI_JSON_BYTES,
+                description="JSON object",
+            )
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError("unable to read JSON object") from exc
     if not isinstance(value, Mapping):
-        raise ValueError(f"JSON document {path.name} must contain an object")
+        raise ValueError("JSON document must contain an object")
     return dict(value)
+
+
+def _public_key_bytes(path: Path) -> bytes:
+    encoded = _bounded_utf8_text(
+        path,
+        maximum_bytes=_MAX_PUBLIC_KEY_TEXT_BYTES,
+        description="publisher public key",
+    ).strip()
+    if not encoded or "=" in encoded:
+        raise ValueError("publisher public key must be canonical unpadded base64url text")
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        raw = base64.b64decode(padded, altchars=b"-_", validate=True)
+    except (UnicodeEncodeError, binascii.Error, ValueError) as exc:
+        raise ValueError("publisher public key must be canonical unpadded base64url text") from exc
+    canonical = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+    if len(raw) != 32 or canonical != encoded:
+        raise ValueError("publisher public key must encode exactly 32 raw bytes")
+    return raw
+
+
+def _bounded_utf8_text(
+    path: Path,
+    *,
+    maximum_bytes: int,
+    description: str,
+) -> str:
+    try:
+        with path.open("rb") as source:
+            payload = source.read(maximum_bytes + 1)
+    except OSError as exc:
+        raise ValueError(f"unable to read {description}") from exc
+    if len(payload) > maximum_bytes:
+        raise ValueError(f"{description} exceeds the {maximum_bytes}-byte CLI limit")
+    try:
+        return payload.decode("utf-8")
+    except UnicodeError as exc:
+        raise ValueError(f"{description} must contain UTF-8 text") from exc
 
 
 def main(argv: Sequence[str] | None = None) -> int:

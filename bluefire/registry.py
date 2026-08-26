@@ -80,8 +80,33 @@ class BehaviorRegistry:
         return tuple(sorted(self._behaviors))
 
     @property
+    def behaviors(self) -> tuple[BehaviorDefinition, ...]:
+        """Return the exact immutable-by-convention behavior snapshot."""
+
+        return tuple(self._behaviors[item_id] for item_id in sorted(self._behaviors))
+
+    @property
     def action_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._actions))
+
+    @property
+    def actions(self) -> tuple[ActionDefinition, ...]:
+        """Return the exact immutable-by-convention action snapshot."""
+
+        return tuple(self._actions[item_id] for item_id in sorted(self._actions))
+
+    def extended(
+        self,
+        *,
+        behaviors: Iterable[BehaviorDefinition] = (),
+        actions: Iterable[ActionDefinition] = (),
+    ) -> "BehaviorRegistry":
+        """Create one new registry snapshot without mutating this registry."""
+
+        return BehaviorRegistry(
+            (*self.behaviors, *tuple(behaviors)),
+            (*self.actions, *tuple(actions)),
+        )
 
     def get_behavior(self, behavior_id: str) -> BehaviorDefinition:
         try:

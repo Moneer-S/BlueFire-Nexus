@@ -94,6 +94,7 @@ fn profile(root: &TempDir, network: Vec<NetworkDestination>) -> RunnerProfile {
             .map(|descriptor| descriptor.action_id.to_string())
             .collect(),
         control_blocked_actions: Vec::new(),
+        action_bindings: Vec::new(),
         capabilities: vec![
             Capability::FilesystemRead,
             Capability::FilesystemWrite,
@@ -131,6 +132,7 @@ fn manifest(profile: &RunnerProfile, action_id: &str, params: Value) -> Executio
         step_id: format!("step:{}", action_id.replace('.', "-")),
         behavior_id: descriptor.behavior_ids[0].to_string(),
         action_id: action_id.to_string(),
+        execution_binding: None,
         mode: RunMode::Execute,
         runner_id: profile.runner_id.clone(),
         runner_profile_id: profile.profile_id.clone(),

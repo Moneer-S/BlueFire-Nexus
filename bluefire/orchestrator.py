@@ -68,13 +68,14 @@ class PreflightReport:
     approval_required: bool
     problems: tuple[str, ...]
     plan: Mapping[str, Any]
+    catalog_authority: Mapping[str, Any] | None = None
 
     @property
     def ready(self) -> bool:
         return self.status == "ready"
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        document = {
             "schema_version": "bluefire.preflight.v1",
             "status": self.status,
             "ready": self.ready,
@@ -90,6 +91,9 @@ class PreflightReport:
             "problems": list(self.problems),
             "plan": dict(self.plan),
         }
+        if self.catalog_authority is not None:
+            document["catalog_authority"] = dict(self.catalog_authority)
+        return document
 
 
 class Orchestrator:
@@ -103,13 +107,23 @@ class Orchestrator:
         runner: RunnerTransport | None = None,
         proposal_provider: AIProvider | None = None,
         approval_store: ApprovalStore | None = None,
+        action_bindings: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
+        catalog_authority: Mapping[str, Any] | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
         self.runner = runner
         self.proposal_provider = proposal_provider
         self.approval_store = approval_store
-        self.planner = DeterministicPlanner(registry)
+        self.catalog_authority = dict(catalog_authority) if catalog_authority is not None else None
+        self.action_bindings = {
+            (str(behavior_id), str(action_id)): dict(binding)
+            for (behavior_id, action_id), binding in (action_bindings or {}).items()
+        }
+        self.planner = DeterministicPlanner(
+            registry,
+            action_bindings=self.action_bindings,
+        )
         self.policy = PolicyEngine()
         self.simulations = SimulationRegistry()
         self.adapter = RunnerActionAdapter()
@@ -180,6 +194,7 @@ class Orchestrator:
             approval_required=approval_required,
             problems=tuple(problems),
             plan=plan.to_dict(),
+            catalog_authority=self.catalog_authority,
         )
 
     def run(
@@ -256,6 +271,7 @@ class Orchestrator:
                 ai_provider=plan.ai_provider,
                 context=approval_context,
                 runner_readiness=runner_readiness,
+                catalog_authority=self.catalog_authority,
             )
             if self.approval_store is None:
                 raise OrchestrationError("Execute requires a durable approval verifier")
@@ -287,6 +303,7 @@ class Orchestrator:
                 sandbox_root=sandbox_root,
                 filesystem_scope=self._filesystem_scope(plan),
                 network_destinations=network_destinations,
+                action_bindings=self._runner_profile_action_bindings(profile),
             )
             observer = SandboxObserver(sandbox_root)
             self._validate_inventory(plan, self.runner.inventory())
@@ -441,7 +458,11 @@ class Orchestrator:
                 counterfactual_step = None
                 if mode is ExecutionMode.EXECUTE and receipt_ids and not cleanup_attempted:
                     cleanup_step = next(
-                        (item for item in plan.steps if item.action_id == "sandbox.cleanup.v1"),
+                        (
+                            item
+                            for item in plan.steps
+                            if self._runner_opcode(item) == "sandbox.cleanup.v1"
+                        ),
                         None,
                     )
                     if cleanup_step is not None:
@@ -452,7 +473,7 @@ class Orchestrator:
 
             bound_inputs: Mapping[str, Any]
             parent_ids: tuple[str, ...]
-            if forced_cleanup and plan_step.action_id == "sandbox.cleanup.v1":
+            if forced_cleanup and self._runner_opcode(plan_step) == "sandbox.cleanup.v1":
                 bound_inputs = {}
                 parent_ids = tuple(step_rows[-1].get("evidence_ids", []) if step_rows else [])
             else:
@@ -473,8 +494,7 @@ class Orchestrator:
                 assert profile is not None
                 assert runner_profile is not None
                 assert observer is not None
-                action = self.registry.get_action(str(plan_step.action_id))
-                is_cleanup = action.id == "sandbox.cleanup.v1"
+                is_cleanup = self._runner_opcode(plan_step) == "sandbox.cleanup.v1"
                 remaining = max((deadline or time.monotonic()) - time.monotonic(), 0.0)
                 # Cleanup is the compensating safety boundary. A runner call can
                 # return just beyond its requested timeout (scheduler jitter is
@@ -506,7 +526,7 @@ class Orchestrator:
                     cancel_event=cancel_event,
                 )
                 policy_rows.append(decision.to_dict())
-                if plan_step.action_id == "sandbox.cleanup.v1":
+                if self._runner_opcode(plan_step) == "sandbox.cleanup.v1":
                     cleanup_attempted = True
                     if row["status"] == StepOutcome.SUCCESS.value:
                         receipt_ids.clear()
@@ -526,7 +546,10 @@ class Orchestrator:
                     }
                 )
 
-            if approval_pause is not None and plan_step.action_id == "sandbox.cleanup.v1":
+            if (
+                approval_pause is not None
+                and self._runner_opcode(plan_step) == "sandbox.cleanup.v1"
+            ):
                 current_step_id = None
                 continue
 
@@ -535,7 +558,11 @@ class Orchestrator:
                 forced_cleanup = False
                 if mode is ExecutionMode.EXECUTE and receipt_ids:
                     cleanup_step = next(
-                        (item for item in plan.steps if item.action_id == "sandbox.cleanup.v1"),
+                        (
+                            item
+                            for item in plan.steps
+                            if self._runner_opcode(item) == "sandbox.cleanup.v1"
+                        ),
                         None,
                     )
                     if cleanup_step is not None and not cleanup_attempted:
@@ -654,7 +681,11 @@ class Orchestrator:
 
             if current_step_id is None and mode is ExecutionMode.EXECUTE and receipt_ids:
                 cleanup_step = next(
-                    (item for item in plan.steps if item.action_id == "sandbox.cleanup.v1"),
+                    (
+                        item
+                        for item in plan.steps
+                        if self._runner_opcode(item) == "sandbox.cleanup.v1"
+                    ),
                     None,
                 )
                 if cleanup_step is not None and not cleanup_attempted:
@@ -668,7 +699,7 @@ class Orchestrator:
 
         detections = self._build_detections(evidence.records())
         cleanup_success = any(
-            row.get("behavior_id") == "sandbox.cleanup.v1"
+            self._row_runner_opcode(row) == "sandbox.cleanup.v1"
             and row.get("status") == StepOutcome.SUCCESS.value
             for row in step_rows
         )
@@ -677,7 +708,9 @@ class Orchestrator:
             and self.registry.get_action(step.action_id).cleanup_action_id is not None
             for step in plan.steps
         )
-        business_rows = [row for row in step_rows if row.get("behavior_id") != "sandbox.cleanup.v1"]
+        business_rows = [
+            row for row in step_rows if self._row_runner_opcode(row) != "sandbox.cleanup.v1"
+        ]
         terminal_business = business_rows[-1] if business_rows else None
         terminal_satisfied = bool(
             terminal_business
@@ -777,6 +810,7 @@ class Orchestrator:
         ai_provider: Mapping[str, Any],
         approval_context: Mapping[str, Any] | None = None,
         runner_readiness: Mapping[str, Any] | None = None,
+        action_implementations: Mapping[str, str] | None = None,
     ) -> Mapping[str, Any]:
         """Reconcile only runner-owned receipts from one interrupted Execute run."""
 
@@ -788,6 +822,7 @@ class Orchestrator:
             profile=profile,
             autonomy=autonomy,
             ai_provider=ai_provider,
+            action_implementations=action_implementations,
         )
         authorized_scope = self._validated_target_scope(target_scope, profile)
         binding = execution_approval_binding(
@@ -800,6 +835,7 @@ class Orchestrator:
             ai_provider=plan.ai_provider,
             context=approval_context,
             runner_readiness=runner_readiness,
+            catalog_authority=self.catalog_authority,
         )
         approved_by = approval_record.get("approved_by")
         validate_claimed_approval(
@@ -809,16 +845,36 @@ class Orchestrator:
         )
         clean_receipts = list(self._validated_receipt_ids(list(receipt_ids)))
         cleanup_step = next(
-            (item for item in plan.steps if item.action_id == "sandbox.cleanup.v1"),
+            (item for item in plan.steps if self._runner_opcode(item) == "sandbox.cleanup.v1"),
             None,
         )
         if cleanup_step is None:
             raise OrchestrationError("interrupted plan has no registered cleanup action")
-        runner_profile = build_runner_profile(
+        cleanup_opcode = self._runner_opcode(cleanup_step)
+        if cleanup_opcode != "sandbox.cleanup.v1":
+            raise OrchestrationError("interrupted cleanup action has no reviewed native opcode")
+        cleanup_binding = cleanup_step.execution_binding
+        cleanup_allowed_actions = [cleanup_opcode]
+        cleanup_bindings: tuple[Mapping[str, Any], ...] = ()
+        if cleanup_binding is not None:
+            cleanup_action_id = str(cleanup_step.action_id)
+            cleanup_allowed_actions.insert(0, cleanup_action_id)
+            cleanup_bindings = (dict(cleanup_binding),)
+        cleanup_profile = replace(
             profile,
+            enabled_actions=tuple(cleanup_allowed_actions),
+            blocked_actions=tuple(
+                action_id
+                for action_id in profile.blocked_actions
+                if action_id in cleanup_allowed_actions
+            ),
+        )
+        runner_profile = build_runner_profile(
+            cleanup_profile,
             sandbox_root=sandbox_root,
             filesystem_scope=self._filesystem_scope(plan),
             network_destinations=self._network_destinations(plan),
+            action_bindings=cleanup_bindings,
         )
         self._validate_cleanup_inventory(self.runner.inventory())
         row, records, decision, _returned = self._execute_step(
@@ -878,7 +934,7 @@ class Orchestrator:
             outcome in {StepOutcome.PARTIAL, StepOutcome.BLOCKED, StepOutcome.FAILED}
             and retries_used < 1
             and remaining_steps > 0
-            and current_plan_step.behavior_id != "sandbox.cleanup.v1"
+            and self._runner_opcode(current_plan_step) != "sandbox.cleanup.v1"
         )
         allowed_step_ids = tuple(
             dict.fromkeys(
@@ -1324,7 +1380,7 @@ class Orchestrator:
         receipt_ids: list[str],
     ) -> None:
         cleanup_step = next(
-            (item for item in plan.steps if item.action_id == "sandbox.cleanup.v1"),
+            (item for item in plan.steps if self._runner_opcode(item) == "sandbox.cleanup.v1"),
             None,
         )
         if cleanup_step is None or not receipt_ids:
@@ -1382,9 +1438,42 @@ class Orchestrator:
             problems.append("Mutating Execute actions require the registered cleanup action.")
         if cleanup_id in profile.blocked_actions:
             problems.append("The runner profile control-blocks its required cleanup action.")
-        if not any(step.action_id == cleanup_id for step in plan.steps):
+        if not any(self._runner_opcode(step) == cleanup_id for step in plan.steps):
             problems.append("The Execute plan has no registered cleanup step.")
         return tuple(problems)
+
+    @staticmethod
+    def _runner_opcode(step: PlanStep) -> str | None:
+        binding = step.execution_binding
+        if binding is None:
+            return step.action_id
+        opcode = binding.get("runner_opcode")
+        if not isinstance(opcode, str) or not opcode:
+            raise OrchestrationError("package execution binding has no reviewed runner opcode")
+        if binding.get("logical_behavior_id") != step.behavior_id:
+            raise OrchestrationError("package execution binding changed its logical behavior")
+        if binding.get("logical_action_id") != step.action_id:
+            raise OrchestrationError("package execution binding changed its logical action")
+        return opcode
+
+    def _runner_profile_action_bindings(
+        self,
+        profile: RunnerProfile,
+    ) -> tuple[Mapping[str, Any], ...]:
+        bindings = [
+            dict(binding)
+            for binding in self.action_bindings.values()
+            if binding.get("logical_action_id") in profile.enabled_actions
+            and binding.get("runner_opcode") in profile.enabled_actions
+            and binding.get("runner_opcode") not in profile.blocked_actions
+        ]
+        bindings.sort(
+            key=lambda item: (
+                str(item["logical_behavior_id"]),
+                str(item["logical_action_id"]),
+            )
+        )
+        return tuple(bindings)
 
     @staticmethod
     def _plan_step(plan: ExecutionPlan, step_id: str) -> PlanStep:
@@ -1489,6 +1578,15 @@ class Orchestrator:
         cancel_event: threading.Event | None = None,
     ) -> tuple[dict[str, Any], tuple[EvidenceRecord, ...], PolicyDecision, tuple[str, ...]]:
         action = self.registry.get_action(str(step.action_id))
+        runner_step = (
+            replace(
+                step,
+                action_id=self._runner_opcode(step),
+                execution_binding=None,
+            )
+            if step.execution_binding is not None
+            else step
+        )
         if action_timeout_ms is not None and action_timeout_ms < 1:
             decision = self._budget_refusal(step, profile)
             record = self._control_record(run_id, step, decision, parent_ids)
@@ -1508,7 +1606,7 @@ class Orchestrator:
             return row, (record,), decision, ()
         try:
             adapted = self.adapter.adapt(
-                step,
+                runner_step,
                 bound_inputs=bound_inputs,
                 receipt_ids=receipt_ids,
             )
@@ -1567,6 +1665,7 @@ class Orchestrator:
             evidence_refs=parent_ids,
             approval_record=approval_record,
             timeout_ms=action_timeout_ms,
+            execution_binding=step.execution_binding,
         )
         approval = self._approval_state(
             manifest,
@@ -1728,7 +1827,7 @@ class Orchestrator:
         if outcome in {StepOutcome.SUCCESS, StepOutcome.PARTIAL}:
             try:
                 logical_outputs = self.adapter.logical_outputs(
-                    step,
+                    runner_step,
                     bound_inputs=bound_inputs,
                     runner_output=runner_result.get("output"),
                     receipt_ids=effective_receipts,
@@ -1825,8 +1924,18 @@ class Orchestrator:
             "telemetry": list(telemetry),
             "evidence_ids": list(evidence_ids),
         }
+        if step.execution_binding is not None:
+            row["execution_binding"] = dict(step.execution_binding)
         row.update(extra)
         return row
+
+    @staticmethod
+    def _row_runner_opcode(row: Mapping[str, Any]) -> str | None:
+        binding = row.get("execution_binding")
+        if isinstance(binding, Mapping) and isinstance(binding.get("runner_opcode"), str):
+            return str(binding["runner_opcode"])
+        action_id = row.get("action_id")
+        return str(action_id) if isinstance(action_id, str) else None
 
     @staticmethod
     def _runner_outcome(status: str) -> StepOutcome:
@@ -2064,7 +2173,7 @@ class Orchestrator:
         }
         selected: list[str] = []
         for step in plan.steps:
-            for root in roots_by_action.get(step.action_id or "", ()):
+            for root in roots_by_action.get(Orchestrator._runner_opcode(step) or "", ()):
                 if root not in selected:
                     selected.append(root)
         return tuple(selected)
@@ -2073,7 +2182,7 @@ class Orchestrator:
     def _network_destinations(plan: ExecutionPlan) -> tuple[Mapping[str, Any], ...]:
         rows: list[Mapping[str, Any]] = []
         for step in plan.steps:
-            if step.action_id != "sandbox.network.loopback.v1":
+            if Orchestrator._runner_opcode(step) != "sandbox.network.loopback.v1":
                 continue
             port = step.parameters.get("port", 4317)
             if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
@@ -2094,7 +2203,9 @@ class Orchestrator:
             for row in raw_actions
             if isinstance(row, Mapping) and isinstance(row.get("action_id"), str)
         }
-        requested = {str(step.action_id) for step in plan.steps if step.action_id}
+        requested = {
+            str(Orchestrator._runner_opcode(step)) for step in plan.steps if step.action_id
+        }
         missing = sorted(requested - available)
         if missing:
             raise OrchestrationError("Rust runner lacks planned actions: " + ", ".join(missing))
@@ -2237,7 +2348,15 @@ class Orchestrator:
         manifest: Mapping[str, Any],
         result: Mapping[str, Any],
     ) -> None:
-        if manifest.get("action_id") != "sandbox.cleanup.v1":
+        execution_binding = manifest.get("execution_binding")
+        bound_opcode = (
+            execution_binding.get("runner_opcode")
+            if isinstance(execution_binding, Mapping)
+            else None
+        )
+        if manifest.get("action_id") != "sandbox.cleanup.v1" and bound_opcode != (
+            "sandbox.cleanup.v1"
+        ):
             return
         cleanup = result.get("cleanup")
         if not isinstance(cleanup, Mapping):

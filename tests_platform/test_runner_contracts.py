@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from bluefire.config import RunnerProfile, load_config
+from bluefire.contracts import ActionDefinition
 from bluefire.registry import load_builtin_registry
 from bluefire.runner_client import RunnerTransportError, reject_forbidden_execution_keys
 from bluefire.runner_contracts import (
@@ -20,6 +22,46 @@ from bluefire.runner_contracts import (
 from bluefire.util import content_hash
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _execution_binding(
+    *,
+    behavior_id: str = "acme.endpoint.profile.v1",
+    action_id: str = "acme.endpoint.profile-action.v1",
+    opcode: str = "endpoint.discovery.system.v1",
+    constants: dict[str, object] | None = None,
+) -> dict[str, object]:
+    reviewed_constants = {} if constants is None else dict(constants)
+    program = {
+        "schema_version": "bluefire.action-program.v1",
+        "steps": [
+            {
+                "opcode": opcode,
+                "adapter": "bluefire.builtin-runner-adapter.v1",
+                "constants": reviewed_constants,
+            }
+        ],
+    }
+    return {
+        "schema_version": "bluefire.runner-execution-binding.v1",
+        "catalog_generation": 7,
+        "catalog_digest": "sha256:" + "1" * 64,
+        "logical_behavior_id": behavior_id,
+        "logical_action_id": action_id,
+        "package_id": "acme.endpoint-profile-pack",
+        "package_version": "1.2.3",
+        "package_digest": "sha256:" + "2" * 64,
+        "content_digest": "sha256:" + "3" * 64,
+        "program_digest": content_hash(program),
+        "runner_opcode": opcode,
+        "opcode_contract_digest": "sha256:" + "4" * 64,
+        "constants": reviewed_constants,
+    }
+
+
+def _alias_action(action_id: str, opcode: str) -> ActionDefinition:
+    action = load_builtin_registry().get_action(opcode)
+    return replace(action, id=action_id, title="Signed package alias")
 
 
 def _execute_profile() -> RunnerProfile:
@@ -224,6 +266,164 @@ def test_execution_manifest_exactly_binds_profile_approval_and_hash(tmp_path: Pa
     mutated = copy.deepcopy(manifest)
     mutated["params"]["content_template"] = "different"
     assert seal_manifest(mutated)["request_hash"] != manifest["request_hash"]
+
+
+def test_package_alias_binding_is_exactly_sealed_in_profile_and_manifest(
+    tmp_path: Path,
+) -> None:
+    binding = _execution_binding()
+    assert binding["program_digest"] == (
+        "sha256:e9fa0fe32f0e7bb0b38d5bb946ac3b3fcf91cc4abc14945fc4c1053c0cf57c4a"
+    )
+    base_profile = _execute_profile()
+    alias_id = str(binding["logical_action_id"])
+    profile = replace(
+        base_profile,
+        enabled_actions=base_profile.enabled_actions + (alias_id,),
+    )
+    runner_profile = build_runner_profile(
+        profile,
+        sandbox_root=tmp_path / "sandbox",
+        platform=current_platform(),
+        action_bindings=(binding,),
+    )
+    action = replace(
+        _alias_action(alias_id, str(binding["runner_opcode"])),
+        cleanup_action_id="acme.cleanup.v1",
+    )
+    now = datetime(2026, 8, 23, 12, 0, tzinfo=timezone.utc)
+    manifest = build_execution_manifest(
+        run_id="run-20260823T120000Z-0123456789abcdef",
+        step_id="package_profile",
+        behavior_id=str(binding["logical_behavior_id"]),
+        action=action,
+        runner_profile=runner_profile,
+        params={},
+        filesystem_scope=(),
+        approval_record=None,
+        execution_binding=binding,
+        resolved_cleanup_action_id="sandbox.cleanup.v1",
+        now=now,
+    )
+
+    assert runner_profile["action_bindings"] == [binding]
+    assert manifest["execution_binding"] == binding
+    assert manifest["cleanup_action_id"] == "sandbox.cleanup.v1"
+    assert runner_profile["policy_digest"] == content_hash(_unsigned_profile(runner_profile))
+    assert manifest["request_hash"] == content_hash(_unsigned_manifest(manifest))
+
+    changed_profile = copy.deepcopy(runner_profile)
+    changed_profile["action_bindings"][0]["catalog_generation"] = 8
+    assert seal_profile(changed_profile)["policy_digest"] != runner_profile["policy_digest"]
+    changed_manifest = copy.deepcopy(manifest)
+    changed_manifest["execution_binding"]["package_digest"] = "sha256:" + "5" * 64
+    assert seal_manifest(changed_manifest)["request_hash"] != manifest["request_hash"]
+
+    with pytest.raises(RunnerContractError, match="resolved native cleanup"):
+        build_execution_manifest(
+            run_id="run-20260823T120000Z-0123456789abcdef",
+            step_id="package_profile",
+            behavior_id=str(binding["logical_behavior_id"]),
+            action=action,
+            runner_profile=runner_profile,
+            params={},
+            filesystem_scope=(),
+            approval_record=None,
+            execution_binding=binding,
+            resolved_cleanup_action_id="acme.cleanup.v1",
+            now=now,
+        )
+
+
+def test_package_alias_binding_rejects_profile_mismatch_and_constant_conflict(
+    tmp_path: Path,
+) -> None:
+    opcode = "sandbox.fixture.create.v1"
+    alias_id = "acme.fixture.create-action.v1"
+    behavior_id = "acme.fixture.create.v1"
+    binding = _execution_binding(
+        behavior_id=behavior_id,
+        action_id=alias_id,
+        opcode=opcode,
+        constants={"content_template": "telemetry-seed"},
+    )
+    base_profile = _execute_profile()
+    profile = replace(
+        base_profile,
+        enabled_actions=base_profile.enabled_actions + (alias_id,),
+    )
+    runner_profile = build_runner_profile(
+        profile,
+        sandbox_root=tmp_path / "sandbox",
+        platform=current_platform(),
+        action_bindings=(binding,),
+    )
+    action = _alias_action(alias_id, opcode)
+
+    with pytest.raises(RunnerContractError, match="conflict"):
+        build_execution_manifest(
+            run_id="run-20260823T120000Z-0123456789abcdef",
+            step_id="package_fixture",
+            behavior_id=behavior_id,
+            action=action,
+            runner_profile=runner_profile,
+            params={"content_template": "caller-authored"},
+            filesystem_scope=(),
+            approval_record=None,
+            execution_binding=binding,
+        )
+
+    mismatched = copy.deepcopy(binding)
+    mismatched["package_version"] = "1.2.4"
+    with pytest.raises(RunnerContractError, match="sealed runner profile"):
+        build_execution_manifest(
+            run_id="run-20260823T120000Z-0123456789abcdef",
+            step_id="package_fixture",
+            behavior_id=behavior_id,
+            action=action,
+            runner_profile=runner_profile,
+            params={"content_template": "telemetry-seed"},
+            filesystem_scope=(),
+            approval_record=None,
+            execution_binding=mismatched,
+        )
+
+
+def test_execution_binding_shape_and_program_are_strict(tmp_path: Path) -> None:
+    binding = _execution_binding()
+    binding["unknown"] = "not allowed"
+    profile = _execute_profile()
+    with pytest.raises(RunnerContractError, match="exact execution-binding fields"):
+        build_runner_profile(
+            profile,
+            sandbox_root=tmp_path / "sandbox",
+            platform=current_platform(),
+            action_bindings=(binding,),
+        )
+
+    wrong_program = _execution_binding()
+    wrong_program["program_digest"] = "sha256:" + "f" * 64
+    with pytest.raises(RunnerContractError, match="program_digest"):
+        seal_manifest(
+            {
+                "schema_version": "bluefire.runner-manifest.v1",
+                "requested_at": "2026-08-23T12:00:00Z",
+                "expires_at": "2026-08-23T12:05:00Z",
+                "approval": None,
+                "execution_binding": wrong_program,
+            }
+        )
+
+    with pytest.raises(RunnerContractError, match="must be an object"):
+        seal_manifest(
+            {
+                "schema_version": "bluefire.runner-manifest.v1",
+                "requested_at": "2026-08-23T12:00:00Z",
+                "expires_at": "2026-08-23T12:05:00Z",
+                "approval": None,
+                "execution_binding": None,
+            }
+        )
 
 
 def test_manifest_timestamps_match_rust_chrono_hash_normalization(tmp_path: Path) -> None:

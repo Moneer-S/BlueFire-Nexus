@@ -5,7 +5,7 @@ import copy
 import hashlib
 import json
 from dataclasses import FrozenInstanceError
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -22,6 +22,7 @@ from bluefire.action_packages import (
     MAX_JSON_DEPTH,
     MAX_STRING_CHARS,
     ActionPackageError,
+    SemVer,
     audit_action_package,
     build_signed_action_package,
     canonical_public_key_b64u,
@@ -29,8 +30,9 @@ from bluefire.action_packages import (
     normalize_ed25519_public_key,
     parse_canonical_action_package,
     verify_action_package,
+    verify_action_package_for_activation,
 )
-from bluefire.util import canonical_json_bytes
+from bluefire.util import canonical_json_bytes, content_hash
 
 PUBLISHER_ID = "acme.security"
 KEY_ID = "release-2026"
@@ -180,6 +182,36 @@ def _b64u(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
 
 
+def _runner_inventory(
+    *, action_version: str = "1.0.0", readiness: str = "ready", include_opcode: bool = True
+) -> dict[str, Any]:
+    actions: list[dict[str, str]] = [
+        {
+            "action_id": "sandbox.archive.tar.v1",
+            "action_version": "1.0.0",
+            "readiness": "ready",
+        }
+    ]
+    if include_opcode:
+        actions.insert(
+            0,
+            {
+                "action_id": "endpoint.discovery.system.v1",
+                "action_version": action_version,
+                "readiness": readiness,
+            },
+        )
+    return {
+        "schema_version": "bluefire.runner-inventory.v1",
+        "runner_id": "bluefire-runner",
+        "runner_version": "0.1.0",
+        "action_sdk_version": "1.0.0",
+        "receipt_protocol": "bluefire.runner-receipt.v1",
+        "platform": "windows",
+        "actions": actions,
+    }
+
+
 def test_valid_signed_envelope_returns_store_safe_verified_result() -> None:
     private_key = Ed25519PrivateKey.generate()
     envelope = _signed(private_key)
@@ -210,6 +242,83 @@ def test_valid_signed_envelope_returns_store_safe_verified_result() -> None:
     assert verified.actions[0].program.steps[0].opcode == "endpoint.discovery.system.v1"
     with pytest.raises(FrozenInstanceError):
         verified.manifest.version = "2.0.0"  # type: ignore[misc]
+
+
+def test_activation_verifier_binds_exact_catalog_and_canonical_runner_inventory() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    envelope = _signed(private_key)
+    empty_digest = content_hash(
+        {"schema_version": "bluefire.active-action-package-catalog.v1", "packages": []}
+    )
+
+    activation = verify_action_package_for_activation(
+        envelope,
+        trusted_signers=_trust(private_key),
+        bluefire_version="0.1.0",
+        runner_inventory=_runner_inventory(),
+        runner_identity_digest="sha256:" + "1" * 64,
+        expected_catalog_generation=0,
+        expected_catalog_digest=empty_digest,
+        occupied_behavior_ids=("endpoint.discovery.system.v1",),
+        occupied_action_ids=("endpoint.discovery.system.v1",),
+    )
+
+    assert activation.expected_catalog_generation == 0
+    assert activation.expected_catalog_digest == empty_digest
+    assert activation.runner_platform == "windows"
+    assert [item["action_id"] for item in activation.runner_inventory()["actions"]] == [
+        "endpoint.discovery.system.v1",
+        "sandbox.archive.tar.v1",
+    ]
+    assert activation.opcode_bindings[0].package_action_id == ACTION_ID
+    assert activation.opcode_bindings[0].opcode == "endpoint.discovery.system.v1"
+    assert activation.to_dict()["runner"]["identity_digest"] == "sha256:" + "1" * 64
+    with pytest.raises(FrozenInstanceError):
+        activation.runner_platform = "linux"  # type: ignore[misc]
+
+    # A persisted canonical snapshot is accepted byte-for-byte for independent
+    # activation replay; source/contract digests must not be hashed a second time.
+    replayed = verify_action_package_for_activation(
+        envelope,
+        trusted_signers=_trust(private_key),
+        bluefire_version="0.1.0",
+        runner_inventory=activation.runner_inventory(),
+        runner_identity_digest=activation.runner_identity_digest,
+        expected_catalog_generation=0,
+        expected_catalog_digest=empty_digest,
+        occupied_behavior_ids=activation.occupied_behavior_ids,
+        occupied_action_ids=activation.occupied_action_ids,
+    )
+    assert replayed == activation
+
+
+@pytest.mark.parametrize(
+    ("inventory", "message"),
+    [
+        (_runner_inventory(include_opcode=False), "missing packaged reviewed opcode"),
+        (_runner_inventory(action_version="2.0.0"), "version is incompatible"),
+        (_runner_inventory(readiness="unavailable"), "is not ready"),
+    ],
+)
+def test_activation_verifier_rejects_runner_inventory_mismatch(
+    inventory: Mapping[str, Any], message: str
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    with pytest.raises(ActionPackageError, match=message):
+        verify_action_package_for_activation(
+            _signed(private_key),
+            trusted_signers=_trust(private_key),
+            bluefire_version="0.1.0",
+            runner_inventory=inventory,
+            runner_identity_digest="sha256:" + "2" * 64,
+            expected_catalog_generation=0,
+            expected_catalog_digest=content_hash(
+                {
+                    "schema_version": "bluefire.active-action-package-catalog.v1",
+                    "packages": [],
+                }
+            ),
+        )
 
 
 def test_key_encodings_are_canonical_and_strict() -> None:
@@ -399,6 +508,10 @@ def test_exact_claims_compatibility_platform_and_semver_are_enforced() -> None:
     manifest["version"] = "01.2.3"
     with pytest.raises(ActionPackageError, match="strict semantic versioning"):
         _signed(private_key, manifest=manifest)
+
+    assert SemVer.parse("18446744073709551615.0.0").major == (1 << 64) - 1
+    with pytest.raises(ActionPackageError, match="unsigned 64-bit"):
+        SemVer.parse("18446744073709551616.0.0")
 
     envelope = _signed(private_key)
     with pytest.raises(ActionPackageError, match="incompatible"):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from datetime import datetime
 from typing import Any, Mapping, Sequence
@@ -12,6 +13,74 @@ from .util import content_hash
 
 class ComparisonError(ValueError):
     pass
+
+
+_CATALOG_AUTHORITY_SCHEMA = "bluefire.action-catalog-authority.v1"
+_CATALOG_AUTHORITY_FIELDS = frozenset(
+    {
+        "schema_version",
+        "generation",
+        "catalog_digest",
+        "built_in_catalog_digest",
+        "packages",
+        "action_bindings",
+        "authority_digest",
+    }
+)
+_PACKAGE_AUTHORITY_FIELDS = frozenset(
+    {
+        "package_id",
+        "package_version",
+        "package_digest",
+        "content_digest",
+        "publisher_id",
+        "key_id",
+        "signer_fingerprint",
+        "activated_generation",
+        "runner_identity_digest",
+        "runner_inventory_digest",
+        "runner_platform",
+        "behavior_ids",
+        "action_ids",
+    }
+)
+_PACKAGE_IDENTITY_FIELDS = (
+    "package_id",
+    "package_version",
+    "package_digest",
+    "content_digest",
+    "publisher_id",
+    "key_id",
+    "signer_fingerprint",
+    "activated_generation",
+)
+_ACTION_BINDING_FIELDS = frozenset(
+    {
+        "schema_version",
+        "catalog_generation",
+        "catalog_digest",
+        "logical_behavior_id",
+        "logical_action_id",
+        "package_id",
+        "package_version",
+        "package_digest",
+        "content_digest",
+        "program_digest",
+        "runner_opcode",
+        "opcode_contract_digest",
+        "constants",
+    }
+)
+_IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
+_SEMVER = re.compile(
+    r"^(0|[1-9][0-9]*)\."
+    r"(0|[1-9][0-9]*)\."
+    r"(0|[1-9][0-9]*)"
+    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
+_STABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\.v[1-9][0-9]*$")
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def compare_runs(store: RunStore, run_ids: Sequence[str]) -> Mapping[str, Any]:
@@ -123,6 +192,7 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "run_id": snapshot.get("run_id"),
         "mode": snapshot.get("mode"),
         "profile_id": snapshot.get("runner_profile_id"),
+        "catalog_authority": _catalog_authority_summary(snapshot),
         "path": path,
         "outcomes": outcomes,
         "outcome_counts": dict(sorted(outcome_counts.items())),
@@ -189,6 +259,9 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         signals.append("observed_evidence_decreased")
     detection_match_delta = candidate["detection_matches"] - baseline["detection_matches"]
     benign_match_delta = candidate["benign_matches"] - baseline["benign_matches"]
+    authority_delta = _catalog_authority_delta(
+        baseline["catalog_authority"], candidate["catalog_authority"]
+    )
     if detection_match_delta > 0:
         signals.append("detection_matches_increased")
     elif detection_match_delta < 0:
@@ -197,6 +270,8 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         signals.append("benign_matches_increased")
     elif benign_match_delta < 0:
         signals.append("benign_matches_decreased")
+    if authority_delta["changed"]:
+        signals.append("catalog_authority_changed")
     assessment = _assessment(signals)
     return {
         "from_run_id": baseline["run_id"],
@@ -219,12 +294,325 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         "autonomy_changed": baseline["autonomy"] != candidate["autonomy"],
         "ai_provider_changed": baseline["ai_provider_id"] != candidate["ai_provider_id"],
         "ai_proposal_delta": candidate["ai_proposal_count"] - baseline["ai_proposal_count"],
+        "catalog_authority_changed": authority_delta["changed"],
+        "catalog_authority_delta": authority_delta,
+        "material_configuration_changed": authority_delta["changed"],
+        "configuration_changes": (["catalog_authority"] if authority_delta["changed"] else []),
         "duration_delta_ms": _number_delta(
             baseline.get("duration_ms"), candidate.get("duration_ms")
         ),
         "assessment": assessment,
         "signals": signals,
     }
+
+
+def _catalog_authority_summary(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    policy = snapshot.get("policy")
+    if not isinstance(policy, Mapping):
+        return _legacy_catalog_authority()
+    preflight = policy.get("preflight")
+    if not isinstance(preflight, Mapping) or "catalog_authority" not in preflight:
+        return _legacy_catalog_authority()
+    value = preflight["catalog_authority"]
+    if not isinstance(value, Mapping):
+        return _malformed_catalog_authority(value, ["authority_not_object"])
+
+    errors: list[str] = []
+    if set(value) != _CATALOG_AUTHORITY_FIELDS:
+        errors.append("authority_fields_invalid")
+    if value.get("schema_version") != _CATALOG_AUTHORITY_SCHEMA:
+        errors.append("schema_version_invalid")
+    generation = value.get("generation")
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+        errors.append("generation_invalid")
+    for field in (
+        "catalog_digest",
+        "built_in_catalog_digest",
+        "authority_digest",
+    ):
+        if not _is_digest(value.get(field)):
+            errors.append(f"{field}_invalid")
+
+    packages = value.get("packages")
+    package_summaries: list[dict[str, Any]] = []
+    if not isinstance(packages, list):
+        errors.append("packages_invalid")
+    else:
+        package_ids: set[str] = set()
+        for package in packages:
+            package_errors = _package_authority_errors(package, generation)
+            if package_errors:
+                errors.extend(package_errors)
+                continue
+            package_id = str(package["package_id"])
+            if package_id in package_ids:
+                errors.append("package_id_duplicate")
+                continue
+            package_ids.add(package_id)
+            package_summaries.append({field: package[field] for field in _PACKAGE_IDENTITY_FIELDS})
+    action_bindings = value.get("action_bindings")
+    if not isinstance(action_bindings, list):
+        errors.append("action_bindings_invalid")
+    else:
+        package_rows = packages if isinstance(packages, list) else []
+        package_index = {
+            str(package["package_id"]): package
+            for package in package_rows
+            if isinstance(package, Mapping) and not _package_authority_errors(package, generation)
+        }
+        binding_keys: set[tuple[str, str]] = set()
+        for binding in action_bindings:
+            binding_errors = _action_binding_errors(
+                binding,
+                generation=generation,
+                catalog_digest=value.get("catalog_digest"),
+                package_index=package_index,
+            )
+            errors.extend(binding_errors)
+            if not binding_errors:
+                key = (
+                    str(binding["logical_behavior_id"]),
+                    str(binding["logical_action_id"]),
+                )
+                if key in binding_keys:
+                    errors.append("action_binding_duplicate")
+                binding_keys.add(key)
+
+    record_digest = _safe_content_hash(value)
+    if record_digest is None:
+        errors.append("authority_not_canonical_json")
+    else:
+        body = dict(value)
+        claimed_digest = body.pop("authority_digest", None)
+        body_digest = _safe_content_hash(body)
+        if body_digest is None or claimed_digest != body_digest:
+            errors.append("authority_digest_mismatch")
+
+    if errors:
+        return _malformed_catalog_authority(value, errors, record_digest=record_digest)
+    package_summaries.sort(key=lambda item: str(item["package_id"]))
+    return {
+        "state": "bound",
+        "schema_version": _CATALOG_AUTHORITY_SCHEMA,
+        "generation": generation,
+        "catalog_digest": value["catalog_digest"],
+        "authority_digest": value["authority_digest"],
+        "authority_record_digest": record_digest,
+        "package_count": len(package_summaries),
+        "packages": package_summaries,
+    }
+
+
+def _legacy_catalog_authority() -> dict[str, Any]:
+    return {
+        "state": "legacy_unbound",
+        "schema_version": None,
+        "generation": None,
+        "catalog_digest": None,
+        "authority_digest": None,
+        "authority_record_digest": None,
+        "package_count": 0,
+        "packages": [],
+    }
+
+
+def _malformed_catalog_authority(
+    value: Any,
+    errors: Sequence[str],
+    *,
+    record_digest: str | None = None,
+) -> dict[str, Any]:
+    if record_digest is None:
+        record_digest = _safe_content_hash(value)
+    return {
+        "state": "malformed",
+        "schema_version": None,
+        "generation": None,
+        "catalog_digest": None,
+        "authority_digest": None,
+        "authority_record_digest": record_digest,
+        "package_count": 0,
+        "packages": [],
+        "error_codes": sorted(set(errors)),
+    }
+
+
+def _package_authority_errors(value: Any, generation: Any) -> list[str]:
+    if not isinstance(value, Mapping):
+        return ["package_entry_not_object"]
+    errors: list[str] = []
+    if set(value) != _PACKAGE_AUTHORITY_FIELDS:
+        errors.append("package_fields_invalid")
+    for field in ("package_id", "publisher_id", "key_id"):
+        item = value.get(field)
+        if not isinstance(item, str) or not _IDENTIFIER.fullmatch(item):
+            errors.append(f"package_{field}_invalid")
+    version = value.get("package_version")
+    if not isinstance(version, str) or not _SEMVER.fullmatch(version):
+        errors.append("package_version_invalid")
+    for field in (
+        "package_digest",
+        "content_digest",
+        "signer_fingerprint",
+        "runner_identity_digest",
+        "runner_inventory_digest",
+    ):
+        if not _is_digest(value.get(field)):
+            errors.append(f"package_{field}_invalid")
+    activated_generation = value.get("activated_generation")
+    if (
+        isinstance(activated_generation, bool)
+        or not isinstance(activated_generation, int)
+        or activated_generation < 1
+        or isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or activated_generation > generation
+    ):
+        errors.append("package_activated_generation_invalid")
+    platform = value.get("runner_platform")
+    if not isinstance(platform, str) or not platform or len(platform) > 64:
+        errors.append("package_runner_platform_invalid")
+    for field in ("behavior_ids", "action_ids"):
+        identifiers = value.get(field)
+        if (
+            not isinstance(identifiers, list)
+            or not identifiers
+            or len(identifiers) > 64
+            or any(
+                not isinstance(item, str) or not _STABLE_ID.fullmatch(item) for item in identifiers
+            )
+            or len(identifiers) != len(set(identifiers))
+        ):
+            errors.append(f"package_{field}_invalid")
+    return errors
+
+
+def _catalog_authority_delta(
+    baseline: Mapping[str, Any], candidate: Mapping[str, Any]
+) -> dict[str, Any]:
+    baseline_packages = {
+        str(item["package_id"]): item
+        for item in baseline.get("packages", [])
+        if isinstance(item, Mapping) and isinstance(item.get("package_id"), str)
+    }
+    candidate_packages = {
+        str(item["package_id"]): item
+        for item in candidate.get("packages", [])
+        if isinstance(item, Mapping) and isinstance(item.get("package_id"), str)
+    }
+    package_ids = sorted(set(baseline_packages) | set(candidate_packages))
+    packages_added = [
+        dict(candidate_packages[package_id])
+        for package_id in package_ids
+        if package_id not in baseline_packages
+    ]
+    packages_removed = [
+        dict(baseline_packages[package_id])
+        for package_id in package_ids
+        if package_id not in candidate_packages
+    ]
+    packages_changed = [
+        {
+            "package_id": package_id,
+            "from": dict(baseline_packages[package_id]),
+            "to": dict(candidate_packages[package_id]),
+        }
+        for package_id in package_ids
+        if package_id in baseline_packages
+        and package_id in candidate_packages
+        and baseline_packages[package_id] != candidate_packages[package_id]
+    ]
+    fields = (
+        "state",
+        "generation",
+        "catalog_digest",
+        "authority_digest",
+        "authority_record_digest",
+    )
+    fields_changed = [field for field in fields if baseline.get(field) != candidate.get(field)]
+    changed = bool(fields_changed or packages_added or packages_removed or packages_changed)
+    return {
+        "changed": changed,
+        "fields_changed": fields_changed,
+        "from_state": baseline.get("state"),
+        "to_state": candidate.get("state"),
+        "from_generation": baseline.get("generation"),
+        "to_generation": candidate.get("generation"),
+        "generation_delta": _number_delta(baseline.get("generation"), candidate.get("generation")),
+        "from_catalog_digest": baseline.get("catalog_digest"),
+        "to_catalog_digest": candidate.get("catalog_digest"),
+        "from_authority_digest": baseline.get("authority_digest"),
+        "to_authority_digest": candidate.get("authority_digest"),
+        "packages_added": packages_added,
+        "packages_removed": packages_removed,
+        "packages_changed": packages_changed,
+    }
+
+
+def _action_binding_errors(
+    value: Any,
+    *,
+    generation: Any,
+    catalog_digest: Any,
+    package_index: Mapping[str, Mapping[str, Any]],
+) -> list[str]:
+    if not isinstance(value, Mapping):
+        return ["action_binding_not_object"]
+    errors: list[str] = []
+    if set(value) != _ACTION_BINDING_FIELDS:
+        errors.append("action_binding_fields_invalid")
+    if value.get("schema_version") != "bluefire.runner-execution-binding.v1":
+        errors.append("action_binding_schema_invalid")
+    if value.get("catalog_generation") != generation:
+        errors.append("action_binding_generation_invalid")
+    if value.get("catalog_digest") != catalog_digest or not _is_digest(value.get("catalog_digest")):
+        errors.append("action_binding_catalog_digest_invalid")
+    for field in ("logical_behavior_id", "logical_action_id"):
+        item = value.get(field)
+        if not isinstance(item, str) or not _STABLE_ID.fullmatch(item):
+            errors.append(f"action_binding_{field}_invalid")
+    package_id = value.get("package_id")
+    package = package_index.get(package_id) if isinstance(package_id, str) else None
+    if package is None:
+        errors.append("action_binding_package_invalid")
+    else:
+        for binding_field, package_field in (
+            ("package_version", "package_version"),
+            ("package_digest", "package_digest"),
+            ("content_digest", "content_digest"),
+        ):
+            if value.get(binding_field) != package.get(package_field):
+                errors.append(f"action_binding_{binding_field}_mismatch")
+        if value.get("logical_behavior_id") not in package.get("behavior_ids", []):
+            errors.append("action_binding_behavior_not_in_package")
+        if value.get("logical_action_id") not in package.get("action_ids", []):
+            errors.append("action_binding_action_not_in_package")
+    for field in (
+        "package_digest",
+        "content_digest",
+        "program_digest",
+        "opcode_contract_digest",
+    ):
+        if not _is_digest(value.get(field)):
+            errors.append(f"action_binding_{field}_invalid")
+    opcode = value.get("runner_opcode")
+    if not isinstance(opcode, str) or not _STABLE_ID.fullmatch(opcode):
+        errors.append("action_binding_runner_opcode_invalid")
+    constants = value.get("constants")
+    if not isinstance(constants, Mapping) or _safe_content_hash(constants) is None:
+        errors.append("action_binding_constants_invalid")
+    return errors
+
+
+def _is_digest(value: Any) -> bool:
+    return isinstance(value, str) and _DIGEST.fullmatch(value) is not None
+
+
+def _safe_content_hash(value: Any) -> str | None:
+    try:
+        return content_hash(value)
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        return None
 
 
 def _provider_id(value: Any) -> str | None:

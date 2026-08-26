@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { AIPlannerPage } from "./pages/AIPlanner";
+import { ActionPackagesPage } from "./pages/ActionPackages";
 import { BuilderPage } from "./pages/Builder";
 import {
   ActionsPage,
@@ -32,6 +33,7 @@ export default function App() {
         <Route path="runner-profiles" element={<RunnerProfilesPage />} />
         <Route path="runners" element={<RunnersPage />} />
         <Route path="actions" element={<ActionsPage />} />
+        <Route path="action-packages" element={<ActionPackagesPage />} />
         <Route path="detection-lab" element={<DetectionLabPage />} />
         <Route path="research-sources" element={<ResearchSourcesPage />} />
         <Route path="ai-planner" element={<AIPlannerPage />} />

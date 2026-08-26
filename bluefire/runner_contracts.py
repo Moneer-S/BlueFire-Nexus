@@ -46,6 +46,51 @@ _TIER_RANK = {
 _RFC3339_MICROSECONDS = re.compile(
     r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})"
 )
+_EXECUTION_BINDING_SCHEMA = "bluefire.runner-execution-binding.v1"
+_ACTION_PROGRAM_SCHEMA = "bluefire.action-program.v1"
+_ACTION_PROGRAM_ADAPTER = "bluefire.builtin-runner-adapter.v1"
+_SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_PACKAGE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
+_STABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\.v[1-9][0-9]*$")
+_SEMVER = re.compile(
+    r"^(0|[1-9][0-9]*)\."
+    r"(0|[1-9][0-9]*)\."
+    r"(0|[1-9][0-9]*)"
+    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
+)
+_EXECUTION_BINDING_FIELDS = frozenset(
+    {
+        "schema_version",
+        "catalog_generation",
+        "catalog_digest",
+        "logical_behavior_id",
+        "logical_action_id",
+        "package_id",
+        "package_version",
+        "package_digest",
+        "content_digest",
+        "program_digest",
+        "runner_opcode",
+        "opcode_contract_digest",
+        "constants",
+    }
+)
+_REVIEWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, Any]] = {
+    "endpoint.discovery.processes.v1": {},
+    "endpoint.discovery.system.v1": {},
+    "sandbox.archive.tar.v1": {"archive_format": "ustar"},
+    "sandbox.cleanup.v1": {},
+    "sandbox.collection.stage.v1": {},
+    "sandbox.discovery.list.v1": {},
+    "sandbox.discovery.metadata.v1": {},
+    "sandbox.discovery.recursive.v1": {},
+    "sandbox.export.local.v1": {},
+    "sandbox.fixture.create.v1": {"content_template": "telemetry-seed"},
+    "sandbox.fixture.transform.v1": {"transform": "uppercase-ascii"},
+    "sandbox.network.loopback.v1": {"method": "POST"},
+    "sandbox.restricted.persistence-marker.v1": {"marker_kind": "detection-canary"},
+}
 
 
 def _format_rust_datetime(value: datetime, *, context: str) -> str:
@@ -71,6 +116,129 @@ def _normalize_rust_datetime(value: str, *, context: str) -> str:
     except ValueError as exc:
         raise RunnerContractError(f"{context} must be an RFC 3339 timestamp") from exc
     return _format_rust_datetime(parsed, context=context)
+
+
+def _canonical_execution_binding(
+    value: Mapping[str, Any],
+    *,
+    context: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != _EXECUTION_BINDING_FIELDS:
+        raise RunnerContractError(f"{context} must have the exact execution-binding fields")
+    if value.get("schema_version") != _EXECUTION_BINDING_SCHEMA:
+        raise RunnerContractError(f"{context}.schema_version is unsupported")
+    generation = value.get("catalog_generation")
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or not 1 <= generation <= (1 << 63) - 1
+    ):
+        raise RunnerContractError(f"{context}.catalog_generation is invalid")
+    digests: dict[str, str] = {}
+    for field in (
+        "catalog_digest",
+        "package_digest",
+        "content_digest",
+        "program_digest",
+        "opcode_contract_digest",
+    ):
+        digest = value.get(field)
+        if not isinstance(digest, str) or _SHA256_DIGEST.fullmatch(digest) is None:
+            raise RunnerContractError(f"{context}.{field} must be exact lowercase SHA-256")
+        digests[field] = digest
+    identifiers: dict[str, str] = {}
+    for field in ("logical_behavior_id", "logical_action_id", "runner_opcode"):
+        identifier = value.get(field)
+        if (
+            not isinstance(identifier, str)
+            or len(identifier) > 128
+            or _STABLE_ID.fullmatch(identifier) is None
+        ):
+            raise RunnerContractError(f"{context}.{field} is invalid")
+        identifiers[field] = identifier
+    package_id = value.get("package_id")
+    if (
+        not isinstance(package_id, str)
+        or len(package_id) > 128
+        or _PACKAGE_ID.fullmatch(package_id) is None
+    ):
+        raise RunnerContractError(f"{context}.package_id is invalid")
+    package_version = value.get("package_version")
+    if not isinstance(package_version, str):
+        raise RunnerContractError(f"{context}.package_version is invalid")
+    match = _SEMVER.fullmatch(package_version)
+    if (
+        match is None
+        or len(package_version) > 128
+        or any(int(match.group(index)) > (1 << 64) - 1 for index in (1, 2, 3))
+        or any(
+            part.isdigit() and len(part) > 1 and part.startswith("0")
+            for part in (match.group(4) or "").split(".")
+        )
+    ):
+        raise RunnerContractError(f"{context}.package_version is invalid")
+    constants = value.get("constants")
+    if not isinstance(constants, Mapping) or len(constants) > 32:
+        raise RunnerContractError(f"{context}.constants must be a bounded object")
+    opcode = identifiers["runner_opcode"]
+    expected_constants = _REVIEWED_PROGRAM_CONSTANTS.get(opcode)
+    if expected_constants is None or dict(constants) != dict(expected_constants):
+        raise RunnerContractError(
+            f"{context}.constants do not exactly match the reviewed runner opcode"
+        )
+    canonical_constants = dict(sorted(dict(constants).items()))
+    program = {
+        "schema_version": _ACTION_PROGRAM_SCHEMA,
+        "steps": [
+            {
+                "opcode": opcode,
+                "adapter": _ACTION_PROGRAM_ADAPTER,
+                "constants": canonical_constants,
+            }
+        ],
+    }
+    if digests["program_digest"] != content_hash(program):
+        raise RunnerContractError(f"{context}.program_digest does not match its program")
+    return {
+        "schema_version": _EXECUTION_BINDING_SCHEMA,
+        "catalog_generation": generation,
+        "catalog_digest": digests["catalog_digest"],
+        "logical_behavior_id": identifiers["logical_behavior_id"],
+        "logical_action_id": identifiers["logical_action_id"],
+        "package_id": package_id,
+        "package_version": package_version,
+        "package_digest": digests["package_digest"],
+        "content_digest": digests["content_digest"],
+        "program_digest": digests["program_digest"],
+        "runner_opcode": opcode,
+        "opcode_contract_digest": digests["opcode_contract_digest"],
+        "constants": canonical_constants,
+    }
+
+
+def _canonical_action_bindings(
+    value: Sequence[Mapping[str, Any]],
+    *,
+    context: str,
+) -> list[dict[str, Any]]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence) or len(value) > 512:
+        raise RunnerContractError(f"{context} must be a bounded list")
+    bindings = [
+        _canonical_execution_binding(item, context=f"{context}[{index}]")
+        for index, item in enumerate(value)
+    ]
+    pairs = [(binding["logical_behavior_id"], binding["logical_action_id"]) for binding in bindings]
+    if len(pairs) != len(set(pairs)):
+        raise RunnerContractError(f"{context} contains a duplicate logical behavior/action pair")
+    identities = {
+        (binding["catalog_generation"], binding["catalog_digest"]) for binding in bindings
+    }
+    if len(identities) > 1:
+        raise RunnerContractError(f"{context} spans more than one catalog generation")
+    return sorted(
+        bindings,
+        key=lambda item: (str(item["logical_behavior_id"]), str(item["logical_action_id"])),
+    )
 
 
 def current_platform() -> str:
@@ -127,6 +295,18 @@ def seal_profile(document: Mapping[str, Any]) -> dict[str, Any]:
     sealed: dict[str, Any] = dict(json_clone(document))
     if sealed.get("schema_version") != "bluefire.runner-profile.v1":
         raise RunnerContractError("runner profile schema version is unsupported")
+    if "action_bindings" in sealed:
+        raw_bindings = sealed["action_bindings"]
+        if not isinstance(raw_bindings, list):
+            raise RunnerContractError("runner profile action_bindings must be a list")
+        bindings = _canonical_action_bindings(
+            raw_bindings,
+            context="runner profile action_bindings",
+        )
+        if bindings:
+            sealed["action_bindings"] = bindings
+        else:
+            sealed.pop("action_bindings")
     sealed["policy_digest"] = ""
     sealed["policy_digest"] = content_hash(sealed)
     return sealed
@@ -139,6 +319,7 @@ def build_runner_profile(
     platform: str | None = None,
     filesystem_scope: Sequence[str] = ("fixtures", "staged", "exports"),
     network_destinations: Sequence[Mapping[str, Any]] = (),
+    action_bindings: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     if profile.mode.value != "execute":
         raise RunnerContractError("only Execute profiles can be compiled for the Rust runner")
@@ -151,7 +332,22 @@ def build_runner_profile(
         raise RunnerContractError("selected runner profile does not support this platform")
     tiers = sorted(profile.safety_tiers, key=_TIER_RANK.__getitem__)
     runner_capabilities = effect_capabilities(profile.capabilities)
-    profile_doc = {
+    bindings = _canonical_action_bindings(
+        action_bindings,
+        context="runner profile action_bindings",
+    )
+    allowed_actions = set(profile.enabled_actions)
+    blocked_actions = set(profile.blocked_actions)
+    for binding in bindings:
+        logical_action = str(binding["logical_action_id"])
+        opcode = str(binding["runner_opcode"])
+        if logical_action not in allowed_actions:
+            raise RunnerContractError("runner profile action binding logical action is not enabled")
+        if opcode not in allowed_actions or opcode in blocked_actions:
+            raise RunnerContractError(
+                "runner profile action binding cannot bypass backing opcode policy"
+            )
+    profile_doc: dict[str, Any] = {
         "schema_version": "bluefire.runner-profile.v1",
         "profile_id": profile.id,
         "runner_id": "bluefire-rust-runner.v1",
@@ -169,6 +365,8 @@ def build_runner_profile(
         "limits": execution_limits(profile),
         "policy_digest": "",
     }
+    if bindings:
+        profile_doc["action_bindings"] = bindings
     return seal_profile(profile_doc)
 
 
@@ -176,6 +374,14 @@ def seal_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
     sealed: dict[str, Any] = dict(json_clone(document))
     if sealed.get("schema_version") != "bluefire.runner-manifest.v1":
         raise RunnerContractError("runner manifest schema version is unsupported")
+    if "execution_binding" in sealed:
+        raw_binding = sealed["execution_binding"]
+        if not isinstance(raw_binding, Mapping):
+            raise RunnerContractError("runner execution_binding must be an object")
+        sealed["execution_binding"] = _canonical_execution_binding(
+            raw_binding,
+            context="runner execution_binding",
+        )
     approval = sealed.get("approval")
     if approval is not None:
         if not isinstance(approval, dict):
@@ -212,6 +418,8 @@ def build_execution_manifest(
     network_destinations: Sequence[Mapping[str, Any]] = (),
     evidence_refs: Sequence[str] = (),
     approval_record: Mapping[str, Any] | None,
+    execution_binding: Mapping[str, Any] | None = None,
+    resolved_cleanup_action_id: str | None = None,
     timeout_ms: int | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -245,6 +453,40 @@ def build_execution_manifest(
         raise RunnerContractError("runner profile identity fields are missing")
     if not isinstance(policy_digest, str) or not policy_digest.startswith("sha256:"):
         raise RunnerContractError("runner profile has no sealed policy digest")
+    binding = (
+        None
+        if execution_binding is None
+        else _canonical_execution_binding(
+            execution_binding,
+            context="runner execution_binding",
+        )
+    )
+    if binding is not None:
+        if (
+            binding["logical_behavior_id"] != behavior_id
+            or binding["logical_action_id"] != action.id
+        ):
+            raise RunnerContractError(
+                "runner execution binding does not match the logical behavior/action"
+            )
+        profile_bindings = runner_profile.get("action_bindings")
+        if not isinstance(profile_bindings, list):
+            raise RunnerContractError(
+                "runner execution binding is absent from the sealed runner profile"
+            )
+        canonical_profile_bindings = _canonical_action_bindings(
+            profile_bindings,
+            context="runner profile action_bindings",
+        )
+        if binding not in canonical_profile_bindings:
+            raise RunnerContractError(
+                "runner execution binding does not exactly match the sealed runner profile"
+            )
+        for name, constant in binding["constants"].items():
+            if name in params and params[name] != constant:
+                raise RunnerContractError(
+                    "runner parameters conflict with a reviewed execution-binding constant"
+                )
     profile_limits = runner_profile.get("limits")
     if not isinstance(profile_limits, Mapping):
         raise RunnerContractError("runner profile limits are missing")
@@ -260,7 +502,18 @@ def build_execution_manifest(
         raise RunnerContractError("manifest timeout must be within the runner profile limit")
     manifest_limits = dict(profile_limits)
     manifest_limits["timeout_ms"] = effective_timeout
-    cleanup_action = action.cleanup_action_id or "sandbox.cleanup.v1"
+    if resolved_cleanup_action_id is not None and (
+        not isinstance(resolved_cleanup_action_id, str)
+        or resolved_cleanup_action_id != "sandbox.cleanup.v1"
+    ):
+        raise RunnerContractError("resolved native cleanup action must be sandbox.cleanup.v1")
+    cleanup_action = (
+        resolved_cleanup_action_id
+        or ("sandbox.cleanup.v1" if binding is not None else action.cleanup_action_id)
+        or "sandbox.cleanup.v1"
+    )
+    if cleanup_action != "sandbox.cleanup.v1":
+        raise RunnerContractError("native runner cleanup action must be sandbox.cleanup.v1")
     document = {
         "schema_version": "bluefire.runner-manifest.v1",
         "request_id": f"request-{uuid.uuid4().hex}",
@@ -288,6 +541,8 @@ def build_execution_manifest(
         "evidence_refs": list(evidence_refs),
         "request_hash": "",
     }
+    if binding is not None:
+        document["execution_binding"] = binding
     return seal_manifest(document)
 
 

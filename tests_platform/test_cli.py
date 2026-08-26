@@ -1,3 +1,4 @@
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -215,6 +216,265 @@ def test_cli_runner_commands_use_only_explicit_managed_lifecycle_actions(
             {"confirm_runner_id": "bluefire-rust-runner.v1"},
         ),
     ]
+
+
+def test_cli_action_package_commands_dispatch_exact_lifecycle_requests(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _RecordingService()
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    parser = _parser()
+    public_key = b"k" * 32
+    public_key_file = tmp_path / "publisher-key.txt"
+    public_key_file.write_text(
+        base64.urlsafe_b64encode(public_key).rstrip(b"=").decode("ascii") + "\n",
+        encoding="utf-8",
+    )
+    provenance_file = tmp_path / "provenance.json"
+    provenance_file.write_text(
+        json.dumps({"source": "urn:bluefire:publisher-review"}),
+        encoding="utf-8",
+    )
+    envelope_file = tmp_path / "package.json"
+    envelope_file.write_text(
+        json.dumps({"schema_version": "bluefire.action-package.v1"}),
+        encoding="utf-8",
+    )
+    package_id = "com.example.discovery"
+    version = "1.2.3"
+    package_digest = "sha256:" + "a" * 64
+    catalog_digest = "sha256:" + "b" * 64
+
+    _execute(parser.parse_args(["packages", "inventory"]))
+    _execute(parser.parse_args(["packages", "detail", package_id]))
+    _execute(
+        parser.parse_args(
+            [
+                "packages",
+                "trust-publisher",
+                "--publisher-id",
+                "publisher.example",
+                "--key-id",
+                "release-2026",
+                "--public-key-file",
+                str(public_key_file),
+                "--provenance-file",
+                str(provenance_file),
+                "--trusted-by",
+                "security-reviewer",
+            ]
+        )
+    )
+    for command in ("suspend-publisher", "revoke-publisher"):
+        _execute(
+            parser.parse_args(
+                [
+                    "packages",
+                    command,
+                    "publisher.example",
+                    "release-2026",
+                    "--actor",
+                    "security-reviewer",
+                    "--reason",
+                    "Key lifecycle review.",
+                ]
+            )
+        )
+    _execute(
+        parser.parse_args(
+            [
+                "packages",
+                "install",
+                str(envelope_file),
+                "--installed-by",
+                "package-operator",
+            ]
+        )
+    )
+    _execute(
+        parser.parse_args(
+            [
+                "packages",
+                "activate",
+                package_id,
+                version,
+                "--profile",
+                "sandbox-execute.v1",
+                "--activated-by",
+                "package-operator",
+                "--reason",
+                "Reviewed release.",
+            ]
+        )
+    )
+    for command, actor_option in (
+        ("deactivate", "--deactivated-by"),
+        ("remove", "--removed-by"),
+    ):
+        _execute(
+            parser.parse_args(
+                [
+                    "packages",
+                    command,
+                    package_id,
+                    version,
+                    "--package-digest",
+                    package_digest,
+                    "--catalog-generation",
+                    "7",
+                    "--catalog-digest",
+                    catalog_digest,
+                    actor_option,
+                    "package-operator",
+                    "--reason",
+                    "Reviewed lifecycle transition.",
+                ]
+            )
+        )
+
+    assert service.calls == [
+        ("action_packages", (), {}),
+        ("action_package", (package_id,), {}),
+        (
+            "trust_action_package_publisher",
+            (
+                {
+                    "publisher_id": "publisher.example",
+                    "key_id": "release-2026",
+                    "public_key": public_key,
+                    "provenance": {"source": "urn:bluefire:publisher-review"},
+                    "trusted_by": "security-reviewer",
+                },
+            ),
+            {},
+        ),
+        (
+            "transition_action_package_publisher",
+            (
+                "publisher.example",
+                "release-2026",
+                "suspend",
+                {"actor": "security-reviewer", "reason": "Key lifecycle review."},
+            ),
+            {},
+        ),
+        (
+            "transition_action_package_publisher",
+            (
+                "publisher.example",
+                "release-2026",
+                "revoke",
+                {"actor": "security-reviewer", "reason": "Key lifecycle review."},
+            ),
+            {},
+        ),
+        (
+            "install_action_package",
+            (
+                {
+                    "envelope": {"schema_version": "bluefire.action-package.v1"},
+                    "installed_by": "package-operator",
+                },
+            ),
+            {},
+        ),
+        (
+            "activate_action_package",
+            (
+                package_id,
+                version,
+                {
+                    "runner_profile_id": "sandbox-execute.v1",
+                    "activated_by": "package-operator",
+                    "reason": "Reviewed release.",
+                },
+            ),
+            {},
+        ),
+        (
+            "deactivate_action_package",
+            (
+                package_id,
+                version,
+                {
+                    "package_digest": package_digest,
+                    "expected_catalog_generation": 7,
+                    "expected_catalog_digest": catalog_digest,
+                    "deactivated_by": "package-operator",
+                    "reason": "Reviewed lifecycle transition.",
+                },
+            ),
+            {},
+        ),
+        (
+            "remove_action_package",
+            (
+                package_id,
+                version,
+                {
+                    "package_digest": package_digest,
+                    "expected_catalog_generation": 7,
+                    "expected_catalog_digest": catalog_digest,
+                    "removed_by": "package-operator",
+                    "reason": "Reviewed lifecycle transition.",
+                },
+            ),
+            {},
+        ),
+    ]
+
+
+def test_cli_action_package_file_reads_are_bounded_and_path_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _RecordingService()
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    parser = _parser()
+    oversized_secret = tmp_path / "operator-private-envelope.json"
+    oversized_secret.write_text("{" + " " * (256 * 1024), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exceeds") as oversized:
+        _execute(
+            parser.parse_args(
+                [
+                    "packages",
+                    "install",
+                    str(oversized_secret),
+                    "--installed-by",
+                    "operator",
+                ]
+            )
+        )
+    assert str(oversized_secret) not in str(oversized.value)
+    assert oversized_secret.name not in str(oversized.value)
+
+    missing_secret = tmp_path / "publisher-secret-key.txt"
+    provenance = tmp_path / "provenance.json"
+    provenance.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="unable to read publisher public key") as missing:
+        _execute(
+            parser.parse_args(
+                [
+                    "packages",
+                    "trust-publisher",
+                    "--publisher-id",
+                    "publisher.example",
+                    "--key-id",
+                    "release",
+                    "--public-key-file",
+                    str(missing_secret),
+                    "--provenance-file",
+                    str(provenance),
+                    "--trusted-by",
+                    "operator",
+                ]
+            )
+        )
+    assert str(missing_secret) not in str(missing.value)
+    assert missing_secret.name not in str(missing.value)
+    assert service.calls == []
 
 
 def test_cli_ui_delivers_one_capability_only_in_the_launch_url_fragment(

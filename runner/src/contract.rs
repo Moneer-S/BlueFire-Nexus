@@ -1,9 +1,10 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::de::{MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -11,6 +12,9 @@ pub const MANIFEST_SCHEMA_VERSION: &str = "bluefire.runner-manifest.v1";
 pub const PROFILE_SCHEMA_VERSION: &str = "bluefire.runner-profile.v1";
 pub const RESULT_SCHEMA_VERSION: &str = "bluefire.runner-result.v1";
 pub const INVENTORY_SCHEMA_VERSION: &str = "bluefire.runner-inventory.v1";
+pub const EXECUTION_BINDING_SCHEMA_VERSION: &str = "bluefire.runner-execution-binding.v1";
+pub const ACTION_PROGRAM_SCHEMA_VERSION: &str = "bluefire.action-program.v1";
+pub const ACTION_PROGRAM_ADAPTER: &str = "bluefire.builtin-runner-adapter.v1";
 
 pub fn utc_now() -> DateTime<Utc> {
     DateTime::<Utc>::from(SystemTime::now())
@@ -119,6 +123,66 @@ pub struct Approval {
     pub request_hash: String,
 }
 
+fn deserialize_constants<'de, D>(deserializer: D) -> Result<BTreeMap<String, Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct ConstantsVisitor;
+
+    impl<'de> Visitor<'de> for ConstantsVisitor {
+        type Value = BTreeMap<String, Value>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a canonical object of reviewed action constants")
+        }
+
+        fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut constants = BTreeMap::new();
+            while let Some((key, value)) = access.next_entry::<String, Value>()? {
+                if constants.insert(key.clone(), value).is_some() {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate execution-binding constant {key}"
+                    )));
+                }
+            }
+            Ok(constants)
+        }
+    }
+
+    deserializer.deserialize_map(ConstantsVisitor)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionBinding {
+    pub schema_version: String,
+    pub catalog_generation: u64,
+    pub catalog_digest: String,
+    pub logical_behavior_id: String,
+    pub logical_action_id: String,
+    pub package_id: String,
+    pub package_version: String,
+    pub package_digest: String,
+    pub content_digest: String,
+    pub program_digest: String,
+    pub runner_opcode: String,
+    pub opcode_contract_digest: String,
+    #[serde(deserialize_with = "deserialize_constants")]
+    pub constants: BTreeMap<String, Value>,
+}
+
+fn deserialize_execution_binding<'de, D>(
+    deserializer: D,
+) -> Result<Option<ExecutionBinding>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    ExecutionBinding::deserialize(deserializer).map(Some)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionManifest {
@@ -128,6 +192,12 @@ pub struct ExecutionManifest {
     pub step_id: String,
     pub behavior_id: String,
     pub action_id: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_execution_binding",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub execution_binding: Option<ExecutionBinding>,
     pub mode: RunMode,
     pub runner_id: String,
     pub runner_profile_id: String,
@@ -159,6 +229,8 @@ pub struct RunnerProfile {
     pub allowed_actions: Vec<String>,
     #[serde(default)]
     pub control_blocked_actions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub action_bindings: Vec<ExecutionBinding>,
     pub capabilities: Vec<Capability>,
     pub max_safety_tier: SafetyTier,
     #[serde(default)]
@@ -441,5 +513,115 @@ mod tests {
     fn unknown_struct_field_is_rejected() {
         let unknown = r#"{"host":"127.0.0.1","port":8080,"url":"http://example"}"#;
         assert!(serde_json::from_str::<NetworkDestination>(unknown).is_err());
+    }
+
+    #[test]
+    fn execution_binding_rejects_unknown_fields_and_duplicate_constants() {
+        let unknown = format!(
+            r#"{{
+                "schema_version":"{EXECUTION_BINDING_SCHEMA_VERSION}",
+                "catalog_generation":1,
+                "catalog_digest":"sha256:{}",
+                "logical_behavior_id":"acme.endpoint.profile.v1",
+                "logical_action_id":"acme.endpoint.profile-action.v1",
+                "package_id":"acme.endpoint-profile-pack",
+                "package_version":"1.2.3",
+                "package_digest":"sha256:{}",
+                "content_digest":"sha256:{}",
+                "program_digest":"sha256:{}",
+                "runner_opcode":"endpoint.discovery.system.v1",
+                "opcode_contract_digest":"sha256:{}",
+                "constants":{{}},
+                "entry_point":"forbidden"
+            }}"#,
+            "1".repeat(64),
+            "2".repeat(64),
+            "3".repeat(64),
+            "4".repeat(64),
+            "5".repeat(64),
+        );
+        assert!(serde_json::from_str::<ExecutionBinding>(&unknown).is_err());
+
+        let duplicate = unknown
+            .replace(",\n                \"entry_point\":\"forbidden\"", "")
+            .replace(
+                "\"constants\":{}",
+                "\"constants\":{\"method\":\"POST\",\"method\":\"GET\"}",
+            );
+        assert!(serde_json::from_str::<ExecutionBinding>(&duplicate).is_err());
+
+        let missing_constants = unknown
+            .replace(",\n                \"constants\":{}", "")
+            .replace(",\n                \"entry_point\":\"forbidden\"", "");
+        assert!(serde_json::from_str::<ExecutionBinding>(&missing_constants).is_err());
+    }
+
+    #[test]
+    fn absent_binding_fields_remain_omitted_for_legacy_documents() {
+        let profile: RunnerProfile = serde_json::from_value(serde_json::json!({
+            "schema_version": PROFILE_SCHEMA_VERSION,
+            "profile_id": "profile.test.v1",
+            "runner_id": "runner.test.v1",
+            "platform": Platform::current(),
+            "sandbox_root": ".",
+            "allowed_actions": [],
+            "control_blocked_actions": [],
+            "capabilities": [],
+            "max_safety_tier": "safe",
+            "approval_required_at_or_above": null,
+            "target_scope": {"filesystem": [], "network": []},
+            "limits": {
+                "timeout_ms": 1,
+                "max_stdout_bytes": 1,
+                "max_stderr_bytes": 1,
+                "max_artifact_bytes": 1,
+                "max_files": 1
+            },
+            "policy_digest": "sha256:legacy"
+        }))
+        .unwrap();
+        let serialized_profile = serde_json::to_value(profile).unwrap();
+        assert!(serialized_profile.get("action_bindings").is_none());
+
+        let manifest: ExecutionManifest = serde_json::from_value(serde_json::json!({
+            "schema_version": MANIFEST_SCHEMA_VERSION,
+            "request_id": "request.test.v1",
+            "run_id": "run.test.v1",
+            "step_id": "step.test.v1",
+            "behavior_id": "behavior.test.v1",
+            "action_id": "action.test.v1",
+            "mode": "execute",
+            "runner_id": "runner.test.v1",
+            "runner_profile_id": "profile.test.v1",
+            "platform": Platform::current(),
+            "requested_at": "2026-08-23T12:00:00Z",
+            "expires_at": "2026-08-23T12:05:00Z",
+            "params": {},
+            "target_scope": {"filesystem": [], "network": []},
+            "required_capabilities": [],
+            "safety_tier": "safe",
+            "limits": {
+                "timeout_ms": 1,
+                "max_stdout_bytes": 1,
+                "max_stderr_bytes": 1,
+                "max_artifact_bytes": 1,
+                "max_files": 1
+            },
+            "cleanup_action_id": "sandbox.cleanup.v1",
+            "policy_digest": "sha256:legacy",
+            "approval": null,
+            "evidence_refs": [],
+            "request_hash": "sha256:legacy"
+        }))
+        .unwrap();
+        let serialized_manifest = serde_json::to_value(manifest).unwrap();
+        assert!(serialized_manifest.get("execution_binding").is_none());
+
+        let mut explicit_null = serialized_manifest;
+        explicit_null
+            .as_object_mut()
+            .unwrap()
+            .insert("execution_binding".to_string(), Value::Null);
+        assert!(serde_json::from_value::<ExecutionManifest>(explicit_null).is_err());
     }
 }

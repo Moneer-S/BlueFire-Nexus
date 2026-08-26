@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import os
 import re
 import stat
 import threading
+from contextlib import AbstractContextManager
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from importlib.resources import as_file, files
@@ -14,6 +17,16 @@ from typing import Any, Callable, Mapping, Sequence
 
 import yaml
 
+from .action_catalog import (
+    ActionCatalogError,
+    ActionCatalogSnapshot,
+    ActivatedActionPackage,
+)
+from .action_packages import (
+    ActionPackageError,
+    audit_action_package,
+    verify_action_package,
+)
 from .ai import (
     AIProposal,
     AIProvider,
@@ -62,7 +75,13 @@ from .job_runtime import (
 )
 from .orchestrator import OrchestrationError, Orchestrator
 from .plugins import PluginManifest, PluginManifestError, PluginTrust
-from .product_store import ProductStore, ProductStoreError, ResearchSourceIntegrityError
+from .product_store import (
+    ActionPackageConflictError,
+    ActionPackageIntegrityError,
+    ProductStore,
+    ProductStoreError,
+    ResearchSourceIntegrityError,
+)
 from .registry import BehaviorRegistry, RegistryError, load_builtin_registry
 from .replay import ReplayError, ReplayRequest, prepare_replay
 from .research import ResearchSource, ResearchSourceError
@@ -79,7 +98,7 @@ from .runner_client import (
 )
 from .runner_contracts import RunnerContractError
 from .runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError
-from .util import content_hash, file_hash
+from .util import canonical_json_bytes, content_hash, file_hash
 
 RunnerFactory = Callable[[RunnerProfile], tuple[RunnerTransport, Path]]
 AIProviderFactory = Callable[[AIConfig, str], AIProvider]
@@ -106,6 +125,7 @@ _RUNNER_PROBE_MAX_ACTIONS = 512
 _RUNNER_PROBE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]*$")
 _STEP_IMPLEMENTATION_ID = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _EXECUTE_READINESS_KEY = "_execute_readiness"
+_ACTION_CATALOG_AUTHORITY_KEY = "_action_catalog_authority"
 _EXECUTE_READINESS_MAX_AGE_SECONDS = 15 * 60
 
 
@@ -138,7 +158,8 @@ class BlueFireService:
             Path(project_root) if project_root is not None else Path(__file__).resolve().parents[1]
         )
         self.project_root = root.resolve()
-        self.registry = registry or load_builtin_registry()
+        self._built_in_registry = registry or load_builtin_registry()
+        self.registry = self._built_in_registry
         self.config = config or self._load_default_config(config_path)
         self.store = RunStore(runs_dir or Path.cwd() / ".bluefire-runs")
         self.recovered_runs = self.store.recover_interrupted_runs()
@@ -149,13 +170,16 @@ class BlueFireService:
             ai_draft_provider_factory or _default_ai_draft_provider_factory
         )
         self._runtime_configuration_lock = threading.RLock()
+        self._action_catalog_lock = threading.RLock()
         self._job_retry_lock = threading.RLock()
         self._runtime_runner_profiles = self.config.runner_profiles
         self._runtime_ai_config = self.config.ai
-        self._scenarios = self._load_scenarios()
         self.product_store = ProductStore(
             product_db_path or self.store.root / "bluefire-product.sqlite3"
         )
+        self._catalog_snapshot = self._load_action_catalog_snapshot()
+        self.registry = self._catalog_snapshot.registry
+        self._scenarios = self._load_scenarios()
         self.detection_lab = DetectionLabService(
             product_store=self.product_store,
             run_store=self.store,
@@ -179,16 +203,113 @@ class BlueFireService:
         self._refresh_runtime_configuration()
         self._synchronize_run_index()
 
+    def _load_action_catalog_snapshot(
+        self,
+        generation: int | None = None,
+    ) -> ActionCatalogSnapshot:
+        stored = self.product_store.get_action_package_catalog_snapshot(generation)
+        raw_packages = stored.get("packages")
+        if not isinstance(raw_packages, list):
+            raise ActionCatalogError("persisted action-package catalog has no package list")
+        active: list[ActivatedActionPackage] = []
+        ordered_packages = sorted(
+            raw_packages,
+            key=lambda item: (str(item.get("package_id")) if isinstance(item, Mapping) else ""),
+        )
+        for row in ordered_packages:
+            if not isinstance(row, Mapping):
+                raise ActionCatalogError("persisted active action-package row is invalid")
+            package_id = row.get("package_id")
+            if not isinstance(package_id, str):
+                raise ActionCatalogError("persisted active action-package ID is invalid")
+            activation = row.get("verified_activation")
+            activation_generation = row.get("activation_generation")
+            if activation is None:
+                raise ActionCatalogError(
+                    f"active action package {package_id} has no verified activation"
+                )
+            if (
+                isinstance(activation_generation, bool)
+                or not isinstance(activation_generation, int)
+                or activation_generation < 1
+            ):
+                raise ActionCatalogError(
+                    f"active action package {package_id} has an invalid activation generation"
+                )
+            active.append(
+                ActivatedActionPackage(
+                    generation=activation_generation,
+                    activation=activation,
+                )
+            )
+        return ActionCatalogSnapshot.compose(
+            self._built_in_registry,
+            generation=int(stored["generation"]),
+            catalog_digest=str(stored["catalog_digest"]),
+            active_packages=active,
+        )
+
+    def _refresh_action_catalog(self) -> ActionCatalogSnapshot:
+        snapshot = self._load_action_catalog_snapshot()
+        self._catalog_snapshot = snapshot
+        self.registry = snapshot.registry
+        detection_lab = getattr(self, "detection_lab", None)
+        if detection_lab is not None:
+            detection_lab.registry = snapshot.registry
+        return snapshot
+
+    def _action_catalog_boundary(
+        self,
+        expected: Mapping[str, Any] | None = None,
+    ) -> ActionCatalogSnapshot:
+        snapshot = self._refresh_action_catalog()
+        if expected is None:
+            return snapshot
+        if (
+            expected.get("generation") != snapshot.generation
+            or expected.get("catalog_digest") != snapshot.catalog_digest
+            or expected.get("authority_digest") != snapshot.authority.get("authority_digest")
+        ):
+            raise ProductStoreError(
+                "action-package catalog changed after review; submit a new Execute request"
+            )
+        return snapshot
+
+    def _historical_action_catalog(
+        self,
+        authority: Mapping[str, Any] | None,
+    ) -> tuple[ActionCatalogSnapshot, Mapping[str, Any] | None]:
+        """Reconstruct one immutable authority without making it active again."""
+
+        if authority is None:
+            # Pre-package execution workspaces could only reference built-ins.
+            return self._load_action_catalog_snapshot(0), None
+        generation = authority.get("generation")
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+            raise ProductStoreError("historical action-package catalog generation is invalid")
+        snapshot = self._load_action_catalog_snapshot(generation)
+        if snapshot.to_dict() != dict(authority):
+            raise ProductStoreError("historical action-package catalog authority changed")
+        return snapshot, dict(authority)
+
+    @staticmethod
+    def _run_catalog_authority(
+        run: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        policy = run.get("policy")
+        preflight = policy.get("preflight") if isinstance(policy, Mapping) else None
+        authority = preflight.get("catalog_authority") if isinstance(preflight, Mapping) else None
+        if authority is not None and not isinstance(authority, Mapping):
+            raise ProductStoreError("run action-package catalog authority is invalid")
+        return dict(authority) if isinstance(authority, Mapping) else None
+
     def catalog(self) -> Mapping[str, Any]:
-        behaviors = [
-            self.registry.get_behavior(behavior_id).to_dict()
-            for behavior_id in self.registry.behavior_ids
-        ]
-        actions = [
-            self.registry.get_action(action_id).to_dict() for action_id in self.registry.action_ids
-        ]
+        with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+            snapshot = self._action_catalog_boundary()
+            behaviors = [item.to_dict() for item in snapshot.registry.behaviors]
+            actions = [item.to_dict() for item in snapshot.registry.actions]
         runtime_ai = self._runtime_ai()
-        runtime_profiles = self._runner_profiles()
+        runtime_profiles = tuple(snapshot.profile(profile) for profile in self._runner_profiles())
         providers = []
         for provider in runtime_ai.providers:
             metadata = ai_runtime_metadata(
@@ -213,6 +334,7 @@ class BlueFireService:
             "behaviors": behaviors,
             "actions": actions,
             "runner_profiles": [profile.to_dict() for profile in runtime_profiles],
+            "action_package_catalog": snapshot.to_dict(),
             "product_state": {
                 "storage": "sqlite",
                 "schema_version": self.product_store.schema_version,
@@ -223,6 +345,419 @@ class BlueFireService:
                     "cleanup": dict(self.cleanup_recovery),
                 },
             },
+        }
+
+    @staticmethod
+    def _sanitized_action_package(record: Mapping[str, Any]) -> dict[str, Any]:
+        result = dict(record)
+        result.pop("canonical_envelope_bytes", None)
+        result.pop("canonical_content_bytes", None)
+        return result
+
+    def action_packages(self) -> Mapping[str, Any]:
+        """Return the audited package, publisher-trust, and active-catalog inventory."""
+
+        with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+            snapshot = self._action_catalog_boundary()
+            packages = [
+                self._sanitized_action_package(item)
+                for item in self.product_store.list_action_packages()
+            ]
+            publishers = self.product_store.list_trusted_action_package_publishers()
+            activation_events = self.product_store.list_action_package_activation_events()
+        return {
+            "schema_version": "bluefire.action-package-inventory.v1",
+            "packages": packages,
+            "publishers": publishers,
+            "catalog": snapshot.to_dict(),
+            "activation_events": activation_events,
+            "execution_boundary": "signed-reviewed-opcodes-only",
+        }
+
+    def action_package(
+        self,
+        package_id: str,
+        *,
+        version: str | None = None,
+    ) -> Mapping[str, Any]:
+        try:
+            package = self._sanitized_action_package(
+                self.product_store.get_action_package(package_id, version)
+            )
+            versions = [
+                self._sanitized_action_package(item)
+                for item in self.product_store.list_action_package_versions(package_id)
+            ]
+            events = self.product_store.list_action_package_lifecycle_events(package_id)
+        except ProductStoreError as exc:
+            raise APIError(
+                HTTPStatus.NOT_FOUND,
+                "action_package_not_found",
+                "The action package or version was not found.",
+                [str(exc)],
+            ) from exc
+        return {
+            "schema_version": "bluefire.action-package-detail.v1",
+            "package": package,
+            "versions": versions,
+            "lifecycle_events": events,
+        }
+
+    def trust_action_package_publisher(
+        self,
+        request: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        required = {
+            "publisher_id",
+            "key_id",
+            "public_key",
+            "provenance",
+            "trusted_by",
+        }
+        if set(request) != required or not isinstance(request.get("provenance"), Mapping):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "action_package_trust_invalid",
+                "Publisher trust requires exact publisher/key/public-key/provenance/operator fields.",
+            )
+        try:
+            public_key = request["public_key"]
+            if isinstance(public_key, str):
+                if re.fullmatch(r"[A-Za-z0-9_-]{43}", public_key) is None:
+                    raise ActionPackageError(
+                        "publisher public key must be canonical unpadded base64url"
+                    )
+                try:
+                    decoded_key = base64.urlsafe_b64decode(public_key + "=")
+                except (ValueError, binascii.Error) as exc:
+                    raise ActionPackageError("publisher public key is invalid") from exc
+                if (
+                    len(decoded_key) != 32
+                    or base64.urlsafe_b64encode(decoded_key).rstrip(b"=").decode("ascii")
+                    != public_key
+                ):
+                    raise ActionPackageError("publisher public key is not canonical")
+                public_key = decoded_key
+            trust = self.product_store.trust_action_package_publisher(
+                publisher_id=request["publisher_id"],
+                key_id=request["key_id"],
+                public_key=public_key,
+                provenance=request["provenance"],
+                trusted_by=request["trusted_by"],
+            )
+        except (
+            ActionPackageError,
+            ActionPackageConflictError,
+            ActionPackageIntegrityError,
+            ProductStoreError,
+        ) as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "action_package_trust_refused",
+                "The publisher key could not be enrolled in local trust.",
+                [str(exc)],
+            ) from exc
+        return {
+            "schema_version": "bluefire.action-package-publisher-trust.v1",
+            "publisher": trust,
+        }
+
+    def transition_action_package_publisher(
+        self,
+        publisher_id: str,
+        key_id: str,
+        action: str,
+        request: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        if set(request) != {"actor", "reason"} or action not in {"suspend", "revoke"}:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "action_package_trust_invalid",
+                "Trust suspension/revocation requires only actor and reason.",
+            )
+        with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+            self._action_catalog_boundary()
+            try:
+                if action == "suspend":
+                    trust = self.product_store.suspend_action_package_publisher(
+                        publisher_id,
+                        key_id,
+                        suspended_by=request["actor"],
+                        reason=request["reason"],
+                    )
+                else:
+                    trust = self.product_store.revoke_action_package_publisher(
+                        publisher_id,
+                        key_id,
+                        revoked_by=request["actor"],
+                        reason=request["reason"],
+                    )
+                catalog = self._refresh_action_catalog()
+            except (
+                ActionPackageConflictError,
+                ActionPackageIntegrityError,
+                ProductStoreError,
+            ) as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "action_package_trust_refused",
+                    "The publisher trust transition was refused.",
+                    [str(exc)],
+                ) from exc
+        return {
+            "schema_version": "bluefire.action-package-publisher-trust.v1",
+            "publisher": trust,
+            "catalog": catalog.to_dict(),
+            "active_packages_deactivated": True,
+        }
+
+    def _action_package_occupied_ids(
+        self,
+        *,
+        excluding_package_id: str,
+    ) -> tuple[set[str], set[str]]:
+        behavior_ids = set(self._built_in_registry.behavior_ids)
+        action_ids = set(self._built_in_registry.action_ids)
+        for item in self.product_store.list_action_packages():
+            if item.get("package_id") == excluding_package_id:
+                continue
+            manifest = item.get("manifest")
+            if not isinstance(manifest, Mapping):
+                raise ProductStoreError("installed action-package manifest is invalid")
+            raw_behaviors = manifest.get("behavior_ids")
+            raw_actions = manifest.get("action_ids")
+            if not isinstance(raw_behaviors, list) or not isinstance(raw_actions, list):
+                raise ProductStoreError("installed action-package ID inventory is invalid")
+            behavior_ids.update(str(value) for value in raw_behaviors)
+            action_ids.update(str(value) for value in raw_actions)
+        return behavior_ids, action_ids
+
+    def install_action_package(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        if set(request) != {"envelope", "installed_by"} or not isinstance(
+            request.get("envelope"), Mapping
+        ):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "action_package_install_invalid",
+                "Package installation requires only a signed envelope and installed_by.",
+            )
+        try:
+            envelope_bytes = canonical_json_bytes(dict(request["envelope"]))
+            signers = self.product_store.trusted_action_package_signers()
+            audited = audit_action_package(envelope_bytes, trusted_signers=signers)
+            occupied_behaviors, occupied_actions = self._action_package_occupied_ids(
+                excluding_package_id=audited.manifest.package_id
+            )
+            verified = verify_action_package(
+                envelope_bytes,
+                trusted_signers=signers,
+                bluefire_version=None,
+                platform=None,
+                occupied_behavior_ids=occupied_behaviors,
+                occupied_action_ids=occupied_actions,
+            )
+            package = self.product_store.install_action_package(
+                verified,
+                installed_by=request["installed_by"],
+                occupied_behavior_ids=occupied_behaviors,
+                occupied_action_ids=occupied_actions,
+            )
+        except (
+            ActionPackageError,
+            ActionPackageConflictError,
+            ActionPackageIntegrityError,
+            ProductStoreError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise APIError(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "action_package_install_refused",
+                "The signed action package could not be installed.",
+                [str(exc)],
+            ) from exc
+        return {
+            "schema_version": "bluefire.action-package-install.v1",
+            "package": self._sanitized_action_package(package),
+            "catalog_changed": False,
+            "activation_required": True,
+        }
+
+    def activate_action_package(
+        self,
+        package_id: str,
+        version: str,
+        request: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        if set(request) != {"runner_profile_id", "activated_by", "reason"}:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "action_package_activation_invalid",
+                "Activation requires runner_profile_id, activated_by, and reason.",
+            )
+        with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+            before = self._action_catalog_boundary()
+            try:
+                profile = self._profile(request.get("runner_profile_id"), ExecutionMode.EXECUTE)
+                if profile is None:
+                    raise ProductStoreError("activation requires an explicit Execute profile")
+                runner, _sandbox = self.runner_factory(profile)
+                inventory = runner.inventory()
+                identity = runner_transport_identity(runner, inventory)
+                activation = self.product_store.prepare_action_package_activation(
+                    package_id,
+                    version,
+                    runner_inventory=inventory,
+                    runner_identity_digest=content_hash(identity),
+                )
+                unavailable_opcodes = sorted(
+                    {
+                        binding.opcode
+                        for binding in activation.opcode_bindings
+                        if binding.opcode not in profile.enabled_actions
+                        or binding.opcode in profile.blocked_actions
+                    }
+                )
+                if unavailable_opcodes:
+                    raise RunnerContractError(
+                        "selected Execute profile cannot dispatch every package opcode"
+                    )
+                package = self.product_store.activate_action_package(
+                    activation,
+                    activated_by=request["activated_by"],
+                    reason=request["reason"],
+                )
+                after = self._refresh_action_catalog()
+            except (RunnerContractError, RunnerTransportError, OSError) as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "action_package_activation_refused",
+                    "The package failed exact catalog and authenticated-runner activation.",
+                ) from exc
+            except (
+                ActionPackageConflictError,
+                ActionPackageIntegrityError,
+                ProductStoreError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "action_package_activation_refused",
+                    "The package failed exact catalog and authenticated-runner activation.",
+                    [str(exc)],
+                ) from exc
+        previous = next(
+            (item for item in before.packages if item.get("package_id") == package_id),
+            None,
+        )
+        return {
+            "schema_version": "bluefire.action-package-activation.v1",
+            "operation": "upgrade" if previous is not None else "activation",
+            "package": self._sanitized_action_package(package),
+            "catalog_before": dict(before.authority),
+            "catalog": after.to_dict(),
+            "runner_identity_digest": activation.runner_identity_digest,
+            "runner_inventory_digest": activation.runner_inventory_digest,
+        }
+
+    def deactivate_action_package(
+        self,
+        package_id: str,
+        version: str,
+        request: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        required = {
+            "package_digest",
+            "expected_catalog_generation",
+            "expected_catalog_digest",
+            "deactivated_by",
+            "reason",
+        }
+        if set(request) != required:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "action_package_deactivation_invalid",
+                "Deactivation requires the exact package and catalog identity plus operator reason.",
+            )
+        with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+            self._action_catalog_boundary()
+            try:
+                package = self.product_store.deactivate_action_package(
+                    package_id,
+                    version,
+                    request["package_digest"],
+                    expected_catalog_generation=request["expected_catalog_generation"],
+                    expected_catalog_digest=request["expected_catalog_digest"],
+                    deactivated_by=request["deactivated_by"],
+                    reason=request["reason"],
+                )
+                catalog = self._refresh_action_catalog()
+            except (
+                ActionPackageConflictError,
+                ActionPackageIntegrityError,
+                ProductStoreError,
+            ) as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "action_package_deactivation_refused",
+                    "The exact active package could not be deactivated.",
+                    [str(exc)],
+                ) from exc
+        return {
+            "schema_version": "bluefire.action-package-deactivation.v1",
+            "package": self._sanitized_action_package(package),
+            "catalog": catalog.to_dict(),
+        }
+
+    def remove_action_package(
+        self,
+        package_id: str,
+        version: str,
+        request: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        required = {
+            "package_digest",
+            "expected_catalog_generation",
+            "expected_catalog_digest",
+            "removed_by",
+            "reason",
+        }
+        if set(request) != required:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "action_package_removal_invalid",
+                "Removal requires the exact immutable package/catalog identity and operator reason.",
+            )
+        with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+            self._action_catalog_boundary()
+            try:
+                package = self.product_store.remove_action_package(
+                    package_id,
+                    version,
+                    request["package_digest"],
+                    expected_catalog_generation=request["expected_catalog_generation"],
+                    expected_catalog_digest=request["expected_catalog_digest"],
+                    removed_by=request["removed_by"],
+                    reason=request["reason"],
+                )
+                catalog = self._refresh_action_catalog()
+            except (
+                ActionPackageConflictError,
+                ActionPackageIntegrityError,
+                ProductStoreError,
+            ) as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "action_package_removal_refused",
+                    "The exact immutable package version could not be removed.",
+                    [str(exc)],
+                ) from exc
+        return {
+            "schema_version": "bluefire.action-package-removal.v1",
+            "package": self._sanitized_action_package(package),
+            "catalog": catalog.to_dict(),
+            "historical_audit_bytes_retained": True,
         }
 
     def scenarios(self) -> Mapping[str, Any]:
@@ -961,6 +1496,18 @@ class BlueFireService:
         }
 
     def preflight(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        with self._action_catalog_lock:
+            expected = request.get(_ACTION_CATALOG_AUTHORITY_KEY)
+            if expected is not None and not isinstance(expected, Mapping):
+                raise APIError(
+                    HTTPStatus.BAD_REQUEST,
+                    "action_catalog_binding_invalid",
+                    "The action-package catalog binding is invalid.",
+                )
+            self._action_catalog_boundary(expected)
+            return self._preflight_locked(request)
+
+    def _preflight_locked(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         scenario = self._scenario_or_api_error(request)
         mode = self._mode(request)
         profile = self._profile(request.get("runner_profile_id"), mode)
@@ -994,6 +1541,8 @@ class BlueFireService:
             self.store,
             runner=runner,
             approval_store=self.product_store,
+            action_bindings=self._catalog_snapshot.action_bindings,
+            catalog_authority=self._catalog_snapshot.to_dict(),
         )
         try:
             report = orchestrator.preflight(
@@ -1063,10 +1612,12 @@ class BlueFireService:
                 autonomy=autonomy,
                 ai_provider=provider,
                 runner_readiness=runner_readiness,
+                catalog_authority=self._catalog_snapshot.to_dict(),
             )
             report["approval_envelope"] = execution_approval_envelope(
                 registry=self.registry,
                 scenario=scenario,
+                catalog_authority=self._catalog_snapshot.to_dict(),
             )
         else:
             report["approval_binding"] = None
@@ -1074,6 +1625,28 @@ class BlueFireService:
         return report
 
     def run(
+        self,
+        request: Mapping[str, Any],
+        *,
+        checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> Mapping[str, Any]:
+        with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+            expected = request.get(_ACTION_CATALOG_AUTHORITY_KEY)
+            if expected is not None and not isinstance(expected, Mapping):
+                raise APIError(
+                    HTTPStatus.BAD_REQUEST,
+                    "action_catalog_binding_invalid",
+                    "The action-package catalog binding is invalid.",
+                )
+            self._action_catalog_boundary(expected)
+            return self._run_locked(
+                request,
+                checkpoint=checkpoint,
+                cancel_event=cancel_event,
+            )
+
+    def _run_locked(
         self,
         request: Mapping[str, Any],
         *,
@@ -1139,6 +1712,8 @@ class BlueFireService:
             runner=runner,
             proposal_provider=self._proposal_provider(autonomy, provider),
             approval_store=self.product_store,
+            action_bindings=self._catalog_snapshot.action_bindings,
+            catalog_authority=self._catalog_snapshot.to_dict(),
         )
         try:
             resolved_action_implementations = {
@@ -1187,6 +1762,7 @@ class BlueFireService:
                     ai_provider=provider,
                     runner_readiness=runner_readiness,
                     action_implementations=resolved_action_implementations,
+                    catalog_authority=self._catalog_snapshot.to_dict(),
                 )
             tracked_checkpoint = (
                 self._execution_checkpoint(execution_approval_id, checkpoint)
@@ -1258,6 +1834,7 @@ class BlueFireService:
         # This is service-produced, sanitized approval context. A caller cannot
         # nominate its own runner snapshot for a new review.
         stored_request.pop(_EXECUTE_READINESS_KEY, None)
+        stored_request.pop(_ACTION_CATALOG_AUTHORITY_KEY, None)
         approval_request: Mapping[str, Any] | None = None
         preflight: Mapping[str, Any] | None = None
         if mode is ExecutionMode.EXECUTE:
@@ -1281,6 +1858,14 @@ class BlueFireService:
                     problems or ["The exact approval binding could not be created."],
                 )
             stored_request[_EXECUTE_READINESS_KEY] = dict(runner_readiness)
+            catalog_authority = preflight.get("catalog_authority")
+            if not isinstance(catalog_authority, Mapping):
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "preflight_refused",
+                    "The Execute request has no exact action-package catalog binding.",
+                )
+            stored_request[_ACTION_CATALOG_AUTHORITY_KEY] = dict(catalog_authority)
             profile = self._profile(stored_request.get("runner_profile_id"), mode)
             if profile is None:
                 raise APIError(
@@ -2156,6 +2741,15 @@ class BlueFireService:
         job: Mapping[str, Any],
         review: Mapping[str, Any],
     ) -> Mapping[str, Any]:
+        with self._action_catalog_lock:
+            self._action_catalog_boundary()
+            return self._prepare_ai_proposal_continuation_locked(job, review)
+
+    def _prepare_ai_proposal_continuation_locked(
+        self,
+        job: Mapping[str, Any],
+        review: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
         source, record = self._validated_ai_proposal_source(review)
         proposal = record["proposal"]
         assert isinstance(proposal, Mapping)
@@ -2251,6 +2845,8 @@ class BlueFireService:
             self.store,
             runner=runner,
             approval_store=self.product_store,
+            action_bindings=self._catalog_snapshot.action_bindings,
+            catalog_authority=self._catalog_snapshot.to_dict(),
         )
         preflight = orchestrator.preflight(
             prepared.scenario,
@@ -2322,6 +2918,7 @@ class BlueFireService:
                 ai_provider=provider,
                 context=approval_context,
                 runner_readiness=runner_readiness,
+                catalog_authority=self._catalog_snapshot.to_dict(),
             )
             if mode is ExecutionMode.EXECUTE and profile is not None
             else None
@@ -2343,6 +2940,7 @@ class BlueFireService:
             "ai_provider_id": provider_id,
             "replay": replay_record,
             "runner_readiness": runner_readiness,
+            "catalog_authority": self._catalog_snapshot.to_dict(),
             "execute_approval_binding_digest": (
                 content_hash(binding) if binding is not None else None
             ),
@@ -2362,6 +2960,16 @@ class BlueFireService:
         }
 
     def _run_ai_proposal_continuation(
+        self,
+        context: JobContext,
+        request: Mapping[str, Any],
+        review: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+            self._action_catalog_boundary()
+            return self._run_ai_proposal_continuation_locked(context, request, review)
+
+    def _run_ai_proposal_continuation_locked(
         self,
         context: JobContext,
         request: Mapping[str, Any],
@@ -2427,6 +3035,7 @@ class BlueFireService:
                 approval_context=approval_context,
                 runner_readiness=runner_readiness,
                 action_implementations=action_implementations,
+                catalog_authority=self._catalog_snapshot.to_dict(),
             )
         orchestrator = Orchestrator(
             self.registry,
@@ -2434,6 +3043,8 @@ class BlueFireService:
             runner=runner,
             proposal_provider=self._proposal_provider(prepared.autonomy, provider),
             approval_store=self.product_store,
+            action_bindings=self._catalog_snapshot.action_bindings,
+            catalog_authority=self._catalog_snapshot.to_dict(),
         )
         result = orchestrator.run(
             prepared.scenario,
@@ -2518,6 +3129,12 @@ class BlueFireService:
                 runner_readiness = context.get("runner_readiness")
                 if runner_readiness is not None and not isinstance(runner_readiness, Mapping):
                     raise ProductStoreError("execution runner readiness is invalid")
+                catalog_authority = context.get("catalog_authority")
+                if catalog_authority is not None and not isinstance(catalog_authority, Mapping):
+                    raise ProductStoreError("execution catalog authority is invalid")
+                recovery_catalog, approval_catalog_authority = self._historical_action_catalog(
+                    catalog_authority
+                )
                 raw_action_implementations = context.get("action_implementations", {})
                 if not isinstance(raw_action_implementations, Mapping) or not all(
                     isinstance(step_id, str) and isinstance(action_id, str)
@@ -2626,10 +3243,12 @@ class BlueFireService:
                     continue
 
                 orchestrator = Orchestrator(
-                    self.registry,
+                    recovery_catalog.registry,
                     self.store,
                     runner=runner,
                     approval_store=self.product_store,
+                    action_bindings=recovery_catalog.action_bindings,
+                    catalog_authority=approval_catalog_authority,
                 )
                 plan = orchestrator.planner.compile(
                     scenario,
@@ -2640,7 +3259,7 @@ class BlueFireService:
                     action_implementations=recovery_action_implementations,
                 )
                 binding = execution_approval_binding(
-                    registry=self.registry,
+                    registry=recovery_catalog.registry,
                     scenario=scenario,
                     plan=plan.to_dict(),
                     profile=profile,
@@ -2649,6 +3268,7 @@ class BlueFireService:
                     ai_provider=plan.ai_provider,
                     context=approval_context,
                     runner_readiness=runner_readiness,
+                    catalog_authority=approval_catalog_authority,
                 )
                 renewed = self.product_store.renew_claimed_approval_for_cleanup(
                     approval_id,
@@ -2664,21 +3284,23 @@ class BlueFireService:
                 for _attempt in range(2):
                     if not remaining:
                         break
-                    attempts.append(
-                        orchestrator.recover_cleanup(
-                            scenario,
-                            run_id=recovery_run_id,
-                            profile=profile,
-                            sandbox_root=workspace,
-                            target_scope=target_scope,
-                            approval_record=renewed,
-                            receipt_ids=remaining,
-                            autonomy=autonomy,
-                            ai_provider=provider,
-                            approval_context=approval_context,
-                            runner_readiness=runner_readiness,
+                    with self.product_store.action_package_catalog_lease():
+                        attempts.append(
+                            orchestrator.recover_cleanup(
+                                scenario,
+                                run_id=recovery_run_id,
+                                profile=profile,
+                                sandbox_root=workspace,
+                                target_scope=target_scope,
+                                approval_record=renewed,
+                                receipt_ids=remaining,
+                                autonomy=autonomy,
+                                ai_provider=provider,
+                                approval_context=approval_context,
+                                runner_readiness=runner_readiness,
+                                action_implementations=recovery_action_implementations,
+                            )
                         )
-                    )
                     remaining = self._workspace_receipt_ids(
                         workspace,
                         expected_profile_id=profile.id,
@@ -2804,6 +3426,7 @@ class BlueFireService:
         approval_context: Mapping[str, Any] | None = None,
         runner_readiness: Mapping[str, Any] | None = None,
         action_implementations: Mapping[str, str] | None = None,
+        catalog_authority: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         approval_id = approval_record.get("approval_id")
         if not isinstance(approval_id, str):
@@ -2826,6 +3449,9 @@ class BlueFireService:
                     dict(runner_readiness) if runner_readiness is not None else None
                 ),
                 "action_implementations": dict(action_implementations or {}),
+                "catalog_authority": (
+                    dict(catalog_authority) if catalog_authority is not None else None
+                ),
             },
         )
 
@@ -3140,16 +3766,50 @@ class BlueFireService:
             raise APIError(HTTPStatus.NOT_FOUND, "run_not_found", "Run was not found.") from exc
 
     def replay(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+            try:
+                self._action_catalog_boundary()
+                return self._replay_locked(run_id, request)
+            except APIError:
+                raise
+            except (ActionCatalogError, ProductStoreError) as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "replay_refused",
+                    "Replay could not be prepared safely.",
+                    [str(exc)],
+                ) from exc
+
+    def _replay_locked(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
+            integrity = self.store.validate_bundle(run_id)
+            if not integrity.get("valid"):
+                raise ReplayError("source run bundle failed integrity validation")
             source = self.store.get_run(run_id)
             mode = ExecutionMode(str(source.get("mode", "simulate")))
+            exact = bool(request.get("exact", False))
+            source_catalog_authority = self._run_catalog_authority(source)
+            replay_catalog, replay_catalog_authority = (
+                self._historical_action_catalog(source_catalog_authority)
+                if exact
+                else (self._catalog_snapshot, self._catalog_snapshot.to_dict())
+            )
+            if (
+                exact
+                and mode is ExecutionMode.EXECUTE
+                and source_catalog_authority is not None
+                and replay_catalog_authority != self._catalog_snapshot.to_dict()
+            ):
+                raise ReplayError(
+                    "exact Execute replay requires the source package catalog to remain active"
+                )
             replay_action_implementations = self._action_implementations(request, mode=mode)
             prepared = prepare_replay(
                 self.store,
-                self.registry,
+                replay_catalog.registry,
                 ReplayRequest(
                     source_run_id=run_id,
-                    exact=bool(request.get("exact", False)),
+                    exact=exact,
                     from_step_id=self._optional_string(request.get("from_step_id")),
                     swap_step_id=self._optional_string(request.get("swap_step_id")),
                     swap_behavior_id=self._optional_string(request.get("swap_behavior_id")),
@@ -3167,7 +3827,11 @@ class BlueFireService:
                     defense_change=self._optional_string(request.get("defense_change")),
                 ),
             )
-            profile = self._profile(prepared.runner_profile_id, mode)
+            profile = self._profile_for_catalog(
+                prepared.runner_profile_id,
+                mode,
+                replay_catalog,
+            )
             autonomy = prepared.autonomy
             provider_id = self._resolve_ai_provider_id(prepared.ai_provider_id)
             provider = self._ai_provider_metadata(autonomy, provider_id)
@@ -3186,11 +3850,13 @@ class BlueFireService:
                     for_dispatch=True,
                 )
             orchestrator = Orchestrator(
-                self.registry,
+                replay_catalog.registry,
                 self.store,
                 runner=runner,
                 proposal_provider=self._proposal_provider(autonomy, provider),
                 approval_store=self.product_store,
+                action_bindings=replay_catalog.action_bindings,
+                catalog_authority=replay_catalog_authority,
             )
             resolved_replay_plan = orchestrator.planner.compile(
                 prepared.scenario,
@@ -3207,6 +3873,9 @@ class BlueFireService:
             }
             replay_record = {
                 **prepared.lineage,
+                "catalog_authority_from": source_catalog_authority,
+                "catalog_authority_to": replay_catalog_authority,
+                "catalog_authority_changed": (source_catalog_authority != replay_catalog_authority),
                 "ai_provider_to": provider_id,
                 "action_implementations_to": resolved_replay_actions,
                 "action_implementations_changed": (
@@ -3255,6 +3924,7 @@ class BlueFireService:
                     approval_context=replay_approval_context,
                     runner_readiness=runner_readiness,
                     action_implementations=resolved_replay_actions,
+                    catalog_authority=replay_catalog_authority,
                 )
             else:
                 replay_approval_context = None
@@ -3355,7 +4025,7 @@ class BlueFireService:
         if not report.ready:
             raise OrchestrationError("; ".join(report.problems))
         binding = execution_approval_binding(
-            registry=self.registry,
+            registry=orchestrator.registry,
             scenario=scenario,
             plan=report.plan,
             profile=profile,
@@ -3364,6 +4034,7 @@ class BlueFireService:
             ai_provider=ai_provider,
             context=context,
             runner_readiness=runner_readiness,
+            catalog_authority=orchestrator.catalog_authority,
         )
         intent_digest = content_hash(binding)
         expires_at = self._approval_review_expires_at()
@@ -3461,6 +4132,31 @@ class BlueFireService:
     ) -> tuple[RunnerTransport, Path, Mapping[str, Any]]:
         """Probe or bind the exact non-mutating Execute readiness envelope."""
 
+        with self._action_catalog_lock:
+            validated_expected = (
+                self._validated_execute_readiness(profile, expected)
+                if expected is not None
+                else None
+            )
+            expected_catalog = (
+                validated_expected["catalog_authority"] if validated_expected is not None else None
+            )
+            self._action_catalog_boundary(expected_catalog)
+            return self._execute_readiness_boundary_locked(
+                profile,
+                expected=validated_expected,
+                for_dispatch=for_dispatch,
+            )
+
+    def _execute_readiness_boundary_locked(
+        self,
+        profile: RunnerProfile,
+        *,
+        expected: Mapping[str, Any] | None = None,
+        for_dispatch: bool = False,
+    ) -> tuple[RunnerTransport, Path, Mapping[str, Any]]:
+        """Implement readiness while the exact catalog generation is locked."""
+
         try:
             runner, sandbox = self.runner_factory(profile)
         except (
@@ -3492,6 +4188,9 @@ class BlueFireService:
                         expected_inventory_digest=str(expected_snapshot["inventory_digest"]),
                         expected_identity_digest=str(expected_snapshot["runner_identity_digest"]),
                         recovery_identity=dict(expected_snapshot["recovery_identity"]),
+                        dispatch_lease=self._catalog_dispatch_lease(
+                            expected_snapshot["catalog_authority"]
+                        ),
                     ),
                     sandbox,
                     expected_snapshot,
@@ -3518,7 +4217,38 @@ class BlueFireService:
             for item in canonical_inventory["actions"]
             if isinstance(item, Mapping)
         }
-        missing = sorted(set(profile.enabled_actions) - set(action_rows))
+        effective_action_rows = dict(action_rows)
+        package_bindings_by_action: dict[str, list[Mapping[str, Any]]] = {}
+        for binding in self._catalog_snapshot.profile_action_bindings(profile):
+            package_bindings_by_action.setdefault(str(binding["logical_action_id"]), []).append(
+                binding
+            )
+        native_requirements_by_action = {
+            str(item["logical_action_id"]): item
+            for item in self._catalog_snapshot.profile_native_action_requirements(profile)
+        }
+        for action_id, bindings in package_bindings_by_action.items():
+            opcode = str(bindings[0]["runner_opcode"])
+            native = action_rows.get(opcode)
+            if native is None:
+                continue
+            requirement = native_requirements_by_action.get(action_id)
+            if (
+                requirement is None
+                or native.get("action_version") != requirement.get("action_version")
+                or native.get("contract_digest") != requirement.get("contract_digest")
+            ):
+                raise RunnerReadinessError(
+                    "Runner native action contract changed after package activation; "
+                    "review and reactivate the package."
+                )
+            effective_action_rows[action_id] = {
+                **dict(native),
+                "action_id": action_id,
+                "native_action_id": opcode,
+                "package_bindings": [dict(item) for item in bindings],
+            }
+        missing = sorted(set(profile.enabled_actions) - set(effective_action_rows))
         if missing:
             raise RunnerReadinessError(
                 "Runner inventory is missing enabled action(s): " + ", ".join(missing)
@@ -3526,7 +4256,7 @@ class BlueFireService:
         unavailable = sorted(
             action_id
             for action_id in profile.enabled_actions
-            if action_rows[action_id].get("readiness") != "ready"
+            if effective_action_rows[action_id].get("readiness") != "ready"
         )
         if unavailable:
             raise RunnerReadinessError(
@@ -3554,9 +4284,22 @@ class BlueFireService:
             "runner_identity": identity,
             "runner_identity_digest": content_hash(identity),
             "inventory_digest": content_hash(canonical_inventory),
+            "effective_inventory_digest": content_hash(
+                {
+                    "schema_version": "bluefire.effective-runner-inventory.v1",
+                    "native_inventory_digest": content_hash(canonical_inventory),
+                    "catalog_authority": self._catalog_snapshot.to_dict(),
+                    "actions": [
+                        dict(effective_action_rows[action_id])
+                        for action_id in sorted(profile.enabled_actions)
+                    ],
+                }
+            ),
+            "catalog_authority": self._catalog_snapshot.to_dict(),
             "platform": platform,
             "enabled_actions": [
-                dict(action_rows[action_id]) for action_id in sorted(profile.enabled_actions)
+                dict(effective_action_rows[action_id])
+                for action_id in sorted(profile.enabled_actions)
             ],
             "sandbox": sandbox_readiness,
             "freshness": {
@@ -3571,6 +4314,8 @@ class BlueFireService:
                 "runner_identity",
                 "runner_identity_digest",
                 "inventory_digest",
+                "effective_inventory_digest",
+                "catalog_authority",
                 "platform",
                 "enabled_actions",
                 "sandbox",
@@ -3587,8 +4332,24 @@ class BlueFireService:
                 expected_inventory_digest=str(snapshot["inventory_digest"]),
                 expected_identity_digest=str(snapshot["runner_identity_digest"]),
                 recovery_identity=recovery_identity,
+                dispatch_lease=self._catalog_dispatch_lease(snapshot["catalog_authority"]),
             )
         return runner, sandbox, snapshot
+
+    def _catalog_dispatch_lease(
+        self,
+        authority: Mapping[str, Any],
+    ) -> Callable[[], AbstractContextManager[Any]]:
+        generation = int(authority["generation"])
+        catalog_digest = str(authority["catalog_digest"])
+
+        def lease() -> AbstractContextManager[Any]:
+            return self.product_store.action_package_catalog_dispatch_lease(
+                generation,
+                catalog_digest,
+            )
+
+        return lease
 
     @staticmethod
     def _sandbox_root_readiness(configured_root: str | Path) -> Mapping[str, Any]:
@@ -3648,6 +4409,8 @@ class BlueFireService:
             "runner_identity",
             "runner_identity_digest",
             "inventory_digest",
+            "effective_inventory_digest",
+            "catalog_authority",
             "platform",
             "enabled_actions",
             "sandbox",
@@ -3661,6 +4424,7 @@ class BlueFireService:
         identity = value.get("runner_identity")
         freshness = value.get("freshness")
         enabled_actions = value.get("enabled_actions")
+        catalog_authority = value.get("catalog_authority")
         sandbox = value.get("sandbox")
         recovery_identity = value.get("recovery_identity")
         if (
@@ -3670,6 +4434,8 @@ class BlueFireService:
             or value.get("runner_identity_digest") != content_hash(identity)
             or not isinstance(value.get("inventory_digest"), str)
             or not str(value["inventory_digest"]).startswith("sha256:")
+            or not isinstance(value.get("effective_inventory_digest"), str)
+            or not isinstance(catalog_authority, Mapping)
             or value.get("platform") not in profile.platforms
             or not isinstance(enabled_actions, list)
             or not isinstance(sandbox, Mapping)
@@ -3692,6 +4458,24 @@ class BlueFireService:
         ):
             raise RunnerReadinessError(
                 "Execute readiness action binding is invalid; submit a new Execute request."
+            )
+        catalog_body = dict(catalog_authority)
+        authority_digest = catalog_body.pop("authority_digest", None)
+        if (
+            catalog_authority.get("schema_version") != "bluefire.action-catalog-authority.v1"
+            or authority_digest != content_hash(catalog_body)
+            or value.get("effective_inventory_digest")
+            != content_hash(
+                {
+                    "schema_version": "bluefire.effective-runner-inventory.v1",
+                    "native_inventory_digest": value["inventory_digest"],
+                    "catalog_authority": dict(catalog_authority),
+                    "actions": [dict(item) for item in enabled_actions],
+                }
+            )
+        ):
+            raise RunnerReadinessError(
+                "Execute readiness catalog binding is invalid; submit a new Execute request."
             )
         observed = freshness.get("observed_at")
         maximum_age = freshness.get("max_age_seconds")
@@ -4083,58 +4867,12 @@ class BlueFireService:
         }
 
     def _activate_plugin(self, resource_id: str) -> Mapping[str, Any]:
-        with self._runtime_configuration_lock:
-            resource = self._runtime_resource("plugin", resource_id)
-            document = resource.get("document")
-            try:
-                manifest = PluginManifest.from_mapping(
-                    document,
-                    "persisted plugin manifest",
-                )
-                if manifest.id != resource_id:
-                    raise PluginManifestError(
-                        "persisted plugin manifest ID does not match its resource ID"
-                    )
-                if not manifest.enabled:
-                    raise PluginManifestError("plugin manifest is declaratively disabled")
-                if manifest.trust not in {PluginTrust.REVIEWED, PluginTrust.TRUSTED}:
-                    raise PluginManifestError(
-                        "plugin activation requires reviewed or trusted provenance"
-                    )
-                if manifest.integrity.digest == "0" * 64:
-                    raise PluginManifestError(
-                        "plugin activation requires a reviewed non-placeholder integrity digest"
-                    )
-            except ContractError as exc:
-                raise APIError(
-                    HTTPStatus.CONFLICT,
-                    "plugin_activation_refused",
-                    "The declarative plugin manifest is not eligible for activation.",
-                    [str(exc)],
-                ) from exc
-            try:
-                activated = self.product_store.save_resource(
-                    "plugin",
-                    resource_id,
-                    manifest.to_dict(),
-                    status="active",
-                )
-            except ProductStoreError as exc:
-                raise APIError(
-                    HTTPStatus.UNPROCESSABLE_ENTITY,
-                    "plugin_activation_refused",
-                    "The declarative plugin manifest could not be activated.",
-                    [str(exc)],
-                ) from exc
-        return {
-            "schema_version": "bluefire.plugin-activation.v1",
-            "resource": activated,
-            "health": self._plugin_health(activated),
-            "inventory": self._plugin_inventory(),
-            "registration": "metadata_only",
-            "executable_loading": False,
-            "dynamic_actions": False,
-        }
+        self._runtime_resource("plugin", resource_id)
+        raise APIError(
+            HTTPStatus.CONFLICT,
+            "plugin_activation_retired",
+            "Legacy declarative plugin activation is retired; install and activate a signed action package.",
+        )
 
     def _deactivate_plugin(self, resource_id: str) -> Mapping[str, Any]:
         with self._runtime_configuration_lock:
@@ -4250,7 +4988,15 @@ class BlueFireService:
         return provider
 
     def _profile(self, value: Any, mode: ExecutionMode) -> RunnerProfile | None:
-        profiles = self._runner_profiles()
+        return self._profile_for_catalog(value, mode, self._catalog_snapshot)
+
+    def _profile_for_catalog(
+        self,
+        value: Any,
+        mode: ExecutionMode,
+        catalog: ActionCatalogSnapshot,
+    ) -> RunnerProfile | None:
+        profiles = tuple(catalog.profile(profile) for profile in self._runner_profiles())
         if value is None or value == "":
             if mode is ExecutionMode.EXECUTE:
                 return None

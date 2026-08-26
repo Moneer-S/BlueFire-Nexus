@@ -43,6 +43,7 @@ def execution_approval_binding(
     ai_provider: Mapping[str, Any],
     context: Mapping[str, Any] | None = None,
     runner_readiness: Mapping[str, Any] | None = None,
+    catalog_authority: Mapping[str, Any] | None = None,
 ) -> Mapping[str, str]:
     """Hash every operator-reviewed input that may affect an Execute plan."""
 
@@ -67,10 +68,13 @@ def execution_approval_binding(
         "resolved_alternate_envelope": execution_approval_envelope(
             registry=registry,
             scenario=scenario,
+            catalog_authority=catalog_authority,
         ),
     }
     if runner_readiness is not None:
         state["runner_readiness"] = dict(runner_readiness)
+    if catalog_authority is not None:
+        state["catalog_authority"] = dict(catalog_authority)
     ranks = {"safe": 1, "controlled": 2, "restricted": 3}
     tiers: list[str] = []
     for step in scenario.steps:
@@ -95,6 +99,7 @@ def execution_approval_envelope(
     *,
     registry: BehaviorRegistry,
     scenario: ScenarioDefinition,
+    catalog_authority: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     """Resolve every primary/alternate contract that Auto may select later."""
 
@@ -129,11 +134,13 @@ def execution_approval_envelope(
                 }
             )
         steps.append({"step_id": step.id, "options": options})
-    body = {
+    body: dict[str, Any] = {
         "schema_version": "bluefire.approval-envelope.v1",
         "scenario_id": scenario.id,
         "steps": steps,
     }
+    if catalog_authority is not None:
+        body["catalog_authority"] = dict(catalog_authority)
     return {**body, "envelope_digest": content_hash(body)}
 
 

@@ -528,11 +528,11 @@ def test_untrusted_or_disabled_plugin_manifest_cannot_activate(
         with pytest.raises(APIError) as refused:
             service.activate_resource("plugin", plugin_id, {})
         assert refused.value.status == 409
-        assert refused.value.code == "plugin_activation_refused"
+        assert refused.value.code == "plugin_activation_retired"
     assert service.resources("plugin")["inventory"]["active_manifest_ids"] == []
 
 
-def test_reviewed_plugin_activation_is_metadata_only_and_persists_restart(
+def test_reviewed_legacy_plugin_activation_is_retired_in_favor_of_signed_packages(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "product.sqlite3"
@@ -549,14 +549,13 @@ def test_reviewed_plugin_activation_is_metadata_only_and_persists_restart(
         {"document": _plugin_manifest(plugin_id)},
     )
     assert saved["resource"]["status"] == "ready"
-    activated = first.activate_resource("plugin", plugin_id, {})
-    assert activated["resource"]["status"] == "active"
-    assert activated["registration"] == "metadata_only"
-    assert activated["executable_loading"] is False
-    assert activated["dynamic_actions"] is False
-    assert activated["inventory"]["active_manifest_ids"] == [plugin_id]
-    assert "python_entry_point" not in activated["resource"]["document"]
-    assert "command" not in activated["resource"]["document"]
+    with pytest.raises(APIError) as refused:
+        first.activate_resource("plugin", plugin_id, {})
+    assert refused.value.status == 409
+    assert refused.value.code == "plugin_activation_retired"
+    assert "signed action package" in refused.value.message
+    assert first.resource("plugin", plugin_id)["resource"]["status"] == "ready"
+    assert first.resources("plugin")["inventory"]["active_manifest_ids"] == []
     first.close()
 
     restarted = BlueFireService(
@@ -567,18 +566,16 @@ def test_reviewed_plugin_activation_is_metadata_only_and_persists_restart(
     try:
         persisted = restarted.resource("plugin", plugin_id)["resource"]
         inventory = restarted.resources("plugin")["inventory"]
-        assert persisted["status"] == "active"
+        assert persisted["status"] == "ready"
         assert inventory["health"]["state"] == "ready"
-        assert inventory["active_manifest_ids"] == [plugin_id]
+        assert inventory["active_manifest_ids"] == []
         assert inventory["executable_loading"] is False
         assert inventory["dynamic_actions"] is False
         assert inventory["python_entry_points"] is False
 
-        deactivated = restarted.deactivate_resource("plugin", plugin_id, {})
-        assert deactivated["resource"]["status"] == "inactive"
-        assert deactivated["health"]["state"] == "inactive"
-        assert deactivated["inventory"]["active_manifest_ids"] == []
-        assert restarted.resource("plugin", plugin_id)["resource"]["status"] == "inactive"
+        with pytest.raises(APIError) as refused_again:
+            restarted.activate_resource("plugin", plugin_id, {})
+        assert refused_again.value.code == "plugin_activation_retired"
     finally:
         restarted.close()
 

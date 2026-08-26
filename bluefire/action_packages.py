@@ -19,7 +19,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from functools import lru_cache, total_ordering
 from types import MappingProxyType
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
@@ -75,6 +75,7 @@ _SEMVER = re.compile(
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
     r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
 )
+_SEMVER_CORE_MAX = (1 << 64) - 1
 _URL_VALUE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
 _FORBIDDEN_EXECUTION_FIELDS = frozenset(
@@ -133,6 +134,9 @@ ALLOWED_PROGRAM_OPCODES = frozenset(
 )
 ALLOWED_PROGRAM_ADAPTERS: Mapping[str, frozenset[str]] = MappingProxyType(
     {ACTION_PROGRAM_ADAPTER: ALLOWED_PROGRAM_OPCODES}
+)
+SUPPORTED_RUNNER_ACTION_VERSIONS: Mapping[str, str] = MappingProxyType(
+    {opcode: "1.0.0" for opcode in ALLOWED_PROGRAM_OPCODES}
 )
 SUPPORTED_PLATFORMS = frozenset({"linux", "macos", "windows"})
 
@@ -415,6 +419,11 @@ class SemVer:
         match = _SEMVER.fullmatch(text)
         if match is None:
             raise ActionPackageError(f"{context} must be strict semantic versioning")
+        core = tuple(int(match.group(index)) for index in (1, 2, 3))
+        if any(part > _SEMVER_CORE_MAX for part in core):
+            raise ActionPackageError(
+                f"{context} semantic version core must fit unsigned 64-bit integers"
+            )
         prerelease = tuple(match.group(4).split(".")) if match.group(4) else ()
         build = tuple(match.group(5).split(".")) if match.group(5) else ()
         if any(part.isdigit() and len(part) > 1 and part.startswith("0") for part in prerelease):
@@ -423,9 +432,9 @@ class SemVer:
             )
         return cls(
             text=text,
-            major=int(match.group(1)),
-            minor=int(match.group(2)),
-            patch=int(match.group(3)),
+            major=core[0],
+            minor=core[1],
+            patch=core[2],
             prerelease=prerelease,
             build=build,
         )
@@ -768,6 +777,72 @@ class VerifiedActionPackage:
     @property
     def manifest_bytes(self) -> bytes:
         return canonical_json_bytes(self.manifest.to_dict())
+
+
+@dataclass(frozen=True, slots=True)
+class RunnerOpcodeBinding:
+    """One signed package alias bound to one authenticated runner opcode."""
+
+    package_action_id: str
+    opcode: str
+    action_version: str
+    readiness: str
+    contract_digest: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "package_action_id": self.package_action_id,
+            "opcode": self.opcode,
+            "action_version": self.action_version,
+            "readiness": self.readiness,
+            "contract_digest": self.contract_digest,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedActionPackageActivation:
+    """Exact activation preflight result safe for independent store verification."""
+
+    package: VerifiedActionPackage
+    bluefire_version: str
+    expected_catalog_generation: int
+    expected_catalog_digest: str
+    runner_identity_digest: str
+    canonical_runner_inventory_bytes: bytes
+    runner_inventory_digest: str
+    runner_id: str
+    runner_version: str
+    action_sdk_version: str
+    runner_platform: str
+    opcode_bindings: tuple[RunnerOpcodeBinding, ...]
+    occupied_behavior_ids: tuple[str, ...]
+    occupied_action_ids: tuple[str, ...]
+
+    def runner_inventory(self) -> Mapping[str, Any]:
+        value = json.loads(self.canonical_runner_inventory_bytes)
+        if not isinstance(value, Mapping):  # pragma: no cover - construction invariant
+            raise ActionPackageError("canonical runner inventory must be an object")
+        return value
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": "bluefire.action-package-activation-binding.v1",
+            "package_id": self.package.manifest.package_id,
+            "version": self.package.manifest.version,
+            "package_digest": self.package.package_digest,
+            "content_digest": self.package.content_digest,
+            "bluefire_version": self.bluefire_version,
+            "expected_catalog_generation": self.expected_catalog_generation,
+            "expected_catalog_digest": self.expected_catalog_digest,
+            "runner": {
+                "identity_digest": self.runner_identity_digest,
+                "inventory_digest": self.runner_inventory_digest,
+                "inventory": dict(self.runner_inventory()),
+            },
+            "opcode_bindings": [item.to_dict() for item in self.opcode_bindings],
+            "occupied_behavior_ids": list(self.occupied_behavior_ids),
+            "occupied_action_ids": list(self.occupied_action_ids),
+        }
 
 
 def _reject_forbidden_field_name(value: Any, context: str) -> None:
@@ -1404,6 +1479,216 @@ def verify_action_package(
     )
 
 
+def _activation_occupied_ids(
+    values: Collection[str],
+    context: str,
+) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ActionPackageError(f"{context} must be a collection of stable identifiers")
+    result = tuple(sorted({_identifier(value, context, _STABLE_ID) for value in values}))
+    if len(result) > 4096:
+        raise ActionPackageError(f"{context} exceeds 4096 identifiers")
+    return result
+
+
+def _canonical_activation_runner_inventory(
+    inventory: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], bytes]:
+    """Accept a raw inventory or the exact canonical result persisted for replay."""
+
+    from .runner_client import RunnerReadinessError, canonical_runner_inventory
+
+    canonical_keys = {
+        "schema_version",
+        "runner_id",
+        "runner_version",
+        "action_sdk_version",
+        "receipt_protocol",
+        "platform",
+        "source_digest",
+        "actions",
+    }
+    raw_actions = inventory.get("actions") if isinstance(inventory, Mapping) else None
+    is_canonical = (
+        isinstance(inventory, Mapping)
+        and set(inventory) == canonical_keys
+        and isinstance(raw_actions, list)
+        and all(
+            isinstance(item, Mapping)
+            and set(item)
+            == {
+                "action_id",
+                "action_version",
+                "readiness",
+                "contract_digest",
+            }
+            for item in raw_actions
+        )
+    )
+    try:
+        if not is_canonical:
+            canonical = canonical_runner_inventory(inventory)
+            return canonical, canonical_json_bytes(canonical)
+        canonical_actions = cast(list[Mapping[str, Any]], raw_actions)
+
+        # ``canonical_runner_inventory`` intentionally hashes the source
+        # document. Feeding its own output back through it would therefore
+        # change both source and per-action contract digests. Validate the
+        # bounded identity/readiness fields with a digest-free probe, then
+        # preserve the exact canonical snapshot for historical replay.
+        probe = {
+            key: inventory[key]
+            for key in (
+                "schema_version",
+                "runner_id",
+                "runner_version",
+                "action_sdk_version",
+                "receipt_protocol",
+                "platform",
+            )
+        }
+        probe["actions"] = [
+            {
+                "action_id": item["action_id"],
+                "action_version": item["action_version"],
+                "readiness": item["readiness"],
+            }
+            for item in canonical_actions
+        ]
+        validated = canonical_runner_inventory(probe)
+        if any(
+            validated[key] != inventory[key]
+            for key in (
+                "schema_version",
+                "runner_id",
+                "runner_version",
+                "action_sdk_version",
+                "receipt_protocol",
+                "platform",
+            )
+        ):
+            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
+        if [
+            (item["action_id"], item["action_version"], item["readiness"])
+            for item in validated["actions"]
+        ] != [
+            (item["action_id"], item["action_version"], item["readiness"])
+            for item in canonical_actions
+        ]:
+            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
+        if _SHA256.fullmatch(str(inventory["source_digest"])) is None or any(
+            _SHA256.fullmatch(str(item["contract_digest"])) is None for item in canonical_actions
+        ):
+            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
+        canonical = dict(inventory)
+        canonical["actions"] = [dict(item) for item in canonical_actions]
+        return canonical, canonical_json_bytes(canonical)
+    except (KeyError, RunnerReadinessError, TypeError, ValueError) as exc:
+        raise ActionPackageError("runner inventory is invalid or unsupported") from exc
+
+
+def verify_action_package_for_activation(
+    envelope_bytes: bytes,
+    *,
+    trusted_signers: Mapping[tuple[str, str], PublicKeyValue],
+    bluefire_version: str,
+    runner_inventory: Mapping[str, Any],
+    runner_identity_digest: str,
+    expected_catalog_generation: int,
+    expected_catalog_digest: str,
+    occupied_behavior_ids: Collection[str] = (),
+    occupied_action_ids: Collection[str] = (),
+) -> VerifiedActionPackageActivation:
+    """Bind a signed package to one exact authenticated runner/catalog snapshot.
+
+    The caller is responsible for obtaining ``runner_inventory`` and its
+    identity digest from an authenticated local runner transport. This helper
+    canonicalizes that snapshot and rejects packages whose reviewed opcodes are
+    absent, unavailable, or at an unexpected compiled contract version.
+    """
+
+    if (
+        isinstance(expected_catalog_generation, bool)
+        or not isinstance(expected_catalog_generation, int)
+        or not 0 <= expected_catalog_generation <= MAX_INTEGER
+    ):
+        raise ActionPackageError("expected catalog generation must be a non-negative integer")
+    if (
+        not isinstance(expected_catalog_digest, str)
+        or _SHA256.fullmatch(expected_catalog_digest) is None
+    ):
+        raise ActionPackageError("expected catalog digest must be a lowercase SHA-256 digest")
+    if (
+        not isinstance(runner_identity_digest, str)
+        or _SHA256.fullmatch(runner_identity_digest) is None
+    ):
+        raise ActionPackageError("runner identity digest must be a lowercase SHA-256 digest")
+    occupied_behaviors = _activation_occupied_ids(occupied_behavior_ids, "occupied behavior IDs")
+    occupied_actions = _activation_occupied_ids(occupied_action_ids, "occupied action IDs")
+
+    canonical_inventory, canonical_inventory_bytes = _canonical_activation_runner_inventory(
+        runner_inventory
+    )
+    platform = str(canonical_inventory["platform"])
+    package = verify_action_package(
+        envelope_bytes,
+        trusted_signers=trusted_signers,
+        bluefire_version=bluefire_version,
+        platform=platform,
+        occupied_behavior_ids=occupied_behaviors,
+        occupied_action_ids=occupied_actions,
+    )
+    runner_actions = {
+        str(item["action_id"]): item
+        for item in canonical_inventory["actions"]
+        if isinstance(item, Mapping)
+    }
+    bindings: list[RunnerOpcodeBinding] = []
+    for packaged in package.actions:
+        opcode = packaged.program.steps[0].opcode
+        runner_action = runner_actions.get(opcode)
+        if runner_action is None:
+            raise ActionPackageError(
+                f"runner inventory is missing packaged reviewed opcode: {opcode}"
+            )
+        expected_version = SUPPORTED_RUNNER_ACTION_VERSIONS[opcode]
+        if runner_action.get("action_version") != expected_version:
+            raise ActionPackageError(
+                f"runner opcode {opcode} version is incompatible with this package contract"
+            )
+        if runner_action.get("readiness") != "ready":
+            raise ActionPackageError(f"runner opcode {opcode} is not ready")
+        contract_digest = runner_action.get("contract_digest")
+        if not isinstance(contract_digest, str) or _SHA256.fullmatch(contract_digest) is None:
+            raise ActionPackageError(f"runner opcode {opcode} has no canonical contract digest")
+        bindings.append(
+            RunnerOpcodeBinding(
+                package_action_id=packaged.definition.id,
+                opcode=opcode,
+                action_version=expected_version,
+                readiness="ready",
+                contract_digest=contract_digest,
+            )
+        )
+    bindings.sort(key=lambda item: item.package_action_id)
+    return VerifiedActionPackageActivation(
+        package=package,
+        bluefire_version=SemVer.parse(bluefire_version, "bluefire_version").text,
+        expected_catalog_generation=expected_catalog_generation,
+        expected_catalog_digest=expected_catalog_digest,
+        runner_identity_digest=runner_identity_digest,
+        canonical_runner_inventory_bytes=canonical_inventory_bytes,
+        runner_inventory_digest=_digest(canonical_inventory_bytes),
+        runner_id=str(canonical_inventory["runner_id"]),
+        runner_version=str(canonical_inventory["runner_version"]),
+        action_sdk_version=str(canonical_inventory["action_sdk_version"]),
+        runner_platform=platform,
+        opcode_bindings=tuple(bindings),
+        occupied_behavior_ids=occupied_behaviors,
+        occupied_action_ids=occupied_actions,
+    )
+
+
 def audit_action_package(
     envelope_bytes: bytes,
     *,
@@ -1450,12 +1735,16 @@ __all__ = [
     "PackageLicense",
     "PackageProvenance",
     "PackagedAction",
+    "RunnerOpcodeBinding",
     "SemVer",
+    "SUPPORTED_RUNNER_ACTION_VERSIONS",
     "VerifiedActionPackage",
+    "VerifiedActionPackageActivation",
     "build_signed_action_package",
     "canonical_public_key_b64u",
     "ed25519_public_key_fingerprint",
     "normalize_ed25519_public_key",
     "parse_canonical_action_package",
     "verify_action_package",
+    "verify_action_package_for_activation",
 ]

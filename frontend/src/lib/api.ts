@@ -1,4 +1,4 @@
-import type { AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
+import type { AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
 
 const API_ROOT = "/api/v1";
@@ -9,6 +9,7 @@ const RUNNER_TRUST_MUTATION_TIMEOUT_MS = 135_000;
 const SYNCHRONOUS_REPLAY_TIMEOUT_MS = 180_000;
 export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
 export const BROWSER_SESSION_RELAUNCH_MESSAGE = "This local browser session is unavailable. Close this tab and relaunch BlueFire with `bluefire ui`.";
+const EMPTY_ACTION_PACKAGE_CATALOG_DIGEST = `sha256:${"0".repeat(64)}`;
 
 export class ApiError extends Error {
   constructor(message: string, public readonly code = "request_failed", public readonly details?: unknown, public readonly status?: number) {
@@ -176,6 +177,41 @@ export const api = {
     return request("/ai/drafts", { method: "POST", body: JSON.stringify({ objective, ...(providerId ? { provider_id: providerId } : {}), max_nodes: maxNodes, max_edges: maxEdges }) });
   },
   async catalog(): Promise<CatalogResponse> { return DEMO_MODE ? structuredClone(demoCatalog) : request("/catalog"); },
+  async actionPackages(): Promise<ActionPackageInventory> {
+    if (DEMO_MODE) return {
+      schema_version: "bluefire.action-package-inventory.v1",
+      packages: [],
+      publishers: [],
+      catalog: { schema_version: "bluefire.action-catalog-authority.v1", generation: 0, catalog_digest: EMPTY_ACTION_PACKAGE_CATALOG_DIGEST, packages: [], action_bindings: [] },
+      activation_events: [],
+      execution_boundary: "signed-reviewed-opcodes-only",
+    };
+    return request("/action-packages");
+  },
+  async installActionPackage(envelope: Record<string, unknown>, installedBy: string): Promise<{ schema_version: string; package: ActionPackageInstallation; catalog_changed: false; activation_required: true }> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot install signed action packages.", "demo_action_package_refused", undefined, 409);
+    return request("/action-packages", { method: "POST", body: JSON.stringify({ envelope, installed_by: installedBy }) });
+  },
+  async trustActionPackagePublisher(enrollment: ActionPackagePublisherEnrollment): Promise<{ schema_version: string; publisher: ActionPackagePublisherTrust }> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot enroll publisher trust.", "demo_action_package_refused", undefined, 409);
+    return request("/action-package-publishers", { method: "POST", body: JSON.stringify(enrollment) });
+  },
+  async transitionActionPackagePublisher(publisherId: string, keyId: string, action: "suspend" | "revoke", actor: string, reason: string): Promise<{ schema_version: string; publisher: ActionPackagePublisherTrust; catalog?: Record<string, unknown>; active_packages_deactivated?: true }> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot change publisher trust.", "demo_action_package_refused", undefined, 409);
+    return request(`/action-package-publishers/${encodeURIComponent(publisherId)}/keys/${encodeURIComponent(keyId)}/${action}`, { method: "POST", body: JSON.stringify({ actor, reason }) });
+  },
+  async activateActionPackage(packageId: string, version: string, runnerProfileId: string, activatedBy: string, reason: string): Promise<{ schema_version: string; operation: string; package: ActionPackageInstallation; catalog: Record<string, unknown> }> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot activate action packages.", "demo_action_package_refused", undefined, 409);
+    return request(`/action-packages/${encodeURIComponent(packageId)}/versions/${encodeURIComponent(version)}/activate`, { method: "POST", body: JSON.stringify({ runner_profile_id: runnerProfileId, activated_by: activatedBy, reason }) }, 60_000);
+  },
+  async deactivateActionPackage(packageId: string, version: string, identity: ActionPackageCatalogIdentity, deactivatedBy: string, reason: string): Promise<{ schema_version: string; package: ActionPackageInstallation; catalog: Record<string, unknown> }> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot deactivate action packages.", "demo_action_package_refused", undefined, 409);
+    return request(`/action-packages/${encodeURIComponent(packageId)}/versions/${encodeURIComponent(version)}/deactivate`, { method: "POST", body: JSON.stringify({ ...identity, deactivated_by: deactivatedBy, reason }) });
+  },
+  async removeActionPackage(packageId: string, version: string, identity: ActionPackageCatalogIdentity, removedBy: string, reason: string): Promise<{ schema_version: string; package: ActionPackageInstallation; catalog: Record<string, unknown>; historical_audit_bytes_retained: true }> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot remove action packages.", "demo_action_package_refused", undefined, 409);
+    return request(`/action-packages/${encodeURIComponent(packageId)}/versions/${encodeURIComponent(version)}/remove`, { method: "POST", body: JSON.stringify({ ...identity, removed_by: removedBy, reason }) });
+  },
   async scenarios(): Promise<{ scenarios: Scenario[] }> { return DEMO_MODE ? { scenarios: [structuredClone(demoScenario)] } : request("/scenarios"); },
   async settings(): Promise<{ schema_version: string; settings: ManagedSetting[] }> {
     return DEMO_MODE ? { schema_version: "bluefire.setting-list.v1", settings: structuredClone([...demoSettings.values()]) } : request("/settings");

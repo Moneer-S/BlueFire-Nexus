@@ -8,16 +8,142 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from bluefire.action_packages import (
+    build_signed_action_package,
+    canonical_public_key_b64u,
+)
 from bluefire.contracts import load_scenario
 from bluefire.receiver import LoopbackArtifactReceiver, ReceiverConfig
 from bluefire.receiver_auth import derive_receiver_task_key
 from bluefire.runner_client import SubprocessRustRunner
 from bluefire.service import BlueFireService
+from tests_platform.test_action_package_lifecycle import (
+    ACTION_ID as PACKAGE_ACTION_ID,
+)
+from tests_platform.test_action_package_lifecycle import (
+    BEHAVIOR_ID as PACKAGE_BEHAVIOR_ID,
+)
+from tests_platform.test_action_package_lifecycle import (
+    KEY_ID as PACKAGE_KEY_ID,
+)
+from tests_platform.test_action_package_lifecycle import (
+    PACKAGE_ID,
+    PUBLISHER_ID,
+)
+from tests_platform.test_action_package_lifecycle import (
+    _manifest as package_manifest,
+)
+from tests_platform.test_action_package_lifecycle import (
+    _payload as package_payload,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_ENV = "BLUEFIRE_E2E_RUNNER"
 E2E_ENROLLMENT_KEY = bytes(range(32))
+
+
+@pytest.mark.skipif(
+    not os.environ.get(RUNNER_ENV),
+    reason=f"set {RUNNER_ENV} to a freshly built runner binary",
+)
+def test_signed_package_alias_executes_through_real_native_runner(tmp_path: Path) -> None:
+    runner_binary = Path(os.environ[RUNNER_ENV]).resolve(strict=True)
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    runner = SubprocessRustRunner(
+        runner_binary,
+        tmp_path / "transport",
+        timeout_seconds=30.0,
+        output_limit_bytes=4 * 1024 * 1024,
+    )
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        product_db_path=tmp_path / "product.sqlite3",
+        runner_factory=lambda _profile: (runner, sandbox),
+    )
+    key = Ed25519PrivateKey.generate()
+    envelope = json.loads(
+        build_signed_action_package(
+            manifest=package_manifest("1.2.3"),
+            payload=package_payload(),
+            key_id=PACKAGE_KEY_ID,
+            private_key=key,
+        )
+    )
+    profile = next(item for item in service.config.runner_profiles if item.mode.value == "execute")
+    try:
+        service.trust_action_package_publisher(
+            {
+                "publisher_id": PUBLISHER_ID,
+                "key_id": PACKAGE_KEY_ID,
+                "public_key": canonical_public_key_b64u(key.public_key()),
+                "provenance": {
+                    "source": "local native acceptance",
+                    "purpose": "verify signed package alias execution",
+                },
+                "trusted_by": "native-acceptance-reviewer",
+            }
+        )
+        service.install_action_package(
+            {"envelope": envelope, "installed_by": "native-acceptance-installer"}
+        )
+        activated = service.activate_action_package(
+            PACKAGE_ID,
+            "1.2.3",
+            {
+                "runner_profile_id": profile.id,
+                "activated_by": "native-acceptance-operator",
+                "reason": "prove an exact reviewed alias through the native boundary",
+            },
+        )
+        result = service.run(
+            {
+                "scenario": {
+                    "schema_version": "bluefire.scenario.v1",
+                    "id": "scenario.package.native-alias.v1",
+                    "title": "Native signed-package alias acceptance",
+                    "purpose": "Execute one reviewed logical alias through its bound native opcode.",
+                    "start": "observe_system",
+                    "steps": [
+                        {
+                            "id": "observe_system",
+                            "behavior_id": PACKAGE_BEHAVIOR_ID,
+                        }
+                    ],
+                    "edges": [],
+                    "provenance": {
+                        "source": "BlueFire native acceptance",
+                        "reference": "scenario.package.native-alias.v1",
+                        "license": "MIT",
+                        "derived": False,
+                        "notes": "No external content.",
+                    },
+                    "limitations": ["Observes bounded operating-system identity only."],
+                },
+                "mode": "execute",
+                "runner_profile_id": profile.id,
+                "autonomy": "off",
+                "target_scope": {"scope_refs": list(profile.scope)},
+                "approval": {
+                    "confirmed": True,
+                    "approved_by": "native-acceptance-reviewer",
+                },
+            }
+        )
+    finally:
+        service.close()
+
+    assert activated["catalog"]["generation"] == 1
+    assert result["status"] == "completed"
+    assert result["objective_reached"] is True
+    assert result["steps"][0]["behavior_id"] == PACKAGE_BEHAVIOR_ID
+    assert result["steps"][0]["action_id"] == PACKAGE_ACTION_ID
+    assert result["steps"][0]["status"] == "success"
+    assert result["policy"]["preflight"]["catalog_authority"]["generation"] == 1
+    assert not [path for path in sandbox.rglob("*") if path.is_file()]
 
 
 @pytest.mark.skipif(

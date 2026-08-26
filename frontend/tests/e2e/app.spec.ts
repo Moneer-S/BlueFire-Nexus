@@ -28,6 +28,7 @@ test("all major workspaces are reachable", async ({ page }) => {
     ["Runner Profiles", "Runner profiles"],
     ["Runners", "Runners"],
     ["Actions & Plugins", "Actions & plugins"],
+    ["Action Packages", "Action packages"],
     ["Research Sources", "Research sources"],
     ["AI Planner", "AI Planner"],
     ["Settings", "Settings"],

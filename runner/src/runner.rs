@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
@@ -8,12 +8,17 @@ use chrono::{Duration as ChronoDuration, Utc};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
-use crate::actions::{find_action, ActionContext, ActionDescriptor, ActionFailure, ActionOutcome};
+use crate::actions::{
+    find_action, Action, ActionContext, ActionDescriptor, ActionFailure, ActionOutcome,
+    ActionReadiness,
+};
 use crate::contract::{
     canonical_hash, evidence_id, expected_manifest_hash, expected_profile_digest,
     unique_capabilities, utc_now, validate_identifier, BoundedOutput, ErrorRecord, EvidenceKind,
-    EvidenceRecord, ExecutionLimits, ExecutionManifest, RunMode, RunnerProfile, TaskResult,
-    TaskStatus, MANIFEST_SCHEMA_VERSION, PROFILE_SCHEMA_VERSION, RESULT_SCHEMA_VERSION,
+    EvidenceRecord, ExecutionBinding, ExecutionLimits, ExecutionManifest, RunMode, RunnerProfile,
+    TaskResult, TaskStatus, ACTION_PROGRAM_ADAPTER, ACTION_PROGRAM_SCHEMA_VERSION,
+    EXECUTION_BINDING_SCHEMA_VERSION, MANIFEST_SCHEMA_VERSION, PROFILE_SCHEMA_VERSION,
+    RESULT_SCHEMA_VERSION,
 };
 use crate::safety::{normalize_relative, scope_is_subset, validate_loopback_destination, SafeRoot};
 
@@ -22,6 +27,8 @@ const MAX_JSON_DEPTH: usize = 16;
 const MAX_JSON_NODES: usize = 4096;
 const MAX_JSON_STRING_BYTES: usize = 16 * 1024;
 const MAX_REQUEST_LIFETIME_MINUTES: i64 = 60;
+const MAX_ACTION_BINDINGS: usize = 512;
+const MAX_BINDING_CONSTANTS: usize = 32;
 
 #[derive(Debug)]
 pub struct RunnerError(pub String);
@@ -44,27 +51,10 @@ impl Runner {
 
     pub fn execute(&self, manifest: ExecutionManifest, profile: RunnerProfile) -> TaskResult {
         let started_at = utc_now();
-
-        let action = match find_action(&manifest.action_id) {
-            Some(action) => action,
-            None => {
-                return failure_result(
-                    &manifest,
-                    &profile,
-                    started_at,
-                    ActionFailure {
-                        status: TaskStatus::Refused,
-                        code: "unknown_action",
-                        message: "action ID is not present in the static runner registry"
-                            .to_string(),
-                    },
-                )
-            }
+        let action = match validate_policy(&manifest, &profile) {
+            Ok(action) => action,
+            Err(failure) => return failure_result(&manifest, &profile, started_at, failure),
         };
-
-        if let Err(failure) = validate_policy(&manifest, &profile, action.descriptor()) {
-            return failure_result(&manifest, &profile, started_at, failure);
-        }
 
         let prepared = match action.prepare(manifest.params.clone()) {
             Ok(prepared) => prepared,
@@ -161,6 +151,203 @@ fn validate_json_shape(value: &Value) -> Result<(), ActionFailure> {
     visit(value, 0, &mut nodes).map_err(|error| blocked("parameter_bounds_blocked", error))
 }
 
+fn is_sha256_digest(value: &str) -> bool {
+    value.len() == 71
+        && value.starts_with("sha256:")
+        && value[7..]
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn is_package_identifier(value: &str) -> bool {
+    if value.is_empty() || value.len() > 128 {
+        return false;
+    }
+    let bytes = value.as_bytes();
+    if !bytes[0].is_ascii_lowercase() {
+        return false;
+    }
+    let mut separator = false;
+    for byte in bytes.iter().copied().skip(1) {
+        if byte.is_ascii_lowercase() || byte.is_ascii_digit() {
+            separator = false;
+        } else if matches!(byte, b'.' | b'_' | b'-') && !separator {
+            separator = true;
+        } else {
+            return false;
+        }
+    }
+    !separator
+}
+
+fn is_stable_id(value: &str) -> bool {
+    let Some((namespace, version)) = value.rsplit_once(".v") else {
+        return false;
+    };
+    is_package_identifier(namespace)
+        && !version.is_empty()
+        && version.as_bytes()[0].is_ascii_digit()
+        && version.as_bytes()[0] != b'0'
+        && version.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn is_semver(value: &str) -> bool {
+    if value.is_empty() || value.len() > 128 || !value.is_ascii() {
+        return false;
+    }
+    let mut build_split = value.split('+');
+    let Some(without_build) = build_split.next() else {
+        return false;
+    };
+    let build = build_split.next();
+    if build_split.next().is_some() {
+        return false;
+    }
+    let mut prerelease_split = without_build.splitn(2, '-');
+    let Some(core) = prerelease_split.next() else {
+        return false;
+    };
+    let prerelease = prerelease_split.next();
+    let core_parts = core.split('.').collect::<Vec<_>>();
+    if core_parts.len() != 3
+        || core_parts.iter().any(|part| {
+            part.is_empty()
+                || !part.bytes().all(|byte| byte.is_ascii_digit())
+                || (part.len() > 1 && part.starts_with('0'))
+                || part.parse::<u64>().is_err()
+        })
+    {
+        return false;
+    }
+    for (section, reject_numeric_leading_zero) in [(prerelease, true), (build, false)] {
+        if let Some(section) = section {
+            if section.is_empty()
+                || section.split('.').any(|part| {
+                    part.is_empty()
+                        || !part
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                        || (reject_numeric_leading_zero
+                            && part.bytes().all(|byte| byte.is_ascii_digit())
+                            && part.len() > 1
+                            && part.starts_with('0'))
+                })
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn reviewed_program_constants(opcode: &str) -> Option<BTreeMap<String, Value>> {
+    let constants = match opcode {
+        "sandbox.archive.tar.v1" => BTreeMap::from([(
+            "archive_format".to_string(),
+            Value::String("ustar".to_string()),
+        )]),
+        "sandbox.fixture.create.v1" => BTreeMap::from([(
+            "content_template".to_string(),
+            Value::String("telemetry-seed".to_string()),
+        )]),
+        "sandbox.fixture.transform.v1" => BTreeMap::from([(
+            "transform".to_string(),
+            Value::String("uppercase-ascii".to_string()),
+        )]),
+        "sandbox.network.loopback.v1" => {
+            BTreeMap::from([("method".to_string(), Value::String("POST".to_string()))])
+        }
+        "sandbox.restricted.persistence-marker.v1" => BTreeMap::from([(
+            "marker_kind".to_string(),
+            Value::String("detection-canary".to_string()),
+        )]),
+        "endpoint.discovery.processes.v1"
+        | "endpoint.discovery.system.v1"
+        | "sandbox.cleanup.v1"
+        | "sandbox.collection.stage.v1"
+        | "sandbox.discovery.list.v1"
+        | "sandbox.discovery.metadata.v1"
+        | "sandbox.discovery.recursive.v1"
+        | "sandbox.export.local.v1" => BTreeMap::new(),
+        _ => return None,
+    };
+    Some(constants)
+}
+
+fn program_digest(binding: &ExecutionBinding) -> String {
+    canonical_hash(&json!({
+        "schema_version": ACTION_PROGRAM_SCHEMA_VERSION,
+        "steps": [{
+            "opcode": &binding.runner_opcode,
+            "adapter": ACTION_PROGRAM_ADAPTER,
+            "constants": &binding.constants,
+        }],
+    }))
+}
+
+fn descriptor_digest(descriptor: &ActionDescriptor) -> String {
+    canonical_hash(
+        &serde_json::to_value(descriptor)
+            .expect("static action descriptor serialization cannot fail"),
+    )
+}
+
+fn validate_execution_binding(binding: &ExecutionBinding) -> Result<&'static dyn Action, String> {
+    if binding.schema_version != EXECUTION_BINDING_SCHEMA_VERSION {
+        return Err("execution binding schema version is unsupported".to_string());
+    }
+    if binding.catalog_generation == 0 || binding.catalog_generation > i64::MAX as u64 {
+        return Err("execution binding catalog generation is invalid".to_string());
+    }
+    for (kind, digest) in [
+        ("catalog", binding.catalog_digest.as_str()),
+        ("package", binding.package_digest.as_str()),
+        ("content", binding.content_digest.as_str()),
+        ("program", binding.program_digest.as_str()),
+        ("opcode contract", binding.opcode_contract_digest.as_str()),
+    ] {
+        if !is_sha256_digest(digest) {
+            return Err(format!(
+                "execution binding {kind} digest must be exact lowercase SHA-256"
+            ));
+        }
+    }
+    if !is_stable_id(&binding.logical_behavior_id)
+        || !is_stable_id(&binding.logical_action_id)
+        || !is_package_identifier(&binding.package_id)
+        || !is_semver(&binding.package_version)
+        || !is_stable_id(&binding.runner_opcode)
+    {
+        return Err("execution binding identity is invalid".to_string());
+    }
+    if find_action(&binding.logical_action_id).is_some() {
+        return Err("execution binding cannot shadow a static action".to_string());
+    }
+    if binding.constants.len() > MAX_BINDING_CONSTANTS {
+        return Err("execution binding contains too many constants".to_string());
+    }
+    let expected_constants = reviewed_program_constants(&binding.runner_opcode)
+        .ok_or_else(|| "execution binding selects an unreviewed runner opcode".to_string())?;
+    if binding.constants != expected_constants {
+        return Err("execution binding constants do not match the reviewed opcode".to_string());
+    }
+    if binding.program_digest != program_digest(binding) {
+        return Err("execution binding program digest does not match its program".to_string());
+    }
+    let action = find_action(&binding.runner_opcode)
+        .ok_or_else(|| "execution binding runner opcode is unavailable".to_string())?;
+    let descriptor = action.descriptor();
+    if !matches!(descriptor.readiness, ActionReadiness::Ready) {
+        return Err("execution binding runner opcode is not ready".to_string());
+    }
+    if binding.opcode_contract_digest != descriptor_digest(descriptor) {
+        return Err(
+            "execution binding opcode contract digest does not match the runner".to_string(),
+        );
+    }
+    Ok(action)
+}
+
 fn validate_profile(profile: &RunnerProfile) -> Result<(), ActionFailure> {
     if profile.schema_version != PROFILE_SCHEMA_VERSION {
         return Err(blocked(
@@ -197,12 +384,73 @@ fn validate_profile(profile: &RunnerProfile) -> Result<(), ActionFailure> {
             "control_blocked_actions contains duplicates",
         ));
     }
+    if profile.action_bindings.len() > MAX_ACTION_BINDINGS {
+        return Err(blocked(
+            "invalid_profile",
+            "action_bindings exceeds the runner profile limit",
+        ));
+    }
+    let mut binding_pairs = BTreeSet::new();
+    let mut catalog_identity: Option<(u64, &str)> = None;
+    let mut previous_binding_pair: Option<(&str, &str)> = None;
+    for binding in &profile.action_bindings {
+        validate_execution_binding(binding).map_err(|error| blocked("invalid_profile", error))?;
+        let pair = (
+            binding.logical_behavior_id.as_str(),
+            binding.logical_action_id.as_str(),
+        );
+        if !binding_pairs.insert(pair) {
+            return Err(blocked(
+                "invalid_profile",
+                "action_bindings contains a duplicate logical behavior/action pair",
+            ));
+        }
+        if previous_binding_pair.is_some_and(|previous| previous >= pair) {
+            return Err(blocked(
+                "invalid_profile",
+                "action_bindings must be ordered by logical behavior/action pair",
+            ));
+        }
+        previous_binding_pair = Some(pair);
+        let candidate_identity = (binding.catalog_generation, binding.catalog_digest.as_str());
+        if let Some(expected_identity) = catalog_identity {
+            if candidate_identity != expected_identity {
+                return Err(blocked(
+                    "invalid_profile",
+                    "action_bindings span more than one catalog generation",
+                ));
+            }
+        } else {
+            catalog_identity = Some(candidate_identity);
+        }
+        if !profile.allowed_actions.contains(&binding.logical_action_id) {
+            return Err(blocked(
+                "invalid_profile",
+                "action binding logical action is not in allowed_actions",
+            ));
+        }
+        if !profile.allowed_actions.contains(&binding.runner_opcode)
+            || profile
+                .control_blocked_actions
+                .contains(&binding.runner_opcode)
+        {
+            return Err(blocked(
+                "invalid_profile",
+                "action binding cannot bypass backing opcode policy",
+            ));
+        }
+    }
     for action_id in profile
         .allowed_actions
         .iter()
         .chain(profile.control_blocked_actions.iter())
     {
-        if find_action(action_id).is_none() {
+        if find_action(action_id).is_none()
+            && !profile
+                .action_bindings
+                .iter()
+                .any(|binding| binding.logical_action_id == *action_id)
+        {
             return Err(blocked(
                 "invalid_profile",
                 format!("profile names unknown action {action_id}"),
@@ -222,8 +470,7 @@ fn validate_profile(profile: &RunnerProfile) -> Result<(), ActionFailure> {
 fn validate_policy(
     manifest: &ExecutionManifest,
     profile: &RunnerProfile,
-    descriptor: &ActionDescriptor,
-) -> Result<(), ActionFailure> {
+) -> Result<&'static dyn Action, ActionFailure> {
     validate_profile(profile)?;
     if manifest.schema_version != MANIFEST_SCHEMA_VERSION {
         return Err(blocked(
@@ -290,6 +537,48 @@ fn validate_policy(
             "manifest must bind cleanup to sandbox.cleanup.v1",
         ));
     }
+    let (action, package_alias) = if let Some(binding) = manifest.execution_binding.as_ref() {
+        let action = validate_execution_binding(binding)
+            .map_err(|error| blocked("execution_binding_mismatch", error))?;
+        if binding.logical_behavior_id != manifest.behavior_id
+            || binding.logical_action_id != manifest.action_id
+        {
+            return Err(blocked(
+                "execution_binding_mismatch",
+                "execution binding does not match the manifest logical identity",
+            ));
+        }
+        let profile_binding = profile.action_bindings.iter().find(|candidate| {
+            candidate.logical_behavior_id == manifest.behavior_id
+                && candidate.logical_action_id == manifest.action_id
+        });
+        if profile_binding != Some(binding) {
+            return Err(blocked(
+                "execution_binding_mismatch",
+                "manifest execution binding does not exactly match the sealed profile",
+            ));
+        }
+        let parameter_object = manifest.params.as_object();
+        for (name, constant) in &binding.constants {
+            if let Some(parameter) = parameter_object.and_then(|params| params.get(name)) {
+                if parameter != constant {
+                    return Err(blocked(
+                        "execution_binding_mismatch",
+                        "manifest parameter conflicts with a reviewed program constant",
+                    ));
+                }
+            }
+        }
+        (action, true)
+    } else {
+        let action = find_action(&manifest.action_id).ok_or_else(|| ActionFailure {
+            status: TaskStatus::Refused,
+            code: "unknown_action",
+            message: "action ID is not present in the static runner registry".to_string(),
+        })?;
+        (action, false)
+    };
+    let descriptor = action.descriptor();
     let actual_platform = crate::contract::Platform::current();
     if manifest.platform != actual_platform
         || profile.platform != actual_platform
@@ -300,9 +589,10 @@ fn validate_policy(
             "manifest, profile, action, and actual host platform do not agree",
         ));
     }
-    if !descriptor
-        .behavior_ids
-        .contains(&manifest.behavior_id.as_str())
+    if !package_alias
+        && !descriptor
+            .behavior_ids
+            .contains(&manifest.behavior_id.as_str())
     {
         return Err(blocked(
             "behavior_action_mismatch",
@@ -393,7 +683,7 @@ fn validate_policy(
         validate_identifier("evidence reference", reference)
             .map_err(|error| blocked("invalid_evidence_reference", error))?;
     }
-    Ok(())
+    Ok(action)
 }
 
 fn blocked(code: &'static str, message: impl Into<String>) -> ActionFailure {
@@ -558,6 +848,102 @@ pub fn execute_files(manifest_path: &Path, profile_path: &Path) -> Result<TaskRe
 mod tests {
     use super::*;
 
+    fn test_limits() -> ExecutionLimits {
+        ExecutionLimits {
+            timeout_ms: 5_000,
+            max_stdout_bytes: 8 * 1024,
+            max_stderr_bytes: 8 * 1024,
+            max_artifact_bytes: 1024 * 1024,
+            max_files: 32,
+        }
+    }
+
+    fn alias_binding(
+        logical_behavior_id: &str,
+        logical_action_id: &str,
+        opcode: &str,
+    ) -> ExecutionBinding {
+        let action = find_action(opcode).expect("test opcode is registered");
+        let mut binding = ExecutionBinding {
+            schema_version: EXECUTION_BINDING_SCHEMA_VERSION.to_string(),
+            catalog_generation: 7,
+            catalog_digest: format!("sha256:{}", "1".repeat(64)),
+            logical_behavior_id: logical_behavior_id.to_string(),
+            logical_action_id: logical_action_id.to_string(),
+            package_id: "acme.endpoint-profile-pack".to_string(),
+            package_version: "1.2.3".to_string(),
+            package_digest: format!("sha256:{}", "2".repeat(64)),
+            content_digest: format!("sha256:{}", "3".repeat(64)),
+            program_digest: String::new(),
+            runner_opcode: opcode.to_string(),
+            opcode_contract_digest: descriptor_digest(action.descriptor()),
+            constants: reviewed_program_constants(opcode).expect("test opcode is reviewed"),
+        };
+        binding.program_digest = program_digest(&binding);
+        binding
+    }
+
+    fn alias_documents(
+        root: &Path,
+        binding: ExecutionBinding,
+        params: Value,
+    ) -> (RunnerProfile, ExecutionManifest) {
+        let descriptor = find_action(&binding.runner_opcode)
+            .expect("test opcode is registered")
+            .descriptor();
+        let mut profile = RunnerProfile {
+            schema_version: PROFILE_SCHEMA_VERSION.to_string(),
+            profile_id: "profile.test.v1".to_string(),
+            runner_id: "runner.test.v1".to_string(),
+            platform: crate::contract::Platform::current(),
+            sandbox_root: root.to_path_buf(),
+            allowed_actions: vec![
+                binding.runner_opcode.clone(),
+                binding.logical_action_id.clone(),
+            ],
+            control_blocked_actions: Vec::new(),
+            action_bindings: vec![binding.clone()],
+            capabilities: descriptor.capabilities.to_vec(),
+            max_safety_tier: descriptor.safety_tier,
+            approval_required_at_or_above: None,
+            target_scope: crate::contract::TargetScope {
+                filesystem: vec!["fixtures".to_string()],
+                network: Vec::new(),
+            },
+            limits: test_limits(),
+            policy_digest: String::new(),
+        };
+        crate::contract::seal_profile(&mut profile);
+        let requested_at = utc_now() - ChronoDuration::seconds(1);
+        let mut manifest = ExecutionManifest {
+            schema_version: MANIFEST_SCHEMA_VERSION.to_string(),
+            request_id: "request.package-alias.v1".to_string(),
+            run_id: "run.package-alias.v1".to_string(),
+            step_id: "step.package-alias.v1".to_string(),
+            behavior_id: binding.logical_behavior_id.clone(),
+            action_id: binding.logical_action_id.clone(),
+            execution_binding: Some(binding),
+            mode: RunMode::Execute,
+            runner_id: profile.runner_id.clone(),
+            runner_profile_id: profile.profile_id.clone(),
+            platform: crate::contract::Platform::current(),
+            requested_at,
+            expires_at: requested_at + ChronoDuration::minutes(5),
+            params,
+            target_scope: profile.target_scope.clone(),
+            required_capabilities: descriptor.capabilities.to_vec(),
+            safety_tier: descriptor.safety_tier,
+            limits: test_limits(),
+            cleanup_action_id: "sandbox.cleanup.v1".to_string(),
+            policy_digest: profile.policy_digest.clone(),
+            approval: None,
+            evidence_refs: Vec::new(),
+            request_hash: String::new(),
+        };
+        crate::contract::seal_manifest(&mut manifest);
+        (profile, manifest)
+    }
+
     #[test]
     fn parameter_depth_is_bounded() {
         let mut value = Value::Null;
@@ -581,5 +967,119 @@ mod tests {
         assert!(validate_limits(&requested, &maximum).is_err());
         requested.timeout_ms = 0;
         assert!(validate_limits(&requested, &maximum).is_err());
+    }
+
+    #[test]
+    fn package_alias_dispatch_preserves_logical_result_and_evidence_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "bluefire-runner-alias-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let binding = alias_binding(
+            "acme.endpoint.profile.v1",
+            "acme.endpoint.profile-action.v1",
+            "endpoint.discovery.system.v1",
+        );
+        assert_eq!(
+            binding.program_digest,
+            "sha256:e9fa0fe32f0e7bb0b38d5bb946ac3b3fcf91cc4abc14945fc4c1053c0cf57c4a"
+        );
+        let (profile, manifest) = alias_documents(&root, binding.clone(), json!({}));
+
+        let result = Runner::new().unwrap().execute(manifest, profile);
+
+        assert_eq!(result.status, TaskStatus::Success, "{result:#?}");
+        assert_eq!(result.behavior_id, binding.logical_behavior_id);
+        assert_eq!(result.action_id, binding.logical_action_id);
+        assert_eq!(result.evidence.len(), 1);
+        assert_eq!(result.evidence[0].behavior_id, result.behavior_id);
+        assert_eq!(result.evidence[0].action_id, result.action_id);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn package_alias_receipt_retains_the_logical_action_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "bluefire-runner-alias-receipt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let binding = alias_binding(
+            "acme.fixture.create.v1",
+            "acme.fixture.create-action.v1",
+            "sandbox.fixture.create.v1",
+        );
+        let (profile, manifest) = alias_documents(
+            &root,
+            binding.clone(),
+            json!({
+                "path": "fixtures/package-alias.txt",
+                "content_template": "telemetry-seed"
+            }),
+        );
+
+        let result = Runner::new().unwrap().execute(manifest, profile);
+
+        assert_eq!(result.status, TaskStatus::Success, "{result:#?}");
+        assert_eq!(result.receipt_ids.len(), 1);
+        let receipt = SafeRoot::open(&root)
+            .unwrap()
+            .load_receipt(&result.receipt_ids[0])
+            .unwrap()
+            .expect("successful mutation must persist its cleanup receipt");
+        assert_eq!(receipt.action_id, binding.logical_action_id);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn package_alias_fails_closed_on_profile_or_descriptor_substitution() {
+        let root = Path::new(".");
+        let binding = alias_binding(
+            "acme.endpoint.profile.v1",
+            "acme.endpoint.profile-action.v1",
+            "endpoint.discovery.system.v1",
+        );
+        let (profile, mut manifest) = alias_documents(root, binding.clone(), json!({}));
+        manifest.execution_binding.as_mut().unwrap().package_version = "1.2.4".to_string();
+        crate::contract::seal_manifest(&mut manifest);
+        let result = Runner::new().unwrap().execute(manifest, profile);
+        assert_eq!(result.status, TaskStatus::ControlBlocked);
+        assert_eq!(result.error.unwrap().code, "execution_binding_mismatch");
+
+        let mut substituted = binding;
+        substituted.opcode_contract_digest = format!("sha256:{}", "9".repeat(64));
+        let (mut profile, mut manifest) = alias_documents(root, substituted, json!({}));
+        crate::contract::seal_profile(&mut profile);
+        manifest.policy_digest = profile.policy_digest.clone();
+        crate::contract::seal_manifest(&mut manifest);
+        let result = Runner::new().unwrap().execute(manifest, profile);
+        assert_eq!(result.status, TaskStatus::ControlBlocked);
+        assert_eq!(result.error.unwrap().code, "invalid_profile");
+    }
+
+    #[test]
+    fn package_alias_constants_are_exactly_the_reviewed_opcode_attestations() {
+        let mut binding = alias_binding(
+            "acme.network.loopback.v1",
+            "acme.network.loopback-action.v1",
+            "sandbox.network.loopback.v1",
+        );
+        binding
+            .constants
+            .insert("method".to_string(), Value::String("GET".to_string()));
+        binding.program_digest = program_digest(&binding);
+        assert!(validate_execution_binding(&binding)
+            .err()
+            .expect("mismatched constants must be refused")
+            .contains("constants"));
     }
 }

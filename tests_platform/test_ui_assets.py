@@ -130,6 +130,7 @@ def test_management_ui_uses_durable_secret_safe_routes() -> None:
     builder = (SOURCE_ROOT / "pages" / "Builder.tsx").read_text(encoding="utf-8")
     settings = (SOURCE_ROOT / "pages" / "SettingsHelp.tsx").read_text(encoding="utf-8")
     catalog = (SOURCE_ROOT / "pages" / "CatalogPages.tsx").read_text(encoding="utf-8")
+    action_packages = (SOURCE_ROOT / "pages" / "ActionPackages.tsx").read_text(encoding="utf-8")
     detection = (SOURCE_ROOT / "pages" / "DetectionLab.tsx").read_text(encoding="utf-8")
 
     for route in (
@@ -152,11 +153,17 @@ def test_management_ui_uses_durable_secret_safe_routes() -> None:
     assert 'api.activateResource("runner-profiles"' in catalog
     assert 'api.deactivateResource("runner-profiles"' in catalog
     assert "api.probeRunnerProfile(" in catalog
-    assert 'api.activateResource("plugins"' in catalog
-    assert 'api.deactivateResource("plugins"' in catalog
+    assert 'api.activateResource("plugins"' not in catalog
+    assert 'api.deactivateResource("plugins"' not in catalog
+    assert "api.installActionPackage(" in action_packages
+    assert "api.activateActionPackage(" in action_packages
+    assert "api.deactivateActionPackage(" in action_packages
+    assert "api.removeActionPackage(" in action_packages
+    assert "api.trustActionPackagePublisher" in action_packages
+    assert "api.transitionActionPackagePublisher(" in action_packages
     assert "does not launch, enroll, authenticate, or attest" in catalog
     assert "does not download, verify bytes, install code" in catalog
-    assert "It never installs or loads plugin code" in catalog
+    assert "decorative activation control has been removed" in catalog
 
 
 def test_graph_editor_exposes_typed_contract_controls(source: str) -> None:

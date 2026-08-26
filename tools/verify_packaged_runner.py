@@ -292,6 +292,8 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
     if cleaned.get("status") != "success" or remaining_files:
         raise RuntimeError("installed runner cleanup did not reconcile the sandbox to zero files")
 
+    signed_alias = _smoke_signed_package_alias(runner, work_root)
+
     _write_report(
         args.report,
         {
@@ -306,10 +308,222 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
             },
             "execute": {"status": created.get("status"), "receipt_count": len(receipts)},
             "cleanup": {"status": cleaned.get("status"), "remaining_file_count": 0},
+            "signed_alias": signed_alias,
             "verified": True,
         },
     )
     return 0
+
+
+def _smoke_signed_package_alias(runner: Any, work_root: Path) -> Mapping[str, Any]:
+    """Activate and Execute one signed logical alias from the installed wheel."""
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from bluefire.action_packages import (
+        ACTION_PACKAGE_PAYLOAD_SCHEMA,
+        ACTION_PROGRAM_ADAPTER,
+        ACTION_PROGRAM_SCHEMA,
+        build_signed_action_package,
+        canonical_public_key_b64u,
+    )
+    from bluefire.service import BlueFireService
+
+    publisher_id = "bluefire.release-smoke"
+    key_id = "wheel-smoke-2026"
+    package_id = "bluefire.release-smoke.endpoint-pack"
+    behavior_id = "bluefire.release-smoke.endpoint-profile.v1"
+    action_id = "bluefire.release-smoke.endpoint-profile-action.v1"
+    provenance = {
+        "source": "BlueFire installed-wheel verification",
+        "reference": "urn:bluefire:wheel-smoke:endpoint-profile:sha256:" + "b" * 64,
+        "license": "MIT",
+        "derived": False,
+        "notes": "Declarative binding to one compiled reviewed native operation.",
+    }
+    manifest = {
+        "package_id": package_id,
+        "version": "1.0.0",
+        "compatibility": {
+            "minimum_bluefire_version": "0.1.0",
+            "maximum_bluefire_version_exclusive": "1.0.0",
+        },
+        "license": {
+            "spdx_id": "MIT",
+            "notice": "Copyright 2026 BlueFire installed-wheel verification; MIT licensed.",
+        },
+        "provenance": {
+            "publisher_id": publisher_id,
+            "source": "BlueFire installed-wheel verification",
+            "reference": "urn:bluefire:wheel-smoke:package:1.0.0",
+            "revision": "a" * 40,
+        },
+        "platforms": ["linux", "macos", "windows"],
+        "capabilities": ["endpoint.discovery", "system.discovery"],
+        "safety_tiers": ["safe"],
+        "behavior_ids": [behavior_id],
+        "action_ids": [action_id],
+    }
+    outputs = [
+        {
+            "name": "system",
+            "type": "artifact.endpoint.system-profile.v1",
+            "description": "Bounded system profile.",
+        }
+    ]
+    payload = {
+        "schema_version": ACTION_PACKAGE_PAYLOAD_SCHEMA,
+        "behaviors": [
+            {
+                "schema_version": "bluefire.behavior.v1",
+                "id": behavior_id,
+                "title": "Observe bounded endpoint identity",
+                "purpose": "Return non-sensitive operating-system and architecture facts.",
+                "execution_state": "action",
+                "safety_tier": "safe",
+                "platforms": ["linux", "macos", "windows"],
+                "techniques": ["T1082"],
+                "capabilities": ["endpoint.discovery", "system.discovery"],
+                "inputs": [],
+                "outputs": outputs,
+                "parameters": [],
+                "action_ids": [action_id],
+                "telemetry": ["endpoint.discovery.system_observed"],
+                "detection_hints": ["Compare with independent host inventory."],
+                "provenance": provenance,
+                "limitations": ["Does not inspect accounts, networks, or file content."],
+            }
+        ],
+        "actions": [
+            {
+                "definition": {
+                    "schema_version": "bluefire.action.v1",
+                    "id": action_id,
+                    "title": "Observe bounded endpoint identity",
+                    "purpose": "Use the reviewed compiled system-profile operation.",
+                    "safety_tier": "safe",
+                    "capabilities": ["endpoint.discovery", "system.discovery"],
+                    "platforms": ["linux", "macos", "windows"],
+                    "inputs": [],
+                    "outputs": outputs,
+                    "parameters": [],
+                    "mutates": False,
+                    "cleanup_action_id": None,
+                    "provenance": provenance,
+                },
+                "program": {
+                    "schema_version": ACTION_PROGRAM_SCHEMA,
+                    "steps": [
+                        {
+                            "opcode": "endpoint.discovery.system.v1",
+                            "adapter": ACTION_PROGRAM_ADAPTER,
+                            "constants": {},
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+    key = Ed25519PrivateKey.generate()
+    envelope = json.loads(
+        build_signed_action_package(
+            manifest=manifest,
+            payload=payload,
+            key_id=key_id,
+            private_key=key,
+        )
+    )
+    project_root = work_root / "installed-project"
+    alias_sandbox = work_root / "alias-sandbox"
+    project_root.mkdir()
+    alias_sandbox.mkdir()
+    service = BlueFireService(
+        project_root=project_root,
+        runs_dir=work_root / "alias-runs",
+        product_db_path=work_root / "alias-product.sqlite3",
+        runner_factory=lambda _profile: (runner, alias_sandbox),
+    )
+    try:
+        service.trust_action_package_publisher(
+            {
+                "publisher_id": publisher_id,
+                "key_id": key_id,
+                "public_key": canonical_public_key_b64u(key.public_key()),
+                "provenance": {
+                    "source": "BlueFire installed-wheel verification",
+                    "purpose": "wheel-only signed alias acceptance",
+                },
+                "trusted_by": "wheel-smoke-reviewer",
+            }
+        )
+        service.install_action_package(
+            {"envelope": envelope, "installed_by": "wheel-smoke-installer"}
+        )
+        profile = next(
+            item for item in service.config.runner_profiles if item.mode.value == "execute"
+        )
+        activated = service.activate_action_package(
+            package_id,
+            "1.0.0",
+            {
+                "runner_profile_id": profile.id,
+                "activated_by": "wheel-smoke-operator",
+                "reason": "verify the installed signed alias against the packaged native runner",
+            },
+        )
+        result = service.run(
+            {
+                "scenario": {
+                    "schema_version": "bluefire.scenario.v1",
+                    "id": "scenario.installed-wheel.signed-alias.v1",
+                    "title": "Installed-wheel signed alias",
+                    "purpose": "Execute one signed logical alias through its reviewed opcode.",
+                    "start": "observe_system",
+                    "steps": [{"id": "observe_system", "behavior_id": behavior_id}],
+                    "edges": [],
+                    "provenance": {
+                        "source": "BlueFire installed-wheel verification",
+                        "reference": "scenario.installed-wheel.signed-alias.v1",
+                        "license": "MIT",
+                        "derived": False,
+                        "notes": "No external content.",
+                    },
+                    "limitations": ["Observes bounded operating-system identity only."],
+                },
+                "mode": "execute",
+                "runner_profile_id": profile.id,
+                "autonomy": "off",
+                "target_scope": {"scope_refs": list(profile.scope)},
+                "approval": {
+                    "confirmed": True,
+                    "approved_by": "wheel-smoke-reviewer",
+                },
+            }
+        )
+    finally:
+        service.close()
+    step = result["steps"][0]
+    binding = step.get("execution_binding")
+    if (
+        result.get("status") != "completed"
+        or result.get("objective_reached") is not True
+        or step.get("behavior_id") != behavior_id
+        or step.get("action_id") != action_id
+        or step.get("status") != "success"
+        or not isinstance(binding, Mapping)
+        or binding.get("runner_opcode") != "endpoint.discovery.system.v1"
+        or activated.get("catalog", {}).get("generation") != 1
+        or any(path.is_file() for path in alias_sandbox.rglob("*"))
+    ):
+        raise RuntimeError("installed signed package alias did not execute exactly")
+    return {
+        "status": "success",
+        "catalog_generation": 1,
+        "logical_behavior_id": behavior_id,
+        "logical_action_id": action_id,
+        "runner_opcode": "endpoint.discovery.system.v1",
+        "remaining_file_count": 0,
+    }
 
 
 def _parser() -> argparse.ArgumentParser:
