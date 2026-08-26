@@ -337,9 +337,6 @@ fn validate_execution_binding(binding: &ExecutionBinding) -> Result<&'static dyn
     let action = find_action(&binding.runner_opcode)
         .ok_or_else(|| "execution binding runner opcode is unavailable".to_string())?;
     let descriptor = action.descriptor();
-    if !matches!(descriptor.readiness, ActionReadiness::Ready) {
-        return Err("execution binding runner opcode is not ready".to_string());
-    }
     if binding.opcode_contract_digest != descriptor_digest(descriptor) {
         return Err(
             "execution binding opcode contract digest does not match the runner".to_string(),
@@ -579,6 +576,7 @@ fn validate_policy(
         (action, false)
     };
     let descriptor = action.descriptor();
+    ensure_action_ready(descriptor)?;
     let actual_platform = crate::contract::Platform::current();
     if manifest.platform != actual_platform
         || profile.platform != actual_platform
@@ -684,6 +682,16 @@ fn validate_policy(
             .map_err(|error| blocked("invalid_evidence_reference", error))?;
     }
     Ok(action)
+}
+
+fn ensure_action_ready(descriptor: &ActionDescriptor) -> Result<(), ActionFailure> {
+    if matches!(descriptor.readiness, ActionReadiness::Ready) {
+        return Ok(());
+    }
+    Err(blocked(
+        "action_not_ready",
+        "selected action is not ready for execution",
+    ))
 }
 
 fn blocked(code: &'static str, message: impl Into<String>) -> ActionFailure {
@@ -967,6 +975,27 @@ mod tests {
         assert!(validate_limits(&requested, &maximum).is_err());
         requested.timeout_ms = 0;
         assert!(validate_limits(&requested, &maximum).is_err());
+    }
+
+    #[test]
+    fn shared_action_readiness_gate_refuses_non_ready_descriptors() {
+        let mut descriptor = find_action("endpoint.discovery.system.v1")
+            .expect("test action is registered")
+            .descriptor()
+            .clone();
+        assert!(ensure_action_ready(&descriptor).is_ok());
+
+        for readiness in [ActionReadiness::Structural, ActionReadiness::Unavailable] {
+            descriptor.readiness = readiness;
+            let failure = ensure_action_ready(&descriptor)
+                .expect_err("non-ready actions must be rejected before execution");
+            assert_eq!(failure.status, TaskStatus::ControlBlocked);
+            assert_eq!(failure.code, "action_not_ready");
+            assert_eq!(
+                failure.message,
+                "selected action is not ready for execution"
+            );
+        }
     }
 
     #[test]
