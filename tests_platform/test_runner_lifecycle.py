@@ -368,7 +368,7 @@ def test_remove_preflight(
     result_root = result_namespace.parent
     watchdog = result_namespace / (".bluefire-watchdog-" + "b" * 64)
     watchdog.mkdir(parents=True)
-    (result_namespace / ("c" * 64 + ".json")).write_text("{}", encoding="utf-8")
+    (result_namespace / ("c" * 40 + ".json")).write_text("{}", encoding="utf-8")
     (watchdog / "status.json").write_text("{}", encoding="utf-8")
 
     with pytest.raises(RunnerLifecycleError, match="live watchdog"):
@@ -723,8 +723,8 @@ def test_removal_deletes_only_the_enrollment_result_namespace(
     sibling = namespace.with_name("f" * 40)
     namespace.mkdir(parents=True)
     sibling.mkdir()
-    (namespace / ("a" * 64 + ".json")).write_text("{}", encoding="utf-8")
-    sibling_result = sibling / ("b" * 64 + ".json")
+    (namespace / ("a" * 40 + ".json")).write_text("{}", encoding="utf-8")
+    sibling_result = sibling / ("b" * 40 + ".json")
     sibling_result.write_text("{}", encoding="utf-8")
 
     lifecycle.revoke()
@@ -1511,7 +1511,7 @@ def test_result_namespace_deletion_never_unlinks_a_racing_victim(
     parent = tmp_path / "results"
     namespace = parent / ("a" * 40)
     namespace.mkdir(parents=True)
-    result = namespace / ("b" * 64 + ".json")
+    result = namespace / ("b" * 40 + ".json")
     result.write_bytes(b"owned-result")
     victim = tmp_path / "result-victim.json"
     victim.write_bytes(b"victim-result")

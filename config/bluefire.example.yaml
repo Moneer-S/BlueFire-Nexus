@@ -129,7 +129,7 @@ runner_profiles:
     cleanup_policy: always
     budgets:
       max_steps: 12
-      max_seconds: 60
+      max_seconds: 120
       max_artifacts: 100
       max_bytes: 5242880
     secrets: {}

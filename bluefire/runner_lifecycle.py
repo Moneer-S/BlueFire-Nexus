@@ -71,7 +71,9 @@ CLIENT_ID = "bluefire-control-plane.v1"
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
-_DURABLE_RESULT_NAME = re.compile(r"^[0-9a-f]{64}\.json$")
+# AuthenticatedRunnerServer derives durable result names from the first 160 bits
+# of SHA-256(task_id); lifecycle audit and removal must recognize that exact shape.
+_DURABLE_RESULT_NAME = re.compile(r"^[0-9a-f]{40}\.json$")
 _PENDING_RESULT_NAME = re.compile(r"^\.bluefire-result-[0-9a-f]{64}\.pending$")
 _WATCHDOG_DIRECTORY_NAME = re.compile(r"^\.bluefire-watchdog-[0-9a-f]{64}$")
 _WATCHDOG_FILES = frozenset({"config.json", "start", "cancel", "ready.json", "status.json"})

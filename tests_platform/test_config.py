@@ -31,6 +31,19 @@ def test_example_config_uses_exactly_two_modes_and_loopback_only() -> None:
         )
 
 
+def test_seeded_execute_profiles_budget_the_installed_nine_step_journey() -> None:
+    config = load_config(CONFIG_PATH)
+    profiles = {
+        profile.id: profile
+        for profile in config.runner_profiles
+        if profile.id in {"sandbox-execute.v1", "sandbox-blocked-network.v1"}
+    }
+
+    assert set(profiles) == {"sandbox-execute.v1", "sandbox-blocked-network.v1"}
+    assert all(profile.budgets.max_steps == 12 for profile in profiles.values())
+    assert all(profile.budgets.max_seconds == 120 for profile in profiles.values())
+
+
 def test_environment_values_remain_unresolved_references(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BLUEFIRE_RUNNER_BINARY", "sensitive-local-value")
     config = load_config(CONFIG_PATH)
