@@ -150,6 +150,68 @@ def test_constructor_and_status_have_no_launch_or_storage_side_effects(
     assert not root.exists()
 
 
+def test_execute_client_uses_runner_budget_without_expanding_control_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    timeouts: list[float] = []
+
+    class StubClient:
+        def __init__(self, timeout: float) -> None:
+            self.socket_timeout_seconds = timeout
+
+    def client_factory(*_args: object, **kwargs: Any) -> StubClient:
+        timeout = float(kwargs["socket_timeout_seconds"])
+        timeouts.append(timeout)
+        return StubClient(timeout)
+
+    class StubEnrollment:
+        root = tmp_path / "enrollment"
+        allowed_profile_ids = (PROFILE_ID,)
+
+    class StubBootstrap:
+        binary_digest = "sha256:" + "0" * 64
+        sandbox_path = tmp_path / "sandbox"
+
+    manager = ManagedRunnerLifecycle(
+        tmp_path / "managed",
+        client_factory=client_factory,  # type: ignore[arg-type]
+        start_timeout_seconds=2,
+        runner_timeout_seconds=35,
+    )
+    enrollment = StubEnrollment()
+    bootstrap = StubBootstrap()
+    monkeypatch.setattr(manager, "_load_active_enrollment", lambda: enrollment)
+    monkeypatch.setattr(manager, "_load_bootstrap", lambda _enrollment: bootstrap)
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "read_process_record",
+        lambda *_args, **_kwargs: {"port": 43123},
+    )
+
+    def authenticated_health(
+        _enrollment: object,
+        _bootstrap: object,
+        _record: Mapping[str, Any],
+        profile_id: str,
+    ) -> tuple[StubClient, Mapping[str, Any]]:
+        control = manager._new_client(  # type: ignore[arg-type]
+            enrollment,
+            profile_id,
+            port=43123,
+        )
+        return control, {"ledger": {"accepting_execute": True}}
+
+    monkeypatch.setattr(manager, "_authenticated_health", authenticated_health)
+
+    client, sandbox = manager.client_for_profile(PROFILE_ID)
+
+    server_execution_envelope = max(manager.runner_timeout_seconds + 5.0, 10.0)
+    assert timeouts == [2.0, server_execution_envelope + 5.0]
+    assert client.socket_timeout_seconds > server_execution_envelope
+    assert sandbox == bootstrap.sandbox_path
+
+
 def test_bootstrap_creates_exact_enrollment_and_path_free_stopped_status(
     lifecycle: ManagedRunnerLifecycle,
     secret_provider: ProcessTestSecretProvider,
@@ -230,6 +292,8 @@ def test_real_process_boundary_requires_mtls_health_and_graceful_shutdown(
     assert ready["health"]["runner_binary_digest"] == ready["runner"]["binary_digest"]
 
     client, sandbox = lifecycle.client_for_profile(PROFILE_ID)
+    server_execution_envelope = max(lifecycle.runner_timeout_seconds + 5.0, 10.0)
+    assert client.socket_timeout_seconds == server_execution_envelope + 5.0
     assert client.inventory()["runner_id"] == RUNNER_ID
     assert sandbox.is_dir()
     with pytest.raises(RunnerLifecycleError, match="stopped before enrollment revocation"):

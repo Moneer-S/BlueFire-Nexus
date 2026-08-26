@@ -721,10 +721,18 @@ class ManagedRunnerLifecycle:
             )
         except RunnerHostError:
             raise RunnerLifecycleError("Runner host is not authenticated and ready.") from None
-        client, _health = self._authenticated_health(enrollment, bootstrap, record, selected)
+        _control_client, _health = self._authenticated_health(
+            enrollment, bootstrap, record, selected
+        )
         ledger = _health.get("ledger")
         if not isinstance(ledger, Mapping) or ledger.get("accepting_execute") is not True:
             raise RunnerLifecycleError("Runner recovery ledger cannot accept execution.")
+        client = self._new_client(
+            enrollment,
+            selected,
+            port=int(record["port"]),
+            execution=True,
+        )
         return client, bootstrap.sandbox_path
 
     def stop(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
@@ -1270,6 +1278,7 @@ class ManagedRunnerLifecycle:
         profile_id: str,
         *,
         port: int,
+        execution: bool = False,
     ) -> AuthenticatedRunnerClient:
         try:
             return self.client_factory(
@@ -1277,7 +1286,17 @@ class ManagedRunnerLifecycle:
                 profile_id=profile_id,
                 host=LOOPBACK_HOST,
                 port=port,
-                socket_timeout_seconds=min(5.0, self.start_timeout_seconds),
+                # Execute may remain silent until the native runner deadline.
+                # The server adds five seconds for watchdog termination and
+                # terminal publication; the client needs a separate five-second
+                # response margin because its deadline starts before TLS and
+                # request validation. Lifecycle control probes retain their
+                # short readiness bound.
+                socket_timeout_seconds=(
+                    max(self.runner_timeout_seconds + 5.0, 10.0) + 5.0
+                    if execution
+                    else min(5.0, self.start_timeout_seconds)
+                ),
                 recovery_delay_seconds=0.025,
                 secret_provider=self.secret_provider,
             )

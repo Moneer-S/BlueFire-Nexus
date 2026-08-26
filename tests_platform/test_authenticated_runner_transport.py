@@ -161,6 +161,16 @@ class RecordingRunner:
         return _result(manifest, profile, call=self.calls)
 
 
+class DelayedRunner(RecordingRunner):
+    def __init__(self, delay_seconds: float) -> None:
+        super().__init__()
+        self.delay_seconds = delay_seconds
+
+    def execute(self, manifest: Mapping[str, Any], profile: Mapping[str, Any]) -> Mapping[str, Any]:
+        time.sleep(self.delay_seconds)
+        return super().execute(manifest, profile)
+
+
 class BlockingRunner(RecordingRunner):
     def __init__(self) -> None:
         super().__init__()
@@ -676,6 +686,36 @@ def test_client_recovers_exact_result_when_execution_response_is_lost(
     assert runner.calls == 1
 
 
+def test_budgeted_execution_accepts_a_valid_response_after_five_seconds(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> None:
+    runner = DelayedRunner(5.25)
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        runner,
+        tmp_path / "transport.sqlite3",
+        socket_timeout_seconds=5,
+        secret_provider=secret_provider,
+    ) as server:
+        client = _client(
+            enrollment_root,
+            server,
+            secret_provider,
+            timeout_seconds=10,
+        )
+        started = time.monotonic()
+        result = client.execute(manifest, profile)
+
+    assert time.monotonic() - started >= 5.0
+    assert result["status"] == "success"
+    assert result["output"]["call"] == 1
+    assert runner.calls == 1
+
+
 def test_decoder_rejects_noncanonical_and_duplicate_key_json() -> None:
     with pytest.raises(RunnerAuthenticationError, match="canonical JSON"):
         wire._decode_json_object(b'{"b":2, "a":1}')
@@ -1055,16 +1095,14 @@ def test_foreign_fresh_ledger_schema_and_trigger_are_refused_without_upgrade(
     ).replace("nonce TEXT NOT NULL UNIQUE", "nonce TEXT NOT NULL")
     with sqlite3.connect(state_path) as database:
         database.execute(foreign_sql)
-        database.execute(
-            """
+        database.execute("""
             CREATE TRIGGER erase_effect_edge
             AFTER UPDATE OF effect_dispatched ON transport_tasks
             WHEN NEW.effect_dispatched = 1
             BEGIN
                 DELETE FROM transport_tasks WHERE rowid = NEW.rowid;
             END
-            """
-        )
+            """)
 
     with pytest.raises(AuthenticatedRunnerTransportError, match="could not be initialized"):
         AuthenticatedRunnerServer(
