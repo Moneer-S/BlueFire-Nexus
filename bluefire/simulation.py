@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Mapping
 
 from .contracts import StepOutcome
 from .planner import PlanStep
-from .util import content_hash
+from .util import canonical_json_bytes, content_hash
+
+_IDENTITY_MATERIAL_BYTES = (
+    b'{"canary_id":"bluefire-public-identity-canary-v1","classification":"public",'
+    b'"material":"synthetic-public-identity-canary","schema_version":'
+    b'"bluefire.identity-material.v1","synthetic":true}\n'
+)
+_IDENTITY_MATERIAL_CONTENT_HASH = (
+    "sha256:4af6ae2cf13d13d9d325632af3f90d1730faae52424f176b2cc34a0eef0db6ca"
+)
+_NATIVE_CANARY_SEED = b"bluefire-native-execution-canary-v1"
+_SIMULATED_IDENTITY_MATERIAL_PATH = "synthetic/identity-material/public-canary.json"
+_SIMULATED_OBSERVABILITY_VARIANT_PATH = "synthetic/observability/variant.bin"
+_SIMULATED_STAGED_BUNDLE_PATHS = frozenset(
+    {"synthetic/staged/bundle.json", "synthetic/staged/bundle.jsonl"}
+)
 
 
 class SimulationError(ValueError):
@@ -17,7 +33,7 @@ class SimulationError(ValueError):
 def _bounded_integer(value: Any, context: str, minimum: int, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
         raise SimulationError(f"{context} must be an integer between {minimum} and {maximum}")
-    return value
+    return int(value)
 
 
 def _boolean(value: Any, context: str) -> bool:
@@ -30,6 +46,46 @@ def _choice(value: Any, context: str, choices: frozenset[str]) -> str:
     if not isinstance(value, str) or value not in choices:
         raise SimulationError(f"{context} is not a reviewed choice")
     return value
+
+
+def _exact_parameter_keys(
+    parameters: Mapping[str, Any], *, allowed: frozenset[str], context: str
+) -> None:
+    if set(parameters) - allowed:
+        raise SimulationError(f"{context} contains unreviewed parameters")
+
+
+def _content_hash(value: Any, context: str) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 71
+        or not value.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in value[7:])
+    ):
+        raise SimulationError(f"{context} must be a sha256-prefixed lowercase digest")
+    return value
+
+
+def _native_canary_digests(rounds: int) -> tuple[str, str]:
+    state = hashlib.sha256(_NATIVE_CANARY_SEED).digest()
+    seed_sha256 = state.hex()
+    for _ in range(rounds):
+        state = hashlib.sha256(state).digest()
+    return seed_sha256, state.hex()
+
+
+def _simulated_bundle(value: Any) -> tuple[Mapping[str, Any], str, str, int]:
+    bundle = _mapping(value, "bundle")
+    path = bundle.get("path")
+    if (
+        bundle.get("type") != "artifact.sandbox.bundle.v1"
+        or not isinstance(path, str)
+        or path not in _SIMULATED_STAGED_BUNDLE_PATHS
+    ):
+        raise SimulationError("bundle must be one fixed simulated staged bundle")
+    bundle_hash = _content_hash(bundle.get("content_hash"), "bundle.content_hash")
+    bundle_size = _bounded_integer(bundle.get("size"), "bundle.size", 1, 2**63 - 1)
+    return bundle, path, bundle_hash, bundle_size
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +111,12 @@ class SimulationRegistry:
             "simulation.sandbox.discovery.recursive.v1",
             "simulation.sandbox.archive.tar.v1",
             "simulation.sandbox.collection.stage.v1",
+            "simulation.sandbox.execution.native-canary.v1",
+            "simulation.sandbox.identity-material.seed.v1",
+            "simulation.sandbox.identity-material.inspect.v1",
             "simulation.sandbox.network.loopback.v1",
+            "simulation.sandbox.peer.handoff.v1",
+            "simulation.sandbox.observability.variant.v1",
             "simulation.sandbox.export.local.v1",
             "simulation.sandbox.restricted.persistence-marker.v1",
             "simulation.sandbox.cleanup.v1",
@@ -77,7 +138,78 @@ class SimulationRegistry:
         )
         artifacts: dict[str, Any]
         telemetry: tuple[str, ...]
-        if simulation_id == "simulation.sandbox.fixture.create.v1":
+        if simulation_id == "simulation.sandbox.execution.native-canary.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset({"rounds"}),
+                context="native execution canary simulation",
+            )
+            rounds = _bounded_integer(step.parameters.get("rounds", 256), "rounds", 1, 4096)
+            seed_sha256, result_sha256 = _native_canary_digests(rounds)
+            artifacts = {
+                "result": {
+                    "type": "artifact.sandbox.execution.canary.v1",
+                    "algorithm": "sha256",
+                    "implementation": "rust-in-process-sha256-v1",
+                    "rounds": rounds,
+                    "seed_sha256": seed_sha256,
+                    "result_sha256": result_sha256,
+                    "external_effects": False,
+                }
+            }
+            telemetry = ("sandbox.execution.native_canary_completed",)
+        elif simulation_id == "simulation.sandbox.identity-material.seed.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset(),
+                context="identity-material seed simulation",
+            )
+            artifacts = {
+                "identity_material": {
+                    "type": "artifact.sandbox.identity-material.v1",
+                    "path": _SIMULATED_IDENTITY_MATERIAL_PATH,
+                    "content_hash": _IDENTITY_MATERIAL_CONTENT_HASH,
+                    "size": len(_IDENTITY_MATERIAL_BYTES),
+                    "classification": "public",
+                    "synthetic": True,
+                }
+            }
+            telemetry = ("sandbox.identity_material.seeded",)
+        elif simulation_id == "simulation.sandbox.identity-material.inspect.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset(),
+                context="identity-material inspection simulation",
+            )
+            identity = _mapping(bound_inputs.get("identity_material"), "identity_material")
+            identity_hash = _content_hash(
+                identity.get("content_hash"), "identity_material.content_hash"
+            )
+            identity_size = _bounded_integer(
+                identity.get("size"), "identity_material.size", 1, 2**63 - 1
+            )
+            if (
+                identity.get("type") != "artifact.sandbox.identity-material.v1"
+                or identity.get("path") != _SIMULATED_IDENTITY_MATERIAL_PATH
+                or identity_hash != _IDENTITY_MATERIAL_CONTENT_HASH
+                or identity_size != len(_IDENTITY_MATERIAL_BYTES)
+                or identity.get("classification") != "public"
+                or identity.get("synthetic") is not True
+            ):
+                raise SimulationError(
+                    "identity_material does not match the fixed simulated public canary"
+                )
+            artifacts = {
+                "inspection": {
+                    "type": "artifact.sandbox.identity-material.inspection.v1",
+                    "path": _SIMULATED_IDENTITY_MATERIAL_PATH,
+                    "content_hash": identity_hash,
+                    "size": identity_size,
+                    "field_count": 5,
+                }
+            }
+            telemetry = ("sandbox.identity_material.inspected",)
+        elif simulation_id == "simulation.sandbox.fixture.create.v1":
             count = _bounded_integer(step.parameters.get("record_count", 6), "record_count", 1, 100)
             body = [
                 {
@@ -209,24 +341,24 @@ class SimulationRegistry:
             }
             telemetry = ("sandbox.discovery.recursive_completed",)
         elif simulation_id == "simulation.sandbox.archive.tar.v1":
-            records = bound_inputs.get("records")
-            if not isinstance(records, list) or not records:
+            archive_records = bound_inputs.get("records")
+            if not isinstance(archive_records, list) or not archive_records:
                 raise SimulationError("archive simulation requires filesystem records")
-            body = {"format": "ustar", "records": records}
+            archive_body: dict[str, Any] = {"format": "ustar", "records": archive_records}
             artifacts = {
                 "bundle": {
                     "type": "artifact.sandbox.archive.v1",
                     "path": "synthetic/staged/discovery.tar",
-                    "record_count": len(records),
-                    "content_hash": content_hash(body),
+                    "record_count": len(archive_records),
+                    "content_hash": content_hash(archive_body),
                 }
             }
             telemetry = ("sandbox.archive.created",)
         elif simulation_id == "simulation.sandbox.collection.stage.v1":
-            records = bound_inputs.get("records")
-            if not isinstance(records, list) or len(records) != 1:
+            collection_records = bound_inputs.get("records")
+            if not isinstance(collection_records, list) or len(collection_records) != 1:
                 raise SimulationError("collection simulation requires one discovery record")
-            source = _mapping(records[0], "records[0]")
+            source = _mapping(collection_records[0], "records[0]")
             if source.get("kind") != "file":
                 raise SimulationError("collection simulation requires an exact file record")
             record_count = _bounded_integer(
@@ -240,18 +372,21 @@ class SimulationRegistry:
                 "bundle_format",
                 frozenset({"jsonl", "json"}),
             )
-            body = {
+            collection_body: dict[str, Any] = {
                 "source_content_hash": source_hash,
                 "record_count": record_count,
                 "format": bundle_format,
             }
+            body_bytes = canonical_json_bytes(collection_body)
             artifacts = {
                 "bundle": {
                     "type": "artifact.sandbox.bundle.v1",
                     "path": f"synthetic/staged/bundle.{bundle_format}",
                     "record_count": record_count,
                     "format": bundle_format,
-                    "content_hash": content_hash(body),
+                    "source_content_hash": source_hash,
+                    "content_hash": content_hash(collection_body),
+                    "size": len(body_bytes),
                 }
             }
             telemetry = ("sandbox.collection.staged",)

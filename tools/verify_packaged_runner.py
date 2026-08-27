@@ -340,7 +340,13 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
     ):
         raise RuntimeError("installed runner cleanup did not reconcile the sandbox to zero files")
 
-    signed_alias = _smoke_signed_package_alias(runner, work_root)
+    alias_runner = SubprocessRustRunner(
+        bootstrapped.binary_path,
+        work_root / "alias-transport",
+        timeout_seconds=30.0,
+        output_limit_bytes=4 * 1024 * 1024,
+    )
+    signed_alias = _smoke_signed_package_alias(alias_runner, work_root)
 
     _write_report(
         args.report,
@@ -552,6 +558,9 @@ def _smoke_signed_package_alias(runner: Any, work_root: Path) -> Mapping[str, An
         service.close()
     step = result["steps"][0]
     binding = step.get("execution_binding")
+    alias_remaining_files = [
+        str(path.relative_to(alias_sandbox)) for path in alias_sandbox.rglob("*") if path.is_file()
+    ]
     if (
         result.get("status") != "completed"
         or result.get("objective_reached") is not True
@@ -561,9 +570,28 @@ def _smoke_signed_package_alias(runner: Any, work_root: Path) -> Mapping[str, An
         or not isinstance(binding, Mapping)
         or binding.get("runner_opcode") != "endpoint.discovery.system.v1"
         or activated.get("catalog", {}).get("generation") != 1
-        or any(path.is_file() for path in alias_sandbox.rglob("*"))
+        or alias_remaining_files
     ):
-        raise RuntimeError("installed signed package alias did not execute exactly")
+        raise RuntimeError(
+            "installed signed package alias did not execute exactly: "
+            + json.dumps(
+                {
+                    "result_status": result.get("status"),
+                    "objective_reached": result.get("objective_reached"),
+                    "step_behavior_id": step.get("behavior_id"),
+                    "step_action_id": step.get("action_id"),
+                    "step_status": step.get("status"),
+                    "step_error": step.get("error"),
+                    "step_message": step.get("message"),
+                    "runner_opcode": (
+                        binding.get("runner_opcode") if isinstance(binding, Mapping) else None
+                    ),
+                    "catalog_generation": activated.get("catalog", {}).get("generation"),
+                    "remaining_files": alias_remaining_files,
+                },
+                sort_keys=True,
+            )
+        )
     return {
         "status": "success",
         "catalog_generation": 1,

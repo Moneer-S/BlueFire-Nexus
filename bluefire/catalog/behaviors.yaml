@@ -308,6 +308,139 @@ items:
     limitations: [The runner chooses the fixed local path; neither label survives normal cleanup and no caller path is accepted.]
 
   - schema_version: bluefire.behavior.v1
+    id: sandbox.execution.native-canary.v1
+    title: Run bounded native execution canary
+    purpose: Run a deterministic, bounded in-process numeric canary in compiled Rust without launching a process or producing filesystem or network effects.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [native.execution]
+    inputs: []
+    outputs:
+      - name: result
+        type: artifact.sandbox.execution.canary.v1
+        description: Bounded numeric canary result and requested round count.
+    parameters:
+      - name: rounds
+        type: integer
+        default: 256
+        minimum: 1
+        maximum: 4096
+        description: Number of deterministic in-process canary rounds; it never becomes a command or process argument.
+    simulation_id: simulation.sandbox.execution.native-canary.v1
+    action_ids: [sandbox.execution.native-canary.v1]
+    telemetry: [sandbox.execution.native_canary_completed]
+    detection_hints: [Treat this as proof of one bounded compiled action path, not general command or program execution.]
+    provenance: *authored
+    limitations: [Performs only deterministic in-process computation and has no process, filesystem, or network effect.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.identity-material.seed.v1
+    title: Seed public identity material canary
+    purpose: Write one fixed public, non-secret canary document at identity-material/public-canary.json inside the runner-owned workspace.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.identity-material.seed, filesystem.write]
+    inputs: []
+    outputs:
+      - name: identity_material
+        type: artifact.sandbox.identity-material.v1
+        description: Exact fixed-path reference to the public identity-material canary.
+    parameters: []
+    simulation_id: simulation.sandbox.identity-material.seed.v1
+    action_ids: [sandbox.identity-material.seed.v1]
+    telemetry: [sandbox.identity_material.seeded]
+    detection_hints: [Evidence must label the document public synthetic canary material and retain its fixed path and digest.]
+    provenance: *authored
+    limitations: [Creates only a public synthetic canary; it does not access, derive, store, or represent a credential.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.identity-material.inspect.v1
+    title: Inspect public identity material canary
+    purpose: Read only the exact bound public canary and report its digest and bounded field count without returning document contents.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.identity-material.inspect, filesystem.read]
+    inputs:
+      - name: identity_material
+        type: artifact.sandbox.identity-material.v1
+    outputs:
+      - name: inspection
+        type: artifact.sandbox.identity-material.inspection.v1
+        description: Digest and bounded field count for the exact public canary.
+    parameters: []
+    simulation_id: simulation.sandbox.identity-material.inspect.v1
+    action_ids: [sandbox.identity-material.inspect.v1]
+    telemetry: [sandbox.identity_material.inspected]
+    detection_hints: [Inspection evidence should contain only the exact artifact identity, digest, size, and bounded field count.]
+    provenance: *authored
+    limitations: [Reads only the seeded public canary and never returns its values or enumerates adjacent files.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.peer.handoff.v1
+    title: Hand staged bundle to authenticated loopback peer
+    purpose: Authenticate and send exactly one bound staged bundle to literal 127.0.0.1 at a reviewed port, with no caller-selectable host or path.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.peer, filesystem.read, network.loopback]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.peer-handoff.receipt.v1
+        description: Authenticated loopback handoff receipt for the exact staged bundle.
+    parameters:
+      - name: port
+        type: integer
+        default: 4317
+        minimum: 1024
+        maximum: 65535
+        description: Port on the runner-enforced literal 127.0.0.1 destination; no hostname or address is accepted.
+    simulation_id: simulation.sandbox.peer.handoff.v1
+    action_ids: [sandbox.peer.handoff.v1]
+    telemetry: [sandbox.peer.handoff_attempted]
+    detection_hints: [A blocked-network profile refusal is control-blocked evidence and never a successful handoff.]
+    provenance: *authored
+    limitations: [Accepts only a typed staged bundle and authenticated literal-IPv4 loopback; it is not remote or lateral transport.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.observability.variant.v1
+    title: Create reversible observability variant
+    purpose: Create one reversible canonical or chunked hexadecimal representation of a bound staged bundle at observability/variant.bin for comparison, never for bypass or control impairment.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.observability.variant, filesystem.read, filesystem.write]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: variant
+        type: artifact.sandbox.observability.variant.v1
+        description: Fixed-path reversible representation whose metadata identifies canonical or chunked_hex and binds the exact staged bundle.
+    parameters:
+      - name: representation
+        type: string
+        default: canonical
+        enum: [canonical, chunked_hex]
+        description: Reviewed reversible representation for side-by-side observability comparison.
+    simulation_id: simulation.sandbox.observability.variant.v1
+    action_ids: [sandbox.observability.variant.v1]
+    telemetry: [sandbox.observability.variant_created]
+    detection_hints: [Comparison evidence should bind the source and variant digests and the exact reversible representation.]
+    provenance: *authored
+    limitations: [The representation is transparent and reversible; no defense bypass, evasion, or control-impairment claim is made.]
+
+  - schema_version: bluefire.behavior.v1
     id: sandbox.cleanup.v1
     title: Clean runner-owned workspace
     purpose: Quarantine, revalidate, and remove receipt-bound temporary artifacts, then emit an authoritative verification report.

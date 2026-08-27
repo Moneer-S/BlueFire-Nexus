@@ -233,7 +233,7 @@ class StructuredFakeRunner:
                 "artifact": (f"exports/{manifest['params']['retention_label']}/bundle.bin"),
                 "size": 16,
                 "retention_label": manifest["params"]["retention_label"],
-                "sha256": "4" * 64,
+                "sha256": "3" * 64,
                 "destination_policy": "runner_fixed_retention_destination",
             }
         else:
@@ -1404,4 +1404,4 @@ def test_cleanup_success_requires_a_complete_runner_report(tmp_path: Path) -> No
     assert cleanup["status"] == "failed"
     assert cleanup["error"]["code"] == "runner_transport_failed"
     assert result["cleanup"]["success"] is False
-    assert result["cleanup"]["outstanding_receipt_count"] == 3
+    assert result["cleanup"]["outstanding_receipt_count"] == 4

@@ -56,6 +56,11 @@ runner_profiles:
       - sandbox.export
       - sandbox.archive
       - sandbox.cleanup
+      - native.execution
+      - sandbox.identity-material.seed
+      - sandbox.identity-material.inspect
+      - sandbox.peer
+      - sandbox.observability.variant
       - endpoint.discovery
       - system.discovery
       - process.discovery
@@ -101,6 +106,11 @@ runner_profiles:
       - sandbox.export
       - sandbox.archive
       - sandbox.cleanup
+      - native.execution
+      - sandbox.identity-material.seed
+      - sandbox.identity-material.inspect
+      - sandbox.peer
+      - sandbox.observability.variant
       - endpoint.discovery
       - system.discovery
       - process.discovery
@@ -113,6 +123,9 @@ runner_profiles:
     safety_tiers: [safe, controlled]
     approval_required: true
     enabled_actions:
+      - sandbox.execution.native-canary.v1
+      - sandbox.identity-material.seed.v1
+      - sandbox.identity-material.inspect.v1
       - sandbox.fixture.create.v1
       - sandbox.fixture.transform.v1
       - sandbox.discovery.list.v1
@@ -123,6 +136,8 @@ runner_profiles:
       - sandbox.collection.stage.v1
       - sandbox.archive.tar.v1
       - sandbox.network.loopback.v1
+      - sandbox.peer.handoff.v1
+      - sandbox.observability.variant.v1
       - sandbox.export.local.v1
       - sandbox.cleanup.v1
     blocked_actions: []
@@ -136,7 +151,7 @@ runner_profiles:
 
   - <<: *execute_profile
     id: sandbox-blocked-network.v1
-    blocked_actions: [sandbox.network.loopback.v1]
+    blocked_actions: [sandbox.network.loopback.v1, sandbox.peer.handoff.v1]
 
   - <<: *execute_profile
     id: sandbox-restricted-owned.v1

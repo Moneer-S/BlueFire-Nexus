@@ -674,6 +674,7 @@ def test_package_revision_requires_immutable_full_identity(revision: str) -> Non
         "sandbox.archive.tar.v1",
         "sandbox.fixture.create.v1",
         "sandbox.network.loopback.v1",
+        "sandbox.peer.handoff.v1",
         "sandbox.restricted.persistence-marker.v1",
     ],
 )
@@ -696,9 +697,14 @@ def test_runner_contract_versions_fail_closed_across_breaking_semantic_schemas()
         "sandbox.discovery.list.v1": "2.0.0",
         "sandbox.discovery.metadata.v1": "2.0.0",
         "sandbox.discovery.recursive.v1": "1.0.0",
+        "sandbox.execution.native-canary.v1": "1.0.0",
         "sandbox.export.local.v1": "2.0.0",
         "sandbox.fixture.create.v1": "2.0.0",
         "sandbox.fixture.transform.v1": "2.0.0",
+        "sandbox.identity-material.inspect.v1": "1.0.0",
+        "sandbox.identity-material.seed.v1": "1.0.0",
         "sandbox.network.loopback.v1": "1.0.0",
+        "sandbox.observability.variant.v1": "1.0.0",
+        "sandbox.peer.handoff.v1": "1.0.0",
         "sandbox.restricted.persistence-marker.v1": "1.0.0",
     }

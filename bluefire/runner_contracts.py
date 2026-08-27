@@ -26,6 +26,7 @@ class RunnerContractError(ValueError):
 
 
 EFFECT_CAPABILITIES: Mapping[str, str] = {
+    "native.execution": "native_execution",
     "sandbox.restricted": "sandbox_restricted",
     "filesystem.read": "filesystem_read",
     "filesystem.write": "filesystem_write",
@@ -79,6 +80,11 @@ _EXECUTION_BINDING_FIELDS = frozenset(
 _REVIEWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, Any]] = {
     "endpoint.discovery.processes.v1": {},
     "endpoint.discovery.system.v1": {},
+    "sandbox.execution.native-canary.v1": {},
+    "sandbox.identity-material.inspect.v1": {},
+    "sandbox.identity-material.seed.v1": {},
+    "sandbox.observability.variant.v1": {},
+    "sandbox.peer.handoff.v1": {"method": "POST"},
     "sandbox.archive.tar.v1": {"archive_format": "ustar"},
     "sandbox.cleanup.v1": {},
     "sandbox.collection.stage.v1": {},

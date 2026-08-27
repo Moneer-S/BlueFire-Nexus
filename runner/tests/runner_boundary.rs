@@ -2403,7 +2403,7 @@ fn inventory_and_execute_cli_emit_the_versioned_json_contract() {
         inventory_json["receipt_protocol"],
         "bluefire.runner-receipt-wal.v2"
     );
-    assert_eq!(inventory_json["actions"].as_array().unwrap().len(), 13);
+    assert_eq!(inventory_json["actions"].as_array().unwrap().len(), 18);
 
     let root = TempDir::new().unwrap();
     let profile = profile(&root, Vec::new());

@@ -128,6 +128,11 @@ _ALLOWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, frozenset[str] | type[int]
         {
             "endpoint.discovery.processes.v1": MappingProxyType({}),
             "endpoint.discovery.system.v1": MappingProxyType({}),
+            "sandbox.execution.native-canary.v1": MappingProxyType({}),
+            "sandbox.identity-material.inspect.v1": MappingProxyType({}),
+            "sandbox.identity-material.seed.v1": MappingProxyType({}),
+            "sandbox.observability.variant.v1": MappingProxyType({}),
+            "sandbox.peer.handoff.v1": MappingProxyType({"method": frozenset({"POST"})}),
             "sandbox.archive.tar.v1": MappingProxyType({"archive_format": frozenset({"ustar"})}),
             "sandbox.cleanup.v1": MappingProxyType({}),
             "sandbox.collection.stage.v1": MappingProxyType({}),

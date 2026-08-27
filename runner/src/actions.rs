@@ -10,7 +10,7 @@ use serde::de::DeserializeOwned;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 use crate::contract::{
     BoundedOutput, Capability, CleanupReport, ErrorRecord, ExecutionManifest, NetworkDestination,
@@ -28,6 +28,15 @@ const MAX_RECURSIVE_DEPTH: usize = 16;
 const MAX_RECURSIVE_ENTRIES: usize = 4_096;
 const MAX_RECURSIVE_ERRORS: usize = 64;
 const MAX_SYNTHETIC_RECORDS: usize = 100;
+const NATIVE_CANARY_SEED: &[u8] = b"bluefire-native-execution-canary-v1";
+const IDENTITY_MATERIAL_PATH: &str = "identity-material/public-canary.json";
+const IDENTITY_MATERIAL_BYTES: &[u8] = b"{\"canary_id\":\"bluefire-public-identity-canary-v1\",\"classification\":\"public\",\"material\":\"synthetic-public-identity-canary\",\"schema_version\":\"bluefire.identity-material.v1\",\"synthetic\":true}\n";
+const IDENTITY_MATERIAL_SHA256: &str =
+    "4af6ae2cf13d13d9d325632af3f90d1730faae52424f176b2cc34a0eef0db6ca";
+const STAGED_BUNDLE_JSON_PATH: &str = "staged/bundle.json";
+const STAGED_BUNDLE_JSONL_PATH: &str = "staged/bundle.jsonl";
+const OBSERVABILITY_VARIANT_PATH: &str = "observability/variant.bin";
+const CHUNKED_HEX_WIDTH: usize = 64;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -283,6 +292,62 @@ fn fixture_create_schema() -> Value {
     })
 }
 
+fn native_canary_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "rounds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 4096,
+                "default": 256
+            }
+        }
+    })
+}
+
+fn empty_action_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+    })
+}
+
+fn peer_handoff_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "port": {
+                "type": "integer",
+                "minimum": 1024,
+                "maximum": 65535,
+                "default": 4317
+            }
+        }
+    })
+}
+
+fn observability_variant_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["representation"],
+        "properties": {
+            "representation": {
+                "type": "string",
+                "enum": ["canonical", "chunked_hex"]
+            }
+        }
+    })
+}
+
 fn fixture_transform_schema() -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -497,6 +562,234 @@ macro_rules! reviewed_descriptor {
             cleanup_receipt: $receipt,
         }
     };
+}
+
+// -------------------------------------------------------------------------
+// sandbox.execution.native-canary.v1
+
+fn default_native_canary_rounds() -> u32 {
+    256
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeCanaryParams {
+    #[serde(default = "default_native_canary_rounds")]
+    rounds: u32,
+}
+
+struct NativeCanaryPrepared(NativeCanaryParams);
+
+impl PreparedAction for NativeCanaryPrepared {
+    fn execute(
+        self: Box<Self>,
+        context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        if !(1..=4_096).contains(&self.0.rounds) {
+            return Err(ActionFailure::refused(
+                "invalid_action_params",
+                "rounds must be between 1 and 4096",
+            ));
+        }
+        let started = Instant::now();
+        let deadline = Duration::from_millis(context.manifest.limits.timeout_ms);
+        let seed_digest = Sha256::digest(NATIVE_CANARY_SEED);
+        let mut state: [u8; 32] = seed_digest.into();
+        for _ in 0..self.0.rounds {
+            if started.elapsed() >= deadline {
+                return Err(ActionFailure::timed_out(
+                    "native_canary_timeout",
+                    "the bounded in-process SHA-256 chain exceeded its deadline",
+                ));
+            }
+            state = Sha256::digest(state).into();
+        }
+        Ok(ActionOutcome::success(json!({
+            "algorithm": "sha256",
+            "implementation": "rust-in-process-sha256-v1",
+            "rounds": self.0.rounds,
+            "seed_sha256": crate::contract::sha256_hex(NATIVE_CANARY_SEED),
+            "result_sha256": hex::encode(state),
+            "external_effects": false,
+        })))
+    }
+}
+
+struct NativeCanaryAction;
+static NATIVE_CANARY_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    ..reviewed_descriptor! {
+        id: "sandbox.execution.native-canary.v1",
+        version: "1.0.0",
+        behavior_ids: &["sandbox.execution.native-canary.v1"],
+        summary: "Run a bounded deterministic SHA-256 chain entirely inside the native runner.",
+        schema: native_canary_schema,
+        capabilities: &[Capability::NativeExecution],
+        tier: SafetyTier::Safe,
+        readiness: ActionReadiness::Ready,
+        targets: &["runner_process"],
+        hints: &[ObservationHint { source: "runner", signal: "in_process_computation" }],
+        cleanup: None,
+        limits: TASK_LIMITS,
+        effects: (false, false, false),
+        receipt: false,
+    }
+};
+impl Action for NativeCanaryAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        &NATIVE_CANARY_DESCRIPTOR
+    }
+    fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        Ok(Box::new(NativeCanaryPrepared(parse_params(params)?)))
+    }
+}
+
+// -------------------------------------------------------------------------
+// sandbox.identity-material.seed.v1 and sandbox.identity-material.inspect.v1
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmptyParams {}
+
+struct IdentityMaterialSeedPrepared(EmptyParams);
+
+impl PreparedAction for IdentityMaterialSeedPrepared {
+    fn execute(
+        self: Box<Self>,
+        context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        let _params = self.0;
+        let path = authorize_path(context, IDENTITY_MATERIAL_PATH, false)?;
+        let digest = crate::contract::sha256_hex(IDENTITY_MATERIAL_BYTES);
+        if IDENTITY_MATERIAL_BYTES.len() != 189 || digest != IDENTITY_MATERIAL_SHA256 {
+            return Err(ActionFailure::failed(
+                "identity_material_contract_failed",
+                "the compiled public identity-material contract is inconsistent",
+            ));
+        }
+        let target = context
+            .root
+            .prepare_new_file(&path)
+            .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        let intent = begin_receipt(
+            context,
+            receipt_paths(
+                target.relative.clone(),
+                IDENTITY_MATERIAL_BYTES,
+                &target.created_directories,
+            ),
+        )?;
+        context
+            .root
+            .write_new(&target, IDENTITY_MATERIAL_BYTES, &intent)
+            .map_err(|error| ActionFailure::failed("identity_material_write_failed", error))?;
+        let receipt_id = commit_receipt(context, &intent)?;
+        Ok(ActionOutcome::success(json!({
+            "artifact": IDENTITY_MATERIAL_PATH,
+            "byte_count": IDENTITY_MATERIAL_BYTES.len(),
+            "classification": "public",
+            "sha256": IDENTITY_MATERIAL_SHA256,
+            "synthetic": true,
+        }))
+        .with_receipt(receipt_id))
+    }
+}
+
+struct IdentityMaterialSeedAction;
+static IDENTITY_MATERIAL_SEED_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    ..reviewed_descriptor! {
+        id: "sandbox.identity-material.seed.v1",
+        version: "1.0.0",
+        behavior_ids: &["sandbox.identity-material.seed.v1"],
+        summary: "Create one fixed canonical public and synthetic identity-material canary.",
+        schema: empty_action_schema,
+        capabilities: &[Capability::FilesystemWrite],
+        tier: SafetyTier::Safe,
+        readiness: ActionReadiness::Ready,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "file_create" }],
+        cleanup: Some("sandbox.cleanup.v1"),
+        limits: TASK_LIMITS,
+        effects: (true, false, false),
+        receipt: true,
+    }
+};
+impl Action for IdentityMaterialSeedAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        &IDENTITY_MATERIAL_SEED_DESCRIPTOR
+    }
+    fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        Ok(Box::new(IdentityMaterialSeedPrepared(parse_params(
+            params,
+        )?)))
+    }
+}
+
+struct IdentityMaterialInspectPrepared(EmptyParams);
+
+impl PreparedAction for IdentityMaterialInspectPrepared {
+    fn execute(
+        self: Box<Self>,
+        context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        let _params = self.0;
+        let path = authorize_path(context, IDENTITY_MATERIAL_PATH, false)?;
+        let source = context
+            .root
+            .resolve_existing(&path)
+            .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        let bytes = read_file_bounded(&source, context.manifest.limits.max_artifact_bytes)
+            .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
+        if bytes.as_slice() != IDENTITY_MATERIAL_BYTES {
+            return Err(ActionFailure::failed(
+                "identity_material_validation_failed",
+                "the fixed identity-material canary did not match its reviewed public schema",
+            ));
+        }
+        let field_count = serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|value| value.as_object().map(serde_json::Map::len))
+            .ok_or_else(|| {
+                ActionFailure::failed(
+                    "identity_material_validation_failed",
+                    "the fixed identity-material canary did not match its reviewed public schema",
+                )
+            })?;
+        Ok(ActionOutcome::success(json!({
+            "byte_count": bytes.len(),
+            "field_count": field_count,
+            "sha256": crate::contract::sha256_hex(&bytes),
+        })))
+    }
+}
+
+struct IdentityMaterialInspectAction;
+static IDENTITY_MATERIAL_INSPECT_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    ..reviewed_descriptor! {
+        id: "sandbox.identity-material.inspect.v1",
+        version: "1.0.0",
+        behavior_ids: &["sandbox.identity-material.inspect.v1"],
+        summary: "Inspect only the fixed public identity-material canary and return structural metadata.",
+        schema: empty_action_schema,
+        capabilities: &[Capability::FilesystemRead],
+        tier: SafetyTier::Safe,
+        readiness: ActionReadiness::Ready,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "file_read" }],
+        cleanup: None,
+        limits: TASK_LIMITS,
+        effects: (false, false, false),
+        receipt: false,
+    }
+};
+impl Action for IdentityMaterialInspectAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        &IDENTITY_MATERIAL_INSPECT_DESCRIPTOR
+    }
+    fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        Ok(Box::new(IdentityMaterialInspectPrepared(parse_params(
+            params,
+        )?)))
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -1948,6 +2241,348 @@ impl Action for CollectionStageAction {
 }
 
 // -------------------------------------------------------------------------
+// Fixed reviewed staged-bundle consumers
+
+struct ReviewedStagedBundle {
+    relative: String,
+    bytes: Vec<u8>,
+}
+
+fn validate_reviewed_staged_records(records: &[Value]) -> Result<(), ActionFailure> {
+    if records.is_empty() || records.len() > MAX_SYNTHETIC_RECORDS {
+        return Err(ActionFailure::failed(
+            "staged_bundle_validation_failed",
+            "the fixed staged bundle has an invalid synthetic record count",
+        ));
+    }
+    let mut fixture_template: Option<String> = None;
+    let mut fixture_redacted: Option<bool> = None;
+    for (index, record) in records.iter().enumerate() {
+        let object = validated_synthetic_record_object(
+            record.clone(),
+            index + 1,
+            index + 1,
+            "staged_bundle_validation_failed",
+        )?;
+        let template = object["template"]
+            .as_str()
+            .expect("validated synthetic template is a string");
+        let is_redacted = object["value"].as_str() == Some("synthetic-redacted");
+        if fixture_template
+            .as_deref()
+            .is_some_and(|expected| expected != template)
+            || fixture_redacted.is_some_and(|expected| expected != is_redacted)
+        {
+            return Err(ActionFailure::failed(
+                "staged_bundle_validation_failed",
+                "the fixed staged bundle mixes fixture templates or redaction states",
+            ));
+        }
+        fixture_template.get_or_insert_with(|| template.to_string());
+        fixture_redacted.get_or_insert(is_redacted);
+    }
+    Ok(())
+}
+
+fn validate_reviewed_staged_bundle(
+    bytes: &[u8],
+    format: BundleFormat,
+) -> Result<usize, ActionFailure> {
+    let records = match format {
+        BundleFormat::Jsonl => {
+            let text = std::str::from_utf8(bytes).map_err(|_| {
+                ActionFailure::failed(
+                    "staged_bundle_validation_failed",
+                    "the fixed staged JSONL bundle is not UTF-8",
+                )
+            })?;
+            if !text.ends_with('\n') || text.is_empty() {
+                return Err(ActionFailure::failed(
+                    "staged_bundle_validation_failed",
+                    "the fixed staged JSONL bundle is not canonically terminated",
+                ));
+            }
+            let mut records = Vec::new();
+            for line in text[..text.len() - 1].split('\n') {
+                if line.is_empty() || records.len() == MAX_SYNTHETIC_RECORDS {
+                    return Err(ActionFailure::failed(
+                        "staged_bundle_validation_failed",
+                        "the fixed staged JSONL bundle has an invalid record boundary",
+                    ));
+                }
+                let record: Value = serde_json::from_str(line).map_err(|_| {
+                    ActionFailure::failed(
+                        "staged_bundle_validation_failed",
+                        "the fixed staged JSONL bundle is not strict JSON",
+                    )
+                })?;
+                if crate::contract::canonical_json(&record) != line {
+                    return Err(ActionFailure::failed(
+                        "staged_bundle_validation_failed",
+                        "the fixed staged JSONL bundle is not canonical",
+                    ));
+                }
+                records.push(record);
+            }
+            records
+        }
+        BundleFormat::Json => {
+            let value: Value = serde_json::from_slice(bytes).map_err(|_| {
+                ActionFailure::failed(
+                    "staged_bundle_validation_failed",
+                    "the fixed staged JSON bundle is not strict JSON",
+                )
+            })?;
+            let mut expected = crate::contract::canonical_json(&value).into_bytes();
+            expected.push(b'\n');
+            if expected != bytes {
+                return Err(ActionFailure::failed(
+                    "staged_bundle_validation_failed",
+                    "the fixed staged JSON bundle is not canonical",
+                ));
+            }
+            let object = value.as_object().ok_or_else(|| {
+                ActionFailure::failed(
+                    "staged_bundle_validation_failed",
+                    "the fixed staged JSON bundle is not an object",
+                )
+            })?;
+            if object.len() != 2
+                || object.get("schema_version")
+                    != Some(&Value::String("bluefire.synthetic-bundle.v1".to_string()))
+                || !object.contains_key("records")
+            {
+                return Err(ActionFailure::failed(
+                    "staged_bundle_validation_failed",
+                    "the fixed staged JSON bundle does not match the reviewed schema",
+                ));
+            }
+            object["records"].as_array().cloned().ok_or_else(|| {
+                ActionFailure::failed(
+                    "staged_bundle_validation_failed",
+                    "the fixed staged JSON bundle records are not an array",
+                )
+            })?
+        }
+    };
+    validate_reviewed_staged_records(&records)?;
+    Ok(records.len())
+}
+
+fn load_reviewed_staged_bundle(
+    context: &ActionContext<'_>,
+) -> Result<ReviewedStagedBundle, ActionFailure> {
+    let json_absent = context
+        .root
+        .path_is_absent(STAGED_BUNDLE_JSON_PATH)
+        .map_err(|error| ActionFailure::blocked("staged_bundle_rejected", error))?;
+    let jsonl_absent = context
+        .root
+        .path_is_absent(STAGED_BUNDLE_JSONL_PATH)
+        .map_err(|error| ActionFailure::blocked("staged_bundle_rejected", error))?;
+    let (relative, format) = match (json_absent, jsonl_absent) {
+        (false, true) => (STAGED_BUNDLE_JSON_PATH, BundleFormat::Json),
+        (true, false) => (STAGED_BUNDLE_JSONL_PATH, BundleFormat::Jsonl),
+        (true, true) => {
+            return Err(ActionFailure::failed(
+                "staged_bundle_unavailable",
+                "exactly one fixed staged synthetic bundle is required",
+            ));
+        }
+        (false, false) => {
+            return Err(ActionFailure::blocked(
+                "staged_bundle_ambiguous",
+                "both fixed staged bundle formats exist; exactly one is permitted",
+            ));
+        }
+    };
+    let relative = authorize_path(context, relative, false)?;
+    let source = context
+        .root
+        .resolve_existing(&relative)
+        .map_err(|error| ActionFailure::blocked("staged_bundle_rejected", error))?;
+    let bytes = read_file_bounded(&source, context.manifest.limits.max_artifact_bytes)
+        .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
+    validate_reviewed_staged_bundle(&bytes, format)?;
+    Ok(ReviewedStagedBundle { relative, bytes })
+}
+
+// -------------------------------------------------------------------------
+// sandbox.observability.variant.v1
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ObservabilityRepresentation {
+    Canonical,
+    ChunkedHex,
+}
+
+impl ObservabilityRepresentation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Canonical => "canonical",
+            Self::ChunkedHex => "chunked_hex",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ObservabilityVariantParams {
+    representation: ObservabilityRepresentation,
+}
+
+struct ObservabilityVariantPrepared(ObservabilityVariantParams);
+
+impl PreparedAction for ObservabilityVariantPrepared {
+    fn execute(
+        self: Box<Self>,
+        context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        let started = Instant::now();
+        let deadline = Duration::from_millis(context.manifest.limits.timeout_ms);
+        let source = load_reviewed_staged_bundle(context)?;
+        let encoded_len = source.bytes.len().checked_mul(2).ok_or_else(|| {
+            ActionFailure::blocked(
+                "artifact_limit_blocked",
+                "the deterministic observability variant size overflowed",
+            )
+        })?;
+        let separator_count = match self.0.representation {
+            ObservabilityRepresentation::Canonical => 0,
+            ObservabilityRepresentation::ChunkedHex => {
+                encoded_len.saturating_sub(1) / CHUNKED_HEX_WIDTH
+            }
+        };
+        let variant_len = encoded_len.checked_add(separator_count).ok_or_else(|| {
+            ActionFailure::blocked(
+                "artifact_limit_blocked",
+                "the deterministic observability variant size overflowed",
+            )
+        })?;
+        if (variant_len as u128) > (context.manifest.limits.max_artifact_bytes as u128) {
+            return Err(ActionFailure::blocked(
+                "artifact_limit_blocked",
+                "the deterministic observability variant exceeds the manifest artifact limit",
+            ));
+        }
+        let encoded = hex::encode(&source.bytes);
+        let variant_bytes = match self.0.representation {
+            ObservabilityRepresentation::Canonical => encoded.into_bytes(),
+            ObservabilityRepresentation::ChunkedHex => {
+                let chunks = encoded.as_bytes().chunks(CHUNKED_HEX_WIDTH);
+                let mut bytes = Vec::with_capacity(variant_len);
+                for (index, chunk) in chunks.enumerate() {
+                    if index > 0 {
+                        bytes.push(b'\n');
+                    }
+                    bytes.extend_from_slice(chunk);
+                }
+                bytes
+            }
+        };
+        if started.elapsed() >= deadline {
+            return Err(ActionFailure::timed_out(
+                "observability_variant_timeout",
+                "the deterministic observability transform exceeded its deadline",
+            ));
+        }
+        debug_assert_eq!(variant_bytes.len(), variant_len);
+        let compact = variant_bytes
+            .iter()
+            .copied()
+            .filter(|byte| *byte != b'\n')
+            .collect::<Vec<_>>();
+        if compact
+            .iter()
+            .any(|byte| !(byte.is_ascii_digit() || (b'a'..=b'f').contains(byte)))
+        {
+            return Err(ActionFailure::failed(
+                "observability_variant_verification_failed",
+                "the deterministic observability representation was not lowercase hexadecimal",
+            ));
+        }
+        let decoded = hex::decode(&compact).map_err(|_| {
+            ActionFailure::failed(
+                "observability_variant_verification_failed",
+                "the deterministic observability representation could not be decoded",
+            )
+        })?;
+        if decoded != source.bytes {
+            return Err(ActionFailure::failed(
+                "observability_variant_verification_failed",
+                "the deterministic observability representation was not equivalent to its source",
+            ));
+        }
+
+        let target_path = authorize_path(context, OBSERVABILITY_VARIANT_PATH, false)?;
+        let target = context
+            .root
+            .prepare_new_file(&target_path)
+            .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+        let intent = begin_receipt(
+            context,
+            receipt_paths(
+                target.relative.clone(),
+                &variant_bytes,
+                &target.created_directories,
+            ),
+        )?;
+        context
+            .root
+            .write_new(&target, &variant_bytes, &intent)
+            .map_err(|error| ActionFailure::failed("observability_variant_write_failed", error))?;
+        let receipt_id = commit_receipt(context, &intent)?;
+        let mut outcome = ActionOutcome::success(json!({
+            "artifact": OBSERVABILITY_VARIANT_PATH,
+            "representation": self.0.representation.as_str(),
+            "source_artifact": source.relative,
+            "source_sha256": crate::contract::sha256_hex(&source.bytes),
+            "source_size": source.bytes.len(),
+            "sha256": crate::contract::sha256_hex(&variant_bytes),
+            "size": variant_bytes.len(),
+            "equivalence_verified": true,
+        }))
+        .with_receipt(receipt_id);
+        outcome.limitations.push(
+            "This deterministic lowercase-hex fixture exists only to validate defensive observability equivalence; it is not an evasion or bypass mechanism."
+                .to_string(),
+        );
+        Ok(outcome)
+    }
+}
+
+struct ObservabilityVariantAction;
+static OBSERVABILITY_VARIANT_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    ..reviewed_descriptor! {
+        id: "sandbox.observability.variant.v1",
+        version: "1.0.0",
+        behavior_ids: &["sandbox.observability.variant.v1"],
+        summary: "Create a reversible lowercase-hex observability fixture from one reviewed synthetic bundle.",
+        schema: observability_variant_schema,
+        capabilities: &[Capability::FilesystemRead, Capability::FilesystemWrite],
+        tier: SafetyTier::Safe,
+        readiness: ActionReadiness::Ready,
+        targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "file_create" }],
+        cleanup: Some("sandbox.cleanup.v1"),
+        limits: TASK_LIMITS,
+        effects: (true, false, false),
+        receipt: true,
+    }
+};
+impl Action for ObservabilityVariantAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        &OBSERVABILITY_VARIANT_DESCRIPTOR
+    }
+    fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        Ok(Box::new(ObservabilityVariantPrepared(parse_params(
+            params,
+        )?)))
+    }
+}
+
+// -------------------------------------------------------------------------
 // sandbox.network.loopback.v1
 
 #[derive(Debug, Deserialize)]
@@ -1957,7 +2592,10 @@ struct NetworkLoopbackParams {
     destination: NetworkDestination,
 }
 
-struct NetworkLoopbackPrepared(NetworkLoopbackParams);
+struct NetworkLoopbackPrepared {
+    params: NetworkLoopbackParams,
+    reviewed_body: Option<Vec<u8>>,
+}
 
 const LOOPBACK_RECEIVER_CHALLENGE_SCHEMA_VERSION: &str = "bluefire.loopback-receiver-challenge.v1";
 const LOOPBACK_RECEIVER_REQUEST_SCHEMA_VERSION: &str = "bluefire.loopback-receiver-request.v1";
@@ -2517,24 +3155,30 @@ impl PreparedAction for NetworkLoopbackPrepared {
     ) -> Result<ActionOutcome, ActionFailure> {
         let started = Instant::now();
         let budget = Duration::from_millis(context.manifest.limits.timeout_ms);
-        let artifact = authorize_path(context, &self.0.artifact, false)?;
+        let artifact = authorize_path(context, &self.params.artifact, false)?;
         // This authorization intentionally occurs before constructing or
         // connecting a socket. A refused destination has no network effect.
-        let ip = ensure_network_authorized(context.manifest, context.profile, &self.0.destination)
-            .map_err(|error| ActionFailure::blocked("network_scope_blocked", error))?;
+        let ip =
+            ensure_network_authorized(context.manifest, context.profile, &self.params.destination)
+                .map_err(|error| ActionFailure::blocked("network_scope_blocked", error))?;
         // The transport/watchdog supplies this exact pair through a scrubbed
         // child environment. Missing, partial, malformed, or mismatched
         // material blocks the action before the first connection attempt.
         let receiver_authentication = receiver_task_authentication()?;
-        let artifact_path = context
-            .root
-            .resolve_existing(&artifact)
-            .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
-        let body = read_file_bounded(&artifact_path, context.manifest.limits.max_artifact_bytes)
-            .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
+        let body = match self.reviewed_body {
+            Some(body) => body,
+            None => {
+                let artifact_path = context
+                    .root
+                    .resolve_existing(&artifact)
+                    .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
+                read_file_bounded(&artifact_path, context.manifest.limits.max_artifact_bytes)
+                    .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?
+            }
+        };
         let body_sha256 = crate::contract::sha256_hex(&body);
-        let socket = SocketAddr::new(ip, self.0.destination.port);
-        let authority = loopback_authority(&self.0.destination);
+        let socket = SocketAddr::new(ip, self.params.destination.port);
+        let authority = loopback_authority(&self.params.destination);
         let response_limit = context
             .manifest
             .limits
@@ -2564,7 +3208,7 @@ impl PreparedAction for NetworkLoopbackPrepared {
             &challenge_bytes,
             challenge_output.truncated,
             &receiver_authentication,
-            &self.0.destination,
+            &self.params.destination,
         )
         .map_err(|_| {
             ActionFailure::failed(
@@ -2586,8 +3230,8 @@ impl PreparedAction for NetworkLoopbackPrepared {
             "task_id": receiver_authentication.task_id,
             "session_id": challenge.session_id,
             "nonce": challenge.nonce,
-            "host": self.0.destination.host,
-            "port": self.0.destination.port,
+            "host": self.params.destination.host,
+            "port": self.params.destination.port,
             "sha256": body_sha256,
             "content_length": body.len(),
         });
@@ -2640,7 +3284,7 @@ impl PreparedAction for NetworkLoopbackPrepared {
         Ok(ActionOutcome {
             status,
             output: json!({
-                "destination": self.0.destination,
+                "destination": self.params.destination,
                 "artifact": artifact,
                 "bytes_sent": body.len(),
                 "sha256": body_sha256,
@@ -2706,7 +3350,80 @@ impl Action for NetworkLoopbackAction {
         &NETWORK_LOOPBACK_DESCRIPTOR
     }
     fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
-        Ok(Box::new(NetworkLoopbackPrepared(parse_params(params)?)))
+        Ok(Box::new(NetworkLoopbackPrepared {
+            params: parse_params(params)?,
+            reviewed_body: None,
+        }))
+    }
+}
+
+// -------------------------------------------------------------------------
+// sandbox.peer.handoff.v1
+
+fn default_peer_handoff_port() -> u32 {
+    4_317
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeerHandoffParams {
+    #[serde(default = "default_peer_handoff_port")]
+    port: u32,
+}
+
+struct PeerHandoffPrepared(PeerHandoffParams);
+
+impl PreparedAction for PeerHandoffPrepared {
+    fn execute(
+        self: Box<Self>,
+        context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        if !(1_024..=65_535).contains(&self.0.port) {
+            return Err(ActionFailure::refused(
+                "invalid_action_params",
+                "port must be between 1024 and 65535",
+            ));
+        }
+        let source = load_reviewed_staged_bundle(context)?;
+        Box::new(NetworkLoopbackPrepared {
+            params: NetworkLoopbackParams {
+                artifact: source.relative,
+                destination: NetworkDestination {
+                    host: "127.0.0.1".to_string(),
+                    port: self.0.port as u16,
+                },
+            },
+            reviewed_body: Some(source.bytes),
+        })
+        .execute(context)
+    }
+}
+
+struct PeerHandoffAction;
+static PEER_HANDOFF_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    ..reviewed_descriptor! {
+        id: "sandbox.peer.handoff.v1",
+        version: "1.0.0",
+        behavior_ids: &["sandbox.peer.handoff.v1"],
+        summary: "Hand one reviewed synthetic bundle to an authenticated literal-loopback peer session.",
+        schema: peer_handoff_schema,
+        capabilities: &[Capability::FilesystemRead, Capability::NetworkLoopback],
+        tier: SafetyTier::Controlled,
+        readiness: ActionReadiness::Ready,
+        targets: &["sandbox", "loopback_service"],
+        hints: &[ObservationHint { source: "network_fixture", signal: "authenticated_handoff" }],
+        cleanup: None,
+        limits: TASK_LIMITS,
+        effects: (false, true, false),
+        receipt: false,
+    }
+};
+impl Action for PeerHandoffAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        &PEER_HANDOFF_DESCRIPTOR
+    }
+    fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        Ok(Box::new(PeerHandoffPrepared(parse_params(params)?)))
     }
 }
 
@@ -3120,6 +3837,9 @@ impl Action for CleanupAction {
     }
 }
 
+static NATIVE_CANARY: NativeCanaryAction = NativeCanaryAction;
+static IDENTITY_MATERIAL_SEED: IdentityMaterialSeedAction = IdentityMaterialSeedAction;
+static IDENTITY_MATERIAL_INSPECT: IdentityMaterialInspectAction = IdentityMaterialInspectAction;
 static FIXTURE_CREATE: FixtureCreateAction = FixtureCreateAction;
 static FIXTURE_TRANSFORM: FixtureTransformAction = FixtureTransformAction;
 static DISCOVERY_LIST: DiscoveryListAction = DiscoveryListAction;
@@ -3130,12 +3850,17 @@ static RECURSIVE_DISCOVERY: RecursiveDiscoveryAction = RecursiveDiscoveryAction;
 static ARCHIVE_TAR: ArchiveTarAction = ArchiveTarAction;
 static COLLECTION_STAGE: CollectionStageAction = CollectionStageAction;
 static NETWORK_LOOPBACK: NetworkLoopbackAction = NetworkLoopbackAction;
+static PEER_HANDOFF: PeerHandoffAction = PeerHandoffAction;
+static OBSERVABILITY_VARIANT: ObservabilityVariantAction = ObservabilityVariantAction;
 static EXPORT_LOCAL: ExportLocalAction = ExportLocalAction;
 static RESTRICTED_PERSISTENCE_MARKER: RestrictedPersistenceMarkerAction =
     RestrictedPersistenceMarkerAction;
 static CLEANUP: CleanupAction = CleanupAction;
 
-static REGISTRY: [&'static dyn Action; 13] = [
+static REGISTRY: [&'static dyn Action; 18] = [
+    &NATIVE_CANARY,
+    &IDENTITY_MATERIAL_SEED,
+    &IDENTITY_MATERIAL_INSPECT,
     &FIXTURE_CREATE,
     &FIXTURE_TRANSFORM,
     &DISCOVERY_LIST,
@@ -3146,6 +3871,8 @@ static REGISTRY: [&'static dyn Action; 13] = [
     &ARCHIVE_TAR,
     &COLLECTION_STAGE,
     &NETWORK_LOOPBACK,
+    &PEER_HANDOFF,
+    &OBSERVABILITY_VARIANT,
     &EXPORT_LOCAL,
     &RESTRICTED_PERSISTENCE_MARKER,
     &CLEANUP,
@@ -3182,6 +3909,9 @@ mod tests {
             .map(|descriptor| descriptor.action_id)
             .collect::<BTreeSet<_>>();
         let expected = BTreeSet::from([
+            "sandbox.execution.native-canary.v1",
+            "sandbox.identity-material.seed.v1",
+            "sandbox.identity-material.inspect.v1",
             "sandbox.fixture.create.v1",
             "sandbox.fixture.transform.v1",
             "sandbox.discovery.list.v1",
@@ -3192,6 +3922,8 @@ mod tests {
             "sandbox.archive.tar.v1",
             "sandbox.collection.stage.v1",
             "sandbox.network.loopback.v1",
+            "sandbox.peer.handoff.v1",
+            "sandbox.observability.variant.v1",
             "sandbox.export.local.v1",
             "sandbox.restricted.persistence-marker.v1",
             "sandbox.cleanup.v1",

@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from .planner import PlanStep
 from .runner_client import reject_forbidden_execution_keys
+
+_IDENTITY_MATERIAL_PATH = "identity-material/public-canary.json"
+_IDENTITY_MATERIAL_SHA256 = "4af6ae2cf13d13d9d325632af3f90d1730faae52424f176b2cc34a0eef0db6ca"
+_IDENTITY_MATERIAL_SIZE = 189
+_OBSERVABILITY_VARIANT_PATH = "observability/variant.bin"
+_STAGED_BUNDLE_PATHS = frozenset({"staged/bundle.json", "staged/bundle.jsonl"})
+_NATIVE_CANARY_SEED = b"bluefire-native-execution-canary-v1"
 
 
 class RunnerAdapterError(ValueError):
@@ -87,6 +95,47 @@ def _runner_sha256(value: Any, context: str) -> str:
     return value
 
 
+def _single_receipt_ids(receipt_ids: Sequence[str], context: str) -> list[str]:
+    validated = [_receipt_id(value) for value in receipt_ids]
+    if len(validated) != 1:
+        raise RunnerAdapterError(f"{context} requires exactly one runner-issued receipt ID")
+    return validated
+
+
+def _exact_parameter_keys(
+    parameters: Mapping[str, Any], *, allowed: frozenset[str], context: str
+) -> None:
+    extras = set(parameters) - allowed
+    if extras:
+        raise RunnerAdapterError(f"{context} contains unreviewed parameters")
+
+
+def _bound_content_artifact(
+    value: Any,
+    context: str,
+    *,
+    artifact_type: str,
+    allowed_paths: frozenset[str],
+) -> tuple[Mapping[str, Any], str, str, int]:
+    artifact = _artifact_mapping(value, context)
+    if artifact.get("type") != artifact_type:
+        raise RunnerAdapterError(f"{context}.type does not match the reviewed artifact type")
+    path = _artifact_path(artifact, context)
+    if path not in allowed_paths:
+        raise RunnerAdapterError(f"{context}.path is not a reviewed fixed path")
+    sha256 = _runner_sha256(artifact.get("sha256"), f"{context}.sha256")
+    size = _bounded_integer(artifact.get("size"), f"{context}.size", 1, 2**63 - 1)
+    return artifact, path, sha256, size
+
+
+def _native_canary_digests(rounds: int) -> tuple[str, str]:
+    state = hashlib.sha256(_NATIVE_CANARY_SEED).digest()
+    seed_sha256 = state.hex()
+    for _ in range(rounds):
+        state = hashlib.sha256(state).digest()
+    return seed_sha256, state.hex()
+
+
 def _exact_fixture_discovery_record(
     *,
     bound_inputs: Mapping[str, Any],
@@ -143,7 +192,7 @@ def _exact_fixture_discovery_record(
 
 
 class RunnerActionAdapter:
-    """Compile only the thirteen reviewed action IDs into strict runner params.
+    """Compile only the eighteen reviewed action IDs into strict runner params.
 
     Paths are constants or validated outputs of earlier runner actions.  No
     scenario parameter can become an executable, command, or filesystem path.
@@ -160,7 +209,12 @@ class RunnerActionAdapter:
             "sandbox.discovery.recursive.v1",
             "sandbox.archive.tar.v1",
             "sandbox.collection.stage.v1",
+            "sandbox.execution.native-canary.v1",
+            "sandbox.identity-material.seed.v1",
+            "sandbox.identity-material.inspect.v1",
             "sandbox.network.loopback.v1",
+            "sandbox.peer.handoff.v1",
+            "sandbox.observability.variant.v1",
             "sandbox.export.local.v1",
             "sandbox.restricted.persistence-marker.v1",
             "sandbox.cleanup.v1",
@@ -179,7 +233,48 @@ class RunnerActionAdapter:
         if action_id not in self.action_ids:
             raise RunnerAdapterError(f"unreviewed or missing runner action: {action_id}")
 
-        if action_id == "sandbox.fixture.create.v1":
+        if action_id == "sandbox.execution.native-canary.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset({"rounds"}),
+                context="native execution canary",
+            )
+            rounds = _bounded_integer(step.parameters.get("rounds", 256), "rounds", 1, 4096)
+            adapted = AdaptedAction(params={"rounds": rounds}, filesystem_scope=())
+        elif action_id == "sandbox.identity-material.seed.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset(),
+                context="identity-material seed",
+            )
+            adapted = AdaptedAction(
+                params={},
+                filesystem_scope=(_IDENTITY_MATERIAL_PATH,),
+                observable_paths=(_IDENTITY_MATERIAL_PATH,),
+            )
+        elif action_id == "sandbox.identity-material.inspect.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset(),
+                context="identity-material inspection",
+            )
+            identity, path, sha256, size = _bound_content_artifact(
+                bound_inputs.get("identity_material"),
+                "identity_material",
+                artifact_type="artifact.sandbox.identity-material.v1",
+                allowed_paths=frozenset({_IDENTITY_MATERIAL_PATH}),
+            )
+            if (
+                sha256 != _IDENTITY_MATERIAL_SHA256
+                or size != _IDENTITY_MATERIAL_SIZE
+                or identity.get("classification") != "public"
+                or identity.get("synthetic") is not True
+            ):
+                raise RunnerAdapterError(
+                    "identity_material does not match the fixed public synthetic canary"
+                )
+            adapted = AdaptedAction(params={}, filesystem_scope=(path,))
+        elif action_id == "sandbox.fixture.create.v1":
             record_count = _bounded_integer(
                 step.parameters.get("record_count", 6), "record_count", 1, 100
             )
@@ -300,6 +395,47 @@ class RunnerActionAdapter:
                 filesystem_scope=(bundle,),
                 network_destinations=(network_destination,),
             )
+        elif action_id == "sandbox.peer.handoff.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset({"port"}),
+                context="peer handoff",
+            )
+            _, bundle, _, _ = _bound_content_artifact(
+                bound_inputs.get("bundle"),
+                "bundle",
+                artifact_type="artifact.sandbox.bundle.v1",
+                allowed_paths=_STAGED_BUNDLE_PATHS,
+            )
+            port = _bounded_integer(step.parameters.get("port", 4317), "port", 1024, 65535)
+            network_destination = {"host": "127.0.0.1", "port": port}
+            adapted = AdaptedAction(
+                params={"port": port},
+                filesystem_scope=(bundle,),
+                network_destinations=(network_destination,),
+            )
+        elif action_id == "sandbox.observability.variant.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset({"representation"}),
+                context="observability variant",
+            )
+            _, bundle, _, _ = _bound_content_artifact(
+                bound_inputs.get("bundle"),
+                "bundle",
+                artifact_type="artifact.sandbox.bundle.v1",
+                allowed_paths=_STAGED_BUNDLE_PATHS,
+            )
+            representation = _reviewed_choice(
+                step.parameters.get("representation"),
+                "representation",
+                frozenset({"canonical", "chunked_hex"}),
+            )
+            adapted = AdaptedAction(
+                params={"representation": representation},
+                filesystem_scope=(bundle, _OBSERVABILITY_VARIANT_PATH),
+                observable_paths=(_OBSERVABILITY_VARIANT_PATH,),
+            )
         elif action_id == "sandbox.export.local.v1":
             bundle = _artifact_path(bound_inputs.get("bundle"), "bundle")
             retention_label = _reviewed_choice(
@@ -358,6 +494,157 @@ class RunnerActionAdapter:
         if not isinstance(runner_output, Mapping):
             raise RunnerAdapterError("successful runner output must be an object")
 
+        if action_id == "sandbox.execution.native-canary.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset({"rounds"}),
+                context="native execution canary",
+            )
+            if set(runner_output) != {
+                "algorithm",
+                "implementation",
+                "rounds",
+                "seed_sha256",
+                "result_sha256",
+                "external_effects",
+            }:
+                raise RunnerAdapterError("runner native-canary output shape is invalid")
+            expected_rounds = _bounded_integer(
+                step.parameters.get("rounds", 256), "rounds", 1, 4096
+            )
+            actual_rounds = _bounded_integer(
+                runner_output.get("rounds"), "runner native-canary output.rounds", 1, 4096
+            )
+            seed_sha256 = _runner_sha256(
+                runner_output.get("seed_sha256"),
+                "runner native-canary output.seed_sha256",
+            )
+            result_sha256 = _runner_sha256(
+                runner_output.get("result_sha256"),
+                "runner native-canary output.result_sha256",
+            )
+            expected_seed_sha256, expected_result_sha256 = _native_canary_digests(expected_rounds)
+            if (
+                runner_output.get("algorithm") != "sha256"
+                or runner_output.get("implementation") != "rust-in-process-sha256-v1"
+                or actual_rounds != expected_rounds
+                or seed_sha256 != expected_seed_sha256
+                or result_sha256 != expected_result_sha256
+                or runner_output.get("external_effects") is not False
+            ):
+                raise RunnerAdapterError("runner native-canary output changed the reviewed request")
+            return {
+                "result": {
+                    "type": "artifact.sandbox.execution.canary.v1",
+                    "algorithm": "sha256",
+                    "implementation": "rust-in-process-sha256-v1",
+                    "rounds": actual_rounds,
+                    "seed_sha256": seed_sha256,
+                    "result_sha256": result_sha256,
+                    "external_effects": False,
+                }
+            }
+        if action_id == "sandbox.identity-material.seed.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset(),
+                context="identity-material seed",
+            )
+            if set(runner_output) != {
+                "artifact",
+                "byte_count",
+                "classification",
+                "sha256",
+                "synthetic",
+            }:
+                raise RunnerAdapterError("runner identity-material seed output shape is invalid")
+            path = _runner_path(
+                runner_output.get("artifact"), "runner identity-material seed output.artifact"
+            )
+            byte_count = _bounded_integer(
+                runner_output.get("byte_count"),
+                "runner identity-material seed output.byte_count",
+                1,
+                2**63 - 1,
+            )
+            sha256 = _runner_sha256(
+                runner_output.get("sha256"),
+                "runner identity-material seed output.sha256",
+            )
+            if (
+                path != _IDENTITY_MATERIAL_PATH
+                or byte_count != _IDENTITY_MATERIAL_SIZE
+                or sha256 != _IDENTITY_MATERIAL_SHA256
+                or runner_output.get("classification") != "public"
+                or runner_output.get("synthetic") is not True
+            ):
+                raise RunnerAdapterError(
+                    "runner identity-material seed output changed the fixed public canary"
+                )
+            return {
+                "identity_material": {
+                    "type": "artifact.sandbox.identity-material.v1",
+                    "path": path,
+                    "sha256": sha256,
+                    "size": byte_count,
+                    "classification": "public",
+                    "synthetic": True,
+                    "receipt_ids": _single_receipt_ids(receipt_ids, "identity-material seed"),
+                }
+            }
+        if action_id == "sandbox.identity-material.inspect.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset(),
+                context="identity-material inspection",
+            )
+            if set(runner_output) != {"byte_count", "field_count", "sha256"}:
+                raise RunnerAdapterError(
+                    "runner identity-material inspection output shape is invalid"
+                )
+            identity, path, expected_sha256, expected_size = _bound_content_artifact(
+                bound_inputs.get("identity_material"),
+                "identity_material",
+                artifact_type="artifact.sandbox.identity-material.v1",
+                allowed_paths=frozenset({_IDENTITY_MATERIAL_PATH}),
+            )
+            byte_count = _bounded_integer(
+                runner_output.get("byte_count"),
+                "runner identity-material inspection output.byte_count",
+                1,
+                2**63 - 1,
+            )
+            field_count = _bounded_integer(
+                runner_output.get("field_count"),
+                "runner identity-material inspection output.field_count",
+                0,
+                64,
+            )
+            sha256 = _runner_sha256(
+                runner_output.get("sha256"),
+                "runner identity-material inspection output.sha256",
+            )
+            if (
+                expected_sha256 != _IDENTITY_MATERIAL_SHA256
+                or expected_size != _IDENTITY_MATERIAL_SIZE
+                or identity.get("classification") != "public"
+                or identity.get("synthetic") is not True
+                or byte_count != expected_size
+                or field_count != 5
+                or sha256 != expected_sha256
+            ):
+                raise RunnerAdapterError(
+                    "runner identity-material inspection does not match its bound canary"
+                )
+            return {
+                "inspection": {
+                    "type": "artifact.sandbox.identity-material.inspection.v1",
+                    "path": path,
+                    "sha256": sha256,
+                    "size": byte_count,
+                    "field_count": field_count,
+                }
+            }
         if action_id == "sandbox.fixture.create.v1":
             if set(runner_output) != {
                 "artifact",
@@ -535,10 +822,10 @@ class RunnerActionAdapter:
             )
             if runner_output.get("format") != bundle_format:
                 raise RunnerAdapterError("runner bundle format does not match the requested format")
-            records = bound_inputs.get("records")
-            if not isinstance(records, list) or len(records) != 1:
+            bound_records_value = bound_inputs.get("records")
+            if not isinstance(bound_records_value, list) or len(bound_records_value) != 1:
                 raise RunnerAdapterError("bound collection records are invalid")
-            source_record = _artifact_mapping(records[0], "records[0]")
+            source_record = _artifact_mapping(bound_records_value[0], "records[0]")
             expected_count = _bounded_integer(
                 source_record.get("record_count"), "records[0].record_count", 1, 100
             )
@@ -658,6 +945,177 @@ class RunnerActionAdapter:
                     "type": "artifact.sandbox.network.receipt.v1",
                     "transport": "loopback",
                     "details": dict(runner_output),
+                }
+            }
+        if action_id == "sandbox.peer.handoff.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset({"port"}),
+                context="peer handoff",
+            )
+            if set(runner_output) != {
+                "destination",
+                "artifact",
+                "bytes_sent",
+                "sha256",
+                "http_status",
+                "receiver_acknowledged",
+                "receiver_stored",
+            }:
+                raise RunnerAdapterError("runner peer-handoff output shape is invalid")
+            _, source, expected_sha256, expected_size = _bound_content_artifact(
+                bound_inputs.get("bundle"),
+                "bundle",
+                artifact_type="artifact.sandbox.bundle.v1",
+                allowed_paths=_STAGED_BUNDLE_PATHS,
+            )
+            expected_port = _bounded_integer(step.parameters.get("port", 4317), "port", 1024, 65535)
+            destination = _artifact_mapping(
+                runner_output.get("destination"), "runner peer-handoff output.destination"
+            )
+            if set(destination) != {"host", "port"}:
+                raise RunnerAdapterError("runner peer-handoff destination shape is invalid")
+            actual_port = _bounded_integer(
+                destination.get("port"),
+                "runner peer-handoff output.destination.port",
+                1024,
+                65535,
+            )
+            actual_source = _runner_path(
+                runner_output.get("artifact"), "runner peer-handoff output.artifact"
+            )
+            actual_size = _bounded_integer(
+                runner_output.get("bytes_sent"),
+                "runner peer-handoff output.bytes_sent",
+                1,
+                2**63 - 1,
+            )
+            actual_sha256 = _runner_sha256(
+                runner_output.get("sha256"), "runner peer-handoff output.sha256"
+            )
+            http_status = _bounded_integer(
+                runner_output.get("http_status"),
+                "runner peer-handoff output.http_status",
+                200,
+                201,
+            )
+            acknowledged = _reviewed_boolean(
+                runner_output.get("receiver_acknowledged"),
+                "runner peer-handoff output.receiver_acknowledged",
+            )
+            receiver_stored = _reviewed_boolean(
+                runner_output.get("receiver_stored"),
+                "runner peer-handoff output.receiver_stored",
+            )
+            if (
+                destination.get("host") != "127.0.0.1"
+                or actual_port != expected_port
+                or actual_source != source
+                or actual_size != expected_size
+                or actual_sha256 != expected_sha256
+                or acknowledged is not True
+                or (http_status == 201) != receiver_stored
+            ):
+                raise RunnerAdapterError(
+                    "runner peer-handoff output does not match the bound request"
+                )
+            return {
+                "receipt": {
+                    "type": "artifact.sandbox.peer-handoff.receipt.v1",
+                    "transport": "authenticated_loopback",
+                    "artifact": actual_source,
+                    "sha256": actual_sha256,
+                    "size": actual_size,
+                    "destination": dict(destination),
+                    "http_status": http_status,
+                    "receiver_acknowledged": True,
+                    "receiver_stored": receiver_stored,
+                }
+            }
+        if action_id == "sandbox.observability.variant.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset({"representation"}),
+                context="observability variant",
+            )
+            if set(runner_output) != {
+                "artifact",
+                "representation",
+                "source_artifact",
+                "source_sha256",
+                "source_size",
+                "sha256",
+                "size",
+                "equivalence_verified",
+            }:
+                raise RunnerAdapterError("runner observability-variant output shape is invalid")
+            _, source, expected_source_sha256, expected_source_size = _bound_content_artifact(
+                bound_inputs.get("bundle"),
+                "bundle",
+                artifact_type="artifact.sandbox.bundle.v1",
+                allowed_paths=_STAGED_BUNDLE_PATHS,
+            )
+            representation = _reviewed_choice(
+                step.parameters.get("representation"),
+                "representation",
+                frozenset({"canonical", "chunked_hex"}),
+            )
+            path = _runner_path(
+                runner_output.get("artifact"),
+                "runner observability-variant output.artifact",
+            )
+            source_artifact = _runner_path(
+                runner_output.get("source_artifact"),
+                "runner observability-variant output.source_artifact",
+            )
+            source_sha256 = _runner_sha256(
+                runner_output.get("source_sha256"),
+                "runner observability-variant output.source_sha256",
+            )
+            source_size = _bounded_integer(
+                runner_output.get("source_size"),
+                "runner observability-variant output.source_size",
+                1,
+                2**63 - 1,
+            )
+            sha256 = _runner_sha256(
+                runner_output.get("sha256"),
+                "runner observability-variant output.sha256",
+            )
+            size = _bounded_integer(
+                runner_output.get("size"),
+                "runner observability-variant output.size",
+                1,
+                2**63 - 1,
+            )
+            encoded_hex_size = expected_source_size * 2
+            expected_size = encoded_hex_size
+            if representation == "chunked_hex":
+                expected_size += (encoded_hex_size - 1) // 64
+            if (
+                path != _OBSERVABILITY_VARIANT_PATH
+                or runner_output.get("representation") != representation
+                or source_artifact != source
+                or source_sha256 != expected_source_sha256
+                or source_size != expected_source_size
+                or size != expected_size
+                or runner_output.get("equivalence_verified") is not True
+            ):
+                raise RunnerAdapterError(
+                    "runner observability-variant output does not match its bound bundle"
+                )
+            return {
+                "variant": {
+                    "type": "artifact.sandbox.observability.variant.v1",
+                    "path": path,
+                    "representation": representation,
+                    "source_path": source_artifact,
+                    "source_sha256": source_sha256,
+                    "source_size": source_size,
+                    "sha256": sha256,
+                    "size": size,
+                    "equivalence_verified": True,
+                    "receipt_ids": _single_receipt_ids(receipt_ids, "observability variant"),
                 }
             }
         if action_id == "sandbox.export.local.v1":

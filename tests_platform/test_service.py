@@ -39,10 +39,15 @@ EXECUTE_PROFILE_ACTIONS = {
     "sandbox.discovery.list.v1",
     "sandbox.discovery.metadata.v1",
     "sandbox.discovery.recursive.v1",
+    "sandbox.execution.native-canary.v1",
     "sandbox.export.local.v1",
     "sandbox.fixture.create.v1",
     "sandbox.fixture.transform.v1",
+    "sandbox.identity-material.inspect.v1",
+    "sandbox.identity-material.seed.v1",
     "sandbox.network.loopback.v1",
+    "sandbox.observability.variant.v1",
+    "sandbox.peer.handoff.v1",
 }
 
 
@@ -312,8 +317,8 @@ def test_service_seeds_durable_product_state_and_indexes_completed_runs(
     )
 
     assert service.product_store.path == database.resolve()
-    assert service.seed_counts["scenario"] == 6
-    assert service.seed_counts["action"] == 13
+    assert service.seed_counts["scenario"] == 7
+    assert service.seed_counts["action"] == 18
     assert len(service.product_store.list_resources("collector")) == 6
 
     result = service.run(
@@ -1206,6 +1211,7 @@ def test_service_enumerates_all_checkout_and_packaged_scenarios_in_stable_order(
         "scenario.ai-adaptive.safe-chain.v1",
         "scenario.detection.regression.v1",
         "scenario.linux-container.validation.v1",
+        "scenario.operator.representative-validation.v1",
         "scenario.restricted.persistence-canary.v1",
         "scenario.sandbox.research.chain.v1",
         "scenario.windows.endpoint.validation.v1",

@@ -122,7 +122,7 @@ Transport failure is not action success. Invalid JSON, output overflow, timeout,
 
 ## Rust action boundary
 
-The current Rust registry contains thirteen IDs:
+The current Rust registry contains eighteen IDs:
 
 - sandbox.fixture.create.v1
 - sandbox.fixture.transform.v1
@@ -135,10 +135,21 @@ The current Rust registry contains thirteen IDs:
 - sandbox.collection.stage.v1
 - sandbox.network.loopback.v1
 - sandbox.export.local.v1
+- sandbox.execution.native-canary.v1
+- sandbox.identity-material.seed.v1
+- sandbox.identity-material.inspect.v1
+- sandbox.peer.handoff.v1
+- sandbox.observability.variant.v1
 - sandbox.restricted.persistence-marker.v1
 - sandbox.cleanup.v1
 
-Their scope is deliberately narrow: create/transform deterministic fixtures; inspect one exact fixture's metadata plus bounded system, process, and recursive-file facts; create a deterministic archive; stage one fixture as one bundle; send one bounded artifact to a literal allowlisted loopback socket; create a temporary policy-labelled copy at a fixed runner-owned export path; write one fixed non-executable restricted-tier canary marker; and clean receipt-bound objects. The canary never changes host persistence settings.
+Their scope is deliberately narrow: create/transform deterministic fixtures; inspect one exact fixture's metadata plus bounded system, process, and recursive-file facts; create a deterministic archive; stage one fixture as one bundle; send one bounded artifact to a literal allowlisted loopback socket; create a temporary policy-labelled copy at a fixed runner-owned export path; run bounded in-process computation; seed and inspect one public fixed-path identity-material canary; authenticate one staged-bundle handoff to literal IPv4 loopback; create one fixed-path reversible observability representation; write one fixed non-executable restricted-tier canary marker; and clean receipt-bound objects. The canary never changes host persistence settings.
+
+The five representative descriptors are implementation version `1.0.0` and inventory readiness `ready`. Native canary accepts only `rounds` from 1 through 4096 and has no compiled effect capability beyond `NativeExecution`; it launches no process and has no filesystem or network effect. Identity seed has no logical parameter and writes the exact public synthetic document at `identity-material/public-canary.json`. Identity inspection accepts only the resulting typed artifact and returns byte count, field count, and SHA-256 digest without returning values. It is not credential access.
+
+Peer handoff accepts only a port and exactly one typed `staged/bundle.json` or `staged/bundle.jsonl`. Its destination is hardcoded literal `127.0.0.1`, the request is authenticated, and the blocked-network profile lists the action as blocked. Observability variant accepts only `canonical` or `chunked_hex` and creates `observability/variant.bin`. The former is continuous lowercase hexadecimal; the latter uses 64-character lines without a trailing line feed. Both decode exactly to the source bundle. Output metadata names the representation, source and output identities, digests and sizes, and equivalence result. It is a transparent comparison action with no bypass, evasion, or control-impairment claim.
+
+The shipped `scenario.operator.representative-validation.v1` orders native canary, public identity seed/inspection, fixture create/transform/metadata, staging, observability variant, peer handoff of the original staged bundle, and cleanup. All paths are fixed or artifact-derived, and the scenario's provenance and limitations distinguish simulated, executed, and independently observed evidence.
 
 The fixture and staging contracts are exact rather than best-effort. Create writes 1..100 deterministic JSONL records to the adapter-derived `fixtures/input.jsonl`; every record has only `record_id`, `synthetic`, `template`, and `value`. Transform validates the full schema and generated values, canonicalizes the records, and uses a reviewed `redact_values` boolean. When enabled, it replaces every value with the public `synthetic-redacted` placeholder and reports the record and redaction counts.
 
@@ -160,7 +171,7 @@ These constraints describe the source contract. Execute readiness for a particul
 
 Filesystem scope uses normalized relative paths beneath one existing sandbox root. Absolute, drive, UNC/device, alternate-separator traversal, dot-component, reserved-device, symbolic-link, and reparse-point escapes are refused.
 
-Network scope uses literal IP address and port pairs. The current network action accepts loopback only. The canonical profile allowlist contains only 127.0.0.1/32 and ::1/128. DNS names, redirects, proxies, and non-loopback destinations are outside the action contract.
+Network scope uses literal IP address and port pairs. Both network actions accept loopback only; peer handoff further hardcodes `127.0.0.1`. The canonical profile allowlist contains only 127.0.0.1/32 and ::1/128. DNS names, redirects, proxies, and non-loopback destinations are outside the action contract.
 
 ## Results and evidence
 

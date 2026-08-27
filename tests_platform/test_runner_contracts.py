@@ -19,9 +19,59 @@ from bluefire.runner_contracts import (
     seal_manifest,
     seal_profile,
 )
+from bluefire.runner_inventory import (
+    BUILTIN_RUNNER_ACTION_IDS,
+    BUILTIN_RUNNER_ACTION_VERSIONS,
+)
 from bluefire.util import content_hash
 
 ROOT = Path(__file__).resolve().parents[1]
+
+EXPECTED_BUILTIN_RUNNER_ACTION_VERSIONS = {
+    "endpoint.discovery.processes.v1": "1.0.0",
+    "endpoint.discovery.system.v1": "1.0.0",
+    "sandbox.archive.tar.v1": "1.0.0",
+    "sandbox.cleanup.v1": "1.1.0",
+    "sandbox.collection.stage.v1": "2.0.0",
+    "sandbox.discovery.list.v1": "2.0.0",
+    "sandbox.discovery.metadata.v1": "2.0.0",
+    "sandbox.discovery.recursive.v1": "1.0.0",
+    "sandbox.execution.native-canary.v1": "1.0.0",
+    "sandbox.export.local.v1": "2.0.0",
+    "sandbox.fixture.create.v1": "2.0.0",
+    "sandbox.fixture.transform.v1": "2.0.0",
+    "sandbox.identity-material.inspect.v1": "1.0.0",
+    "sandbox.identity-material.seed.v1": "1.0.0",
+    "sandbox.network.loopback.v1": "1.0.0",
+    "sandbox.observability.variant.v1": "1.0.0",
+    "sandbox.peer.handoff.v1": "1.0.0",
+    "sandbox.restricted.persistence-marker.v1": "1.0.0",
+}
+EXPECTED_EXECUTE_ACTIONS = [
+    "sandbox.execution.native-canary.v1",
+    "sandbox.identity-material.seed.v1",
+    "sandbox.identity-material.inspect.v1",
+    "sandbox.fixture.create.v1",
+    "sandbox.fixture.transform.v1",
+    "sandbox.discovery.list.v1",
+    "sandbox.discovery.metadata.v1",
+    "endpoint.discovery.system.v1",
+    "endpoint.discovery.processes.v1",
+    "sandbox.discovery.recursive.v1",
+    "sandbox.collection.stage.v1",
+    "sandbox.archive.tar.v1",
+    "sandbox.network.loopback.v1",
+    "sandbox.peer.handoff.v1",
+    "sandbox.observability.variant.v1",
+    "sandbox.export.local.v1",
+    "sandbox.cleanup.v1",
+]
+
+
+def test_python_authority_contains_exactly_eighteen_compiled_actions() -> None:
+    assert dict(BUILTIN_RUNNER_ACTION_VERSIONS) == EXPECTED_BUILTIN_RUNNER_ACTION_VERSIONS
+    assert BUILTIN_RUNNER_ACTION_IDS == frozenset(EXPECTED_BUILTIN_RUNNER_ACTION_VERSIONS)
+    assert len(BUILTIN_RUNNER_ACTION_IDS) == 18
 
 
 def _execution_binding(
@@ -76,6 +126,13 @@ def _restricted_profile() -> RunnerProfile:
     )
 
 
+def _blocked_network_profile() -> RunnerProfile:
+    config = load_config(ROOT / "config" / "bluefire.example.yaml")
+    return next(
+        profile for profile in config.runner_profiles if profile.id == "sandbox-blocked-network.v1"
+    )
+
+
 def _unsigned_profile(document: dict[str, object]) -> dict[str, object]:
     unsigned = copy.deepcopy(document)
     unsigned["policy_digest"] = ""
@@ -124,6 +181,7 @@ def test_runner_profile_has_exact_shape_and_content_seal(tmp_path: Path) -> None
     assert document["allowed_actions"] == list(profile.enabled_actions)
     assert document["control_blocked_actions"] == []
     assert document["capabilities"] == [
+        "native_execution",
         "system_discovery",
         "process_discovery",
         "filesystem_read",

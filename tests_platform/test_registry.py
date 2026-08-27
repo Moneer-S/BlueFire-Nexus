@@ -7,6 +7,15 @@ import pytest
 from bluefire.config import RunnerProfile, load_config
 from bluefire.contracts import ExecutionState
 from bluefire.registry import BehaviorRegistry, RegistryError, load_builtin_registry
+from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_VERSIONS
+
+REPRESENTATIVE_ACTION_IDS = {
+    "sandbox.execution.native-canary.v1",
+    "sandbox.identity-material.seed.v1",
+    "sandbox.identity-material.inspect.v1",
+    "sandbox.peer.handoff.v1",
+    "sandbox.observability.variant.v1",
+}
 
 EXPECTED_ACTION_IDS = {
     "sandbox.fixture.create.v1",
@@ -22,17 +31,94 @@ EXPECTED_ACTION_IDS = {
     "sandbox.export.local.v1",
     "sandbox.restricted.persistence-marker.v1",
     "sandbox.cleanup.v1",
-}
+} | REPRESENTATIVE_ACTION_IDS
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_builtin_registry_has_only_reviewed_bounded_actions() -> None:
     registry = load_builtin_registry()
     assert set(registry.action_ids) == EXPECTED_ACTION_IDS
+    assert {
+        behavior.id
+        for behavior in registry.behaviors
+        if behavior.execution_state is ExecutionState.ACTION
+    } == EXPECTED_ACTION_IDS
     assert all(
         "command" not in action_id and "script" not in action_id
         for action_id in registry.action_ids
     )
+
+
+def test_representative_actions_are_versioned_bounded_and_cross_platform() -> None:
+    registry = load_builtin_registry()
+    assert {
+        action_id: BUILTIN_RUNNER_ACTION_VERSIONS[action_id]
+        for action_id in REPRESENTATIVE_ACTION_IDS
+    } == {action_id: "1.0.0" for action_id in REPRESENTATIVE_ACTION_IDS}
+
+    expected_contracts = {
+        "sandbox.execution.native-canary.v1": {
+            "tier": "safe",
+            "capabilities": ("native.execution",),
+            "mutates": False,
+            "cleanup": None,
+        },
+        "sandbox.identity-material.seed.v1": {
+            "tier": "safe",
+            "capabilities": ("sandbox.identity-material.seed", "filesystem.write"),
+            "mutates": True,
+            "cleanup": "sandbox.cleanup.v1",
+        },
+        "sandbox.identity-material.inspect.v1": {
+            "tier": "safe",
+            "capabilities": ("sandbox.identity-material.inspect", "filesystem.read"),
+            "mutates": False,
+            "cleanup": None,
+        },
+        "sandbox.peer.handoff.v1": {
+            "tier": "controlled",
+            "capabilities": ("sandbox.peer", "filesystem.read", "network.loopback"),
+            "mutates": False,
+            "cleanup": None,
+        },
+        "sandbox.observability.variant.v1": {
+            "tier": "safe",
+            "capabilities": (
+                "sandbox.observability.variant",
+                "filesystem.read",
+                "filesystem.write",
+            ),
+            "mutates": True,
+            "cleanup": "sandbox.cleanup.v1",
+        },
+    }
+    for action_id, expected in expected_contracts.items():
+        action = registry.get_action(action_id)
+        behavior = registry.get_behavior(action_id)
+        assert action.platforms == ("windows", "linux", "macos")
+        assert behavior.platforms == action.platforms
+        assert behavior.execution_state is ExecutionState.ACTION
+        assert action.safety_tier.value == expected["tier"]
+        assert action.capabilities == expected["capabilities"]
+        assert action.mutates is expected["mutates"]
+        assert action.cleanup_action_id == expected["cleanup"]
+
+
+def test_representative_logical_parameters_expose_no_path_host_or_command() -> None:
+    registry = load_builtin_registry()
+    assert tuple(
+        parameter.name
+        for parameter in registry.get_action("sandbox.execution.native-canary.v1").parameters
+    ) == ("rounds",)
+    assert registry.get_action("sandbox.identity-material.seed.v1").parameters == ()
+    assert registry.get_action("sandbox.identity-material.inspect.v1").parameters == ()
+    assert tuple(
+        parameter.name for parameter in registry.get_action("sandbox.peer.handoff.v1").parameters
+    ) == ("port",)
+    assert tuple(
+        parameter.name
+        for parameter in registry.get_action("sandbox.observability.variant.v1").parameters
+    ) == ("representation",)
 
 
 def test_action_and_behavior_parameter_contracts_are_identical() -> None:

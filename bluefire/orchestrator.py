@@ -1852,6 +1852,15 @@ class Orchestrator:
         receipt_limits = manifest.get("limits")
         if not isinstance(receipt_limits, Mapping):
             raise OrchestrationError("runner manifest has no receipt recovery limits")
+        max_receipt_files = receipt_limits.get("max_files")
+        max_receipt_bytes = receipt_limits.get("max_artifact_bytes")
+        if (
+            isinstance(max_receipt_files, bool)
+            or not isinstance(max_receipt_files, int)
+            or isinstance(max_receipt_bytes, bool)
+            or not isinstance(max_receipt_bytes, int)
+        ):
+            raise OrchestrationError("runner manifest has invalid receipt recovery limits")
 
         def discover_current_receipts(*, require_commit: bool = False) -> tuple[str, ...]:
             return self._discover_runner_receipts(
@@ -1860,8 +1869,8 @@ class Orchestrator:
                 expected_request_hash=str(manifest["request_hash"]),
                 expected_action_id=str(manifest["action_id"]),
                 require_commit=require_commit,
-                max_files=receipt_limits.get("max_files"),
-                max_bytes=receipt_limits.get("max_artifact_bytes"),
+                max_files=max_receipt_files,
+                max_bytes=max_receipt_bytes,
             )
 
         pre_dispatch_receipts = discover_current_receipts()

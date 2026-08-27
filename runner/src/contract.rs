@@ -57,6 +57,7 @@ pub enum RunMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Capability {
+    NativeExecution,
     FilesystemRead,
     FilesystemWrite,
     ProcessSpawn,
@@ -488,6 +489,10 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&RunMode::Execute).unwrap(),
             r#""execute""#
+        );
+        assert_eq!(
+            serde_json::to_string(&Capability::NativeExecution).unwrap(),
+            r#""native_execution""#
         );
         assert_eq!(
             serde_json::to_string(&Capability::FilesystemWrite).unwrap(),

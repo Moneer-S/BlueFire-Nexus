@@ -32,11 +32,11 @@ def test_bootstrap_seeds_versioned_secret_safe_product_metadata(tmp_path: Path) 
     )
 
     assert first == second
-    assert first["scenario"] == 6
-    assert first["action"] == 13
+    assert first["scenario"] == 7
+    assert first["action"] == 18
     assert first["collector"] >= 6
-    assert len(store.list_scenarios()) == 6
-    assert len(store.list_resources("action")) == 13
+    assert len(store.list_scenarios()) == 7
+    assert len(store.list_resources("action")) == 18
     providers = store.list_resources("model_provider")
     serialized = json.dumps(providers, sort_keys=True)
     assert "OPENAI_API_KEY" in serialized
