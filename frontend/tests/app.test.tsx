@@ -353,6 +353,8 @@ describe("product application", () => {
     expect(screen.getAllByRole("radio").filter((item) => item.getAttribute("name") === "run-mode")).toHaveLength(2);
     expect(screen.getAllByRole("radio").filter((item) => item.getAttribute("name") === "autonomy")).toHaveLength(3);
     expect(screen.getByText("Profile-owned enforcement")).toBeInTheDocument();
+    expect(screen.getByText("Builder handoff")).toBeVisible();
+    expect(screen.getByText("Not run for this handoff")).toBeVisible();
     expect(screen.getByRole("heading", { name: "No active job" })).toBeVisible();
     expect(screen.queryByText("Job submission in progress")).not.toBeInTheDocument();
     expect(screen.queryByText("Planning request submitted")).not.toBeInTheDocument();

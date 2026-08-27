@@ -208,6 +208,9 @@ def test_run_ui_separates_preview_preferences_from_canonical_preflight() -> None
         "Expected outputs",
         "Required capabilities",
         "sent for exact binding",
+        "Builder handoff",
+        "Unsaved browser draft",
+        "Next required move",
     ):
         assert copy in runs
     api = (SOURCE_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")

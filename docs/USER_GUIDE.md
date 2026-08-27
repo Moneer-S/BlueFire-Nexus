@@ -59,6 +59,8 @@ For a large graph:
 
 Graph export downloads a local JSON copy. It does not save, validate, authorize, or execute the graph.
 
+The Runs page repeats a compact **Builder handoff** summary before preflight. Treat it as a bridge, not authority: it identifies whether the graph is still an unsaved browser draft, shows node/route counts, reports Execute action overrides and local review state, and names the next required move. Backend preflight remains the only authorization boundary for a specific run.
+
 ## Choose and validate a scenario
 
 The packaged graphs are listed in the README. For a first run, choose `scenario.sandbox.research.chain.v1`.
