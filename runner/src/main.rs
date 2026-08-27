@@ -80,6 +80,7 @@ fn real_main() -> Result<i32, String> {
                 "receipt_protocol": bluefire_runner::RECEIPT_PROTOCOL_VERSION,
                 "platform": bluefire_runner::Platform::current(),
                 "actions": inventory(),
+                "provider_runtimes": bluefire_runner::provider_runtimes(),
             });
             println!(
                 "{}",

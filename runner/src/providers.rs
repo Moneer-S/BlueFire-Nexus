@@ -10,17 +10,19 @@ use std::fmt;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use wasmi::{
     CompilationMode, Config, EnforcedLimits, Engine, Linker, Module, Store, StoreLimits,
     StoreLimitsBuilder, TrapCode,
 };
 
-use crate::contract::canonical_json;
+use crate::contract::{canonical_hash, canonical_json};
 
 pub const PROVIDER_ABI_V1: &str = "bluefire.provider-abi.v1";
 pub const PROVIDER_ENTRYPOINT_V1: &str = "bluefire_provider_run_v1";
 pub const PROVIDER_MEMORY_EXPORT: &str = "memory";
+pub const PROVIDER_RUNTIME_VERSION: &str = "wasmi-1.1.0";
 
 const WASM_HEADER: &[u8; 8] = b"\0asm\x01\0\0\0";
 const WASM_PAGE_BYTES: u64 = 65_536;
@@ -29,6 +31,26 @@ pub const HARD_MAX_PROVIDER_MODULE_BYTES: usize = 2 * 1024 * 1024;
 pub const HARD_MAX_PROVIDER_MEMORY_BYTES: usize = 16 * 1024 * 1024;
 pub const HARD_MAX_PROVIDER_JSON_BYTES: usize = 1024 * 1024;
 pub const HARD_MAX_PROVIDER_FUEL: u64 = 100_000_000;
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct ProviderRuntimeHardLimits {
+    pub max_module_bytes: usize,
+    pub max_memory_bytes: usize,
+    pub max_input_bytes: usize,
+    pub max_output_bytes: usize,
+    pub fuel: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderRuntimeDescriptor {
+    pub kind: &'static str,
+    pub abi_version: &'static str,
+    pub readiness: &'static str,
+    pub runtime_version: &'static str,
+    pub no_host_imports: bool,
+    pub hard_limits: ProviderRuntimeHardLimits,
+    pub contract_digest: String,
+}
 
 /// Signed manifest fields required before a provider artifact may be loaded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +197,22 @@ pub fn provider_artifact_digest(artifact: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(artifact)))
 }
 
+pub fn provider_runtime_contract_digest() -> String {
+    canonical_hash(&provider_runtime_contract_value())
+}
+
+pub fn provider_runtimes() -> Vec<ProviderRuntimeDescriptor> {
+    vec![ProviderRuntimeDescriptor {
+        kind: "wasm",
+        abi_version: PROVIDER_ABI_V1,
+        readiness: "ready",
+        runtime_version: PROVIDER_RUNTIME_VERSION,
+        no_host_imports: true,
+        hard_limits: provider_runtime_hard_limits(),
+        contract_digest: provider_runtime_contract_digest(),
+    }]
+}
+
 /// Execute a no-import provider and decode its canonical JSON output as `O`.
 ///
 /// ABI v1 exports exactly one memory named `memory` and one function named
@@ -191,7 +229,7 @@ where
     I: Serialize,
     O: DeserializeOwned,
 {
-    validate_limits(limits)?;
+    validate_provider_limits(limits)?;
     if artifact.len() > limits.max_module_bytes {
         return Err(ProviderError::ArtifactTooLarge {
             size: artifact.len(),
@@ -322,7 +360,7 @@ fn provider_engine() -> Engine {
     Engine::new(&config)
 }
 
-fn validate_limits(limits: ProviderLimits) -> Result<(), ProviderError> {
+pub(crate) fn validate_provider_limits(limits: ProviderLimits) -> Result<(), ProviderError> {
     for (field, value, hard_limit) in [
         (
             "max_module_bytes",
@@ -356,6 +394,34 @@ fn validate_limits(limits: ProviderLimits) -> Result<(), ProviderError> {
         return Err(ProviderError::InvalidLimits("fuel"));
     }
     Ok(())
+}
+
+fn provider_runtime_hard_limits() -> ProviderRuntimeHardLimits {
+    ProviderRuntimeHardLimits {
+        max_module_bytes: HARD_MAX_PROVIDER_MODULE_BYTES,
+        max_memory_bytes: HARD_MAX_PROVIDER_MEMORY_BYTES,
+        max_input_bytes: HARD_MAX_PROVIDER_JSON_BYTES,
+        max_output_bytes: HARD_MAX_PROVIDER_JSON_BYTES,
+        fuel: HARD_MAX_PROVIDER_FUEL,
+    }
+}
+
+fn provider_runtime_contract_value() -> serde_json::Value {
+    let limits = provider_runtime_hard_limits();
+    json!({
+        "kind": "wasm",
+        "abi_version": PROVIDER_ABI_V1,
+        "readiness": "ready",
+        "runtime_version": PROVIDER_RUNTIME_VERSION,
+        "no_host_imports": true,
+        "hard_limits": {
+            "max_module_bytes": limits.max_module_bytes,
+            "max_memory_bytes": limits.max_memory_bytes,
+            "max_input_bytes": limits.max_input_bytes,
+            "max_output_bytes": limits.max_output_bytes,
+            "fuel": limits.fuel,
+        },
+    })
 }
 
 fn validate_module_boundary(module: &Module, memory_limit: usize) -> Result<(), ProviderError> {
@@ -468,6 +534,36 @@ mod tests {
             bytes_literal(output),
         ))
         .expect("test provider WAT must compile")
+    }
+
+    #[test]
+    fn runtime_inventory_row_is_exact_and_self_attesting() {
+        let runtimes = provider_runtimes();
+        assert_eq!(runtimes.len(), 1);
+        let value = serde_json::to_value(&runtimes[0]).unwrap();
+        let contract_digest = provider_runtime_contract_digest();
+        assert_eq!(
+            value,
+            json!({
+                "kind": "wasm",
+                "abi_version": PROVIDER_ABI_V1,
+                "runtime_version": PROVIDER_RUNTIME_VERSION,
+                "readiness": "ready",
+                "no_host_imports": true,
+                "hard_limits": {
+                    "max_module_bytes": HARD_MAX_PROVIDER_MODULE_BYTES,
+                    "max_memory_bytes": HARD_MAX_PROVIDER_MEMORY_BYTES,
+                    "max_input_bytes": HARD_MAX_PROVIDER_JSON_BYTES,
+                    "max_output_bytes": HARD_MAX_PROVIDER_JSON_BYTES,
+                    "fuel": HARD_MAX_PROVIDER_FUEL,
+                },
+                "contract_digest": contract_digest,
+            })
+        );
+        assert_eq!(
+            provider_runtime_contract_digest(),
+            canonical_hash(&provider_runtime_contract_value())
+        );
     }
 
     #[test]

@@ -15,11 +15,16 @@ use crate::actions::{
 use crate::contract::{
     canonical_hash, evidence_id, expected_manifest_hash, expected_profile_digest,
     unique_capabilities, utc_now, validate_identifier, BoundedOutput, ErrorRecord, EvidenceKind,
-    EvidenceRecord, ExecutionBinding, ExecutionLimits, ExecutionManifest, RunMode, RunnerProfile,
-    TaskResult, TaskStatus, ACTION_PROGRAM_ADAPTER, ACTION_PROGRAM_SCHEMA_VERSION,
-    EXECUTION_BINDING_SCHEMA_VERSION, MANIFEST_SCHEMA_VERSION, PROFILE_SCHEMA_VERSION,
-    RESULT_SCHEMA_VERSION,
+    EvidenceRecord, ExecutionBinding, ExecutionLimits, ExecutionManifest, ProviderExecutionBinding,
+    RunMode, RunnerProfile, TaskResult, TaskStatus, ACTION_PROGRAM_ADAPTER,
+    ACTION_PROGRAM_SCHEMA_VERSION, EXECUTION_BINDING_SCHEMA_VERSION, MANIFEST_SCHEMA_VERSION,
+    PROFILE_SCHEMA_VERSION, RESULT_SCHEMA_VERSION,
 };
+use crate::provider_action::{
+    execute_provider_action, provider_artifact_bytes, validate_provider_binding,
+    validate_provider_parameters, validate_provider_profile, ProviderActionExecution,
+};
+use crate::providers::ProviderError;
 use crate::safety::{normalize_relative, scope_is_subset, validate_loopback_destination, SafeRoot};
 
 pub const MAX_DOCUMENT_BYTES: u64 = 1024 * 1024;
@@ -44,6 +49,17 @@ impl std::error::Error for RunnerError {}
 #[derive(Debug, Clone, Default)]
 pub struct Runner;
 
+enum ValidatedExecution<'a> {
+    Registered {
+        action: &'static dyn Action,
+        package_alias: bool,
+    },
+    Provider {
+        binding: &'a ProviderExecutionBinding,
+        artifact: Vec<u8>,
+    },
+}
+
 impl Runner {
     pub fn new() -> Result<Self, RunnerError> {
         Ok(Self)
@@ -51,38 +67,52 @@ impl Runner {
 
     pub fn execute(&self, manifest: ExecutionManifest, profile: RunnerProfile) -> TaskResult {
         let started_at = utc_now();
-        let action = match validate_policy(&manifest, &profile) {
-            Ok(action) => action,
+        let execution = match validate_policy(&manifest, &profile) {
+            Ok(execution) => execution,
             Err(failure) => return failure_result(&manifest, &profile, started_at, failure),
         };
 
-        let prepared = match action.prepare(manifest.params.clone()) {
-            Ok(prepared) => prepared,
-            Err(failure) => return failure_result(&manifest, &profile, started_at, failure),
-        };
-        let root = match SafeRoot::open(&profile.sandbox_root) {
-            Ok(root) => root,
-            Err(message) => {
-                return failure_result(
-                    &manifest,
-                    &profile,
-                    started_at,
-                    ActionFailure {
-                        status: TaskStatus::ControlBlocked,
-                        code: "sandbox_root_blocked",
-                        message,
-                    },
-                )
+        match execution {
+            ValidatedExecution::Registered { action, .. } => {
+                let prepared = match action.prepare(manifest.params.clone()) {
+                    Ok(prepared) => prepared,
+                    Err(failure) => {
+                        return failure_result(&manifest, &profile, started_at, failure)
+                    }
+                };
+                let root = match SafeRoot::open(&profile.sandbox_root) {
+                    Ok(root) => root,
+                    Err(message) => {
+                        return failure_result(
+                            &manifest,
+                            &profile,
+                            started_at,
+                            ActionFailure {
+                                status: TaskStatus::ControlBlocked,
+                                code: "sandbox_root_blocked",
+                                message,
+                            },
+                        )
+                    }
+                };
+                let context = ActionContext {
+                    manifest: &manifest,
+                    profile: &profile,
+                    root: &root,
+                };
+                match prepared.execute(&context) {
+                    Ok(outcome) => outcome_result(&manifest, &profile, started_at, outcome),
+                    Err(failure) => failure_result(&manifest, &profile, started_at, failure),
+                }
             }
-        };
-        let context = ActionContext {
-            manifest: &manifest,
-            profile: &profile,
-            root: &root,
-        };
-        match prepared.execute(&context) {
-            Ok(outcome) => outcome_result(&manifest, &profile, started_at, outcome),
-            Err(failure) => failure_result(&manifest, &profile, started_at, failure),
+            ValidatedExecution::Provider { binding, artifact } => {
+                match execute_provider_action(&manifest, binding, &artifact) {
+                    Ok(execution) => provider_result(&manifest, &profile, started_at, execution),
+                    Err(error) => {
+                        failure_result(&manifest, &profile, started_at, provider_failure(error))
+                    }
+                }
+            }
         }
     }
 }
@@ -378,12 +408,19 @@ fn validate_profile(profile: &RunnerProfile) -> Result<(), ActionFailure> {
             "control_blocked_actions contains duplicates",
         ));
     }
-    if profile.action_bindings.len() > MAX_ACTION_BINDINGS {
+    if profile
+        .action_bindings
+        .len()
+        .checked_add(profile.provider_bindings.len())
+        .is_none_or(|count| count > MAX_ACTION_BINDINGS)
+    {
         return Err(blocked(
             "invalid_profile",
-            "action_bindings exceeds the runner profile limit",
+            "action and provider bindings exceed the runner profile limit",
         ));
     }
+    validate_provider_profile(&profile.provider_bindings, &profile.provider_artifacts)
+        .map_err(|error| blocked("invalid_profile", error))?;
     let mut binding_pairs = BTreeSet::new();
     let mut catalog_identity: Option<(u64, &str)> = None;
     let mut previous_binding_pair: Option<(&str, &str)> = None;
@@ -434,6 +471,41 @@ fn validate_profile(profile: &RunnerProfile) -> Result<(), ActionFailure> {
             ));
         }
     }
+    for binding in &profile.provider_bindings {
+        let pair = (
+            binding.logical_behavior_id.as_str(),
+            binding.logical_action_id.as_str(),
+        );
+        if !binding_pairs.insert(pair) {
+            return Err(blocked(
+                "invalid_profile",
+                "action and provider bindings contain a duplicate logical pair",
+            ));
+        }
+        let candidate_identity = (binding.catalog_generation, binding.catalog_digest.as_str());
+        if let Some(expected_identity) = catalog_identity {
+            if candidate_identity != expected_identity {
+                return Err(blocked(
+                    "invalid_profile",
+                    "action and provider bindings span more than one catalog generation",
+                ));
+            }
+        } else {
+            catalog_identity = Some(candidate_identity);
+        }
+        if find_action(&binding.logical_action_id).is_some() {
+            return Err(blocked(
+                "invalid_profile",
+                "provider binding cannot shadow a registered action",
+            ));
+        }
+        if !profile.allowed_actions.contains(&binding.logical_action_id) {
+            return Err(blocked(
+                "invalid_profile",
+                "provider binding logical action is not in allowed_actions",
+            ));
+        }
+    }
     for action_id in profile
         .allowed_actions
         .iter()
@@ -442,6 +514,10 @@ fn validate_profile(profile: &RunnerProfile) -> Result<(), ActionFailure> {
         if find_action(action_id).is_none()
             && !profile
                 .action_bindings
+                .iter()
+                .any(|binding| binding.logical_action_id == *action_id)
+            && !profile
+                .provider_bindings
                 .iter()
                 .any(|binding| binding.logical_action_id == *action_id)
         {
@@ -461,10 +537,10 @@ fn validate_profile(profile: &RunnerProfile) -> Result<(), ActionFailure> {
     validate_limits(&profile.limits, &profile.limits)
 }
 
-fn validate_policy(
-    manifest: &ExecutionManifest,
-    profile: &RunnerProfile,
-) -> Result<&'static dyn Action, ActionFailure> {
+fn validate_policy<'a>(
+    manifest: &'a ExecutionManifest,
+    profile: &'a RunnerProfile,
+) -> Result<ValidatedExecution<'a>, ActionFailure> {
     validate_profile(profile)?;
     if manifest.schema_version != MANIFEST_SCHEMA_VERSION {
         return Err(blocked(
@@ -531,69 +607,163 @@ fn validate_policy(
             "manifest must bind cleanup to sandbox.cleanup.v1",
         ));
     }
-    let (action, package_alias) = if let Some(binding) = manifest.execution_binding.as_ref() {
-        let action = validate_execution_binding(binding)
-            .map_err(|error| blocked("execution_binding_mismatch", error))?;
-        if binding.logical_behavior_id != manifest.behavior_id
-            || binding.logical_action_id != manifest.action_id
-        {
+    let execution = match (
+        manifest.execution_binding.as_ref(),
+        manifest.provider_binding.as_ref(),
+    ) {
+        (Some(_), Some(_)) => {
             return Err(blocked(
                 "execution_binding_mismatch",
-                "execution binding does not match the manifest logical identity",
-            ));
+                "manifest cannot select both a native alias and a provider action",
+            ))
         }
-        let profile_binding = profile.action_bindings.iter().find(|candidate| {
-            candidate.logical_behavior_id == manifest.behavior_id
-                && candidate.logical_action_id == manifest.action_id
-        });
-        if profile_binding != Some(binding) {
-            return Err(blocked(
-                "execution_binding_mismatch",
-                "manifest execution binding does not exactly match the sealed profile",
-            ));
-        }
-        let parameter_object = manifest.params.as_object();
-        for (name, constant) in &binding.constants {
-            if let Some(parameter) = parameter_object.and_then(|params| params.get(name)) {
-                if parameter != constant {
-                    return Err(blocked(
-                        "execution_binding_mismatch",
-                        "manifest parameter conflicts with a reviewed program constant",
-                    ));
+        (Some(binding), None) => {
+            let action = validate_execution_binding(binding)
+                .map_err(|error| blocked("execution_binding_mismatch", error))?;
+            if binding.logical_behavior_id != manifest.behavior_id
+                || binding.logical_action_id != manifest.action_id
+            {
+                return Err(blocked(
+                    "execution_binding_mismatch",
+                    "execution binding does not match the manifest logical identity",
+                ));
+            }
+            let profile_binding = profile.action_bindings.iter().find(|candidate| {
+                candidate.logical_behavior_id == manifest.behavior_id
+                    && candidate.logical_action_id == manifest.action_id
+            });
+            if profile_binding != Some(binding) {
+                return Err(blocked(
+                    "execution_binding_mismatch",
+                    "manifest execution binding does not exactly match the sealed profile",
+                ));
+            }
+            let parameter_object = manifest.params.as_object();
+            for (name, constant) in &binding.constants {
+                if let Some(parameter) = parameter_object.and_then(|params| params.get(name)) {
+                    if parameter != constant {
+                        return Err(blocked(
+                            "execution_binding_mismatch",
+                            "manifest parameter conflicts with a reviewed program constant",
+                        ));
+                    }
                 }
             }
+            ValidatedExecution::Registered {
+                action,
+                package_alias: true,
+            }
         }
-        (action, true)
-    } else {
-        let action = find_action(&manifest.action_id).ok_or_else(|| ActionFailure {
-            status: TaskStatus::Refused,
-            code: "unknown_action",
-            message: "action ID is not present in the static runner registry".to_string(),
-        })?;
-        (action, false)
+        (None, Some(binding)) => {
+            validate_provider_binding(binding)
+                .map_err(|error| blocked("provider_binding_mismatch", error))?;
+            if binding.logical_behavior_id != manifest.behavior_id
+                || binding.logical_action_id != manifest.action_id
+            {
+                return Err(blocked(
+                    "provider_binding_mismatch",
+                    "provider binding does not match the manifest logical identity",
+                ));
+            }
+            if find_action(&binding.logical_action_id).is_some() {
+                return Err(blocked(
+                    "provider_binding_mismatch",
+                    "provider binding cannot shadow a registered action",
+                ));
+            }
+            let profile_binding = profile.provider_bindings.iter().find(|candidate| {
+                candidate.logical_behavior_id == manifest.behavior_id
+                    && candidate.logical_action_id == manifest.action_id
+            });
+            if profile_binding != Some(binding) {
+                return Err(blocked(
+                    "provider_binding_mismatch",
+                    "manifest provider binding does not exactly match the sealed profile",
+                ));
+            }
+            let artifact = provider_artifact_bytes(profile, binding)
+                .map_err(|error| blocked("provider_artifact_blocked", error))?;
+            ValidatedExecution::Provider { binding, artifact }
+        }
+        (None, None) => {
+            let action = find_action(&manifest.action_id).ok_or_else(|| ActionFailure {
+                status: TaskStatus::Refused,
+                code: "unknown_action",
+                message: "action ID is not present in the static runner registry".to_string(),
+            })?;
+            ValidatedExecution::Registered {
+                action,
+                package_alias: false,
+            }
+        }
     };
-    let descriptor = action.descriptor();
-    ensure_action_ready(descriptor)?;
+
     let actual_platform = crate::contract::Platform::current();
-    if manifest.platform != actual_platform
-        || profile.platform != actual_platform
-        || !descriptor.platforms.contains(&actual_platform)
-    {
+    if manifest.platform != actual_platform || profile.platform != actual_platform {
         return Err(blocked(
             "platform_blocked",
-            "manifest, profile, action, and actual host platform do not agree",
+            "manifest, profile, and actual host platform do not agree",
         ));
     }
-    if !package_alias
-        && !descriptor
-            .behavior_ids
-            .contains(&manifest.behavior_id.as_str())
-    {
-        return Err(blocked(
-            "behavior_action_mismatch",
-            "action is not registered for the requested behavior",
-        ));
-    }
+    let (target_capabilities, target_safety_tier) = match &execution {
+        ValidatedExecution::Registered {
+            action,
+            package_alias,
+        } => {
+            let descriptor = action.descriptor();
+            ensure_action_ready(descriptor)?;
+            if !descriptor.platforms.contains(&actual_platform) {
+                return Err(blocked(
+                    "platform_blocked",
+                    "registered action does not support the actual host platform",
+                ));
+            }
+            if !package_alias
+                && !descriptor
+                    .behavior_ids
+                    .contains(&manifest.behavior_id.as_str())
+            {
+                return Err(blocked(
+                    "behavior_action_mismatch",
+                    "action is not registered for the requested behavior",
+                ));
+            }
+            (
+                descriptor
+                    .capabilities
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>(),
+                descriptor.safety_tier,
+            )
+        }
+        ValidatedExecution::Provider { binding, .. } => {
+            if !binding.platforms.contains(&actual_platform) {
+                return Err(blocked(
+                    "platform_blocked",
+                    "provider action does not support the actual host platform",
+                ));
+            }
+            if !manifest.target_scope.filesystem.is_empty()
+                || !manifest.target_scope.network.is_empty()
+            {
+                return Err(blocked(
+                    "provider_scope_blocked",
+                    "provider ABI v1 receives no filesystem or network scope",
+                ));
+            }
+            validate_provider_parameters(binding, &manifest.params)
+                .map_err(|error| blocked("provider_parameters_blocked", error))?;
+            (
+                binding
+                    .capabilities
+                    .iter()
+                    .copied()
+                    .collect::<BTreeSet<_>>(),
+                binding.safety_tier,
+            )
+        }
+    };
     if profile
         .control_blocked_actions
         .contains(&manifest.action_id)
@@ -612,27 +782,22 @@ fn validate_policy(
 
     let requested_capabilities = unique_capabilities(&manifest.required_capabilities)
         .map_err(|error| blocked("capability_blocked", error))?;
-    let descriptor_capabilities = descriptor
-        .capabilities
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
-    if requested_capabilities != descriptor_capabilities {
+    if requested_capabilities != target_capabilities {
         return Err(blocked(
             "capability_declaration_mismatch",
-            "manifest capabilities must exactly match the action descriptor",
+            "manifest capabilities must exactly match the selected action contract",
         ));
     }
     let profile_capabilities = unique_capabilities(&profile.capabilities)
         .map_err(|error| blocked("invalid_profile", error))?;
-    if !descriptor_capabilities.is_subset(&profile_capabilities) {
+    if !target_capabilities.is_subset(&profile_capabilities) {
         return Err(blocked(
             "capability_blocked",
             "runner profile lacks a required action capability",
         ));
     }
-    if manifest.safety_tier != descriptor.safety_tier
-        || descriptor.safety_tier.rank() > profile.max_safety_tier.rank()
+    if manifest.safety_tier != target_safety_tier
+        || target_safety_tier.rank() > profile.max_safety_tier.rank()
     {
         return Err(blocked(
             "safety_tier_blocked",
@@ -640,7 +805,7 @@ fn validate_policy(
         ));
     }
     if let Some(threshold) = profile.approval_required_at_or_above {
-        if descriptor.safety_tier.rank() >= threshold.rank() {
+        if target_safety_tier.rank() >= threshold.rank() {
             let approval = manifest.approval.as_ref().ok_or_else(|| {
                 blocked(
                     "approval_required",
@@ -678,7 +843,7 @@ fn validate_policy(
         validate_identifier("evidence reference", reference)
             .map_err(|error| blocked("invalid_evidence_reference", error))?;
     }
-    Ok(action)
+    Ok(execution)
 }
 
 fn ensure_action_ready(descriptor: &ActionDescriptor) -> Result<(), ActionFailure> {
@@ -774,6 +939,86 @@ fn failure_result(
     }
 }
 
+fn provider_failure(error: ProviderError) -> ActionFailure {
+    match error {
+        ProviderError::FuelExhausted => ActionFailure {
+            status: TaskStatus::TimedOut,
+            code: "provider_fuel_exhausted",
+            message: "isolated provider execution exhausted its fuel limit".to_string(),
+        },
+        ProviderError::InvalidLimits(_)
+        | ProviderError::InvalidArtifactDigest
+        | ProviderError::ArtifactDigestMismatch
+        | ProviderError::ArtifactTooLarge { .. }
+        | ProviderError::UnsupportedAbi(_)
+        | ProviderError::InputEncoding(_)
+        | ProviderError::InputTooLarge { .. } => ActionFailure {
+            status: TaskStatus::ControlBlocked,
+            code: "provider_contract_blocked",
+            message: "provider artifact or invocation contract was refused before execution"
+                .to_string(),
+        },
+        ProviderError::InvalidArtifact(_)
+        | ProviderError::ImportForbidden { .. }
+        | ProviderError::InvalidExport(_)
+        | ProviderError::MemoryLimitExceeded
+        | ProviderError::ExecutionTrap(_)
+        | ProviderError::OutputTooLarge { .. }
+        | ProviderError::OutputOutOfBounds
+        | ProviderError::InvalidOutput(_)
+        | ProviderError::NonCanonicalOutput => ActionFailure {
+            status: TaskStatus::Failed,
+            code: "provider_runtime_failed",
+            message: "isolated provider execution failed its bounded runtime contract".to_string(),
+        },
+    }
+}
+
+fn provider_result(
+    manifest: &ExecutionManifest,
+    profile: &RunnerProfile,
+    started_at: chrono::DateTime<Utc>,
+    execution: ProviderActionExecution,
+) -> TaskResult {
+    let details = json!({
+        "status": TaskStatus::Success,
+        "output_hash": canonical_hash(&execution.output),
+        "receipt_ids": [],
+        "provider_execution": {
+            "artifact_sha256": &execution.artifact_sha256,
+            "fuel_consumed": execution.fuel_consumed,
+            "memory_bytes": execution.memory_bytes,
+            "output_bytes": execution.output_bytes,
+            "no_host_imports": true,
+        },
+    });
+    let evidence = make_evidence(manifest, profile, EvidenceKind::Executed, details);
+    TaskResult {
+        schema_version: RESULT_SCHEMA_VERSION.to_string(),
+        request_id: manifest.request_id.clone(),
+        run_id: manifest.run_id.clone(),
+        step_id: manifest.step_id.clone(),
+        behavior_id: manifest.behavior_id.clone(),
+        action_id: manifest.action_id.clone(),
+        status: TaskStatus::Success,
+        runner_id: profile.runner_id.clone(),
+        runner_profile_id: profile.profile_id.clone(),
+        platform: crate::contract::Platform::current(),
+        request_hash: manifest.request_hash.clone(),
+        policy_digest: profile.policy_digest.clone(),
+        started_at,
+        finished_at: utc_now(),
+        output: execution.output,
+        stdout: BoundedOutput::default(),
+        stderr: BoundedOutput::default(),
+        receipt_ids: Vec::new(),
+        cleanup: None,
+        evidence: vec![evidence],
+        error: None,
+        limitations: Vec::new(),
+    }
+}
+
 fn outcome_result(
     manifest: &ExecutionManifest,
     profile: &RunnerProfile,
@@ -852,6 +1097,20 @@ pub fn execute_files(manifest_path: &Path, profile_path: &Path) -> Result<TaskRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::{
+        canonical_json, ProviderActionLimits, ProviderArtifact, ProviderArtifactSpec,
+        ProviderParameterSpec, ProviderParameterType, PROVIDER_EXECUTION_BINDING_SCHEMA_VERSION,
+    };
+    use crate::provider_action::{
+        provider_action_contract_digest, provider_program_digest, runtime_action_contract_digest,
+        PROVIDER_ACTION_OUTPUT_SCHEMA_VERSION,
+    };
+    use crate::providers::{
+        provider_artifact_digest, provider_runtime_contract_digest, PROVIDER_ABI_V1,
+        PROVIDER_ENTRYPOINT_V1, PROVIDER_MEMORY_EXPORT,
+    };
+
+    const PROVIDER_OUTPUT_OFFSET: u64 = 4096;
 
     fn test_limits() -> ExecutionLimits {
         ExecutionLimits {
@@ -861,6 +1120,159 @@ mod tests {
             max_artifact_bytes: 1024 * 1024,
             max_files: 32,
         }
+    }
+
+    fn bytes_literal(value: &[u8]) -> String {
+        value.iter().map(|byte| format!("\\{byte:02x}")).collect()
+    }
+
+    fn provider_module(output: &Value, body: &str) -> Vec<u8> {
+        let output = canonical_json(output).into_bytes();
+        let packed = (PROVIDER_OUTPUT_OFFSET << 32) | output.len() as u64;
+        wat::parse_str(format!(
+            r#"(module
+                (memory (export "{PROVIDER_MEMORY_EXPORT}") 1 8)
+                (data (i32.const {PROVIDER_OUTPUT_OFFSET}) "{}")
+                (func (export "{PROVIDER_ENTRYPOINT_V1}") (param i32 i32) (result i64)
+                    {body}
+                    (i64.const {packed})))"#,
+            bytes_literal(&output),
+        ))
+        .expect("test provider WAT must compile")
+    }
+
+    fn provider_output(artifact_type: &str, value: u64) -> Value {
+        json!({
+            "schema_version": PROVIDER_ACTION_OUTPUT_SCHEMA_VERSION,
+            "outputs": {
+                "result": {
+                    "type": artifact_type,
+                    "value": value,
+                }
+            }
+        })
+    }
+
+    fn provider_binding(artifact: &[u8]) -> ProviderExecutionBinding {
+        let mut binding = ProviderExecutionBinding {
+            schema_version: PROVIDER_EXECUTION_BINDING_SCHEMA_VERSION.to_string(),
+            catalog_generation: 7,
+            catalog_digest: format!("sha256:{}", "1".repeat(64)),
+            logical_behavior_id: "acme.provider.behavior.v1".to_string(),
+            logical_action_id: "acme.provider.action.v1".to_string(),
+            package_id: "acme.provider-pack".to_string(),
+            package_version: "1.2.3".to_string(),
+            package_digest: format!("sha256:{}", "2".repeat(64)),
+            content_digest: format!("sha256:{}", "3".repeat(64)),
+            program_digest: String::new(),
+            provider_id: "acme.provider.runtime.v1".to_string(),
+            abi_version: PROVIDER_ABI_V1.to_string(),
+            artifact_sha256: provider_artifact_digest(artifact),
+            artifact_size: artifact.len(),
+            action_contract_digest: format!("sha256:{}", "4".repeat(64)),
+            runtime_contract_digest: String::new(),
+            provider_runtime_contract_digest: provider_runtime_contract_digest(),
+            inputs: Vec::new(),
+            outputs: vec![ProviderArtifactSpec {
+                name: "result".to_string(),
+                artifact_type: "artifact.acme.provider-result.v1".to_string(),
+                required: true,
+                multiple: false,
+            }],
+            parameters: vec![ProviderParameterSpec {
+                name: "seed".to_string(),
+                parameter_type: ProviderParameterType::Integer,
+                required: true,
+                default: Value::Null,
+                enum_values: Vec::new(),
+                minimum: Some(serde_json::Number::from(0)),
+                maximum: Some(serde_json::Number::from(100)),
+            }],
+            capabilities: vec![crate::contract::Capability::NativeExecution],
+            safety_tier: crate::contract::SafetyTier::Safe,
+            platforms: vec![crate::contract::Platform::current()],
+            mutates: false,
+            cleanup_action_id: None,
+            limits: ProviderActionLimits {
+                max_module_bytes: 256 * 1024,
+                max_memory_bytes: 2 * 1024 * 1024,
+                max_input_bytes: 64 * 1024,
+                max_output_bytes: 64 * 1024,
+                fuel: 1_000_000,
+            },
+        };
+        binding.action_contract_digest = provider_action_contract_digest(&binding);
+        binding.runtime_contract_digest = runtime_action_contract_digest(&binding);
+        binding.program_digest = provider_program_digest(&binding);
+        binding
+    }
+
+    fn provider_documents(
+        artifact: &[u8],
+        binding: ProviderExecutionBinding,
+    ) -> (RunnerProfile, ExecutionManifest) {
+        let mut profile = RunnerProfile {
+            schema_version: PROFILE_SCHEMA_VERSION.to_string(),
+            profile_id: "profile.provider-test.v1".to_string(),
+            runner_id: "runner.provider-test.v1".to_string(),
+            platform: crate::contract::Platform::current(),
+            sandbox_root: Path::new(".").to_path_buf(),
+            allowed_actions: vec![binding.logical_action_id.clone()],
+            control_blocked_actions: Vec::new(),
+            action_bindings: Vec::new(),
+            provider_bindings: vec![binding.clone()],
+            provider_artifacts: vec![ProviderArtifact {
+                artifact_sha256: binding.artifact_sha256.clone(),
+                artifact_size: artifact.len(),
+                artifact_hex: hex::encode(artifact),
+            }],
+            capabilities: vec![crate::contract::Capability::NativeExecution],
+            max_safety_tier: crate::contract::SafetyTier::Safe,
+            approval_required_at_or_above: None,
+            target_scope: crate::contract::TargetScope {
+                filesystem: Vec::new(),
+                network: Vec::new(),
+            },
+            limits: test_limits(),
+            policy_digest: String::new(),
+        };
+        crate::contract::seal_profile(&mut profile);
+
+        let requested_at = utc_now() - ChronoDuration::seconds(1);
+        let mut manifest = ExecutionManifest {
+            schema_version: MANIFEST_SCHEMA_VERSION.to_string(),
+            request_id: "request.provider-test.v1".to_string(),
+            run_id: "run.provider-test.v1".to_string(),
+            step_id: "step.provider-test.v1".to_string(),
+            behavior_id: binding.logical_behavior_id.clone(),
+            action_id: binding.logical_action_id.clone(),
+            execution_binding: None,
+            provider_binding: Some(binding),
+            mode: RunMode::Execute,
+            runner_id: profile.runner_id.clone(),
+            runner_profile_id: profile.profile_id.clone(),
+            platform: crate::contract::Platform::current(),
+            requested_at,
+            expires_at: requested_at + ChronoDuration::minutes(5),
+            params: json!({"seed": 7}),
+            target_scope: profile.target_scope.clone(),
+            required_capabilities: vec![crate::contract::Capability::NativeExecution],
+            safety_tier: crate::contract::SafetyTier::Safe,
+            limits: test_limits(),
+            cleanup_action_id: "sandbox.cleanup.v1".to_string(),
+            policy_digest: profile.policy_digest.clone(),
+            approval: None,
+            evidence_refs: Vec::new(),
+            request_hash: String::new(),
+        };
+        crate::contract::seal_manifest(&mut manifest);
+        (profile, manifest)
+    }
+
+    fn reseal_documents(profile: &mut RunnerProfile, manifest: &mut ExecutionManifest) {
+        crate::contract::seal_profile(profile);
+        manifest.policy_digest = profile.policy_digest.clone();
+        crate::contract::seal_manifest(manifest);
     }
 
     fn alias_binding(
@@ -908,6 +1320,8 @@ mod tests {
             ],
             control_blocked_actions: Vec::new(),
             action_bindings: vec![binding.clone()],
+            provider_bindings: Vec::new(),
+            provider_artifacts: Vec::new(),
             capabilities: descriptor.capabilities.to_vec(),
             max_safety_tier: descriptor.safety_tier,
             approval_required_at_or_above: None,
@@ -928,6 +1342,7 @@ mod tests {
             behavior_id: binding.logical_behavior_id.clone(),
             action_id: binding.logical_action_id.clone(),
             execution_binding: Some(binding),
+            provider_binding: None,
             mode: RunMode::Execute,
             runner_id: profile.runner_id.clone(),
             runner_profile_id: profile.profile_id.clone(),
@@ -993,6 +1408,151 @@ mod tests {
                 "selected action is not ready for execution"
             );
         }
+    }
+
+    #[test]
+    fn sealed_provider_dispatch_executes_real_wasm_outside_the_static_registry() {
+        let artifact_type = "artifact.acme.provider-result.v1";
+        let expected_output = provider_output(artifact_type, 7);
+        let expected_output_bytes = canonical_json(&expected_output).len();
+        let artifact = provider_module(&expected_output, "");
+        let binding = provider_binding(&artifact);
+        let artifact_digest = binding.artifact_sha256.clone();
+        assert!(find_action(&binding.logical_action_id).is_none());
+        assert!(crate::actions::inventory()
+            .iter()
+            .all(|descriptor| descriptor.action_id != binding.logical_action_id));
+        let (profile, manifest) = provider_documents(&artifact, binding.clone());
+
+        let result = Runner::new().unwrap().execute(manifest, profile);
+
+        assert_eq!(result.status, TaskStatus::Success, "{result:#?}");
+        assert_eq!(result.behavior_id, binding.logical_behavior_id);
+        assert_eq!(result.action_id, binding.logical_action_id);
+        assert_eq!(result.output, expected_output);
+        assert!(result.receipt_ids.is_empty());
+        assert!(result.cleanup.is_none());
+        assert_eq!(result.evidence.len(), 1);
+        assert_eq!(result.evidence[0].behavior_id, result.behavior_id);
+        assert_eq!(result.evidence[0].action_id, result.action_id);
+        let metrics = &result.evidence[0].details["provider_execution"];
+        assert_eq!(metrics["artifact_sha256"], artifact_digest);
+        assert!(metrics["fuel_consumed"]
+            .as_u64()
+            .is_some_and(|fuel| fuel > 0));
+        assert_eq!(metrics["memory_bytes"], 65_536);
+        assert_eq!(metrics["output_bytes"], expected_output_bytes);
+        assert_eq!(metrics["no_host_imports"], true);
+    }
+
+    #[test]
+    fn provider_dispatch_fails_closed_on_missing_substituted_or_mismatched_seals() {
+        let output = provider_output("artifact.acme.provider-result.v1", 7);
+        let artifact = provider_module(&output, "");
+        let binding = provider_binding(&artifact);
+
+        let (mut profile, mut manifest) = provider_documents(&artifact, binding.clone());
+        profile.provider_artifacts.clear();
+        reseal_documents(&mut profile, &mut manifest);
+        let result = Runner::new().unwrap().execute(manifest, profile);
+        assert_eq!(result.status, TaskStatus::ControlBlocked);
+        assert_eq!(result.error.unwrap().code, "invalid_profile");
+
+        let replacement =
+            provider_module(&provider_output("artifact.acme.provider-result.v1", 8), "");
+        assert_eq!(replacement.len(), artifact.len());
+        assert_ne!(
+            provider_artifact_digest(&replacement),
+            binding.artifact_sha256
+        );
+        let (mut profile, mut manifest) = provider_documents(&artifact, binding.clone());
+        profile.provider_artifacts[0].artifact_hex = hex::encode(replacement);
+        reseal_documents(&mut profile, &mut manifest);
+        let result = Runner::new().unwrap().execute(manifest, profile);
+        assert_eq!(result.status, TaskStatus::ControlBlocked);
+        assert_eq!(result.error.unwrap().code, "invalid_profile");
+
+        let (profile, mut manifest) = provider_documents(&artifact, binding);
+        manifest.provider_binding.as_mut().unwrap().package_version = "1.2.4".to_string();
+        crate::contract::seal_manifest(&mut manifest);
+        let result = Runner::new().unwrap().execute(manifest, profile);
+        assert_eq!(result.status, TaskStatus::ControlBlocked);
+        assert_eq!(result.error.unwrap().code, "provider_binding_mismatch");
+    }
+
+    #[test]
+    fn provider_dispatch_maps_fuel_and_output_failures_to_stable_statuses() {
+        let expected_output = provider_output("artifact.acme.provider-result.v1", 7);
+        let looping_artifact = provider_module(&expected_output, "(loop $forever (br $forever))");
+        let mut looping_binding = provider_binding(&looping_artifact);
+        looping_binding.limits.fuel = 10_000;
+        let (profile, manifest) = provider_documents(&looping_artifact, looping_binding);
+        let result = Runner::new().unwrap().execute(manifest, profile);
+        assert_eq!(result.status, TaskStatus::TimedOut, "{result:#?}");
+        assert_eq!(result.error.unwrap().code, "provider_fuel_exhausted");
+
+        let invalid_output = provider_output("artifact.acme.unexpected-result.v1", 7);
+        let invalid_artifact = provider_module(&invalid_output, "");
+        let invalid_binding = provider_binding(&invalid_artifact);
+        let (profile, manifest) = provider_documents(&invalid_artifact, invalid_binding);
+        let result = Runner::new().unwrap().execute(manifest, profile);
+        assert_eq!(result.status, TaskStatus::Failed, "{result:#?}");
+        assert_eq!(result.error.unwrap().code, "provider_runtime_failed");
+
+        let invalid_guest = wat::parse_str(format!(
+            r#"(module
+                (memory (export "{PROVIDER_MEMORY_EXPORT}") 1)
+                (func (export "unexpected_entrypoint") (param i32 i32) (result i64)
+                    (i64.const 0)))"#,
+        ))
+        .unwrap();
+        let guest_binding = provider_binding(&invalid_guest);
+        let (profile, manifest) = provider_documents(&invalid_guest, guest_binding);
+        let result = Runner::new().unwrap().execute(manifest, profile);
+        assert_eq!(result.status, TaskStatus::Failed, "{result:#?}");
+        assert_eq!(result.error.unwrap().code, "provider_runtime_failed");
+    }
+
+    #[test]
+    fn static_actions_refuse_provider_shadowing_and_mixed_dispatch_bindings() {
+        let provider_artifact =
+            provider_module(&provider_output("artifact.acme.provider-result.v1", 7), "");
+        let provider_binding = provider_binding(&provider_artifact);
+        let (profile, mut manifest) =
+            provider_documents(&provider_artifact, provider_binding.clone());
+        manifest.execution_binding = Some(alias_binding(
+            "acme.endpoint.profile.v1",
+            "acme.endpoint.profile-action.v1",
+            "endpoint.discovery.system.v1",
+        ));
+        crate::contract::seal_manifest(&mut manifest);
+        let result = Runner::new().unwrap().execute(manifest, profile);
+        assert_eq!(result.status, TaskStatus::ControlBlocked);
+        assert_eq!(result.error.unwrap().code, "execution_binding_mismatch");
+
+        let static_action_id = "endpoint.discovery.system.v1";
+        let static_behavior_id = find_action(static_action_id)
+            .unwrap()
+            .descriptor()
+            .behavior_ids[0];
+        let alias = alias_binding(
+            "acme.endpoint.profile.v1",
+            "acme.endpoint.profile-action.v1",
+            static_action_id,
+        );
+        let (profile, mut manifest) = alias_documents(Path::new("."), alias, json!({}));
+        let mut shadow = provider_binding;
+        shadow.logical_behavior_id = static_behavior_id.to_string();
+        shadow.logical_action_id = static_action_id.to_string();
+        shadow.runtime_contract_digest = runtime_action_contract_digest(&shadow);
+        manifest.behavior_id = static_behavior_id.to_string();
+        manifest.action_id = static_action_id.to_string();
+        manifest.execution_binding = None;
+        manifest.provider_binding = Some(shadow);
+        crate::contract::seal_manifest(&mut manifest);
+        let result = Runner::new().unwrap().execute(manifest, profile);
+        assert_eq!(result.status, TaskStatus::ControlBlocked);
+        assert_eq!(result.error.unwrap().code, "provider_binding_mismatch");
     }
 
     #[test]

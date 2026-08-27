@@ -13,6 +13,8 @@ pub const PROFILE_SCHEMA_VERSION: &str = "bluefire.runner-profile.v1";
 pub const RESULT_SCHEMA_VERSION: &str = "bluefire.runner-result.v1";
 pub const INVENTORY_SCHEMA_VERSION: &str = "bluefire.runner-inventory.v1";
 pub const EXECUTION_BINDING_SCHEMA_VERSION: &str = "bluefire.runner-execution-binding.v1";
+pub const PROVIDER_EXECUTION_BINDING_SCHEMA_VERSION: &str =
+    "bluefire.runner-provider-execution-binding.v1";
 pub const ACTION_PROGRAM_SCHEMA_VERSION: &str = "bluefire.action-program.v1";
 pub const ACTION_PROGRAM_ADAPTER: &str = "bluefire.builtin-runner-adapter.v1";
 
@@ -175,6 +177,100 @@ pub struct ExecutionBinding {
     pub constants: BTreeMap<String, Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderParameterType {
+    String,
+    Integer,
+    Number,
+    Boolean,
+    StringList,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderArtifactSpec {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub artifact_type: String,
+    pub required: bool,
+    pub multiple: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderParameterSpec {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub parameter_type: ProviderParameterType,
+    pub required: bool,
+    pub default: Value,
+    #[serde(rename = "enum")]
+    pub enum_values: Vec<Value>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub minimum: Option<serde_json::Number>,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub maximum: Option<serde_json::Number>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderActionLimits {
+    pub max_module_bytes: usize,
+    pub max_memory_bytes: usize,
+    pub max_input_bytes: usize,
+    pub max_output_bytes: usize,
+    pub fuel: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderExecutionBinding {
+    pub schema_version: String,
+    pub catalog_generation: u64,
+    pub catalog_digest: String,
+    pub logical_behavior_id: String,
+    pub logical_action_id: String,
+    pub package_id: String,
+    pub package_version: String,
+    pub package_digest: String,
+    pub content_digest: String,
+    pub program_digest: String,
+    pub provider_id: String,
+    pub abi_version: String,
+    pub artifact_sha256: String,
+    pub artifact_size: usize,
+    pub action_contract_digest: String,
+    pub runtime_contract_digest: String,
+    pub provider_runtime_contract_digest: String,
+    pub inputs: Vec<ProviderArtifactSpec>,
+    pub outputs: Vec<ProviderArtifactSpec>,
+    pub parameters: Vec<ProviderParameterSpec>,
+    pub capabilities: Vec<Capability>,
+    pub safety_tier: SafetyTier,
+    pub platforms: Vec<Platform>,
+    pub mutates: bool,
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub cleanup_action_id: Option<String>,
+    pub limits: ProviderActionLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderArtifact {
+    pub artifact_sha256: String,
+    pub artifact_size: usize,
+    pub artifact_hex: String,
+}
+
+fn deserialize_required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
 fn deserialize_execution_binding<'de, D>(
     deserializer: D,
 ) -> Result<Option<ExecutionBinding>, D::Error>
@@ -182,6 +278,15 @@ where
     D: Deserializer<'de>,
 {
     ExecutionBinding::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_provider_binding<'de, D>(
+    deserializer: D,
+) -> Result<Option<ProviderExecutionBinding>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    ProviderExecutionBinding::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +304,12 @@ pub struct ExecutionManifest {
         skip_serializing_if = "Option::is_none"
     )]
     pub execution_binding: Option<ExecutionBinding>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_provider_binding",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub provider_binding: Option<ProviderExecutionBinding>,
     pub mode: RunMode,
     pub runner_id: String,
     pub runner_profile_id: String,
@@ -232,6 +343,10 @@ pub struct RunnerProfile {
     pub control_blocked_actions: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub action_bindings: Vec<ExecutionBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_bindings: Vec<ProviderExecutionBinding>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provider_artifacts: Vec<ProviderArtifact>,
     pub capabilities: Vec<Capability>,
     pub max_safety_tier: SafetyTier,
     #[serde(default)]
