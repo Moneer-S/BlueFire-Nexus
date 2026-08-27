@@ -152,6 +152,7 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     provenance = Counter(
         str(row.get("provenance", "unknown")) for row in records if isinstance(row, Mapping)
     )
+    evidence_details = _evidence_details(records)
     detections_doc = snapshot.get("detections", {})
     candidates = detections_doc.get("candidates", []) if isinstance(detections_doc, Mapping) else []
     detection_states = Counter(
@@ -199,6 +200,7 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "first_blocked_step": first_blocked,
         "objective_reached": objective_reached,
         "evidence_provenance": dict(sorted(provenance.items())),
+        "evidence_details": evidence_details,
         "detection_states": dict(sorted(detection_states.items())),
         "detection_matches": detection_matches,
         "benign_matches": benign_matches,
@@ -234,6 +236,9 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
     candidate_evidence = Counter(candidate["evidence_provenance"])
     keys = sorted(set(baseline_evidence) | set(candidate_evidence))
     evidence_delta = {key: candidate_evidence[key] - baseline_evidence[key] for key in keys}
+    evidence_detail_delta = _evidence_detail_delta(
+        baseline.get("evidence_details"), candidate.get("evidence_details")
+    )
     baseline_detection = Counter(baseline["detection_states"])
     candidate_detection = Counter(candidate["detection_states"])
     detection_keys = sorted(set(baseline_detection) | set(candidate_detection))
@@ -281,6 +286,7 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         "objective_changed": baseline["objective_reached"] != candidate["objective_reached"],
         "cleanup_changed": baseline["cleanup_success"] != candidate["cleanup_success"],
         "evidence_delta": evidence_delta,
+        "evidence_detail_delta": evidence_detail_delta,
         "detection_delta": detection_delta,
         "detection_match_delta": detection_match_delta,
         "benign_match_delta": benign_match_delta,
@@ -622,6 +628,219 @@ def _provider_id(value: Any) -> str | None:
         selected = value.get("provider_id") or value.get("requested_provider_id")
         return str(selected) if isinstance(selected, str) and selected else None
     return None
+
+
+def _evidence_details(records: Any) -> dict[str, Any]:
+    if not isinstance(records, list):
+        records = []
+    producer_counts: Counter[str] = Counter()
+    observed_artifacts: dict[str, dict[str, Any]] = {}
+    evidence_gaps: dict[str, dict[str, Any]] = {}
+    for row in records:
+        if not isinstance(row, Mapping):
+            continue
+        provenance = str(row.get("provenance", "unknown"))
+        producer = _bounded_text(row.get("producer"), default="unknown-producer")
+        producer_counts[producer] += 1
+        content = row.get("content")
+        content = content if isinstance(content, Mapping) else {}
+        if provenance == "observed":
+            artifact = _observed_artifact_summary(row, content, producer)
+            if artifact is not None:
+                observed_artifacts[artifact["key"]] = artifact
+        elif provenance == "unknown" and content.get("artifact_type") == "evidence_gap":
+            gap = _evidence_gap_summary(row, content, producer)
+            evidence_gaps[gap["key"]] = gap
+    return {
+        "producer_counts": dict(sorted(producer_counts.items())),
+        "observed_artifacts": [
+            {key: value for key, value in item.items() if key != "key"}
+            for item in sorted(observed_artifacts.values(), key=lambda value: value["key"])
+        ],
+        "evidence_gaps": [
+            {key: value for key, value in item.items() if key != "key"}
+            for item in sorted(evidence_gaps.values(), key=lambda value: value["key"])
+        ],
+    }
+
+
+def _observed_artifact_summary(
+    row: Mapping[str, Any], content: Mapping[str, Any], producer: str
+) -> dict[str, Any] | None:
+    path = content.get("path")
+    source = content.get("source")
+    logical_path = path if isinstance(path, str) else source if isinstance(source, str) else None
+    if logical_path is None:
+        return None
+    normalized_path = _safe_relative_path(logical_path)
+    if normalized_path is None:
+        return None
+    step_id = _bounded_text(row.get("step_id"), default="unknown-step")
+    artifact_type = _bounded_text(content.get("artifact_type"), default="unknown_artifact")
+    item: dict[str, Any] = {
+        "key": f"{producer}\0{step_id}\0{normalized_path}",
+        "evidence_id": _bounded_text(row.get("evidence_id"), default="evidence-unknown"),
+        "step_id": step_id,
+        "producer": producer,
+        "artifact_type": artifact_type,
+        "path": normalized_path,
+        "content_hash": _digest_or_none(row.get("content_hash")),
+    }
+    digest = _digest_or_none(content.get("sha256"))
+    if digest is not None:
+        item["sha256"] = digest
+    size = _safe_int(content.get("size_bytes"))
+    if size is None:
+        size = _safe_int(content.get("size"))
+    if size is not None:
+        item["size_bytes"] = size
+    return item
+
+
+def _evidence_gap_summary(
+    row: Mapping[str, Any], content: Mapping[str, Any], producer: str
+) -> dict[str, Any]:
+    requested = _bounded_text(content.get("requested_artifact"), default="unspecified")
+    reason = content.get("reason")
+    reason_text = reason if isinstance(reason, str) else "unavailable"
+    reason_code = reason_text if _IDENTIFIER.fullmatch(reason_text) else "unclassified"
+    step_id = _bounded_text(row.get("step_id"), default="unknown-step")
+    return {
+        "key": f"{producer}\0{step_id}\0{requested}\0{reason_code}",
+        "evidence_id": _bounded_text(row.get("evidence_id"), default="evidence-unknown"),
+        "step_id": step_id,
+        "producer": producer,
+        "requested_artifact": requested,
+        "reason_code": reason_code,
+        "reason_hash": content_hash({"reason": reason_text}),
+        "content_hash": _digest_or_none(row.get("content_hash")),
+    }
+
+
+def _evidence_detail_delta(baseline: Any, candidate: Any) -> dict[str, Any]:
+    baseline_details = baseline if isinstance(baseline, Mapping) else {}
+    candidate_details = candidate if isinstance(candidate, Mapping) else {}
+    baseline_observed = _keyed_observed(baseline_details.get("observed_artifacts"))
+    candidate_observed = _keyed_observed(candidate_details.get("observed_artifacts"))
+    observed_keys = sorted(set(baseline_observed) | set(candidate_observed))
+    observed_added = [
+        candidate_observed[key] for key in observed_keys if key not in baseline_observed
+    ]
+    observed_removed = [
+        baseline_observed[key] for key in observed_keys if key not in candidate_observed
+    ]
+    observed_changed = [
+        {
+            "from": baseline_observed[key],
+            "to": candidate_observed[key],
+        }
+        for key in observed_keys
+        if key in baseline_observed
+        and key in candidate_observed
+        and _artifact_identity(baseline_observed[key])
+        != _artifact_identity(candidate_observed[key])
+    ]
+    baseline_gaps = _keyed_gaps(baseline_details.get("evidence_gaps"))
+    candidate_gaps = _keyed_gaps(candidate_details.get("evidence_gaps"))
+    gap_keys = sorted(set(baseline_gaps) | set(candidate_gaps))
+    return {
+        "observed_artifacts_added": observed_added,
+        "observed_artifacts_removed": observed_removed,
+        "observed_artifacts_changed": observed_changed,
+        "evidence_gaps_added": [
+            candidate_gaps[key] for key in gap_keys if key not in baseline_gaps
+        ],
+        "evidence_gaps_removed": [
+            baseline_gaps[key] for key in gap_keys if key not in candidate_gaps
+        ],
+        "producer_delta": _counter_delta(
+            baseline_details.get("producer_counts"), candidate_details.get("producer_counts")
+        ),
+    }
+
+
+def _keyed_observed(value: Any) -> dict[str, Mapping[str, Any]]:
+    result: dict[str, Mapping[str, Any]] = {}
+    rows = value if isinstance(value, list) else []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        producer = _bounded_text(row.get("producer"), default="unknown-producer")
+        step_id = _bounded_text(row.get("step_id"), default="unknown-step")
+        path = row.get("path")
+        if isinstance(path, str):
+            result[f"{producer}\0{step_id}\0{path}"] = row
+    return result
+
+
+def _keyed_gaps(value: Any) -> dict[str, Mapping[str, Any]]:
+    result: dict[str, Mapping[str, Any]] = {}
+    rows = value if isinstance(value, list) else []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        producer = _bounded_text(row.get("producer"), default="unknown-producer")
+        step_id = _bounded_text(row.get("step_id"), default="unknown-step")
+        requested = _bounded_text(row.get("requested_artifact"), default="unspecified")
+        reason_code = _bounded_text(row.get("reason_code"), default="unclassified")
+        result[f"{producer}\0{step_id}\0{requested}\0{reason_code}"] = row
+    return result
+
+
+def _artifact_identity(value: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+    return (value.get("sha256"), value.get("size_bytes"), value.get("content_hash"))
+
+
+def _counter_delta(baseline: Any, candidate: Any) -> dict[str, int]:
+    baseline_counts = Counter(
+        {
+            str(key): int(value)
+            for key, value in (baseline.items() if isinstance(baseline, Mapping) else ())
+            if isinstance(value, int) and not isinstance(value, bool)
+        }
+    )
+    candidate_counts = Counter(
+        {
+            str(key): int(value)
+            for key, value in (candidate.items() if isinstance(candidate, Mapping) else ())
+            if isinstance(value, int) and not isinstance(value, bool)
+        }
+    )
+    return {
+        key: candidate_counts[key] - baseline_counts[key]
+        for key in sorted(set(baseline_counts) | set(candidate_counts))
+    }
+
+
+def _bounded_text(value: Any, *, default: str) -> str:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        return default
+    return value[:200]
+
+
+def _safe_relative_path(value: str) -> str | None:
+    logical = value.replace("\\", "/")
+    if logical.startswith("/") or "\x00" in logical:
+        return None
+    parts = [part for part in logical.split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        return None
+    return "/".join(parts)[:500]
+
+
+def _digest_or_none(value: Any) -> str | None:
+    if isinstance(value, str):
+        if _DIGEST.fullmatch(value):
+            return value
+        if len(value) == 64 and all(character in "0123456789abcdef" for character in value):
+            return "sha256:" + value
+    return None
+
+
+def _safe_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return int(value)
 
 
 def _duration_ms(snapshot: Mapping[str, Any]) -> int | None:

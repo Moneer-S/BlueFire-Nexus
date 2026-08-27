@@ -751,6 +751,11 @@ export interface ComparisonSummary {
   first_blocked_step?: string | null;
   objective_reached?: boolean;
   evidence_provenance?: Record<string, number>;
+  evidence_details?: {
+    producer_counts?: Record<string, number>;
+    observed_artifacts?: Array<Record<string, unknown>>;
+    evidence_gaps?: Array<Record<string, unknown>>;
+  };
   detection_states?: Record<string, number>;
   detection_matches?: number;
   benign_matches?: number;
@@ -775,6 +780,14 @@ export interface ComparisonDelta {
   objective_changed?: boolean;
   cleanup_changed?: boolean;
   evidence_delta?: Record<string, number>;
+  evidence_detail_delta?: {
+    observed_artifacts_added?: Array<Record<string, unknown>>;
+    observed_artifacts_removed?: Array<Record<string, unknown>>;
+    observed_artifacts_changed?: Array<Record<string, unknown>>;
+    evidence_gaps_added?: Array<Record<string, unknown>>;
+    evidence_gaps_removed?: Array<Record<string, unknown>>;
+    producer_delta?: Record<string, number>;
+  };
   detection_delta?: Record<string, number>;
   detection_match_delta?: number;
   benign_match_delta?: number;

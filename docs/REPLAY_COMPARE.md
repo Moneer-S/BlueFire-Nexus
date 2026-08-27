@@ -88,7 +88,7 @@ The result contains normalized summaries and one delta from the baseline to each
 - mode and runner profile;
 - path, per-step outcomes, and outcome counts;
 - first blocked/refused step and objective state;
-- evidence counts by provenance;
+- evidence counts by provenance, independent producer counts, observed artifact identities, and hashed evidence gaps;
 - detection lifecycle counts, malicious matches, and benign matches;
 - telemetry and policy/control states;
 - cleanup success;
@@ -100,7 +100,7 @@ The result contains normalized summaries and one delta from the baseline to each
 
 - first path-divergence index;
 - block, objective, and cleanup changes;
-- evidence, detection, match, benign-match, and outcome deltas;
+- evidence, observed artifact, evidence-gap, detection, match, benign-match, and outcome deltas;
 - telemetry/control additions and removals;
 - autonomy/provider/proposal/duration changes;
 - coarse signals and `improved`, `regressed`, `mixed`, or `no_material_change` assessment.

@@ -91,6 +91,7 @@ export function ComparisonResult({ comparison }: { comparison: ComparisonRespons
         { label: "Duration", value: formatDuration(summary.duration_ms) },
         { label: "Outcomes", value: formatCountMap(summary.outcome_counts ?? countValues(Object.values(summary.outcomes)), "None reported") },
         { label: "Evidence provenance", value: formatCountMap(summary.evidence_provenance, "None reported") },
+        { label: "Independent evidence", value: formatEvidenceDetails(summary.evidence_details) },
         { label: "Detection lifecycle", value: formatCountMap(summary.detection_states, "None reported") },
         { label: "Detection matches", value: formatReportedCount(summary.detection_matches) },
         { label: "Benign matches", value: formatReportedCount(summary.benign_matches) },
@@ -112,6 +113,8 @@ export function ComparisonResult({ comparison }: { comparison: ComparisonRespons
         <div className="delta-columns">
           <div><h3>Evidence, detections & outcomes</h3><DataList items={[
             { label: "Evidence delta", value: formatDeltaMap(delta.evidence_delta) },
+            { label: "Observed artifact delta", value: formatObservedArtifactDelta(delta.evidence_detail_delta) },
+            { label: "Evidence gap delta", value: formatEvidenceGapDelta(delta.evidence_detail_delta) },
             { label: "Detection lifecycle delta", value: formatDeltaMap(delta.detection_delta) },
             { label: "Detection match delta", value: formatSignedNumber(delta.detection_match_delta) },
             { label: "Benign match delta", value: formatSignedNumber(delta.benign_match_delta) },
@@ -142,7 +145,8 @@ type ComparisonDeltaItem = ComparisonResponse["deltas"][number];
 
 function hasMaterialDelta(delta: ComparisonDeltaItem) {
   if (delta.assessment) return delta.assessment !== "no_material_change";
-  return Boolean(delta.objective_changed || delta.first_blocked_changed || delta.cleanup_changed || delta.autonomy_changed || delta.ai_provider_changed || delta.first_path_divergence !== null && delta.first_path_divergence !== undefined && delta.first_path_divergence >= 0 || Object.values(delta.evidence_delta ?? {}).some(Boolean) || Object.values(delta.detection_delta ?? {}).some(Boolean) || Object.values(delta.outcome_delta ?? {}).some(Boolean) || delta.detection_match_delta || delta.benign_match_delta || delta.ai_proposal_delta || delta.duration_delta_ms || delta.telemetry_added?.length || delta.telemetry_removed?.length || delta.controls_added?.length || delta.controls_removed?.length);
+  const evidenceDetail = delta.evidence_detail_delta;
+  return Boolean(delta.objective_changed || delta.first_blocked_changed || delta.cleanup_changed || delta.autonomy_changed || delta.ai_provider_changed || delta.first_path_divergence !== null && delta.first_path_divergence !== undefined && delta.first_path_divergence >= 0 || Object.values(delta.evidence_delta ?? {}).some(Boolean) || evidenceDetail?.observed_artifacts_added?.length || evidenceDetail?.observed_artifacts_removed?.length || evidenceDetail?.observed_artifacts_changed?.length || evidenceDetail?.evidence_gaps_added?.length || evidenceDetail?.evidence_gaps_removed?.length || Object.values(evidenceDetail?.producer_delta ?? {}).some(Boolean) || Object.values(delta.detection_delta ?? {}).some(Boolean) || Object.values(delta.outcome_delta ?? {}).some(Boolean) || delta.detection_match_delta || delta.benign_match_delta || delta.ai_proposal_delta || delta.duration_delta_ms || delta.telemetry_added?.length || delta.telemetry_removed?.length || delta.controls_added?.length || delta.controls_removed?.length);
 }
 
 function assessmentTone(value: string): "neutral" | "success" | "warning" | "danger" {
@@ -152,6 +156,26 @@ function assessmentTone(value: string): "neutral" | "success" | "warning" | "dan
 function formatChanged(value?: boolean) { return value === undefined ? "Not reported" : value ? "Changed" : "Stable"; }
 function formatReportedCount(value?: number) { return value === undefined ? "Not reported" : new Intl.NumberFormat().format(value); }
 function formatList(values?: string[], empty = "None") { return values?.length ? values.map(sentence).join(", ") : empty; }
+function formatEvidenceDetails(value?: { producer_counts?: Record<string, number>; observed_artifacts?: Array<Record<string, unknown>>; evidence_gaps?: Array<Record<string, unknown>> }) {
+  if (!value) return "None reported";
+  const observed = value.observed_artifacts?.length ?? 0;
+  const gaps = value.evidence_gaps?.length ?? 0;
+  const producers = formatCountMap(value.producer_counts, "no producers");
+  return `${observed} observed artifact${observed === 1 ? "" : "s"} · ${gaps} gap${gaps === 1 ? "" : "s"} · ${producers}`;
+}
+function formatObservedArtifactDelta(value?: ComparisonDeltaItem["evidence_detail_delta"]) {
+  if (!value) return "None";
+  const added = value.observed_artifacts_added?.length ?? 0;
+  const removed = value.observed_artifacts_removed?.length ?? 0;
+  const changed = value.observed_artifacts_changed?.length ?? 0;
+  return added || removed || changed ? `+${added} / -${removed} / ${changed} changed` : "Stable";
+}
+function formatEvidenceGapDelta(value?: ComparisonDeltaItem["evidence_detail_delta"]) {
+  if (!value) return "None";
+  const added = value.evidence_gaps_added?.length ?? 0;
+  const removed = value.evidence_gaps_removed?.length ?? 0;
+  return added || removed ? `+${added} / -${removed} gaps` : "Stable";
+}
 function countValues(values: string[]) { return values.reduce<Record<string, number>>((counts, value) => { counts[value] = (counts[value] ?? 0) + 1; return counts; }, {}); }
 function formatCountMap(values?: Record<string, number>, empty = "None") { return values && Object.keys(values).length ? Object.entries(values).map(([key, value]) => `${sentence(key)}: ${new Intl.NumberFormat().format(value)}`).join(", ") : empty; }
 function formatDeltaMap(values?: Record<string, number>) { return values && Object.keys(values).length ? Object.entries(values).map(([key, value]) => `${sentence(key)} ${value >= 0 ? "+" : ""}${value}`).join(", ") : "No delta"; }

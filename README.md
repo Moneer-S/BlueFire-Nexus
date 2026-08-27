@@ -350,7 +350,7 @@ Compare two or more runs; the first is the baseline:
 bluefire --runs-dir .bluefire-runs compare BASELINE_RUN_ID CANDIDATE_RUN_ID
 ```
 
-Comparison reports path and first-block divergence, outcome counts, objective state, evidence provenance, detection lifecycle/matches, telemetry, policy/control states, cleanup, autonomy/provider, AI proposal application, budgets, duration, and coarse improvement/regression signals. It does not yet compute planner-decision deltas, predicted-versus-observed field drift, declared defense-change lineage, target-scope differences, or action-implementation inventory differences. A reported delta is not proof that the declared change caused it. See [Replay and compare](docs/REPLAY_COMPARE.md).
+Comparison reports path and first-block divergence, outcome counts, objective state, evidence provenance, independent observed-artifact and evidence-gap deltas, detection lifecycle/matches, telemetry, policy/control states, cleanup, autonomy/provider, AI proposal application, budgets, duration, and coarse improvement/regression signals. It does not yet compute planner-decision deltas, predicted-versus-observed field drift, declared defense-change lineage, target-scope differences, or action-implementation inventory differences. A reported delta is not proof that the declared change caused it. See [Replay and compare](docs/REPLAY_COMPARE.md).
 
 ## Evidence and Detection Lab
 

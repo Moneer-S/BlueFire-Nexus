@@ -20,6 +20,7 @@ def _run(
     benign_matches: int,
     autonomy: str,
     catalog_authority: Any = _UNBOUND,
+    evidence: list[dict[str, Any]] | None = None,
 ) -> str:
     policy: dict[str, Any] = {"schema_version": "bluefire.run-policy.v1"}
     if catalog_authority is not _UNBOUND:
@@ -30,9 +31,14 @@ def _run(
         policy=policy,
         profile=None,
     )
-    evidence = [
-        {"evidence_id": f"evidence-{index}", "provenance": "observed"} for index in range(observed)
-    ]
+    evidence_records = (
+        evidence
+        if evidence is not None
+        else [
+            {"evidence_id": f"evidence-{index}", "provenance": "observed"}
+            for index in range(observed)
+        ]
+    )
     store.finalize(
         handle.run_id,
         result={
@@ -56,7 +62,7 @@ def _run(
             ],
             "planner_decisions": [{"remaining_budgets": {"steps": 2}}],
         },
-        evidence=evidence,
+        evidence=evidence_records,
         detections=[
             {
                 "candidate_id": "candidate-test",
@@ -157,6 +163,89 @@ def test_comparison_reports_evidence_detection_ai_and_assessment(tmp_path: Path)
     assert delta["autonomy_changed"] is True
     assert delta["material_configuration_changed"] is False
     assert delta["assessment"] == "improved"
+
+
+def test_comparison_reports_sanitized_observed_artifact_and_gap_deltas(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    baseline = _run(
+        store,
+        objective=True,
+        observed=0,
+        detection_matches=0,
+        benign_matches=0,
+        autonomy="off",
+        evidence=[
+            {
+                "evidence_id": "evidence-baseline",
+                "step_id": "stage_records",
+                "provenance": "observed",
+                "producer": "collector.filesystem.sandbox.v1",
+                "content": {
+                    "artifact_type": "file_observation",
+                    "path": "staged/bundle.jsonl",
+                    "sha256": "1" * 64,
+                    "size_bytes": 12,
+                },
+                "content_hash": _sha("1"),
+            }
+        ],
+    )
+    candidate = _run(
+        store,
+        objective=True,
+        observed=0,
+        detection_matches=0,
+        benign_matches=0,
+        autonomy="off",
+        evidence=[
+            {
+                "evidence_id": "evidence-candidate",
+                "step_id": "stage_records",
+                "provenance": "observed",
+                "producer": "collector.filesystem.sandbox.v1",
+                "content": {
+                    "artifact_type": "file_observation",
+                    "path": "staged/bundle.jsonl",
+                    "sha256": "2" * 64,
+                    "size_bytes": 24,
+                },
+                "content_hash": _sha("2"),
+            },
+            {
+                "evidence_id": "evidence-gap",
+                "step_id": "audit_logs",
+                "provenance": "unknown",
+                "producer": "collector.sysmon-eventlog.v1",
+                "content": {
+                    "artifact_type": "evidence_gap",
+                    "requested_artifact": "host-audit",
+                    "reason": "raw collector failure with local detail",
+                },
+                "content_hash": _sha("3"),
+            },
+        ],
+    )
+
+    comparison = compare_runs(store, [baseline, candidate])
+    candidate_details = comparison["summaries"][1]["evidence_details"]
+    delta = comparison["deltas"][0]["evidence_detail_delta"]
+
+    assert candidate_details["producer_counts"] == {
+        "collector.filesystem.sandbox.v1": 1,
+        "collector.sysmon-eventlog.v1": 1,
+    }
+    assert delta["observed_artifacts_changed"] == [
+        {
+            "from": comparison["summaries"][0]["evidence_details"]["observed_artifacts"][0],
+            "to": candidate_details["observed_artifacts"][0],
+        }
+    ]
+    assert delta["producer_delta"]["collector.sysmon-eventlog.v1"] == 1
+    assert delta["evidence_gaps_added"][0]["reason_code"] == "unclassified"
+    assert delta["evidence_gaps_added"][0]["reason_hash"].startswith("sha256:")
+    assert "raw collector failure" not in json.dumps(comparison)
 
 
 def test_comparison_reports_deterministic_catalog_authority_lineage(tmp_path: Path) -> None:
