@@ -27,9 +27,23 @@ class GateWorkflowResult:
 
 GateWorkflow = Callable[[GateDefinition, Path], GateWorkflowResult]
 
+
+def _gate_10_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowResult:
+    # Import lazily so the generic dispatcher remains cheap and so the
+    # architecture auditor can be exercised independently by focused tests.
+    from .architecture_gate import run_gate_10
+
+    outcome = run_gate_10(gate, evidence_dir)
+    return GateWorkflowResult(
+        status=outcome.status,
+        proofs=outcome.proofs,
+        failure_reason=outcome.failure_reason,
+    )
+
+
 # Gate implementations are added here only after their dynamic workflow and
-# focused tests exist. An empty registry is an explicit failing baseline.
-_WORKFLOWS: dict[str, GateWorkflow] = {}
+# focused tests exist. Missing gates retain the explicit failing baseline.
+_WORKFLOWS: dict[str, GateWorkflow] = {"GATE-10": _gate_10_workflow}
 
 
 def _utc_now() -> str:

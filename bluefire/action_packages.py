@@ -17,26 +17,28 @@ import re
 import unicodedata
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from functools import lru_cache, total_ordering
+from functools import lru_cache
 from types import MappingProxyType
-from typing import Any, TypeAlias, cast
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
 
+from .action_package_errors import ActionPackageError
+from .action_package_metadata import PackageCompatibility, PackageLicense, PackageProvenance, SemVer
+from .action_package_signing import (
+    PublicKeyValue,
+    canonical_public_key_b64u,
+    ed25519_public_key_fingerprint,
+    normalize_ed25519_public_key,
+)
 from .contracts import ActionDefinition, BehaviorDefinition, ContractError, ExecutionState
 from .runner_inventory import BUILTIN_RUNNER_ACTION_VERSIONS
 from .util import canonical_json_bytes
-
-
-class ActionPackageError(ValueError):
-    """Raised when an action package is malformed, untrusted, or incompatible."""
-
 
 ACTION_PACKAGE_SCHEMA = "bluefire.action-package.v1"
 ACTION_PACKAGE_PAYLOAD_SCHEMA = "bluefire.action-package-payload.v1"
@@ -58,25 +60,13 @@ _PACKAGE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _STABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\.v[1-9][0-9]*$")
 _NAMESPACE = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _KEY_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
-_SPDX_SHAPED_ID = re.compile(
-    r"^(?:[A-Za-z0-9][A-Za-z0-9.+-]{0,63}|LicenseRef-[A-Za-z0-9.-]{1,52})$"
-)
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
-_IMMUTABLE_REVISION = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64}|sha256:[0-9a-f]{64})$")
 _URN_REFERENCE = re.compile(
     r"^urn:[a-z0-9][a-z0-9-]{0,31}:[A-Za-z0-9]" r"[A-Za-z0-9._~:/@!$&'()*+,;=%-]{0,959}$"
 )
 _CONTENT_ADDRESSED_URN = re.compile(r":sha256:[0-9a-f]{64}$")
 _CONTENT_ADDRESSED_HTTPS_PATH = re.compile(r"/sha256/[0-9a-f]{64}$")
 _B64U = re.compile(r"^[A-Za-z0-9_-]+$")
-_SEMVER = re.compile(
-    r"^(0|[1-9][0-9]*)\."
-    r"(0|[1-9][0-9]*)\."
-    r"(0|[1-9][0-9]*)"
-    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
-    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
-)
-_SEMVER_CORE_MAX = (1 << 64) - 1
 _URL_VALUE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
 _FORBIDDEN_EXECUTION_FIELDS = frozenset(
@@ -122,6 +112,7 @@ ALLOWED_PROGRAM_ADAPTERS: Mapping[str, frozenset[str]] = MappingProxyType(
 )
 SUPPORTED_RUNNER_ACTION_VERSIONS: Mapping[str, str] = BUILTIN_RUNNER_ACTION_VERSIONS
 SUPPORTED_PLATFORMS = frozenset({"linux", "macos", "windows"})
+JsonScalar = str | int | bool | None
 
 _ALLOWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, frozenset[str] | type[int] | type[bool]]] = (
     MappingProxyType(
@@ -152,83 +143,6 @@ _ALLOWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, frozenset[str] | type[int]
     )
 )
 
-JsonScalar: TypeAlias = str | int | bool | None
-PublicKeyValue: TypeAlias = bytes | Ed25519PublicKey
-
-_ED25519_FIELD = (1 << 255) - 19
-_ED25519_D = (-121665 * pow(121666, _ED25519_FIELD - 2, _ED25519_FIELD)) % _ED25519_FIELD
-_ED25519_SQRT_M1 = pow(2, (_ED25519_FIELD - 1) // 4, _ED25519_FIELD)
-_ED25519_SUBGROUP_ORDER = (1 << 252) + 27742317777372353535851937790883648493
-_ED25519_IDENTITY = (0, 1, 1, 0)
-
-
-def _ed25519_extended_add(
-    left: tuple[int, int, int, int],
-    right: tuple[int, int, int, int],
-) -> tuple[int, int, int, int]:
-    """Add two extended Edwards points without data-dependent field inversion."""
-
-    x1, y1, z1, t1 = left
-    x2, y2, z2, t2 = right
-    field = _ED25519_FIELD
-    a = ((y1 - x1) * (y2 - x2)) % field
-    b = ((y1 + x1) * (y2 + x2)) % field
-    c = (2 * _ED25519_D * t1 * t2) % field
-    d = (2 * z1 * z2) % field
-    e = (b - a) % field
-    f = (d - c) % field
-    g = (d + c) % field
-    h = (b + a) % field
-    return (e * f % field, g * h % field, f * g % field, e * h % field)
-
-
-def _ed25519_scalar_multiply(
-    point: tuple[int, int, int, int], scalar: int
-) -> tuple[int, int, int, int]:
-    result = _ED25519_IDENTITY
-    addend = point
-    value = scalar
-    while value:
-        if value & 1:
-            result = _ed25519_extended_add(result, addend)
-        addend = _ed25519_extended_add(addend, addend)
-        value >>= 1
-    return result
-
-
-def _validate_prime_order_ed25519_public_key(raw: bytes) -> None:
-    """Reject non-canonical, low-order, and mixed-order Ed25519 encodings."""
-
-    encoded = int.from_bytes(raw, "little")
-    sign = encoded >> 255
-    y = encoded & ((1 << 255) - 1)
-    field = _ED25519_FIELD
-    if y >= field:
-        raise ActionPackageError("trusted signer key uses a non-canonical Ed25519 encoding")
-    y_squared = y * y % field
-    numerator = (y_squared - 1) % field
-    denominator = (_ED25519_D * y_squared + 1) % field
-    if denominator == 0:
-        raise ActionPackageError("trusted signer key is not an Ed25519 curve point")
-    x_squared = numerator * pow(denominator, field - 2, field) % field
-    x = pow(x_squared, (field + 3) // 8, field)
-    if x * x % field != x_squared:
-        x = x * _ED25519_SQRT_M1 % field
-    if x * x % field != x_squared or (x == 0 and sign == 1):
-        raise ActionPackageError("trusted signer key is not an Ed25519 curve point")
-    if x & 1 != sign:
-        x = field - x
-    point = (x, y, 1, x * y % field)
-    subgroup_check = _ed25519_scalar_multiply(point, _ED25519_SUBGROUP_ORDER)
-    if (
-        point == _ED25519_IDENTITY
-        or subgroup_check[0] != 0
-        or subgroup_check[1] != subgroup_check[2]
-    ):
-        raise ActionPackageError(
-            "trusted signer key must be a non-identity prime-order Ed25519 point"
-        )
-
 
 def _digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
@@ -236,40 +150,6 @@ def _digest(value: bytes) -> str:
 
 def _canonical_b64u(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
-
-
-def normalize_ed25519_public_key(value: PublicKeyValue) -> bytes:
-    """Return the canonical raw 32-byte encoding of an Ed25519 public key."""
-
-    if isinstance(value, Ed25519PublicKey):
-        raw = value.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw,
-        )
-    elif isinstance(value, bytes):
-        raw = value
-    else:
-        raise ActionPackageError("trusted signer key must be an Ed25519 public key")
-    if len(raw) != 32:
-        raise ActionPackageError("trusted signer key must contain exactly 32 raw bytes")
-    _validate_prime_order_ed25519_public_key(raw)
-    try:
-        Ed25519PublicKey.from_public_bytes(raw)
-    except ValueError as exc:
-        raise ActionPackageError("trusted signer key is not a valid Ed25519 public key") from exc
-    return raw
-
-
-def canonical_public_key_b64u(value: PublicKeyValue) -> str:
-    """Return the canonical unpadded base64url public-key encoding."""
-
-    return _canonical_b64u(normalize_ed25519_public_key(value))
-
-
-def ed25519_public_key_fingerprint(value: PublicKeyValue) -> str:
-    """Return the stable SHA-256 fingerprint of a raw Ed25519 public key."""
-
-    return _digest(normalize_ed25519_public_key(value))
 
 
 def _bounded_string(value: Any, context: str, *, maximum: int = MAX_STRING_CHARS) -> str:
@@ -332,13 +212,6 @@ def _content_addressed_source_reference(value: Any, context: str) -> str:
     return reference
 
 
-def _immutable_revision(value: Any, context: str) -> str:
-    revision = _bounded_string(value, context, maximum=71)
-    if _IMMUTABLE_REVISION.fullmatch(revision) is None:
-        raise ActionPackageError(f"{context} must be a full lowercase VCS commit or sha256 digest")
-    return revision
-
-
 def _identifier(value: Any, context: str, pattern: re.Pattern[str], maximum: int = 128) -> str:
     result = _bounded_string(value, context, maximum=maximum)
     if pattern.fullmatch(result) is None:
@@ -385,174 +258,6 @@ def _strict_sorted_strings(
     if len(result) != len(set(result)):
         raise ActionPackageError(f"{context} must be sorted and contain no duplicates")
     return result
-
-
-@total_ordering
-@dataclass(frozen=True, slots=True)
-class SemVer:
-    """Strict SemVer 2.0 value with precedence comparison."""
-
-    text: str
-    major: int
-    minor: int
-    patch: int
-    prerelease: tuple[str, ...] = ()
-    build: tuple[str, ...] = ()
-
-    @classmethod
-    def parse(cls, value: Any, context: str = "version") -> SemVer:
-        text = _bounded_string(value, context, maximum=128)
-        match = _SEMVER.fullmatch(text)
-        if match is None:
-            raise ActionPackageError(f"{context} must be strict semantic versioning")
-        core = tuple(int(match.group(index)) for index in (1, 2, 3))
-        if any(part > _SEMVER_CORE_MAX for part in core):
-            raise ActionPackageError(
-                f"{context} semantic version core must fit unsigned 64-bit integers"
-            )
-        prerelease = tuple(match.group(4).split(".")) if match.group(4) else ()
-        build = tuple(match.group(5).split(".")) if match.group(5) else ()
-        if any(part.isdigit() and len(part) > 1 and part.startswith("0") for part in prerelease):
-            raise ActionPackageError(
-                f"{context} numeric prerelease identifiers cannot contain leading zeroes"
-            )
-        return cls(
-            text=text,
-            major=core[0],
-            minor=core[1],
-            patch=core[2],
-            prerelease=prerelease,
-            build=build,
-        )
-
-    def _compare(self, other: SemVer) -> int:
-        left_core = (self.major, self.minor, self.patch)
-        right_core = (other.major, other.minor, other.patch)
-        if left_core != right_core:
-            return -1 if left_core < right_core else 1
-        if self.prerelease == other.prerelease:
-            return 0
-        if not self.prerelease:
-            return 1
-        if not other.prerelease:
-            return -1
-        for left, right in zip(self.prerelease, other.prerelease, strict=False):
-            if left == right:
-                continue
-            left_numeric = left.isdigit()
-            right_numeric = right.isdigit()
-            if left_numeric and right_numeric:
-                return -1 if int(left) < int(right) else 1
-            if left_numeric != right_numeric:
-                return -1 if left_numeric else 1
-            return -1 if left < right else 1
-        return -1 if len(self.prerelease) < len(other.prerelease) else 1
-
-    def __lt__(self, other: object) -> bool:
-        if not isinstance(other, SemVer):
-            return NotImplemented
-        return self._compare(other) < 0
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, SemVer):
-            return False
-        return self._compare(other) == 0
-
-    def __hash__(self) -> int:
-        # Build metadata is intentionally absent because SemVer precedence
-        # ignores it and ``__eq__`` follows precedence for range checks.
-        return hash((self.major, self.minor, self.patch, self.prerelease))
-
-
-@dataclass(frozen=True, slots=True)
-class PackageCompatibility:
-    minimum_bluefire_version: str
-    maximum_bluefire_version_exclusive: str
-
-    @classmethod
-    def from_mapping(
-        cls, value: Any, context: str = "manifest.compatibility"
-    ) -> PackageCompatibility:
-        data = _strict_mapping(
-            value,
-            context=context,
-            required={"minimum_bluefire_version", "maximum_bluefire_version_exclusive"},
-        )
-        minimum = SemVer.parse(
-            data["minimum_bluefire_version"], f"{context}.minimum_bluefire_version"
-        )
-        maximum = SemVer.parse(
-            data["maximum_bluefire_version_exclusive"],
-            f"{context}.maximum_bluefire_version_exclusive",
-        )
-        if minimum >= maximum:
-            raise ActionPackageError(f"{context} minimum must precede its exclusive maximum")
-        return cls(minimum.text, maximum.text)
-
-    def supports(self, version: SemVer) -> bool:
-        return (
-            SemVer.parse(self.minimum_bluefire_version)
-            <= version
-            < SemVer.parse(self.maximum_bluefire_version_exclusive)
-        )
-
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "minimum_bluefire_version": self.minimum_bluefire_version,
-            "maximum_bluefire_version_exclusive": self.maximum_bluefire_version_exclusive,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class PackageLicense:
-    spdx_id: str
-    notice: str
-
-    @classmethod
-    def from_mapping(cls, value: Any, context: str = "manifest.license") -> PackageLicense:
-        data = _strict_mapping(value, context=context, required={"spdx_id", "notice"})
-        spdx_id = _bounded_string(data["spdx_id"], f"{context}.spdx_id", maximum=64)
-        if _SPDX_SHAPED_ID.fullmatch(spdx_id) is None:
-            raise ActionPackageError(
-                f"{context}.spdx_id must use SPDX-shaped identifier or LicenseRef syntax"
-            )
-        return cls(
-            spdx_id=spdx_id,
-            notice=_bounded_string(data["notice"], f"{context}.notice", maximum=1024),
-        )
-
-    def to_dict(self) -> dict[str, str]:
-        return {"spdx_id": self.spdx_id, "notice": self.notice}
-
-
-@dataclass(frozen=True, slots=True)
-class PackageProvenance:
-    publisher_id: str
-    source: str
-    reference: str
-    revision: str
-
-    @classmethod
-    def from_mapping(cls, value: Any, context: str = "manifest.provenance") -> PackageProvenance:
-        data = _strict_mapping(
-            value,
-            context=context,
-            required={"publisher_id", "source", "reference", "revision"},
-        )
-        return cls(
-            publisher_id=_identifier(data["publisher_id"], f"{context}.publisher_id", _PACKAGE_ID),
-            source=_bounded_string(data["source"], f"{context}.source", maximum=512),
-            reference=_immutable_source_reference(data["reference"], f"{context}.reference"),
-            revision=_immutable_revision(data["revision"], f"{context}.revision"),
-        )
-
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "publisher_id": self.publisher_id,
-            "source": self.source,
-            "reference": self.reference,
-            "revision": self.revision,
-        }
 
 
 @dataclass(frozen=True, slots=True)

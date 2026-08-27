@@ -1,0 +1,183 @@
+{
+  "schema_version": "bluefire.architecture-policy.v1",
+  "baseline_commit": "72c6be958dbd3586b22a481f42676119e606187c",
+  "line_budgets": {
+    "new_file": 1000,
+    "existing_file": 1500,
+    "exceptions": []
+  },
+  "production_roots": [
+    {
+      "path": "bluefire",
+      "extensions": [".py"]
+    },
+    {
+      "path": "runner/src",
+      "extensions": [".rs"]
+    }
+  ],
+  "python_layer_rules": [
+    {
+      "layer": "release",
+      "patterns": [
+        "bluefire.architecture_gate",
+        "bluefire.product_acceptance*",
+        "bluefire.product_gates"
+      ]
+    },
+    {
+      "layer": "adapter",
+      "patterns": ["bluefire.__init__", "bluefire.api", "bluefire.cli"]
+    },
+    {
+      "layer": "service",
+      "patterns": ["bluefire.service"]
+    },
+    {
+      "layer": "application",
+      "patterns": [
+        "bluefire.bootstrap",
+        "bluefire.comparison",
+        "bluefire.detection_lab",
+        "bluefire.job_runtime",
+        "bluefire.orchestrator",
+        "bluefire.replay"
+      ]
+    },
+    {
+      "layer": "persistence",
+      "patterns": ["bluefire.product_store", "bluefire.run_store"]
+    },
+    {
+      "layer": "execution",
+      "patterns": [
+        "bluefire.local_lock",
+        "bluefire.receiver",
+        "bluefire.receiver_auth",
+        "bluefire.runner_adapter",
+        "bluefire.runner_bootstrap",
+        "bluefire.runner_client",
+        "bluefire.runner_host",
+        "bluefire.runner_lifecycle",
+        "bluefire.runner_transport",
+        "bluefire.runner_trust",
+        "bluefire.runner_watchdog"
+      ]
+    },
+    {
+      "layer": "foundation",
+      "patterns": [
+        "bluefire.config",
+        "bluefire.contracts",
+        "bluefire.data.__init__",
+        "bluefire.native.__init__",
+        "bluefire.secret_store",
+        "bluefire.util"
+      ]
+    },
+    {
+      "layer": "domain",
+      "patterns": [
+        "bluefire.action_*",
+        "bluefire.ai",
+        "bluefire.ai_drafts",
+        "bluefire.approvals",
+        "bluefire.collectors",
+        "bluefire.detections",
+        "bluefire.evidence",
+        "bluefire.planner",
+        "bluefire.plugins",
+        "bluefire.policy",
+        "bluefire.registry",
+        "bluefire.research",
+        "bluefire.runner_contracts",
+        "bluefire.runner_inventory",
+        "bluefire.simulation"
+      ]
+    }
+  ],
+  "allowed_python_dependencies": {
+    "foundation": ["foundation"],
+    "domain": ["domain", "foundation"],
+    "persistence": ["persistence", "domain", "foundation"],
+    "execution": ["execution", "domain", "foundation"],
+    "application": ["application", "execution", "persistence", "domain", "foundation"],
+    "service": ["service", "application", "execution", "persistence", "domain", "foundation"],
+    "adapter": ["adapter", "service", "application", "execution", "persistence", "domain", "foundation", "release"],
+    "release": ["release", "persistence", "foundation"]
+  },
+  "rust_layers": {
+    "contract": "foundation",
+    "process": "platform",
+    "safety": "safety",
+    "actions": "action",
+    "runner": "execution",
+    "lib": "adapter",
+    "main": "adapter"
+  },
+  "allowed_rust_dependencies": {
+    "foundation": ["foundation"],
+    "platform": ["platform", "foundation"],
+    "safety": ["safety", "platform", "foundation"],
+    "action": ["action", "safety", "platform", "foundation"],
+    "execution": ["execution", "action", "safety", "platform", "foundation"],
+    "adapter": ["adapter", "execution", "action", "safety", "platform", "foundation"]
+  },
+  "decomposition_hotspots": {
+    "python": [
+      "bluefire/service.py",
+      "bluefire/product_store.py",
+      "bluefire/runner_transport.py",
+      "bluefire/runner_lifecycle.py",
+      "bluefire/orchestrator.py",
+      "bluefire/runner_trust.py",
+      "bluefire/runner_client.py",
+      "bluefire/api.py",
+      "bluefire/action_packages.py",
+      "bluefire/detections.py"
+    ],
+    "rust": ["runner/src/actions.rs", "runner/src/safety.rs"]
+  },
+  "responsibility_markers": {
+    "security_protocol": [
+      "ssl.SSLContext",
+      "TLSVersion",
+      "_request_mac(",
+      "certificate_fingerprint(",
+      "HmacSha256"
+    ],
+    "persistence": [
+      "import sqlite3",
+      "sqlite3.Connection",
+      "CREATE TABLE",
+      "_persist_durable",
+      "ReceiptCommitRecord"
+    ],
+    "lifecycle": [
+      "self.runner_lifecycle.start(",
+      "def _install_action_package_locked(",
+      "def _remove_locked(",
+      "struct CleanupParams",
+      "struct CleanupQuarantine"
+    ],
+    "ui_service": ["class BlueFireService", "class PlatformService", "BaseHTTPRequestHandler"],
+    "package_signing": [
+      "def build_signed_action_package(",
+      "def verify_action_package(",
+      "def normalize_ed25519_public_key("
+    ]
+  },
+  "custom_crypto_markers": [
+    "_ED25519_FIELD",
+    "_ED25519_D",
+    "_ED25519_SUBGROUP_ORDER",
+    "_ed25519_extended_add(",
+    "_ed25519_scalar_multiply("
+  ],
+  "maintained_crypto_markers": [
+    "from cryptography.",
+    "from nacl.bindings",
+    "use hmac::",
+    "use sha2::"
+  ]
+}
