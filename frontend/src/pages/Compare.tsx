@@ -85,6 +85,8 @@ export function ComparisonResult({ comparison }: { comparison: ComparisonRespons
       <ol>{summary.path.map((step, index) => <li key={`${step}-${index}`} data-status={summary.outcomes[step] === "success" ? "succeeded" : summary.outcomes[step]}><span>{String(index + 1).padStart(2, "0")}</span><strong>{step}</strong><small>{sentence(summary.outcomes[step] ?? "unknown")}</small></li>)}</ol>
       <DataList items={[
         { label: "Mode / profile", value: `${sentence(summary.mode ?? "not_reported")} / ${summary.profile_id ?? "Not reported"}` },
+        { label: "Target scope", value: formatTargetScope(summary.target_scope) },
+        { label: "Replay Variant", value: formatReplayLineage(summary.replay_lineage) },
         { label: "Objective", value: summary.objective_reached === true ? "Reached" : summary.objective_reached === false ? "Prevented / incomplete" : "Not reported" },
         { label: "First block", value: summary.first_blocked_step ?? "None recorded" },
         { label: "Cleanup", value: summary.cleanup_success === true ? "Reconciled" : summary.cleanup_success === false ? "Outstanding" : "Not reported" },
@@ -126,6 +128,8 @@ export function ComparisonResult({ comparison }: { comparison: ComparisonRespons
             { label: "Autonomy", value: formatChanged(delta.autonomy_changed) },
             { label: "AI provider", value: formatChanged(delta.ai_provider_changed) },
             { label: "AI proposal delta", value: formatSignedNumber(delta.ai_proposal_delta) },
+            { label: "Target scope", value: formatChanged(delta.target_scope_changed) },
+            { label: "Replay Variant", value: formatReplayDelta(delta.replay_lineage_delta) },
             { label: "Duration delta", value: formatDurationDelta(delta.duration_delta_ms) },
           ]} /></div>
           <div><h3>Telemetry & controls</h3><DataList items={[
@@ -146,7 +150,7 @@ type ComparisonDeltaItem = ComparisonResponse["deltas"][number];
 function hasMaterialDelta(delta: ComparisonDeltaItem) {
   if (delta.assessment) return delta.assessment !== "no_material_change";
   const evidenceDetail = delta.evidence_detail_delta;
-  return Boolean(delta.objective_changed || delta.first_blocked_changed || delta.cleanup_changed || delta.autonomy_changed || delta.ai_provider_changed || delta.first_path_divergence !== null && delta.first_path_divergence !== undefined && delta.first_path_divergence >= 0 || Object.values(delta.evidence_delta ?? {}).some(Boolean) || evidenceDetail?.observed_artifacts_added?.length || evidenceDetail?.observed_artifacts_removed?.length || evidenceDetail?.observed_artifacts_changed?.length || evidenceDetail?.evidence_gaps_added?.length || evidenceDetail?.evidence_gaps_removed?.length || Object.values(evidenceDetail?.producer_delta ?? {}).some(Boolean) || Object.values(delta.detection_delta ?? {}).some(Boolean) || Object.values(delta.outcome_delta ?? {}).some(Boolean) || delta.detection_match_delta || delta.benign_match_delta || delta.ai_proposal_delta || delta.duration_delta_ms || delta.telemetry_added?.length || delta.telemetry_removed?.length || delta.controls_added?.length || delta.controls_removed?.length);
+  return Boolean(delta.objective_changed || delta.first_blocked_changed || delta.cleanup_changed || delta.autonomy_changed || delta.ai_provider_changed || delta.target_scope_changed || delta.replay_lineage_changed || delta.first_path_divergence !== null && delta.first_path_divergence !== undefined && delta.first_path_divergence >= 0 || Object.values(delta.evidence_delta ?? {}).some(Boolean) || evidenceDetail?.observed_artifacts_added?.length || evidenceDetail?.observed_artifacts_removed?.length || evidenceDetail?.observed_artifacts_changed?.length || evidenceDetail?.evidence_gaps_added?.length || evidenceDetail?.evidence_gaps_removed?.length || Object.values(evidenceDetail?.producer_delta ?? {}).some(Boolean) || Object.values(delta.detection_delta ?? {}).some(Boolean) || Object.values(delta.outcome_delta ?? {}).some(Boolean) || delta.detection_match_delta || delta.benign_match_delta || delta.ai_proposal_delta || delta.duration_delta_ms || delta.telemetry_added?.length || delta.telemetry_removed?.length || delta.controls_added?.length || delta.controls_removed?.length);
 }
 
 function assessmentTone(value: string): "neutral" | "success" | "warning" | "danger" {
@@ -156,6 +160,23 @@ function assessmentTone(value: string): "neutral" | "success" | "warning" | "dan
 function formatChanged(value?: boolean) { return value === undefined ? "Not reported" : value ? "Changed" : "Stable"; }
 function formatReportedCount(value?: number) { return value === undefined ? "Not reported" : new Intl.NumberFormat().format(value); }
 function formatList(values?: string[], empty = "None") { return values?.length ? values.map(sentence).join(", ") : empty; }
+function formatTargetScope(value?: ComparisonResponse["summaries"][number]["target_scope"]) {
+  if (!value || value.state !== "bound") return "Not recorded";
+  return `${formatReportedCount(value.scope_ref_count)} scope ref${value.scope_ref_count === 1 ? "" : "s"} · ${shortDigest(value.scope_digest)}`;
+}
+function formatReplayLineage(value?: ComparisonResponse["summaries"][number]["replay_lineage"]) {
+  if (!value || value.state !== "replay") return "Original run";
+  const variants = formatList(value.variant_types, "exact replay");
+  const source = value.source_run_id ? ` from ${shortId(value.source_run_id)}` : "";
+  const defense = value.defense_change_declared ? ` · defense note ${shortDigest(value.defense_change_digest)}` : "";
+  return `${variants}${source}${defense}`;
+}
+function formatReplayDelta(value?: ComparisonDeltaItem["replay_lineage_delta"]) {
+  if (!value || !value.changed) return "Stable";
+  const variants = formatList(value.to_variant_types, "No Variant labels");
+  const defense = value.defense_change_declared ? ` · defense note ${shortDigest(value.defense_change_digest)}` : "";
+  return `${variants}${defense}`;
+}
 function formatEvidenceDetails(value?: { producer_counts?: Record<string, number>; observed_artifacts?: Array<Record<string, unknown>>; evidence_gaps?: Array<Record<string, unknown>> }) {
   if (!value) return "None reported";
   const observed = value.observed_artifacts?.length ?? 0;
@@ -180,6 +201,7 @@ function countValues(values: string[]) { return values.reduce<Record<string, num
 function formatCountMap(values?: Record<string, number>, empty = "None") { return values && Object.keys(values).length ? Object.entries(values).map(([key, value]) => `${sentence(key)}: ${new Intl.NumberFormat().format(value)}`).join(", ") : empty; }
 function formatDeltaMap(values?: Record<string, number>) { return values && Object.keys(values).length ? Object.entries(values).map(([key, value]) => `${sentence(key)} ${value >= 0 ? "+" : ""}${value}`).join(", ") : "No delta"; }
 function formatSignedNumber(value?: number) { return value === undefined ? "Not reported" : value === 0 ? "No delta" : `${value > 0 ? "+" : ""}${new Intl.NumberFormat().format(value)}`; }
+function shortDigest(value?: string | null) { return value && value.length > 18 ? `${value.slice(0, 14)}…${value.slice(-6)}` : value ?? "No digest"; }
 function formatDuration(value?: number | null) { if (value === undefined || value === null) return "Not reported"; return formatMilliseconds(value); }
 function formatDurationDelta(value?: number | null) { if (value === undefined || value === null) return "Not comparable"; return value === 0 ? "No delta" : `${value > 0 ? "+" : "−"}${formatMilliseconds(Math.abs(value))}`; }
 function formatMilliseconds(value: number) { return Math.abs(value) < 1_000 ? `${new Intl.NumberFormat().format(value)} ms` : `${(value / 1_000).toLocaleString(undefined, { maximumFractionDigits: 2 })} s`; }

@@ -86,6 +86,7 @@ The result contains normalized summaries and one delta from the baseline to each
 ### Summary fields
 
 - mode and runner profile;
+- target-scope count/digest and sanitized replay lineage;
 - path, per-step outcomes, and outcome counts;
 - first blocked/refused step and objective state;
 - evidence counts by provenance, independent producer counts, observed artifact identities, and hashed evidence gaps;
@@ -102,8 +103,10 @@ The result contains normalized summaries and one delta from the baseline to each
 - block, objective, and cleanup changes;
 - evidence, observed artifact, evidence-gap, detection, match, benign-match, and outcome deltas;
 - telemetry/control additions and removals;
-- autonomy/provider/proposal/duration changes;
+- target-scope, replay-lineage, autonomy/provider/proposal/duration changes;
 - coarse signals and `improved`, `regressed`, `mixed`, or `no_material_change` assessment.
+
+Replay lineage summaries include the source run, source scenario digest, declared Variant labels, restart/substitution IDs, parameter override step/name lists, action-implementation override/reselection steps, AI/provider/profile change flags, and a hash of any defense-change note. They do not echo the raw defense-change text or raw target-scope references into comparison output.
 
 The assessment is a transparent heuristic. More observed evidence is not always better; more detection matches can accompany more benign matches; a shorter path may indicate prevention or missing telemetry. Read the underlying summaries.
 

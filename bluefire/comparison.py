@@ -193,6 +193,8 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "run_id": snapshot.get("run_id"),
         "mode": snapshot.get("mode"),
         "profile_id": snapshot.get("runner_profile_id"),
+        "target_scope": _target_scope_summary(snapshot.get("target_scope")),
+        "replay_lineage": _replay_lineage_summary(snapshot.get("replay")),
         "catalog_authority": _catalog_authority_summary(snapshot),
         "path": path,
         "outcomes": outcomes,
@@ -267,6 +269,10 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
     authority_delta = _catalog_authority_delta(
         baseline["catalog_authority"], candidate["catalog_authority"]
     )
+    target_scope_changed = baseline["target_scope"] != candidate["target_scope"]
+    replay_delta = _replay_lineage_delta(
+        baseline["replay_lineage"], candidate["replay_lineage"]
+    )
     if detection_match_delta > 0:
         signals.append("detection_matches_increased")
     elif detection_match_delta < 0:
@@ -277,7 +283,16 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         signals.append("benign_matches_decreased")
     if authority_delta["changed"]:
         signals.append("catalog_authority_changed")
+    if target_scope_changed:
+        signals.append("target_scope_changed")
+    if replay_delta["changed"]:
+        signals.append("replay_variant_changed")
     assessment = _assessment(signals)
+    configuration_changes = ["catalog_authority"] if authority_delta["changed"] else []
+    if target_scope_changed:
+        configuration_changes.append("target_scope")
+    if replay_delta["action_implementations_changed"]:
+        configuration_changes.append("action_implementations")
     return {
         "from_run_id": baseline["run_id"],
         "to_run_id": candidate["run_id"],
@@ -300,10 +315,13 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         "autonomy_changed": baseline["autonomy"] != candidate["autonomy"],
         "ai_provider_changed": baseline["ai_provider_id"] != candidate["ai_provider_id"],
         "ai_proposal_delta": candidate["ai_proposal_count"] - baseline["ai_proposal_count"],
+        "target_scope_changed": target_scope_changed,
+        "replay_lineage_changed": replay_delta["changed"],
+        "replay_lineage_delta": replay_delta,
         "catalog_authority_changed": authority_delta["changed"],
         "catalog_authority_delta": authority_delta,
-        "material_configuration_changed": authority_delta["changed"],
-        "configuration_changes": (["catalog_authority"] if authority_delta["changed"] else []),
+        "material_configuration_changed": bool(configuration_changes),
+        "configuration_changes": configuration_changes,
         "duration_delta_ms": _number_delta(
             baseline.get("duration_ms"), candidate.get("duration_ms")
         ),
@@ -406,6 +424,173 @@ def _catalog_authority_summary(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "authority_record_digest": record_digest,
         "package_count": len(package_summaries),
         "packages": package_summaries,
+    }
+
+
+def _target_scope_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {
+            "state": "not_recorded",
+            "scope_ref_count": 0,
+            "scope_digest": None,
+        }
+    refs = value.get("scope_refs")
+    scope_ref_count = (
+        len([item for item in refs if isinstance(item, str)])
+        if isinstance(refs, list)
+        else 0
+    )
+    return {
+        "state": "bound",
+        "scope_ref_count": scope_ref_count,
+        "scope_digest": content_hash(dict(value)),
+    }
+
+
+def _replay_lineage_summary(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {
+            "state": "original",
+            "lineage_digest": None,
+            "source_run_id": None,
+            "source_scenario_digest": None,
+            "variant_types": [],
+            "from_step_id": None,
+            "swap_step_id": None,
+            "swap_behavior_id": None,
+            "parameter_override_steps": [],
+            "parameter_override_names": {},
+            "action_implementations_changed": False,
+            "action_implementation_override_steps": [],
+            "action_reselection_steps": [],
+            "ai_changed": False,
+            "autonomy_from": None,
+            "autonomy_to": None,
+            "ai_provider_changed": False,
+            "ai_provider_from": None,
+            "ai_provider_to": None,
+            "profile_changed": False,
+            "defense_change_declared": False,
+            "defense_change_digest": None,
+        }
+    parameter_overrides = value.get("parameter_overrides")
+    parameter_override_names: dict[str, list[str]] = {}
+    if isinstance(parameter_overrides, Mapping):
+        for step_id, parameters in parameter_overrides.items():
+            if isinstance(step_id, str) and isinstance(parameters, Mapping):
+                parameter_override_names[step_id] = sorted(
+                    str(name) for name in parameters if isinstance(name, str)
+                )
+    action_overrides = value.get("action_implementation_overrides")
+    action_override_steps = (
+        sorted(str(step_id) for step_id in action_overrides if isinstance(step_id, str))
+        if isinstance(action_overrides, Mapping)
+        else []
+    )
+    action_reselection_steps = [
+        str(step_id)
+        for step_id in value.get("action_reselection_steps", [])
+        if isinstance(step_id, str)
+    ] if isinstance(value.get("action_reselection_steps"), list) else []
+    variant_types = []
+    if value.get("exact") is True:
+        variant_types.append("exact")
+    if isinstance(value.get("from_step_id"), str):
+        variant_types.append("from_node")
+    if isinstance(value.get("swap_step_id"), str) or isinstance(value.get("swap_behavior_id"), str):
+        variant_types.append("swap")
+    if parameter_override_names:
+        variant_types.append("parameters")
+    if action_override_steps or action_reselection_steps:
+        variant_types.append("action_implementations")
+    if value.get("ai_changed") is True or value.get("ai_provider_changed") is True:
+        variant_types.append("ai")
+    if value.get("profile_changed") is True:
+        variant_types.append("profile")
+    defense_change = value.get("defense_change")
+    defense_change_text = defense_change if isinstance(defense_change, str) and defense_change else None
+    if defense_change_text is not None:
+        variant_types.append("defense_change")
+    return {
+        "state": "replay",
+        "lineage_digest": content_hash(dict(value)),
+        "source_run_id": value.get("source_run_id") if isinstance(value.get("source_run_id"), str) else None,
+        "source_scenario_digest": (
+            value.get("source_scenario_digest")
+            if _is_digest(value.get("source_scenario_digest"))
+            else None
+        ),
+        "variant_types": sorted(set(variant_types)),
+        "from_step_id": value.get("from_step_id") if isinstance(value.get("from_step_id"), str) else None,
+        "swap_step_id": value.get("swap_step_id") if isinstance(value.get("swap_step_id"), str) else None,
+        "swap_behavior_id": value.get("swap_behavior_id") if isinstance(value.get("swap_behavior_id"), str) else None,
+        "parameter_override_steps": sorted(parameter_override_names),
+        "parameter_override_names": parameter_override_names,
+        "action_implementations_changed": bool(value.get("action_implementations_changed")),
+        "action_implementation_override_steps": action_override_steps,
+        "action_reselection_steps": sorted(set(action_reselection_steps)),
+        "ai_changed": bool(value.get("ai_changed")),
+        "autonomy_from": value.get("autonomy_from") if isinstance(value.get("autonomy_from"), str) else None,
+        "autonomy_to": value.get("autonomy_to") if isinstance(value.get("autonomy_to"), str) else None,
+        "ai_provider_changed": bool(value.get("ai_provider_changed")),
+        "ai_provider_from": value.get("ai_provider_from") if isinstance(value.get("ai_provider_from"), str) else None,
+        "ai_provider_to": value.get("ai_provider_to") if isinstance(value.get("ai_provider_to"), str) else None,
+        "profile_changed": bool(value.get("profile_changed")),
+        "defense_change_declared": defense_change_text is not None,
+        "defense_change_digest": (
+            content_hash({"defense_change": defense_change_text})
+            if defense_change_text is not None
+            else None
+        ),
+    }
+
+
+def _replay_lineage_delta(
+    baseline: Mapping[str, Any], candidate: Mapping[str, Any]
+) -> dict[str, Any]:
+    fields = (
+        "state",
+        "lineage_digest",
+        "source_run_id",
+        "source_scenario_digest",
+        "variant_types",
+        "from_step_id",
+        "swap_step_id",
+        "swap_behavior_id",
+        "parameter_override_steps",
+        "parameter_override_names",
+        "action_implementations_changed",
+        "action_implementation_override_steps",
+        "action_reselection_steps",
+        "ai_changed",
+        "autonomy_from",
+        "autonomy_to",
+        "ai_provider_changed",
+        "ai_provider_from",
+        "ai_provider_to",
+        "profile_changed",
+        "defense_change_declared",
+        "defense_change_digest",
+    )
+    fields_changed = [field for field in fields if baseline.get(field) != candidate.get(field)]
+    return {
+        "changed": bool(fields_changed),
+        "fields_changed": fields_changed,
+        "from_state": baseline.get("state"),
+        "to_state": candidate.get("state"),
+        "from_variant_types": baseline.get("variant_types", []),
+        "to_variant_types": candidate.get("variant_types", []),
+        "from_lineage_digest": baseline.get("lineage_digest"),
+        "to_lineage_digest": candidate.get("lineage_digest"),
+        "source_run_id": candidate.get("source_run_id"),
+        "source_scenario_digest": candidate.get("source_scenario_digest"),
+        "parameter_override_steps": candidate.get("parameter_override_steps", []),
+        "action_implementations_changed": bool(
+            candidate.get("action_implementations_changed")
+            or baseline.get("action_implementations_changed")
+        ),
+        "defense_change_declared": bool(candidate.get("defense_change_declared")),
+        "defense_change_digest": candidate.get("defense_change_digest"),
     }
 
 

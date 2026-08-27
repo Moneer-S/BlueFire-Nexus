@@ -226,6 +226,9 @@ def test_replay_compare_requires_fresh_execute_approval_and_strict_parameters() 
     assert "I approve this reviewed Execute replay request once" in compare
     assert "Not the replay binding" in compare
     assert "The source bundle never changes" in compare
+    assert "Replay Variant" in compare
+    assert "formatReplayLineage" in compare
+    assert "formatTargetScope" in compare
     assert "Source run" in compare
     assert "Replay created" in compare and "replayMutation.data.run_id" in compare
     assert "buildReplayPayload" in api

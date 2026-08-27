@@ -21,6 +21,8 @@ def _run(
     autonomy: str,
     catalog_authority: Any = _UNBOUND,
     evidence: list[dict[str, Any]] | None = None,
+    replay: dict[str, Any] | None = None,
+    target_scope: dict[str, Any] | None = None,
 ) -> str:
     policy: dict[str, Any] = {"schema_version": "bluefire.run-policy.v1"}
     if catalog_authority is not _UNBOUND:
@@ -52,6 +54,8 @@ def _run(
             "ai_proposals": (
                 [{"application_status": "recorded_for_review"}] if autonomy != "off" else []
             ),
+            "replay": replay,
+            "target_scope": target_scope,
             "steps": [
                 {
                     "step_id": "observe",
@@ -246,6 +250,81 @@ def test_comparison_reports_sanitized_observed_artifact_and_gap_deltas(
     assert delta["evidence_gaps_added"][0]["reason_code"] == "unclassified"
     assert delta["evidence_gaps_added"][0]["reason_hash"].startswith("sha256:")
     assert "raw collector failure" not in json.dumps(comparison)
+
+
+def test_comparison_reports_sanitized_replay_variant_and_target_scope_delta(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    baseline = _run(
+        store,
+        objective=True,
+        observed=1,
+        detection_matches=0,
+        benign_matches=0,
+        autonomy="off",
+        target_scope={"scope_refs": ["sandbox.workspace"]},
+    )
+    replay_lineage = {
+        "schema_version": "bluefire.replay-lineage.v1",
+        "source_run_id": baseline,
+        "source_scenario_digest": _sha("8"),
+        "exact": False,
+        "from_step_id": "observe",
+        "swap_step_id": "observe",
+        "swap_behavior_id": "sandbox.discovery.metadata.v1",
+        "parameter_overrides": {"observe": {"record_count": 3}},
+        "action_implementation_overrides": {"observe": "sandbox.discovery.metadata.v1"},
+        "action_reselection_steps": ["observe"],
+        "action_implementations_changed": True,
+        "ai_changed": True,
+        "autonomy_from": "off",
+        "autonomy_to": "assist",
+        "ai_provider_changed": True,
+        "ai_provider_from": "deterministic-offline.v1",
+        "ai_provider_to": "openai-responses.v1",
+        "profile_changed": True,
+        "defense_change": "sensitive defense note contents must not appear",
+    }
+    candidate = _run(
+        store,
+        objective=True,
+        observed=1,
+        detection_matches=0,
+        benign_matches=0,
+        autonomy="assist",
+        replay=replay_lineage,
+        target_scope={"scope_refs": ["sandbox.workspace", "lab.identity"]},
+    )
+
+    comparison = compare_runs(store, [baseline, candidate])
+    baseline_summary, candidate_summary = comparison["summaries"]
+    delta = comparison["deltas"][0]
+    encoded = json.dumps(comparison)
+
+    assert baseline_summary["target_scope"]["scope_ref_count"] == 1
+    assert candidate_summary["target_scope"]["scope_ref_count"] == 2
+    assert candidate_summary["replay_lineage"]["variant_types"] == [
+        "action_implementations",
+        "ai",
+        "defense_change",
+        "from_node",
+        "parameters",
+        "profile",
+        "swap",
+    ]
+    assert candidate_summary["replay_lineage"]["parameter_override_names"] == {
+        "observe": ["record_count"]
+    }
+    assert candidate_summary["replay_lineage"]["defense_change_declared"] is True
+    assert candidate_summary["replay_lineage"]["defense_change_digest"].startswith("sha256:")
+    assert delta["target_scope_changed"] is True
+    assert delta["replay_lineage_changed"] is True
+    assert delta["replay_lineage_delta"]["action_implementations_changed"] is True
+    assert delta["configuration_changes"] == ["target_scope", "action_implementations"]
+    assert "replay_variant_changed" in delta["signals"]
+    assert "target_scope_changed" in delta["signals"]
+    assert "sensitive defense note" not in encoded
 
 
 def test_comparison_reports_deterministic_catalog_authority_lineage(tmp_path: Path) -> None:
