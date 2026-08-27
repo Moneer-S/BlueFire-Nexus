@@ -51,6 +51,62 @@ def _write_report(path: Path | None, report: Mapping[str, Any]) -> None:
     print(payload, end="")
 
 
+def _within(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _disposable_workspace_proof(
+    *,
+    work_root: Path,
+    checkout: Path,
+    sandbox: Path,
+    remaining_files: Sequence[Path],
+    signed_alias: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Return a sanitized machine-checkable proof of disposable smoke isolation."""
+
+    if _within(work_root, checkout):
+        raise RuntimeError("installed-wheel smoke work root must be outside the checkout")
+    if not _within(sandbox, work_root):
+        raise RuntimeError("installed-wheel smoke sandbox must stay inside the disposable root")
+    if remaining_files:
+        raise RuntimeError("installed-wheel smoke retained files after cleanup")
+    alias_remaining = signed_alias.get("remaining_file_count")
+    if type(alias_remaining) is not int:
+        raise RuntimeError("installed signed-alias smoke did not report retained file count")
+
+    return {
+        "schema_version": "bluefire.disposable-workspace-proof.v1",
+        "work_root": {
+            "role": "ci-temp-disposable",
+            "outside_checkout": True,
+            "path": "omitted",
+        },
+        "source": {
+            "wheel_imported_outside_checkout": True,
+            "source_overrides_absent": True,
+        },
+        "sandboxes": [
+            {
+                "name": "fixture-smoke",
+                "relative_scope": "sandbox",
+                "inside_work_root": True,
+                "remaining_file_count": len(remaining_files),
+            },
+            {
+                "name": "signed-alias-smoke",
+                "relative_scope": "alias-sandbox",
+                "inside_work_root": True,
+                "remaining_file_count": alias_remaining,
+            },
+        ],
+    }
+
+
 def inspect_wheel(args: argparse.Namespace) -> int:
     wheel_dir = args.wheel_dir.resolve(strict=True)
     wheels = sorted(wheel_dir.glob("*.whl"))
@@ -363,6 +419,13 @@ def smoke_installed_runner(args: argparse.Namespace) -> int:
             "execute": {"status": created.get("status"), "receipt_count": len(receipts)},
             "cleanup": {"status": cleaned.get("status"), "remaining_file_count": 0},
             "signed_alias": signed_alias,
+            "disposable_workspace": _disposable_workspace_proof(
+                work_root=work_root,
+                checkout=checkout,
+                sandbox=sandbox,
+                remaining_files=remaining_files,
+                signed_alias=signed_alias,
+            ),
             "verified": True,
         },
     )
