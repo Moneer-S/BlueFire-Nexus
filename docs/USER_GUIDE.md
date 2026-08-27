@@ -26,7 +26,7 @@ Open the exact one-use URL printed after the listener is ready. Its fragment cap
 | Runner Profiles / Runners | Inspect scope and capability policy or runner readiness |
 | Actions | Inspect logical actions and the Rust inventory boundary |
 | Detection Lab | Create, clone, tune, exercise, reject, and compare immutable candidate revisions |
-| Research Sources | Inspect pins, licenses, relationships, and cache policy |
+| Research Sources | Inspect pins, licenses, source-intake classifications, attribution, and cache policy |
 | AI Planner | Select autonomy/provider and review planner decisions |
 | Settings | Manage theme plus browser-side effect/autonomy preferences; inspect backend settings authority |
 | Help | Concepts and common readiness failures |
@@ -212,7 +212,7 @@ The first run is the baseline. Treat `improved`, `regressed`, and `mixed` as sum
 8. Compare with attributed public baselines.
 9. Retain field drift, known misses, and tuning decisions.
 
-The Detection Lab UI creates strict hypotheses, exposes clone/tune as new content-addressed revisions, and compares siblings without overwriting their parents. Its public-baseline selector uses only registered pinned Research Source records and preserves the digest of the validated registered metadata document, pin, version, license review, relationship, and comparison use. That digest is not a hash of fetched external bytes; BlueFire does not fetch the reference. The CLI exposes the same lifecycle through `bluefire detections ...`; see the [detection command reference](CLI.md#detection-lab).
+The Detection Lab UI creates strict hypotheses, exposes clone/tune as new content-addressed revisions, and compares siblings without overwriting their parents. Its public-baseline selector uses only registered pinned Research Source records and preserves the digest of the validated registered metadata document, pin, version, license review, relationship, source-intake classification, and comparison use. That digest is not a hash of fetched external bytes; BlueFire does not fetch the reference. The CLI exposes the same lifecycle through `bluefire detections ...`; see the [detection command reference](CLI.md#detection-lab) and [Source intake](SOURCE_INTAKE.md).
 
 Backend parser/compiler functionality is provided by `ExternalDetectionValidator`; rendered source or an enabled browser button is not evidence that validation ran. Trust the persisted candidate state, backend name/version, ordered lifecycle history, and immutable definition/lineage digests. See [Detection Lab](DETECTION_LAB.md).
 

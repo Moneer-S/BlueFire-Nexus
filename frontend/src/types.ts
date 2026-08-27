@@ -397,6 +397,7 @@ export interface PublicBaselineReference {
   license: string;
   license_review: "reviewed" | "conditional" | "prohibited";
   relationship: "imported" | "adapted" | "inspired" | "comparative";
+  use_classification?: "reference_only" | "metadata_import" | "clean_reimplementation" | "external_adapter" | "compatible_code_adaptation" | "incompatible_or_restricted";
   use: "comparison";
 }
 

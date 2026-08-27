@@ -4,88 +4,143 @@ sources:
     id: research.mitre-attack-enterprise.v1
     name: MITRE ATT&CK Enterprise STIX data
     source_type: dataset
+    project: mitre-attack/attack-stix-data
     authority: The MITRE Corporation
     reference_url: https://github.com/mitre-attack/attack-stix-data/blob/6cda5ad8462c79e14fbb872f4e09059b18e0cfc4/enterprise-attack/enterprise-attack-19.2.json
     version: "19.2"
     pin: 6cda5ad8462c79e14fbb872f4e09059b18e0cfc4  # pragma: allowlist secret -- public Git commit
+    exact_ref: 6cda5ad8462c79e14fbb872f4e09059b18e0cfc4
     retrieved_at: "2026-08-25"
     license: CC-BY-4.0
     license_url: https://github.com/mitre-attack/attack-stix-data/blob/6cda5ad8462c79e14fbb872f4e09059b18e0cfc4/LICENSE.txt
+    file_level_license_review: Dataset file and LICENSE.txt reviewed at the pinned commit; no source tree is vendored.
+    trademark_considerations: ATT&CK and MITRE marks are attribution references only and do not imply endorsement.
     license_review: reviewed
     relationship: comparative
+    use_classification: metadata_import
     uses: [behavior_mapping, research_reference]
+    imported_paths: [bluefire/data/behaviors.yaml]
     cache_policy: external_only
     executable_content: false
+    attribution: MITRE ATT&CK Enterprise is attributed in behavior provenance and documentation.
+    security_review: Public STIX metadata is not executed; transformed behavior metadata remains defensive and sanitized.
+    last_verified_at: "2026-08-25"
+    update_status: current
+    transformation_history: Behavior metadata references selected technique semantics without vendoring the STIX dataset.
     notes: Versioned STIX data is referenced for behavior semantics and attribution; no ATT&CK dataset is vendored.
 
   - schema_version: bluefire.research-source.v1
     id: research.sigma-specification.v1
     name: Sigma specification
     source_type: documentation
+    project: SigmaHQ/sigma-specification
     authority: SigmaHQ
     reference_url: https://github.com/SigmaHQ/sigma-specification/tree/v2.1.0
     version: 2.1.0
     pin: v2.1.0
+    exact_ref: v2.1.0
     retrieved_at: "2026-08-25"
     license: LGPL-2.1-only
     license_url: https://github.com/SigmaHQ/sigma-specification/blob/v2.1.0/LICENSE
+    file_level_license_review: Specification repository license reviewed at the pinned tag; no specification text is copied into rules.
+    trademark_considerations: Sigma name is used descriptively for compatibility boundaries.
     license_review: reviewed
     relationship: inspired
+    use_classification: reference_only
     uses: [parser_validation, research_reference]
+    imported_paths: []
     cache_policy: metadata_only
     executable_content: false
+    attribution: SigmaHQ specification is referenced for parser validation semantics.
+    security_review: Documentation is reviewed as a format reference only and is not executed.
+    last_verified_at: "2026-08-25"
+    update_status: current
+    transformation_history: Parser behavior is independently implemented against published semantics.
     notes: Candidate structure follows the published specification; rendered output is never treated as validated without parser results.
 
   - schema_version: bluefire.research-source.v1
     id: research.pysigma.v1
     name: pySigma
     source_type: software
+    project: SigmaHQ/pySigma
     authority: SigmaHQ
     reference_url: https://github.com/SigmaHQ/pySigma/tree/v1.5.0
     version: 1.5.0
     pin: v1.5.0
+    exact_ref: v1.5.0
     retrieved_at: "2026-08-25"
     license: LGPL-2.1-only
     license_url: https://github.com/SigmaHQ/pySigma/blob/v1.5.0/LICENSE
+    file_level_license_review: Package license reviewed at the pinned tag; source is not vendored into BlueFire.
+    trademark_considerations: pySigma name is used to identify an optional separately installed parser dependency.
     license_review: reviewed
     relationship: imported
+    use_classification: external_adapter
     uses: [parser_validation]
+    imported_paths: []
     cache_policy: external_only
     executable_content: true
+    attribution: pySigma is attributed in parser-readiness and research-source metadata.
+    security_review: Optional parser execution is bounded to candidate parsing; BlueFire does not execute upstream tests or scripts during intake.
+    last_verified_at: "2026-08-25"
+    update_status: current
+    transformation_history: BlueFire integrates through an optional installed package boundary rather than copied source.
     notes: The pinned Python package is an optional validation dependency; no source tree or rule corpus is vendored.
 
   - schema_version: bluefire.research-source.v1
     id: research.yara-python.v1
     name: yara-python
     source_type: software
+    project: VirusTotal/yara-python
     authority: VirusTotal
     reference_url: https://github.com/VirusTotal/yara-python/tree/v4.5.5
     version: 4.5.5
     pin: v4.5.5
+    exact_ref: v4.5.5
     retrieved_at: "2026-08-25"
     license: Apache-2.0
     license_url: https://github.com/VirusTotal/yara-python/blob/v4.5.5/LICENSE
+    file_level_license_review: Package license reviewed at the pinned tag; source is not vendored into BlueFire.
+    trademark_considerations: YARA and yara-python names are used descriptively for optional parser compatibility.
     license_review: reviewed
     relationship: imported
+    use_classification: external_adapter
     uses: [parser_validation]
+    imported_paths: []
     cache_policy: external_only
     executable_content: true
+    attribution: yara-python is attributed in parser-readiness and research-source metadata.
+    security_review: Optional compiler use disables includes and treats warnings as errors; intake never executes upstream scripts.
+    last_verified_at: "2026-08-25"
+    update_status: current
+    transformation_history: BlueFire integrates through an optional installed package boundary rather than copied source.
     notes: The pinned Python binding compiles generated YARA candidates with includes disabled; no public YARA corpus is vendored.
 
   - schema_version: bluefire.research-source.v1
     id: research.atomic-red-team.v1
     name: Atomic Red Team
     source_type: rule_corpus
+    project: redcanaryco/atomic-red-team
     authority: Red Canary
     reference_url: https://github.com/redcanaryco/atomic-red-team/tree/6132b92779873cb0d05bef07ba0a480d47eb1cc8
     version: "2026-08-24 snapshot"
     pin: 6132b92779873cb0d05bef07ba0a480d47eb1cc8  # pragma: allowlist secret -- public Git commit
+    exact_ref: 6132b92779873cb0d05bef07ba0a480d47eb1cc8
     retrieved_at: "2026-08-25"
     license: MIT
     license_url: https://github.com/redcanaryco/atomic-red-team/blob/6132b92779873cb0d05bef07ba0a480d47eb1cc8/LICENSE.txt
+    file_level_license_review: Repository license reviewed at the pinned commit; individual tests are not copied or executed.
+    trademark_considerations: Atomic Red Team and Red Canary marks are attribution references only and do not imply endorsement.
     license_review: reviewed
     relationship: comparative
+    use_classification: reference_only
     uses: [behavior_mapping, comparison, research_reference]
+    imported_paths: []
     cache_policy: metadata_only
     executable_content: false
+    attribution: Atomic Red Team is attributed as comparative research in documentation and registry metadata.
+    security_review: Public test corpus is not fetched, copied, or executed by source intake; behavior ideas require separate clean implementation.
+    last_verified_at: "2026-08-25"
+    update_status: current
+    transformation_history: Used as a comparative behavior/test-structure reference only.
     notes: The immutable public snapshot is a comparative behavior and detection-test reference only; no external scripts or corpus content are vendored or executed.
