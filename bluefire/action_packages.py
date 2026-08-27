@@ -16,10 +16,10 @@ import json
 import re
 import unicodedata
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any
 from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
@@ -36,6 +36,22 @@ from .action_package_signing import (
     ed25519_public_key_fingerprint,
     normalize_ed25519_public_key,
 )
+from .action_provider_packages import (
+    ACTION_PACKAGE_PAYLOAD_V2_SCHEMA,
+    ACTION_PACKAGE_V2_SCHEMA,
+    MAX_PROVIDER_ARTIFACT_BYTES,
+    WASM_PROVIDER_ABI_V1,
+    WASM_PROVIDER_PROGRAM_SCHEMA,
+    ProviderLimits,
+    WasmProviderBinding,
+    WasmProviderDescriptor,
+    WasmProviderProgram,
+    bind_provider_runtime,
+    canonical_activation_runner_inventory,
+    parse_provider_artifact_hex,
+    provider_action_contract,
+    provider_action_contract_digest,
+)
 from .contracts import ActionDefinition, BehaviorDefinition, ContractError, ExecutionState
 from .runner_inventory import BUILTIN_RUNNER_ACTION_VERSIONS
 from .util import canonical_json_bytes
@@ -45,6 +61,7 @@ ACTION_PACKAGE_PAYLOAD_SCHEMA = "bluefire.action-package-payload.v1"
 ACTION_PROGRAM_SCHEMA = "bluefire.action-program.v1"
 ACTION_PROGRAM_ADAPTER = "bluefire.builtin-runner-adapter.v1"
 SIGNATURE_DOMAIN = b"BlueFire Nexus action-package signature v1\x00"
+SIGNATURE_DOMAIN_V2 = b"BlueFire Nexus action-package signature v2\x00"
 
 MAX_ENVELOPE_BYTES = 256 * 1024
 MAX_JSON_DEPTH = 16
@@ -272,24 +289,34 @@ class ActionPackageManifest:
     safety_tiers: tuple[str, ...]
     behavior_ids: tuple[str, ...]
     action_ids: tuple[str, ...]
+    provider: WasmProviderDescriptor | None = None
 
     @classmethod
-    def from_mapping(cls, value: Any, context: str = "manifest") -> ActionPackageManifest:
+    def from_mapping(
+        cls,
+        value: Any,
+        context: str = "manifest",
+        *,
+        provider_required: bool = False,
+    ) -> ActionPackageManifest:
+        required = {
+            "package_id",
+            "version",
+            "compatibility",
+            "license",
+            "provenance",
+            "platforms",
+            "capabilities",
+            "safety_tiers",
+            "behavior_ids",
+            "action_ids",
+        }
+        if provider_required:
+            required.add("provider")
         data = _strict_mapping(
             value,
             context=context,
-            required={
-                "package_id",
-                "version",
-                "compatibility",
-                "license",
-                "provenance",
-                "platforms",
-                "capabilities",
-                "safety_tiers",
-                "behavior_ids",
-                "action_ids",
-            },
+            required=required,
         )
         tiers = _strict_sorted_strings(
             data["safety_tiers"], f"{context}.safety_tiers", pattern=_NAMESPACE, maximum_items=3
@@ -326,10 +353,15 @@ class ActionPackageManifest:
                 pattern=_STABLE_ID,
                 maximum_items=MAX_ACTIONS,
             ),
+            provider=(
+                WasmProviderDescriptor.from_mapping(data["provider"], f"{context}.provider")
+                if provider_required
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "package_id": self.package_id,
             "version": self.version,
             "compatibility": self.compatibility.to_dict(),
@@ -341,6 +373,9 @@ class ActionPackageManifest:
             "behavior_ids": list(self.behavior_ids),
             "action_ids": list(self.action_ids),
         }
+        if self.provider is not None:
+            result["provider"] = self.provider.to_dict()
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,7 +481,7 @@ class ActionProgram:
 @dataclass(frozen=True, slots=True)
 class PackagedAction:
     definition: ActionDefinition
-    program: ActionProgram
+    program: ActionProgram | WasmProviderProgram
 
 
 @dataclass(frozen=True, slots=True)
@@ -464,10 +499,18 @@ class VerifiedActionPackage:
     manifest: ActionPackageManifest
     behaviors: tuple[BehaviorDefinition, ...]
     actions: tuple[PackagedAction, ...]
+    provider: WasmProviderDescriptor | None = None
+    _provider_artifact_bytes: bytes | None = field(default=None, repr=False)
 
     @property
     def manifest_bytes(self) -> bytes:
         return canonical_json_bytes(self.manifest.to_dict())
+
+    @property
+    def provider_artifact_bytes(self) -> bytes | None:
+        """Return the verified inline WASM artifact, when this is a v2 package."""
+
+        return self._provider_artifact_bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -508,6 +551,7 @@ class VerifiedActionPackageActivation:
     opcode_bindings: tuple[RunnerOpcodeBinding, ...]
     occupied_behavior_ids: tuple[str, ...]
     occupied_action_ids: tuple[str, ...]
+    provider_bindings: tuple[WasmProviderBinding, ...] = ()
 
     def runner_inventory(self) -> Mapping[str, Any]:
         value = json.loads(self.canonical_runner_inventory_bytes)
@@ -516,7 +560,7 @@ class VerifiedActionPackageActivation:
         return value
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "schema_version": "bluefire.action-package-activation-binding.v1",
             "package_id": self.package.manifest.package_id,
             "version": self.package.manifest.version,
@@ -534,6 +578,10 @@ class VerifiedActionPackageActivation:
             "occupied_behavior_ids": list(self.occupied_behavior_ids),
             "occupied_action_ids": list(self.occupied_action_ids),
         }
+        if self.provider_bindings:
+            result["schema_version"] = "bluefire.action-package-activation-binding.v2"
+            result["provider_bindings"] = [item.to_dict() for item in self.provider_bindings]
+        return result
 
 
 def _reject_forbidden_field_name(value: Any, context: str) -> None:
@@ -603,8 +651,13 @@ def _validate_json_tree(value: Any, *, context: str = "$", depth: int = 1) -> No
             _validate_json_tree(child, context=f"{context}[{index}]", depth=depth + 1)
         return
     if isinstance(value, str):
-        if len(value) > MAX_STRING_CHARS:
-            raise ActionPackageError(f"{context} exceeds {MAX_STRING_CHARS} characters")
+        maximum = (
+            MAX_PROVIDER_ARTIFACT_BYTES * 2
+            if context == "$.payload.artifact_hex"
+            else MAX_STRING_CHARS
+        )
+        if len(value) > maximum:
+            raise ActionPackageError(f"{context} exceeds {maximum} characters")
         if value != value.strip():
             raise ActionPackageError(f"{context} contains surrounding whitespace")
         if unicodedata.normalize("NFC", value) != value:
@@ -678,14 +731,23 @@ def _definition_parameter_names(definition: ActionDefinition, context: str) -> N
 
 def _parse_payload(
     value: Any,
-) -> tuple[tuple[BehaviorDefinition, ...], tuple[PackagedAction, ...]]:
+    *,
+    envelope_schema: str,
+) -> tuple[tuple[BehaviorDefinition, ...], tuple[PackagedAction, ...], bytes | None]:
+    provider_package = envelope_schema == ACTION_PACKAGE_V2_SCHEMA
+    required = {"schema_version", "behaviors", "actions"}
+    if provider_package:
+        required.add("artifact_hex")
     data = _strict_mapping(
         value,
         context="payload",
-        required={"schema_version", "behaviors", "actions"},
+        required=required,
     )
-    if data["schema_version"] != ACTION_PACKAGE_PAYLOAD_SCHEMA:
-        raise ActionPackageError(f"payload.schema_version must be {ACTION_PACKAGE_PAYLOAD_SCHEMA}")
+    expected_payload_schema = (
+        ACTION_PACKAGE_PAYLOAD_V2_SCHEMA if provider_package else ACTION_PACKAGE_PAYLOAD_SCHEMA
+    )
+    if data["schema_version"] != expected_payload_schema:
+        raise ActionPackageError(f"payload.schema_version must be {expected_payload_schema}")
     raw_behaviors = data["behaviors"]
     raw_actions = data["actions"]
     if not isinstance(raw_behaviors, list) or not 1 <= len(raw_behaviors) <= MAX_BEHAVIORS:
@@ -715,15 +777,17 @@ def _parse_payload(
         except ContractError as exc:
             raise ActionPackageError(str(exc)) from exc
         _definition_parameter_names(action_definition, f"payload.actions[{index}].definition")
-        actions.append(
-            PackagedAction(
-                definition=action_definition,
-                program=ActionProgram.from_mapping(
-                    item["program"], f"payload.actions[{index}].program"
-                ),
+        context = f"payload.actions[{index}].program"
+        program: ActionProgram | WasmProviderProgram
+        if provider_package:
+            program = WasmProviderProgram.from_mapping(
+                item["program"], action=action_definition, context=context
             )
-        )
-    return tuple(behaviors), tuple(actions)
+        else:
+            program = ActionProgram.from_mapping(item["program"], context)
+        actions.append(PackagedAction(definition=action_definition, program=program))
+    artifact = parse_provider_artifact_hex(data["artifact_hex"]) if provider_package else None
+    return tuple(behaviors), tuple(actions), artifact
 
 
 def _validate_id_closure(
@@ -887,6 +951,8 @@ def _validate_program_bindings(actions: tuple[PackagedAction, ...]) -> None:
     packaged_by_id = {item.definition.id: item for item in actions}
     for packaged in actions:
         definition = packaged.definition
+        if not isinstance(packaged.program, ActionProgram):
+            raise ActionPackageError("v1 action package contains a provider program")
         opcode = packaged.program.steps[0].opcode
         try:
             reviewed = reviewed_registry.get_action(opcode)
@@ -937,6 +1003,8 @@ def _validate_program_bindings(actions: tuple[PackagedAction, ...]) -> None:
                 f"action {definition.id} omits its reviewed opcode cleanup operation"
             )
         packaged_cleanup = packaged_by_id[definition.cleanup_action_id]
+        if not isinstance(packaged_cleanup.program, ActionProgram):  # pragma: no cover - above
+            raise ActionPackageError("v1 action package contains a provider program")
         cleanup_opcode = packaged_cleanup.program.steps[0].opcode
         if cleanup_opcode != reviewed.cleanup_action_id:
             raise ActionPackageError(
@@ -956,6 +1024,7 @@ def _parse_content(
     ActionPackageManifest,
     tuple[BehaviorDefinition, ...],
     tuple[PackagedAction, ...],
+    bytes | None,
     bytes,
 ]:
     data = _strict_mapping(
@@ -963,10 +1032,16 @@ def _parse_content(
         context="envelope",
         required={"schema_version", "manifest", "payload", "integrity", "signature"},
     )
-    if data["schema_version"] != ACTION_PACKAGE_SCHEMA:
-        raise ActionPackageError(f"envelope.schema_version must be {ACTION_PACKAGE_SCHEMA}")
-    manifest = ActionPackageManifest.from_mapping(data["manifest"])
-    behaviors, actions = _parse_payload(data["payload"])
+    envelope_schema = data["schema_version"]
+    if envelope_schema not in {ACTION_PACKAGE_SCHEMA, ACTION_PACKAGE_V2_SCHEMA}:
+        raise ActionPackageError("envelope.schema_version is unsupported")
+    provider_package = envelope_schema == ACTION_PACKAGE_V2_SCHEMA
+    manifest = ActionPackageManifest.from_mapping(
+        data["manifest"], provider_required=provider_package
+    )
+    behaviors, actions, provider_artifact = _parse_payload(
+        data["payload"], envelope_schema=envelope_schema
+    )
     _validate_id_closure(
         manifest,
         behaviors,
@@ -974,7 +1049,20 @@ def _parse_content(
         occupied_behavior_ids=occupied_behavior_ids,
         occupied_action_ids=occupied_action_ids,
     )
-    if enforce_current_action_contract:
+    if provider_package:
+        if (
+            manifest.provider is None or provider_artifact is None
+        ):  # pragma: no cover - parser invariant
+            raise ActionPackageError("v2 action package has no provider artifact")
+        manifest.provider.verify_artifact(provider_artifact)
+        for packaged in actions:
+            if not isinstance(packaged.program, WasmProviderProgram):  # pragma: no cover
+                raise ActionPackageError("v2 action package contains a static opcode program")
+            if packaged.program.provider_id != manifest.provider.provider_id:
+                raise ActionPackageError(
+                    f"action {packaged.definition.id} selects a different provider"
+                )
+    elif enforce_current_action_contract:
         _validate_program_bindings(actions)
     _validate_manifest_claims(manifest, behaviors, actions)
     if bluefire_version is not None:
@@ -988,17 +1076,25 @@ def _parse_content(
         if selected not in manifest.platforms:
             raise ActionPackageError(f"package does not support platform {selected}")
     content = {
-        "schema_version": ACTION_PACKAGE_SCHEMA,
+        "schema_version": envelope_schema,
         "manifest": data["manifest"],
         "payload": data["payload"],
     }
-    return manifest, behaviors, actions, canonical_json_bytes(content)
+    return manifest, behaviors, actions, provider_artifact, canonical_json_bytes(content)
 
 
-def _signature_input(content_digest: str) -> bytes:
+def _signature_input(content_digest: str, schema_version: str = ACTION_PACKAGE_SCHEMA) -> bytes:
     if _SHA256.fullmatch(content_digest) is None:
         raise ActionPackageError("content digest must be a lowercase SHA-256 digest")
-    return SIGNATURE_DOMAIN + bytes.fromhex(content_digest.removeprefix("sha256:"))
+    domains = {
+        ACTION_PACKAGE_SCHEMA: SIGNATURE_DOMAIN,
+        ACTION_PACKAGE_V2_SCHEMA: SIGNATURE_DOMAIN_V2,
+    }
+    try:
+        domain = domains[schema_version]
+    except KeyError as exc:  # pragma: no cover - caller validates the envelope schema
+        raise ActionPackageError("action package signature schema is unsupported") from exc
+    return domain + bytes.fromhex(content_digest.removeprefix("sha256:"))
 
 
 def _decode_signature(value: Any) -> tuple[str, bytes]:
@@ -1030,8 +1126,15 @@ def build_signed_action_package(
     if not isinstance(private_key, Ed25519PrivateKey):
         raise ActionPackageError("private_key must be an Ed25519 private key")
     clean_key_id = _identifier(key_id, "signature.key_id", _KEY_ID)
+    payload_schema = payload.get("schema_version")
+    if payload_schema == ACTION_PACKAGE_PAYLOAD_SCHEMA:
+        envelope_schema = ACTION_PACKAGE_SCHEMA
+    elif payload_schema == ACTION_PACKAGE_PAYLOAD_V2_SCHEMA:
+        envelope_schema = ACTION_PACKAGE_V2_SCHEMA
+    else:
+        raise ActionPackageError("payload.schema_version is unsupported")
     provisional = {
-        "schema_version": ACTION_PACKAGE_SCHEMA,
+        "schema_version": envelope_schema,
         "manifest": dict(manifest),
         "payload": dict(payload),
         "integrity": {"algorithm": "sha256", "content_digest": "sha256:" + "0" * 64},
@@ -1041,7 +1144,7 @@ def build_signed_action_package(
     _reject_forbidden_fields(provisional)
     provisional_bytes = canonical_json_bytes(provisional)
     parsed = parse_canonical_action_package(provisional_bytes)
-    _, _, _, content_bytes = _parse_content(
+    _, _, _, _, content_bytes = _parse_content(
         parsed,
         bluefire_version=None,
         platform=None,
@@ -1050,9 +1153,9 @@ def build_signed_action_package(
         enforce_current_action_contract=True,
     )
     content_digest = _digest(content_bytes)
-    signature = private_key.sign(_signature_input(content_digest))
+    signature = private_key.sign(_signature_input(content_digest, envelope_schema))
     envelope = {
-        "schema_version": ACTION_PACKAGE_SCHEMA,
+        "schema_version": envelope_schema,
         "manifest": parsed["manifest"],
         "payload": parsed["payload"],
         "integrity": {"algorithm": "sha256", "content_digest": content_digest},
@@ -1083,7 +1186,7 @@ def _verify_action_package(
             "bluefire_version and platform must both be supplied or both be omitted"
         )
     envelope = parse_canonical_action_package(envelope_bytes)
-    manifest, behaviors, actions, content_bytes = _parse_content(
+    manifest, behaviors, actions, provider_artifact, content_bytes = _parse_content(
         envelope,
         bluefire_version=bluefire_version,
         platform=platform,
@@ -1124,7 +1227,10 @@ def _verify_action_package(
     raw_public_key = normalize_ed25519_public_key(trusted_value)
     public_key = Ed25519PublicKey.from_public_bytes(raw_public_key)
     try:
-        public_key.verify(signature_bytes, _signature_input(actual_digest))
+        public_key.verify(
+            signature_bytes,
+            _signature_input(actual_digest, str(envelope["schema_version"])),
+        )
     except InvalidSignature as exc:
         raise ActionPackageError("action package signature verification failed") from exc
     return VerifiedActionPackage(
@@ -1139,6 +1245,8 @@ def _verify_action_package(
         manifest=manifest,
         behaviors=behaviors,
         actions=actions,
+        provider=manifest.provider,
+        _provider_artifact_bytes=provider_artifact,
     )
 
 
@@ -1182,102 +1290,6 @@ def _activation_occupied_ids(
     return result
 
 
-def _canonical_activation_runner_inventory(
-    inventory: Mapping[str, Any],
-) -> tuple[Mapping[str, Any], bytes]:
-    """Accept a raw inventory or the exact canonical result persisted for replay."""
-
-    from .runner_client import RunnerReadinessError, canonical_runner_inventory
-
-    canonical_keys = {
-        "schema_version",
-        "runner_id",
-        "runner_version",
-        "action_sdk_version",
-        "receipt_protocol",
-        "platform",
-        "source_digest",
-        "actions",
-    }
-    raw_actions = inventory.get("actions") if isinstance(inventory, Mapping) else None
-    is_canonical = (
-        isinstance(inventory, Mapping)
-        and set(inventory) == canonical_keys
-        and isinstance(raw_actions, list)
-        and all(
-            isinstance(item, Mapping)
-            and set(item)
-            == {
-                "action_id",
-                "action_version",
-                "readiness",
-                "contract_digest",
-            }
-            for item in raw_actions
-        )
-    )
-    try:
-        if not is_canonical:
-            canonical = canonical_runner_inventory(inventory)
-            return canonical, canonical_json_bytes(canonical)
-        canonical_actions = cast(list[Mapping[str, Any]], raw_actions)
-
-        # ``canonical_runner_inventory`` intentionally hashes the source
-        # document. Feeding its own output back through it would therefore
-        # change both source and per-action contract digests. Validate the
-        # bounded identity/readiness fields with a digest-free probe, then
-        # preserve the exact canonical snapshot for historical replay.
-        probe = {
-            key: inventory[key]
-            for key in (
-                "schema_version",
-                "runner_id",
-                "runner_version",
-                "action_sdk_version",
-                "receipt_protocol",
-                "platform",
-            )
-        }
-        probe["actions"] = [
-            {
-                "action_id": item["action_id"],
-                "action_version": item["action_version"],
-                "readiness": item["readiness"],
-            }
-            for item in canonical_actions
-        ]
-        validated = canonical_runner_inventory(probe)
-        if any(
-            validated[key] != inventory[key]
-            for key in (
-                "schema_version",
-                "runner_id",
-                "runner_version",
-                "action_sdk_version",
-                "receipt_protocol",
-                "platform",
-            )
-        ):
-            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
-        if [
-            (item["action_id"], item["action_version"], item["readiness"])
-            for item in validated["actions"]
-        ] != [
-            (item["action_id"], item["action_version"], item["readiness"])
-            for item in canonical_actions
-        ]:
-            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
-        if _SHA256.fullmatch(str(inventory["source_digest"])) is None or any(
-            _SHA256.fullmatch(str(item["contract_digest"])) is None for item in canonical_actions
-        ):
-            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
-        canonical = dict(inventory)
-        canonical["actions"] = [dict(item) for item in canonical_actions]
-        return canonical, canonical_json_bytes(canonical)
-    except (KeyError, RunnerReadinessError, TypeError, ValueError) as exc:
-        raise ActionPackageError("runner inventory is invalid or unsupported") from exc
-
-
 def verify_action_package_for_activation(
     envelope_bytes: bytes,
     *,
@@ -1317,7 +1329,7 @@ def verify_action_package_for_activation(
     occupied_behaviors = _activation_occupied_ids(occupied_behavior_ids, "occupied behavior IDs")
     occupied_actions = _activation_occupied_ids(occupied_action_ids, "occupied action IDs")
 
-    canonical_inventory, canonical_inventory_bytes = _canonical_activation_runner_inventory(
+    canonical_inventory, canonical_inventory_bytes = canonical_activation_runner_inventory(
         runner_inventory
     )
     platform = str(canonical_inventory["platform"])
@@ -1329,38 +1341,46 @@ def verify_action_package_for_activation(
         occupied_behavior_ids=occupied_behaviors,
         occupied_action_ids=occupied_actions,
     )
-    runner_actions = {
-        str(item["action_id"]): item
-        for item in canonical_inventory["actions"]
-        if isinstance(item, Mapping)
-    }
     bindings: list[RunnerOpcodeBinding] = []
-    for packaged in package.actions:
-        opcode = packaged.program.steps[0].opcode
-        runner_action = runner_actions.get(opcode)
-        if runner_action is None:
-            raise ActionPackageError(
-                f"runner inventory is missing packaged reviewed opcode: {opcode}"
+    provider_bindings: tuple[WasmProviderBinding, ...] = ()
+    if package.provider is not None:
+        provider_bindings = (bind_provider_runtime(package.provider, canonical_inventory),)
+    else:
+        runner_actions = {
+            str(item["action_id"]): item
+            for item in canonical_inventory["actions"]
+            if isinstance(item, Mapping)
+        }
+        for packaged in package.actions:
+            if not isinstance(
+                packaged.program, ActionProgram
+            ):  # pragma: no cover - parser invariant
+                raise ActionPackageError("v1 action package contains a provider program")
+            opcode = packaged.program.steps[0].opcode
+            runner_action = runner_actions.get(opcode)
+            if runner_action is None:
+                raise ActionPackageError(
+                    f"runner inventory is missing packaged reviewed opcode: {opcode}"
+                )
+            expected_version = SUPPORTED_RUNNER_ACTION_VERSIONS[opcode]
+            if runner_action.get("action_version") != expected_version:
+                raise ActionPackageError(
+                    f"runner opcode {opcode} version is incompatible with this package contract"
+                )
+            if runner_action.get("readiness") != "ready":
+                raise ActionPackageError(f"runner opcode {opcode} is not ready")
+            contract_digest = runner_action.get("contract_digest")
+            if not isinstance(contract_digest, str) or _SHA256.fullmatch(contract_digest) is None:
+                raise ActionPackageError(f"runner opcode {opcode} has no canonical contract digest")
+            bindings.append(
+                RunnerOpcodeBinding(
+                    package_action_id=packaged.definition.id,
+                    opcode=opcode,
+                    action_version=expected_version,
+                    readiness="ready",
+                    contract_digest=contract_digest,
+                )
             )
-        expected_version = SUPPORTED_RUNNER_ACTION_VERSIONS[opcode]
-        if runner_action.get("action_version") != expected_version:
-            raise ActionPackageError(
-                f"runner opcode {opcode} version is incompatible with this package contract"
-            )
-        if runner_action.get("readiness") != "ready":
-            raise ActionPackageError(f"runner opcode {opcode} is not ready")
-        contract_digest = runner_action.get("contract_digest")
-        if not isinstance(contract_digest, str) or _SHA256.fullmatch(contract_digest) is None:
-            raise ActionPackageError(f"runner opcode {opcode} has no canonical contract digest")
-        bindings.append(
-            RunnerOpcodeBinding(
-                package_action_id=packaged.definition.id,
-                opcode=opcode,
-                action_version=expected_version,
-                readiness="ready",
-                contract_digest=contract_digest,
-            )
-        )
     bindings.sort(key=lambda item: item.package_action_id)
     return VerifiedActionPackageActivation(
         package=package,
@@ -1377,6 +1397,7 @@ def verify_action_package_for_activation(
         opcode_bindings=tuple(bindings),
         occupied_behavior_ids=occupied_behaviors,
         occupied_action_ids=occupied_actions,
+        provider_bindings=provider_bindings,
     )
 
 
@@ -1385,7 +1406,7 @@ def audit_action_package(
     *,
     trusted_signers: Mapping[tuple[str, str], PublicKeyValue],
 ) -> VerifiedActionPackage:
-    """Reverify immutable v1 structure/signature for historical inventory.
+    """Reverify immutable signed structure and signature for historical inventory.
 
     This intentionally omits the mutable current registry and target
     compatibility. It cannot authorize activation or execution.
@@ -1404,7 +1425,9 @@ def audit_action_package(
 
 __all__ = [
     "ACTION_PACKAGE_PAYLOAD_SCHEMA",
+    "ACTION_PACKAGE_PAYLOAD_V2_SCHEMA",
     "ACTION_PACKAGE_SCHEMA",
+    "ACTION_PACKAGE_V2_SCHEMA",
     "ACTION_PROGRAM_ADAPTER",
     "ACTION_PROGRAM_SCHEMA",
     "ALLOWED_PROGRAM_ADAPTERS",
@@ -1421,21 +1444,30 @@ __all__ = [
     "MAX_ENVELOPE_BYTES",
     "MAX_JSON_DEPTH",
     "MAX_PROGRAM_STEPS",
+    "MAX_PROVIDER_ARTIFACT_BYTES",
     "MAX_STRING_CHARS",
     "PackageCompatibility",
     "PackageLicense",
     "PackageProvenance",
     "PackagedAction",
+    "ProviderLimits",
     "RunnerOpcodeBinding",
     "SemVer",
     "SUPPORTED_RUNNER_ACTION_VERSIONS",
     "VerifiedActionPackage",
     "VerifiedActionPackageActivation",
+    "WASM_PROVIDER_ABI_V1",
+    "WASM_PROVIDER_PROGRAM_SCHEMA",
+    "WasmProviderBinding",
+    "WasmProviderDescriptor",
+    "WasmProviderProgram",
     "build_signed_action_package",
     "canonical_public_key_b64u",
     "ed25519_public_key_fingerprint",
     "normalize_ed25519_public_key",
     "parse_canonical_action_package",
+    "provider_action_contract",
+    "provider_action_contract_digest",
     "verify_action_package",
     "verify_action_package_for_activation",
 ]
