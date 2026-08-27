@@ -18,6 +18,8 @@ import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, Loadin
 const lifecycle = ["hypothesis", "parsed", "fixture_exercised", "observed_exercised", "benign_evaluated", "rejected"];
 const baselineRelationships = new Set(["imported", "adapted", "inspired", "comparative"]);
 const baselineReviews = new Set(["reviewed", "conditional", "prohibited"]);
+const baselineUseClassifications = new Set(["reference_only", "metadata_import", "clean_reimplementation", "external_adapter", "compatible_code_adaptation", "incompatible_or_restricted"]);
+const baselineUpdateStatuses = new Set(["current", "review_due", "superseded", "blocked"]);
 
 type CandidateView = DetectionCandidate & { resolvedId: string; resourceId?: string; runId?: string; demo?: boolean };
 
@@ -26,10 +28,19 @@ interface ResearchSourceDocument extends Record<string, unknown> {
   authority?: string;
   pin?: string;
   version?: string;
+  exact_ref?: string;
+  retrieved_at?: string;
   license?: string;
+  file_level_license_review?: string;
+  trademark_considerations?: string;
   license_review?: string;
   relationship?: string;
+  use_classification?: string;
   uses?: unknown;
+  attribution?: string;
+  security_review?: string;
+  last_verified_at?: string;
+  update_status?: string;
 }
 
 type ResearchSourceResource = ManagedResource<ResearchSourceDocument>;
@@ -46,22 +57,42 @@ function publicBaselineFromSource(resource: ResearchSourceResource): PublicBasel
     || !/^sha256:[0-9a-f]{64}$/.test(resource.digest)
     || typeof source.pin !== "string"
     || typeof source.version !== "string"
+    || typeof source.exact_ref !== "string"
+    || typeof source.retrieved_at !== "string"
     || typeof source.license !== "string"
+    || typeof source.file_level_license_review !== "string"
+    || typeof source.trademark_considerations !== "string"
     || typeof source.license_review !== "string"
     || !baselineReviews.has(source.license_review)
     || typeof source.relationship !== "string"
     || !baselineRelationships.has(source.relationship)
+    || typeof source.use_classification !== "string"
+    || !baselineUseClassifications.has(source.use_classification)
+    || typeof source.attribution !== "string"
+    || typeof source.security_review !== "string"
+    || typeof source.last_verified_at !== "string"
+    || typeof source.update_status !== "string"
+    || !baselineUpdateStatuses.has(source.update_status)
   ) return undefined;
   return {
-    schema_version: "bluefire.public-baseline.v1",
+    schema_version: "bluefire.public-baseline.v2",
     research_source_id: resource.id,
     source_digest: resource.digest,
     pin: source.pin,
     version: source.version,
+    exact_ref: source.exact_ref,
+    retrieved_at: source.retrieved_at,
     license: source.license,
+    file_level_license_review: source.file_level_license_review,
+    trademark_considerations: source.trademark_considerations,
     license_review: source.license_review as PublicBaselineReference["license_review"],
     relationship: source.relationship as PublicBaselineReference["relationship"],
+    use_classification: source.use_classification as PublicBaselineReference["use_classification"],
     use: "comparison",
+    attribution: source.attribution,
+    security_review: source.security_review,
+    last_verified_at: source.last_verified_at,
+    update_status: source.update_status,
   };
 }
 
@@ -505,7 +536,7 @@ function RevisionWorkspace({
       {selectableBaselines.length ? <div className="choice-grid two">{selectableBaselines.map((baseline) => {
         const source = sourcesById.get(baseline.research_source_id);
         const selected = selectedBaselineIds.includes(baseline.research_source_id);
-        return <label key={baseline.research_source_id}><input type="checkbox" checked={selected} disabled={!persisted || baseline.license_review === "prohibited"} onChange={() => setSelectedBaselineIds(selected ? selectedBaselineIds.filter((item) => item !== baseline.research_source_id) : [...selectedBaselineIds, baseline.research_source_id])} /><span><strong>{source?.document.name ?? baseline.research_source_id}</strong><small>{baseline.version} · {baseline.pin} · {sentence(baseline.license_review)} license review</small></span></label>;
+        return <label key={baseline.research_source_id}><input type="checkbox" checked={selected} disabled={!persisted || baseline.license_review === "prohibited"} onChange={() => setSelectedBaselineIds(selected ? selectedBaselineIds.filter((item) => item !== baseline.research_source_id) : [...selectedBaselineIds, baseline.research_source_id])} /><span><strong>{source?.document.name ?? baseline.research_source_id}</strong><small>{baseline.version} · {baseline.exact_ref ?? baseline.pin} · {sentence(baseline.use_classification ?? "legacy")} · {sentence(baseline.license_review)} license review</small></span></label>;
       })}</div> : <p className="field-note">No pinned, comparison-authorized public research source is registered.</p>}
       <PublicBaselineList baselines={selectableBaselines.filter((item) => selectedBaselineIds.includes(item.research_source_id))} sourcesById={sourcesById} empty="No public baseline will be attached to the new revision." />
     </fieldset>
@@ -526,9 +557,9 @@ function PublicBaselineList({ baselines, sourcesById, empty }: { baselines: Publ
     return <article key={`${baseline.research_source_id}-${baseline.source_digest}`}>
       <header><Badge tone={baseline.license_review === "reviewed" ? "success" : baseline.license_review === "prohibited" ? "danger" : "warning"}>{sentence(baseline.license_review)}</Badge><code title={baseline.source_digest}>{shortDigest(baseline.source_digest)}</code></header>
       <strong>{source?.document.name ?? baseline.research_source_id}</strong>
-      <p>{source?.document.authority ? `${source.document.authority} · ` : ""}{sentence(baseline.relationship)} public comparison; not an executable import.</p>
-      <DataList items={[{ label: "Version", value: baseline.version }, { label: "Immutable source pin", value: <code>{baseline.pin}</code> }, { label: "License", value: baseline.license }, { label: "Authorized use", value: sentence(baseline.use) }]} />
-      <details><summary>Show full public baseline identity</summary><DataList items={[{ label: "Research source ID", value: <code>{baseline.research_source_id}</code> }, { label: "Source digest", value: <code>{baseline.source_digest}</code> }, { label: "Schema", value: baseline.schema_version }]} /></details>
+      <p>{source?.document.authority ? `${source.document.authority} · ` : ""}{sentence(baseline.relationship)} public comparison; {sentence(baseline.use_classification ?? "legacy")} source handling.</p>
+      <DataList items={[{ label: "Version", value: baseline.version }, { label: "Source handling", value: sentence(baseline.use_classification ?? "legacy") }, { label: "Exact ref", value: baseline.exact_ref ?? "Legacy baseline" }, { label: "Immutable source pin", value: <code>{baseline.pin}</code> }, { label: "License", value: baseline.license }, { label: "Authorized use", value: sentence(baseline.use) }, { label: "Update status", value: sentence(baseline.update_status ?? "legacy") }]} />
+      <details><summary>Show full public baseline identity</summary><DataList items={[{ label: "Research source ID", value: <code>{baseline.research_source_id}</code> }, { label: "Source digest", value: <code>{baseline.source_digest}</code> }, { label: "Retrieved", value: baseline.retrieved_at ?? "Legacy baseline" }, { label: "Last verified", value: baseline.last_verified_at ?? "Legacy baseline" }, { label: "File-level license review", value: baseline.file_level_license_review ?? "Legacy baseline" }, { label: "Trademark considerations", value: baseline.trademark_considerations ?? "Legacy baseline" }, { label: "Attribution", value: baseline.attribution ?? "Legacy baseline" }, { label: "Security review", value: baseline.security_review ?? "Legacy baseline" }, { label: "Schema", value: baseline.schema_version }]} /></details>
     </article>;
   })}</div>;
 }

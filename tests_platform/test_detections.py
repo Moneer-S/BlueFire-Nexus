@@ -113,6 +113,19 @@ def test_public_baseline_contract_is_exact_and_definition_bound() -> None:
         "relationship": "comparative",
         "use": "comparison",
     }
+    enriched_baseline = {
+        **baseline,
+        "schema_version": "bluefire.public-baseline.v2",
+        "exact_ref": "6132b92779873cb0d05bef07ba0a480d47eb1cc8",
+        "retrieved_at": "2026-08-25",
+        "file_level_license_review": "Repository license reviewed at the pinned commit.",
+        "trademark_considerations": "No marks are used in generated rule content.",
+        "use_classification": "reference_only",
+        "attribution": "Atomic Red Team metadata retained for comparison only.",
+        "security_review": "Public tests are not fetched, copied, or executed.",
+        "last_verified_at": "2026-08-25",
+        "update_status": "current",
+    }
     candidate = DetectionCandidate.hypothesis(
         behavior_id="collection.stage_fixture.v1",
         title="Source-linked baseline",
@@ -124,6 +137,16 @@ def test_public_baseline_contract_is_exact_and_definition_bound() -> None:
     )
 
     assert candidate.public_baselines == (baseline,)
+    enriched = DetectionCandidate.hypothesis(
+        behavior_id="collection.stage_fixture.v1",
+        title="Source-linked enriched baseline",
+        target_language="internal",
+        logsource={"category": "file_event"},
+        selection={"path|contains": "staged/"},
+        provenance={"source": "operator", "license": "MIT"},
+        public_baselines=[enriched_baseline],
+    )
+    assert enriched.public_baselines == (enriched_baseline,)
     with pytest.raises(DetectionError, match="exactly"):
         DetectionCandidate.hypothesis(
             behavior_id="collection.stage_fixture.v1",
@@ -133,6 +156,16 @@ def test_public_baseline_contract_is_exact_and_definition_bound() -> None:
             selection={"path|contains": "staged/"},
             provenance={"source": "operator", "license": "MIT"},
             public_baselines=[{**baseline, "notes": "arbitrary"}],
+        )
+    with pytest.raises(DetectionError, match="use_classification"):
+        DetectionCandidate.hypothesis(
+            behavior_id="collection.stage_fixture.v1",
+            title="Invalid enriched baseline",
+            target_language="internal",
+            logsource={"category": "file_event"},
+            selection={"path|contains": "staged/"},
+            provenance={"source": "operator", "license": "MIT"},
+            public_baselines=[{**enriched_baseline, "use_classification": "copied_unknown"}],
         )
 
 

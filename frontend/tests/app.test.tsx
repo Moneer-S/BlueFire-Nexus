@@ -48,15 +48,24 @@ const richComparison: ComparisonResponse = {
 };
 
 const publicBaseline: PublicBaselineReference = {
-  schema_version: "bluefire.public-baseline.v1",
+  schema_version: "bluefire.public-baseline.v2",
   research_source_id: "mitre.attack.v1",
   source_digest: `sha256:${"a".repeat(64)}`,
   pin: "attack-enterprise-v19.2",
   version: "19.2",
+  exact_ref: "attack-enterprise-v19.2",
+  retrieved_at: "2030-01-01",
   license: "Terms of Use",
+  file_level_license_review: "Framework and matrix metadata reviewed; no rule text copied.",
+  trademark_considerations: "MITRE marks retained only in attribution metadata.",
   license_review: "reviewed",
   relationship: "comparative",
+  use_classification: "reference_only",
   use: "comparison",
+  attribution: "MITRE ATT&CK source metadata retained for comparison.",
+  security_review: "Reference metadata is not fetched, synchronized, or executed.",
+  last_verified_at: "2030-01-01",
+  update_status: "current",
 };
 const detectionOriginId = "detection-111111111111111111111111";
 const detectionTuneId = "detection-222222222222222222222222";
@@ -166,7 +175,7 @@ describe("product application", () => {
       if (path.endsWith("/scenarios")) return json({ scenarios: [demoScenario] });
       if (path.endsWith("/scenario-versions")) return json({ schema_version: "bluefire.scenario-version-list.v1", scenarios: [] });
       if (path.endsWith("/detection-lab/health")) return json({ schema_version: "bluefire.detection-lab-health.v1", ready: true, persistence_ready: true, candidate_resources: 0, invalid_candidate_resources: 0, languages: {}, limits: {} });
-      if (path.endsWith("/resources/research-sources")) return json({ schema_version: "bluefire.resource-list.v1", kind: "research-sources", resources: [{ schema_version: "bluefire.resource.v1", kind: "research-sources", id: "mitre.attack.v1", status: "pinned", digest: publicBaseline.source_digest, created_at: "2030-01-01T00:00:00Z", updated_at: "2030-01-01T00:00:00Z", document: { schema_version: "bluefire.research-source.v1", name: "MITRE ATT&CK", source_type: "behavior_reference", authority: "MITRE", reference_url: "https://attack.mitre.org/versions/v19/", version: "19.2", pin: "attack-enterprise-v19.2", retrieved_at: "2030-01-01", license: "Terms of Use", license_url: "https://www.mitre.org/legal-notices", relationship: "comparative", license_review: "reviewed", uses: ["comparison", "research_reference"], cache_policy: "metadata_only", executable_content: false } }] });
+      if (path.endsWith("/resources/research-sources")) return json({ schema_version: "bluefire.resource-list.v1", kind: "research-sources", resources: [{ schema_version: "bluefire.resource.v1", kind: "research-sources", id: "mitre.attack.v1", status: "pinned", digest: publicBaseline.source_digest, created_at: "2030-01-01T00:00:00Z", updated_at: "2030-01-01T00:00:00Z", document: { schema_version: "bluefire.research-source.v1", name: "MITRE ATT&CK", source_type: "behavior_reference", project: "MITRE ATT&CK", authority: "MITRE", reference_url: "https://attack.mitre.org/versions/v19/", version: "19.2", pin: "attack-enterprise-v19.2", exact_ref: "attack-enterprise-v19.2", retrieved_at: "2030-01-01", license: "Terms of Use", license_url: "https://www.mitre.org/legal-notices", file_level_license_review: "Framework and matrix metadata reviewed; no rule text copied.", trademark_considerations: "MITRE marks retained only in attribution metadata.", relationship: "comparative", use_classification: "reference_only", license_review: "reviewed", uses: ["comparison", "research_reference"], imported_paths: [], cache_policy: "metadata_only", executable_content: false, attribution: "MITRE ATT&CK source metadata retained for comparison.", security_review: "Reference metadata is not fetched, synchronized, or executed.", last_verified_at: "2030-01-01", update_status: "current", transformation_history: "Metadata-only comparison reference.", notes: "No remote content is fetched by the UI fixture." } }] });
       if (path.endsWith(`/detections/${detectionOriginId}/compare`)) return json(detectionComparison);
       if (path.endsWith(`/detections/${detectionOriginId}/clone`) || path.endsWith(`/detections/${detectionOriginId}/tune`)) return json({ schema_version: "bluefire.detection-resource.v1", candidate: detectionTune });
       if (path.endsWith("/detections")) return json({ schema_version: "bluefire.detection-list.v1", candidates: [detectionOrigin, detectionTune] });
@@ -305,6 +314,7 @@ describe("product application", () => {
     await user.click(screen.getByRole("radio", { name: /Clone unchanged rule behavior/i }));
     const baselineChoice = screen.getByRole("checkbox", { name: /MITRE ATT&CK/i });
     await user.click(baselineChoice);
+    expect(await screen.findByText("Source handling")).toBeVisible();
     await user.type(screen.getByRole("textbox", { name: /Required research reason/ }), "Branch reviewed source attribution.");
     await user.click(screen.getByRole("button", { name: "Create immutable clone" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith(`/detections/${detectionOriginId}/clone`))).toBe(true));

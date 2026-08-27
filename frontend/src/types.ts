@@ -389,16 +389,24 @@ export interface EvidenceRecord {
 }
 
 export interface PublicBaselineReference {
-  schema_version: "bluefire.public-baseline.v1";
+  schema_version: "bluefire.public-baseline.v1" | "bluefire.public-baseline.v2";
   research_source_id: string;
   source_digest: string;
   pin: string;
   version: string;
+  exact_ref?: string;
+  retrieved_at?: string;
   license: string;
+  file_level_license_review?: string;
+  trademark_considerations?: string;
   license_review: "reviewed" | "conditional" | "prohibited";
   relationship: "imported" | "adapted" | "inspired" | "comparative";
   use_classification?: "reference_only" | "metadata_import" | "clean_reimplementation" | "external_adapter" | "compatible_code_adaptation" | "incompatible_or_restricted";
   use: "comparison";
+  attribution?: string;
+  security_review?: string;
+  last_verified_at?: string;
+  update_status?: "current" | "review_due" | "superseded" | "blocked" | string;
 }
 
 export interface DetectionLifecycleRecord {

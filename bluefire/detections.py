@@ -16,6 +16,17 @@ class DetectionError(ValueError):
 
 
 _LANGUAGES = frozenset({"sigma", "spl", "yara", "yara-l", "internal"})
+_SOURCE_USE_CLASSIFICATIONS = frozenset(
+    {
+        "reference_only",
+        "metadata_import",
+        "clean_reimplementation",
+        "external_adapter",
+        "compatible_code_adaptation",
+        "incompatible_or_restricted",
+    }
+)
+_BASELINE_UPDATE_STATUSES = frozenset({"current", "review_due", "superseded", "blocked"})
 _CANDIDATE_FIELDS = frozenset(
     {
         "schema_version",
@@ -159,16 +170,25 @@ class PublicBaselineReference:
     source_digest: str
     pin: str
     version: str
+    exact_ref: str | None
+    retrieved_at: str | None
     license: str
+    file_level_license_review: str | None
+    trademark_considerations: str | None
     license_review: str
     relationship: str
+    use_classification: str | None
     use: str
+    attribution: str | None
+    security_review: str | None
+    last_verified_at: str | None
+    update_status: str | None
 
     @classmethod
     def from_mapping(
         cls, value: Any, context: str = "public baseline"
     ) -> "PublicBaselineReference":
-        fields = {
+        fields_v1 = {
             "schema_version",
             "research_source_id",
             "source_digest",
@@ -179,10 +199,28 @@ class PublicBaselineReference:
             "relationship",
             "use",
         }
-        if not isinstance(value, Mapping) or set(value) != fields:
+        fields_v2 = fields_v1 | {
+            "exact_ref",
+            "retrieved_at",
+            "file_level_license_review",
+            "trademark_considerations",
+            "use_classification",
+            "attribution",
+            "security_review",
+            "last_verified_at",
+            "update_status",
+        }
+        if not isinstance(value, Mapping):
             raise DetectionError(f"{context} must contain exactly the reviewed baseline fields")
-        if value.get("schema_version") != "bluefire.public-baseline.v1":
+        schema_version = value.get("schema_version")
+        if schema_version == "bluefire.public-baseline.v1":
+            expected_fields = fields_v1
+        elif schema_version == "bluefire.public-baseline.v2":
+            expected_fields = fields_v2
+        else:
             raise DetectionError(f"{context}.schema_version is unsupported")
+        if set(value) != expected_fields:
+            raise DetectionError(f"{context} must contain exactly the reviewed baseline fields")
         source_digest = _bounded_string(
             value.get("source_digest"), f"{context}.source_digest", maximum=71
         )
@@ -206,22 +244,75 @@ class PublicBaselineReference:
         use = _bounded_string(value.get("use"), f"{context}.use", maximum=40)
         if use != "comparison":
             raise DetectionError(f"{context}.use must be comparison")
+        if schema_version == "bluefire.public-baseline.v2":
+            use_classification = _bounded_string(
+                value.get("use_classification"), f"{context}.use_classification", maximum=40
+            )
+            if use_classification not in _SOURCE_USE_CLASSIFICATIONS:
+                raise DetectionError(f"{context}.use_classification is invalid")
+            update_status = _bounded_string(
+                value.get("update_status"), f"{context}.update_status", maximum=40
+            )
+            if update_status not in _BASELINE_UPDATE_STATUSES:
+                raise DetectionError(f"{context}.update_status is invalid")
+            exact_ref = _bounded_string(value.get("exact_ref"), f"{context}.exact_ref", maximum=200)
+            retrieved_at = _bounded_string(
+                value.get("retrieved_at"), f"{context}.retrieved_at", maximum=40
+            )
+            file_level_license_review = _bounded_string(
+                value.get("file_level_license_review"),
+                f"{context}.file_level_license_review",
+                maximum=1_000,
+            )
+            trademark_considerations = _bounded_string(
+                value.get("trademark_considerations"),
+                f"{context}.trademark_considerations",
+                maximum=1_000,
+            )
+            attribution = _bounded_string(
+                value.get("attribution"), f"{context}.attribution", maximum=1_000
+            )
+            security_review = _bounded_string(
+                value.get("security_review"), f"{context}.security_review", maximum=1_000
+            )
+            last_verified_at = _bounded_string(
+                value.get("last_verified_at"), f"{context}.last_verified_at", maximum=40
+            )
+        else:
+            exact_ref = None
+            retrieved_at = None
+            file_level_license_review = None
+            trademark_considerations = None
+            use_classification = None
+            attribution = None
+            security_review = None
+            last_verified_at = None
+            update_status = None
         return cls(
-            schema_version="bluefire.public-baseline.v1",
+            schema_version=schema_version,
             research_source_id=_bounded_string(
                 value.get("research_source_id"), f"{context}.research_source_id", maximum=200
             ),
             source_digest=source_digest,
             pin=_bounded_string(value.get("pin"), f"{context}.pin", maximum=200),
             version=_bounded_string(value.get("version"), f"{context}.version", maximum=200),
+            exact_ref=exact_ref,
+            retrieved_at=retrieved_at,
             license=_bounded_string(value.get("license"), f"{context}.license", maximum=200),
+            file_level_license_review=file_level_license_review,
+            trademark_considerations=trademark_considerations,
             license_review=license_review,
             relationship=relationship,
+            use_classification=use_classification,
             use=use,
+            attribution=attribution,
+            security_review=security_review,
+            last_verified_at=last_verified_at,
+            update_status=update_status,
         )
 
     def to_dict(self) -> dict[str, str]:
-        return {
+        value = {
             "schema_version": self.schema_version,
             "research_source_id": self.research_source_id,
             "source_digest": self.source_digest,
@@ -232,6 +323,21 @@ class PublicBaselineReference:
             "relationship": self.relationship,
             "use": self.use,
         }
+        if self.schema_version == "bluefire.public-baseline.v2":
+            value.update(
+                {
+                    "exact_ref": self.exact_ref or "",
+                    "retrieved_at": self.retrieved_at or "",
+                    "file_level_license_review": self.file_level_license_review or "",
+                    "trademark_considerations": self.trademark_considerations or "",
+                    "use_classification": self.use_classification or "",
+                    "attribution": self.attribution or "",
+                    "security_review": self.security_review or "",
+                    "last_verified_at": self.last_verified_at or "",
+                    "update_status": self.update_status or "",
+                }
+            )
+        return value
 
 
 def _public_baseline_rows(value: Any) -> tuple[Mapping[str, str], ...]:

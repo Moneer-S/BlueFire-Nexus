@@ -150,6 +150,15 @@ def test_management_ui_uses_durable_secret_safe_routes() -> None:
     assert "api.detectionAction(" in detection
     for action in ("parse", "exercise-fixtures", "exercise-observed", "evaluate-benign", "reject"):
         assert action in detection
+    for source_marker in (
+        "bluefire.public-baseline.v2",
+        "baselineUseClassifications",
+        "Source handling",
+        "Exact ref",
+        "File-level license review",
+        "Security review",
+    ):
+        assert source_marker in detection
     assert 'api.activateResource("runner-profiles"' in catalog
     assert 'api.deactivateResource("runner-profiles"' in catalog
     assert "api.probeRunnerProfile(" in catalog

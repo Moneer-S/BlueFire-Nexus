@@ -113,7 +113,9 @@ Treat predicted-only fields as a telemetry dependency or mapping problem before 
 
 ## Public baselines
 
-Public rules are research references, not automatic evasion targets. Preserve source, version/commit, retrieval date, license, and the candidate relationship. The current revision comparison reports changes to registered public-baseline metadata alongside the two candidates' own malicious/benign fixture, observed-evidence, field, rule, and lifecycle deltas. It does not fetch a public corpus, execute a public rule, or compute candidate-only/baseline-only public-rule hit sets.
+Public rules are research references, not automatic evasion targets. New Detection Lab pins use the enriched `bluefire.public-baseline.v2` contract and preserve the research-source ID, source digest, version, exact commit/tag/ref, retrieval and verification dates, license review, file-level license and trademark notes, relationship, source-use classification, attribution, security review, and update status. Legacy `bluefire.public-baseline.v1` pins remain readable for existing candidates but should not be used for new source attachments.
+
+The current revision comparison reports changes to registered public-baseline metadata alongside the two candidates' own malicious/benign fixture, observed-evidence, field, rule, and lifecycle deltas. It does not fetch a public corpus, execute a public rule, or compute candidate-only/baseline-only public-rule hit sets.
 
 BlueFire's built-in research registry references MITRE ATT&CK, Sigma specification, pySigma, and yara-python. It does not synchronize SigmaHQ, Elastic, Splunk, or commercial rule corpora.
 
@@ -134,5 +136,6 @@ Observed evidence cannot be supplied by a client. The service reads a finalized 
 - Are known misses and telemetry dependencies recorded?
 - Are false-positive notes and benign match counts present?
 - Are public baselines licensed and pinned?
+- Do public baselines include exact source-use classification, attribution, security review, and verification metadata?
 - Is every tuning decision retained rather than overwriting history?
 - Does the documentation avoid the word “validated” when only rendered, parsed, or structurally checked?
