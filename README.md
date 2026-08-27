@@ -426,6 +426,8 @@ pnpm test:e2e
 
 Security and release checks should also include detect-secrets/Gitleaks, staged-diff checks, built-wheel inspection, installed-wheel CLI/API smoke, and the opt-in real-runner E2E test in a disposable environment. See [Development](docs/DEVELOPMENT.md) and [Contributing](CONTRIBUTING.md).
 
+For a compact reviewer map of product boundaries, license/source posture, package proof artifacts, disposable wheel-smoke evidence, and explicit non-claims, see [Final proof packet](docs/FINAL_PROOF.md).
+
 ## Documentation
 
 - [User guide](docs/USER_GUIDE.md) and [command-line reference](docs/CLI.md)

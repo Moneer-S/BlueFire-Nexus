@@ -164,6 +164,8 @@ bluefire --runs-dir path/to/temp-runs ui --host 127.0.0.1 --port 8765
 
 The runner is a separate release artifact and must be built/tested independently.
 
+Native-wheel CI additionally runs `tools/verify_packaged_runner.py inspect` and then copies the verifier outside the checkout for installed-wheel `smoke`. The smoke report includes a sanitized `disposable_workspace` proof showing the temporary work root is outside the checkout, source runner overrides are absent, sandbox scopes remain inside the disposable root, and cleanup leaves zero retained files. The proof deliberately omits absolute paths.
+
 ## Contract-change workflow
 
 When adding or changing a behavior/action:
