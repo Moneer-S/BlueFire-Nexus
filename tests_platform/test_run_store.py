@@ -30,6 +30,44 @@ def test_run_ids_are_generated_and_contained(tmp_path: Path) -> None:
             store.get_run(invalid)
 
 
+def test_acceptance_binding_is_environment_owned_and_finalized_into_bundle(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    environment = {
+        "BLUEFIRE_ACCEPTANCE_ID": "acceptance-test",
+        "BLUEFIRE_ACCEPTANCE_GATE_ID": "GATE-03",
+        "BLUEFIRE_ACCEPTANCE_CONTRACT_SHA256": "sha256:" + "1" * 64,
+        "BLUEFIRE_ACCEPTANCE_REPOSITORY_COMMIT": "2" * 40,
+        "BLUEFIRE_ACCEPTANCE_REPOSITORY_TREE": "3" * 40,
+        "BLUEFIRE_ACCEPTANCE_RELEASE": "true",
+    }
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    store = RunStore(tmp_path / "runs")
+    handle = _create(store)
+    store.finalize(
+        handle.run_id,
+        result={
+            "schema_version": "bluefire.run-result.v1",
+            "status": "completed",
+            "created_at": handle.created_at,
+        },
+        evidence=[],
+        detections=[],
+    )
+
+    assert store.get_run(handle.run_id)["acceptance_binding"] == {
+        "schema_version": "bluefire.product-acceptance-run-binding.v1",
+        "acceptance_id": "acceptance-test",
+        "gate_id": "GATE-03",
+        "contract_sha256": "sha256:" + "1" * 64,
+        "repository_commit": "2" * 40,
+        "repository_tree": "3" * 40,
+        "release": "true",
+    }
+
+
 def test_duplicate_generated_id_never_reuses_a_bundle(tmp_path: Path, monkeypatch) -> None:
     store = RunStore(tmp_path / "runs")
     values = iter(

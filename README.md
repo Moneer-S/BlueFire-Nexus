@@ -426,7 +426,9 @@ pnpm test:e2e
 
 Security and release checks should also include detect-secrets/Gitleaks, staged-diff checks, built-wheel inspection, installed-wheel CLI/API smoke, and the opt-in real-runner E2E test in a disposable environment. See [Development](docs/DEVELOPMENT.md) and [Contributing](CONTRIBUTING.md).
 
-For a compact reviewer map of product boundaries, license/source posture, package proof artifacts, disposable wheel-smoke evidence, and explicit non-claims, see [Final proof packet](docs/FINAL_PROOF.md).
+The canonical release authority is `bluefire acceptance run --release`. It refuses an uncommitted worktree, executes the exact ordered GATE-01 through GATE-12 contract, and writes a hashed result directory under `build/product-acceptance/`. Independently re-check a persisted result, its locked contract snapshot, canonical run bundles, and every evidence byte with `bluefire acceptance verify --result <acceptance-result.json>`. A failed or incomplete receipt remains a failed gate; documentation is never accepted as gate proof.
+
+For the historical pre-1.0 product boundary and explicit non-claims, see the [pre-release baseline](docs/PRE_RELEASE_BASELINE.md). It is context only and does not satisfy a release gate.
 
 ## Documentation
 

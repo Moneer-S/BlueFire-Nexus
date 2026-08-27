@@ -18,6 +18,7 @@ from .api import (
 )
 from .config import AutonomyLevel, RunnerProfile
 from .contracts import ExecutionMode, load_scenario
+from .product_acceptance import AcceptanceFailure, run_release_acceptance, verify_release_result
 from .receiver import (
     DEFAULT_IDLE_TIMEOUT_SECONDS,
     DEFAULT_MAX_BODY_BYTES,
@@ -325,6 +326,21 @@ def _parser() -> argparse.ArgumentParser:
     research = commands.add_parser("research", help="Inspect restricted research metadata")
     research_commands = research.add_subparsers(dest="research_command", required=True)
     research_commands.add_parser("status", help="Show metadata-only research entries")
+
+    acceptance = commands.add_parser(
+        "acceptance", help="Run the locked machine-verifiable release contract"
+    )
+    acceptance_commands = acceptance.add_subparsers(dest="acceptance_command", required=True)
+    acceptance_run = acceptance_commands.add_parser(
+        "run", help="Execute every required product release gate"
+    )
+    acceptance_run.add_argument("--release", action="store_true", required=True)
+    acceptance_run.add_argument("--repository-root", type=Path)
+    acceptance_run.add_argument("--output-dir", type=Path)
+    acceptance_verify = acceptance_commands.add_parser(
+        "verify", help="Verify a persisted release result and all referenced artifacts"
+    )
+    acceptance_verify.add_argument("--result", type=Path, required=True)
     return parser
 
 
@@ -419,6 +435,13 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
                 idle_timeout_seconds=args.idle_timeout,
                 storage_dir=args.storage_dir,
             )
+        )
+    if args.command == "acceptance":
+        if args.acceptance_command == "verify":
+            return verify_release_result(args.result)
+        return run_release_acceptance(
+            repository_root=args.repository_root,
+            output_dir=args.output_dir,
         )
     service = _service(args)
     if args.command == "scenario":
@@ -775,6 +798,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result = _execute(args)
+    except AcceptanceFailure as exc:
+        _json(exc.result)
+        return 1
     except APIError as exc:
         _json(
             {

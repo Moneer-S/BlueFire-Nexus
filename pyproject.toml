@@ -17,6 +17,7 @@ zip-safe = false
 bluefire = [
   "catalog/*.yaml",
   "data/*.yaml",
+  "data/*.json",
   "ui/*.css",
   "ui/*.html",
   "ui/*.js",
@@ -58,6 +59,7 @@ dev = [
   "build>=1.2.2,<2",
   "cyclonedx-bom>=7.3.1,<8",
   "detect-secrets>=1.5,<2",
+  "jsonschema>=4.23,<5",
   "mypy>=1.14,<2",
   "pip-audit>=2.8,<3",
   "pre-commit>=4.0,<5",

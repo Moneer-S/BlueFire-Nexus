@@ -1,6 +1,6 @@
-# Final proof packet
+# Pre-release baseline
 
-This packet is a concise review map for the shipped local-first product surface. It is not a security certification, legal opinion, or claim that a third-party environment was tested.
+This historical baseline maps the pre-1.0 local product surface. It does not satisfy a release gate or establish release readiness. The locked `bluefire acceptance run --release` contract is the machine-verifiable release authority.
 
 ## Product boundary
 

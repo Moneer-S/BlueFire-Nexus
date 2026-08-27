@@ -30,6 +30,14 @@ SAFE_BUNDLE_NAMES = frozenset(
         "manifest.json",
     }
 )
+_ACCEPTANCE_BINDING_ENV = {
+    "acceptance_id": "BLUEFIRE_ACCEPTANCE_ID",
+    "gate_id": "BLUEFIRE_ACCEPTANCE_GATE_ID",
+    "contract_sha256": "BLUEFIRE_ACCEPTANCE_CONTRACT_SHA256",
+    "repository_commit": "BLUEFIRE_ACCEPTANCE_REPOSITORY_COMMIT",
+    "repository_tree": "BLUEFIRE_ACCEPTANCE_REPOSITORY_TREE",
+    "release": "BLUEFIRE_ACCEPTANCE_RELEASE",
+}
 
 
 class RunStoreError(ValueError):
@@ -45,6 +53,20 @@ class RunHandle:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _acceptance_binding() -> dict[str, str] | None:
+    values = {field: os.environ.get(name) for field, name in _ACCEPTANCE_BINDING_ENV.items()}
+    if not any(value is not None for value in values.values()):
+        return None
+    if any(
+        not isinstance(value, str) or not value or len(value) > 512 for value in values.values()
+    ):
+        raise RunStoreError("acceptance run binding is incomplete or invalid")
+    return {
+        "schema_version": "bluefire.product-acceptance-run-binding.v1",
+        **{field: str(value) for field, value in values.items()},
+    }
 
 
 class RunStore:
@@ -74,6 +96,7 @@ class RunStore:
         replay: Mapping[str, Any] | None = None,
     ) -> RunHandle:
         created_at = utc_now()
+        acceptance_binding = _acceptance_binding()
         for _attempt in range(8):
             run_id = self._new_run_id()
             path = self.root / run_id
@@ -89,6 +112,8 @@ class RunStore:
                 "status": "created",
                 "replay": json_clone(replay) if replay else None,
             }
+            if acceptance_binding is not None:
+                metadata["acceptance_binding"] = acceptance_binding
             self.write_json(run_id, "result.json", metadata)
             self.write_json(run_id, "scenario.json", scenario)
             self.write_json(run_id, "plan.json", plan)
@@ -163,7 +188,18 @@ class RunStore:
             "detections.json",
             {"schema_version": "1.0", "candidates": list(detections)},
         )
+        initial_result = self.read_json(run_id, "result.json")
+        binding = initial_result.get("acceptance_binding")
         final_result = dict(result)
+        if binding is not None:
+            if (
+                not isinstance(binding, Mapping)
+                or final_result.get("acceptance_binding", binding) != binding
+            ):
+                raise RunStoreError("acceptance run binding changed before finalization")
+            final_result["acceptance_binding"] = dict(binding)
+        elif "acceptance_binding" in final_result:
+            raise RunStoreError("acceptance run binding cannot be supplied by a caller")
         final_result["run_id"] = run_id
         final_result["finalized_at"] = utc_now()
         self.write_json(run_id, "result.json", final_result)
