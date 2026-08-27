@@ -18,6 +18,7 @@ PROVIDER_PROGRAM_SCHEMA = "bluefire.wasm-provider-program.v1"
 PROVIDER_RUNTIME_ACTION_CONTRACT_SCHEMA = "bluefire.provider-runtime-action-contract.v1"
 PROVIDER_ABI_V1 = "bluefire.provider-abi.v1"
 MAX_PROVIDER_ARTIFACT_BYTES = 64 * 1024
+MAX_PROVIDER_MODULE_BYTES = 2 * 1024 * 1024
 
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PACKAGE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
@@ -185,8 +186,8 @@ def _canonical_limits(value: Any, context: str) -> dict[str, int]:
         if isinstance(item, bool) or not isinstance(item, int) or not 1 <= item <= (1 << 63) - 1:
             raise ProviderRunnerContractError(f"{context}.{field} is invalid")
         limits[field] = item
-    if limits["max_module_bytes"] > MAX_PROVIDER_ARTIFACT_BYTES:
-        raise ProviderRunnerContractError(f"{context}.max_module_bytes exceeds the package limit")
+    if limits["max_module_bytes"] > MAX_PROVIDER_MODULE_BYTES:
+        raise ProviderRunnerContractError(f"{context}.max_module_bytes exceeds the runtime limit")
     return limits
 
 
@@ -376,6 +377,7 @@ def canonical_provider_artifacts(
 
 __all__ = [
     "MAX_PROVIDER_ARTIFACT_BYTES",
+    "MAX_PROVIDER_MODULE_BYTES",
     "PROVIDER_ABI_V1",
     "PROVIDER_BINDING_SCHEMA",
     "PROVIDER_PROGRAM_SCHEMA",
