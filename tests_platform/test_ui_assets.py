@@ -256,6 +256,13 @@ def test_durable_proposal_review_and_retry_stay_separate_from_execute_approval()
         "every Execute mutation stops for fresh one-time approval",
     ):
         assert capability in planner
+    for journey_copy in (
+        "Policy-valid Simulate choices",
+        "Proposal, policy, and application trail",
+        "Auto can apply only policy-valid Simulate choices from registered Behavior/Action contracts",
+        "Execute still pauses for review and a fresh one-time approval before any effect",
+    ):
+        assert journey_copy in runs
     for boundary in (
         "arbitrary commands",
         "widen scope",

@@ -602,6 +602,15 @@ export interface RunRecord {
   profile?: Record<string, unknown>;
   cleanup?: Record<string, unknown> | boolean;
   planner_decisions?: unknown[];
+  ai_proposals?: Array<Record<string, unknown> & {
+    application_status?: string;
+    outcome?: string;
+    proposal?: AIProposal | null;
+    provider?: Record<string, unknown>;
+    proposal_policy_evaluation?: Record<string, unknown>;
+    selected_behavior_id?: string;
+    allowed_edges?: Array<{ from_step: string; outcome: string; to_step: string }>;
+  }>;
   approval_pause?: Record<string, unknown> | null;
   events?: unknown[];
   manifest?: Record<string, unknown>;
