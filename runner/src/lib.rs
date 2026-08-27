@@ -7,6 +7,7 @@
 pub mod actions;
 pub mod contract;
 mod process;
+pub mod providers;
 pub mod runner;
 pub mod safety;
 

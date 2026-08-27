@@ -111,6 +111,7 @@
     "process": "platform",
     "safety": "safety",
     "actions": "action",
+    "providers": "action",
     "runner": "execution",
     "lib": "adapter",
     "main": "adapter"
