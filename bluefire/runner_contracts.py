@@ -18,6 +18,12 @@ from typing import Any, Mapping, Sequence
 
 from .config import EnvironmentReference, RunnerProfile
 from .contracts import ActionDefinition, SafetyTier
+from .provider_runner_contracts import (
+    ProviderRunnerContractError,
+    canonical_provider_artifacts,
+    canonical_provider_binding,
+    canonical_provider_bindings,
+)
 from .util import content_hash, json_clone
 
 
@@ -313,6 +319,33 @@ def seal_profile(document: Mapping[str, Any]) -> dict[str, Any]:
             sealed["action_bindings"] = bindings
         else:
             sealed.pop("action_bindings")
+    try:
+        provider_bindings = canonical_provider_bindings(
+            sealed.get("provider_bindings", []),
+            context="runner profile provider_bindings",
+        )
+        provider_artifacts = canonical_provider_artifacts(
+            sealed.get("provider_artifacts", []),
+            context="runner profile provider_artifacts",
+        )
+    except ProviderRunnerContractError as exc:
+        raise RunnerContractError(str(exc)) from exc
+    referenced_artifacts = {
+        (binding["artifact_sha256"], binding["artifact_size"]) for binding in provider_bindings
+    }
+    supplied_artifacts = {
+        (artifact["artifact_sha256"], artifact["artifact_size"]) for artifact in provider_artifacts
+    }
+    if referenced_artifacts != supplied_artifacts:
+        raise RunnerContractError(
+            "runner profile provider artifacts must exactly cover its provider bindings"
+        )
+    if provider_bindings:
+        sealed["provider_bindings"] = provider_bindings
+        sealed["provider_artifacts"] = provider_artifacts
+    else:
+        sealed.pop("provider_bindings", None)
+        sealed.pop("provider_artifacts", None)
     sealed["policy_digest"] = ""
     sealed["policy_digest"] = content_hash(sealed)
     return sealed
@@ -326,6 +359,8 @@ def build_runner_profile(
     filesystem_scope: Sequence[str] = ("fixtures", "staged", "exports"),
     network_destinations: Sequence[Mapping[str, Any]] = (),
     action_bindings: Sequence[Mapping[str, Any]] = (),
+    provider_bindings: Sequence[Mapping[str, Any]] = (),
+    provider_artifacts: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     if profile.mode.value != "execute":
         raise RunnerContractError("only Execute profiles can be compiled for the Rust runner")
@@ -342,6 +377,17 @@ def build_runner_profile(
         action_bindings,
         context="runner profile action_bindings",
     )
+    try:
+        providers = canonical_provider_bindings(
+            provider_bindings,
+            context="runner profile provider_bindings",
+        )
+        artifacts = canonical_provider_artifacts(
+            provider_artifacts,
+            context="runner profile provider_artifacts",
+        )
+    except ProviderRunnerContractError as exc:
+        raise RunnerContractError(str(exc)) from exc
     allowed_actions = set(profile.enabled_actions)
     blocked_actions = set(profile.blocked_actions)
     for binding in bindings:
@@ -353,6 +399,14 @@ def build_runner_profile(
             raise RunnerContractError(
                 "runner profile action binding cannot bypass backing opcode policy"
             )
+    for binding in providers:
+        logical_action = str(binding["logical_action_id"])
+        if logical_action not in allowed_actions or logical_action in blocked_actions:
+            raise RunnerContractError("runner profile provider action is not enabled")
+        if actual_platform not in binding["platforms"]:
+            raise RunnerContractError("runner profile provider does not support this platform")
+        if "native_execution" not in runner_capabilities:
+            raise RunnerContractError("runner profile lacks the provider execution capability")
     profile_doc: dict[str, Any] = {
         "schema_version": "bluefire.runner-profile.v1",
         "profile_id": profile.id,
@@ -373,6 +427,9 @@ def build_runner_profile(
     }
     if bindings:
         profile_doc["action_bindings"] = bindings
+    if providers:
+        profile_doc["provider_bindings"] = providers
+        profile_doc["provider_artifacts"] = artifacts
     return seal_profile(profile_doc)
 
 
@@ -388,6 +445,19 @@ def seal_manifest(document: Mapping[str, Any]) -> dict[str, Any]:
             raw_binding,
             context="runner execution_binding",
         )
+    if "provider_binding" in sealed:
+        raw_provider = sealed["provider_binding"]
+        if not isinstance(raw_provider, Mapping):
+            raise RunnerContractError("runner provider_binding must be an object")
+        try:
+            sealed["provider_binding"] = canonical_provider_binding(
+                raw_provider,
+                context="runner provider_binding",
+            )
+        except ProviderRunnerContractError as exc:
+            raise RunnerContractError(str(exc)) from exc
+    if "execution_binding" in sealed and "provider_binding" in sealed:
+        raise RunnerContractError("runner manifest cannot select two package execution models")
     approval = sealed.get("approval")
     if approval is not None:
         if not isinstance(approval, dict):
@@ -425,6 +495,7 @@ def build_execution_manifest(
     evidence_refs: Sequence[str] = (),
     approval_record: Mapping[str, Any] | None,
     execution_binding: Mapping[str, Any] | None = None,
+    provider_binding: Mapping[str, Any] | None = None,
     resolved_cleanup_action_id: str | None = None,
     timeout_ms: int | None = None,
     now: datetime | None = None,
@@ -459,6 +530,8 @@ def build_execution_manifest(
         raise RunnerContractError("runner profile identity fields are missing")
     if not isinstance(policy_digest, str) or not policy_digest.startswith("sha256:"):
         raise RunnerContractError("runner profile has no sealed policy digest")
+    if execution_binding is not None and provider_binding is not None:
+        raise RunnerContractError("runner manifest cannot select two package execution models")
     binding = (
         None
         if execution_binding is None
@@ -467,6 +540,17 @@ def build_execution_manifest(
             context="runner execution_binding",
         )
     )
+    try:
+        provider = (
+            None
+            if provider_binding is None
+            else canonical_provider_binding(
+                provider_binding,
+                context="runner provider_binding",
+            )
+        )
+    except ProviderRunnerContractError as exc:
+        raise RunnerContractError(str(exc)) from exc
     if binding is not None:
         if (
             binding["logical_behavior_id"] != behavior_id
@@ -493,6 +577,73 @@ def build_execution_manifest(
                 raise RunnerContractError(
                     "runner parameters conflict with a reviewed execution-binding constant"
                 )
+    if provider is not None:
+        if (
+            provider["logical_behavior_id"] != behavior_id
+            or provider["logical_action_id"] != action.id
+        ):
+            raise RunnerContractError(
+                "runner provider binding does not match the logical behavior/action"
+            )
+        raw_profile_providers = runner_profile.get("provider_bindings")
+        if not isinstance(raw_profile_providers, list):
+            raise RunnerContractError(
+                "runner provider binding is absent from the sealed runner profile"
+            )
+        try:
+            profile_providers = canonical_provider_bindings(
+                raw_profile_providers,
+                context="runner profile provider_bindings",
+            )
+        except ProviderRunnerContractError as exc:
+            raise RunnerContractError(str(exc)) from exc
+        if provider not in profile_providers:
+            raise RunnerContractError(
+                "runner provider binding does not exactly match the sealed runner profile"
+            )
+        expected_inputs = [
+            {
+                "name": item.name,
+                "type": item.type,
+                "required": item.required,
+                "multiple": item.multiple,
+            }
+            for item in action.inputs
+        ]
+        expected_outputs = [
+            {
+                "name": item.name,
+                "type": item.type,
+                "required": item.required,
+                "multiple": item.multiple,
+            }
+            for item in action.outputs
+        ]
+        expected_parameters = [
+            {
+                "name": item.name,
+                "type": item.type.value,
+                "required": item.required,
+                "default": item.default,
+                "enum": list(item.enum),
+                "minimum": item.minimum,
+                "maximum": item.maximum,
+            }
+            for item in action.parameters
+        ]
+        if (
+            provider["inputs"] != expected_inputs
+            or provider["outputs"] != expected_outputs
+            or provider["parameters"] != expected_parameters
+            or provider["capabilities"] != effect_capabilities(action.capabilities)
+            or provider["safety_tier"] != action.safety_tier.value
+            or provider["platforms"] != list(action.platforms)
+            or provider["mutates"] is not action.mutates
+            or provider["cleanup_action_id"] != action.cleanup_action_id
+        ):
+            raise RunnerContractError(
+                "runner provider binding differs from the signed logical action contract"
+            )
     profile_limits = runner_profile.get("limits")
     if not isinstance(profile_limits, Mapping):
         raise RunnerContractError("runner profile limits are missing")
@@ -515,7 +666,11 @@ def build_execution_manifest(
         raise RunnerContractError("resolved native cleanup action must be sandbox.cleanup.v1")
     cleanup_action = (
         resolved_cleanup_action_id
-        or ("sandbox.cleanup.v1" if binding is not None else action.cleanup_action_id)
+        or (
+            "sandbox.cleanup.v1"
+            if binding is not None or provider is not None
+            else action.cleanup_action_id
+        )
         or "sandbox.cleanup.v1"
     )
     if cleanup_action != "sandbox.cleanup.v1":
@@ -549,6 +704,8 @@ def build_execution_manifest(
     }
     if binding is not None:
         document["execution_binding"] = binding
+    if provider is not None:
+        document["provider_binding"] = provider
     return seal_manifest(document)
 
 
