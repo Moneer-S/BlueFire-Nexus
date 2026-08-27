@@ -62,7 +62,28 @@ _CANONICAL_INVENTORY_KEYS = frozenset(
         "actions",
     }
 )
+_CANONICAL_PROVIDER_INVENTORY_KEYS = _CANONICAL_INVENTORY_KEYS | {"provider_runtimes"}
 _CANONICAL_ACTION_KEYS = frozenset({"action_id", "action_version", "readiness", "contract_digest"})
+_CANONICAL_PROVIDER_RUNTIME_KEYS = frozenset(
+    {
+        "kind",
+        "abi_version",
+        "runtime_version",
+        "readiness",
+        "no_host_imports",
+        "hard_limits",
+        "contract_digest",
+    }
+)
+_PROVIDER_LIMIT_KEYS = frozenset(
+    {
+        "max_module_bytes",
+        "max_memory_bytes",
+        "max_input_bytes",
+        "max_output_bytes",
+        "fuel",
+    }
+)
 _MAX_ACTIONS = 512
 
 
@@ -102,10 +123,12 @@ def validate_builtin_action_inventory(
         isinstance(row, Mapping) and "contract_digest" in row for row in raw_actions
     )
     if canonical_shape:
-        if set(inventory) != _CANONICAL_INVENTORY_KEYS or not _valid_digest(
-            inventory.get("source_digest")
-        ):
+        if set(inventory) not in {
+            _CANONICAL_INVENTORY_KEYS,
+            _CANONICAL_PROVIDER_INVENTORY_KEYS,
+        } or not _valid_digest(inventory.get("source_digest")):
             raise RunnerInventoryAuthorityError("canonical runner inventory digest is invalid")
+        _validate_canonical_provider_runtimes(inventory.get("provider_runtimes", []))
 
     normalized: dict[str, Mapping[str, str]] = {}
     for row in raw_actions:
@@ -168,6 +191,50 @@ def validate_builtin_action_inventory(
             raise RunnerInventoryAuthorityError("runner action contract digest is invalid")
 
     return MappingProxyType(normalized)
+
+
+def _validate_canonical_provider_runtimes(value: Any) -> None:
+    if not isinstance(value, list) or len(value) > 8:
+        raise RunnerInventoryAuthorityError("canonical provider-runtime inventory is invalid")
+    identities: set[tuple[str, str]] = set()
+    previous: tuple[str, str] | None = None
+    for row in value:
+        if not isinstance(row, Mapping) or set(row) != _CANONICAL_PROVIDER_RUNTIME_KEYS:
+            raise RunnerInventoryAuthorityError("canonical provider-runtime inventory is invalid")
+        kind = row.get("kind")
+        abi_version = row.get("abi_version")
+        runtime_version = row.get("runtime_version")
+        readiness = row.get("readiness")
+        no_host_imports = row.get("no_host_imports")
+        limits = row.get("hard_limits")
+        contract_digest = row.get("contract_digest")
+        identity = (str(kind), str(abi_version))
+        if (
+            kind != "wasm"
+            or not isinstance(abi_version, str)
+            or _ACTION_ID.fullmatch(abi_version) is None
+            or not isinstance(runtime_version, str)
+            or not runtime_version
+            or readiness not in _READINESS_VALUES
+            or no_host_imports is not True
+            or not isinstance(limits, Mapping)
+            or set(limits) != _PROVIDER_LIMIT_KEYS
+            or any(
+                isinstance(limit, bool)
+                or not isinstance(limit, int)
+                or not 1 <= limit <= (1 << 63) - 1
+                for limit in limits.values()
+            )
+            or not _valid_digest(contract_digest)
+            or identity in identities
+            or (previous is not None and previous >= identity)
+        ):
+            raise RunnerInventoryAuthorityError("canonical provider-runtime inventory is invalid")
+        contract = {key: row[key] for key in row if key != "contract_digest"}
+        if content_hash(contract) != contract_digest:
+            raise RunnerInventoryAuthorityError("canonical provider-runtime digest is invalid")
+        identities.add(identity)
+        previous = identity
 
 
 def _valid_digest(value: Any) -> bool:
