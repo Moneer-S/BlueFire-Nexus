@@ -47,14 +47,23 @@ from .planner import (
     PlanStep,
 )
 from .policy import ApprovalState, PolicyDecision, PolicyEngine, PolicyStatus
+from .provider_runner_contracts import (
+    PROVIDER_BINDING_SCHEMA,
+    ProviderRunnerContractError,
+    canonical_provider_artifacts,
+    canonical_provider_binding,
+    canonical_provider_bindings,
+)
 from .registry import BehaviorRegistry, RegistryError
 from .run_store import RunHandle, RunStore
 from .runner_adapter import AdaptedAction, RunnerActionAdapter, RunnerAdapterError
 from .runner_client import (
+    RunnerReadinessError,
     RunnerTaskCancelled,
     RunnerTransport,
     RunnerTransportError,
     _PinnedPrivateDirectory,
+    canonical_runner_inventory,
 )
 from .runner_contracts import build_execution_manifest, build_runner_profile, current_platform
 from .runner_inventory import (
@@ -265,6 +274,7 @@ class Orchestrator:
         proposal_provider: AIProvider | None = None,
         approval_store: ApprovalStore | None = None,
         action_bindings: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
+        provider_artifacts: Mapping[str, Mapping[str, Any]] | None = None,
         catalog_authority: Mapping[str, Any] | None = None,
         collector_registry: CollectorRegistry | None = None,
     ) -> None:
@@ -278,6 +288,43 @@ class Orchestrator:
             (str(behavior_id), str(action_id)): dict(binding)
             for (behavior_id, action_id), binding in (action_bindings or {}).items()
         }
+        raw_provider_artifacts = {} if provider_artifacts is None else provider_artifacts
+        if not isinstance(raw_provider_artifacts, Mapping) or any(
+            not isinstance(digest, str)
+            or not isinstance(artifact, Mapping)
+            or artifact.get("artifact_sha256") != digest
+            for digest, artifact in raw_provider_artifacts.items()
+        ):
+            raise OrchestrationError("provider artifact inventory is invalid")
+        try:
+            canonical_artifacts = canonical_provider_artifacts(
+                tuple(raw_provider_artifacts.values()),
+                context="orchestrator provider artifacts",
+            )
+            provider_bindings = canonical_provider_bindings(
+                tuple(
+                    binding
+                    for binding in self.action_bindings.values()
+                    if binding.get("schema_version") == PROVIDER_BINDING_SCHEMA
+                ),
+                context="orchestrator provider bindings",
+            )
+        except ProviderRunnerContractError as exc:
+            raise OrchestrationError(str(exc)) from exc
+        self._provider_artifacts = {
+            str(artifact["artifact_sha256"]): artifact for artifact in canonical_artifacts
+        }
+        for binding in provider_bindings:
+            pair = (
+                str(binding["logical_behavior_id"]),
+                str(binding["logical_action_id"]),
+            )
+            if self.action_bindings.get(pair) != binding:
+                raise OrchestrationError("provider binding identity is invalid")
+            artifact = self._provider_artifacts.get(str(binding["artifact_sha256"]))
+            if artifact is None or artifact["artifact_size"] != binding["artifact_size"]:
+                raise OrchestrationError("provider binding artifact is unavailable")
+            self.action_bindings[pair] = binding
         self.collector_registry = collector_registry
         self.planner = DeterministicPlanner(
             registry,
@@ -460,12 +507,18 @@ class Orchestrator:
             except (ApprovalError, ValueError) as exc:
                 raise OrchestrationError(str(exc)) from exc
             network_destinations = self._network_destinations(plan)
+            provider_bindings = self._runner_profile_provider_bindings(profile)
             runner_profile_doc = build_runner_profile(
                 profile,
                 sandbox_root=sandbox_root,
                 filesystem_scope=self._filesystem_scope(plan),
                 network_destinations=network_destinations,
                 action_bindings=self._runner_profile_action_bindings(profile),
+                provider_bindings=provider_bindings,
+                provider_artifacts=self._runner_profile_provider_artifacts(
+                    profile,
+                    provider_bindings=provider_bindings,
+                ),
             )
             observer = SandboxObserver(sandbox_root)
             if self.collector_registry is None:
@@ -1615,9 +1668,30 @@ class Orchestrator:
         return tuple(problems)
 
     @staticmethod
+    def _provider_execution_binding(step: PlanStep) -> Mapping[str, Any] | None:
+        binding = step.execution_binding
+        if binding is None or binding.get("schema_version") != PROVIDER_BINDING_SCHEMA:
+            return None
+        try:
+            provider = canonical_provider_binding(
+                binding,
+                context="plan provider execution binding",
+            )
+        except ProviderRunnerContractError as exc:
+            raise OrchestrationError(str(exc)) from exc
+        if provider["logical_behavior_id"] != step.behavior_id:
+            raise OrchestrationError("package execution binding changed its logical behavior")
+        if provider["logical_action_id"] != step.action_id:
+            raise OrchestrationError("package execution binding changed its logical action")
+        return provider
+
+    @staticmethod
     def _runner_opcode(step: PlanStep) -> str | None:
         binding = step.execution_binding
         if binding is None:
+            return step.action_id
+        provider = Orchestrator._provider_execution_binding(step)
+        if provider is not None:
             return step.action_id
         opcode = binding.get("runner_opcode")
         if not isinstance(opcode, str) or not opcode:
@@ -1635,7 +1709,8 @@ class Orchestrator:
         bindings = [
             dict(binding)
             for binding in self.action_bindings.values()
-            if binding.get("logical_action_id") in profile.enabled_actions
+            if binding.get("schema_version") != PROVIDER_BINDING_SCHEMA
+            and binding.get("logical_action_id") in profile.enabled_actions
             and binding.get("runner_opcode") in profile.enabled_actions
             and binding.get("runner_opcode") not in profile.blocked_actions
         ]
@@ -1646,6 +1721,45 @@ class Orchestrator:
             )
         )
         return tuple(bindings)
+
+    def _runner_profile_provider_bindings(
+        self,
+        profile: RunnerProfile,
+    ) -> tuple[Mapping[str, Any], ...]:
+        bindings = [
+            dict(binding)
+            for binding in self.action_bindings.values()
+            if binding.get("schema_version") == PROVIDER_BINDING_SCHEMA
+            and binding.get("logical_action_id") in profile.enabled_actions
+            and binding.get("logical_action_id") not in profile.blocked_actions
+        ]
+        bindings.sort(
+            key=lambda item: (
+                str(item["logical_behavior_id"]),
+                str(item["logical_action_id"]),
+            )
+        )
+        return tuple(bindings)
+
+    def _runner_profile_provider_artifacts(
+        self,
+        profile: RunnerProfile,
+        *,
+        provider_bindings: Sequence[Mapping[str, Any]] | None = None,
+    ) -> tuple[Mapping[str, Any], ...]:
+        bindings = (
+            tuple(provider_bindings)
+            if provider_bindings is not None
+            else self._runner_profile_provider_bindings(profile)
+        )
+        artifacts: dict[str, Mapping[str, Any]] = {}
+        for binding in bindings:
+            digest = str(binding["artifact_sha256"])
+            artifact = self._provider_artifacts.get(digest)
+            if artifact is None or artifact["artifact_size"] != binding["artifact_size"]:
+                raise OrchestrationError("provider binding artifact is unavailable")
+            artifacts[digest] = dict(artifact)
+        return tuple(artifacts[digest] for digest in sorted(artifacts))
 
     @staticmethod
     def _plan_step(plan: ExecutionPlan, step_id: str) -> PlanStep:
@@ -1751,13 +1865,14 @@ class Orchestrator:
         collector_ids: Sequence[str] = (),
     ) -> tuple[dict[str, Any], tuple[EvidenceRecord, ...], PolicyDecision, tuple[str, ...]]:
         action = self.registry.get_action(str(step.action_id))
+        provider_binding = self._provider_execution_binding(step)
         runner_step = (
             replace(
                 step,
                 action_id=self._runner_opcode(step),
                 execution_binding=None,
             )
-            if step.execution_binding is not None
+            if step.execution_binding is not None and provider_binding is None
             else step
         )
         if action_timeout_ms is not None and action_timeout_ms < 1:
@@ -1838,7 +1953,8 @@ class Orchestrator:
             evidence_refs=parent_ids,
             approval_record=approval_record,
             timeout_ms=action_timeout_ms,
-            execution_binding=step.execution_binding,
+            execution_binding=(step.execution_binding if provider_binding is None else None),
+            provider_binding=provider_binding,
         )
         approval = self._approval_state(
             manifest,
@@ -2467,19 +2583,62 @@ class Orchestrator:
     @staticmethod
     def _validate_inventory(plan: ExecutionPlan, inventory: Mapping[str, Any]) -> None:
         requested: set[str] = set()
+        provider_bindings: list[Mapping[str, Any]] = []
         for step in plan.steps:
             if not step.action_id:
+                continue
+            provider = Orchestrator._provider_execution_binding(step)
+            if provider is not None:
+                provider_bindings.append(provider)
                 continue
             opcode = Orchestrator._runner_opcode(step)
             if opcode is None:
                 raise OrchestrationError("Execute plan has an unreviewed native action")
             requested.add(opcode)
         try:
-            validate_builtin_action_inventory(
-                inventory,
-                required_action_ids=requested,
+            if requested:
+                validate_builtin_action_inventory(
+                    inventory,
+                    required_action_ids=requested,
+                )
+            providers = canonical_provider_bindings(
+                provider_bindings,
+                context="planned provider bindings",
             )
-        except RunnerInventoryAuthorityError:
+            if providers:
+                canonical_inventory = canonical_runner_inventory(inventory)
+                raw_runtimes = canonical_inventory.get("provider_runtimes")
+                if not isinstance(raw_runtimes, list):
+                    raise RunnerReadinessError("Runner provider runtime is unavailable.")
+                runtimes = {
+                    (str(runtime["kind"]), str(runtime["abi_version"])): runtime
+                    for runtime in raw_runtimes
+                }
+                for binding in providers:
+                    runtime = runtimes.get(("wasm", str(binding["abi_version"])))
+                    if (
+                        runtime is None
+                        or runtime.get("readiness") != "ready"
+                        or runtime.get("no_host_imports") is not True
+                        or runtime.get("contract_digest")
+                        != binding["provider_runtime_contract_digest"]
+                    ):
+                        raise RunnerReadinessError(
+                            "Runner provider runtime does not match the planned contract."
+                        )
+                    hard_limits = runtime.get("hard_limits")
+                    if not isinstance(hard_limits, Mapping) or any(
+                        binding["limits"][field] > hard_limits.get(field, 0)
+                        for field in binding["limits"]
+                    ):
+                        raise RunnerReadinessError(
+                            "Runner provider runtime cannot satisfy the planned limits."
+                        )
+        except (
+            ProviderRunnerContractError,
+            RunnerInventoryAuthorityError,
+            RunnerReadinessError,
+        ):
             raise OrchestrationError(
                 "Rust runner inventory does not satisfy the planned action contracts"
             ) from None

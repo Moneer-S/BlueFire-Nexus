@@ -9,6 +9,7 @@ import re
 import stat
 import threading
 from contextlib import AbstractContextManager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from importlib.resources import as_file, files
@@ -24,6 +25,7 @@ from .action_catalog import (
 )
 from .action_packages import (
     ActionPackageError,
+    VerifiedActionPackageActivation,
     audit_action_package,
     verify_action_package,
 )
@@ -61,7 +63,13 @@ from .config import (
     RunnerProfile,
     load_config,
 )
-from .contracts import ContractError, ExecutionMode, ScenarioDefinition, load_scenario
+from .contracts import (
+    ContractError,
+    ExecutionMode,
+    SafetyTier,
+    ScenarioDefinition,
+    load_scenario,
+)
 from .detection_lab import DetectionLabService
 from .job_runtime import (
     JobCancelled,
@@ -310,7 +318,7 @@ class BlueFireService:
             behaviors = [item.to_dict() for item in snapshot.registry.behaviors]
             actions = [item.to_dict() for item in snapshot.registry.actions]
         runtime_ai = self._runtime_ai()
-        runtime_profiles = tuple(snapshot.profile(profile) for profile in self._runner_profiles())
+        runtime_profiles = self._profiles_for_catalog(snapshot)
         providers = []
         for provider in runtime_ai.providers:
             metadata = ai_runtime_metadata(
@@ -350,9 +358,30 @@ class BlueFireService:
 
     @staticmethod
     def _sanitized_action_package(record: Mapping[str, Any]) -> dict[str, Any]:
-        result = dict(record)
-        result.pop("canonical_envelope_bytes", None)
-        result.pop("canonical_content_bytes", None)
+        """Recursively remove immutable package bytes from public responses."""
+
+        private_fields = {
+            "artifact_hex",
+            "canonical_envelope_bytes",
+            "canonical_content_bytes",
+        }
+
+        def sanitize(value: Any) -> Any:
+            if isinstance(value, Mapping):
+                return {
+                    str(key): sanitize(child)
+                    for key, child in value.items()
+                    if key not in private_fields
+                }
+            if isinstance(value, list):
+                return [sanitize(item) for item in value]
+            if isinstance(value, tuple):
+                return [sanitize(item) for item in value]
+            return value
+
+        result = sanitize(record)
+        if not isinstance(result, dict):  # pragma: no cover - Mapping input invariant
+            raise ProductStoreError("action-package public response is invalid")
         return result
 
     def action_packages(self) -> Mapping[str, Any]:
@@ -372,7 +401,7 @@ class BlueFireService:
             "publishers": publishers,
             "catalog": snapshot.to_dict(),
             "activation_events": activation_events,
-            "execution_boundary": "signed-reviewed-opcodes-only",
+            "execution_boundary": "signed-reviewed-opcodes-and-isolated-wasm-providers",
         }
 
     def action_package(
@@ -611,18 +640,31 @@ class BlueFireService:
                     runner_inventory=inventory,
                     runner_identity_digest=content_hash(identity),
                 )
-                unavailable_opcodes = sorted(
-                    {
-                        binding.opcode
-                        for binding in activation.opcode_bindings
-                        if binding.opcode not in profile.enabled_actions
-                        or binding.opcode in profile.blocked_actions
-                    }
-                )
-                if unavailable_opcodes:
-                    raise RunnerContractError(
-                        "selected Execute profile cannot dispatch every package opcode"
+                if activation.package.provider is None:
+                    unavailable_opcodes = sorted(
+                        {
+                            binding.opcode
+                            for binding in activation.opcode_bindings
+                            if binding.opcode not in profile.enabled_actions
+                            or binding.opcode in profile.blocked_actions
+                        }
                     )
+                    if unavailable_opcodes:
+                        raise RunnerContractError(
+                            "selected Execute profile cannot dispatch every package opcode"
+                        )
+                else:
+                    base_profile = next(
+                        (
+                            candidate
+                            for candidate in self._runner_profiles()
+                            if candidate.id == profile.id
+                        ),
+                        None,
+                    )
+                    if base_profile is None:  # pragma: no cover - _profile invariant
+                        raise RunnerContractError("selected Execute profile is unavailable")
+                    self._validate_provider_activation_profile(activation, base_profile)
                 package = self.product_store.activate_action_package(
                     activation,
                     activated_by=request["activated_by"],
@@ -661,6 +703,37 @@ class BlueFireService:
             "runner_identity_digest": activation.runner_identity_digest,
             "runner_inventory_digest": activation.runner_inventory_digest,
         }
+
+    @staticmethod
+    def _validate_provider_activation_profile(
+        activation: VerifiedActionPackageActivation,
+        profile: RunnerProfile,
+    ) -> None:
+        """Require one base Execute profile to authorize the whole provider package."""
+
+        package = activation.package
+        manifest = package.manifest
+        runner_platform = activation.runner_platform
+        actions = tuple(item.definition for item in package.actions)
+        if (
+            "native.execution" not in profile.capabilities
+            or SafetyTier.SAFE not in profile.safety_tiers
+            or runner_platform not in profile.platforms
+            or runner_platform not in manifest.platforms
+            or "native.execution" not in manifest.capabilities
+            or "safe" not in manifest.safety_tiers
+            or not actions
+            or any(
+                action.safety_tier is not SafetyTier.SAFE
+                or "native.execution" not in action.capabilities
+                or runner_platform not in action.platforms
+                or action.id in profile.blocked_actions
+                for action in actions
+            )
+        ):
+            raise RunnerContractError(
+                "selected Execute profile cannot dispatch every provider package action"
+            )
 
     def deactivate_action_package(
         self,
@@ -1545,6 +1618,7 @@ class BlueFireService:
             runner=runner,
             approval_store=self.product_store,
             action_bindings=self._catalog_snapshot.action_bindings,
+            provider_artifacts=self._catalog_snapshot.provider_artifacts,
             catalog_authority=self._catalog_snapshot.to_dict(),
         )
         try:
@@ -1721,6 +1795,7 @@ class BlueFireService:
             proposal_provider=self._proposal_provider(autonomy, provider),
             approval_store=self.product_store,
             action_bindings=self._catalog_snapshot.action_bindings,
+            provider_artifacts=self._catalog_snapshot.provider_artifacts,
             catalog_authority=self._catalog_snapshot.to_dict(),
         )
         try:
@@ -2856,6 +2931,7 @@ class BlueFireService:
             runner=runner,
             approval_store=self.product_store,
             action_bindings=self._catalog_snapshot.action_bindings,
+            provider_artifacts=self._catalog_snapshot.provider_artifacts,
             catalog_authority=self._catalog_snapshot.to_dict(),
         )
         preflight = orchestrator.preflight(
@@ -3054,6 +3130,7 @@ class BlueFireService:
             proposal_provider=self._proposal_provider(prepared.autonomy, provider),
             approval_store=self.product_store,
             action_bindings=self._catalog_snapshot.action_bindings,
+            provider_artifacts=self._catalog_snapshot.provider_artifacts,
             catalog_authority=self._catalog_snapshot.to_dict(),
         )
         result = orchestrator.run(
@@ -3258,6 +3335,7 @@ class BlueFireService:
                     runner=runner,
                     approval_store=self.product_store,
                     action_bindings=recovery_catalog.action_bindings,
+                    provider_artifacts=recovery_catalog.provider_artifacts,
                     catalog_authority=approval_catalog_authority,
                 )
                 plan = orchestrator.planner.compile(
@@ -3866,6 +3944,7 @@ class BlueFireService:
                 proposal_provider=self._proposal_provider(autonomy, provider),
                 approval_store=self.product_store,
                 action_bindings=replay_catalog.action_bindings,
+                provider_artifacts=replay_catalog.provider_artifacts,
                 catalog_authority=replay_catalog_authority,
             )
             resolved_replay_plan = orchestrator.planner.compile(
@@ -4228,6 +4307,7 @@ class BlueFireService:
             if isinstance(item, Mapping)
         }
         effective_action_rows = dict(action_rows)
+        platform = str(canonical_inventory["platform"])
         package_bindings_by_action: dict[str, list[Mapping[str, Any]]] = {}
         for binding in self._catalog_snapshot.profile_action_bindings(profile):
             package_bindings_by_action.setdefault(str(binding["logical_action_id"]), []).append(
@@ -4258,6 +4338,106 @@ class BlueFireService:
                 "native_action_id": opcode,
                 "package_bindings": [dict(item) for item in bindings],
             }
+        provider_packages = {
+            (str(item["package_id"]), str(item["package_version"])): item
+            for item in self._catalog_snapshot.packages
+            if item.get("execution_model") == "wasm_provider_v1"
+        }
+        raw_provider_runtimes = canonical_inventory.get("provider_runtimes", [])
+        provider_runtimes = {
+            (str(item["kind"]), str(item["abi_version"])): item
+            for item in raw_provider_runtimes
+            if isinstance(item, Mapping)
+        }
+        provider_bindings_by_action: dict[str, list[Mapping[str, Any]]] = {}
+        for binding in self._catalog_snapshot.profile_provider_bindings(profile):
+            provider_bindings_by_action.setdefault(str(binding["logical_action_id"]), []).append(
+                binding
+            )
+        for action_id, bindings in provider_bindings_by_action.items():
+            binding = bindings[0]
+            action_contract = {
+                key: value for key, value in binding.items() if key != "logical_behavior_id"
+            }
+            if any(
+                {key: value for key, value in candidate.items() if key != "logical_behavior_id"}
+                != action_contract
+                for candidate in bindings[1:]
+            ):
+                raise RunnerReadinessError(
+                    "Active provider bindings disagree on the logical action contract."
+                )
+            package = provider_packages.get(
+                (str(binding["package_id"]), str(binding["package_version"]))
+            )
+            provider = package.get("provider") if isinstance(package, Mapping) else None
+            expected_provider = {
+                "kind": "wasm",
+                "provider_id": binding["provider_id"],
+                "abi_version": binding["abi_version"],
+                "artifact_sha256": binding["artifact_sha256"],
+                "artifact_size": binding["artifact_size"],
+                "limits": dict(binding["limits"]),
+                "provider_runtime_contract_digest": binding["provider_runtime_contract_digest"],
+            }
+            if (
+                package is None
+                or not isinstance(provider, Mapping)
+                or dict(provider) != expected_provider
+                or action_id not in package.get("action_ids", [])
+            ):
+                raise RunnerReadinessError(
+                    "Active provider package metadata changed after activation; "
+                    "review and reactivate the package."
+                )
+            runtime = provider_runtimes.get(("wasm", str(binding["abi_version"])))
+            if runtime is None:
+                raise RunnerReadinessError(
+                    "Runner provider runtime is unavailable; review the selected runner."
+                )
+            if (
+                runtime.get("kind") != "wasm"
+                or runtime.get("abi_version") != binding["abi_version"]
+                or runtime.get("readiness") != "ready"
+                or runtime.get("no_host_imports") is not True
+            ):
+                raise RunnerReadinessError(
+                    "Runner provider runtime is not ready for the active package."
+                )
+            if runtime.get("contract_digest") != binding["provider_runtime_contract_digest"]:
+                raise RunnerReadinessError(
+                    "Runner provider runtime changed after package activation; "
+                    "review and reactivate the package."
+                )
+            hard_limits = runtime.get("hard_limits")
+            if not isinstance(hard_limits, Mapping) or any(
+                hard_limits.get(name) is None or int(required) > int(hard_limits[name])
+                for name, required in binding["limits"].items()
+            ):
+                raise RunnerReadinessError(
+                    "Runner provider runtime limits do not satisfy the active package."
+                )
+            if platform not in binding["platforms"]:
+                raise RunnerReadinessError(
+                    "Runner platform is incompatible with an active provider action."
+                )
+            effective_action_rows[action_id] = {
+                "action_id": action_id,
+                "action_version": binding["package_version"],
+                "readiness": "ready",
+                "contract_digest": binding["runtime_contract_digest"],
+                "execution_model": "wasm_provider_v1",
+                "package_id": binding["package_id"],
+                "package_version": binding["package_version"],
+                "package_digest": binding["package_digest"],
+                "content_digest": binding["content_digest"],
+                "program_digest": binding["program_digest"],
+                "action_contract_digest": binding["action_contract_digest"],
+                "runtime_contract_digest": binding["runtime_contract_digest"],
+                "provider_runtime_contract_digest": binding["provider_runtime_contract_digest"],
+                "provider": expected_provider,
+                "provider_bindings": [dict(item) for item in bindings],
+            }
         missing = sorted(set(profile.enabled_actions) - set(effective_action_rows))
         if missing:
             raise RunnerReadinessError(
@@ -4272,7 +4452,6 @@ class BlueFireService:
             raise RunnerReadinessError(
                 "Runner enabled action(s) are not ready: " + ", ".join(unavailable)
             )
-        platform = str(canonical_inventory["platform"])
         if platform not in profile.platforms:
             raise RunnerReadinessError("Runner platform is outside the selected profile allowlist.")
 
@@ -5000,13 +5179,39 @@ class BlueFireService:
     def _profile(self, value: Any, mode: ExecutionMode) -> RunnerProfile | None:
         return self._profile_for_catalog(value, mode, self._catalog_snapshot)
 
+    def _profiles_for_catalog(
+        self,
+        catalog: ActionCatalogSnapshot,
+    ) -> tuple[RunnerProfile, ...]:
+        """Reconcile managed profile overlays against one exact catalog generation."""
+
+        available_actions = set(catalog.registry.action_ids)
+        return tuple(
+            catalog.profile(
+                replace(
+                    profile,
+                    enabled_actions=tuple(
+                        action_id
+                        for action_id in profile.enabled_actions
+                        if action_id in available_actions
+                    ),
+                    blocked_actions=tuple(
+                        action_id
+                        for action_id in profile.blocked_actions
+                        if action_id in available_actions
+                    ),
+                )
+            )
+            for profile in self._runner_profiles()
+        )
+
     def _profile_for_catalog(
         self,
         value: Any,
         mode: ExecutionMode,
         catalog: ActionCatalogSnapshot,
     ) -> RunnerProfile | None:
-        profiles = tuple(catalog.profile(profile) for profile in self._runner_profiles())
+        profiles = self._profiles_for_catalog(catalog)
         if value is None or value == "":
             if mode is ExecutionMode.EXECUTE:
                 return None
