@@ -18,6 +18,7 @@ _IDENTITY_MATERIAL_SIZE = 189
 _OBSERVABILITY_VARIANT_PATH = "observability/variant.bin"
 _STAGED_BUNDLE_PATHS = frozenset({"staged/bundle.json", "staged/bundle.jsonl"})
 _NATIVE_CANARY_SEED = b"bluefire-native-execution-canary-v1"
+_PROVIDER_ACTION_OUTPUT_SCHEMA = "bluefire.provider-action-output.v1"
 
 
 class RunnerAdapterError(ValueError):
@@ -184,22 +185,27 @@ def _provider_output_value(spec: Mapping[str, Any], value: Any, context: str) ->
 
 
 def _provider_outputs(binding: Mapping[str, Any], value: Any) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
-        raise RunnerAdapterError("successful provider output must be an object")
+    if not isinstance(value, Mapping) or set(value) != {"schema_version", "outputs"}:
+        raise RunnerAdapterError("successful provider result must have exact ABI wrapper fields")
+    if value.get("schema_version") != _PROVIDER_ACTION_OUTPUT_SCHEMA:
+        raise RunnerAdapterError("successful provider result has an unsupported ABI schema")
+    outputs = value.get("outputs")
+    if not isinstance(outputs, Mapping):
+        raise RunnerAdapterError("successful provider outputs must be an object")
     raw_specs = binding.get("outputs")
     if not isinstance(raw_specs, list):
         raise RunnerAdapterError("provider binding has no signed output contract")
     specs = {str(spec.get("name")): spec for spec in raw_specs if isinstance(spec, Mapping)}
-    if len(specs) != len(raw_specs) or set(value) - set(specs):
+    if len(specs) != len(raw_specs) or set(outputs) - set(specs):
         raise RunnerAdapterError("provider outputs do not match the signed contract")
     missing = [
-        name for name, spec in specs.items() if spec.get("required") is True and name not in value
+        name for name, spec in specs.items() if spec.get("required") is True and name not in outputs
     ]
     if missing:
         raise RunnerAdapterError("provider outputs omit a required signed artifact")
     return {
         name: _provider_output_value(specs[name], item, f"provider output {name}")
-        for name, item in value.items()
+        for name, item in outputs.items()
     }
 
 

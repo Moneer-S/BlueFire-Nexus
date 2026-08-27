@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from typing import Any
 
 import pytest
 
@@ -89,31 +90,67 @@ def test_provider_adapter_refuses_unsigned_or_mistyped_parameters(
 
 
 def test_provider_adapter_maps_only_declared_typed_outputs() -> None:
-    output = {
+    outputs = {
         "result": {
             "type": "artifact.provider.portable-probe.v1",
             "provider": "independent",
             "status": "ready",
         }
     }
+    result: dict[str, Any] = {
+        "schema_version": "bluefire.provider-action-output.v1",
+        "outputs": outputs,
+    }
 
     assert (
         RunnerActionAdapter().logical_outputs(
             _step(),
             bound_inputs={},
-            runner_output=output,
+            runner_output=result,
             receipt_ids=(),
         )
-        == output
+        == outputs
     )
 
-    substituted = copy.deepcopy(output)
-    substituted["result"]["type"] = "artifact.provider.substituted.v1"
+    substituted = copy.deepcopy(result)
+    substituted["outputs"]["result"]["type"] = "artifact.provider.substituted.v1"
     with pytest.raises(RunnerAdapterError, match="artifact type"):
         RunnerActionAdapter().logical_outputs(
             _step(),
             bound_inputs={},
             runner_output=substituted,
+            receipt_ids=(),
+        )
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"outputs": {}},
+        {"schema_version": "bluefire.provider-action-output.v1"},
+        {
+            "schema_version": "bluefire.provider-action-output.v1",
+            "outputs": {},
+            "extra": True,
+        },
+        {
+            "schema_version": "bluefire.provider-action-output.v2",
+            "outputs": {},
+        },
+        {
+            "schema_version": "bluefire.provider-action-output.v1",
+            "outputs": [],
+        },
+    ],
+)
+def test_provider_adapter_refuses_malformed_abi_output_wrapper(
+    result: dict[str, object],
+) -> None:
+    with pytest.raises(RunnerAdapterError, match="wrapper|schema|outputs"):
+        RunnerActionAdapter().logical_outputs(
+            _step(),
+            bound_inputs={},
+            runner_output=result,
             receipt_ids=(),
         )
 

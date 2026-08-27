@@ -597,7 +597,7 @@ pub fn provider_action_contract_digest(binding: &ProviderExecutionBinding) -> St
             "inputs": inputs,
             "outputs": outputs,
             "parameters": parameters,
-            "capabilities": &binding.capabilities,
+            "capabilities": ["native.execution"],
             "safety_tier": binding.safety_tier,
             "platforms": &binding.platforms,
             "mutates": binding.mutates,
@@ -764,6 +764,10 @@ mod tests {
     fn provider_platforms_use_wire_order_and_semver_metadata_is_strict() {
         let mut binding = test_binding();
         binding.platforms = vec![Platform::Linux, Platform::Macos, Platform::Windows];
+        assert_eq!(
+            provider_action_contract_digest(&binding),
+            "sha256:0cbd16c3b86228a54447e7f0567983dd207aa5756e174adcfb14668033f49d7a"
+        );
         binding.action_contract_digest = provider_action_contract_digest(&binding);
         binding.runtime_contract_digest = runtime_action_contract_digest(&binding);
         binding.program_digest = provider_program_digest(&binding);

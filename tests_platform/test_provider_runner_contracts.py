@@ -4,11 +4,17 @@ import copy
 import hashlib
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+from bluefire.action_provider_packages import provider_action_contract_digest
 from bluefire.config import load_config
 from bluefire.contracts import ActionDefinition
+from bluefire.provider_runner_contracts import (
+    ProviderRunnerContractError,
+    canonical_provider_binding,
+)
 from bluefire.runner_contracts import (
     RunnerContractError,
     build_execution_manifest,
@@ -70,10 +76,10 @@ def _action() -> ActionDefinition:
     )
 
 
-def _binding() -> tuple[dict[str, object], dict[str, object]]:
+def _binding() -> tuple[dict[str, Any], dict[str, Any]]:
     artifact = b"\x00asm\x01\x00\x00\x00"
     artifact_digest = "sha256:" + hashlib.sha256(artifact).hexdigest()
-    action_digest = "sha256:" + "5" * 64
+    action_digest = provider_action_contract_digest(_action())
     program = {
         "schema_version": "bluefire.wasm-provider-program.v1",
         "provider_id": "independent.portable-provider.v1",
@@ -108,7 +114,7 @@ def _binding() -> tuple[dict[str, object], dict[str, object]]:
         "mutates": False,
         "cleanup_action_id": None,
     }
-    binding: dict[str, object] = {
+    binding: dict[str, Any] = {
         "schema_version": "bluefire.runner-provider-execution-binding.v1",
         "catalog_generation": 8,
         "catalog_digest": "sha256:" + "1" * 64,
@@ -142,7 +148,7 @@ def _binding() -> tuple[dict[str, object], dict[str, object]]:
             "fuel": 1_000_000,
         },
     }
-    artifact_row: dict[str, object] = {
+    artifact_row: dict[str, Any] = {
         "artifact_sha256": artifact_digest,
         "artifact_size": len(artifact),
         "artifact_hex": artifact.hex(),
@@ -150,7 +156,7 @@ def _binding() -> tuple[dict[str, object], dict[str, object]]:
     return binding, artifact_row
 
 
-def _profile(tmp_path: Path) -> tuple[dict[str, object], ActionDefinition, dict[str, object]]:
+def _profile(tmp_path: Path) -> tuple[dict[str, Any], ActionDefinition, dict[str, Any]]:
     config = load_config(ROOT / "config" / "bluefire.example.yaml")
     configured = next(item for item in config.runner_profiles if item.mode.value == "execute")
     configured = replace(configured, enabled_actions=configured.enabled_actions + (ACTION_ID,))
@@ -187,6 +193,74 @@ def test_provider_artifact_is_private_to_the_sealed_profile(tmp_path: Path) -> N
     assert manifest["provider_binding"] == binding
     assert "execution_binding" not in manifest
     assert "artifact_hex" not in str(manifest)
+
+
+def test_provider_binding_reconstructs_exact_signed_action_contract() -> None:
+    binding, _artifact = _binding()
+
+    canonical = canonical_provider_binding(binding, context="provider binding")
+
+    assert canonical["action_contract_digest"] == provider_action_contract_digest(_action())
+
+    substituted = copy.deepcopy(binding)
+    substituted["action_contract_digest"] = "sha256:" + "7" * 64
+    substituted["program_digest"] = content_hash(
+        {
+            "schema_version": "bluefire.wasm-provider-program.v1",
+            "provider_id": substituted["provider_id"],
+            "action_contract_digest": substituted["action_contract_digest"],
+        }
+    )
+    with pytest.raises(ProviderRunnerContractError, match="action_contract_digest"):
+        canonical_provider_binding(substituted, context="provider binding")
+
+
+def test_provider_binding_refuses_bounds_on_nonnumeric_parameters() -> None:
+    binding, _artifact = _binding()
+    parameter = cast(list[dict[str, Any]], binding["parameters"])[0]
+    parameter["minimum"] = 1.0
+
+    with pytest.raises(ProviderRunnerContractError, match=r"parameters\[0\].*invalid"):
+        canonical_provider_binding(binding, context="provider binding")
+
+
+def test_provider_binding_refuses_duplicate_unhashable_enum_values() -> None:
+    binding, _artifact = _binding()
+    parameter = cast(list[dict[str, Any]], binding["parameters"])[0]
+    parameter.update(
+        {
+            "type": "string_list",
+            "default": None,
+            "enum": [["release"], ["release"]],
+        }
+    )
+
+    with pytest.raises(ProviderRunnerContractError, match="enum contains duplicates"):
+        canonical_provider_binding(binding, context="provider binding")
+
+
+def test_provider_binding_preserves_no_float_signed_parameter_values() -> None:
+    binding, _artifact = _binding()
+    parameter = cast(list[dict[str, Any]], binding["parameters"])[0]
+    parameter.update(
+        {
+            "type": "number",
+            "default": 1.5,
+            "enum": [],
+        }
+    )
+
+    with pytest.raises(ProviderRunnerContractError, match="default is invalid"):
+        canonical_provider_binding(binding, context="provider binding")
+
+
+def test_provider_binding_refuses_bounds_outside_exact_json_integer_range() -> None:
+    binding, _artifact = _binding()
+    parameter = cast(list[dict[str, Any]], binding["parameters"])[0]
+    parameter["maximum"] = float(1 << 53)
+
+    with pytest.raises(ProviderRunnerContractError, match=r"parameters\[0\].*invalid"):
+        canonical_provider_binding(binding, context="provider binding")
 
 
 @pytest.mark.parametrize("target", ["profile_digest", "artifact", "manifest_binding"])

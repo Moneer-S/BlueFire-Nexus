@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 from typing import Any, Mapping, Sequence
 
-from .util import content_hash, json_clone
+from .util import canonical_json_bytes, content_hash, json_clone
 
 
 class ProviderRunnerContractError(ValueError):
@@ -15,10 +16,12 @@ class ProviderRunnerContractError(ValueError):
 
 PROVIDER_BINDING_SCHEMA = "bluefire.runner-provider-execution-binding.v1"
 PROVIDER_PROGRAM_SCHEMA = "bluefire.wasm-provider-program.v1"
+PROVIDER_ACTION_CONTRACT_SCHEMA = "bluefire.provider-action-contract.v1"
 PROVIDER_RUNTIME_ACTION_CONTRACT_SCHEMA = "bluefire.provider-runtime-action-contract.v1"
 PROVIDER_ABI_V1 = "bluefire.provider-abi.v1"
 MAX_PROVIDER_ARTIFACT_BYTES = 64 * 1024
 MAX_PROVIDER_MODULE_BYTES = 2 * 1024 * 1024
+MAX_PROVIDER_SAFE_INTEGER = (1 << 53) - 1
 
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PACKAGE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
@@ -105,6 +108,45 @@ def _bounded_json(value: Any, context: str) -> Any:
     return cloned
 
 
+def _valid_provider_bound(value: Any) -> bool:
+    return bool(
+        value is None
+        or (
+            not isinstance(value, bool)
+            and (
+                isinstance(value, int)
+                or (isinstance(value, float) and math.isfinite(value) and value.is_integer())
+            )
+            and -MAX_PROVIDER_SAFE_INTEGER <= value <= MAX_PROVIDER_SAFE_INTEGER
+        )
+    )
+
+
+def _valid_signed_parameter_value(parameter_type: str, value: Any) -> bool:
+    if parameter_type == "string":
+        return isinstance(value, str)
+    if parameter_type in {"integer", "number"}:
+        # The signed package parser rejects all JSON floating-point values
+        # before an ActionDefinition reaches this boundary.
+        return isinstance(value, int) and not isinstance(value, bool)
+    if parameter_type == "boolean":
+        return isinstance(value, bool)
+    if parameter_type == "string_list":
+        return isinstance(value, list) and all(isinstance(item, str) for item in value)
+    return False
+
+
+def _within_provider_bounds(
+    parameter_type: str,
+    value: Any,
+    minimum: Any,
+    maximum: Any,
+) -> bool:
+    if parameter_type not in {"integer", "number"}:
+        return True
+    return bool((minimum is None or value >= minimum) and (maximum is None or value <= maximum))
+
+
 def _canonical_io_specs(value: Any, context: str, *, allow_empty: bool) -> list[dict[str, Any]]:
     if not isinstance(value, list) or len(value) > 64 or (not allow_empty and not value):
         raise ProviderRunnerContractError(f"{context} must be a bounded array")
@@ -145,31 +187,52 @@ def _canonical_parameters(value: Any, context: str) -> list[dict[str, Any]]:
         enum = raw.get("enum")
         minimum = raw.get("minimum")
         maximum = raw.get("maximum")
+        numeric = isinstance(parameter_type, str) and parameter_type in {"integer", "number"}
+
+        # Signed package JSON prohibits floating-point tokens. ActionDefinition
+        # currently normalizes signed integer bounds to integral floats, so the
+        # runner boundary accepts only that lossless derived representation.
         if (
             name in names
+            or not isinstance(parameter_type, str)
             or parameter_type not in _PARAMETER_TYPES
             or not isinstance(required, bool)
             or not isinstance(enum, list)
             or len(enum) > 64
-            or (
-                minimum is not None
-                and (isinstance(minimum, bool) or not isinstance(minimum, (int, float)))
-            )
-            or (
-                maximum is not None
-                and (isinstance(maximum, bool) or not isinstance(maximum, (int, float)))
-            )
+            or (not numeric and (minimum is not None or maximum is not None))
+            or not _valid_provider_bound(minimum)
+            or not _valid_provider_bound(maximum)
             or (minimum is not None and maximum is not None and minimum > maximum)
         ):
             raise ProviderRunnerContractError(f"{context}[{index}] is invalid")
+        default = _bounded_json(raw.get("default"), f"{context}[{index}].default")
+        canonical_enum = _bounded_json(enum, f"{context}[{index}].enum")
+
+        if default is not None and (
+            not _valid_signed_parameter_value(parameter_type, default)
+            or not _within_provider_bounds(parameter_type, default, minimum, maximum)
+        ):
+            raise ProviderRunnerContractError(f"{context}[{index}].default is invalid")
+        enum_keys: set[bytes] = set()
+        for enum_index, item in enumerate(canonical_enum):
+            if not _valid_signed_parameter_value(
+                parameter_type, item
+            ) or not _within_provider_bounds(parameter_type, item, minimum, maximum):
+                raise ProviderRunnerContractError(
+                    f"{context}[{index}].enum[{enum_index}] is invalid"
+                )
+            encoded = canonical_json_bytes(item)
+            if encoded in enum_keys:
+                raise ProviderRunnerContractError(f"{context}[{index}].enum contains duplicates")
+            enum_keys.add(encoded)
         names.add(name)
         result.append(
             {
                 "name": name,
                 "type": parameter_type,
                 "required": required,
-                "default": _bounded_json(raw.get("default"), f"{context}[{index}].default"),
-                "enum": _bounded_json(enum, f"{context}[{index}].enum"),
+                "default": default,
+                "enum": canonical_enum,
                 "minimum": minimum,
                 "maximum": maximum,
             }
@@ -271,6 +334,24 @@ def canonical_provider_binding(value: Mapping[str, Any], *, context: str) -> dic
     }
     if content_hash(program) != digests["program_digest"]:
         raise ProviderRunnerContractError(f"{context}.program_digest does not match its program")
+    action_contract = {
+        "schema_version": PROVIDER_ACTION_CONTRACT_SCHEMA,
+        "action": {
+            "id": identifiers["logical_action_id"],
+            "inputs": inputs,
+            "outputs": outputs,
+            "parameters": parameters,
+            "capabilities": ["native.execution"],
+            "safety_tier": "safe",
+            "platforms": list(raw_platforms),
+            "mutates": False,
+            "cleanup_action_id": None,
+        },
+    }
+    if content_hash(action_contract) != digests["action_contract_digest"]:
+        raise ProviderRunnerContractError(
+            f"{context}.action_contract_digest does not match its contract"
+        )
     runtime_contract = {
         "schema_version": PROVIDER_RUNTIME_ACTION_CONTRACT_SCHEMA,
         "logical_action_id": identifiers["logical_action_id"],
@@ -378,7 +459,9 @@ def canonical_provider_artifacts(
 __all__ = [
     "MAX_PROVIDER_ARTIFACT_BYTES",
     "MAX_PROVIDER_MODULE_BYTES",
+    "MAX_PROVIDER_SAFE_INTEGER",
     "PROVIDER_ABI_V1",
+    "PROVIDER_ACTION_CONTRACT_SCHEMA",
     "PROVIDER_BINDING_SCHEMA",
     "PROVIDER_PROGRAM_SCHEMA",
     "PROVIDER_RUNTIME_ACTION_CONTRACT_SCHEMA",

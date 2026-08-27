@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .action_package_errors import ActionPackageError
-from .contracts import ActionDefinition, SafetyTier
+from .contracts import ActionDefinition, ParameterType, SafetyTier
 from .util import canonical_json_bytes, content_hash
 
 ACTION_PACKAGE_V2_SCHEMA = "bluefire.action-package.v2"
@@ -31,6 +31,7 @@ MAX_PROVIDER_JSON_BYTES = 1024 * 1024
 MAX_PROVIDER_FUEL = 100_000_000
 
 _MAX_INTEGER = (1 << 63) - 1
+_MAX_SAFE_INTEGER = (1 << 53) - 1
 _STABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\.v[1-9][0-9]*$")
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _LOWER_HEX = re.compile(r"^(?:[0-9a-f]{2})+$")
@@ -275,6 +276,28 @@ def validate_provider_action(action: ActionDefinition, context: str) -> None:
         raise ActionPackageError(
             f"{context} provider action capabilities must be exactly native.execution"
         )
+    for parameter in action.parameters:
+        numeric = parameter.type in {ParameterType.INTEGER, ParameterType.NUMBER}
+        if not numeric and (parameter.minimum is not None or parameter.maximum is not None):
+            raise ActionPackageError(
+                f"{context} provider parameter {parameter.name} has nonnumeric bounds"
+            )
+        for bound in (parameter.minimum, parameter.maximum):
+            if bound is not None and (
+                not float(bound).is_integer()
+                or not -_MAX_SAFE_INTEGER <= bound <= _MAX_SAFE_INTEGER
+            ):
+                raise ActionPackageError(
+                    f"{context} provider parameter {parameter.name} has an unsafe numeric bound"
+                )
+        enum_values: set[bytes] = set()
+        for value in parameter.enum:
+            encoded = canonical_json_bytes(value)
+            if encoded in enum_values:
+                raise ActionPackageError(
+                    f"{context} provider parameter {parameter.name} enum contains duplicates"
+                )
+            enum_values.add(encoded)
 
 
 @dataclass(frozen=True, slots=True)

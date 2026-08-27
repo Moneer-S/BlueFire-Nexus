@@ -377,6 +377,74 @@ def test_provider_package_rejects_cross_contract_mutations(
         )
 
 
+def test_provider_package_rejects_ambiguous_parameter_contracts() -> None:
+    private_key = Ed25519PrivateKey.generate()
+
+    def resignable_document() -> dict[str, Any]:
+        document = {"manifest": _manifest(), "payload": _payload()}
+        definition = document["payload"]["actions"][0]["definition"]
+        document["payload"]["actions"][0]["program"]["action_contract_digest"] = (
+            provider_action_contract_digest(
+                ActionDefinition.from_mapping(definition, "provider action")
+            )
+        )
+        return document
+
+    nonnumeric = {"manifest": _manifest(), "payload": _payload()}
+    nonnumeric_parameter = nonnumeric["payload"]["actions"][0]["definition"]["parameters"][0]
+    nonnumeric_parameter.update(
+        {
+            "type": "string",
+            "default": "one",
+            "enum": ["one"],
+            "minimum": 1,
+            "maximum": 3,
+        }
+    )
+    definition = nonnumeric["payload"]["actions"][0]["definition"]
+    nonnumeric["payload"]["actions"][0]["program"]["action_contract_digest"] = (
+        provider_action_contract_digest(
+            ActionDefinition.from_mapping(definition, "provider action")
+        )
+    )
+    with pytest.raises(ActionPackageError, match="nonnumeric bounds"):
+        _signed(
+            private_key,
+            manifest=nonnumeric["manifest"],
+            payload=nonnumeric["payload"],
+        )
+
+    duplicate = resignable_document()
+    duplicate["payload"]["actions"][0]["definition"]["parameters"][0]["enum"] = [1, 1]
+    duplicate_definition = duplicate["payload"]["actions"][0]["definition"]
+    duplicate["payload"]["actions"][0]["program"]["action_contract_digest"] = (
+        provider_action_contract_digest(
+            ActionDefinition.from_mapping(duplicate_definition, "provider action")
+        )
+    )
+    with pytest.raises(ActionPackageError, match="enum contains duplicates"):
+        _signed(
+            private_key,
+            manifest=duplicate["manifest"],
+            payload=duplicate["payload"],
+        )
+
+    unsafe = resignable_document()
+    unsafe["payload"]["actions"][0]["definition"]["parameters"][0]["maximum"] = 1 << 53
+    unsafe_definition = unsafe["payload"]["actions"][0]["definition"]
+    unsafe["payload"]["actions"][0]["program"]["action_contract_digest"] = (
+        provider_action_contract_digest(
+            ActionDefinition.from_mapping(unsafe_definition, "provider action")
+        )
+    )
+    with pytest.raises(ActionPackageError, match="unsafe numeric bound"):
+        _signed(
+            private_key,
+            manifest=unsafe["manifest"],
+            payload=unsafe["payload"],
+        )
+
+
 @pytest.mark.parametrize(
     ("inventory", "message"),
     [
