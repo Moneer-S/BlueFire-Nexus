@@ -127,6 +127,7 @@ _STEP_IMPLEMENTATION_ID = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _EXECUTE_READINESS_KEY = "_execute_readiness"
 _ACTION_CATALOG_AUTHORITY_KEY = "_action_catalog_authority"
 _EXECUTE_READINESS_MAX_AGE_SECONDS = 15 * 60
+_AVAILABLE_PER_RUN_COLLECTORS = frozenset({"collector.filesystem.sandbox.v1"})
 
 
 def _default_ai_provider_factory(config: AIConfig, provider_id: str) -> AIProvider:
@@ -1513,6 +1514,8 @@ class BlueFireService:
         profile = self._profile(request.get("runner_profile_id"), mode)
         autonomy, provider = self._ai_context(request)
         action_implementations = self._action_implementations(request, mode=mode)
+        collector_ids = self._collector_ids(request, mode=mode)
+        collector_binding = self._collector_binding(collector_ids)
         approval = self._approval(request, required=False)
         runner: RunnerTransport | None = None
         runner_problem: str | None = None
@@ -1584,6 +1587,8 @@ class BlueFireService:
             for step in report["plan"].get("steps", [])
             if isinstance(step, Mapping) and isinstance(step.get("action_id"), str)
         }
+        report["collectors"] = list(collector_ids)
+        report["collector_binding"] = collector_binding
         report["safety_tier"] = self._maximum_tier(scenario)
         report["approval"] = (
             "present"
@@ -1611,6 +1616,7 @@ class BlueFireService:
                 target_scope=target_scope,
                 autonomy=autonomy,
                 ai_provider=provider,
+                context={"collector_binding": collector_binding},
                 runner_readiness=runner_readiness,
                 catalog_authority=self._catalog_snapshot.to_dict(),
             )
@@ -1658,6 +1664,8 @@ class BlueFireService:
         profile = self._profile(request.get("runner_profile_id"), mode)
         autonomy, provider = self._ai_context(request)
         action_implementations = self._action_implementations(request, mode=mode)
+        collector_ids = self._collector_ids(request, mode=mode)
+        collector_binding = self._collector_binding(collector_ids)
         approval_record = self._stored_approval(request, mode=mode)
         approved_by = (
             str(approval_record["approved_by"])
@@ -1737,6 +1745,7 @@ class BlueFireService:
                     ai_provider=provider,
                     approved_by=approved_by,
                     orchestrator=orchestrator,
+                    context={"collector_binding": collector_binding},
                     runner_readiness=runner_readiness,
                     action_implementations=resolved_action_implementations,
                 )
@@ -1783,6 +1792,7 @@ class BlueFireService:
                 ai_provider=provider,
                 action_implementations=resolved_action_implementations,
                 runner_readiness=runner_readiness,
+                collector_ids=collector_ids,
                 checkpoint=tracked_checkpoint,
                 cancel_event=cancel_event,
             )
@@ -5315,6 +5325,70 @@ class BlueFireService:
                 )
             result[step_id] = action_id
         return result
+
+    def _collector_ids(
+        self,
+        request: Mapping[str, Any],
+        *,
+        mode: ExecutionMode,
+    ) -> tuple[str, ...]:
+        if mode is ExecutionMode.SIMULATE:
+            if "collectors" in request and request.get("collectors") not in (None, []):
+                raise APIError(
+                    HTTPStatus.BAD_REQUEST,
+                    "collectors_invalid",
+                    "Simulate does not accept collector selections.",
+                )
+            return ()
+        value = request.get("collectors")
+        if value is None:
+            value = ["collector.filesystem.sandbox.v1"]
+        if (
+            not isinstance(value, list)
+            or not value
+            or len(value) > len(_AVAILABLE_PER_RUN_COLLECTORS)
+        ):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "collectors_invalid",
+                "Execute collectors must be a bounded list of available collector IDs.",
+            )
+        collector_ids: list[str] = []
+        for item in value:
+            collector_id = _management_identifier(item, "collector ID")
+            if collector_id not in _AVAILABLE_PER_RUN_COLLECTORS:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "collector_unavailable",
+                    "Requested collector is not available for per-run Execute binding.",
+                    [collector_id],
+                )
+            try:
+                resource = self.product_store.get_resource("collector", collector_id)
+            except ProductStoreError as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "collector_unavailable",
+                    "Requested collector is not registered for per-run Execute binding.",
+                    [collector_id],
+                ) from exc
+            if resource.get("status") != "available_per_run":
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "collector_unavailable",
+                    "Requested collector is not currently available for per-run Execute binding.",
+                    [collector_id],
+                )
+            collector_ids.append(collector_id)
+        return tuple(dict.fromkeys(collector_ids))
+
+    @staticmethod
+    def _collector_binding(collector_ids: Sequence[str]) -> Mapping[str, Any]:
+        return {
+            "schema_version": "bluefire.collector-binding.v1",
+            "collectors": list(collector_ids),
+            "authority": "declared-per-run-observable-artifacts",
+        }
 
 
 def _management_identifier(value: Any, context: str) -> str:

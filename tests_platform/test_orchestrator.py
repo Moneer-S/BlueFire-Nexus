@@ -663,6 +663,7 @@ def _approval_kwargs(
     target_scope: Mapping[str, Any],
     approved_by: str = "operator@example.test",
     action_implementations: Mapping[str, str] | None = None,
+    context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     approval_store = orchestrator.approval_store
     assert isinstance(approval_store, ProductStore)
@@ -681,6 +682,7 @@ def _approval_kwargs(
         target_scope=target_scope,
         autonomy=plan.autonomy,
         ai_provider=plan.ai_provider,
+        context=context,
     )
     expires_at = (datetime.now(timezone.utc) + timedelta(minutes=15)).isoformat()
     pending = approval_store.create_approval_request(
@@ -1202,6 +1204,42 @@ def test_missing_independent_observation_is_explicit_unknown_evidence(tmp_path: 
     assert delivery[0]["producer"] == "bluefire-rust-runner"
     assert delivery[1]["producer"] == "sandbox-observer.v1"
     assert delivery[1]["content"]["artifact_type"] == "evidence_gap"
+    assert delivery[1]["parent_evidence_ids"] == [delivery[0]["evidence_id"]]
+
+
+def test_execute_observable_paths_can_be_bound_to_declared_collector(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path, StructuredFakeRunner())
+    scenario = load_scenario(SCENARIO_PATH)
+    profile = _execute_profile()
+    collector_ids = ("collector.filesystem.sandbox.v1",)
+    collector_binding = {
+        "schema_version": "bluefire.collector-binding.v1",
+        "collectors": list(collector_ids),
+        "authority": "declared-per-run-observable-artifacts",
+    }
+
+    result = orchestrator.run(
+        scenario,
+        mode=ExecutionMode.EXECUTE,
+        profile=profile,
+        sandbox_root=tmp_path / "sandbox",
+        target_scope=FULL_TARGET_SCOPE,
+        collector_ids=collector_ids,
+        **_approval_kwargs(
+            orchestrator,
+            scenario=scenario,
+            profile=profile,
+            target_scope=FULL_TARGET_SCOPE,
+            context={"collector_binding": collector_binding},
+        ),
+    )
+
+    delivery = _evidence_by_step(result, "create_fixture")
+    assert [row["provenance"] for row in delivery] == ["executed", "unknown"]
+    assert delivery[0]["producer"] == "bluefire-rust-runner"
+    assert delivery[1]["producer"] == "collector.filesystem.sandbox.v1"
+    assert delivery[1]["content"]["artifact_type"] == "evidence_gap"
+    assert delivery[1]["content"]["requested_artifact"] == "fixtures/input.jsonl"
     assert delivery[1]["parent_evidence_ids"] == [delivery[0]["evidence_id"]]
 
 

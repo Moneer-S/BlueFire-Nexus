@@ -813,6 +813,72 @@ def test_default_runner_binding_never_bootstraps_or_starts_implicitly(tmp_path: 
     service.close()
 
 
+def test_execute_preflight_binds_declared_per_run_collectors(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_factory=lambda _profile: (ReadyInventoryRunner(), sandbox),
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    request = {
+        "scenario_id": "scenario.sandbox.research.chain.v1",
+        "mode": "execute",
+        "runner_profile_id": profile.id,
+        "autonomy": "off",
+        "target_scope": {"scope_refs": list(profile.scope)},
+        "collectors": ["collector.filesystem.sandbox.v1"],
+    }
+
+    report = service.preflight(request)
+
+    assert report["collectors"] == ["collector.filesystem.sandbox.v1"]
+    assert report["collector_binding"] == {
+        "schema_version": "bluefire.collector-binding.v1",
+        "collectors": ["collector.filesystem.sandbox.v1"],
+        "authority": "declared-per-run-observable-artifacts",
+    }
+    assert isinstance(report["approval_binding"], Mapping)
+    service.close()
+
+
+def test_execute_preflight_rejects_unavailable_collector_selection(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_factory=lambda _profile: (ReadyInventoryRunner(), sandbox),
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    with pytest.raises(APIError, match="collector_unavailable"):
+        service.preflight(
+            {
+                "scenario_id": "scenario.sandbox.research.chain.v1",
+                "mode": "execute",
+                "runner_profile_id": profile.id,
+                "autonomy": "off",
+                "target_scope": {"scope_refs": list(profile.scope)},
+                "collectors": ["collector.sysmon-eventlog.v1"],
+            }
+        )
+    with pytest.raises(APIError, match="collectors_invalid"):
+        service.preflight(
+            {
+                "scenario_id": "scenario.sandbox.research.chain.v1",
+                "mode": "simulate",
+                "autonomy": "off",
+                "collectors": ["collector.filesystem.sandbox.v1"],
+            }
+        )
+    service.close()
+
+
 def test_execute_job_cancel_reaches_exact_task_aware_runner(tmp_path: Path) -> None:
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()

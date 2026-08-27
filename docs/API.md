@@ -260,7 +260,13 @@ exactly this versioned, non-authoritative document:
 
 Unknown setting keys, missing or extra preference fields, unknown schema versions, and invalid enum
 values are rejected. These preferences never define profile, scope, action, runner, approval,
-cleanup, budget, collector, detection-backend, provider, model, endpoint, or credential authority.
+cleanup, budget, detection-backend, provider, model, endpoint, or credential authority.
+
+Execute run requests may include a bounded `collectors` list. The service currently accepts only
+`collector.filesystem.sandbox.v1` as an available per-run collector, defaults Execute to that
+collector when omitted, binds the resulting collector selection into preflight/approval, and rejects
+Simulate collector selections. Managed collector resources remain metadata; saving a collector
+record does not dynamically activate code.
 
 ### Saved scenario versions
 

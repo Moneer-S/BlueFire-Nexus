@@ -56,12 +56,17 @@ const defaultRunConfig: RunConfiguration = {
   mode: "simulate", autonomy: "off", provider: "deterministic-offline.v1", model: "deterministic-planner.v1", endpoint: "",
   profileId: "sandbox-simulate.v1", runnerIds: [], scopeRefs: ["sandbox.workspace"], safetyTier: "controlled",
   approvalPolicy: "profile", approved: false, approvedBy: "", maxSeconds: 120, maxSteps: 20, maxBytes: 8_388_608,
-  collectors: ["runner-local", "filesystem-observer"], detectionBackends: ["structured-matcher"],
+  collectors: ["collector.filesystem.sandbox.v1"], detectionBackends: ["structured-matcher"],
   cleanupPolicy: "always", counterfactual: "after_block", fixtureMode: true,
   actionImplementations: {},
 };
 
 function strings(value: unknown, fallback: string[]) { return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : fallback; }
+function collectors(value: unknown) {
+  const allowed = new Set(["collector.filesystem.sandbox.v1"]);
+  const selected = strings(value, defaultRunConfig.collectors).filter((item) => allowed.has(item));
+  return selected.length ? selected : defaultRunConfig.collectors;
+}
 function finite(value: unknown, fallback: number) { return typeof value === "number" && Number.isFinite(value) ? value : fallback; }
 function oneOf<T extends string>(value: unknown, options: readonly T[], fallback: T): T { return typeof value === "string" && options.includes(value as T) ? value as T : fallback; }
 function normalizeRunConfig(value: Partial<RunConfiguration>): RunConfiguration {
@@ -78,7 +83,7 @@ function normalizeRunConfig(value: Partial<RunConfiguration>): RunConfiguration 
     approvalPolicy: oneOf(value.approvalPolicy, ["profile", "every_restricted", "every_action"] as const, defaultRunConfig.approvalPolicy),
     approved: value.approved === true, approvedBy: typeof value.approvedBy === "string" ? value.approvedBy : "",
     maxSeconds: finite(value.maxSeconds, defaultRunConfig.maxSeconds), maxSteps: finite(value.maxSteps, defaultRunConfig.maxSteps), maxBytes: finite(value.maxBytes, defaultRunConfig.maxBytes),
-    collectors: strings(value.collectors, defaultRunConfig.collectors), detectionBackends: strings(value.detectionBackends, defaultRunConfig.detectionBackends),
+    collectors: collectors(value.collectors), detectionBackends: strings(value.detectionBackends, defaultRunConfig.detectionBackends),
     cleanupPolicy: oneOf(value.cleanupPolicy, ["always", "on_success", "manual"] as const, defaultRunConfig.cleanupPolicy),
     counterfactual: oneOf(value.counterfactual, ["disabled", "after_block", "always_preview"] as const, defaultRunConfig.counterfactual),
     fixtureMode: typeof value.fixtureMode === "boolean" ? value.fixtureMode : defaultRunConfig.fixtureMode,

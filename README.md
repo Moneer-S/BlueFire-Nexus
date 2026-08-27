@@ -60,7 +60,7 @@ AI does not create a third mode. Enabling `assist` or `auto` cannot widen target
 - Eighteen compiled Rust actions with versioned inventory descriptors, strict parameter schemas, resource bounds, structured results, and cleanup receipts.
 - Seven sanitized scenario graphs, including blocked-path fallback, platform discovery, archive/staging, detection regression, AI-adaptive, restricted-tier canary, and representative operator-loop examples.
 - A deterministic offline AI provider and an OpenAI-compatible Responses provider using strict structured output, timeouts, retries, token limits, redaction, and deterministic fallback.
-- A bounded filesystem observer and JSONL fixture-log collector, plus honest readiness descriptors for optional auditd, Sysmon/Event Log, packet-capture, and SIEM adapters.
+- A bounded filesystem observer and JSONL fixture-log collector, with Execute binding the ready filesystem collector into preflight/approval for declared sandbox artifacts, plus honest readiness descriptors for optional auditd, Sysmon/Event Log, packet-capture, and SIEM adapters.
 - pySigma parsing and YARA compilation/fixture exercise when their optional pinned packages are installed; SPL receives structural checks only.
 - Content-addressed evidence records, hash-chained run events, finalized bundle manifests, exact/variant replay, and multi-run comparison.
 - A migrated local SQLite product store for secret-safe settings, content-addressed scenario versions, typed resources, approval/job state, restart recovery, and indexed run summaries.
@@ -449,7 +449,7 @@ Security and release checks should also include detect-secrets/Gitleaks, staged-
 - The action pack is intentionally bounded to runner-owned fixtures, discovery, staging/archive, local export, authenticated loopback transport, public fixed-path canaries, reversible observability comparison, bounded in-process computation, and cleanup. It has no general shell or arbitrary program execution.
 - Plugin activation inventories reviewed metadata only; it does not download/load a package or add dynamic behaviors/actions.
 - One restricted persistence-detection canary is available only through a dedicated narrow profile; real host persistence changes and the credential, lateral-movement, and defense-evasion research families remain unavailable for Execute.
-- Built-in independent observation is limited to declared sandbox files and disposable JSONL fixtures. Optional audit/SIEM collectors report unavailable until separately implemented and configured.
+- Built-in independent observation is limited to declared sandbox files and disposable JSONL fixtures. Execute defaults to the ready filesystem collector and rejects unavailable collector selections; optional audit/SIEM collectors report unavailable until separately implemented and configured.
 - The Detection Lab backend offers candidate and validator primitives; backend-specific Sigma conversion and production SPL validation are not included.
 - Real-account AI transport is not part of offline acceptance, and no single dynamically verified product journey currently demonstrates Auto mutation through replay and comparison.
 - Restart-from-node replay carries normalized prior artifact metadata but does not materialize a content-addressed trusted checkpoint in a fresh Execute workspace.

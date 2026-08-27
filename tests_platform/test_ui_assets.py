@@ -204,13 +204,14 @@ def test_run_ui_separates_preview_preferences_from_canonical_preflight() -> None
     api = (SOURCE_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
     for unsupported in (
         "budgets:",
-        "collectors:",
         "detection_backends:",
         "cleanup_policy:",
         "counterfactual_policy:",
     ):
         assert unsupported not in api
     assert 'config.mode === "execute"' in api
+    assert "collectors:" in api
+    assert "[...config.collectors]" in api
     assert "action_implementations" in api
     assert "Simulate ignores and clears action selections" in (
         SOURCE_ROOT / "pages" / "Builder.tsx"

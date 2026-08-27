@@ -848,6 +848,8 @@ export interface PreflightReport {
   approval?: string;
   cleanup?: unknown;
   findings?: Array<string | { message?: string; code?: string }>;
+  collectors?: string[];
+  collector_binding?: Record<string, unknown>;
   plan?: Record<string, unknown>;
   approval_binding?: ApprovalBinding | null;
   approval_envelope?: ApprovalEnvelope | null;

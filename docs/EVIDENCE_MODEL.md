@@ -73,7 +73,7 @@ A policy allow is not execution. An execution receipt is not observation. Observ
 
 Collector readiness is `ready`, `degraded`, or `unavailable`. A failed requested collection emits an `unknown` evidence-gap record with zero confidence rather than disappearing.
 
-The built-in orchestrator observes eligible runner-created files through the sandbox observer. General collector configuration is a library boundary in 0.1.x; optional host/SIEM adapters are not integrated production collectors.
+Execute preflight binds the per-run collector selection into the reviewed approval context. The default Execute binding uses `collector.filesystem.sandbox.v1` to observe only declared sandbox artifact paths after runner execution; runner output remains `executed`, never `observed`. Optional host, packet-capture, and SIEM descriptors remain unavailable until real adapters, access, and target scopes are configured.
 
 ## Run bundle
 

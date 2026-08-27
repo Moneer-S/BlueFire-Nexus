@@ -21,6 +21,13 @@ from .approvals import (
     public_approval_record,
     validate_claimed_approval,
 )
+from .collectors import (
+    CollectionRequest,
+    CollectorError,
+    CollectorRegistry,
+    FilesystemCollector,
+    JsonLinesFixtureCollector,
+)
 from .config import AutonomyLevel, CleanupPolicy, RunnerProfile
 from .contracts import ExecutionMode, ScenarioDefinition, StepOutcome
 from .detections import DetectionCandidate, DetectionPipeline
@@ -259,6 +266,7 @@ class Orchestrator:
         approval_store: ApprovalStore | None = None,
         action_bindings: Mapping[tuple[str, str], Mapping[str, Any]] | None = None,
         catalog_authority: Mapping[str, Any] | None = None,
+        collector_registry: CollectorRegistry | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
@@ -270,6 +278,7 @@ class Orchestrator:
             (str(behavior_id), str(action_id)): dict(binding)
             for (behavior_id, action_id), binding in (action_bindings or {}).items()
         }
+        self.collector_registry = collector_registry
         self.planner = DeterministicPlanner(
             registry,
             action_bindings=self.action_bindings,
@@ -367,6 +376,7 @@ class Orchestrator:
         cancel_event: threading.Event | None = None,
         action_implementations: Mapping[str, str] | None = None,
         runner_readiness: Mapping[str, Any] | None = None,
+        collector_ids: Sequence[str] = (),
     ) -> Mapping[str, Any]:
         execution_started = time.monotonic()
         if checkpoint is not None:
@@ -403,14 +413,16 @@ class Orchestrator:
                     "Execute requires an explicit profile, sandbox root, and Rust runner"
                 )
             authorized_target_scope = self._validated_target_scope(target_scope, profile)
-            approval_context = (
-                {
-                    "replay": dict(replay or {}),
-                    "resume_from_step_id": resume_from_step_id,
-                }
-                if replay is not None or resume_from_step_id is not None
-                else None
-            )
+            approval_context: dict[str, Any] = {}
+            if replay is not None or resume_from_step_id is not None:
+                approval_context.update(
+                    {
+                        "replay": dict(replay or {}),
+                        "resume_from_step_id": resume_from_step_id,
+                    }
+                )
+            if collector_ids:
+                approval_context["collector_binding"] = self._collector_binding(collector_ids)
             binding = execution_approval_binding(
                 registry=self.registry,
                 scenario=scenario,
@@ -419,7 +431,7 @@ class Orchestrator:
                 target_scope=authorized_target_scope,
                 autonomy=plan.autonomy,
                 ai_provider=plan.ai_provider,
-                context=approval_context,
+                context=approval_context or None,
                 runner_readiness=runner_readiness,
                 catalog_authority=self.catalog_authority,
             )
@@ -456,6 +468,13 @@ class Orchestrator:
                 action_bindings=self._runner_profile_action_bindings(profile),
             )
             observer = SandboxObserver(sandbox_root)
+            if self.collector_registry is None:
+                self.collector_registry = CollectorRegistry(
+                    (
+                        FilesystemCollector(sandbox_root),
+                        JsonLinesFixtureCollector(sandbox_root),
+                    )
+                )
             self._validate_inventory(plan, self.runner.inventory())
         elif approval_record is not None:
             raise OrchestrationError("Simulate does not accept an Execute approval capability")
@@ -505,6 +524,7 @@ class Orchestrator:
                 execution_started=execution_started,
                 checkpoint=checkpoint,
                 cancel_event=cancel_event,
+                collector_ids=collector_ids,
             )
         except BaseException:
             if (
@@ -548,6 +568,7 @@ class Orchestrator:
         execution_started: float,
         checkpoint: Callable[[Mapping[str, Any]], None] | None,
         cancel_event: threading.Event | None,
+        collector_ids: Sequence[str] = (),
     ) -> Mapping[str, Any]:
         evidence = EvidenceGraph()
         artifacts: dict[str, Any] = dict(seed_artifacts or {})
@@ -674,6 +695,7 @@ class Orchestrator:
                     receipt_ids=receipt_ids,
                     action_timeout_ms=action_timeout_ms,
                     cancel_event=cancel_event,
+                    collector_ids=collector_ids,
                 )
                 policy_rows.append(decision.to_dict())
                 if self._runner_opcode(plan_step) == "sandbox.cleanup.v1":
@@ -1726,6 +1748,7 @@ class Orchestrator:
         receipt_ids: list[str],
         action_timeout_ms: int | None = None,
         cancel_event: threading.Event | None = None,
+        collector_ids: Sequence[str] = (),
     ) -> tuple[dict[str, Any], tuple[EvidenceRecord, ...], PolicyDecision, tuple[str, ...]]:
         action = self.registry.get_action(str(step.action_id))
         runner_step = (
@@ -2031,50 +2054,62 @@ class Orchestrator:
             except RunnerAdapterError:
                 outcome = StepOutcome.PARTIAL
                 logical_outputs = {}
-        if provenance is EvidenceProvenance.EXECUTED:
-            for path in adapted.observable_paths:
-                try:
-                    observed = observer.observe_file(
-                        relative_path=path,
+        if provenance is EvidenceProvenance.EXECUTED and adapted.observable_paths:
+            if collector_ids:
+                records.extend(
+                    self._collect_observable_paths(
                         run_id=run_id,
-                        step_id=step.step_id,
-                        behavior_id=step.behavior_id,
-                        action_id=str(step.action_id),
-                        runner_profile_id=profile.id,
-                        parent_evidence_ids=(record.evidence_id,),
+                        step=step,
+                        profile=profile,
+                        paths=adapted.observable_paths,
+                        parent_evidence_id=record.evidence_id,
+                        collector_ids=collector_ids,
                     )
-                except (EvidenceError, OSError) as exc:
-                    reason = (
-                        str(exc)[:300]
-                        if isinstance(exc, EvidenceError)
-                        else "observer could not read the requested artifact"
-                    )
-                    records.append(
-                        EvidenceRecord.create(
+                )
+            else:
+                for path in adapted.observable_paths:
+                    try:
+                        observed = observer.observe_file(
+                            relative_path=path,
                             run_id=run_id,
                             step_id=step.step_id,
                             behavior_id=step.behavior_id,
                             action_id=str(step.action_id),
-                            provenance=EvidenceProvenance.UNKNOWN,
-                            producer="sandbox-observer.v1",
                             runner_profile_id=profile.id,
-                            environment={"environment_type": profile.environment_type.value},
                             parent_evidence_ids=(record.evidence_id,),
-                            content={
-                                "artifact_type": "evidence_gap",
-                                "requested_artifact": path,
-                                "reason": reason,
-                            },
-                            confidence=0.0,
-                            limitations=(
-                                "Runner execution was reported, but the declared artifact "
-                                "was not independently observed.",
-                            ),
-                            target_scope_ref=f"runner-profile:{profile.id}",
                         )
-                    )
-                    continue
-                records.append(observed)
+                    except (EvidenceError, OSError) as exc:
+                        reason = (
+                            str(exc)[:300]
+                            if isinstance(exc, EvidenceError)
+                            else "observer could not read the requested artifact"
+                        )
+                        records.append(
+                            EvidenceRecord.create(
+                                run_id=run_id,
+                                step_id=step.step_id,
+                                behavior_id=step.behavior_id,
+                                action_id=str(step.action_id),
+                                provenance=EvidenceProvenance.UNKNOWN,
+                                producer="sandbox-observer.v1",
+                                runner_profile_id=profile.id,
+                                environment={"environment_type": profile.environment_type.value},
+                                parent_evidence_ids=(record.evidence_id,),
+                                content={
+                                    "artifact_type": "evidence_gap",
+                                    "requested_artifact": path,
+                                    "reason": reason,
+                                },
+                                confidence=0.0,
+                                limitations=(
+                                    "Runner execution was reported, but the declared artifact "
+                                    "was not independently observed.",
+                                ),
+                                target_scope_ref=f"runner-profile:{profile.id}",
+                            )
+                        )
+                        continue
+                    records.append(observed)
 
         telemetry = (
             tuple(self.registry.get_behavior(step.behavior_id).telemetry)
@@ -2096,6 +2131,46 @@ class Orchestrator:
             error=runner_result.get("error"),
         )
         return row, tuple(records), decision, effective_receipts
+
+    def _collect_observable_paths(
+        self,
+        *,
+        run_id: str,
+        step: PlanStep,
+        profile: RunnerProfile,
+        paths: Sequence[str],
+        parent_evidence_id: str,
+        collector_ids: Sequence[str],
+    ) -> tuple[EvidenceRecord, ...]:
+        if self.collector_registry is None:
+            raise OrchestrationError("Execute collector binding has no registry")
+        collected: list[EvidenceRecord] = []
+        request = CollectionRequest(
+            run_id=run_id,
+            step_id=step.step_id,
+            behavior_id=step.behavior_id,
+            action_id=str(step.action_id),
+            runner_profile_id=profile.id,
+            target_scope_ref=f"runner-profile:{profile.id}",
+            parent_evidence_ids=(parent_evidence_id,),
+            settings={"paths": list(paths)},
+            timeout_seconds=5.0,
+        )
+        for collector_id in collector_ids:
+            try:
+                result = self.collector_registry.collect(collector_id, request)
+            except CollectorError as exc:
+                raise OrchestrationError(str(exc)) from exc
+            collected.extend(result.records)
+        return tuple(collected)
+
+    @staticmethod
+    def _collector_binding(collector_ids: Sequence[str]) -> Mapping[str, Any]:
+        return {
+            "schema_version": "bluefire.collector-binding.v1",
+            "collectors": list(collector_ids),
+            "authority": "declared-per-run-observable-artifacts",
+        }
 
     @staticmethod
     def _row(

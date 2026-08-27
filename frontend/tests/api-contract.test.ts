@@ -19,7 +19,7 @@ const configuration: RunConfiguration = {
   maxSeconds: 45,
   maxSteps: 8,
   maxBytes: 4096,
-  collectors: ["filesystem-observer"],
+  collectors: ["collector.filesystem.sandbox.v1"],
   detectionBackends: ["sigma"],
   cleanupPolicy: "manual",
   counterfactual: "always_preview",
@@ -46,7 +46,7 @@ describe("control-plane request contracts", () => {
     expect(payload).not.toHaveProperty("provider");
     expect(payload).not.toHaveProperty("approval");
     expect(payload).not.toHaveProperty("budgets");
-    expect(payload).not.toHaveProperty("collectors");
+    expect(payload).toHaveProperty("collectors", ["collector.filesystem.sandbox.v1"]);
     expect(payload).not.toHaveProperty("detection_backends");
     expect(payload).not.toHaveProperty("cleanup_policy");
     expect(payload).not.toHaveProperty("counterfactual_policy");
@@ -56,6 +56,7 @@ describe("control-plane request contracts", () => {
   it("omits action implementations entirely for Simulate", () => {
     const payload = buildRunPayload(demoScenario, { ...configuration, mode: "simulate" });
     expect(payload).not.toHaveProperty("action_implementations");
+    expect(payload).not.toHaveProperty("collectors");
   });
 
   it("keeps exact replay free of variants while retaining its fresh Execute boundary", () => {

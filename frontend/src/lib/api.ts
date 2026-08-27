@@ -123,6 +123,7 @@ export function buildRunPayload(scenario: Scenario, config: RunConfiguration) {
     ...graphDocument(scenario), mode: config.mode, autonomy: config.autonomy,
     ai_provider_id: config.provider || null, runner_profile_id: config.profileId || null,
     target_scope: { scope_refs: config.scopeRefs },
+    ...(config.mode === "execute" ? { collectors: [...config.collectors] } : {}),
     ...(config.mode === "execute" && Object.keys(config.actionImplementations).length ? { action_implementations: { ...config.actionImplementations } } : {}),
   };
 }

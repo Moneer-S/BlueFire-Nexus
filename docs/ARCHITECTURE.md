@@ -180,7 +180,7 @@ The provenance vocabulary is:
 | counterfactual | A modeled branch continued without execution |
 | unknown | Provenance could not be established |
 
-EvidenceGraph rejects missing and cross-run parents. SandboxObserver resolves normalized relative paths beneath one existing sandbox root, refuses symbolic-link paths, bounds bytes/time, detects concurrent file change, and hashes file content. The collector layer adds readiness and explicit `unknown` gap records. Built-in observation remains limited to declared sandbox files and disposable JSONL fixtures; auditd, Sysmon/Event Log, PCAP, and SIEM entries are unavailable descriptors until separately implemented/configured.
+EvidenceGraph rejects missing and cross-run parents. SandboxObserver resolves normalized relative paths beneath one existing sandbox root, refuses symbolic-link paths, bounds bytes/time, detects concurrent file change, and hashes file content. The collector layer adds readiness and explicit `unknown` gap records. Execute preflight now binds the selected ready per-run collector into the approval context, and Execute observes declared runner artifact paths through `collector.filesystem.sandbox.v1` rather than relabeling runner output. Built-in observation remains limited to declared sandbox files and disposable JSONL fixtures; auditd, Sysmon/Event Log, PCAP, and SIEM entries are unavailable descriptors until separately implemented/configured.
 
 ## Detections
 
@@ -196,7 +196,7 @@ RunStore creates internally named, contained run directories. It stores scenario
 
 Hashes are tamper indicators, not signatures.
 
-ProductStore is a separate migrated SQLite store under the run root by default. At startup the service migrates it, marks interrupted background jobs, recovers unfinalized run bundles, idempotently seeds six scenarios, thirteen actions, profiles, providers, six collector records, research sources, and three detection backends, backfills the run index, and exposes a safe storage/recovery summary in catalog metadata. Settings and resources are JSON documents that reject secret-shaped plaintext values; environment references remain declarative.
+ProductStore is a separate migrated SQLite store under the run root by default. At startup the service migrates it, marks interrupted background jobs, recovers unfinalized run bundles, idempotently seeds seven scenarios, eighteen actions, profiles, providers, six collector records, research sources, and three detection backends, backfills the run index, and exposes a safe storage/recovery summary in catalog metadata. Settings and resources are JSON documents that reject secret-shaped plaintext values; environment references remain declarative.
 
 Replay reads a captured source scenario snapshot without writing it. It can prepare an exact replay, resume after prior artifacts, substitute a contract-compatible behavior, change typed parameters, select a registered action implementation, or record declared AI, profile, or defense changes. Each replay receives lineage with a source scenario digest and the exact declared overrides.
 
