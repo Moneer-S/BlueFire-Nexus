@@ -143,7 +143,7 @@ jobs:
         run: rustup show
 
       - name: Build release runner
-        run: cargo build --locked --release --manifest-path runner/Cargo.toml --bin bluefire-runner
+        run: python tools/build_native_runner.py
 
       - name: Stage verified native runner resources
         run: >-
@@ -212,7 +212,7 @@ jobs:
         run: cargo test --manifest-path runner/Cargo.toml --all
 
       - name: Build release runner
-        run: cargo build --locked --release --manifest-path runner/Cargo.toml --bin bluefire-runner
+        run: python tools/build_native_runner.py
 
       - name: Upload platform runner
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

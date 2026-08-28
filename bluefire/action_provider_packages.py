@@ -423,7 +423,7 @@ def canonical_activation_runner_inventory(
 ) -> tuple[Mapping[str, Any], bytes]:
     """Accept one raw inventory or an exact canonical activation replay."""
 
-    from .runner_client import RunnerReadinessError, canonical_runner_inventory
+    from .runner_inventory import RunnerInventoryAuthorityError, canonical_runner_inventory
 
     canonical_keys = {
         "schema_version",
@@ -501,18 +501,18 @@ def canonical_activation_runner_inventory(
                 "platform",
             )
         ):
-            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
+            raise RunnerInventoryAuthorityError("Runner inventory is invalid or unsupported.")
         if [
             (item["action_id"], item["action_version"], item["readiness"])
             for item in validated["actions"]
         ] != [
             (item["action_id"], item["action_version"], item["readiness"]) for item in raw_actions
         ]:
-            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
+            raise RunnerInventoryAuthorityError("Runner inventory is invalid or unsupported.")
         if _SHA256.fullmatch(str(inventory["source_digest"])) is None or any(
             _SHA256.fullmatch(str(item["contract_digest"])) is None for item in raw_actions
         ):
-            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
+            raise RunnerInventoryAuthorityError("Runner inventory is invalid or unsupported.")
         canonical = dict(inventory)
         canonical["actions"] = [dict(item) for item in raw_actions]
         if has_canonical_runtimes:
@@ -522,7 +522,7 @@ def canonical_activation_runner_inventory(
         return canonical, canonical_json_bytes(canonical)
     except ActionPackageError:
         raise
-    except (KeyError, RunnerReadinessError, TypeError, ValueError) as exc:
+    except (KeyError, RunnerInventoryAuthorityError, TypeError, ValueError) as exc:
         raise ActionPackageError("runner inventory is invalid or unsupported") from exc
 
 

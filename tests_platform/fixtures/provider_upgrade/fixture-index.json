@@ -1,0 +1,46 @@
+{
+  "logical_action_id": "fixture.provider-upgrade.action.v1",
+  "logical_behavior_id": "fixture.provider-upgrade.behavior.v1",
+  "package_id": "fixture.provider-upgrade-pack",
+  "packages": [
+    {
+      "artifact_sha256": "sha256:d972456b6b3aa0b55cd8596216b149bcb566abb810568617a0cb2973301959cd",
+      "artifact_size": 725,
+      "content_digest": "sha256:9190513f23220cc2d78e7e44edddb06364d4422ddf83d2e7890e1b80d79b8938",
+      "file": "provider-1.0.0.signed.json",
+      "package_digest": "sha256:e14e8703c7179001070f89d208c4edf8d2eebf1c0fede38385bf923947334ab1",
+      "publisher_trust_file": "publisher-trust.yaml",
+      "version": "1.0.0"
+    },
+    {
+      "artifact_sha256": "sha256:0e3ad2ee3bdea1efb669df3bf9fca479b325b2acb01ac818e0e83d96ef11dd99",
+      "artifact_size": 725,
+      "content_digest": "sha256:9f76a23899fc0b47aa32bda5b0040325fe015628a5713f80c28ccbdf0c802b08",
+      "file": "provider-2.0.0.signed.json",
+      "package_digest": "sha256:2706194fcf0d7dea61bd6768e597fa2cc2835143580492abca308f71f5300c6f",
+      "publisher_trust_file": "publisher-trust.yaml",
+      "version": "2.0.0"
+    },
+    {
+      "artifact_sha256": "sha256:0e3ad2ee3bdea1efb669df3bf9fca479b325b2acb01ac818e0e83d96ef11dd99",
+      "artifact_size": 725,
+      "canonical_output_bytes": 177,
+      "content_digest": "sha256:1bfc6991385f7375ed2d6b13cf51d22a444fbe260eedb479da24a45d56e8f564",
+      "expected_run_status": "incomplete",
+      "expected_step_error_code": "provider_runtime_failed",
+      "file": "provider-3.0.0-output-limit.signed.json",
+      "limit_condition": "canonical_output_exceeds_signed_max_output_bytes",
+      "package_digest": "sha256:8d7db427da25e91424cce5282dbee697568f117ea8889953345d1345e5e01dc4",
+      "publisher_trust_file": "publisher-limit-trust.yaml",
+      "signed_max_output_bytes": 176,
+      "version": "3.0.0"
+    }
+  ],
+  "provider_id": "fixture.provider-upgrade.runtime.v1",
+  "publisher_trust_file": "publisher-trust.yaml",
+  "publisher_trust_files": [
+    "publisher-trust.yaml",
+    "publisher-limit-trust.yaml"
+  ],
+  "schema_version": "bluefire.provider-upgrade-fixture-set.v1"
+}

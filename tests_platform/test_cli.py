@@ -8,6 +8,8 @@ import pytest
 import bluefire.cli as cli
 from bluefire.cli import _execute, _parser, _scenario_payload
 
+PROVIDER_FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "provider_upgrade"
+
 
 def test_scenario_cli_accepts_packaged_id_or_explicit_path() -> None:
     parser = _parser()
@@ -418,6 +420,124 @@ def test_cli_action_package_commands_dispatch_exact_lifecycle_requests(
                     "expected_catalog_digest": catalog_digest,
                     "removed_by": "package-operator",
                     "reason": "Reviewed lifecycle transition.",
+                },
+            ),
+            {},
+        ),
+    ]
+
+
+def test_provider_package_cli_forwards_exact_signed_json_and_lifecycle_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _RecordingService()
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    parser = _parser()
+    envelope_path = PROVIDER_FIXTURE_ROOT / "provider-1.0.0.signed.json"
+    envelope = json.loads(envelope_path.read_text(encoding="utf-8"))
+    index = json.loads((PROVIDER_FIXTURE_ROOT / "fixture-index.json").read_text(encoding="utf-8"))
+    row = index["packages"][0]
+    package_id = index["package_id"]
+    version = row["version"]
+    catalog_digest = "sha256:" + "7" * 64
+
+    _execute(
+        parser.parse_args(
+            [
+                "packages",
+                "install",
+                str(envelope_path),
+                "--installed-by",
+                "provider-cli-operator",
+            ]
+        )
+    )
+    _execute(
+        parser.parse_args(
+            [
+                "packages",
+                "activate",
+                package_id,
+                version,
+                "--profile",
+                "sandbox-execute.v1",
+                "--activated-by",
+                "provider-cli-operator",
+                "--reason",
+                "Verify the exact signed provider fixture through the CLI.",
+            ]
+        )
+    )
+    for command, actor_option in (
+        ("deactivate", "--deactivated-by"),
+        ("remove", "--removed-by"),
+    ):
+        _execute(
+            parser.parse_args(
+                [
+                    "packages",
+                    command,
+                    package_id,
+                    version,
+                    "--package-digest",
+                    row["package_digest"],
+                    "--catalog-generation",
+                    "7",
+                    "--catalog-digest",
+                    catalog_digest,
+                    actor_option,
+                    "provider-cli-operator",
+                    "--reason",
+                    f"Verify exact provider {command} authority.",
+                ]
+            )
+        )
+
+    assert service.calls == [
+        (
+            "install_action_package",
+            ({"envelope": envelope, "installed_by": "provider-cli-operator"},),
+            {},
+        ),
+        (
+            "activate_action_package",
+            (
+                package_id,
+                version,
+                {
+                    "runner_profile_id": "sandbox-execute.v1",
+                    "activated_by": "provider-cli-operator",
+                    "reason": "Verify the exact signed provider fixture through the CLI.",
+                },
+            ),
+            {},
+        ),
+        (
+            "deactivate_action_package",
+            (
+                package_id,
+                version,
+                {
+                    "package_digest": row["package_digest"],
+                    "expected_catalog_generation": 7,
+                    "expected_catalog_digest": catalog_digest,
+                    "deactivated_by": "provider-cli-operator",
+                    "reason": "Verify exact provider deactivate authority.",
+                },
+            ),
+            {},
+        ),
+        (
+            "remove_action_package",
+            (
+                package_id,
+                version,
+                {
+                    "package_digest": row["package_digest"],
+                    "expected_catalog_generation": 7,
+                    "expected_catalog_digest": catalog_digest,
+                    "removed_by": "provider-cli-operator",
+                    "reason": "Verify exact provider remove authority.",
                 },
             ),
             {},

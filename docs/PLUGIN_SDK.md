@@ -85,27 +85,27 @@ The CLI command reports its static declarative trust boundary. The managed API i
 
 ## Integrating reviewed third-party content
 
+Declarative plugins remain metadata-only. Executable action-provider packages use a separate signed contract described in [Action SDK](ACTION_SDK.md); making that path available does not make a plugin manifest executable.
+
 For material such as a selected Atomic Red Team test, do not blindly execute an upstream script. The safe integration path is:
 
 1. pin a tag/commit and retrieval date outside the repository;
 2. review the upstream license and every executable statement;
 3. identify the neutral behavior, prerequisites, parameters, observables, tier, and cleanup;
 4. transcribe only the needed semantics or fixture under the permitted license with attribution;
-5. implement a narrow compiled Rust action or reuse an existing registered action;
-6. add an explicit logical adapter—never pass the upstream command/script through;
+5. implement a narrow compiled Rust action, reuse an existing registered action, or package the reviewed semantics as a signed, content-addressed no-host-import WASM provider with fixed ABI exports and declared limits;
+6. add an explicit logical binding—never pass the upstream command/script through;
 7. require explicit plugin/action enablement in a runner profile;
 8. add structural and disposable dynamic tests appropriate to the risk;
 9. preserve imported/adapted/inspired/comparative provenance.
 
 ## What is not shipped
 
-- package discovery or installation;
-- signature verification or publisher identity;
-- dependency resolution;
-- sandboxing of third-party code;
-- dynamic action loading;
+- automatic plugin/package discovery, dependency fetching, or installation;
+- executable authority from declarative plugin metadata;
+- a general-purpose third-party script, native-library, host-import, or command runtime;
 - Python entry points;
 - remote marketplace or update service;
 - automatic Atomic Red Team or public-rule execution.
 
-Until a separately reviewed installer and runtime trust design exists, adding an executable plugin requires integrating it as first-party reviewed source and following [Action SDK](ACTION_SDK.md).
+An executable extension must be either reviewed first-party compiled source or an explicitly trusted and activated signed provider package that satisfies the bounded runtime contract in [Action SDK](ACTION_SDK.md). Arbitrary executable plugins remain unsupported.

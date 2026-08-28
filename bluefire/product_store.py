@@ -3937,6 +3937,7 @@ class ProductStore:
             )
         installed_head = derived_installed_version == row["version"]
         active_version = None if derived_active is None else derived_active["version"]
+        active_package_digest = None if derived_active is None else derived_active["package_digest"]
         active_generation = (
             None if derived_active is None else int(derived_active["activation_generation"])
         )
@@ -3970,6 +3971,7 @@ class ProductStore:
             "installed_head": installed_head,
             "active": active,
             "active_version": active_version,
+            "active_package_digest": active_package_digest,
             "active_generation": active_generation,
             "activation": (
                 None if derived_active is None else json_clone(derived_active["activation"])

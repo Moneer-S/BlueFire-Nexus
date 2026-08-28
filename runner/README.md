@@ -1,9 +1,13 @@
 # BlueFire Rust Runner
 
 This crate is the execution authority for the disposable BlueFire Nexus local
-vertical slice. The Python control plane can construct plans and select a
-registered action, but it cannot provide an executable, command, shell script,
-or arbitrary payload to this process.
+vertical slice. The Python control plane can construct plans and select either
+a registered compiled action or an activated signed provider version. Provider
+execution is limited to canonical, digest-bound, no-host-import WASM that was
+signature-verified and bound to the runner inventory with fixed ABI exports and
+declared limits. The control plane cannot supply a shell script, Python entry
+point, arbitrary host command, native shared library, or unverified executable
+payload.
 
 The only public commands are:
 
@@ -43,8 +47,9 @@ never select an executable or argument.
 | `sandbox.restricted.persistence-marker.v1` | `1.0.0` | compiled `label` enum | `filesystem_write`, `sandbox_restricted` | `restricted` | fixed non-executable detection canary in runner-owned scope |
 | `sandbox.cleanup.v1` | `1.1.0` | `receipt_ids` | `filesystem_write`, `cleanup` | `safe` | receipt-bound quarantine, identity/hash revalidation, removal, and verification report |
 
-Every parameter structure uses Serde `deny_unknown_fields`. The registry is a
-fixed Rust array; there is no dynamic library, Python entry point, action alias,
+Every parameter structure uses Serde `deny_unknown_fields`. The built-in action
+registry is a fixed Rust array. Its only extension path is the signed provider
+contract above; there is no dynamic library, Python entry point, action alias,
 generic command, URL, hostname resolution, proxy, redirect, or shell dispatch.
 `inventory --json` also exposes every action as
 `bluefire.runner-action-sdk.v1`, including its semantic version, JSON Schema,

@@ -12,17 +12,28 @@
       "extensions": [".py"]
     },
     {
+      "path": "tools",
+      "extensions": [".py"]
+    },
+    {
       "path": "runner/src",
       "extensions": [".rs"]
     }
   ],
   "python_layer_rules": [
     {
+      "layer": "acceptance",
+      "patterns": ["tools", "tools.*"]
+    },
+    {
       "layer": "release",
       "patterns": [
         "bluefire.architecture_gate",
         "bluefire.product_acceptance*",
-        "bluefire.product_gates"
+        "bluefire.product_gates",
+        "bluefire.provider_gate",
+        "bluefire.provider_gate_validation",
+        "bluefire.provider_gate_structural_validation"
       ]
     },
     {
@@ -88,6 +99,7 @@
         "bluefire.planner",
         "bluefire.plugins",
         "bluefire.policy",
+        "bluefire.provider_runner_contracts",
         "bluefire.registry",
         "bluefire.research",
         "bluefire.runner_contracts",
@@ -104,15 +116,28 @@
     "application": ["application", "execution", "persistence", "domain", "foundation"],
     "service": ["service", "application", "execution", "persistence", "domain", "foundation"],
     "adapter": ["adapter", "service", "application", "execution", "persistence", "domain", "foundation", "release"],
-    "release": ["release", "persistence", "foundation"]
+    "release": ["release", "persistence", "foundation"],
+    "acceptance": [
+      "acceptance",
+      "release",
+      "adapter",
+      "service",
+      "application",
+      "execution",
+      "persistence",
+      "domain",
+      "foundation"
+    ]
   },
   "rust_layers": {
     "contract": "foundation",
     "process": "platform",
     "safety": "safety",
     "actions": "action",
+    "provider_action": "action",
     "providers": "action",
     "runner": "execution",
+    "runner_tests": "execution",
     "lib": "adapter",
     "main": "adapter"
   },

@@ -205,8 +205,14 @@ The browser demo mode is explicitly synthetic and refuses Execute dispatch. For 
 Execute is opt-in and requires an explicit managed-runner bootstrap and start. A compatible platform-native wheel supplies the verified artifact. For source development, build the runner and use the environment override shown below:
 
 ```bash
-cargo build --release --manifest-path runner/Cargo.toml
-cargo run --release --manifest-path runner/Cargo.toml -- inventory --json
+python tools/build_native_runner.py
+./runner/target/release/bluefire-runner inventory --json
+```
+
+On Windows, read the same inventory with the `.exe` artifact:
+
+```powershell
+.\runner\target\release\bluefire-runner.exe inventory --json
 ```
 
 Set environment variables to the built binary and a disposable sandbox you own. Do not put their resolved values in tracked YAML.

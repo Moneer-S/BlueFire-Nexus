@@ -18,13 +18,26 @@ Do not run the runner as administrator/root, install it as a system service, or 
 cargo fmt --manifest-path runner/Cargo.toml -- --check
 cargo clippy --manifest-path runner/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path runner/Cargo.toml --all
-cargo build --release --manifest-path runner/Cargo.toml
+python tools/build_native_runner.py
 ```
 
-Read the compiled inventory:
+The release helper has a fixed Cargo argument list. It resolves the host home, workspace, checkout,
+`CARGO_HOME`, `RUSTUP_HOME`, and `CARGO_TARGET_DIR` to absolute roots, supplies path remaps through
+`CARGO_ENCODED_RUSTFLAGS`, disables incremental compilation, strips symbols, and scans the result
+for unremapped UTF-8 or UTF-16 host paths. It replaces inherited `RUSTFLAGS` and encoded Rust flags.
+Controlled build environments may set `CARGO` and the three root variables before invoking the
+helper; relative roots are resolved beneath the checkout.
+
+Read the compiled inventory on Linux/macOS:
 
 ```bash
-cargo run --release --manifest-path runner/Cargo.toml -- inventory --json
+./runner/target/release/bluefire-runner inventory --json
+```
+
+On Windows PowerShell:
+
+```powershell
+.\runner\target\release\bluefire-runner.exe inventory --json
 ```
 
 Inventory schema is `bluefire.runner-inventory.v1`. Each action descriptor uses `bluefire.runner-action-sdk.v1` and declares its version, compatible behaviors, platforms, JSON parameter schema, capabilities, tier, target types, observation hints, cleanup relationship, limit classes, readiness, provenance, effects, and receipt behavior.

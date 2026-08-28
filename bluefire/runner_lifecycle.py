@@ -1679,7 +1679,7 @@ def _spawn_contained_host(command: Sequence[str]) -> _LaunchProcess:
         options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     else:
         options["start_new_session"] = True
-    process = subprocess.Popen(command, **options)  # nosec B603
+    process = subprocess.Popen(command, shell=False, **options)  # nosec B603
     if os.name != "nt":
         return _LaunchProcess(process=process, containment=process.pid)
     try:

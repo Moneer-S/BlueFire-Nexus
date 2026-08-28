@@ -185,7 +185,7 @@ export const api = {
       publishers: [],
       catalog: { schema_version: "bluefire.action-catalog-authority.v1", generation: 0, catalog_digest: EMPTY_ACTION_PACKAGE_CATALOG_DIGEST, packages: [], action_bindings: [] },
       activation_events: [],
-      execution_boundary: "signed-reviewed-opcodes-only",
+      execution_boundary: "demo-no-execution",
     };
     return request("/action-packages");
   },

@@ -66,9 +66,17 @@ Use the toolchain declared in `rust-toolchain.toml` and a repository-local targe
 cargo fmt --manifest-path runner/Cargo.toml -- --check
 cargo clippy --manifest-path runner/Cargo.toml --all-targets --all-features -- -D warnings
 cargo test --manifest-path runner/Cargo.toml --all
-cargo build --release --manifest-path runner/Cargo.toml
-cargo run --release --manifest-path runner/Cargo.toml -- inventory --json
+python tools/build_native_runner.py
+./runner/target/release/bluefire-runner inventory --json
 ```
+
+On Windows, the final command is `.\runner\target\release\bluefire-runner.exe inventory --json`.
+The release helper uses fixed Cargo arguments, remaps the host home, workspace, checkout, Cargo
+home, Rustup home, and target directory through encoded rustc flags, disables incremental
+compilation, and rejects a binary that still contains one of those host paths. Set `CARGO`,
+`CARGO_HOME`, `RUSTUP_HOME`, or `CARGO_TARGET_DIR` before invoking it when a controlled build
+environment needs non-default paths. Do not add release flags through `RUSTFLAGS`; the helper
+deliberately replaces inherited flags.
 
 Runner tests may use only temporary roots and loopback. They must not need elevation, a host service, an external network, personal files, or persistent host changes.
 

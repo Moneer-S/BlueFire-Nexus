@@ -104,7 +104,7 @@ Preserve evidence and receipts, notify the authorized owner, and follow the agre
 
 ## Third-party content
 
-Review provenance, pin, license, integrity, prerequisites, parameters, effects, cleanup, and test scope. Public detection rules are comparison baselines, not evasion targets. External actions require explicit enablement and a reviewed compiled integration; declarative plugin metadata alone grants no execution authority.
+Review provenance, pin, license, integrity, prerequisites, parameters, effects, cleanup, and test scope. Public detection rules are comparison baselines, not evasion targets. External actions require explicit enablement and either a reviewed compiled integration or a signature-verified, content-addressed no-host-import WASM provider bound to an exact version, digest, declared limits, activation record, and runner inventory. Declarative plugin metadata alone grants no execution authority; scripts, Python entry points, arbitrary host commands, native shared libraries, and imported host functions remain unsupported.
 
 ## Reporting vulnerabilities
 

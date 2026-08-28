@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -305,13 +306,12 @@ def _python_module(relative: str) -> str:
 
 
 def _known_dependency(candidate: str, known: set[str]) -> str | None:
-    if candidate == "bluefire":
-        return "bluefire.__init__" if "bluefire.__init__" in known else None
-    if candidate.startswith("bluefire."):
-        first = ".".join(candidate.split(".")[:2])
-        if first in known:
-            return first
-        package = first + ".__init__"
+    parts = candidate.split(".")
+    for length in range(len(parts), 0, -1):
+        module = ".".join(parts[:length])
+        if module in known:
+            return module
+        package = module + ".__init__"
         if package in known:
             return package
     return None
@@ -320,7 +320,11 @@ def _known_dependency(candidate: str, known: set[str]) -> str | None:
 def _python_dependencies(path: Path, module: str, known: set[str]) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
     dependencies: set[str] = set()
-    package = "bluefire" if module == "bluefire.__init__" else module.rpartition(".")[0]
+    package = (
+        module.removesuffix(".__init__")
+        if module.endswith(".__init__")
+        else module.rpartition(".")[0]
+    )
     for node in ast.walk(tree):
         candidates: list[str] = []
         if isinstance(node, ast.Import):
@@ -336,8 +340,10 @@ def _python_dependencies(path: Path, module: str, known: set[str]) -> set[str]:
                     candidates.extend(base + "." + alias.name for alias in node.names)
                 else:
                     candidates.append(base)
+                    candidates.extend(base + "." + alias.name for alias in node.names)
             elif node.module:
                 candidates.append(node.module)
+                candidates.extend(node.module + "." + alias.name for alias in node.names)
         for candidate in candidates:
             dependency = _known_dependency(candidate, known)
             if dependency is not None and dependency != module:
@@ -729,59 +735,87 @@ def _run_pytest_suite(
     tests: Sequence[str],
     timeout_seconds: int,
 ) -> dict[str, Any]:
-    junit = evidence_dir / f".{suite_id}.junit.xml"
-    command = [
-        sys.executable,
+    reported_command = [
+        "{python}",
         "-m",
         "pytest",
         "-p",
         "no:cacheprovider",
         "-q",
         *tests,
-        f"--junitxml={junit}",
+        "--junitxml={temporary}",
     ]
-    environment = dict(os.environ)
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
-        process = subprocess.run(
-            command,
-            cwd=repository,
-            env=environment,
-            check=False,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout_seconds,
-        )
-        summary: dict[str, Any]
-        if junit.is_file():
-            summary = _junit_summary(junit)
-        else:
-            summary = {
-                "tests": 0,
-                "passed_tests": [],
-                "failed_tests": [],
-                "skipped_tests": [],
+        with tempfile.TemporaryDirectory(
+            prefix=f".{suite_id}-pytest-", dir=evidence_dir
+        ) as temporary:
+            temporary_root = Path(temporary)
+            junit = temporary_root / "junit.xml"
+            command = [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "no:cacheprovider",
+                "-q",
+                *tests,
+                f"--junitxml={junit}",
+            ]
+            environment = dict(os.environ)
+            environment.update(
+                {
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                    "TEMP": temporary,
+                    "TMP": temporary,
+                    "TMPDIR": temporary,
+                }
+            )
+            process = subprocess.run(
+                command,
+                cwd=repository,
+                env=environment,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=timeout_seconds,
+            )
+            summary: dict[str, Any]
+            if junit.is_file():
+                summary = _junit_summary(junit)
+            else:
+                summary = {
+                    "tests": 0,
+                    "passed_tests": [],
+                    "failed_tests": [],
+                    "skipped_tests": [],
+                }
+            passed = (
+                process.returncode == 0
+                and summary["tests"] > 0
+                and not summary["failed_tests"]
+                and not summary["skipped_tests"]
+            )
+            report = {
+                "schema_version": "bluefire.architecture-dynamic-check.v1",
+                "suite_id": suite_id,
+                "command": reported_command,
+                "exit_code": process.returncode,
+                "passed": passed,
+                **summary,
             }
-        passed = (
-            process.returncode == 0
-            and summary["tests"] > 0
-            and not summary["failed_tests"]
-            and not summary["skipped_tests"]
-        )
+        # Leaving the context is part of the proof: pytest's temporary stores,
+        # including product databases created by lifecycle tests, must be gone
+        # before a passing suite report can be returned.
         return {
-            "schema_version": "bluefire.architecture-dynamic-check.v1",
-            "suite_id": suite_id,
-            "command": ["{python}", *command[1:-1], "--junitxml={temporary}"],
-            "exit_code": process.returncode,
-            "passed": passed,
-            **summary,
+            **report,
+            "passed": report["passed"] and not temporary_root.exists(),
         }
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {
             "schema_version": "bluefire.architecture-dynamic-check.v1",
             "suite_id": suite_id,
-            "command": ["{python}", *command[1:-1], "--junitxml={temporary}"],
+            "command": reported_command,
             "exit_code": None,
             "passed": False,
             "tests": 0,
@@ -789,11 +823,6 @@ def _run_pytest_suite(
             "failed_tests": [type(exc).__name__],
             "skipped_tests": [],
         }
-    finally:
-        try:
-            junit.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _proof(*, assertion_id: str, kind: str, artifact: str, test_id: str) -> dict[str, Any]:

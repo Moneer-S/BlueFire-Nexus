@@ -1,0 +1,200 @@
+{
+  "integrity": {
+    "algorithm": "sha256",
+    "content_digest": "sha256:9190513f23220cc2d78e7e44edddb06364d4422ddf83d2e7890e1b80d79b8938"
+  },
+  "manifest": {
+    "action_ids": [
+      "fixture.provider-upgrade.action.v1"
+    ],
+    "behavior_ids": [
+      "fixture.provider-upgrade.behavior.v1"
+    ],
+    "capabilities": [
+      "native.execution"
+    ],
+    "compatibility": {
+      "maximum_bluefire_version_exclusive": "1.0.0",
+      "minimum_bluefire_version": "0.1.0"
+    },
+    "license": {
+      "notice": "Copyright 2026 BlueFire fixture authors; MIT licensed.",
+      "spdx_id": "MIT"
+    },
+    "package_id": "fixture.provider-upgrade-pack",
+    "platforms": [
+      "windows"
+    ],
+    "provenance": {
+      "publisher_id": "bluefire.fixture.provider-upgrade",
+      "reference": "urn:bluefire:fixture:provider-upgrade:1.0.0:sha256:d972456b6b3aa0b55cd8596216b149bcb566abb810568617a0cb2973301959cd",
+      "revision": "sha256:d972456b6b3aa0b55cd8596216b149bcb566abb810568617a0cb2973301959cd",
+      "source": "Deterministically assembled no-import WebAssembly fixture committed with BlueFire Nexus"
+    },
+    "provider": {
+      "abi_version": "bluefire.provider-abi.v1",
+      "artifact_sha256": "sha256:d972456b6b3aa0b55cd8596216b149bcb566abb810568617a0cb2973301959cd",
+      "artifact_size": 725,
+      "kind": "wasm",
+      "limits": {
+        "fuel": 100000,
+        "max_input_bytes": 8192,
+        "max_memory_bytes": 524288,
+        "max_module_bytes": 65536,
+        "max_output_bytes": 8192
+      },
+      "provider_id": "fixture.provider-upgrade.runtime.v1"
+    },
+    "safety_tiers": [
+      "safe"
+    ],
+    "version": "1.0.0"
+  },
+  "payload": {
+    "actions": [
+      {
+        "definition": {
+          "capabilities": [
+            "native.execution"
+          ],
+          "cleanup_action_id": null,
+          "id": "fixture.provider-upgrade.action.v1",
+          "inputs": [],
+          "mutates": false,
+          "outputs": [
+            {
+              "description": "Version-marked provider result.",
+              "name": "result",
+              "type": "artifact.fixture.provider-upgrade-result.v1"
+            }
+          ],
+          "parameters": [
+            {
+              "default": "probe",
+              "description": "Bounded fixture operation label.",
+              "enum": [
+                "probe",
+                "verify"
+              ],
+              "name": "message",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "default": 1,
+              "description": "Bounded fixture repetition count.",
+              "enum": [
+                1,
+                2
+              ],
+              "maximum": 2,
+              "minimum": 1,
+              "name": "repeat_count",
+              "required": false,
+              "type": "integer"
+            }
+          ],
+          "platforms": [
+            "windows"
+          ],
+          "provenance": {
+            "derived": false,
+            "license": "MIT",
+            "notes": "Guest output attests the exact canonical message and repeat_count input.",
+            "reference": "urn:bluefire:fixture:provider-upgrade:sha256:d972456b6b3aa0b55cd8596216b149bcb566abb810568617a0cb2973301959cd",
+            "source": "BlueFire committed deterministic no-import WebAssembly provider fixture"
+          },
+          "purpose": "Prove immutable signed provider upgrades without host imports.",
+          "safety_tier": "safe",
+          "schema_version": "bluefire.action.v1",
+          "title": "Run the portable provider-upgrade fixture"
+        },
+        "program": {
+          "action_contract_digest": "sha256:d06a5211cbbd672b51979370ef417f01617ea467e914bc37f6b695f43123db71",
+          "provider_id": "fixture.provider-upgrade.runtime.v1",
+          "schema_version": "bluefire.wasm-provider-program.v1"
+        }
+      }
+    ],
+    "artifact_hex": "0061736d0100000001070160027f7f017e030201000503010001072502066d656d6f7279020018626c7565666972655f70726f76696465725f72756e5f763100000a9d02019a0201017f200141a802462102200220004180016a2d000041f60046712102200220004181016a2d000041e50046712102200220004182016a2d000041f20046712102200220004183016a2d000041e90046712102200220004184016a2d000041e60046712102200220004185016a2d000041f90046712102200220004197016a2d00004132467121022002047e42b181808080800405200141a702462102200220004180016a2d000041f00046712102200220004181016a2d000041f20046712102200220004182016a2d000041ef0046712102200220004183016a2d000041e20046712102200220004184016a2d000041e50046712102200220004196016a2d00004131467121022002047e42b08180808080080542000b0b0b0bf10202004180200bb1017b226f757470757473223a7b22726573756c74223a7b2274797065223a2261727469666163742e666978747572652e70726f76696465722d757067726164652d726573756c742e7631222c2276616c7565223a22312e302e307c6d6573736167653d7665726966797c7265706561745f636f756e743d32227d7d2c22736368656d615f76657273696f6e223a22626c7565666972652e70726f76696465722d616374696f6e2d6f75747075742e7631227d004180c0000bb0017b226f757470757473223a7b22726573756c74223a7b2274797065223a2261727469666163742e666978747572652e70726f76696465722d757067726164652d726573756c742e7631222c2276616c7565223a22312e302e307c6d6573736167653d70726f62657c7265706561745f636f756e743d31227d7d2c22736368656d615f76657273696f6e223a22626c7565666972652e70726f76696465722d616374696f6e2d6f75747075742e7631227d",
+    "behaviors": [
+      {
+        "action_ids": [
+          "fixture.provider-upgrade.action.v1"
+        ],
+        "capabilities": [
+          "native.execution"
+        ],
+        "detection_hints": [
+          "Correlate invocation with the exact signed package digest."
+        ],
+        "execution_state": "action",
+        "id": "fixture.provider-upgrade.behavior.v1",
+        "inputs": [],
+        "limitations": [
+          "No host imports, artifact inputs, persistence, or network access."
+        ],
+        "outputs": [
+          {
+            "description": "Version-marked provider result.",
+            "name": "result",
+            "type": "artifact.fixture.provider-upgrade-result.v1"
+          }
+        ],
+        "parameters": [
+          {
+            "default": "probe",
+            "description": "Bounded fixture operation label.",
+            "enum": [
+              "probe",
+              "verify"
+            ],
+            "name": "message",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "default": 1,
+            "description": "Bounded fixture repetition count.",
+            "enum": [
+              1,
+              2
+            ],
+            "maximum": 2,
+            "minimum": 1,
+            "name": "repeat_count",
+            "required": false,
+            "type": "integer"
+          }
+        ],
+        "platforms": [
+          "windows"
+        ],
+        "provenance": {
+          "derived": false,
+          "license": "MIT",
+          "notes": "Guest output attests the exact canonical message and repeat_count input.",
+          "reference": "urn:bluefire:fixture:provider-upgrade:sha256:d972456b6b3aa0b55cd8596216b149bcb566abb810568617a0cb2973301959cd",
+          "source": "BlueFire committed deterministic no-import WebAssembly provider fixture"
+        },
+        "purpose": "Expose one stable logical action across provider artifact releases.",
+        "safety_tier": "safe",
+        "schema_version": "bluefire.behavior.v1",
+        "techniques": [
+          "T1204"
+        ],
+        "telemetry": [
+          "fixture.provider-upgrade.completed"
+        ],
+        "title": "Portable provider upgrade"
+      }
+    ],
+    "schema_version": "bluefire.action-package-payload.v2"
+  },
+  "schema_version": "bluefire.action-package.v2",
+  "signature": {
+    "algorithm": "ed25519",
+    "key_id": "fixture-release-2026",
+    "value": "bRYdvlV6_jhnWivZCYHowphX1XyJTc80aaRpFFujmZHNA6rzMn4qhlr4OawvTmae6LIfx6dnexyvnuX-o-3rCQ"
+  }
+}

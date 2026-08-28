@@ -224,10 +224,92 @@ def test_policy_is_fail_closed_and_synthetic_violations_remain_blockers(
         architecture_gate.audit_repository(tmp_path, policy_path=invalid_path)
 
 
+def test_tools_dependencies_and_cycles_are_enforced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "bluefire").mkdir()
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "runner" / "src").mkdir(parents=True)
+    (tmp_path / "bluefire" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "bluefire" / "domain.py").write_text(
+        "import tools.one\nVALUE = tools.one.VALUE\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tools" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "tools" / "one.py").write_text(
+        "from tools import two\nVALUE = two.VALUE\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tools" / "two.py").write_text(
+        "from tools.one import VALUE as ONE_VALUE\nVALUE = ONE_VALUE\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "runner" / "src" / "lib.rs").write_text(
+        "pub const VALUE: u8 = 1;\n", encoding="utf-8"
+    )
+    policy = {
+        "schema_version": "bluefire.architecture-policy.v1",
+        "baseline_commit": "0" * 40,
+        "line_budgets": {"new_file": 100, "existing_file": 100, "exceptions": []},
+        "production_roots": [
+            {"path": "bluefire", "extensions": [".py"]},
+            {"path": "tools", "extensions": [".py"]},
+            {"path": "runner/src", "extensions": [".rs"]},
+        ],
+        "python_layer_rules": [
+            {"layer": "foundation", "patterns": ["bluefire.*"]},
+            {"layer": "acceptance", "patterns": ["tools", "tools.*"]},
+        ],
+        "allowed_python_dependencies": {
+            "foundation": ["foundation"],
+            "acceptance": ["acceptance", "foundation"],
+        },
+        "rust_layers": {"lib": "foundation"},
+        "allowed_rust_dependencies": {"foundation": ["foundation"]},
+        "decomposition_hotspots": {"python": [], "rust": []},
+        "responsibility_markers": {},
+        "custom_crypto_markers": [],
+        "maintained_crypto_markers": [],
+    }
+    policy_path = tmp_path / "architecture-policy.json"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    monkeypatch.setattr(architecture_gate, "_git_object_exists", lambda *_args: True)
+
+    report = architecture_gate.audit_repository(tmp_path, policy_path=policy_path)
+
+    assert report["checks"]["dependency_direction"]["passed"] is False
+    assert {
+        (finding["source"], finding["target"])
+        for finding in report["dependencies"]["findings"]
+        if finding["code"] == "python_dependency_direction"
+    } == {("bluefire.domain", "tools.one")}
+    assert report["checks"]["import_cycles"]["passed"] is False
+    assert report["dependencies"]["python"]["cycles"] == [["tools.one", "tools.two"]]
+    assert report["dependencies"]["python"]["layers"]["tools.__init__"] == "acceptance"
+    edges = {(edge["source"], edge["target"]) for edge in report["dependencies"]["python"]["edges"]}
+    assert {
+        ("bluefire.domain", "tools.one"),
+        ("tools.one", "tools.__init__"),
+        ("tools.one", "tools.two"),
+        ("tools.two", "tools.one"),
+    }.issubset(edges)
+
+
 def test_dynamic_suite_rejects_skipped_tests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def fake_run(command: Sequence[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+    suite_temporary: list[Path] = []
+
+    def fake_run(command: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        environment = kwargs["env"]
+        temporary = Path(environment["TEMP"])
+        assert environment["TMP"] == str(temporary)
+        assert environment["TMPDIR"] == str(temporary)
+        assert temporary.parent == tmp_path
+        suite_temporary.append(temporary)
+        scratch = temporary / "pytest-of-fixture" / "test-case"
+        scratch.mkdir(parents=True)
+        (scratch / "product.sqlite3").write_bytes(b"temporary test store")
         junit_argument = next(item for item in command if item.startswith("--junitxml="))
         Path(junit_argument.partition("=")[2]).write_text(
             '<testsuite tests="1"><testcase classname="suite" name="case">'
@@ -248,6 +330,8 @@ def test_dynamic_suite_rejects_skipped_tests(
     assert report["passed"] is False
     assert report["tests"] == 1
     assert report["skipped_tests"] == ["suite::case"]
+    assert len(suite_temporary) == 1
+    assert not suite_temporary[0].exists()
 
 
 def test_registered_gate_emits_exact_truthful_proofs_and_bound_receipt(

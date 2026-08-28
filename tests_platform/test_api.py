@@ -34,6 +34,7 @@ PACKAGE_ID = "package.managed.v1"
 PACKAGE_VERSION = "1.2.3"
 PUBLISHER_ID = "publisher.managed.v1"
 PUBLISHER_KEY_ID = "release-key.v1"
+PROVIDER_FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "provider_upgrade"
 
 
 class StubService:
@@ -989,6 +990,87 @@ def test_action_package_routes_dispatch_exact_lifecycle_authority() -> None:
                 action,
                 lifecycle_body,
             )
+
+
+def test_provider_package_api_forwards_exact_v2_envelope_and_lifecycle_authority() -> None:
+    envelope = json.loads(
+        (PROVIDER_FIXTURE_ROOT / "provider-1.0.0.signed.json").read_text(encoding="utf-8")
+    )
+    index = json.loads((PROVIDER_FIXTURE_ROOT / "fixture-index.json").read_text(encoding="utf-8"))
+    row = index["packages"][0]
+    package_id = index["package_id"]
+    version = row["version"]
+    install_body = {"envelope": envelope, "installed_by": "provider-api-operator"}
+    activate_body = {
+        "runner_profile_id": "sandbox-execute.v1",
+        "activated_by": "provider-api-operator",
+        "reason": "Verify the exact signed provider fixture through the API route.",
+    }
+    catalog_digest = "sha256:" + "7" * 64
+    lifecycle_body = {
+        "package_digest": row["package_digest"],
+        "expected_catalog_generation": 7,
+        "expected_catalog_digest": catalog_digest,
+        "deactivated_by": "provider-api-operator",
+        "reason": "Verify exact provider deactivation authority.",
+    }
+    removal_body = {
+        **lifecycle_body,
+        "removed_by": "provider-api-operator",
+    }
+    removal_body.pop("deactivated_by")
+
+    with running_server(max_request_body=1024 * 1024) as (server, service):
+        status, _, _ = request(
+            server,
+            "POST",
+            "/api/v1/action-packages",
+            body=install_body,
+        )
+        assert status == 201
+        assert service.calls[-1] == ("install_action_package", install_body)
+
+        status, _, _ = request(
+            server,
+            "POST",
+            f"/api/v1/action-packages/{package_id}/versions/{version}/activate",
+            body=activate_body,
+        )
+        assert status == 200
+        assert service.calls[-1] == (
+            "activate_action_package",
+            package_id,
+            version,
+            activate_body,
+        )
+
+        status, _, _ = request(
+            server,
+            "POST",
+            f"/api/v1/action-packages/{package_id}/versions/{version}/deactivate",
+            body=lifecycle_body,
+        )
+        assert status == 200
+        assert service.calls[-1] == (
+            "deactivate_action_package",
+            package_id,
+            version,
+            lifecycle_body,
+        )
+
+        status, _, _ = request(
+            server,
+            "POST",
+            f"/api/v1/action-packages/{package_id}/versions/{version}/remove",
+            body=removal_body,
+        )
+        assert status == 200
+        assert service.calls[-1] == (
+            "remove_action_package",
+            package_id,
+            version,
+            removal_body,
+        )
 
 
 @pytest.mark.parametrize(

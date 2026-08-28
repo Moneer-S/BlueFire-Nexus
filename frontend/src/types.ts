@@ -116,6 +116,23 @@ export interface CatalogResponse {
   runner_profiles: RunnerProfile[];
 }
 
+export interface ActionPackageProviderLimits {
+  max_module_bytes: number;
+  max_memory_bytes: number;
+  max_input_bytes: number;
+  max_output_bytes: number;
+  fuel: number;
+}
+
+export interface ActionPackageProviderDescriptor {
+  kind: "wasm";
+  provider_id: string;
+  abi_version: string;
+  artifact_sha256: string;
+  artifact_size: number;
+  limits: ActionPackageProviderLimits;
+}
+
 export interface ActionPackageManifest {
   package_id: string;
   version: string;
@@ -135,6 +152,7 @@ export interface ActionPackageManifest {
   safety_tiers: SafetyTier[];
   behavior_ids: string[];
   action_ids: string[];
+  provider?: ActionPackageProviderDescriptor;
 }
 
 export interface ActionPackageTrustSummary {
@@ -166,6 +184,7 @@ export interface ActionPackageInstallation {
   installed_head: boolean;
   active: boolean;
   active_version: string | null;
+  active_package_digest: string | null;
   active_generation: number | null;
   catalog_generation: number;
   catalog_digest: string;
@@ -219,7 +238,7 @@ export interface ActionPackageInventory {
   publishers: ActionPackagePublisherTrust[];
   catalog: ActionPackageCatalog;
   activation_events: ActionPackageActivationEvent[];
-  execution_boundary?: "signed-reviewed-opcodes-only" | string;
+  execution_boundary?: "signed-reviewed-opcodes-and-isolated-wasm-providers" | string;
 }
 
 export interface ActionPackagePublisherEnrollment {

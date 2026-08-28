@@ -21,36 +21,10 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator, Mapping, Protocol, cast, runtime_checkable
 
+from .runner_inventory import RunnerInventoryAuthorityError
+from .runner_inventory import canonical_runner_inventory as _canonical_runner_inventory
 from .util import canonical_json_bytes, content_hash, file_hash
 
-_INVENTORY_IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
-_INVENTORY_MAX_ACTIONS = 512
-_INVENTORY_MAX_PROVIDER_RUNTIMES = 8
-_INVENTORY_MAX_BYTES = 2 * 1024 * 1024
-_INVENTORY_PLATFORMS = frozenset({"linux", "macos", "windows"})
-_ACTION_READINESS = frozenset({"ready", "structural", "unavailable"})
-_PROVIDER_RUNTIME_KINDS = frozenset({"wasm"})
-_PROVIDER_RUNTIME_LIMIT_FIELDS = frozenset(
-    {
-        "max_module_bytes",
-        "max_memory_bytes",
-        "max_input_bytes",
-        "max_output_bytes",
-        "fuel",
-    }
-)
-_PROVIDER_RUNTIME_FIELDS = frozenset(
-    {
-        "kind",
-        "abi_version",
-        "runtime_version",
-        "readiness",
-        "no_host_imports",
-        "hard_limits",
-        "contract_digest",
-    }
-)
-_SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TASK_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 _RECEIVER_TASK_KEY = re.compile(r"^[0-9a-f]{64}$")
 _PROCESS_POLL_SECONDS = 0.025
@@ -868,144 +842,12 @@ class TaskAwareRunnerTransport(RunnerTransport, Protocol):
 
 
 def canonical_runner_inventory(inventory: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Validate and normalize the stable identity-bearing runner inventory.
-
-    The returned document deliberately contains only bounded, non-secret fields.
-    Its digest is therefore safe to surface and stable across JSON key ordering.
-    """
-
-    if not isinstance(inventory, Mapping):
-        raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
-    if inventory.get("schema_version") != "bluefire.runner-inventory.v1":
-        raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
-    runner_id = _inventory_token(inventory.get("runner_id"), maximum=128)
-    runner_version = _inventory_token(inventory.get("runner_version"), maximum=128)
-    action_sdk_version = _inventory_token(inventory.get("action_sdk_version"), maximum=128)
-    receipt_protocol = _inventory_token(inventory.get("receipt_protocol"), maximum=128)
-    platform = inventory.get("platform")
-    raw_actions = inventory.get("actions")
-    raw_provider_runtimes = inventory.get("provider_runtimes", ())
-    if (
-        runner_id is None
-        or runner_version is None
-        or action_sdk_version is None
-        or receipt_protocol is None
-        or not isinstance(platform, str)
-        or platform not in _INVENTORY_PLATFORMS
-        or not isinstance(raw_actions, list)
-        or len(raw_actions) > _INVENTORY_MAX_ACTIONS
-        or not isinstance(raw_provider_runtimes, (list, tuple))
-        or len(raw_provider_runtimes) > _INVENTORY_MAX_PROVIDER_RUNTIMES
-    ):
-        raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
+    """Validate and normalize the stable identity-bearing runner inventory."""
 
     try:
-        source_bytes = canonical_json_bytes(dict(inventory))
-    except (TypeError, ValueError) as exc:
-        raise RunnerReadinessError("Runner inventory is invalid or unsupported.") from exc
-    if len(source_bytes) > _INVENTORY_MAX_BYTES:
-        raise RunnerReadinessError("Runner inventory exceeds the readiness size limit.")
-
-    actions: list[dict[str, str]] = []
-    action_ids: set[str] = set()
-    for raw_action in raw_actions:
-        if not isinstance(raw_action, Mapping):
-            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
-        action_id = _inventory_token(raw_action.get("action_id"), maximum=200)
-        action_version = _inventory_token(raw_action.get("action_version"), maximum=64)
-        readiness = raw_action.get("readiness")
-        if (
-            action_id is None
-            or not _INVENTORY_IDENTIFIER.fullmatch(action_id)
-            or action_version is None
-            or not isinstance(readiness, str)
-            or readiness not in _ACTION_READINESS
-            or action_id in action_ids
-        ):
-            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
-        action_ids.add(action_id)
-        actions.append(
-            {
-                "action_id": action_id,
-                "action_version": action_version,
-                "readiness": readiness,
-                "contract_digest": content_hash(dict(raw_action)),
-            }
-        )
-    actions.sort(key=lambda item: item["action_id"])
-    provider_runtimes: list[dict[str, Any]] = []
-    provider_runtime_ids: set[tuple[str, str]] = set()
-    for raw_runtime in raw_provider_runtimes:
-        if not isinstance(raw_runtime, Mapping) or set(raw_runtime) != _PROVIDER_RUNTIME_FIELDS:
-            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
-        kind = _inventory_token(raw_runtime.get("kind"), maximum=32)
-        abi_version = _inventory_token(raw_runtime.get("abi_version"), maximum=128)
-        runtime_version = _inventory_token(raw_runtime.get("runtime_version"), maximum=128)
-        readiness = raw_runtime.get("readiness")
-        no_host_imports = raw_runtime.get("no_host_imports")
-        raw_limits = raw_runtime.get("hard_limits")
-        contract_digest = raw_runtime.get("contract_digest")
-        if (
-            kind not in _PROVIDER_RUNTIME_KINDS
-            or abi_version is None
-            or not _INVENTORY_IDENTIFIER.fullmatch(abi_version)
-            or runtime_version is None
-            or readiness not in _ACTION_READINESS
-            or no_host_imports is not True
-            or not isinstance(raw_limits, Mapping)
-            or set(raw_limits) != _PROVIDER_RUNTIME_LIMIT_FIELDS
-            or not isinstance(contract_digest, str)
-            or _SHA256_DIGEST.fullmatch(contract_digest) is None
-        ):
-            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
-        identity = (kind, abi_version)
-        if identity in provider_runtime_ids:
-            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
-        provider_runtime_ids.add(identity)
-        limits: dict[str, int] = {}
-        for field in sorted(_PROVIDER_RUNTIME_LIMIT_FIELDS):
-            limit = raw_limits.get(field)
-            if (
-                isinstance(limit, bool)
-                or not isinstance(limit, int)
-                or not 1 <= limit <= (1 << 63) - 1
-            ):
-                raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
-            limits[field] = limit
-        contract = {
-            "kind": kind,
-            "abi_version": abi_version,
-            "runtime_version": runtime_version,
-            "readiness": readiness,
-            "no_host_imports": no_host_imports,
-            "hard_limits": limits,
-        }
-        if content_hash(contract) != contract_digest:
-            raise RunnerReadinessError("Runner inventory is invalid or unsupported.")
-        provider_runtimes.append({**contract, "contract_digest": contract_digest})
-    provider_runtimes.sort(key=lambda item: (str(item["kind"]), str(item["abi_version"])))
-    canonical = {
-        "schema_version": "bluefire.runner-inventory.v1",
-        "runner_id": runner_id,
-        "runner_version": runner_version,
-        "action_sdk_version": action_sdk_version,
-        "receipt_protocol": receipt_protocol,
-        "platform": platform,
-        "source_digest": content_hash(dict(inventory)),
-        "actions": actions,
-    }
-    # Preserve the historical canonical inventory shape for runners that do
-    # not advertise an extension runtime. A provider-capable runner always
-    # emits this field, including an empty list if support is unavailable.
-    if "provider_runtimes" in inventory:
-        canonical["provider_runtimes"] = provider_runtimes
-    try:
-        encoded = canonical_json_bytes(canonical)
-    except (TypeError, ValueError) as exc:
-        raise RunnerReadinessError("Runner inventory is invalid or unsupported.") from exc
-    if len(encoded) > _INVENTORY_MAX_BYTES:
-        raise RunnerReadinessError("Runner inventory exceeds the readiness size limit.")
-    return canonical
+        return _canonical_runner_inventory(inventory)
+    except RunnerInventoryAuthorityError as exc:
+        raise RunnerReadinessError(str(exc)) from exc
 
 
 def runner_inventory_digest(inventory: Mapping[str, Any]) -> str:
@@ -1147,15 +989,6 @@ class InventoryBoundRunner:
             yield
         finally:
             manager.__exit__(None, None, None)
-
-
-def _inventory_token(value: Any, *, maximum: int) -> str | None:
-    if not isinstance(value, str):
-        return None
-    token = value.strip()
-    if not 1 <= len(token) <= maximum or any(ord(character) < 32 for character in token):
-        return None
-    return token
 
 
 def reject_forbidden_execution_keys(value: Any, *, path: str = "$") -> None:

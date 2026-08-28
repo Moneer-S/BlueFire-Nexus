@@ -43,9 +43,15 @@ import {
 type PackageOperation = "activate" | "deactivate" | "remove";
 const MAX_SIGNED_ENVELOPE_BYTES = 1_048_576;
 
+type PackageLifecycleTarget = {
+  version: string;
+  packageDigest: string;
+};
+
 type LifecycleVariables = {
   action: PackageOperation;
   package: ActionPackageInstallation;
+  target: PackageLifecycleTarget;
   actor: string;
   reason: string;
   runnerProfileId?: string;
@@ -81,6 +87,22 @@ function identityLabel(item: ActionPackageInstallation) {
   return `${item.package_id}@${item.version}`;
 }
 
+function targetIdentityLabel(item: ActionPackageInstallation, target: PackageLifecycleTarget) {
+  return `${item.package_id}@${target.version}`;
+}
+
+function providerLimits(item: ActionPackageInstallation) {
+  const limits = item.manifest.provider?.limits;
+  if (!limits) return "Not applicable";
+  return [
+    `${limits.max_module_bytes.toLocaleString()} module bytes`,
+    `${limits.max_memory_bytes.toLocaleString()} memory bytes`,
+    `${limits.max_input_bytes.toLocaleString()} input bytes`,
+    `${limits.max_output_bytes.toLocaleString()} output bytes`,
+    `${limits.fuel.toLocaleString()} fuel`,
+  ].join(" · ");
+}
+
 export function ActionPackagesPage() {
   const queryClient = useQueryClient();
   const inventoryQuery = useQuery({ queryKey: ["action-packages"], queryFn: api.actionPackages });
@@ -108,24 +130,24 @@ export function ActionPackagesPage() {
   });
   const lifecycleMutation = useMutation({
     mutationFn: async (variables: LifecycleVariables) => {
-      const { package: item, actor, reason, catalog } = variables;
+      const { package: item, target, actor, reason, catalog } = variables;
       if (variables.action === "activate") {
-        return api.activateActionPackage(item.package_id, item.version, variables.runnerProfileId ?? "", actor, reason);
+        return api.activateActionPackage(item.package_id, target.version, variables.runnerProfileId ?? "", actor, reason);
       }
       const identity = {
-        package_digest: item.package_digest,
+        package_digest: target.packageDigest,
         expected_catalog_generation: catalog.generation,
         expected_catalog_digest: catalog.catalog_digest,
       };
       return variables.action === "deactivate"
-        ? api.deactivateActionPackage(item.package_id, item.version, identity, actor, reason)
-        : api.removeActionPackage(item.package_id, item.version, identity, actor, reason);
+        ? api.deactivateActionPackage(item.package_id, target.version, identity, actor, reason)
+        : api.removeActionPackage(item.package_id, target.version, identity, actor, reason);
     },
     onSuccess: (_result, variables) => {
       const verb = variables.action === "activate"
         ? variables.package.active_version ? "upgraded" : "activated"
         : variables.action === "deactivate" ? "deactivated" : "removed";
-      setNotice(`${identityLabel(variables.package)} was ${verb}; the catalog inventory has been refreshed.`);
+      setNotice(`${targetIdentityLabel(variables.package, variables.target)} (${variables.target.packageDigest}) was ${verb}; the catalog inventory has been refreshed.`);
       refresh();
     },
   });
@@ -147,6 +169,7 @@ export function ActionPackagesPage() {
   if (inventoryQuery.isError) return <ErrorState title="Action package inventory unavailable" error={inventoryQuery.error} retry={() => inventoryQuery.refetch()} />;
 
   const inventory = inventoryQuery.data;
+  const providerRuntimeEnabled = inventory.execution_boundary === "signed-reviewed-opcodes-and-isolated-wasm-providers";
   const executeProfiles = (catalogQuery.data?.runner_profiles ?? []).filter((profile) => profile.mode === "execute");
   const activeCount = inventory.catalog.packages.length;
   const trustedCount = inventory.publishers.filter((item) => item.trust_state === "trusted").length;
@@ -174,9 +197,11 @@ export function ActionPackagesPage() {
       <Stat label="Lifecycle events" value={inventory.activation_events.length} detail="Immutable activation history" tone="info" />
     </div>
 
-    <Callout tone="warning" title="Signed packages select reviewed native behavior; they do not load executable code">
-      BlueFire verifies the signature, immutable digests, compatibility, publisher trust, and exact alias-to-opcode binding. Activation can only select already compiled and reviewed runner opcodes; package bytes, scripts, and entry points are never executed.
-    </Callout>
+    {providerRuntimeEnabled ? <Callout tone="warning" title="Signed packages use two reviewed execution paths">
+      Opcode-alias packages select already compiled runner operations. Provider activation binds a signed descriptor to the runner&apos;s advertised isolated-WASM contract; dispatch then verifies the immutable module digest, fixed ABI exports, absence of host imports, and signed resource limits. Package scripts, Python entry points, and arbitrary host code are never executed.
+    </Callout> : <Callout tone="warning" title="Isolated provider execution is not reported ready">
+      Provider activation stays unavailable unless the control plane reports the exact signed-opcode and isolated-WASM execution boundary. Installed package metadata remains visible for review.
+    </Callout>}
 
     <Panel className="catalog-authority-panel">
       <PanelHeader eyebrow="Current authorization boundary" title={`Catalog generation ${inventory.catalog.generation}`} detail="Every deactivation and removal is compare-and-swapped against this exact identity." actions={<Badge tone="success" dot>Audited snapshot</Badge>} />
@@ -184,7 +209,7 @@ export function ActionPackagesPage() {
         <DataList items={[
           { label: "Catalog digest", value: <code>{inventory.catalog.catalog_digest}</code> },
           { label: "Authority digest", value: inventory.catalog.authority_digest ? <code>{inventory.catalog.authority_digest}</code> : "Not exposed" },
-          { label: "Execution boundary", value: <Badge tone="warning">{sentence(inventory.execution_boundary ?? "signed-reviewed-opcodes-only")}</Badge> },
+          { label: "Execution boundary", value: <Badge tone="warning">{inventory.execution_boundary ? sentence(inventory.execution_boundary.replaceAll("-", "_")) : "Not reported"}</Badge> },
         ]} />
       </div>
     </Panel>
@@ -197,6 +222,7 @@ export function ActionPackagesPage() {
           item={item}
           catalog={inventory.catalog}
           profiles={executeProfiles}
+          providerRuntimeEnabled={providerRuntimeEnabled}
           busy={lifecycleMutation.isPending}
           onOperation={(variables) => lifecycleMutation.mutateAsync(variables).then(() => undefined)}
         />)}
@@ -215,14 +241,21 @@ export function ActionPackagesPage() {
   </div>;
 }
 
-function PackageCard({ item, catalog, profiles, busy, onOperation }: {
+function PackageCard({ item, catalog, profiles, providerRuntimeEnabled, busy, onOperation }: {
   item: ActionPackageInstallation;
   catalog: ActionPackageCatalog;
   profiles: RunnerProfile[];
+  providerRuntimeEnabled: boolean;
   busy: boolean;
   onOperation: (variables: LifecycleVariables) => Promise<void>;
 }) {
-  const canActivate = !item.active && item.status !== "removed" && item.trust.state === "trusted";
+  const provider = item.manifest.provider;
+  const providerActivationAvailable = !provider || providerRuntimeEnabled;
+  const canActivate = !item.active && item.status !== "removed" && item.trust.state === "trusted" && providerActivationAvailable;
+  const installedTarget = { version: item.version, packageDigest: item.package_digest };
+  const activeTarget = item.active_version && item.active_package_digest
+    ? { version: item.active_version, packageDigest: item.active_package_digest }
+    : null;
   return <article className="package-card">
     <header>
       <span className={`registry-icon ${item.active ? "tier-safe" : item.status === "removed" ? "tier-restricted" : "tier-controlled"}`}><PackageCheck aria-hidden="true" /></span>
@@ -240,26 +273,34 @@ function PackageCard({ item, catalog, profiles, busy, onOperation }: {
       { label: "Signing key", value: <span><code>{item.key_id}</code><small className="block-detail">{item.signer_fingerprint}</small></span> },
       { label: "Platforms", value: item.manifest.platforms.join(", ") || "None" },
       { label: "Capabilities", value: item.manifest.capabilities.join(", ") || "None" },
+      { label: "Execution model", value: provider ? "Signed isolated WASM provider" : "Reviewed native opcode alias" },
+      ...(provider ? [
+        { label: "Provider", value: <span><code>{provider.provider_id}</code><small className="block-detail">{provider.kind.toUpperCase()} · {provider.abi_version}</small></span> },
+        { label: "Signed artifact", value: <span><code>{provider.artifact_sha256}</code><small className="block-detail">{provider.artifact_size.toLocaleString()} bytes · executable bytes remain private</small></span> },
+        { label: "Provider limits", value: providerLimits(item) },
+      ] : []),
       { label: "Safety tiers", value: item.manifest.safety_tiers.map((tier) => <Badge key={tier} tone={tier === "restricted" ? "danger" : tier === "controlled" ? "warning" : "success"}>{tier}</Badge>) },
       { label: "License", value: <span>{item.manifest.license.spdx_id}<small className="block-detail">{item.manifest.license.notice}</small></span> },
       { label: "Installed", value: `${formatDate(item.installed_at)} by ${item.installed_by}` },
-      { label: "Active identity", value: item.active ? <span>Generation {item.active_generation}<small className="block-detail">{item.active_version}</small></span> : item.active_version ? `Version ${item.active_version} remains active` : "Not active" },
+      { label: "Active identity", value: item.active_version ? <span>{item.active ? `Generation ${item.active_generation}` : `Version ${item.active_version} remains active`}<small className="block-detail">{item.active_version} · {item.active_package_digest ?? "Digest unavailable; lifecycle action disabled"}</small></span> : "Not active" },
     ]} />
     <div className="package-chip-row">
       <Badge tone="neutral">{item.manifest.behavior_ids.length} behaviors</Badge>
       <Badge tone="neutral">{item.manifest.action_ids.length} actions</Badge>
     </div>
     <footer>
-      {canActivate ? <PackageOperationDialog item={item} operation="activate" catalog={catalog} profiles={profiles} pending={busy} onConfirm={onOperation} disabled={!profiles.length} /> : null}
-      {item.active ? <PackageOperationDialog item={item} operation="deactivate" catalog={catalog} profiles={profiles} pending={busy} onConfirm={onOperation} /> : null}
-      {item.status !== "removed" ? <PackageOperationDialog item={item} operation="remove" catalog={catalog} profiles={profiles} pending={busy} onConfirm={onOperation} /> : null}
-      {!canActivate && !item.active && item.status !== "removed" ? <span className="package-action-note"><ShieldAlert aria-hidden="true" />Activation requires a currently trusted signer.</span> : null}
+      {canActivate ? <PackageOperationDialog item={item} target={installedTarget} operation="activate" catalog={catalog} profiles={profiles} pending={busy} onConfirm={onOperation} disabled={!profiles.length} /> : null}
+      {activeTarget ? <PackageOperationDialog item={item} target={activeTarget} operation="deactivate" catalog={catalog} profiles={profiles} pending={busy} onConfirm={onOperation} /> : null}
+      {item.status !== "removed" ? <PackageOperationDialog item={item} target={installedTarget} operation="remove" catalog={catalog} profiles={profiles} pending={busy} onConfirm={onOperation} /> : null}
+      {!providerActivationAvailable && !item.active && item.status !== "removed" ? <span className="package-action-note"><ShieldAlert aria-hidden="true" />Activation requires the exact isolated-WASM execution boundary.</span> : null}
+      {providerActivationAvailable && !canActivate && !item.active && item.status !== "removed" ? <span className="package-action-note"><ShieldAlert aria-hidden="true" />Activation requires a currently trusted signer.</span> : null}
     </footer>
   </article>;
 }
 
-function PackageOperationDialog({ item, operation, catalog, profiles, pending, onConfirm, disabled = false }: {
+function PackageOperationDialog({ item, target, operation, catalog, profiles, pending, onConfirm, disabled = false }: {
   item: ActionPackageInstallation;
+  target: PackageLifecycleTarget;
   operation: PackageOperation;
   catalog: ActionPackageCatalog;
   profiles: RunnerProfile[];
@@ -277,9 +318,10 @@ function PackageOperationDialog({ item, operation, catalog, profiles, pending, o
   useEffect(() => {
     if (!profileId && profiles[0]) setProfileId(profiles[0].id);
   }, [profileId, profiles]);
-  const label = operation === "activate" ? packageActionLabel(item) : operation === "deactivate" ? `Deactivate ${item.version}` : `Remove ${item.version}`;
+  const label = operation === "activate" ? packageActionLabel(item) : operation === "deactivate" ? `Deactivate ${target.version}` : `Remove ${target.version}`;
   const irreversible = operation === "remove";
-  const valid = actor.trim() && reason.trim() && confirmed && (operation !== "activate" || profileId) && (!irreversible || typedIdentity === identityLabel(item));
+  const exactIdentity = targetIdentityLabel(item, target);
+  const valid = actor.trim() && reason.trim() && confirmed && (operation !== "activate" || profileId) && (!irreversible || typedIdentity === exactIdentity);
   return <Dialog.Root open={open} onOpenChange={(next) => { setOpen(next); if (next) { setConfirmed(false); setTypedIdentity(""); setLocalError(undefined); } }}>
     <Dialog.Trigger asChild><Button size="small" variant={operation === "remove" ? "danger" : operation === "activate" ? "primary" : "secondary"} disabled={disabled || pending}>{operation === "activate" ? <Power /> : operation === "deactivate" ? <ArchiveX /> : <Trash2 />}{label}</Button></Dialog.Trigger>
     <Dialog.Portal>
@@ -291,23 +333,23 @@ function PackageOperationDialog({ item, operation, catalog, profiles, pending, o
           event.preventDefault();
           setLocalError(undefined);
           try {
-            await onConfirm({ action: operation, package: item, actor: actor.trim(), reason: reason.trim(), runnerProfileId: operation === "activate" ? profileId : undefined, catalog });
+            await onConfirm({ action: operation, package: item, target, actor: actor.trim(), reason: reason.trim(), runnerProfileId: operation === "activate" ? profileId : undefined, catalog });
             setOpen(false);
           } catch (error) {
             setLocalError(error instanceof Error ? error.message : "The lifecycle action was refused.");
           }
         }}>
           <div className="exact-identity-box" aria-label="Exact lifecycle identity">
-            <strong>{identityLabel(item)}</strong>
-            <span>Package digest</span><code>{item.package_digest}</code>
+            <strong>{exactIdentity}</strong>
+            <span>Package digest</span><code>{target.packageDigest}</code>
             <span>Catalog generation</span><code>{catalog.generation}</code>
             <span>Catalog digest</span><code>{catalog.catalog_digest}</code>
           </div>
-          {operation === "activate" ? <Field label="Authenticated Execute runner profile" hint="Activation verifies the package against this runner's current platform, version, identity, and reviewed opcode inventory."><select aria-label="Authenticated Execute runner profile" value={profileId} onChange={(event) => setProfileId(event.target.value)} required disabled={!profiles.length}><option value="" disabled>Select an Execute profile</option>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.id} · {profile.platforms.join(", ")}</option>)}</select></Field> : null}
+          {operation === "activate" ? <Field label="Authenticated Execute runner profile" hint={item.manifest.provider ? "Activation binds the signed provider descriptor to the runner's advertised isolated-WASM ABI, no-host-import contract, hard limits, platform, version, and identity. Module digest, imports, exports, and limits are validated again at dispatch." : "Activation verifies the package against this runner's current platform, version, identity, and reviewed opcode inventory."}><select aria-label="Authenticated Execute runner profile" value={profileId} onChange={(event) => setProfileId(event.target.value)} required disabled={!profiles.length}><option value="" disabled>Select an Execute profile</option>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.id} · {profile.platforms.join(", ")}</option>)}</select></Field> : null}
           <Field label="Operator"><input value={actor} onChange={(event) => setActor(event.target.value)} required autoComplete="off" /></Field>
           <Field label="Reason"><textarea rows={3} value={reason} onChange={(event) => setReason(event.target.value)} required placeholder="Why is this exact lifecycle transition required?" /></Field>
-          {irreversible ? <Field label={`Type ${identityLabel(item)} to confirm`} hint="Removal cannot restore the installed head; historical audit bytes remain retained."><input value={typedIdentity} onChange={(event) => setTypedIdentity(event.target.value)} autoComplete="off" required /></Field> : null}
-          <label className="check-row package-confirm-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>I confirm this exact package version and catalog snapshot. A stale catalog identity must be refused without effects.</span></label>
+          {irreversible ? <Field label={`Type ${exactIdentity} to confirm`} hint="Removal cannot restore the installed head; historical audit bytes remain retained."><input value={typedIdentity} onChange={(event) => setTypedIdentity(event.target.value)} autoComplete="off" required /></Field> : null}
+          <label className="check-row package-confirm-check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /><span>I confirm this exact package version, {exactIdentity} with digest {target.packageDigest}, and catalog snapshot. A stale catalog identity must be refused without effects.</span></label>
           {localError ? <Callout tone="danger" title="Action refused">{localError}</Callout> : null}
           <div className="dialog-actions"><Dialog.Close asChild><Button type="button" variant="ghost">Cancel</Button></Dialog.Close><Button type="submit" variant={irreversible ? "danger" : "primary"} disabled={!valid || pending}>{pending ? "Verifying…" : operation === "activate" ? "Verify & publish generation" : operation === "deactivate" ? "Confirm deactivation" : "Confirm immutable removal"}</Button></div>
         </form>
@@ -343,7 +385,7 @@ function PackageImportDialog({ pending, onInstall }: { pending: boolean; onInsta
   return <Dialog.Root open={open} onOpenChange={setOpen}>
     <Dialog.Trigger asChild><Button variant="primary"><FileUp />Import signed package</Button></Dialog.Trigger>
     <Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content">
-      <div><Dialog.Title>Import signed package</Dialog.Title><Dialog.Description>Select a JSON envelope from disk. BlueFire independently verifies the enrolled publisher key, Ed25519 signature, canonical bytes, manifest, and immutable digest before installation.</Dialog.Description></div>
+      <div><Dialog.Title>Import signed package</Dialog.Title><Dialog.Description>Select a JSON envelope from disk. BlueFire independently verifies the enrolled publisher key, Ed25519 signature, canonical bytes, manifest, and immutable digest before installation. Provider packages additionally bind the signed WASM bytes to their declared digest, size, ABI, and limits.</Dialog.Description></div>
       <Dialog.Close asChild><button className="dialog-close" aria-label="Close dialog"><X /></button></Dialog.Close>
       <form className="dialog-form" onSubmit={async (event) => {
         event.preventDefault(); if (!envelope) return; setSubmitError(undefined);

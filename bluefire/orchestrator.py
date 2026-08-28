@@ -2583,13 +2583,22 @@ class Orchestrator:
     @staticmethod
     def _validate_inventory(plan: ExecutionPlan, inventory: Mapping[str, Any]) -> None:
         requested: set[str] = set()
-        provider_bindings: list[Mapping[str, Any]] = []
+        provider_bindings: dict[tuple[Any, Any], Mapping[str, Any]] = {}
         for step in plan.steps:
             if not step.action_id:
                 continue
             provider = Orchestrator._provider_execution_binding(step)
             if provider is not None:
-                provider_bindings.append(provider)
+                identity = (
+                    provider.get("logical_behavior_id"),
+                    provider.get("logical_action_id"),
+                )
+                existing = provider_bindings.get(identity)
+                if existing is not None and content_hash(existing) != content_hash(provider):
+                    raise OrchestrationError(
+                        "Execute plan binds one provider identity to conflicting contracts"
+                    )
+                provider_bindings[identity] = provider
                 continue
             opcode = Orchestrator._runner_opcode(step)
             if opcode is None:
@@ -2602,7 +2611,7 @@ class Orchestrator:
                     required_action_ids=requested,
                 )
             providers = canonical_provider_bindings(
-                provider_bindings,
+                tuple(provider_bindings.values()),
                 context="planned provider bindings",
             )
             if providers:

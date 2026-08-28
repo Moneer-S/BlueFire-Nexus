@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import hmac
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -200,6 +201,20 @@ def test_provider_only_inventory_skips_builtin_action_validation(
     monkeypatch.setattr(
         "bluefire.orchestrator.validate_builtin_action_inventory",
         fail_builtin_validation,
+    )
+
+    raw_inventory = _runner_inventory()
+    Orchestrator._validate_inventory(plan, raw_inventory)
+    Orchestrator._validate_inventory(plan, canonical_runner_inventory(raw_inventory))
+
+
+def test_repeated_provider_steps_share_one_exact_inventory_binding(tmp_path: Path) -> None:
+    orchestrator, profile, binding = _provider_context(tmp_path)
+    first = _provider_step(orchestrator, binding)
+    second = replace(first, step_id="provider-step-2", parameters={"repeat_count": 2})
+    plan = replace(
+        _provider_plan(orchestrator, profile, binding),
+        steps=(first, second),
     )
 
     raw_inventory = _runner_inventory()

@@ -8,8 +8,11 @@ import { ActionPackagesPage } from "../src/pages/ActionPackages";
 import type { ActionPackageInstallation, ActionPackageInventory } from "../src/types";
 
 const packageDigest = `sha256:${"1".repeat(64)}`;
+const activePackageDigest = `sha256:${"7".repeat(64)}`;
 const contentDigest = `sha256:${"2".repeat(64)}`;
 const catalogDigest = `sha256:${"3".repeat(64)}`;
+const artifactDigest = `sha256:${"6".repeat(64)}`;
+const privateArtifactHex = "0061736d01000000";
 
 function packageRecord(overrides: Partial<ActionPackageInstallation> = {}): ActionPackageInstallation {
   return {
@@ -29,16 +32,31 @@ function packageRecord(overrides: Partial<ActionPackageInstallation> = {}): Acti
       license: { spdx_id: "MIT", notice: "Publisher notice" },
       provenance: { publisher_id: "bluefire.publisher", source: "Reviewed release", reference: "https://packages.example.invalid/release-2", revision: "commit-abc" },
       platforms: ["windows"],
-      capabilities: ["filesystem.read"],
+      capabilities: ["native.execution"],
       safety_tiers: ["safe"],
       behavior_ids: ["publisher.endpoint.observe.v1"],
       action_ids: ["publisher.endpoint.observe.v1"],
+      provider: {
+        kind: "wasm",
+        provider_id: "bluefire.publisher.endpoint-provider.v1",
+        abi_version: "bluefire.provider-abi.v1",
+        artifact_sha256: artifactDigest,
+        artifact_size: 8,
+        limits: {
+          max_module_bytes: 65_536,
+          max_memory_bytes: 1_048_576,
+          max_input_bytes: 4_096,
+          max_output_bytes: 4_096,
+          fuel: 10_000,
+        },
+      },
     },
     installed_by: "operator-install",
     installed_at: "2026-08-26T12:00:00Z",
     installed_head: true,
     active: false,
     active_version: "1.0.0",
+    active_package_digest: activePackageDigest,
     active_generation: 6,
     catalog_generation: 7,
     catalog_digest: catalogDigest,
@@ -80,7 +98,7 @@ function inventory(item = packageRecord()): ActionPackageInventory {
     }],
     catalog: { schema_version: "bluefire.action-catalog-authority.v1", generation: 7, catalog_digest: catalogDigest, authority_digest: `sha256:${"5".repeat(64)}`, packages: [] },
     activation_events: [{ generation: 7, event_id: "event-7", event_type: "deactivated", cause: "operator", package_id: "bluefire.publisher.endpoint-pack", actor: "operator-a", reason: "Upgrade prepared", created_at: "2026-08-26T12:01:00Z" }],
-    execution_boundary: "signed-reviewed-opcodes-only",
+    execution_boundary: "signed-reviewed-opcodes-and-isolated-wasm-providers",
   };
 }
 
@@ -96,13 +114,15 @@ function renderPage() {
 describe("action package management", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("shows the honest execution boundary and verifies an upgrade against an explicit runner profile", async () => {
+  it("shows public isolated-provider metadata and verifies an upgrade against an explicit runner profile", async () => {
     const current = inventory();
+    Object.assign(current.packages[0]!.manifest.provider!, { artifact_hex: privateArtifactHex });
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/action-packages") && init?.method === "POST") return json({ schema_version: "bluefire.action-package-activation.v1", operation: "upgrade", package: { ...current.packages[0], active: true, status: "active" }, catalog: current.catalog });
       if (path.endsWith("/action-packages")) return json(current);
       if (path.endsWith("/catalog")) return json(demoCatalog);
+      if (path.endsWith("/deactivate")) return json({ schema_version: "bluefire.action-package-deactivation.v1", package: { ...current.packages[0], active_version: null, active_package_digest: null }, catalog: current.catalog });
       if (path.endsWith("/activate")) return json({ schema_version: "bluefire.action-package-activation.v1", operation: "upgrade", package: { ...current.packages[0], active: true, status: "active" }, catalog: current.catalog });
       throw new Error(`Unhandled request: ${path}`);
     });
@@ -111,10 +131,42 @@ describe("action package management", () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { name: "Action packages" })).toBeVisible();
-    expect(screen.getByText(/do not load executable code/i)).toBeVisible();
+    expect(screen.getByText("Signed packages use two reviewed execution paths")).toBeVisible();
+    expect(screen.getByText(/dispatch then verifies the immutable module digest/i)).toBeVisible();
+    expect(screen.getByText("Signed reviewed opcodes and isolated wasm providers")).toBeVisible();
     expect(screen.getAllByText(catalogDigest).length).toBeGreaterThan(0);
     expect(screen.getByText("windows")).toBeVisible();
-    expect(screen.getByText("filesystem.read")).toBeVisible();
+    expect(screen.getByText("native.execution")).toBeVisible();
+    expect(screen.getByText("Signed isolated WASM provider")).toBeVisible();
+    expect(screen.getByText("bluefire.publisher.endpoint-provider.v1")).toBeVisible();
+    expect(screen.getByText(/bluefire\.provider-abi\.v1/i)).toBeVisible();
+    expect(screen.getByText(artifactDigest)).toBeVisible();
+    expect(screen.getByText(/executable bytes remain private/i)).toBeVisible();
+    expect(screen.queryByText(/artifact_hex/i)).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(privateArtifactHex);
+    expect(JSON.stringify(current)).toContain("artifact_hex");
+
+    await user.click(screen.getByRole("button", { name: "Deactivate 1.0.0" }));
+    expect(screen.getByRole("heading", { name: "Deactivate 1.0.0" })).toBeVisible();
+    expect(screen.getByLabelText("Exact lifecycle identity")).toHaveTextContent("bluefire.publisher.endpoint-pack@1.0.0");
+    expect(screen.getByLabelText("Exact lifecycle identity")).toHaveTextContent(activePackageDigest);
+    fireEvent.change(screen.getByLabelText("Operator"), { target: { value: "operator-old-deactivate" } });
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Retire the previously active provider version" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /confirm this exact package version/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm deactivation" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/versions/1.0.0/deactivate"))).toBe(true));
+    const oldDeactivation = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/versions/1.0.0/deactivate"));
+    expect(String(oldDeactivation?.[0])).toBe("/api/v1/action-packages/bluefire.publisher.endpoint-pack/versions/1.0.0/deactivate");
+    expect(JSON.parse(String(oldDeactivation?.[1]?.body))).toEqual({
+      package_digest: activePackageDigest,
+      expected_catalog_generation: 7,
+      expected_catalog_digest: catalogDigest,
+      deactivated_by: "operator-old-deactivate",
+      reason: "Retire the previously active provider version",
+    });
+    const deactivationNotice = await screen.findByText(/bluefire\.publisher\.endpoint-pack@1\.0\.0.*was deactivated/i);
+    expect(deactivationNotice).toHaveTextContent(activePackageDigest);
 
     await user.click(screen.getByRole("button", { name: "Upgrade to 2.0.0" }));
     expect(screen.getByRole("heading", { name: "Upgrade to 2.0.0" })).toBeVisible();
@@ -135,8 +187,40 @@ describe("action package management", () => {
     });
   });
 
+  it("activates a first provider version through an explicit isolated-runtime verification", async () => {
+    const item = packageRecord({ active_version: null, active_package_digest: null, active_generation: null });
+    const current = inventory(item);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/action-packages")) return json(current);
+      if (path.endsWith("/catalog")) return json(demoCatalog);
+      if (path.endsWith("/activate") && init?.method === "POST") return json({ schema_version: "bluefire.action-package-activation.v1", operation: "activation", package: { ...item, active: true, status: "active" }, catalog: current.catalog });
+      throw new Error(`Unhandled request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Activate 2.0.0" }));
+    expect(screen.getByText(/binds the signed provider descriptor.*advertised isolated-WASM ABI/i)).toBeVisible();
+    expect(screen.getByText(/validated again at dispatch/i)).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Authenticated Execute runner profile"), { target: { value: "sandbox-execute.v1" } });
+    fireEvent.change(screen.getByLabelText("Operator"), { target: { value: "operator-activate" } });
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Publish the first reviewed provider generation" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /confirm this exact package version/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Verify & publish generation" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/activate"))).toBe(true));
+    const request = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/activate"));
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+      runner_profile_id: "sandbox-execute.v1",
+      activated_by: "operator-activate",
+      reason: "Publish the first reviewed provider generation",
+    });
+  });
+
   it("binds deactivation to the exact immutable package and current catalog snapshot", async () => {
-    const item = packageRecord({ status: "active", active: true, active_version: "2.0.0", active_generation: 7 });
+    const item = packageRecord({ status: "active", active: true, active_version: "2.0.0", active_package_digest: packageDigest, active_generation: 7 });
     const current = inventory(item);
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
@@ -166,9 +250,42 @@ describe("action package management", () => {
     });
   });
 
-  it("imports a file-backed signed envelope without exposing a raw JSON editor", async () => {
+  it("requires the exact package identity before immutable removal", async () => {
+    const item = packageRecord({ active_version: null, active_package_digest: null, active_generation: null });
+    const current = inventory(item);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/action-packages")) return json(current);
+      if (path.endsWith("/catalog")) return json(demoCatalog);
+      if (path.endsWith("/remove") && init?.method === "POST") return json({ schema_version: "bluefire.action-package-removal.v1", package: { ...item, status: "removed" }, catalog: current.catalog, historical_audit_bytes_retained: true });
+      throw new Error(`Unhandled request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Remove 2.0.0" }));
+    expect(screen.getByText(/retaining the immutable bytes required for historical audit/i)).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Operator"), { target: { value: "operator-remove" } });
+    fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "Retire the provider package" } });
+    fireEvent.change(screen.getByLabelText(/Type bluefire\.publisher\.endpoint-pack@2\.0\.0 to confirm/), { target: { value: "bluefire.publisher.endpoint-pack@2.0.0" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /confirm this exact package version/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm immutable removal" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/remove"))).toBe(true));
+    const request = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/remove"));
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+      package_digest: packageDigest,
+      expected_catalog_generation: 7,
+      expected_catalog_digest: catalogDigest,
+      removed_by: "operator-remove",
+      reason: "Retire the provider package",
+    });
+  });
+
+  it("forwards a file-backed v2 provider envelope to backend verification without a raw editor", async () => {
     const current = inventory();
-    const envelope = { schema_version: "bluefire.action-package-envelope.v1", manifest: current.packages[0]!.manifest, payload: {}, integrity: { algorithm: "sha256", content_digest: contentDigest }, signature: { algorithm: "ed25519", key_id: "release-2026", value: "signature" } };
+    const envelope = { schema_version: "bluefire.action-package.v2", manifest: current.packages[0]!.manifest, payload: { schema_version: "bluefire.action-package-payload.v2", behaviors: [], actions: [], artifact_hex: privateArtifactHex }, integrity: { algorithm: "sha256", content_digest: contentDigest }, signature: { algorithm: "ed25519", key_id: "release-2026", value: "signature" } };
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/action-packages") && init?.method === "POST") return json({ schema_version: "bluefire.action-package-install.v1", package: current.packages[0], catalog_changed: false, activation_required: true });
@@ -192,6 +309,26 @@ describe("action package management", () => {
     await waitFor(() => expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith("/action-packages") && init?.method === "POST")).toHaveLength(1));
     const request = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith("/action-packages") && init?.method === "POST");
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({ envelope, installed_by: "operator-import" });
+  });
+
+  it("fails closed when the server does not report isolated provider support", async () => {
+    const current = inventory();
+    current.execution_boundary = "signed-reviewed-opcodes-only";
+    current.packages[0]!.active_package_digest = null;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/action-packages")) return json(current);
+      if (path.endsWith("/catalog")) return json(demoCatalog);
+      throw new Error(`Unhandled request: ${path}`);
+    }));
+    renderPage();
+
+    expect(await screen.findByText("Isolated provider execution is not reported ready")).toBeVisible();
+    expect(screen.getByText("Signed reviewed opcodes only")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Upgrade to 2.0.0" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Deactivate 1.0.0" })).not.toBeInTheDocument();
+    expect(screen.getByText(/digest unavailable; lifecycle action disabled/i)).toBeVisible();
+    expect(screen.getByText("Activation requires the exact isolated-WASM execution boundary.")).toBeVisible();
   });
 
   it("refuses an oversized signed envelope before reading it into browser memory", async () => {

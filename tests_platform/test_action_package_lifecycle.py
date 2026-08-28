@@ -326,6 +326,7 @@ def test_local_trust_install_idempotency_upgrade_and_restart(tmp_path: Path) -> 
     assert duplicate["trust"]["state"] == "trusted"
     assert duplicate["active"] is False
     assert duplicate["active_version"] is None
+    assert duplicate["active_package_digest"] is None
     assert len(store.list_action_package_lifecycle_events(PACKAGE_ID)) == 1
 
     second = store.install_action_package(
@@ -827,7 +828,10 @@ def test_activation_upgrade_removal_and_exact_historical_recovery(tmp_path: Path
 
     store.install_action_package(_verified(store, key, "1.2.4"), installed_by="operator")
     assert store.get_action_package(PACKAGE_ID, "1.2.3")["active"] is True
-    assert store.get_action_package(PACKAGE_ID)["active_version"] == "1.2.3"
+    public_head = store.list_action_packages()[0]
+    assert public_head["active_version"] == "1.2.3"
+    assert public_head["active_package_digest"] == first_active["package_digest"]
+    assert "canonical_envelope_bytes" not in public_head
     second_preflight = store.prepare_action_package_activation(
         PACKAGE_ID,
         "1.2.4",

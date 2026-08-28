@@ -1,11 +1,12 @@
 # Action SDK
 
-BlueFire has two related action contracts:
+BlueFire has three related action contracts:
 
 1. the **logical action** in `bluefire/catalog/actions.yaml`, used by scenarios and the Python planner;
-2. the **executor action descriptor** in the Rust static registry, exposed as `bluefire.runner-action-sdk.v1`.
+2. the **built-in executor action descriptor** in the Rust static registry, exposed as `bluefire.runner-action-sdk.v1`;
+3. the **signed provider action contract**, exposed as `bluefire.provider-action-contract.v1` and bound to a `bluefire.wasm-provider-program.v1` record inside an immutable action-package version.
 
-They are intentionally different. Logical parameters and typed artifacts must pass through an explicit `RunnerActionAdapter`; a scenario cannot supply runner paths, process arguments, sockets, or receipt internals directly.
+They are intentionally different. Logical parameters and typed artifacts must cross an explicit reviewed binding: a `RunnerActionAdapter` for built-ins or the exact signed provider program/action-contract digest for providers. A scenario cannot supply runner paths, process arguments, sockets, receipt internals, or executable bytes directly.
 
 ## Rust descriptor
 
@@ -34,8 +35,11 @@ Every compiled `ActionDescriptor` declares:
 Read the live inventory rather than copying this table into tooling:
 
 ```bash
-cargo run --release --manifest-path runner/Cargo.toml -- inventory --json
+python tools/build_native_runner.py
+./runner/target/release/bluefire-runner inventory --json
 ```
+
+On Windows, invoke `.\runner\target\release\bluefire-runner.exe inventory --json` after the build.
 
 ## Runtime trait
 
@@ -58,6 +62,14 @@ pub trait PreparedAction: Send {
 `prepare` strictly deserializes action-specific parameters using Serde `deny_unknown_fields`. Shared runner preflight validates manifest/profile identity, action registration, behavior compatibility, platform, capabilities, tier, scope, approval, lifetime, limits, cleanup binding, and request/profile digests before `execute` is called.
 
 Observation is expressed through descriptor hints and separate collectors; an action must not label its own result `observed`. Cleanup is a separately registered action that accepts receipt IDs, not arbitrary paths.
+
+## Signed provider descriptor and runtime ABI
+
+A provider-backed action uses the same strict logical `bluefire.action.v1` definition, but its immutable package version also binds a provider ID, `bluefire.provider-abi.v1`, the exact WebAssembly artifact SHA-256 and byte size, and explicit module, memory, input, output, and fuel limits. The action-contract digest covers the action's typed inputs, outputs, parameters, capabilities, tier, platforms, mutation flag, and cleanup relationship. Installation verifies the package signature and content digest; activation then binds the exact package version and provider contract to the selected runner inventory.
+
+The runner inventory advertises the provider runtime kind, ABI, runtime version, readiness, no-host-import guarantee, hard limits, and contract digest. Execution proceeds only when all signed limits fit within that exact advertised contract. ABI v1 accepts a version-1 WebAssembly module with no imports and exactly two exports: 32-bit memory named `memory` and `bluefire_provider_run_v1` with type `(i32, i32) -> i64`. The host writes canonical typed input JSON at offset zero; the packed return value identifies bounded output JSON, which must conform to `bluefire.provider-action-output.v1` and the signed logical output contract.
+
+This is not a generic plugin, script, command, Python, native-library, or host-function interface. A module with imports, an unexpected export, a mismatched digest or ABI, an unbound activation/inventory contract, or an exceeded limit is refused.
 
 ## Logical catalog contract
 
@@ -122,7 +134,7 @@ Export maps `ephemeral` and `review` to separate fixed runner-owned paths. Both 
 
 If an action creates any owned object before a partial result, it must return the corresponding committed receipt. The control plane authenticates its exact schema, bounds, request/action/profile/workspace binding, filename digest, and commit before treating a successful, partial, or timed-out mutation as cleanup-owned. A valid intent without a commit remains available only for failed or cancelled recovery. Never convert partial or timeout into success to simplify graph routing. Cleanup's `output` and `cleanup` fields carry the same authoritative report, including whether verification ran and counts for verified removed paths, verified absent paths, and removed receipts.
 
-## Adding an action
+## Adding a compiled built-in action
 
 An action is complete only when all layers agree:
 
@@ -156,3 +168,5 @@ At minimum, test refusal for:
 ## Prohibited interfaces
 
 Do not add a generic `command`, `shell`, `script`, `payload`, `interpreter`, `binary`, `url`, `hostname`, `proxy`, `redirect`, dynamic-library, or arbitrary plugin executor. A new capability must be a reviewed, typed, versioned action with an explicit effect and cleanup model.
+
+The only portable executable extension is the signed provider contract above. Its artifact is never accepted as a caller-selected generic payload: signature, package content digest, provider/action contract, artifact digest and size, ABI, activation, runner inventory, and limits must all match before the no-host-import runtime executes it.
