@@ -136,6 +136,7 @@ class SimulationRegistry:
         base_limitations = (
             "Synthetic projection only; no Rust runner action or host effect occurred.",
         )
+        limitations = base_limitations
         artifacts: dict[str, Any]
         telemetry: tuple[str, ...]
         if simulation_id == "simulation.sandbox.execution.native-canary.v1":
@@ -390,6 +391,73 @@ class SimulationRegistry:
                 }
             }
             telemetry = ("sandbox.collection.staged",)
+        elif simulation_id == "simulation.sandbox.peer.handoff.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset({"port"}),
+                context="peer handoff simulation",
+            )
+            _, bundle_path, bundle_hash, bundle_size = _simulated_bundle(bound_inputs.get("bundle"))
+            port = _bounded_integer(step.parameters.get("port", 4317), "port", 1024, 65535)
+            artifacts = {
+                "receipt": {
+                    "type": "artifact.sandbox.peer-handoff.receipt.v1",
+                    "transport": "simulated_authenticated_loopback",
+                    "artifact": bundle_path,
+                    "content_hash": bundle_hash,
+                    "size": bundle_size,
+                    "destination": {"host": "127.0.0.1", "port": port},
+                    "would_authenticate": True,
+                    "receiver_stored": False,
+                    "synthetic": True,
+                }
+            }
+            telemetry = ("sandbox.peer.handoff_attempted",)
+            limitations = base_limitations + (
+                "No peer was contacted and no authentication exchange or transfer occurred.",
+            )
+        elif simulation_id == "simulation.sandbox.observability.variant.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset({"representation"}),
+                context="observability variant simulation",
+            )
+            _, bundle_path, bundle_hash, bundle_size = _simulated_bundle(bound_inputs.get("bundle"))
+            representation = _choice(
+                step.parameters.get("representation", "canonical"),
+                "representation",
+                frozenset({"canonical", "chunked_hex"}),
+            )
+            encoded_size = bundle_size * 2
+            newline_count = (encoded_size - 1) // 64 if representation == "chunked_hex" else 0
+            variant_size = encoded_size + newline_count
+            variant_hash = content_hash(
+                {
+                    "representation": representation,
+                    "source_content_hash": bundle_hash,
+                    "source_path": bundle_path,
+                    "source_size": bundle_size,
+                    "variant_size": variant_size,
+                }
+            )
+            artifacts = {
+                "variant": {
+                    "type": "artifact.sandbox.observability.variant.v1",
+                    "path": _SIMULATED_OBSERVABILITY_VARIANT_PATH,
+                    "representation": representation,
+                    "source_path": bundle_path,
+                    "source_content_hash": bundle_hash,
+                    "source_size": bundle_size,
+                    "content_hash": variant_hash,
+                    "size": variant_size,
+                    "equivalence_verified": True,
+                    "synthetic": True,
+                }
+            }
+            telemetry = ("sandbox.observability.variant_created",)
+            limitations = base_limitations + (
+                "No representation file was created; equivalence is a deterministic projection.",
+            )
         elif simulation_id == "simulation.sandbox.network.loopback.v1":
             bundle = _mapping(bound_inputs.get("bundle"), "bundle")
             bundle_hash = bundle.get("content_hash")
@@ -468,7 +536,7 @@ class SimulationRegistry:
                 "artifact_digest": content_hash(artifacts),
                 "side_effects_started": False,
             },
-            limitations=base_limitations,
+            limitations=limitations,
         )
 
 
