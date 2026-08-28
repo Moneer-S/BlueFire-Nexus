@@ -189,11 +189,16 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
                 if isinstance(value, int) and not isinstance(value, bool)
             }
     objective_reached = bool(snapshot.get("objective_reached", False))
+    target_scope = (
+        snapshot.get("authorized_target_scope")
+        if "authorized_target_scope" in snapshot
+        else snapshot.get("target_scope")
+    )
     return {
         "run_id": snapshot.get("run_id"),
         "mode": snapshot.get("mode"),
         "profile_id": snapshot.get("runner_profile_id"),
-        "target_scope": _target_scope_summary(snapshot.get("target_scope")),
+        "target_scope": _target_scope_summary(target_scope),
         "replay_lineage": _replay_lineage_summary(snapshot.get("replay")),
         "catalog_authority": _catalog_authority_summary(snapshot),
         "path": path,

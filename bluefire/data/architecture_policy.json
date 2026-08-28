@@ -29,6 +29,8 @@
       "layer": "release",
       "patterns": [
         "bluefire.architecture_gate",
+        "bluefire.install_gate",
+        "bluefire.install_gate_validation",
         "bluefire.product_acceptance*",
         "bluefire.product_gates",
         "bluefire.provider_gate",

@@ -274,6 +274,7 @@ def test_canonical_gate_dispatcher_emits_bound_failure_until_real_workflow_exist
 ) -> None:
     contract = acceptance.load_release_contract()
     gate = contract.gates[0]
+    monkeypatch.delitem(product_gates._WORKFLOWS, gate.gate_id)
     evidence_dir = tmp_path / "gate-01"
     evidence_dir.mkdir()
     receipt = evidence_dir / "gate-receipt.json"

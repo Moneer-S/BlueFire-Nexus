@@ -201,15 +201,37 @@ class FilesystemCollector:
                     )
                 break
             try:
+                observed = self._observer.observe_file(
+                    relative_path=relative_path,
+                    run_id=request.run_id,
+                    step_id=request.step_id,
+                    behavior_id=request.behavior_id,
+                    action_id=request.action_id or "collector.filesystem.observe.v1",
+                    runner_profile_id=request.runner_profile_id,
+                    parent_evidence_ids=request.parent_evidence_ids,
+                )
                 records.append(
-                    self._observer.observe_file(
-                        relative_path=relative_path,
-                        run_id=request.run_id,
-                        step_id=request.step_id,
-                        behavior_id=request.behavior_id,
-                        action_id=request.action_id or "collector.filesystem.observe.v1",
-                        runner_profile_id=request.runner_profile_id,
-                        parent_evidence_ids=request.parent_evidence_ids,
+                    EvidenceRecord.create(
+                        run_id=observed.run_id,
+                        step_id=observed.step_id,
+                        behavior_id=observed.behavior_id,
+                        action_id=observed.action_id,
+                        provenance=observed.provenance,
+                        producer=self.descriptor.id,
+                        runner_profile_id=observed.runner_profile_id,
+                        environment={
+                            **observed.environment,
+                            "collector_id": self.descriptor.id,
+                            "collector_version": self.descriptor.version,
+                        },
+                        timestamp=observed.timestamp,
+                        parent_evidence_ids=observed.parent_evidence_ids,
+                        content={**observed.content, "collector_id": self.descriptor.id},
+                        confidence=observed.confidence,
+                        limitations=(
+                            "independent filesystem metadata and digest observation only",
+                        ),
+                        target_scope_ref=observed.target_scope_ref,
                     )
                 )
             except (EvidenceError, OSError) as exc:

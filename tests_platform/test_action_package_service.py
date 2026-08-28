@@ -462,6 +462,77 @@ def test_exact_execute_replay_refuses_when_source_package_authority_is_inactive(
     assert runner.execute_calls == 1
 
 
+def test_exact_execute_replay_gets_fresh_collector_bound_approval(
+    package_service: tuple[BlueFireService, PackageRecordingRunner, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, runner, _sandbox = package_service
+    key = Ed25519PrivateKey.generate()
+    _trust(service, key)
+    _install(service, key, "1.2.3")
+    _activate(service, "1.2.3")
+    profile = _execute_profile(service)
+    collector_ids = ("collector.filesystem.sandbox.v1",)
+    source = service.run(
+        {
+            "scenario": _package_scenario(),
+            "mode": "execute",
+            "runner_profile_id": profile.id,
+            "autonomy": "off",
+            "target_scope": {"scope_refs": list(profile.scope)},
+            "collectors": list(collector_ids),
+            "approval": {"confirmed": True, "approved_by": "source-reviewer"},
+        }
+    )
+
+    approval_calls: list[Mapping[str, Any] | None] = []
+    run_collector_calls: list[tuple[str, ...] | None] = []
+    original_bind = service._bind_and_consume_approval
+    original_run = Orchestrator.run
+
+    def capture_approval(**kwargs: Any) -> Mapping[str, Any]:
+        context = kwargs.get("context")
+        approval_calls.append(dict(context) if isinstance(context, Mapping) else None)
+        return original_bind(**kwargs)
+
+    def capture_run(
+        orchestrator: Orchestrator,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Mapping[str, Any]:
+        value = kwargs.get("collector_ids")
+        run_collector_calls.append(tuple(value) if value is not None else None)
+        return original_run(orchestrator, *args, **kwargs)
+
+    monkeypatch.setattr(service, "_bind_and_consume_approval", capture_approval)
+    monkeypatch.setattr(Orchestrator, "run", capture_run)
+    replay = service.replay(
+        str(source["run_id"]),
+        {
+            "exact": True,
+            "target_scope": {"scope_refs": list(profile.scope)},
+            "collectors": list(collector_ids),
+            "approval": {"confirmed": True, "approved_by": "replay-reviewer"},
+        },
+    )
+
+    assert approval_calls == [
+        {
+            "replay": replay["replay"],
+            "resume_from_step_id": None,
+            "collector_binding": {
+                "schema_version": "bluefire.collector-binding.v1",
+                "collectors": list(collector_ids),
+                "authority": "declared-per-run-observable-artifacts",
+            },
+        }
+    ]
+    assert run_collector_calls == [collector_ids]
+    assert replay["approval"]["approval_id"] != source["approval"]["approval_id"]
+    assert replay["approval"]["state_digest"] != source["approval"]["state_digest"]
+    assert runner.execute_calls == 2
+
+
 def test_interrupted_package_replay_recovers_with_its_exact_catalog_authority(
     package_service: tuple[BlueFireService, PackageRecordingRunner, Path],
     monkeypatch: pytest.MonkeyPatch,

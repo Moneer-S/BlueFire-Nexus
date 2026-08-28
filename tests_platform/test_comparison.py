@@ -23,6 +23,7 @@ def _run(
     evidence: list[dict[str, Any]] | None = None,
     replay: dict[str, Any] | None = None,
     target_scope: dict[str, Any] | None = None,
+    authorized_target_scope: Any = _UNBOUND,
 ) -> str:
     policy: dict[str, Any] = {"schema_version": "bluefire.run-policy.v1"}
     if catalog_authority is not _UNBOUND:
@@ -56,6 +57,9 @@ def _run(
             ),
             "replay": replay,
             "target_scope": target_scope,
+            "authorized_target_scope": (
+                target_scope if authorized_target_scope is _UNBOUND else authorized_target_scope
+            ),
             "steps": [
                 {
                     "step_id": "observe",
@@ -325,6 +329,64 @@ def test_comparison_reports_sanitized_replay_variant_and_target_scope_delta(
     assert "replay_variant_changed" in delta["signals"]
     assert "target_scope_changed" in delta["signals"]
     assert "sensitive defense note" not in encoded
+
+
+def test_comparison_summarizes_canonical_authorized_target_scope(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    baseline = _run(
+        store,
+        objective=True,
+        observed=1,
+        detection_matches=0,
+        benign_matches=0,
+        autonomy="off",
+        target_scope={"scope_refs": ["requested.one", "requested.two"]},
+        authorized_target_scope={"scope_refs": ["sandbox.workspace"]},
+    )
+    candidate = _run(
+        store,
+        objective=True,
+        observed=1,
+        detection_matches=0,
+        benign_matches=0,
+        autonomy="off",
+        target_scope={"scope_refs": ["requested.one"]},
+        authorized_target_scope={"scope_refs": ["sandbox.workspace", "lab.identity"]},
+    )
+
+    comparison = compare_runs(store, [baseline, candidate])
+
+    assert comparison["summaries"][0]["target_scope"]["scope_ref_count"] == 1
+    assert comparison["summaries"][1]["target_scope"]["scope_ref_count"] == 2
+    assert comparison["deltas"][0]["target_scope_changed"] is True
+    assert "target_scope" in comparison["deltas"][0]["configuration_changes"]
+
+
+def test_comparison_does_not_substitute_requested_scope_for_invalid_authority(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    run_ids = [
+        _run(
+            store,
+            objective=True,
+            observed=1,
+            detection_matches=0,
+            benign_matches=0,
+            autonomy="off",
+            target_scope={"scope_refs": [requested]},
+            authorized_target_scope=None,
+        )
+        for requested in ("requested.one", "requested.two")
+    ]
+
+    comparison = compare_runs(store, run_ids)
+
+    assert [row["target_scope"]["state"] for row in comparison["summaries"]] == [
+        "not_recorded",
+        "not_recorded",
+    ]
+    assert comparison["deltas"][0]["target_scope_changed"] is False
 
 
 def test_comparison_reports_deterministic_catalog_authority_lineage(tmp_path: Path) -> None:

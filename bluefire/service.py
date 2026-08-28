@@ -3875,6 +3875,8 @@ class BlueFireService:
                 raise ReplayError("source run bundle failed integrity validation")
             source = self.store.get_run(run_id)
             mode = ExecutionMode(str(source.get("mode", "simulate")))
+            collector_ids = self._collector_ids(request, mode=mode)
+            collector_binding = self._collector_binding(collector_ids)
             exact = bool(request.get("exact", False))
             source_catalog_authority = self._run_catalog_authority(source)
             replay_catalog, replay_catalog_authority = (
@@ -3983,6 +3985,7 @@ class BlueFireService:
                     context={
                         "replay": replay_record,
                         "resume_from_step_id": prepared.resume_from_step_id,
+                        "collector_binding": collector_binding,
                     },
                     runner_readiness=runner_readiness,
                     action_implementations=resolved_replay_actions,
@@ -3999,6 +4002,7 @@ class BlueFireService:
                 replay_approval_context = {
                     "replay": replay_record,
                     "resume_from_step_id": prepared.resume_from_step_id,
+                    "collector_binding": collector_binding,
                 }
                 replay_approval_id = str(approval_record["approval_id"])
                 self._bind_execution_workspace(
@@ -4035,6 +4039,7 @@ class BlueFireService:
                 seed_artifacts=prepared.seed_artifacts,
                 action_implementations=resolved_replay_actions,
                 runner_readiness=runner_readiness,
+                collector_ids=collector_ids,
                 checkpoint=(
                     self._execution_checkpoint(replay_approval_id, None)
                     if replay_approval_id is not None

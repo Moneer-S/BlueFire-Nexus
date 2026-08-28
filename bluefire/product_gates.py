@@ -28,6 +28,17 @@ class GateWorkflowResult:
 GateWorkflow = Callable[[GateDefinition, Path], GateWorkflowResult]
 
 
+def _gate_01_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowResult:
+    from .install_gate import run_gate_01
+
+    outcome = run_gate_01(gate, evidence_dir)
+    return GateWorkflowResult(
+        status=outcome.status,
+        proofs=outcome.proofs,
+        failure_reason=outcome.failure_reason,
+    )
+
+
 def _gate_02_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowResult:
     from .provider_gate import run_gate_02
 
@@ -55,6 +66,7 @@ def _gate_10_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowR
 # Gate implementations are added here only after their dynamic workflow and
 # focused tests exist. Missing gates retain the explicit failing baseline.
 _WORKFLOWS: dict[str, GateWorkflow] = {
+    "GATE-01": _gate_01_workflow,
     "GATE-02": _gate_02_workflow,
     "GATE-10": _gate_10_workflow,
 }

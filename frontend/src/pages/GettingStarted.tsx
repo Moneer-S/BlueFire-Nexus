@@ -53,13 +53,9 @@ export function GettingStartedPage() {
       <PageHeader
         eyebrow="First-run guide"
         title="Prove the safe path first"
-        description="Confirm the local control plane, complete one deterministic Simulate run, review its durable record, then prepare Execute only if you have a disposable runner-owned sandbox."
+        description="Confirm the local control plane, complete one deterministic Simulate run, or follow the guided local Execute path when you have an authorized disposable runner-owned sandbox."
         actions={
-          <Link to="/runs">
-            <Button variant="primary">
-              <Play aria-hidden="true" /> Configure Simulate
-            </Button>
-          </Link>
+          <><Link to="/runs"><Button variant="primary"><Play aria-hidden="true" /> Configure Simulate</Button></Link><Link to="/runs#guided-execute"><Button variant="secondary"><ShieldAlert aria-hidden="true" /> Prepare guided Execute</Button></Link></>
         }
       />
       {DEMO_MODE ? (
@@ -153,7 +149,9 @@ export function GettingStartedPage() {
           />
           <Callout title="Execute remains a separate decision">
             A completed Simulate run does not prove the Rust runner, host controls, or independent
-            collectors. Execute requires a fresh identity/inventory/sandbox probe and exact approval.
+            collectors. The guided Execute path performs a fresh identity/inventory/sandbox probe,
+            selects a seeded sandbox scenario, preflights the exact intent, and still requires a
+            fresh one-time job approval.
           </Callout>
         </Panel>
       </div>

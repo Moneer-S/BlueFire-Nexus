@@ -24,7 +24,8 @@ const executePreflight: PreflightReport = {
   approval_binding: { state_digest: "state-digest-test", plan_digest: "plan-digest-test", target_scope_digest: "scope-digest-test", profile_id: "sandbox-execute.v1", maximum_tier: "controlled" },
   approval_envelope: { schema_version: "bluefire.approval-envelope.v1", scenario_id: demoScenario.id, envelope_digest: "envelope-digest-test", steps: [{ step_id: "place_fixture", options: [{ behavior_id: envelopeBehavior.id, is_primary: true, contract_digest: "behavior-digest-test", contract: envelopeBehavior as unknown as Record<string, unknown>, resolved_parameters: {}, actions: [{ action_id: envelopeAction.id, contract_digest: "action-digest-test", contract: envelopeAction as unknown as Record<string, unknown> }] }] }] },
 };
-const executeJob = { schema_version: "bluefire.job.v1", job_id: "job-0123456789abcdef0123456789abcdef", kind: "scenario.run", state: "awaiting_approval", request: {}, progress: { phase: "awaiting_approval" }, result_ref: null, error: null } as const;
+const executeApprovalRequest = { approval_id: "approval-test", status: "pending", expires_at: "2030-01-01T00:00:00Z", ...executePreflight.approval_binding! } as const;
+const executeJob = { schema_version: "bluefire.job.v1", job_id: "job-0123456789abcdef0123456789abcdef", kind: "scenario.run", state: "awaiting_approval", request: { approval_request_id: executeApprovalRequest.approval_id }, progress: { phase: "awaiting_approval", approval_request_id: executeApprovalRequest.approval_id }, result_ref: null, error: null } as const;
 const proposalJob = { ...executeJob, job_id: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", progress: { phase: "awaiting_approval", approval_kind: "ai_proposal", proposal_record_id: "proposal-review-0123456789abcdef0123456789abcdef" } } as const;
 const proposalReview = { schema_version: "bluefire.ai-proposal-review.v1", proposal_record_id: "proposal-review-0123456789abcdef0123456789abcdef", job_id: proposalJob.job_id, source_run_id: "run-source", source_proposal_id: "proposal-source", state_digest: "sha256:" + "1".repeat(64), plan_digest: "sha256:" + "2".repeat(64), proposal_digest: "sha256:" + "3".repeat(64), status: "pending", record: { allowed_step_ids: ["discover"], allowed_behavior_ids: ["endpoint.discovery.system.v1"], proposal: { proposal_id: "proposal-source", proposal_type: "select_registered", selected_step_id: "discover", selected_behavior_id: "endpoint.discovery.system.v1", selected_action_id: null, rationale: "Registered compatible alternate" } }, resolution: null, created_at: "2030-01-01T00:00:00Z" } as const;
 const richComparison: ComparisonResponse = {
@@ -184,7 +185,7 @@ describe("product application", () => {
       if (path.endsWith("/settings/ui.preferences")) return json({ schema_version: "bluefire.setting.v1", setting: { key: "ui.preferences", value: JSON.parse(String(init?.body)).value, updated_at: "2030-01-01T00:00:00Z" } });
       if (path.endsWith("/ai/drafts")) return json({ schema_version: "bluefire.ai-graph-draft-result.v1", draft_id: "ai-draft-test", saved: false, scenario: { ...demoScenario, title: "Registered draft", layout: undefined }, rationale: "Normalized from registered contracts.", assumptions: ["Operator review required."], audit: { schema_version: "bluefire.ai-graph-draft-audit.v1", unsaved: true, provider: { effective_provider_id: "deterministic-offline.v1", model: "deterministic-planner.v1", used_fallback: false }, selected_behavior_ids: demoScenario.steps.map((step) => step.behavior_id), normalization: { artifact_bindings_added: 4 }, validation: { registered_behaviors_only: true } } });
       if (path.endsWith("/runs/preflight")) return json(executePreflight);
-      if (path.endsWith("/runs") && init?.method === "POST") return json({ schema_version: "bluefire.run-job-submission.v1", job: executeJob, approval_request: { approval_id: "approval-test", expires_at: "2030-01-01T00:00:00Z" }, preflight: executePreflight });
+      if (path.endsWith("/runs") && init?.method === "POST") return json({ schema_version: "bluefire.run-job-submission.v1", job: executeJob, approval_request: executeApprovalRequest, preflight: executePreflight });
       if (path.endsWith("/comparisons")) return json(richComparison);
       const runDetailMatch = path.match(/\/runs\/([^/?]+)$/);
       if (runDetailMatch) {
@@ -193,7 +194,7 @@ describe("product application", () => {
         if (run) return json(run);
       }
       if (path.endsWith("/proposals")) return json({ schema_version: "bluefire.ai-proposal-review-list.v1", job_id: proposalJob.job_id, proposals: [proposalReview] });
-      if (path.endsWith("/accept")) return json({ schema_version: "bluefire.ai-proposal-decision.v1", job: { ...proposalJob, progress: { phase: "awaiting_approval", approval_kind: "ai_proposal_execute", proposal_record_id: proposalReview.proposal_record_id } }, proposal: { ...proposalReview, status: "accepted", resolution: { decision: "accepted", continuation: { execute_approval_binding_digest: "sha256:" + "4".repeat(64), selected_behavior_id: "endpoint.discovery.system.v1" } } }, approval_request: { approval_id: "approval-fresh", state_digest: "sha256:" + "5".repeat(64), plan_digest: "sha256:" + "6".repeat(64), target_scope_digest: "sha256:" + "7".repeat(64), profile_id: "sandbox-execute.v1", maximum_tier: "controlled", expires_at: "2030-01-01T00:00:00Z" } });
+      if (path.endsWith("/accept")) return json({ schema_version: "bluefire.ai-proposal-decision.v1", job: { ...proposalJob, progress: { phase: "awaiting_approval", approval_kind: "ai_proposal_execute", approval_request_id: "approval-fresh", proposal_record_id: proposalReview.proposal_record_id } }, proposal: { ...proposalReview, status: "accepted", resolution: { decision: "accepted", approval_request_id: "approval-fresh", continuation: { execute_approval_binding_digest: "sha256:" + "4".repeat(64), selected_behavior_id: "endpoint.discovery.system.v1" } } }, approval_request: { approval_id: "approval-fresh", status: "pending", state_digest: "sha256:" + "5".repeat(64), plan_digest: "sha256:" + "6".repeat(64), target_scope_digest: "sha256:" + "7".repeat(64), profile_id: "sandbox-execute.v1", maximum_tier: "controlled", expires_at: "2030-01-01T00:00:00Z" } });
       if (path.includes("/proposals/")) return json(proposalReview);
       if (path.includes(`/jobs/${proposalJob.job_id}`)) return json(proposalJob);
       if (path.includes("/jobs/")) return json(executeJob);
@@ -295,6 +296,59 @@ describe("product application", () => {
     expect(screen.getByText("Unavailable run records excluded")).toBeVisible();
     expect(screen.getByText(/1 in-flight, interrupted, or integrity-failed run record is unavailable/)).toBeVisible();
     expect(screen.getAllByRole("checkbox")).toHaveLength(2);
+  });
+
+  it("binds the independent filesystem collector into Execute replay preflight", async () => {
+    const user = userEvent.setup();
+    const executeRun = {
+      ...demoRuns[0]!,
+      run_id: "run-20300101T000000Z-bbbbbbbbbbbbbbbb",
+      mode: "execute" as const,
+      runner_profile_id: "sandbox-execute.v1",
+      target_scope: { scope_refs: ["sandbox.workspace"] },
+      scenario: demoScenario,
+      is_demo: false,
+    };
+    const fetchMock = vi.mocked(fetch);
+    const fallback = fetchMock.getMockImplementation()!;
+    let resolveFirstPreflight!: (response: Response) => void;
+    const firstPreflight = new Promise<Response>((resolve) => { resolveFirstPreflight = resolve; });
+    let preflightAttempts = 0;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/runs") && init?.method !== "POST") {
+        return json({ schema_version: "bluefire.run-list.v1", runs: [executeRun] });
+      }
+      if (path.endsWith(`/runs/${encodeURIComponent(executeRun.run_id)}`)) {
+        return json(executeRun);
+      }
+      if (path.endsWith("/runs/preflight") && preflightAttempts++ === 0) return firstPreflight;
+      return fallback(input, init);
+    });
+
+    renderApp("/compare");
+    expect(await screen.findByRole("heading", { name: "Measure what changed" })).toBeVisible();
+    await user.selectOptions(screen.getByLabelText("Source run"), executeRun.run_id);
+    await waitFor(() => expect(screen.getByLabelText("Exact target scope")).toHaveValue("sandbox.workspace"));
+    await user.click(screen.getByRole("button", { name: "Run prospective base-plan check" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/runs/preflight"))).toBe(true));
+    const targetScope = screen.getByLabelText("Exact target scope");
+    await user.clear(targetScope);
+    await user.type(targetScope, "sandbox.changed");
+    resolveFirstPreflight(json(executePreflight));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run prospective base-plan check" })).toBeEnabled());
+    expect(screen.getByRole("checkbox", { name: /I approve this reviewed Execute replay request once/ })).toBeDisabled();
+
+    await waitFor(() => {
+      const preflightCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/runs/preflight"));
+      expect(preflightCall).toBeDefined();
+      expect(JSON.parse(String((preflightCall?.[1] as RequestInit).body))).toMatchObject({
+        mode: "execute",
+        collectors: ["collector.filesystem.sandbox.v1"],
+      });
+    });
+    await user.click(screen.getByRole("button", { name: "Run prospective base-plan check" }));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /I approve this reviewed Execute replay request once/ })).toBeEnabled());
   });
 
   it("reviews immutable detection revisions, pinned public baselines, and complete deltas", async () => {
