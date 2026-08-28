@@ -102,7 +102,7 @@ Validation checks:
 - duplicate outcome routes;
 - start node, cycles, and reachability.
 
-Six sanitized scenarios ship. The canonical seven-node sandbox graph demonstrates a contract-compatible discovery alternate and a loopback block/failure route to local export before cleanup. The Linux/container and Windows-oriented graphs add bounded system/process/filesystem discovery and deterministic archive staging; detection-regression and AI-adaptive graphs support their named review workflows. A dedicated restricted scenario exercises only a fixed, non-executable persistence-detection canary and cleanup. A scenario title is not proof of dynamic validation on that platform.
+Eight sanitized scenarios ship. The canonical seven-node sandbox graph demonstrates a contract-compatible discovery alternate and a loopback block/failure route to local export before cleanup. The Linux/container and Windows-oriented graphs add bounded system/process/filesystem discovery and deterministic archive staging; detection-regression and AI-adaptive graphs support their named review workflows. A dedicated restricted scenario exercises only a fixed, non-executable persistence-detection canary and cleanup. The representative and deep endpoint graphs add bounded compiled execution, transparent observability variants, and authenticated one-shot peer workflows. A scenario title is not proof of dynamic validation on that platform.
 
 ## Planning and AI
 
@@ -196,7 +196,7 @@ RunStore creates internally named, contained run directories. It stores scenario
 
 Hashes are tamper indicators, not signatures.
 
-ProductStore is a separate migrated SQLite store under the run root by default. At startup the service migrates it, marks interrupted background jobs, recovers unfinalized run bundles, idempotently seeds seven scenarios, eighteen actions, profiles, providers, six collector records, research sources, and three detection backends, backfills the run index, and exposes a safe storage/recovery summary in catalog metadata. Settings and resources are JSON documents that reject secret-shaped plaintext values; environment references remain declarative.
+ProductStore is a separate migrated SQLite store under the run root by default. At startup the service migrates it, marks interrupted background jobs, recovers unfinalized run bundles, idempotently seeds eight scenarios, eighteen actions, profiles, providers, six collector records, research sources, and three detection backends, backfills the run index, and exposes a safe storage/recovery summary in catalog metadata. Settings and resources are JSON documents that reject secret-shaped plaintext values; environment references remain declarative.
 
 Replay reads a captured source scenario snapshot without writing it. It can prepare an exact replay, resume after prior artifacts, substitute a contract-compatible behavior, change typed parameters, select a registered action implementation, or record declared AI, profile, or defense changes. Each replay receives lineage with a source scenario digest and the exact declared overrides.
 
@@ -218,13 +218,13 @@ The loader has no entry-point discovery and no import hook. An inventory entry a
 
 ## Packaging boundary
 
-The Python distribution discovers only bluefire packages. It includes catalog YAML, canonical configuration, six scenario defaults, research registry, and built UI assets as package data. Checkout config/scenario copies are parity-tested against `bluefire/data`; BlueFireService prefers checkout scenarios when present and otherwise uses package resources. Optional detection parsers remain separately installable. Package metadata reads the platform version from `bluefire.__version__`; Python, frontend, and Rust currently use the 0.1.0 baseline.
+The Python distribution discovers only bluefire packages. It includes catalog YAML, canonical configuration, eight scenario defaults, research registry, and built UI assets as package data. Checkout config/scenario copies are parity-tested against `bluefire/data`; BlueFireService prefers checkout scenarios when present and otherwise uses package resources. Optional detection parsers remain separately installable. Package metadata reads the platform version from `bluefire.__version__`; Python, frontend, and Rust currently use the 0.1.0 baseline.
 
 The wheel does not include repository tests. Compatible platform-specific wheels include one manifest-bound native runner artifact; explicit bootstrap verifies and installs it into an owner-private per-user root before creating local enrollment. Source builds remain supported for development, and Execute availability remains explicit because status/readiness never bootstraps or starts the runner.
 
 ## Current limitations
 
-- The maintained action catalog is a bounded thirteen-action endpoint/sandbox pack, not a general execution agent.
+- The maintained action catalog is a bounded eighteen-action endpoint/sandbox pack, not a general execution agent.
 - The four `research.*` entries remain metadata-only. A separate persistence-detection behavior has one fixed non-executable marker action under a dedicated restricted profile; no host persistence mechanism is shipped.
 - No configured remote telemetry collector, SIEM connector, cloud action, identity action, or general network target is part of the baseline.
 - Sigma/YARA validation requires optional pinned packages; production SPL/backend validation is not included.

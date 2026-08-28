@@ -1647,6 +1647,54 @@ fn loopback_challenge_bound(
     authenticated_http_response(200, "OK", &body, &authentication)
 }
 
+fn disposable_peer_process_id() -> u32 {
+    // Protocol-only unit fixtures use a distinct synthetic PID. Release proof must use
+    // the separately launched receiver process exercised by the platform E2E suite.
+    let source = std::process::id();
+    if source == u32::MAX {
+        source - 1
+    } else {
+        source + 1
+    }
+}
+
+fn disposable_peer_challenge_with_override(
+    request: &[u8],
+    port: u16,
+    receiver_process_id: u32,
+    field_override: Option<(&str, Value)>,
+) -> Vec<u8> {
+    let sha256 = request_header(request, "x-bluefire-sha256");
+    let content_length = request_header(request, "x-bluefire-content-length")
+        .parse::<usize>()
+        .unwrap();
+    let mut document = json!({
+        "schema_version": "bluefire.loopback-receiver-challenge.v2",
+        "task_id": RECEIVER_TASK_ID,
+        "session_id": "1".repeat(64),
+        "nonce": "2".repeat(64),
+        "host": "127.0.0.1",
+        "port": port,
+        "sha256": sha256,
+        "content_length": content_length,
+        "receiver_process_id": receiver_process_id,
+        "receiver_mode": "disposable_peer",
+        "accepted_artifact_limit": 1,
+        "storage_mode": "memory_only",
+        "exit_after_accept": true,
+    });
+    if let Some((field, value)) = field_override {
+        document[field] = value;
+    }
+    let body = canonical_json(&document).into_bytes();
+    let authentication = receiver_hmac(b"bluefire.loopback-receiver.challenge.v1\0", &[&body]);
+    authenticated_http_response(200, "OK", &body, &authentication)
+}
+
+fn disposable_peer_challenge(request: &[u8], port: u16, receiver_process_id: u32) -> Vec<u8> {
+    disposable_peer_challenge_with_override(request, port, receiver_process_id, None)
+}
+
 fn loopback_acknowledgement(
     request: &[u8],
     status_code: u16,
@@ -1678,6 +1726,42 @@ fn loopback_acknowledgement(
             )
         });
     authenticated_http_response(status_code, reason, &acknowledgement, &authentication)
+}
+
+fn disposable_peer_acknowledgement_with_override(
+    request: &[u8],
+    receiver_process_id: u32,
+    field_override: Option<(&str, Value)>,
+) -> Vec<u8> {
+    let artifact = request_body(request);
+    let task_id = request_header(request, "x-bluefire-task-id");
+    let session_id = request_header(request, "x-bluefire-session-id");
+    let request_authentication = request_header(request, "x-bluefire-authentication");
+    let mut acknowledgement = json!({
+        "schema_version": "bluefire.loopback-receiver-result.v3",
+        "accepted": true,
+        "task_id": task_id,
+        "session_id": session_id,
+        "bytes_received": artifact.len(),
+        "sha256": sha256_hex(artifact),
+        "stored": false,
+        "receiver_process_id": receiver_process_id,
+        "receiver_mode": "disposable_peer",
+        "terminal_disposition": "exit_after_response",
+    });
+    if let Some((field, value)) = field_override {
+        acknowledgement[field] = value;
+    }
+    let acknowledgement = canonical_json(&acknowledgement).into_bytes();
+    let authentication = receiver_hmac(
+        b"bluefire.loopback-receiver.response.v1\0",
+        &[request_authentication.as_bytes(), b"\0", &acknowledgement],
+    );
+    authenticated_http_response(200, "OK", &acknowledgement, &authentication)
+}
+
+fn disposable_peer_acknowledgement(request: &[u8], receiver_process_id: u32) -> Vec<u8> {
+    disposable_peer_acknowledgement_with_override(request, receiver_process_id, None)
 }
 
 fn assert_authenticated_artifact_request(request: &[u8], port: u16) {
@@ -1791,6 +1875,34 @@ fn network_case(port: u16) -> (TempDir, ExecutionManifest, RunnerProfile) {
     (root, request, profile)
 }
 
+fn peer_case(port: u16) -> (TempDir, ExecutionManifest, RunnerProfile) {
+    let root = TempDir::new().unwrap();
+    let destination = NetworkDestination {
+        host: "127.0.0.1".to_string(),
+        port,
+    };
+    let profile = profile(&root, vec![destination]);
+    assert_eq!(
+        create_fixture(&root, &profile, "fixtures/input.jsonl").status,
+        TaskStatus::Success
+    );
+    let staged = runner().execute(
+        manifest(
+            &profile,
+            "sandbox.collection.stage.v1",
+            json!({
+                "inputs": ["fixtures/input.jsonl"],
+                "destination_directory": "staged",
+                "bundle_format": "jsonl"
+            }),
+        ),
+        profile.clone(),
+    );
+    assert_eq!(staged.status, TaskStatus::Success);
+    let request = manifest(&profile, "sandbox.peer.handoff.v1", json!({"port": port}));
+    (root, request, profile)
+}
+
 fn serve_authenticated_receiver(
     listener: TcpListener,
     status_code: u16,
@@ -1826,6 +1938,38 @@ fn serve_authenticated_receiver(
                 stored,
                 digest_override,
                 None,
+            ))
+            .unwrap();
+        artifact_request
+    })
+}
+
+fn serve_disposable_peer_receiver(listener: TcpListener) -> thread::JoinHandle<Vec<u8>> {
+    let port = listener.local_addr().unwrap().port();
+    let receiver_process_id = disposable_peer_process_id();
+    thread::spawn(move || {
+        let (mut challenge_socket, peer) = listener.accept().unwrap();
+        assert!(peer.ip().is_loopback());
+        let challenge_request = read_http_request(&mut challenge_socket);
+        assert!(challenge_request.starts_with(b"GET /bluefire/v1/challenge HTTP/1.1\r\n"));
+        challenge_socket
+            .write_all(&disposable_peer_challenge(
+                &challenge_request,
+                port,
+                receiver_process_id,
+            ))
+            .unwrap();
+        drop(challenge_socket);
+
+        let (mut artifact_socket, peer) = listener.accept().unwrap();
+        assert!(peer.ip().is_loopback());
+        let artifact_request = read_http_request(&mut artifact_socket);
+        assert!(artifact_request.starts_with(b"POST /bluefire/v1/artifact HTTP/1.1\r\n"));
+        assert_authenticated_artifact_request(&artifact_request, port);
+        artifact_socket
+            .write_all(&disposable_peer_acknowledgement(
+                &artifact_request,
+                receiver_process_id,
             ))
             .unwrap();
         artifact_request
@@ -1944,6 +2088,95 @@ fn loopback_action_refuses_cross_task_challenge() {
         request_header(&receiver.join().unwrap(), "x-bluefire-task-id"),
         other_task
     );
+}
+
+#[test]
+fn peer_handoff_refuses_disposable_challenge_drift_before_artifact_transmission() {
+    for (field, value) in [
+        ("receiver_process_id", json!(std::process::id())),
+        ("receiver_mode", json!("bounded_receiver")),
+        ("accepted_artifact_limit", json!(2)),
+        ("storage_mode", json!("receiver_owned")),
+        ("exit_after_accept", json!(false)),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let receiver = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let request = read_http_request(&mut socket);
+            socket
+                .write_all(&disposable_peer_challenge_with_override(
+                    &request,
+                    port,
+                    disposable_peer_process_id(),
+                    Some((field, value)),
+                ))
+                .unwrap();
+            drop(socket);
+            thread::sleep(StdDuration::from_millis(100));
+            listener.set_nonblocking(true).unwrap();
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            request
+        });
+        let (_root, request, profile) = peer_case(port);
+
+        let result = execute_authenticated_network(request, profile);
+
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert_eq!(result.error.unwrap().code, "receiver_authentication_failed");
+        let received = receiver.join().unwrap();
+        assert!(received.starts_with(b"GET /bluefire/v1/challenge HTTP/1.1\r\n"));
+    }
+}
+
+#[test]
+fn peer_handoff_refuses_disposable_acknowledgement_drift() {
+    for (field, value) in [
+        ("receiver_process_id", json!(std::process::id())),
+        ("receiver_mode", json!("bounded_receiver")),
+        ("terminal_disposition", json!("remain_available")),
+        ("stored", json!(true)),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let receiver = thread::spawn(move || {
+            let receiver_process_id = disposable_peer_process_id();
+            let (mut challenge_socket, _) = listener.accept().unwrap();
+            let challenge_request = read_http_request(&mut challenge_socket);
+            challenge_socket
+                .write_all(&disposable_peer_challenge(
+                    &challenge_request,
+                    port,
+                    receiver_process_id,
+                ))
+                .unwrap();
+            drop(challenge_socket);
+            let (mut artifact_socket, _) = listener.accept().unwrap();
+            let artifact_request = read_http_request(&mut artifact_socket);
+            artifact_socket
+                .write_all(&disposable_peer_acknowledgement_with_override(
+                    &artifact_request,
+                    receiver_process_id,
+                    Some((field, value)),
+                ))
+                .unwrap();
+        });
+        let (_root, request, profile) = peer_case(port);
+
+        let result = execute_authenticated_network(request, profile);
+
+        assert_eq!(result.status, TaskStatus::Failed);
+        assert_eq!(result.output["receiver_acknowledged"], false);
+        assert!(result
+            .error
+            .unwrap()
+            .message
+            .contains("acknowledgement failed"));
+        receiver.join().unwrap();
+    }
 }
 
 #[test]
@@ -2169,7 +2402,7 @@ fn loopback_trickle_response_cannot_extend_the_monotonic_deadline() {
 fn disposable_vertical_slice_runs_real_steps_and_cleans_in_reverse_order() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    let receiver = serve_authenticated_receiver(listener, 201, "Created", true, None);
+    let receiver = serve_disposable_peer_receiver(listener);
 
     let root = TempDir::new().unwrap();
     let destination = NetworkDestination {
@@ -2234,20 +2467,83 @@ fn disposable_vertical_slice_runs_real_steps_and_cleans_in_reverse_order() {
     );
     assert_eq!(staged.status, TaskStatus::Success);
     receipts.extend(staged.receipt_ids.clone());
-    let bundle = staged.output["artifact"].as_str().unwrap().to_string();
+    assert_eq!(staged.output["artifact"], "staged/bundle.jsonl");
 
     let delivered = execute_authenticated_network(
         manifest(
             &profile,
-            "sandbox.network.loopback.v1",
-            json!({"artifact": bundle, "destination": destination}),
+            "sandbox.peer.handoff.v1",
+            json!({"port": destination.port}),
         ),
         profile.clone(),
     );
     assert_eq!(delivered.status, TaskStatus::Success);
-    assert_eq!(delivered.output["http_status"], 201);
+    assert_eq!(delivered.output["http_status"], 200);
     assert_eq!(delivered.output["receiver_acknowledged"], true);
-    assert_eq!(delivered.output["receiver_stored"], true);
+    assert_eq!(delivered.output["receiver_stored"], false);
+    assert_eq!(
+        delivered.output["lab_authorization"]["scope"],
+        "approved_task"
+    );
+    assert_eq!(
+        delivered.output["lab_authorization"]["credential_kind"],
+        "managed_one_task_hmac_capability"
+    );
+    assert_eq!(
+        delivered.output["lab_authorization"]["challenge_verified"],
+        true
+    );
+    assert_eq!(
+        delivered.output["lab_authorization"]["raw_credential_exposed"],
+        false
+    );
+    assert_eq!(
+        delivered.output["lab_peers"]["scope"],
+        "authorized_disposable_loopback_lab"
+    );
+    assert_eq!(
+        delivered.output["lab_peers"]["source_kind"],
+        "rust_runner_process"
+    );
+    assert_eq!(
+        delivered.output["lab_peers"]["destination_kind"],
+        "managed_loopback_receiver_process"
+    );
+    assert_eq!(
+        delivered.output["lab_peers"]["source_process_id"],
+        std::process::id()
+    );
+    assert_eq!(
+        delivered.output["lab_peers"]["destination_process_id"],
+        disposable_peer_process_id()
+    );
+    assert_eq!(delivered.output["lab_peers"]["distinct_processes"], true);
+    assert_eq!(
+        delivered.output["lab_peers"]["receiver_mode"],
+        "disposable_peer"
+    );
+    assert_eq!(delivered.output["lab_peers"]["accepted_artifact_limit"], 1);
+    assert_eq!(delivered.output["lab_peers"]["storage_mode"], "memory_only");
+    assert_eq!(delivered.output["lab_peers"]["exit_after_accept"], true);
+    assert_eq!(delivered.output["lab_peers"]["transfer_acknowledged"], true);
+    for field in [
+        &delivered.output["lab_authorization"]["credential_handle"],
+        &delivered.output["lab_peers"]["source_handle"],
+        &delivered.output["lab_peers"]["destination_handle"],
+    ] {
+        let value = field.as_str().unwrap();
+        assert_eq!(value.len(), 64);
+        assert!(value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+    }
+    assert_ne!(
+        delivered.output["lab_peers"]["source_handle"],
+        delivered.output["lab_peers"]["destination_handle"]
+    );
+    assert!(!serde_json::to_string(&delivered)
+        .unwrap()
+        .contains(&hex::encode(RECEIVER_TASK_KEY)));
     assert!(receiver
         .join()
         .unwrap()

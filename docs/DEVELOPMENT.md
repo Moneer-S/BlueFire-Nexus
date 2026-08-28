@@ -9,7 +9,7 @@ BlueFire is a Python control plane, a separately built Rust runner, and a React/
 | `bluefire/` | Python contracts, registry, planner, AI proposal boundary, policy, orchestration, storage, evidence, detections, API, CLI |
 | `bluefire/catalog/` | Built-in behavior/action catalogs |
 | `bluefire/data/` | Packaged scenarios, config, and research registry |
-| `scenarios/` | Checkout copies of the six canonical scenarios |
+| `scenarios/` | Checkout copies of the eight canonical scenarios |
 | `config/` | Declarative example configuration |
 | `runner/` | Rust execution authority and boundary tests |
 | `frontend/` | React/TypeScript source, unit tests, and Playwright tests |
@@ -204,7 +204,7 @@ Do not push, merge, rewrite history, publish packages/releases, or change remote
 
 - Python, Rust, frontend, browser, security, package, installed-wheel, API, CLI, and opt-in disposable E2E checks pass.
 - Version is consistent across Python, Rust, and frontend metadata.
-- Six packaged/check-out scenarios and thirteen action descriptors remain in parity.
+- Eight packaged/check-out scenarios and eighteen action descriptors remain in parity.
 - Research pins/licenses and optional dependency versions are current and reviewed.
 - Generated screenshots use real UI with sanitized seeded data.
 - README/docs match shipped behavior and limitations.

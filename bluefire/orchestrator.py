@@ -2549,6 +2549,8 @@ class Orchestrator:
         """Compile the fixed runner roots needed by this exact reviewed plan."""
 
         roots_by_action = {
+            "sandbox.identity-material.seed.v1": ("identity-material",),
+            "sandbox.identity-material.inspect.v1": ("identity-material",),
             "sandbox.fixture.create.v1": ("fixtures",),
             "sandbox.fixture.transform.v1": ("fixtures",),
             "sandbox.discovery.list.v1": ("fixtures",),
@@ -2557,6 +2559,8 @@ class Orchestrator:
             "sandbox.archive.tar.v1": ("fixtures", "staged"),
             "sandbox.collection.stage.v1": ("fixtures", "staged"),
             "sandbox.network.loopback.v1": ("staged",),
+            "sandbox.peer.handoff.v1": ("staged",),
+            "sandbox.observability.variant.v1": ("staged", "observability"),
             "sandbox.export.local.v1": ("staged", "exports"),
             "sandbox.restricted.persistence-marker.v1": ("restricted",),
         }
@@ -2571,7 +2575,10 @@ class Orchestrator:
     def _network_destinations(plan: ExecutionPlan) -> tuple[Mapping[str, Any], ...]:
         rows: list[Mapping[str, Any]] = []
         for step in plan.steps:
-            if Orchestrator._runner_opcode(step) != "sandbox.network.loopback.v1":
+            if Orchestrator._runner_opcode(step) not in {
+                "sandbox.network.loopback.v1",
+                "sandbox.peer.handoff.v1",
+            }:
                 continue
             port = step.parameters.get("port", 4317)
             if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:

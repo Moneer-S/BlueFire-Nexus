@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import os
 import re
 import secrets
 import socket
@@ -28,6 +29,8 @@ from .receiver_auth import (
     challenge_authentication,
     challenge_document,
     derive_receiver_task_key,
+    disposable_peer_challenge_document,
+    disposable_peer_result_document,
     request_authentication,
     request_document,
     response_authentication,
@@ -41,6 +44,10 @@ ARTIFACT_PATH = "/bluefire/v1/artifact"
 CHALLENGE_PATH = "/bluefire/v1/challenge"
 DEFAULT_MAX_BODY_BYTES = 5 * 1024 * 1024
 DEFAULT_IDLE_TIMEOUT_SECONDS = 300.0
+DISPOSABLE_PEER_IDLE_TIMEOUT_SECONDS = 240.0
+DISPOSABLE_PEER_LIFETIME_TIMEOUT_SECONDS = 240.0
+DISPOSABLE_PEER_MAX_CONNECTIONS = 8
+DISPOSABLE_PEER_REQUEST_TIMEOUT_SECONDS = 5.0
 MAX_CONFIGURED_BODY_BYTES = 64 * 1024 * 1024
 _MAX_REQUEST_LINE_BYTES = 1024
 _MAX_HEADER_LINE_BYTES = 4096
@@ -65,6 +72,7 @@ class ReceiverConfig:
     request_timeout_seconds: float = 5.0
     idle_timeout_seconds: float = DEFAULT_IDLE_TIMEOUT_SECONDS
     storage_dir: Path | None = None
+    disposable_peer: bool = False
 
     def __post_init__(self) -> None:
         if type(self.authentication_key) is not bytes or len(self.authentication_key) != 32:
@@ -91,6 +99,25 @@ class ReceiverConfig:
             raise ValueError("receiver request timeout must be between 0 and 3600 seconds")
         if not 0 < self.idle_timeout_seconds <= 3600:
             raise ValueError("receiver idle timeout must be between 0 and 3600 seconds")
+        if type(self.disposable_peer) is not bool:
+            raise ValueError("receiver disposable peer mode must be a boolean")
+        if self.disposable_peer:
+            if self.host != "127.0.0.1":
+                raise ValueError("disposable peer receiver host must be exactly 127.0.0.1")
+            if self.max_requests != 1:
+                raise ValueError("disposable peer receiver must accept exactly one artifact")
+            if self.max_connections != DISPOSABLE_PEER_MAX_CONNECTIONS:
+                raise ValueError("disposable peer receiver connection budget must be exactly 8")
+            if self.storage_dir is not None:
+                raise ValueError("disposable peer receiver must use memory-only storage")
+            if self.request_timeout_seconds > DISPOSABLE_PEER_REQUEST_TIMEOUT_SECONDS:
+                raise ValueError(
+                    "disposable peer receiver request timeout must not exceed 5 seconds"
+                )
+            if self.idle_timeout_seconds > DISPOSABLE_PEER_IDLE_TIMEOUT_SECONDS:
+                raise ValueError(
+                    "disposable peer receiver idle timeout must not exceed 240 seconds"
+                )
 
 
 class _ProtocolRefusal(Exception):
@@ -243,6 +270,12 @@ class _LoopbackTCPServer(socketserver.TCPServer):
         self.requests_accepted = 0
         self.requests_refused = 0
         self.challenges_issued = 0
+        self.receiver_process_id = os.getpid()
+        self.lifecycle_deadline = (
+            time.monotonic() + DISPOSABLE_PEER_LIFETIME_TIMEOUT_SECONDS
+            if config.disposable_peer
+            else None
+        )
         self.session_id = secrets.token_hex(32)
         self.challenges: dict[str, _Challenge] = {}
         super().__init__(server_address, handler_class)
@@ -254,6 +287,7 @@ class _LoopbackTCPServer(socketserver.TCPServer):
 
     def server_close(self) -> None:
         try:
+            self.challenges.clear()
             super().server_close()
         finally:
             storage = self.storage
@@ -273,6 +307,8 @@ class _ReceiverHandler(socketserver.BaseRequestHandler):
         server.connections_handled += 1
         try:
             deadline = time.monotonic() + server.config.request_timeout_seconds
+            if server.lifecycle_deadline is not None:
+                deadline = min(deadline, server.lifecycle_deadline)
             peer = ipaddress.ip_address(connection.getpeername()[0])
             if not peer.is_loopback:
                 raise _ProtocolRefusal(403, "peer_not_loopback")
@@ -381,15 +417,22 @@ def _issue_challenge(
         content_length=content_length,
         expires_at=now + min(max(server.config.request_timeout_seconds * 2, 2.0), 30.0),
     )
-    document = challenge_document(
-        task_id=task_id,
-        session_id=server.session_id,
-        nonce=nonce,
-        host=str(server.server_address[0]),
-        port=int(server.server_address[1]),
-        sha256=sha256,
-        content_length=content_length,
-    )
+    document_arguments = {
+        "task_id": task_id,
+        "session_id": server.session_id,
+        "nonce": nonce,
+        "host": str(server.server_address[0]),
+        "port": int(server.server_address[1]),
+        "sha256": sha256,
+        "content_length": content_length,
+    }
+    if server.config.disposable_peer:
+        document = disposable_peer_challenge_document(
+            **document_arguments,
+            receiver_process_id=server.receiver_process_id,
+        )
+    else:
+        document = challenge_document(**document_arguments)
     body = canonical_json_bytes(document)
     authentication = challenge_authentication(task_key, document)
     return _RequestResult(
@@ -495,15 +538,24 @@ def _receive_artifact(
         except OSError as exc:
             raise _ProtocolRefusal(500, "storage_failed") from exc
     status = 201 if stored else 200
-    result = {
-        "schema_version": RESULT_SCHEMA_VERSION,
-        "accepted": True,
-        "task_id": task_id,
-        "session_id": session_id,
-        "bytes_received": len(body),
-        "sha256": actual_digest,
-        "stored": stored,
-    }
+    if server.config.disposable_peer:
+        result = disposable_peer_result_document(
+            task_id=task_id,
+            session_id=session_id,
+            bytes_received=len(body),
+            sha256=actual_digest,
+            receiver_process_id=server.receiver_process_id,
+        )
+    else:
+        result = {
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "accepted": True,
+            "task_id": task_id,
+            "session_id": session_id,
+            "bytes_received": len(body),
+            "sha256": actual_digest,
+            "stored": stored,
+        }
     response_body = canonical_json_bytes(result)
     authentication = response_authentication(
         task_key,
@@ -676,16 +728,28 @@ class LoopbackArtifactReceiver:
     def port(self) -> int:
         return int(self._server.server_address[1])
 
+    @property
+    def process_id(self) -> int:
+        return self._server.receiver_process_id
+
     def serve(self) -> Mapping[str, object]:
         reason = "explicit_stop"
         idle_deadline = time.monotonic() + self._config.idle_timeout_seconds
+        lifetime_deadline = self._server.lifecycle_deadline
         try:
             while (
                 not self._stopping.is_set()
                 and self._server.requests_accepted < self._config.max_requests
                 and self._server.connections_handled < self._config.max_connections
             ):
-                remaining = idle_deadline - time.monotonic()
+                now = time.monotonic()
+                remaining = idle_deadline - now
+                if lifetime_deadline is not None:
+                    lifetime_remaining = lifetime_deadline - now
+                    if lifetime_remaining <= 0:
+                        reason = "lifecycle_timeout"
+                        break
+                    remaining = min(remaining, lifetime_remaining)
                 if remaining <= 0:
                     reason = "idle_timeout"
                     break
@@ -737,16 +801,28 @@ def run_loopback_receiver(
 
     with LoopbackArtifactReceiver(config) as receiver:
         if ready_stream is not None:
-            ready = {
-                "schema_version": "bluefire.loopback-receiver-ready.v1",
-                "host": receiver.host,
-                "port": receiver.port,
-                "max_requests": config.max_requests,
-                "max_connections": config.max_connections,
-                "max_body_bytes": config.max_body_bytes,
-                "storage": "receiver_owned" if config.storage_dir else "memory_only",
-                "authentication": "managed_task_hmac_sha256",
-            }
+            if config.disposable_peer:
+                ready = {
+                    "schema_version": "bluefire.loopback-receiver-ready.v2",
+                    "mode": "disposable_peer",
+                    "process_id": receiver.process_id,
+                    "host": receiver.host,
+                    "port": receiver.port,
+                    "max_requests": 1,
+                    "max_connections": DISPOSABLE_PEER_MAX_CONNECTIONS,
+                    "storage": "memory_only",
+                }
+            else:
+                ready = {
+                    "schema_version": "bluefire.loopback-receiver-ready.v1",
+                    "host": receiver.host,
+                    "port": receiver.port,
+                    "max_requests": config.max_requests,
+                    "max_connections": config.max_connections,
+                    "max_body_bytes": config.max_body_bytes,
+                    "storage": "receiver_owned" if config.storage_dir else "memory_only",
+                    "authentication": "managed_task_hmac_sha256",
+                }
             print(json.dumps(ready, separators=(",", ":"), sort_keys=True), file=ready_stream)
             ready_stream.flush()
         return receiver.serve()
@@ -757,6 +833,10 @@ __all__ = [
     "CHALLENGE_PATH",
     "DEFAULT_IDLE_TIMEOUT_SECONDS",
     "DEFAULT_MAX_BODY_BYTES",
+    "DISPOSABLE_PEER_IDLE_TIMEOUT_SECONDS",
+    "DISPOSABLE_PEER_LIFETIME_TIMEOUT_SECONDS",
+    "DISPOSABLE_PEER_MAX_CONNECTIONS",
+    "DISPOSABLE_PEER_REQUEST_TIMEOUT_SECONDS",
     "LoopbackArtifactReceiver",
     "ReceiverConfig",
     "run_loopback_receiver",

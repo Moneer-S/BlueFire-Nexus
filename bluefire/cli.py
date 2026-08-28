@@ -22,6 +22,8 @@ from .product_acceptance import AcceptanceFailure, run_release_acceptance, verif
 from .receiver import (
     DEFAULT_IDLE_TIMEOUT_SECONDS,
     DEFAULT_MAX_BODY_BYTES,
+    DISPOSABLE_PEER_IDLE_TIMEOUT_SECONDS,
+    DISPOSABLE_PEER_MAX_CONNECTIONS,
     ReceiverConfig,
     run_loopback_receiver,
 )
@@ -92,16 +94,31 @@ def _parser() -> argparse.ArgumentParser:
     receiver.add_argument(
         "--max-connections",
         type=int,
-        default=16,
-        help="All TCP connections before exit; at least twice --max-requests",
+        help=(
+            "All TCP connections before exit; defaults to "
+            f"{DISPOSABLE_PEER_MAX_CONNECTIONS} in disposable-peer mode, otherwise 16"
+        ),
     )
     receiver.add_argument("--max-body-bytes", type=int, default=DEFAULT_MAX_BODY_BYTES)
     receiver.add_argument("--request-timeout", type=float, default=5.0)
-    receiver.add_argument("--idle-timeout", type=float, default=DEFAULT_IDLE_TIMEOUT_SECONDS)
+    receiver.add_argument(
+        "--idle-timeout",
+        type=float,
+        help=(
+            "Idle seconds before exit; defaults to "
+            f"{DISPOSABLE_PEER_IDLE_TIMEOUT_SECONDS:g} in disposable-peer mode, otherwise "
+            f"{DEFAULT_IDLE_TIMEOUT_SECONDS:g}"
+        ),
+    )
     receiver.add_argument(
         "--storage-dir",
         type=Path,
         help="Explicit receiver-owned directory for content-addressed artifact storage",
+    )
+    receiver.add_argument(
+        "--disposable-peer",
+        action="store_true",
+        help="Lock the receiver to one memory-only authenticated disposable peer transfer",
     )
 
     runner = commands.add_parser("runner", help="Manage the authenticated local runner")
@@ -423,17 +440,28 @@ def _json(value: Any) -> None:
 
 def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | None:
     if args.command == "receiver":
+        max_connections = args.max_connections
+        if max_connections is None:
+            max_connections = DISPOSABLE_PEER_MAX_CONNECTIONS if args.disposable_peer else 16
+        idle_timeout = args.idle_timeout
+        if idle_timeout is None:
+            idle_timeout = (
+                DISPOSABLE_PEER_IDLE_TIMEOUT_SECONDS
+                if args.disposable_peer
+                else DEFAULT_IDLE_TIMEOUT_SECONDS
+            )
         return run_loopback_receiver(
             ReceiverConfig(
                 authentication_key=_managed_receiver_authentication_key(),
                 host=args.host,
                 port=args.port,
                 max_requests=args.max_requests,
-                max_connections=args.max_connections,
+                max_connections=max_connections,
                 max_body_bytes=args.max_body_bytes,
                 request_timeout_seconds=args.request_timeout,
-                idle_timeout_seconds=args.idle_timeout,
+                idle_timeout_seconds=idle_timeout,
                 storage_dir=args.storage_dir,
+                disposable_peer=args.disposable_peer,
             )
         )
     if args.command == "acceptance":

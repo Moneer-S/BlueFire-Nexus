@@ -324,6 +324,14 @@ bluefire receiver --host 127.0.0.1 --port 4317 \
 
 The storage directory must be empty on first use, is marked as receiver-owned, and receives only non-overwriting content-addressed files. Use a disposable dedicated directory, not a repository, personal, shared, or production path. The server exits after its accepted-artifact limit, connection cap, idle timeout, or interruption. The runner records transport success only after strict, bounded parsing and constant-time verification of the authenticated acknowledgement, including its task/session, byte count, digest, and storage result. This authenticates the same-user managed receiver session; it remains a local lab receiver, not remote transport or authority for a different host, port, task, or session.
 
+The deep endpoint lab uses the stricter one-shot variant:
+
+```bash
+bluefire receiver --host 127.0.0.1 --port 4317 --max-requests 1 --disposable-peer
+```
+
+`--disposable-peer` fixes memory-only storage, one accepted artifact, an eight-connection cap, a five-second per-connection deadline, and both idle and absolute lifecycle caps of 240 seconds. It exits immediately after the verified upload. Its authenticated challenge v2 and acknowledgement v3 add receiver PID, mode, artifact-limit, storage, and terminal-disposition bindings; peer handoff emits the logical v2 receipt with an opaque approved-task capability handle. Those fields state protocol intent. Release evidence must separately observe that the reported receiver PID is a different real process and has exited.
+
 See [Runner deployment](RUNNER_DEPLOYMENT.md) for the complete Execute setup and cleanup model.
 
 ## Replay and run comparison

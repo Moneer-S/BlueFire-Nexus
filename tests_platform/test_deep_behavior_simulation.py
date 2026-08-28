@@ -38,33 +38,55 @@ def _bundle(*, bundle_format: str = "jsonl", size: int = 129) -> dict[str, Any]:
     }
 
 
-def test_peer_handoff_simulation_is_typed_and_never_claims_a_transfer() -> None:
+@pytest.mark.parametrize(
+    ("behavior_id", "simulation_id", "telemetry"),
+    [
+        (
+            "sandbox.credential.peer-challenge.v1",
+            "simulation.sandbox.credential.peer-challenge.v1",
+            "sandbox.credential.peer_challenge_attempted",
+        ),
+        (
+            "sandbox.peer.handoff.v1",
+            "simulation.sandbox.peer.handoff.v1",
+            "sandbox.peer.handoff_attempted",
+        ),
+    ],
+)
+def test_peer_simulations_are_typed_and_never_claim_a_transfer(
+    behavior_id: str, simulation_id: str, telemetry: str
+) -> None:
     bundle = _bundle()
     result = SimulationRegistry().execute(
         _step(
-            "sandbox.peer.handoff.v1",
-            "simulation.sandbox.peer.handoff.v1",
+            behavior_id,
+            simulation_id,
             {"port": 4318},
         ),
         bound_inputs={"bundle": bundle},
     )
 
     assert result.outcome is StepOutcome.SUCCESS
-    assert result.telemetry == ("sandbox.peer.handoff_attempted",)
+    assert result.telemetry == (telemetry,)
     assert result.details["side_effects_started"] is False
-    assert result.artifacts == {
-        "receipt": {
-            "type": "artifact.sandbox.peer-handoff.receipt.v1",
-            "transport": "simulated_authenticated_loopback",
-            "artifact": bundle["path"],
-            "content_hash": bundle["content_hash"],
-            "size": bundle["size"],
-            "destination": {"host": "127.0.0.1", "port": 4318},
-            "would_authenticate": True,
-            "receiver_stored": False,
-            "synthetic": True,
-        }
-    }
+    receipt = result.artifacts["receipt"]
+    assert receipt["type"] == "artifact.sandbox.peer-handoff.receipt.v2"
+    assert receipt["transport"] == "simulated_authenticated_loopback"
+    assert receipt["artifact"] == bundle["path"]
+    assert receipt["content_hash"] == bundle["content_hash"]
+    assert receipt["size"] == bundle["size"]
+    assert receipt["destination"] == {"host": "127.0.0.1", "port": 4318}
+    assert receipt["would_authenticate"] is True
+    assert receipt["receiver_stored"] is False
+    assert receipt["synthetic"] is True
+    assert receipt["lab_authorization"]["challenge_verified"] is False
+    assert receipt["lab_authorization"]["raw_credential_exposed"] is False
+    assert len(receipt["lab_authorization"]["credential_handle"]) == 64
+    assert receipt["lab_peers"]["distinct_processes"] is False
+    assert receipt["lab_peers"]["source_process_id"] is None
+    assert receipt["lab_peers"]["destination_process_id"] is None
+    assert receipt["lab_peers"]["receiver_mode"] == "disposable_peer"
+    assert receipt["lab_peers"]["transfer_acknowledged"] is False
     assert any("No peer was contacted" in item for item in result.limitations)
 
 

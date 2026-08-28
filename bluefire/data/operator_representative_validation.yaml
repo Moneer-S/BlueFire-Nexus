@@ -1,7 +1,7 @@
 schema_version: bluefire.scenario.v1
 id: scenario.operator.representative-validation.v1
 title: Representative Operator Validation Loop
-purpose: Exercise five narrow representative actions alongside the canonical fixture pipeline, authenticated loopback handoff, and receipt-bound cleanup.
+purpose: Exercise five narrow representative actions alongside the canonical fixture pipeline, credential-bound movement between authorized disposable lab peers, and receipt-bound cleanup.
 start: run_native_canary
 steps:
   - id: run_native_canary
@@ -135,6 +135,7 @@ provenance:
 limitations:
   - Every filesystem artifact is synthetic, public, or runner-owned; the identity-material canary is not a credential.
   - The native canary proves only bounded in-process computation and does not expose command, script, process, or arbitrary program execution.
-  - Peer handoff accepts only the original typed staged bundle and an authenticated literal 127.0.0.1 destination; the blocked-network profile must refuse it.
+  - Peer handoff is lateral-movement control research only between the Rust runner and a separately managed disposable receiver on literal 127.0.0.1; it never compromises or authorizes another host, and the blocked-network profile must refuse it.
+  - The peer credential is a managed one-task capability; only an opaque credential handle and bounded process/lifecycle verification may enter output or evidence.
   - The observability variant is transparent and exactly reversible for comparison; it makes no bypass, evasion, or control-impairment claim.
   - A successful simulation is not evidence that an Execute action ran.

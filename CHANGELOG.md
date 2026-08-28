@@ -9,15 +9,15 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A canonical `bluefire` control plane with strict behavior, action, graph,
   evidence, detection, replay, comparison, plugin, and configuration contracts.
-- A modular Rust runner with thirteen reviewed endpoint/sandbox actions, a
+- A modular Rust runner with eighteen reviewed endpoint/sandbox actions, a
   versioned action SDK inventory, independent policy enforcement, structured
   partial results, bounded effects, and receipt-based cleanup.
 - Bounded cross-platform system/process discovery, recursive sandbox discovery,
   and deterministic ustar archive actions alongside the existing fixture,
   staging, loopback, export, and cleanup pack.
-- Six sanitized scenarios for the canonical sandbox chain, Linux/container and
-  Windows-oriented validation, detection regression, bounded AI adaptation, and
-  a dedicated restricted persistence-detection canary.
+- Eight sanitized scenarios for the canonical sandbox chain, Linux/container and
+  Windows-oriented validation, detection regression, bounded AI adaptation, a
+  dedicated restricted persistence-detection canary, and representative/deep endpoint labs.
 - AI autonomy levels `off`, `assist`, and `auto`; a deterministic offline
   provider; and an OpenAI-compatible Responses provider with strict structured
   output, redaction, bounds, health metadata, retry, and fallback.

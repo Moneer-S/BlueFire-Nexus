@@ -705,6 +705,6 @@ def test_runner_contract_versions_fail_closed_across_breaking_semantic_schemas()
         "sandbox.identity-material.seed.v1": "1.0.0",
         "sandbox.network.loopback.v1": "1.0.0",
         "sandbox.observability.variant.v1": "1.0.0",
-        "sandbox.peer.handoff.v1": "1.0.0",
+        "sandbox.peer.handoff.v1": "2.0.0",
         "sandbox.restricted.persistence-marker.v1": "1.0.0",
     }

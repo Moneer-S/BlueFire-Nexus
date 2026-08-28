@@ -1075,6 +1075,8 @@ class RunnerActionAdapter:
                 "http_status",
                 "receiver_acknowledged",
                 "receiver_stored",
+                "lab_authorization",
+                "lab_peers",
             }:
                 raise RunnerAdapterError("runner peer-handoff output shape is invalid")
             _, source, expected_sha256, expected_size = _bound_content_artifact(
@@ -1111,7 +1113,7 @@ class RunnerActionAdapter:
                 runner_output.get("http_status"),
                 "runner peer-handoff output.http_status",
                 200,
-                201,
+                200,
             )
             acknowledged = _reviewed_boolean(
                 runner_output.get("receiver_acknowledged"),
@@ -1121,6 +1123,88 @@ class RunnerActionAdapter:
                 runner_output.get("receiver_stored"),
                 "runner peer-handoff output.receiver_stored",
             )
+            authorization = _artifact_mapping(
+                runner_output.get("lab_authorization"),
+                "runner peer-handoff output.lab_authorization",
+            )
+            peers = _artifact_mapping(
+                runner_output.get("lab_peers"),
+                "runner peer-handoff output.lab_peers",
+            )
+            if set(authorization) != {
+                "scope",
+                "credential_kind",
+                "credential_handle",
+                "challenge_verified",
+                "raw_credential_exposed",
+            }:
+                raise RunnerAdapterError("runner peer-handoff authorization shape is invalid")
+            if set(peers) != {
+                "scope",
+                "source_kind",
+                "destination_kind",
+                "source_process_id",
+                "destination_process_id",
+                "source_handle",
+                "destination_handle",
+                "distinct_processes",
+                "receiver_mode",
+                "accepted_artifact_limit",
+                "storage_mode",
+                "exit_after_accept",
+                "transfer_acknowledged",
+            }:
+                raise RunnerAdapterError("runner peer-handoff peer shape is invalid")
+            credential_handle = _runner_sha256(
+                authorization.get("credential_handle"),
+                "runner peer-handoff authorization.credential_handle",
+            )
+            source_handle = _runner_sha256(
+                peers.get("source_handle"),
+                "runner peer-handoff peers.source_handle",
+            )
+            destination_handle = _runner_sha256(
+                peers.get("destination_handle"),
+                "runner peer-handoff peers.destination_handle",
+            )
+            challenge_verified = _reviewed_boolean(
+                authorization.get("challenge_verified"),
+                "runner peer-handoff authorization.challenge_verified",
+            )
+            raw_credential_exposed = _reviewed_boolean(
+                authorization.get("raw_credential_exposed"),
+                "runner peer-handoff authorization.raw_credential_exposed",
+            )
+            source_process_id = _bounded_integer(
+                peers.get("source_process_id"),
+                "runner peer-handoff peers.source_process_id",
+                1,
+                2**32 - 1,
+            )
+            destination_process_id = _bounded_integer(
+                peers.get("destination_process_id"),
+                "runner peer-handoff peers.destination_process_id",
+                1,
+                2**32 - 1,
+            )
+            distinct_processes = _reviewed_boolean(
+                peers.get("distinct_processes"),
+                "runner peer-handoff peers.distinct_processes",
+            )
+            accepted_artifact_limit = _bounded_integer(
+                peers.get("accepted_artifact_limit"),
+                "runner peer-handoff peers.accepted_artifact_limit",
+                1,
+                1,
+            )
+            exit_after_accept = _reviewed_boolean(
+                peers.get("exit_after_accept"),
+                "runner peer-handoff peers.exit_after_accept",
+            )
+            transfer_acknowledged = _reviewed_boolean(
+                peers.get("transfer_acknowledged"),
+                "runner peer-handoff peers.transfer_acknowledged",
+            )
             if (
                 destination.get("host") != "127.0.0.1"
                 or actual_port != expected_port
@@ -1128,14 +1212,30 @@ class RunnerActionAdapter:
                 or actual_size != expected_size
                 or actual_sha256 != expected_sha256
                 or acknowledged is not True
-                or (http_status == 201) != receiver_stored
+                or http_status != 200
+                or receiver_stored is not False
+                or authorization.get("scope") != "approved_task"
+                or authorization.get("credential_kind") != "managed_one_task_hmac_capability"
+                or challenge_verified is not True
+                or raw_credential_exposed is not False
+                or peers.get("scope") != "authorized_disposable_loopback_lab"
+                or peers.get("source_kind") != "rust_runner_process"
+                or peers.get("destination_kind") != "managed_loopback_receiver_process"
+                or source_process_id == destination_process_id
+                or source_handle == destination_handle
+                or distinct_processes is not True
+                or peers.get("receiver_mode") != "disposable_peer"
+                or accepted_artifact_limit != 1
+                or peers.get("storage_mode") != "memory_only"
+                or exit_after_accept is not True
+                or transfer_acknowledged is not True
             ):
                 raise RunnerAdapterError(
                     "runner peer-handoff output does not match the bound request"
                 )
             return {
                 "receipt": {
-                    "type": "artifact.sandbox.peer-handoff.receipt.v1",
+                    "type": "artifact.sandbox.peer-handoff.receipt.v2",
                     "transport": "authenticated_loopback",
                     "artifact": actual_source,
                     "sha256": actual_sha256,
@@ -1144,6 +1244,15 @@ class RunnerActionAdapter:
                     "http_status": http_status,
                     "receiver_acknowledged": True,
                     "receiver_stored": receiver_stored,
+                    "lab_authorization": {
+                        **dict(authorization),
+                        "credential_handle": credential_handle,
+                    },
+                    "lab_peers": {
+                        **dict(peers),
+                        "source_handle": source_handle,
+                        "destination_handle": destination_handle,
+                    },
                 }
             }
         if action_id == "sandbox.observability.variant.v1":

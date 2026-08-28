@@ -128,6 +128,8 @@ bluefire receiver --host 127.0.0.1 --port 4317 \
 
 It loads only the active managed enrollment, issues an authenticated one-time challenge, and accepts only the exact loopback artifact route. The challenge, request, and acknowledgement bind the task, ephemeral session, nonce, listener, length, and SHA-256; the runner verifies each HMAC in constant time and treats the body as opaque bytes. `--max-requests` counts verified artifacts while `--max-connections` separately bounds accepted and refused connections and must be at least twice the accepted-artifact limit. Default operation transiently buffers at most the configured body limit and does not persist the body. `--storage-dir` is an explicit opt-in to an empty, dedicated, receiver-owned directory with content-addressed filenames. The default idle window is a bounded 300 seconds and remains explicitly configurable. This authenticates the same-user managed receiver session, but it is not remote transport or a general HTTP server. Without a ready receiver, the primary network action can fail and the scenario may follow only its declared alternate; do not report that alternate as a successful primary-path exercise. See [Runner deployment](RUNNER_DEPLOYMENT.md#provision-the-loopback-receiver) and the [CLI reference](CLI.md#loopback-artifact-receiver).
 
+For `scenario.endpoint.deep-behavior-lab.v1`, use the separate-terminal command `bluefire receiver --host 127.0.0.1 --port 4317 --max-requests 1 --disposable-peer`. This one-shot mode is always memory-only, tolerates only a bounded eight total connections, limits each connection to five seconds, and has 240-second idle and absolute lifetime caps. It exits after the single accepted artifact. The v2/v3 peer protocol binds the receiver PID and declared lifecycle into authentication, while acceptance must independently confirm the distinct PID and its exit; a receipt field alone is not process observation.
+
 ## Preflight
 
 Do not interpret the presence of a Run button as readiness. Preflight reports:
@@ -269,7 +271,7 @@ BlueFire is local-first and pre-1.0. Keep these limits visible when interpreting
 
 - the browser API and artifact receiver bind loopback; the artifact receiver uses active managed enrollment and per-task HMAC, while neither surface is remote transport;
 - the runner action pack is bounded and has no general shell or arbitrary program execution;
-- only the narrow sandbox persistence-detection canary is available under its dedicated restricted profile; real host persistence plus credential, lateral-movement, and defense-evasion Execute families remain unavailable;
+- only the narrow sandbox persistence-detection canary and authorized same-host disposable peer exercise are available under dedicated profiles; real host persistence plus broad credential, remote lateral-movement, and defense-evasion `research.*` Execute families remain unavailable;
 - built-in independent observation is limited to declared sandbox files and disposable JSONL fixtures; optional audit/SIEM collectors remain unavailable until separately implemented and configured;
 - plugins are declarative metadata only and do not load Python entry points or add connector capabilities;
 - Detection Lab does not include backend-specific Sigma conversion, production SPL validation, or automatic public-corpus synchronization;

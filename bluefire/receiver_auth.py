@@ -25,6 +25,8 @@ RESPONSE_AUTH_DOMAIN = b"bluefire.loopback-receiver.response.v1\0"
 
 CHALLENGE_SCHEMA_VERSION = "bluefire.loopback-receiver-challenge.v1"
 RESULT_SCHEMA_VERSION = "bluefire.loopback-receiver-result.v2"
+DISPOSABLE_PEER_CHALLENGE_SCHEMA_VERSION = "bluefire.loopback-receiver-challenge.v2"
+DISPOSABLE_PEER_RESULT_SCHEMA_VERSION = "bluefire.loopback-receiver-result.v3"
 
 _TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 _HEX_32 = re.compile(r"^[0-9a-f]{64}$")
@@ -79,6 +81,65 @@ def challenge_document(
         "port": checked_port,
         "sha256": _hex_identity(sha256, "artifact digest"),
         "content_length": _content_length(content_length),
+    }
+
+
+def disposable_peer_challenge_document(
+    *,
+    task_id: object,
+    session_id: object,
+    nonce: object,
+    host: object,
+    port: object,
+    sha256: object,
+    content_length: object,
+    receiver_process_id: object,
+) -> dict[str, Any]:
+    """Build the exact authenticated challenge for one disposable peer process."""
+
+    document = challenge_document(
+        task_id=task_id,
+        session_id=session_id,
+        nonce=nonce,
+        host=host,
+        port=port,
+        sha256=sha256,
+        content_length=content_length,
+    )
+    document.update(
+        {
+            "schema_version": DISPOSABLE_PEER_CHALLENGE_SCHEMA_VERSION,
+            "receiver_process_id": _process_id(receiver_process_id),
+            "receiver_mode": "disposable_peer",
+            "accepted_artifact_limit": 1,
+            "storage_mode": "memory_only",
+            "exit_after_accept": True,
+        }
+    )
+    return document
+
+
+def disposable_peer_result_document(
+    *,
+    task_id: object,
+    session_id: object,
+    bytes_received: object,
+    sha256: object,
+    receiver_process_id: object,
+) -> dict[str, Any]:
+    """Build the exact authenticated acknowledgement for a disposable peer."""
+
+    return {
+        "schema_version": DISPOSABLE_PEER_RESULT_SCHEMA_VERSION,
+        "accepted": True,
+        "task_id": validate_receiver_task_id(task_id),
+        "session_id": _hex_identity(session_id, "receiver session identity"),
+        "bytes_received": _content_length(bytes_received),
+        "sha256": _hex_identity(sha256, "artifact digest"),
+        "stored": False,
+        "receiver_process_id": _process_id(receiver_process_id),
+        "receiver_mode": "disposable_peer",
+        "terminal_disposition": "exit_after_response",
     }
 
 
@@ -174,9 +235,17 @@ def _content_length(value: object) -> int:
     return value
 
 
+def _process_id(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 2**32 - 1:
+        raise ReceiverAuthenticationError("receiver process identity is invalid")
+    return value
+
+
 __all__ = [
     "CHALLENGE_AUTH_DOMAIN",
     "CHALLENGE_SCHEMA_VERSION",
+    "DISPOSABLE_PEER_CHALLENGE_SCHEMA_VERSION",
+    "DISPOSABLE_PEER_RESULT_SCHEMA_VERSION",
     "RECEIVER_TASK_ID_ENV",
     "RECEIVER_TASK_KEY_ENV",
     "REQUEST_AUTH_DOMAIN",
@@ -187,6 +256,8 @@ __all__ = [
     "challenge_authentication",
     "challenge_document",
     "derive_receiver_task_key",
+    "disposable_peer_challenge_document",
+    "disposable_peer_result_document",
     "request_authentication",
     "request_document",
     "response_authentication",

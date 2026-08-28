@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
+import queue
+import subprocess
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -18,6 +22,7 @@ from bluefire.contracts import load_scenario
 from bluefire.receiver import LoopbackArtifactReceiver, ReceiverConfig
 from bluefire.receiver_auth import derive_receiver_task_key
 from bluefire.runner_client import SubprocessRustRunner
+from bluefire.runner_trust import create_local_enrollment
 from bluefire.service import BlueFireService
 from tests_platform.test_action_package_lifecycle import (
     ACTION_ID as PACKAGE_ACTION_ID,
@@ -42,6 +47,89 @@ from tests_platform.test_action_package_lifecycle import (
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_ENV = "BLUEFIRE_E2E_RUNNER"
 E2E_ENROLLMENT_KEY = bytes(range(32))
+
+
+def _read_process_line(stream: Any, *, timeout_seconds: float) -> str:
+    lines: queue.Queue[str] = queue.Queue(maxsize=1)
+    reader = threading.Thread(target=lambda: lines.put(stream.readline()), daemon=True)
+    reader.start()
+    try:
+        return lines.get(timeout=timeout_seconds)
+    except queue.Empty as exc:
+        raise AssertionError(
+            "receiver did not publish readiness within the bounded deadline"
+        ) from exc
+
+
+def _start_disposable_peer_receiver(
+    tmp_path: Path,
+) -> tuple[subprocess.Popen[str], dict[str, Any], bytes]:
+    if os.name != "nt":
+        pytest.skip("managed disposable receiver enrollment currently requires Windows DPAPI")
+    state_root = tmp_path / "receiver-state"
+    enrollment = create_local_enrollment(
+        state_root / "BlueFire Nexus" / "enrollment",
+        runner_id="bluefire-rust-runner.v1",
+        client_id="bluefire-control-plane.v1",
+        allowed_profile_ids=("sandbox-endpoint-deep-lab.v1", "sandbox-execute.v1"),
+    )
+    child_environment = {
+        name: os.environ[name]
+        for name in ("COMSPEC", "PATH", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP", "WINDIR")
+        if name in os.environ
+    }
+    child_environment["LOCALAPPDATA"] = str(state_root)
+    child_environment["PYTHONPATH"] = os.pathsep.join(
+        (str(ROOT), str(Path(sys.prefix) / "Lib" / "site-packages"))
+    )
+    child_environment["PYTHONIOENCODING"] = "utf-8"
+    child_environment["PYTHONUTF8"] = "1"
+    receiver_python = Path(getattr(sys, "_base_executable", sys.executable)).resolve(strict=True)
+    process = subprocess.Popen(
+        [
+            str(receiver_python),
+            "-m",
+            "bluefire.cli",
+            "receiver",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "4317",
+            "--max-requests",
+            "1",
+            "--disposable-peer",
+        ],
+        cwd=ROOT,
+        env=child_environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        assert process.stderr is not None
+        ready_line = _read_process_line(process.stderr, timeout_seconds=10.0)
+        if not ready_line:
+            stdout, stderr = process.communicate(timeout=10)
+            raise AssertionError(f"receiver exited before readiness: {stdout!r} {stderr!r}")
+        ready = json.loads(ready_line)
+        assert ready == {
+            "schema_version": "bluefire.loopback-receiver-ready.v2",
+            "mode": "disposable_peer",
+            "process_id": process.pid,
+            "host": "127.0.0.1",
+            "port": 4317,
+            "max_requests": 1,
+            "max_connections": 8,
+            "storage": "memory_only",
+        }
+    except BaseException:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+        raise
+    return process, ready, enrollment.hmac_key()
 
 
 @pytest.mark.skipif(
@@ -182,6 +270,33 @@ def test_signed_package_alias_executes_through_real_native_runner(tmp_path: Path
                 "sandbox.archive.tar.v1",
             },
         ),
+        (
+            "operator_representative_validation.yaml",
+            "create_fixture",
+            "stage_records",
+            {
+                "sandbox.execution.native-canary.v1",
+                "sandbox.identity-material.seed.v1",
+                "sandbox.identity-material.inspect.v1",
+                "sandbox.observability.variant.v1",
+                "sandbox.peer.handoff.v1",
+            },
+        ),
+        (
+            "endpoint_deep_behavior_lab.yaml",
+            "create_fixture",
+            "stage_records",
+            {
+                "sandbox.execution.native-canary.v1",
+                "endpoint.discovery.system.v1",
+                "endpoint.discovery.processes.v1",
+                "sandbox.restricted.persistence-marker.v1",
+                "sandbox.collection.stage.v1",
+                "sandbox.observability.variant.v1",
+                "sandbox.credential.peer-challenge.v1",
+                "sandbox.cleanup.v1",
+            },
+        ),
     ],
 )
 def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
@@ -194,15 +309,31 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
     runner_binary = Path(os.environ[RUNNER_ENV]).resolve(strict=True)
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
+    scenario = load_scenario(ROOT / "scenarios" / scenario_name)
+    peer_receiver_required = any(
+        step.behavior_id in {"sandbox.credential.peer-challenge.v1", "sandbox.peer.handoff.v1"}
+        for step in scenario.steps
+    )
+    receiver_process: subprocess.Popen[str] | None = None
+    receiver_ready: dict[str, Any] | None = None
+    receiver_enrollment_key = E2E_ENROLLMENT_KEY
+    if peer_receiver_required:
+        receiver_process, receiver_ready, receiver_enrollment_key = _start_disposable_peer_receiver(
+            tmp_path
+        )
+    receiver_task_keys: list[bytes] = []
+
+    def receiver_task_key(task_id: str) -> bytes:
+        key = derive_receiver_task_key(receiver_enrollment_key, task_id)
+        receiver_task_keys.append(key)
+        return key
+
     runner = SubprocessRustRunner(
         runner_binary,
         tmp_path / "transport",
         timeout_seconds=30.0,
         output_limit_bytes=4 * 1024 * 1024,
-        receiver_task_key_factory=lambda task_id: derive_receiver_task_key(
-            E2E_ENROLLMENT_KEY,
-            task_id,
-        ),
+        receiver_task_key_factory=receiver_task_key,
     )
     service = BlueFireService(
         project_root=ROOT,
@@ -210,8 +341,7 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
         product_db_path=tmp_path / "product.sqlite3",
         runner_factory=lambda _profile: (runner, sandbox),
     )
-    scenario = load_scenario(ROOT / "scenarios" / scenario_name)
-    needs_receiver = any(
+    generic_receiver_required = any(
         step.behavior_id == "sandbox.network.loopback.v1" for step in scenario.steps
     )
     receiver = (
@@ -222,7 +352,7 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
                 max_requests=1,
             )
         )
-        if needs_receiver
+        if generic_receiver_required
         else None
     )
     receiver_result: dict[str, Any] = {}
@@ -242,9 +372,17 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
             {
                 "scenario": scenario.to_dict(),
                 "mode": "execute",
-                "runner_profile_id": "sandbox-execute.v1",
+                "runner_profile_id": (
+                    "sandbox-endpoint-deep-lab.v1"
+                    if scenario_name == "endpoint_deep_behavior_lab.yaml"
+                    else "sandbox-execute.v1"
+                ),
                 "target_scope": {
-                    "scope_refs": ["sandbox.workspace", "network.loopback", "export.local"]
+                    "scope_refs": (
+                        ["sandbox.workspace", "network.loopback"]
+                        if scenario_name == "endpoint_deep_behavior_lab.yaml"
+                        else ["sandbox.workspace", "network.loopback", "export.local"]
+                    )
                 },
                 "autonomy": "off",
                 "approval": {
@@ -253,12 +391,17 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
                 },
             }
         )
+        if receiver_process is not None:
+            receiver_process.wait(timeout=10)
     finally:
         if receiver_thread is not None:
             receiver_thread.join(timeout=5)
         if receiver is not None and receiver_thread is not None and receiver_thread.is_alive():
             receiver.close()
             receiver_thread.join(timeout=2)
+        if receiver_process is not None and receiver_process.poll() is None:
+            receiver_process.terminate()
+            receiver_process.wait(timeout=5)
 
     rows = {row["step_id"]: row for row in result["steps"]}
     assert result["objective_reached"] is True
@@ -277,12 +420,19 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
     assert "nonce" not in result["approval"]
     assert service.store.validate_bundle(str(result["run_id"]))["valid"] is True
     assert not [path for path in sandbox.rglob("*") if path.is_file()]
-    if needs_receiver:
+    if generic_receiver_required or peer_receiver_required:
         network_step = next(
-            row for row in result["steps"] if row["behavior_id"] == "sandbox.network.loopback.v1"
+            row
+            for row in result["steps"]
+            if row["behavior_id"]
+            in {
+                "sandbox.network.loopback.v1",
+                "sandbox.credential.peer-challenge.v1",
+                "sandbox.peer.handoff.v1",
+            }
         )
         assert network_step["status"] == "success", json.dumps(network_step, indent=2)
-        assert receiver_result == {
+        expected_receiver_result = {
             "schema_version": "bluefire.loopback-receiver-summary.v1",
             "reason": "max_requests",
             "connections_handled": 2,
@@ -290,6 +440,52 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
             "requests_accepted": 1,
             "requests_refused": 0,
         }
+        receiver_stdout = ""
+        receiver_stderr = ""
+        if receiver_process is not None:
+            receiver_stdout, receiver_stderr = receiver_process.communicate(timeout=10)
+            receiver_result = json.loads(receiver_stdout)
+            assert receiver_process.returncode == 0
+            assert receiver_stderr == ""
+        assert receiver_result == expected_receiver_result
+        if network_step["behavior_id"] in {
+            "sandbox.credential.peer-challenge.v1",
+            "sandbox.peer.handoff.v1",
+        }:
+            receipt = network_step["artifacts"]["receipt"]
+            authorization = receipt["lab_authorization"]
+            peers = receipt["lab_peers"]
+            assert authorization["scope"] == "approved_task"
+            assert authorization["challenge_verified"] is True
+            assert authorization["raw_credential_exposed"] is False
+            assert len(authorization["credential_handle"]) == 64
+            assert peers["scope"] == "authorized_disposable_loopback_lab"
+            assert peers["distinct_processes"] is True
+            assert peers["transfer_acknowledged"] is True
+            assert peers["source_process_id"] != peers["destination_process_id"]
+            assert receiver_ready is not None
+            assert peers["destination_process_id"] == receiver_ready["process_id"]
+            assert peers["source_handle"] != peers["destination_handle"]
+            rendered = json.dumps(result, sort_keys=True) + receiver_stdout + receiver_stderr
+            evidence_payloads = [rendered.encode("utf-8")]
+            evidence_payloads.extend(
+                path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
+            )
+            for secret in [receiver_enrollment_key, *receiver_task_keys]:
+                encodings = {
+                    secret,
+                    secret.hex().encode("ascii"),
+                    secret.hex().upper().encode("ascii"),
+                    base64.b64encode(secret),
+                    base64.b32encode(secret),
+                    base64.urlsafe_b64encode(secret),
+                    base64.urlsafe_b64encode(secret).rstrip(b"="),
+                }
+                assert all(
+                    encoding not in payload
+                    for encoding in encodings
+                    for payload in evidence_payloads
+                )
 
 
 @pytest.mark.skipif(

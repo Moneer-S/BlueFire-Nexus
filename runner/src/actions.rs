@@ -2595,11 +2595,14 @@ struct NetworkLoopbackParams {
 struct NetworkLoopbackPrepared {
     params: NetworkLoopbackParams,
     reviewed_body: Option<Vec<u8>>,
+    include_disposable_lab_evidence: bool,
 }
 
 const LOOPBACK_RECEIVER_CHALLENGE_SCHEMA_VERSION: &str = "bluefire.loopback-receiver-challenge.v1";
+const DISPOSABLE_PEER_CHALLENGE_SCHEMA_VERSION: &str = "bluefire.loopback-receiver-challenge.v2";
 const LOOPBACK_RECEIVER_REQUEST_SCHEMA_VERSION: &str = "bluefire.loopback-receiver-request.v1";
 const LOOPBACK_RECEIVER_RESULT_SCHEMA_VERSION: &str = "bluefire.loopback-receiver-result.v2";
+const DISPOSABLE_PEER_RESULT_SCHEMA_VERSION: &str = "bluefire.loopback-receiver-result.v3";
 const LOOPBACK_RECEIVER_CHALLENGE_PATH: &str = "/bluefire/v1/challenge";
 const LOOPBACK_RECEIVER_ARTIFACT_PATH: &str = "/bluefire/v1/artifact";
 const LOOPBACK_RECEIVER_TASK_ID_ENV: &str = "BLUEFIRE_RECEIVER_TASK_ID";
@@ -2607,6 +2610,9 @@ const LOOPBACK_RECEIVER_TASK_KEY_ENV: &str = "BLUEFIRE_RECEIVER_TASK_KEY";
 const LOOPBACK_RECEIVER_CHALLENGE_DOMAIN: &[u8] = b"bluefire.loopback-receiver.challenge.v1\0";
 const LOOPBACK_RECEIVER_REQUEST_DOMAIN: &[u8] = b"bluefire.loopback-receiver.request.v1\0";
 const LOOPBACK_RECEIVER_RESPONSE_DOMAIN: &[u8] = b"bluefire.loopback-receiver.response.v1\0";
+const LAB_CREDENTIAL_HANDLE_DOMAIN: &[u8] = b"bluefire.disposable-lab.credential-handle.v1\0";
+const LAB_SOURCE_PEER_HANDLE_DOMAIN: &[u8] = b"bluefire.disposable-lab.source-peer.v1\0";
+const LAB_DESTINATION_PEER_HANDLE_DOMAIN: &[u8] = b"bluefire.disposable-lab.destination-peer.v1\0";
 const LOOPBACK_RECEIVER_PROTOCOL_LIMIT: usize = 32 * 1024;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -2614,6 +2620,12 @@ type HmacSha256 = Hmac<Sha256>;
 struct LoopbackReceiverTaskAuthentication {
     task_id: String,
     task_key: [u8; 32],
+}
+
+impl Drop for LoopbackReceiverTaskAuthentication {
+    fn drop(&mut self) {
+        self.task_key.fill(0);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2627,6 +2639,16 @@ struct LoopbackReceiverChallenge {
     port: u16,
     sha256: String,
     content_length: usize,
+    #[serde(default)]
+    receiver_process_id: Option<u32>,
+    #[serde(default)]
+    receiver_mode: Option<String>,
+    #[serde(default)]
+    accepted_artifact_limit: Option<u32>,
+    #[serde(default)]
+    storage_mode: Option<String>,
+    #[serde(default)]
+    exit_after_accept: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2639,6 +2661,12 @@ struct LoopbackReceiverResult {
     bytes_received: u64,
     sha256: String,
     stored: bool,
+    #[serde(default)]
+    receiver_process_id: Option<u32>,
+    #[serde(default)]
+    receiver_mode: Option<String>,
+    #[serde(default)]
+    terminal_disposition: Option<String>,
 }
 
 struct StrictLoopbackResponse {
@@ -2712,6 +2740,22 @@ fn receiver_authentication_value(key: &[u8; 32], domain: &[u8], payload: &[u8]) 
     mac.update(domain);
     mac.update(payload);
     format!("sha256:{}", hex::encode(mac.finalize().into_bytes()))
+}
+
+fn opaque_hmac_handle(key: &[u8; 32], domain: &[u8], payload: &[u8]) -> String {
+    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC-SHA256 accepts a 32-byte key");
+    mac.update(domain);
+    mac.update(payload);
+    hex::encode(mac.finalize().into_bytes())
+}
+
+fn opaque_public_handle(domain: &[u8], payloads: &[&[u8]]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(domain);
+    for payload in payloads {
+        digest.update(payload);
+    }
+    hex::encode(digest.finalize())
 }
 
 fn verify_receiver_authentication(
@@ -3021,6 +3065,7 @@ fn validate_loopback_challenge(
     truncated: bool,
     authentication: &LoopbackReceiverTaskAuthentication,
     destination: &NetworkDestination,
+    require_disposable_peer: bool,
 ) -> Result<LoopbackReceiverChallenge, String> {
     let response = parse_authenticated_loopback_response(response, truncated)?;
     if response.status_code != 200 {
@@ -3037,14 +3082,33 @@ fn validate_loopback_challenge(
     }
     let challenge: LoopbackReceiverChallenge = serde_json::from_value(value)
         .map_err(|_| "receiver challenge schema was invalid".to_string())?;
-    if challenge.schema_version != LOOPBACK_RECEIVER_CHALLENGE_SCHEMA_VERSION
-        || challenge.task_id != authentication.task_id
+    if challenge.task_id != authentication.task_id
         || !valid_lower_hex_32(&challenge.session_id)
         || !valid_lower_hex_32(&challenge.nonce)
         || challenge.host != destination.host
         || challenge.port != destination.port
     {
         return Err("receiver challenge binding did not match".to_string());
+    }
+    if require_disposable_peer {
+        if challenge.schema_version != DISPOSABLE_PEER_CHALLENGE_SCHEMA_VERSION
+            || challenge.receiver_process_id.is_none()
+            || challenge.receiver_process_id == Some(std::process::id())
+            || challenge.receiver_mode.as_deref() != Some("disposable_peer")
+            || challenge.accepted_artifact_limit != Some(1)
+            || challenge.storage_mode.as_deref() != Some("memory_only")
+            || challenge.exit_after_accept != Some(true)
+        {
+            return Err("receiver challenge did not prove a disposable peer process".to_string());
+        }
+    } else if challenge.schema_version != LOOPBACK_RECEIVER_CHALLENGE_SCHEMA_VERSION
+        || challenge.receiver_process_id.is_some()
+        || challenge.receiver_mode.is_some()
+        || challenge.accepted_artifact_limit.is_some()
+        || challenge.storage_mode.is_some()
+        || challenge.exit_after_accept.is_some()
+    {
+        return Err("receiver challenge schema version did not match".to_string());
     }
     Ok(challenge)
 }
@@ -3057,6 +3121,7 @@ fn validate_loopback_acknowledgement(
     challenge: &LoopbackReceiverChallenge,
     expected_sha256: &str,
     expected_bytes: usize,
+    require_disposable_peer: bool,
 ) -> Result<LoopbackReceiverResult, String> {
     let response = parse_authenticated_loopback_response(response, truncated)?;
     if !matches!(response.status_code, 200 | 201) {
@@ -3074,9 +3139,6 @@ fn validate_loopback_acknowledgement(
 
     let acknowledgement: LoopbackReceiverResult = serde_json::from_value(value)
         .map_err(|_| "response body was not the strict receiver JSON schema".to_string())?;
-    if acknowledgement.schema_version != LOOPBACK_RECEIVER_RESULT_SCHEMA_VERSION {
-        return Err("receiver acknowledgement schema version did not match".to_string());
-    }
     if !acknowledgement.accepted {
         return Err("receiver did not acknowledge the artifact".to_string());
     }
@@ -3093,6 +3155,26 @@ fn validate_loopback_acknowledgement(
     }
     if (response.status_code == 201) != acknowledgement.stored {
         return Err("receiver acknowledgement storage status did not match".to_string());
+    }
+    if require_disposable_peer {
+        if acknowledgement.schema_version != DISPOSABLE_PEER_RESULT_SCHEMA_VERSION
+            || response.status_code != 200
+            || acknowledgement.stored
+            || acknowledgement.receiver_process_id != challenge.receiver_process_id
+            || acknowledgement.receiver_mode.as_deref() != Some("disposable_peer")
+            || acknowledgement.terminal_disposition.as_deref() != Some("exit_after_response")
+        {
+            return Err(
+                "receiver acknowledgement did not preserve disposable peer lifecycle binding"
+                    .to_string(),
+            );
+        }
+    } else if acknowledgement.schema_version != LOOPBACK_RECEIVER_RESULT_SCHEMA_VERSION
+        || acknowledgement.receiver_process_id.is_some()
+        || acknowledgement.receiver_mode.is_some()
+        || acknowledgement.terminal_disposition.is_some()
+    {
+        return Err("receiver acknowledgement schema version did not match".to_string());
     }
     Ok(acknowledgement)
 }
@@ -3209,6 +3291,7 @@ impl PreparedAction for NetworkLoopbackPrepared {
             challenge_output.truncated,
             &receiver_authentication,
             &self.params.destination,
+            self.include_disposable_lab_evidence,
         )
         .map_err(|_| {
             ActionFailure::failed(
@@ -3268,6 +3351,7 @@ impl PreparedAction for NetworkLoopbackPrepared {
                 &challenge,
                 &body_sha256,
                 body.len(),
+                self.include_disposable_lab_evidence,
             ))
         };
         let receiver_stored = acknowledgement
@@ -3281,17 +3365,96 @@ impl PreparedAction for NetworkLoopbackPrepared {
         } else {
             TaskStatus::Failed
         };
+        let mut output = json!({
+            "destination": self.params.destination,
+            "artifact": artifact,
+            "bytes_sent": body.len(),
+            "sha256": body_sha256,
+            "http_status": status_code,
+            "receiver_acknowledged": status == TaskStatus::Success,
+            "receiver_stored": receiver_stored,
+        });
+        if self.include_disposable_lab_evidence {
+            let source_process_id = std::process::id();
+            let destination_process_id = challenge.receiver_process_id.ok_or_else(|| {
+                ActionFailure::failed(
+                    "receiver_authentication_failed",
+                    "the authenticated disposable peer process identity was unavailable",
+                )
+            })?;
+            let source_process_id_text = source_process_id.to_string();
+            let destination_process_id_text = destination_process_id.to_string();
+            let source_peer_handle = opaque_public_handle(
+                LAB_SOURCE_PEER_HANDLE_DOMAIN,
+                &[
+                    source_process_id_text.as_bytes(),
+                    receiver_authentication.task_id.as_bytes(),
+                    context.manifest.request_hash.as_bytes(),
+                ],
+            );
+            let destination_peer_handle = opaque_public_handle(
+                LAB_DESTINATION_PEER_HANDLE_DOMAIN,
+                &[
+                    destination_process_id_text.as_bytes(),
+                    challenge.session_id.as_bytes(),
+                    authority.as_bytes(),
+                    body_sha256.as_bytes(),
+                ],
+            );
+            let credential_handle = opaque_hmac_handle(
+                &receiver_authentication.task_key,
+                LAB_CREDENTIAL_HANDLE_DOMAIN,
+                receiver_authentication.task_id.as_bytes(),
+            );
+            let output = output
+                .as_object_mut()
+                .expect("the fixed loopback output is an object");
+            output.insert(
+                "lab_authorization".to_string(),
+                json!({
+                    "scope": "approved_task",
+                    "credential_kind": "managed_one_task_hmac_capability",
+                    "credential_handle": credential_handle,
+                    "challenge_verified": true,
+                    "raw_credential_exposed": false,
+                }),
+            );
+            output.insert(
+                "lab_peers".to_string(),
+                json!({
+                    "scope": "authorized_disposable_loopback_lab",
+                    "source_kind": "rust_runner_process",
+                    "destination_kind": "managed_loopback_receiver_process",
+                    "source_process_id": source_process_id,
+                    "destination_process_id": destination_process_id,
+                    "source_handle": source_peer_handle,
+                    "destination_handle": destination_peer_handle,
+                    "distinct_processes": source_process_id != destination_process_id,
+                    "receiver_mode": "disposable_peer",
+                    "accepted_artifact_limit": 1,
+                    "storage_mode": "memory_only",
+                    "exit_after_accept": true,
+                    "transfer_acknowledged": status == TaskStatus::Success,
+                }),
+            );
+        }
+        let mut limitations = vec![
+            "Literal loopback IP only; DNS, redirects, and proxy environment variables are not used."
+                .to_string(),
+            "Success requires an active managed enrollment, an exact per-task HMAC capability, an authenticated ephemeral receiver session, a one-time challenge, and a digest- and length-bound acknowledgement."
+                .to_string(),
+            "This same-user loopback protocol is not remote transport and does not authorize a different host, port, task, or receiver session."
+                .to_string(),
+        ];
+        if self.include_disposable_lab_evidence {
+            limitations.push(
+                "The peer variant exercises credential-bound movement only between explicitly authorized disposable lab roles; it does not compromise or access another host."
+                    .to_string(),
+            );
+        }
         Ok(ActionOutcome {
             status,
-            output: json!({
-                "destination": self.params.destination,
-                "artifact": artifact,
-                "bytes_sent": body.len(),
-                "sha256": body_sha256,
-                "http_status": status_code,
-                "receiver_acknowledged": status == TaskStatus::Success,
-                "receiver_stored": receiver_stored,
-            }),
+            output,
             stdout: response,
             stderr: BoundedOutput::default(),
             receipt_ids: Vec::new(),
@@ -3314,14 +3477,7 @@ impl PreparedAction for NetworkLoopbackPrepared {
                     ),
                 }),
             },
-            limitations: vec![
-                "Literal loopback IP only; DNS, redirects, and proxy environment variables are not used."
-                    .to_string(),
-                "Success requires an active managed enrollment, an exact per-task HMAC capability, an authenticated ephemeral receiver session, a one-time challenge, and a digest- and length-bound acknowledgement."
-                    .to_string(),
-                "This same-user loopback protocol is not remote transport and does not authorize a different host, port, task, or receiver session."
-                    .to_string(),
-            ],
+            limitations,
         })
     }
 }
@@ -3353,6 +3509,7 @@ impl Action for NetworkLoopbackAction {
         Ok(Box::new(NetworkLoopbackPrepared {
             params: parse_params(params)?,
             reviewed_body: None,
+            include_disposable_lab_evidence: false,
         }))
     }
 }
@@ -3394,6 +3551,7 @@ impl PreparedAction for PeerHandoffPrepared {
                 },
             },
             reviewed_body: Some(source.bytes),
+            include_disposable_lab_evidence: true,
         })
         .execute(context)
     }
@@ -3403,9 +3561,12 @@ struct PeerHandoffAction;
 static PEER_HANDOFF_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
     ..reviewed_descriptor! {
         id: "sandbox.peer.handoff.v1",
-        version: "1.0.0",
-        behavior_ids: &["sandbox.peer.handoff.v1"],
-        summary: "Hand one reviewed synthetic bundle to an authenticated literal-loopback peer session.",
+        version: "2.0.0",
+        behavior_ids: &[
+            "sandbox.credential.peer-challenge.v1",
+            "sandbox.peer.handoff.v1",
+        ],
+        summary: "Move one reviewed synthetic bundle between credential-bound disposable lab peers on literal loopback.",
         schema: peer_handoff_schema,
         capabilities: &[Capability::FilesystemRead, Capability::NetworkLoopback],
         tier: SafetyTier::Controlled,
@@ -3945,6 +4106,7 @@ mod tests {
                 | "sandbox.export.local.v1"
                 | "sandbox.fixture.create.v1"
                 | "sandbox.fixture.transform.v1" => "2.0.0",
+                "sandbox.peer.handoff.v1" => "2.0.0",
                 _ => "1.0.0",
             };
             assert_eq!(value["action_version"], expected_version);

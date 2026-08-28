@@ -32,8 +32,9 @@ For the default managed lifecycle, these fields do not let a scenario or browser
 `config/bluefire.example.yaml` contains:
 
 - `sandbox-simulate.v1`: default, no enabled runner actions, no approval;
-- `sandbox-execute.v1`: the twelve safe/controlled built-in actions, loopback plus local export, mandatory approval and cleanup;
-- `sandbox-blocked-network.v1`: the same safe/controlled Execute inventory, with `sandbox.network.loopback.v1` explicitly control-blocked to exercise the registered local fallback;
+- `sandbox-execute.v1`: the seventeen safe/controlled built-in actions, loopback plus local export, mandatory approval and cleanup;
+- `sandbox-blocked-network.v1`: the same safe/controlled Execute inventory, with both loopback transfer actions explicitly control-blocked to exercise registered local fallbacks;
+- `sandbox-endpoint-deep-lab.v1`: the exact eleven-action endpoint lab inventory, literal IPv4 loopback only, restricted canary permission, mandatory approval, and cleanup;
 - `sandbox-restricted-owned.v1`: only the fixed-path restricted persistence-detection canary and cleanup, no network scope, and mandatory exact approval.
 
 These are demonstration profiles. Copy and narrow one for a specific authorized lab; do not treat an example as organizational authorization.

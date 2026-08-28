@@ -308,8 +308,8 @@ items:
 
   - schema_version: bluefire.action.v1
     id: sandbox.peer.handoff.v1
-    title: Hand staged bundle to authenticated loopback peer
-    purpose: Authenticate and send exactly one bound staged bundle to literal 127.0.0.1 at a reviewed port, with no caller-selectable host or path.
+    title: Move staged bundle between authorized disposable lab peers
+    purpose: Authenticate with one managed one-task capability and move exactly one bound staged bundle between a Rust runner process and a distinct one-shot memory-only receiver process on literal 127.0.0.1, with no caller-selectable host or path.
     safety_tier: controlled
     capabilities: [sandbox.peer, filesystem.read, network.loopback]
     platforms: [windows, linux, macos]
@@ -318,8 +318,8 @@ items:
         type: artifact.sandbox.bundle.v1
     outputs:
       - name: receipt
-        type: artifact.sandbox.peer-handoff.receipt.v1
-        description: Authenticated loopback handoff receipt for the exact staged bundle.
+        type: artifact.sandbox.peer-handoff.receipt.v2
+        description: Authenticated handoff receipt with opaque authorization handles and bounded process/lifecycle evidence for the exact staged bundle.
     parameters:
       - name: port
         type: integer

@@ -128,6 +128,20 @@ runner adds an exact per-task capability and the receiver proves an ephemeral sa
 before artifact transmission. This does not authorize a different host, port, task, or session and
 does not turn the local receiver into remote transport or cross-user service authentication.
 
+For `scenario.endpoint.deep-behavior-lab.v1`, start the one-shot peer variant instead:
+
+```bash
+bluefire receiver --host 127.0.0.1 --port 4317 --max-requests 1 --disposable-peer
+```
+
+This locks the receiver to memory-only storage, one accepted artifact, eight total connections, a
+five-second per-connection deadline, and 240-second idle and absolute lifecycle caps. Clean protocol
+use consumes one challenge plus one upload; the remaining bounded sockets tolerate incidental local
+probes without making the receiver long-lived. The peer action requires challenge v2 and result v3,
+then emits a v2 logical receipt with only an opaque approved-task capability handle. The receipt
+authenticates the declared PID and terminal disposition, but release proof must observe the distinct
+process and its exit independently.
+
 ## Check compatibility
 
 ```bash

@@ -58,7 +58,7 @@ AI does not create a third mode. Enabling `assist` or `auto` cannot widen target
 - A strict Python control plane for catalog, scenario, planning, policy, simulation, execution dispatch, evidence, detections, replay, comparison, and local run bundles.
 - A React/TypeScript workspace with Overview, Scenarios, Builder, Runs, Compare, Behaviors, Runner Profiles, Runners, Actions, Detection Lab, Research Sources, AI Planner, Settings, and Help areas.
 - Eighteen compiled Rust actions with versioned inventory descriptors, strict parameter schemas, resource bounds, structured results, and cleanup receipts.
-- Seven sanitized scenario graphs, including blocked-path fallback, platform discovery, archive/staging, detection regression, AI-adaptive, restricted-tier canary, and representative operator-loop examples.
+- Eight sanitized scenario graphs, including blocked-path fallback, platform discovery, archive/staging, detection regression, AI-adaptive, restricted-tier canary, representative operator-loop, and deep endpoint-lab examples.
 - A deterministic offline AI provider and an OpenAI-compatible Responses provider using strict structured output, timeouts, retries, token limits, redaction, and deterministic fallback.
 - A bounded filesystem observer and JSONL fixture-log collector, with Execute binding the ready filesystem collector into preflight/approval for declared sandbox artifacts, plus honest readiness descriptors for optional auditd, Sysmon/Event Log, packet-capture, and SIEM adapters.
 - pySigma parsing and YARA compilation/fixture exercise when their optional pinned packages are installed; SPL receives structural checks only.
@@ -83,7 +83,7 @@ AI does not create a third mode. Enabling `assist` or `auto` cannot widen target
 | `sandbox.execution.native-canary.v1` | safe | Run 1..4096 rounds of deterministic in-process compiled computation without process, filesystem, or network effects |
 | `sandbox.identity-material.seed.v1` | safe | Write one public synthetic canary at the fixed `identity-material/public-canary.json` path for receipt-bound cleanup |
 | `sandbox.identity-material.inspect.v1` | safe | Read only the exact public canary and return digest, size, and field-count metadata without values |
-| `sandbox.peer.handoff.v1` | controlled | Send exactly one staged bundle to an authenticated literal `127.0.0.1` peer using only a reviewed port |
+| `sandbox.peer.handoff.v1` | controlled | Authenticate one managed one-task capability and move exactly one staged bundle to a distinct one-shot receiver process on literal `127.0.0.1`, retaining opaque handles plus bounded process/lifecycle evidence |
 | `sandbox.observability.variant.v1` | safe | Create a fixed-path reversible canonical or `chunked_hex` representation for comparison, with the representation recorded in output metadata |
 | `sandbox.restricted.persistence-marker.v1` | restricted | Write one fixed, non-executable persistence-detection canary inside a dedicated runner-owned sandbox |
 | `sandbox.cleanup.v1` | safe | Quarantine, revalidate, and remove only receipt-bound objects, then return an authoritative verification report |
@@ -101,8 +101,21 @@ The runner does not expose a generic command, shell, script, URL, hostname-resol
 | `scenarios/ai_adaptive_safe_chain.yaml` | Bounded planner choice around an incompatible or blocked internal-transport path | AI proposals remain inside registered graph objects and policy |
 | `scenarios/restricted_persistence_canary.yaml` | Restricted-tier canary creation, observation hints, and receipt cleanup | Requires the narrow `sandbox-restricted-owned.v1` profile; it never alters operating-system persistence |
 | `scenarios/operator_representative_validation.yaml` | Ten-step native canary, public identity material, fixture pipeline, reversible observability variant, authenticated peer handoff, and cleanup | Uses only fixed runner-owned artifacts; the blocked-network profile refuses peer handoff |
+| `scenarios/endpoint_deep_behavior_lab.yaml` | Eleven-step native/discovery, restricted marker, fixture pipeline, transparent telemetry shaping, one-task credential challenge, separate-process peer handoff, and cleanup | Requires `sandbox-endpoint-deep-lab.v1` and a one-shot `--disposable-peer` receiver on literal loopback |
 
-The persistence research family now has one deliberately narrow Simulate/Execute canary under a dedicated restricted profile and fresh approval. Credential-access, lateral-movement, and defense-evasion `research.*` families remain **metadata-only** contracts. The public identity-material canary is not a credential-access action, peer handoff is not remote lateral movement, and the reversible observability variant makes no evasion claim. BlueFire does not claim those three categories, or real host persistence changes, are operational.
+The deep endpoint lab adds narrowly bounded executable proofs for a managed one-task capability, authorized same-host peer movement, and transparent telemetry shaping. Broad credential-access, remote lateral-movement, and defense-evasion `research.*` families remain **metadata-only** contracts. Peer handoff never compromises or authorizes a remote host, the observability variant makes no bypass claim, and the persistence marker never changes host startup state.
+
+An Execute peer handoff requires an active managed enrollment and an independently launched one-shot receiver:
+
+```bash
+bluefire receiver --host 127.0.0.1 --port 4317 --max-requests 1 --disposable-peer
+```
+
+Disposable-peer mode accepts only one artifact, keeps it memory-only, and exits immediately after
+acceptance. Its eight-connection cap leaves a small bounded refusal/probe allowance around the
+required challenge and upload. Each connection is capped at five seconds, while both idle and
+absolute process lifetime are capped at 240 seconds so the receiver can be started before the
+reviewed multi-step endpoint chain without becoming a long-lived service.
 
 ## Quickstart: first safe run
 
@@ -458,7 +471,7 @@ For the historical pre-1.0 product boundary and explicit non-claims, see the [pr
 - Runner readiness binds the probed binary digest and inventory, but BlueFire does not provide OS code signing or eliminate the local binary time-of-check/time-of-use interval before launch.
 - The action pack is intentionally bounded to runner-owned fixtures, discovery, staging/archive, local export, authenticated loopback transport, public fixed-path canaries, reversible observability comparison, bounded in-process computation, and cleanup. It has no general shell or arbitrary program execution.
 - Plugin activation inventories reviewed metadata only; it does not download/load a package or add dynamic behaviors/actions.
-- One restricted persistence-detection canary is available only through a dedicated narrow profile; real host persistence changes and the credential, lateral-movement, and defense-evasion research families remain unavailable for Execute.
+- One restricted persistence-detection canary and one authorized same-host disposable peer exercise are available only through narrow profiles; real host persistence changes and the broad credential, remote lateral-movement, and defense-evasion `research.*` families remain unavailable for Execute.
 - Built-in independent observation is limited to declared sandbox files and disposable JSONL fixtures. Execute defaults to the ready filesystem collector and rejects unavailable collector selections; optional audit/SIEM collectors report unavailable until separately implemented and configured.
 - The Detection Lab backend offers candidate and validator primitives; backend-specific Sigma conversion and production SPL validation are not included.
 - Real-account AI transport is not part of offline acceptance, and no single dynamically verified product journey currently demonstrates Auto mutation through replay and comparison.

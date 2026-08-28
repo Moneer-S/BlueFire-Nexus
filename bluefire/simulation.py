@@ -115,6 +115,7 @@ class SimulationRegistry:
             "simulation.sandbox.identity-material.seed.v1",
             "simulation.sandbox.identity-material.inspect.v1",
             "simulation.sandbox.network.loopback.v1",
+            "simulation.sandbox.credential.peer-challenge.v1",
             "simulation.sandbox.peer.handoff.v1",
             "simulation.sandbox.observability.variant.v1",
             "simulation.sandbox.export.local.v1",
@@ -391,7 +392,10 @@ class SimulationRegistry:
                 }
             }
             telemetry = ("sandbox.collection.staged",)
-        elif simulation_id == "simulation.sandbox.peer.handoff.v1":
+        elif simulation_id in {
+            "simulation.sandbox.credential.peer-challenge.v1",
+            "simulation.sandbox.peer.handoff.v1",
+        }:
             _exact_parameter_keys(
                 step.parameters,
                 allowed=frozenset({"port"}),
@@ -399,9 +403,22 @@ class SimulationRegistry:
             )
             _, bundle_path, bundle_hash, bundle_size = _simulated_bundle(bound_inputs.get("bundle"))
             port = _bounded_integer(step.parameters.get("port", 4317), "port", 1024, 65535)
+            credential_handle = content_hash(
+                {
+                    "projection": "managed-credential-handle",
+                    "bundle": bundle_hash,
+                    "port": port,
+                }
+            ).removeprefix("sha256:")
+            source_handle = content_hash(
+                {"projection": "source-peer", "bundle": bundle_hash}
+            ).removeprefix("sha256:")
+            destination_handle = content_hash(
+                {"projection": "destination-peer", "port": port}
+            ).removeprefix("sha256:")
             artifacts = {
                 "receipt": {
-                    "type": "artifact.sandbox.peer-handoff.receipt.v1",
+                    "type": "artifact.sandbox.peer-handoff.receipt.v2",
                     "transport": "simulated_authenticated_loopback",
                     "artifact": bundle_path,
                     "content_hash": bundle_hash,
@@ -409,10 +426,38 @@ class SimulationRegistry:
                     "destination": {"host": "127.0.0.1", "port": port},
                     "would_authenticate": True,
                     "receiver_stored": False,
+                    "lab_authorization": {
+                        "scope": "approved_task",
+                        "credential_kind": "simulated_managed_one_task_capability_reference",
+                        "credential_handle": credential_handle,
+                        "challenge_verified": False,
+                        "raw_credential_exposed": False,
+                    },
+                    "lab_peers": {
+                        "scope": "authorized_disposable_loopback_lab",
+                        "source_kind": "simulated_rust_runner_process",
+                        "destination_kind": "simulated_managed_loopback_receiver_process",
+                        "source_process_id": None,
+                        "destination_process_id": None,
+                        "source_handle": source_handle,
+                        "destination_handle": destination_handle,
+                        "distinct_processes": False,
+                        "receiver_mode": "disposable_peer",
+                        "accepted_artifact_limit": 1,
+                        "storage_mode": "memory_only",
+                        "exit_after_accept": True,
+                        "transfer_acknowledged": False,
+                    },
                     "synthetic": True,
                 }
             }
-            telemetry = ("sandbox.peer.handoff_attempted",)
+            telemetry = (
+                (
+                    "sandbox.credential.peer_challenge_attempted"
+                    if simulation_id == "simulation.sandbox.credential.peer-challenge.v1"
+                    else "sandbox.peer.handoff_attempted"
+                ),
+            )
             limitations = base_limitations + (
                 "No peer was contacted and no authentication exchange or transfer occurred.",
             )

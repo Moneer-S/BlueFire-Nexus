@@ -382,9 +382,9 @@ items:
     limitations: [Reads only the seeded public canary and never returns its values or enumerates adjacent files.]
 
   - schema_version: bluefire.behavior.v1
-    id: sandbox.peer.handoff.v1
-    title: Hand staged bundle to authenticated loopback peer
-    purpose: Authenticate and send exactly one bound staged bundle to literal 127.0.0.1 at a reviewed port, with no caller-selectable host or path.
+    id: sandbox.credential.peer-challenge.v1
+    title: Exercise an authorized disposable peer credential
+    purpose: Prove possession of one managed one-task HMAC capability to a distinct one-shot authorized receiver process while transferring only the fixed public staged bundle and retaining no raw credential value.
     execution_state: action
     safety_tier: controlled
     platforms: [windows, linux, macos]
@@ -395,8 +395,38 @@ items:
         type: artifact.sandbox.bundle.v1
     outputs:
       - name: receipt
-        type: artifact.sandbox.peer-handoff.receipt.v1
-        description: Authenticated loopback handoff receipt for the exact staged bundle.
+        type: artifact.sandbox.peer-handoff.receipt.v2
+        description: Authenticated lab receipt containing an opaque credential handle, challenge result, peer handles, and bounded process/lifecycle evidence.
+    parameters:
+      - name: port
+        type: integer
+        default: 4317
+        minimum: 1024
+        maximum: 65535
+        description: Port on the runner-enforced literal 127.0.0.1 destination; no hostname or address is accepted.
+    simulation_id: simulation.sandbox.credential.peer-challenge.v1
+    action_ids: [sandbox.peer.handoff.v1]
+    telemetry: [sandbox.credential.peer_challenge_attempted]
+    detection_hints: [A successful Execute result must prove the one-task challenge and retain only an opaque handle; Simulate never proves possession.]
+    provenance: *authored
+    limitations: [Uses only a managed high-entropy capability derived for one approved task and one ephemeral lab receiver; it never reads user, host, browser, cloud, or adjacent credentials.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.peer.handoff.v1
+    title: Move staged bundle between authorized disposable lab peers
+    purpose: Exercise credential-bound movement between a Rust runner process and a distinct one-shot managed receiver process by authenticating one managed one-task capability and sending exactly one bound staged bundle to literal 127.0.0.1, with no caller-selectable host or path.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.peer, filesystem.read, network.loopback]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.peer-handoff.receipt.v2
+        description: Authenticated handoff receipt with opaque authorization handles and bounded process/lifecycle evidence for the exact staged bundle.
     parameters:
       - name: port
         type: integer
@@ -407,9 +437,9 @@ items:
     simulation_id: simulation.sandbox.peer.handoff.v1
     action_ids: [sandbox.peer.handoff.v1]
     telemetry: [sandbox.peer.handoff_attempted]
-    detection_hints: [A blocked-network profile refusal is control-blocked evidence and never a successful handoff.]
+    detection_hints: [A successful lab handoff must bind the exact artifact, opaque one-task credential handle, distinct runner and receiver process identities, one-shot memory-only lifecycle, and authenticated receiver acknowledgement; a blocked-network profile refusal is never a successful handoff.]
     provenance: *authored
-    limitations: [Accepts only a typed staged bundle and authenticated literal-IPv4 loopback; it is not remote or lateral transport.]
+    limitations: [This is lateral-movement control research only between explicitly authorized same-host disposable lab roles; it never compromises or authorizes a remote host, accepts only a typed staged bundle, and exposes no raw credential value.]
 
   - schema_version: bluefire.behavior.v1
     id: sandbox.observability.variant.v1

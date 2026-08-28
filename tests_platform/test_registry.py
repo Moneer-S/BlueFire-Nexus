@@ -32,6 +32,7 @@ EXPECTED_ACTION_IDS = {
     "sandbox.restricted.persistence-marker.v1",
     "sandbox.cleanup.v1",
 } | REPRESENTATIVE_ACTION_IDS
+EXPECTED_EXECUTABLE_BEHAVIOR_IDS = EXPECTED_ACTION_IDS | {"sandbox.credential.peer-challenge.v1"}
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -42,7 +43,7 @@ def test_builtin_registry_has_only_reviewed_bounded_actions() -> None:
         behavior.id
         for behavior in registry.behaviors
         if behavior.execution_state is ExecutionState.ACTION
-    } == EXPECTED_ACTION_IDS
+    } == EXPECTED_EXECUTABLE_BEHAVIOR_IDS
     assert all(
         "command" not in action_id and "script" not in action_id
         for action_id in registry.action_ids
@@ -54,7 +55,10 @@ def test_representative_actions_are_versioned_bounded_and_cross_platform() -> No
     assert {
         action_id: BUILTIN_RUNNER_ACTION_VERSIONS[action_id]
         for action_id in REPRESENTATIVE_ACTION_IDS
-    } == {action_id: "1.0.0" for action_id in REPRESENTATIVE_ACTION_IDS}
+    } == {
+        action_id: "2.0.0" if action_id == "sandbox.peer.handoff.v1" else "1.0.0"
+        for action_id in REPRESENTATIVE_ACTION_IDS
+    }
 
     expected_contracts = {
         "sandbox.execution.native-canary.v1": {
