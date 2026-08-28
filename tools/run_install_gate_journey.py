@@ -34,6 +34,7 @@ _LAUNCH = re.compile(
 )
 _MAX_HTTP_BYTES = 16 * 1024 * 1024
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_MAX_RUNTIME_ROOT_CHARS = 48
 _SUPPORT: Any | None = None
 
 
@@ -214,14 +215,13 @@ def _discard_stream(stream: Any) -> None:
 
 def _launch_ui(
     *,
-    evidence_dir: Path,
+    runtime_root: Path,
     runs_dir: Path,
 ) -> tuple[subprocess.Popen[str], int, int, str, Mapping[str, str]]:
-    runtime = evidence_dir / "runtime"
-    work = runtime / "work"
-    state = runtime / "state"
-    temporary = runtime / "temp"
-    home = runtime / "home"
+    work = runtime_root / "work"
+    state = runtime_root / "state"
+    temporary = runtime_root / "temp"
+    home = runtime_root / "home"
     for path in (work, state, temporary, home):
         path.mkdir(parents=True, exist_ok=True)
     environment = dict(os.environ)
@@ -867,10 +867,55 @@ def _remove_product_database(runs_dir: Path) -> None:
             path.unlink()
 
 
-def run(evidence_dir: Path, forbid_root: Path) -> Mapping[str, Any]:
+def _validated_runtime_root(runtime_root: Path, destination: Path, checkout: Path) -> Path:
+    try:
+        resolved = runtime_root.resolve(strict=True)
+        expected_parent = destination.parent.parent.resolve(strict=True)
+    except OSError as exc:
+        raise JourneyError(
+            "runtime_root_invalid", "isolated Gate 01 runtime is unavailable"
+        ) from exc
+    _require(
+        os.name == "nt"
+        and not runtime_root.is_symlink()
+        and resolved.is_dir()
+        and resolved.parent == expected_parent
+        and re.fullmatch(r"b[0-9a-f]{8}", resolved.name) is not None
+        and not resolved.is_relative_to(destination)
+        and not resolved.is_relative_to(checkout)
+        and len(os.fspath(resolved)) <= _MAX_RUNTIME_ROOT_CHARS,
+        "runtime_root_invalid",
+        "isolated Gate 01 runtime failed its scope or path-budget contract",
+    )
+    return resolved
+
+
+def _cleanup_preserving_primary(
+    *,
+    primary_error: BaseException | None,
+    probe: tuple[subprocess.Popen[Any], int | None] | None,
+    service: tuple[subprocess.Popen[Any], int | None] | None,
+    fallback_teardown: Any | None,
+    runtime_root: Path,
+) -> None:
+    try:
+        _SUPPORT.cleanup_journey(
+            probe=probe,
+            service=service,
+            fallback_teardown=fallback_teardown,
+            runtime_root=runtime_root,
+            expected_parent=runtime_root.parent,
+        )
+    except BaseException:
+        if primary_error is None:
+            raise
+
+
+def run(evidence_dir: Path, forbid_root: Path, runtime_root: Path) -> Mapping[str, Any]:
     _require(os.name == "nt", "unsupported_gate01_host", "Gate 01 managed trust requires Windows")
     destination = evidence_dir.resolve(strict=True)
     checkout = forbid_root.resolve(strict=True)
+    runtime = _validated_runtime_root(runtime_root, destination, checkout)
     runs_dir = destination / "runs"
     runs_dir.mkdir(exist_ok=False)
     package_report = _installed_package_report(checkout)
@@ -883,30 +928,34 @@ def run(evidence_dir: Path, forbid_root: Path) -> Mapping[str, Any]:
     teardown: Mapping[str, Any] | None = None
     journey_report: dict[str, Any] | None = None
     run_ids: tuple[str, str] = ("", "")
+    primary_error: BaseException | None = None
     try:
         probe_process, probe_job, probe_port, probe_capability, _environment = _launch_ui(
-            evidence_dir=destination,
+            runtime_root=runtime,
             runs_dir=runs_dir,
         )
         runtime_probe = _SUPPORT.probe_packaged_ui(
             probe_port,
             probe_capability,
-            destination / "runtime" / "browser-profile",
+            runtime / "browser-profile",
         )
         probe_capability = ""
         owned_probe, owned_probe_job = probe_process, probe_job
         probe_process, probe_job = None, None
         _SUPPORT.terminate_process_tree(owned_probe, owned_probe_job)
         process, process_job, port, capability, _environment = _launch_ui(
-            evidence_dir=destination,
+            runtime_root=runtime,
             runs_dir=runs_dir,
         )
         cookie, catalog, _scenarios, ui_report = _ui_health(port, capability)
         ui_report["runtime_probe"] = runtime_probe
         capability = ""  # The consumed launch capability is never persisted.
-        sandbox_root = destination / "runtime" / "state" / "BlueFire Nexus" / "runtime" / "sandbox"
+        sandbox_root = runtime / "state" / "BlueFire Nexus" / "runtime" / "sandbox"
         journey_report, run_ids = _journey(port, cookie, sandbox_root, catalog)
         teardown = _teardown(port, cookie)
+    except BaseException as exc:
+        primary_error = exc
+        raise
     finally:
         fallback_teardown = None
         if process is not None and port is not None and cookie is not None and teardown is None:
@@ -916,12 +965,12 @@ def run(evidence_dir: Path, forbid_root: Path) -> Mapping[str, Any]:
                     _teardown(port, cookie)
 
             fallback_teardown = fallback_teardown_action
-        _SUPPORT.cleanup_journey(
+        _cleanup_preserving_primary(
+            primary_error=primary_error,
             probe=(probe_process, probe_job) if probe_process is not None else None,
             service=(process, process_job) if process is not None else None,
             fallback_teardown=fallback_teardown,
-            runtime_root=destination / "runtime",
-            expected_parent=destination,
+            runtime_root=runtime,
         )
     _require(
         journey_report is not None and teardown is not None and all(run_ids),
@@ -952,6 +1001,7 @@ def run(evidence_dir: Path, forbid_root: Path) -> Mapping[str, Any]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence-dir", type=Path, required=True)
+    parser.add_argument("--runtime-root", type=Path, required=True)
     parser.add_argument("--forbid-root", type=Path, required=True)
     parser.add_argument("--support-module", type=Path, required=True)
     return parser
@@ -962,7 +1012,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         _SUPPORT = _load_support(args.support_module, args.evidence_dir, args.forbid_root)
-        summary = run(args.evidence_dir, args.forbid_root)
+        summary = run(args.evidence_dir, args.forbid_root, args.runtime_root)
     except JourneyError as exc:
         summary = {
             "schema_version": SUMMARY_SCHEMA,

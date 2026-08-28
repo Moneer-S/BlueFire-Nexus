@@ -183,7 +183,13 @@ def terminate_process_tree(process: subprocess.Popen[Any], job_handle: int | Non
         kernel.TerminateJobObject(job_handle, 1)
         kernel.CloseHandle(job_handle)
     if process.poll() is None:
-        process.kill()
+        try:
+            process.kill()
+        except OSError:
+            # The process can finish between poll() and kill() after its Job
+            # Object has already terminated the tree. Waiting below remains
+            # the authoritative postcondition.
+            pass
     try:
         process.wait(timeout=15)
     except subprocess.TimeoutExpired as exc:

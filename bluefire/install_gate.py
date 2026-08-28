@@ -8,6 +8,7 @@ import importlib.metadata
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
@@ -29,6 +30,8 @@ _RUNTIME_DISTRIBUTIONS = frozenset({"pyyaml", "cryptography", "pynacl"})
 _REQUIREMENT_NAME = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(.*)$")
 _REQUIREMENT_SPECIFIER = re.compile(r"^(?:~=|==|!=|<=|>=|<|>)[A-Za-z0-9][A-Za-z0-9.*+!_-]*$")
 _WINDOWS = os.name == "nt"
+_RUNTIME_DIRECTORY = re.compile(r"^b[0-9a-f]{8}$")
+_WINDOWS_RUNTIME_ROOT_MAX_CHARS = 48
 _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, tuple[str, ...], str, str]] = {
     "GATE-01-FRESH-INSTALL": (
         "dynamic",
@@ -247,6 +250,31 @@ def _bounded_remove(destination: Path, path: Path) -> bool:
         if not path.exists() and not path.is_symlink():
             return True
     return not path.exists() and not path.is_symlink()
+
+
+def _allocate_short_runtime_root(destination: Path) -> Path:
+    """Allocate an exact helper-owned runtime without inheriting evidence path depth."""
+
+    parent = destination.parent.parent.resolve(strict=True)
+    required_length = len(os.fspath(parent)) + 1 + len("b00000000")
+    if _WINDOWS and required_length > _WINDOWS_RUNTIME_ROOT_MAX_CHARS:
+        raise ValueError("Gate 01 acceptance output parent is too deep for Windows runtime safety")
+    for _attempt in range(32):
+        candidate = parent / ("b" + secrets.token_hex(4))
+        try:
+            candidate.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        resolved = candidate.resolve(strict=True)
+        if (
+            candidate.is_symlink()
+            or resolved.parent != parent
+            or _RUNTIME_DIRECTORY.fullmatch(candidate.name) is None
+        ):
+            _bounded_remove(parent, candidate)
+            raise ValueError("Gate 01 runtime allocation was unsafe")
+        return resolved
+    raise OSError("Gate 01 could not allocate an isolated runtime")
 
 
 def _run(
@@ -723,6 +751,7 @@ def _run_installed_helper(
     source: Path,
     forbidden_checkout: Path,
     evidence_dir: Path,
+    runtime_root: Path,
     python: Path,
     helper_copy: Path,
     support_copy: Path,
@@ -736,6 +765,8 @@ def _run_installed_helper(
             os.fspath(helper_copy),
             "--evidence-dir",
             os.fspath(evidence_dir),
+            "--runtime-root",
+            os.fspath(runtime_root),
             "--forbid-root",
             os.fspath(forbidden_checkout),
             "--support-module",
@@ -921,9 +952,12 @@ def run_gate_01(
     completed = False
     issue: str | None = None
     run_ids: tuple[str, str] = ()
+    runtime_root: Path | None = None
+    runtime_parent = destination.parent.parent.resolve(strict=True)
     try:
         if destination.is_relative_to(repository):
             raise ValueError("Gate 01 evidence must remain outside the checkout")
+        runtime_root = _allocate_short_runtime_root(destination)
         _archive_committed_source(repository, source, archive_path)
         wheel = _build_and_inspect(source, wheel_dir, destination)
         fresh_python = _create_fresh_environment(environment_root, wheel, destination)
@@ -931,6 +965,7 @@ def run_gate_01(
             source,
             repository,
             destination,
+            runtime_root,
             fresh_python,
             helper_copy,
             support_copy,
@@ -951,7 +986,6 @@ def run_gate_01(
         cleanup_targets = [
             source,
             environment_root,
-            destination / "runtime",
             archive_path,
             helper_copy,
             support_copy,
@@ -961,6 +995,8 @@ def run_gate_01(
         cleanup_failures = [
             path.name for path in cleanup_targets if not _bounded_remove(destination, path)
         ]
+        if runtime_root is not None and not _bounded_remove(runtime_parent, runtime_root):
+            cleanup_failures.append("external-runtime")
         if cleanup_failures:
             if completed and not _bounded_remove(destination, destination / "runs"):
                 cleanup_failures.append("runs")

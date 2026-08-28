@@ -699,6 +699,40 @@ def test_ephemeral_cleanup_retries_and_refuses_paths_outside_destination(
     assert outside.is_dir()
 
 
+def test_gate01_runtime_allocation_is_short_scoped_and_collision_safe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "output"
+    destination = output / "acceptance" / "gate-01"
+    destination.mkdir(parents=True)
+    occupied = output / "b00000000"
+    occupied.mkdir()
+    tokens = iter(("00000000", "1a2b3c4d"))
+    monkeypatch.setattr(install_gate, "_WINDOWS", False)
+    monkeypatch.setattr(install_gate.secrets, "token_hex", lambda _size: next(tokens))
+
+    runtime = install_gate._allocate_short_runtime_root(destination)
+
+    assert runtime == output / "b1a2b3c4d"
+    assert runtime.is_dir()
+    assert occupied.is_dir()
+    assert install_gate._bounded_remove(output, runtime) is True
+
+
+def test_gate01_runtime_allocation_refuses_an_unsafe_windows_path_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = tmp_path / "output" / "acceptance" / "gate-01"
+    destination.mkdir(parents=True)
+    monkeypatch.setattr(install_gate, "_WINDOWS", True)
+    monkeypatch.setattr(install_gate, "_WINDOWS_RUNTIME_ROOT_MAX_CHARS", 1)
+
+    with pytest.raises(ValueError, match="too deep"):
+        install_gate._allocate_short_runtime_root(destination)
+
+
 def test_successful_journey_bundles_are_removed_if_ephemeral_cleanup_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -722,6 +756,11 @@ def test_successful_journey_bundles_are_removed_if_ephemeral_cleanup_fails(
         "_create_fresh_environment",
         lambda *_args: destination / "python.exe",
     )
+    monkeypatch.setattr(
+        install_gate,
+        "_allocate_short_runtime_root",
+        lambda _destination: tmp_path.parent / "b12345678",
+    )
     monkeypatch.setattr(install_gate, "_run_installed_helper", lambda *_args: {})
     monkeypatch.setattr(install_gate, "_structural_report", lambda _repository: _structural())
     monkeypatch.setattr(install_gate, "_validate_reports", lambda _evidence: _RUN_IDS)
@@ -738,3 +777,4 @@ def test_successful_journey_bundles_are_removed_if_ephemeral_cleanup_fails(
     assert outcome.status == "failed"
     assert outcome.failure_reason == "GATE-01 failed: ephemeral Gate 01 cleanup failed: s"
     assert "runs" in removed
+    assert "b12345678" in removed

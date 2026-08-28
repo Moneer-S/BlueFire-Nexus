@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -466,7 +467,7 @@ def test_ui_launch_containment_failure_terminates_the_started_tree(
     monkeypatch.setattr(journey.subprocess, "Popen", lambda *_args, **_kwargs: process)
 
     with pytest.raises(support.SupportError, match="containment failed"):
-        journey._launch_ui(evidence_dir=tmp_path, runs_dir=tmp_path / "runs")
+        journey._launch_ui(runtime_root=tmp_path, runs_dir=tmp_path / "runs")
 
     assert terminated == [(process, None)]
 
@@ -490,6 +491,85 @@ def test_cleanup_all_attempts_later_actions_before_bounded_failure() -> None:
 
     assert raised.value.code == "journey_cleanup_failed"
     assert observed == ["first", "second"]
+
+
+def test_process_termination_tolerates_the_poll_kill_exit_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waited: list[int] = []
+
+    class RacingProcess:
+        pid = 4242
+
+        def poll(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            raise ProcessLookupError("already exited")
+
+        def wait(self, timeout: int) -> int:
+            waited.append(timeout)
+            return 1
+
+    monkeypatch.setattr(
+        support.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0),
+    )
+
+    support.terminate_process_tree(RacingProcess(), None)  # type: ignore[arg-type]
+
+    assert waited == [15]
+
+
+def test_cleanup_failure_does_not_mask_the_primary_journey_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleanup_error = support.SupportError("journey_cleanup_failed", "cleanup failed")
+    fake_support = SimpleNamespace(
+        cleanup_journey=lambda **_kwargs: (_ for _ in ()).throw(cleanup_error)
+    )
+    monkeypatch.setattr(journey, "_SUPPORT", fake_support)
+    primary = journey.JourneyError("execute_run_invalid", "run invalid")
+
+    journey._cleanup_preserving_primary(
+        primary_error=primary,
+        probe=None,
+        service=None,
+        fallback_teardown=None,
+        runtime_root=tmp_path,
+    )
+    with pytest.raises(support.SupportError, match="cleanup failed"):
+        journey._cleanup_preserving_primary(
+            primary_error=None,
+            probe=None,
+            service=None,
+            fallback_teardown=None,
+            runtime_root=tmp_path,
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Gate 01 runtime paths are a Windows contract")
+def test_runtime_root_is_a_short_exact_sibling_of_the_acceptance_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "o"
+    destination = output / "acceptance" / "gate-01"
+    checkout = tmp_path / "checkout"
+    runtime = output / "b1a2b3c4d"
+    destination.mkdir(parents=True)
+    checkout.mkdir()
+    runtime.mkdir()
+    monkeypatch.setattr(journey, "_MAX_RUNTIME_ROOT_CHARS", 4096)
+
+    assert journey._validated_runtime_root(runtime, destination, checkout) == runtime.resolve()
+
+    wrong = destination / "b2b3c4d5e"
+    wrong.mkdir()
+    with pytest.raises(journey.JourneyError, match="scope or path-budget"):
+        journey._validated_runtime_root(wrong, destination, checkout)
 
 
 def test_installed_distribution_version_must_match_imported_package() -> None:
