@@ -72,6 +72,17 @@ def _gate_05_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowR
     )
 
 
+def _gate_06_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowResult:
+    from .replay_gate import run_gate_06
+
+    outcome = run_gate_06(gate, evidence_dir)
+    return GateWorkflowResult(
+        status=outcome.status,
+        proofs=outcome.proofs,
+        failure_reason=outcome.failure_reason,
+    )
+
+
 def _gate_10_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowResult:
     # Import lazily so the generic dispatcher remains cheap and so the
     # architecture auditor can be exercised independently by focused tests.
@@ -92,6 +103,7 @@ _WORKFLOWS: dict[str, GateWorkflow] = {
     "GATE-02": _gate_02_workflow,
     "GATE-04": _gate_04_workflow,
     "GATE-05": _gate_05_workflow,
+    "GATE-06": _gate_06_workflow,
     "GATE-10": _gate_10_workflow,
 }
 

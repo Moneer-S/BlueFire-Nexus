@@ -25,6 +25,8 @@ def _run(
     target_scope: dict[str, Any] | None = None,
     authorized_target_scope: Any = _UNBOUND,
     steps: list[dict[str, Any]] | None = None,
+    plan_steps: list[dict[str, Any]] | None = None,
+    planner_decisions: list[dict[str, Any]] | None = None,
     cleanup: Any = _UNBOUND,
     detection_candidates: list[dict[str, Any]] | None = None,
 ) -> str:
@@ -33,7 +35,7 @@ def _run(
         policy["preflight"] = {"catalog_authority": catalog_authority}
     handle = store.create_run(
         scenario={"schema_version": "bluefire.scenario.v1", "id": "scenario.test.v1"},
-        plan={"schema_version": "bluefire.plan.v1", "steps": []},
+        plan={"schema_version": "bluefire.plan.v1", "steps": plan_steps or []},
         policy=policy,
         profile=None,
     )
@@ -73,7 +75,11 @@ def _run(
                 }
             ]
         ),
-        "planner_decisions": [{"remaining_budgets": {"steps": 2}}],
+        "planner_decisions": (
+            planner_decisions
+            if planner_decisions is not None
+            else [{"remaining_budgets": {"steps": 2}}]
+        ),
     }
     if cleanup is not _UNBOUND:
         result["cleanup"] = cleanup
@@ -187,6 +193,117 @@ def test_comparison_reports_evidence_detection_ai_and_assessment(tmp_path: Path)
     assert delta["assessment"] == "improved"
 
 
+def test_comparison_exposes_all_canonical_dimensions_and_meaningful_deltas(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    baseline_step = {
+        "step_id": "observe",
+        "behavior_id": "sandbox.discovery.list.v1",
+        "action_id": "sandbox.discovery.list.v1",
+        "simulation_id": None,
+    }
+    candidate_step = {
+        "step_id": "observe",
+        "behavior_id": "sandbox.discovery.metadata.v1",
+        "action_id": "sandbox.discovery.metadata.v1",
+        "simulation_id": None,
+    }
+    baseline = _run(
+        store,
+        objective=True,
+        observed=1,
+        detection_matches=1,
+        benign_matches=0,
+        autonomy="off",
+        target_scope={"scope_refs": ["sandbox.workspace"]},
+        plan_steps=[baseline_step],
+        steps=[{**baseline_step, "status": "success", "policy": {"status": "allowed"}}],
+        planner_decisions=[
+            {
+                "decision_id": "decision-baseline",
+                "selected_step_id": "observe",
+                "selected_behavior_id": "sandbox.discovery.list.v1",
+                "selected_action_id": "sandbox.discovery.list.v1",
+                "selected_edge": {
+                    "from_step": "prepare",
+                    "outcome": "success",
+                    "to_step": "observe",
+                },
+                "execution_disposition": "execute",
+                "remaining_budgets": {"steps": 4, "bytes": 4096},
+                "reason": "raw planner rationale must not be exposed",
+            }
+        ],
+    )
+    candidate = _run(
+        store,
+        objective=True,
+        observed=2,
+        detection_matches=2,
+        benign_matches=0,
+        autonomy="assist",
+        target_scope={"scope_refs": ["sandbox.workspace", "network.loopback"]},
+        plan_steps=[candidate_step],
+        steps=[{**candidate_step, "status": "success", "policy": {"status": "allowed"}}],
+        planner_decisions=[
+            {
+                "decision_id": "decision-candidate",
+                "selected_step_id": "observe_metadata",
+                "selected_behavior_id": "sandbox.discovery.metadata.v1",
+                "selected_action_id": "sandbox.discovery.metadata.v1",
+                "selected_edge": {
+                    "from_step": "prepare",
+                    "outcome": "success",
+                    "to_step": "observe_metadata",
+                },
+                "execution_disposition": "execute",
+                "remaining_budgets": {"steps": 2, "bytes": 3072},
+                "reason": "another private planner rationale",
+            }
+        ],
+    )
+
+    comparison = compare_runs(store, [baseline, candidate])
+    expected_dimensions = {
+        "planner",
+        "scope",
+        "implementation",
+        "evidence",
+        "detection",
+        "cleanup",
+        "budgets",
+        "assessment",
+    }
+
+    assert all(
+        set(summary["dimensions"]) == expected_dimensions for summary in comparison["summaries"]
+    )
+    delta_dimensions = comparison["deltas"][0]["dimensions"]
+    assert set(delta_dimensions) == expected_dimensions
+    assert delta_dimensions["planner"] == {
+        "changed": True,
+        "from_digest": comparison["summaries"][0]["dimensions"]["planner"]["decision_digest"],
+        "to_digest": comparison["summaries"][1]["dimensions"]["planner"]["decision_digest"],
+        "decision_count_delta": 0,
+        "selected_steps_added": ["observe_metadata"],
+        "selected_steps_removed": ["observe"],
+    }
+    assert delta_dimensions["implementation"]["changed"] is True
+    assert delta_dimensions["implementation"]["steps_changed"] == ["observe"]
+    assert delta_dimensions["budgets"]["changed"] is True
+    assert delta_dimensions["budgets"]["remaining_delta"] == {
+        "bytes": -1024,
+        "steps": -2,
+    }
+    assert delta_dimensions["scope"]["changed"] is True
+    assert delta_dimensions["evidence"]["changed"] is True
+    assert delta_dimensions["detection"]["changed"] is True
+    assert delta_dimensions["assessment"]["classification"] == "improved"
+    assert "raw planner rationale" not in json.dumps(comparison)
+    assert "private planner rationale" not in json.dumps(comparison)
+
+
 def test_frontier_explanation_uses_path_identity_and_observed_detection(
     tmp_path: Path,
 ) -> None:
@@ -228,7 +345,7 @@ def test_frontier_explanation_uses_path_identity_and_observed_detection(
             }
         ],
     )
-    alternate_options = {
+    alternate_options: dict[str, Any] = {
         "observed": 1,
         "detection_matches": 2,
         "benign_matches": 0,

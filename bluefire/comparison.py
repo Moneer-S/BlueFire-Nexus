@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 
 from .collector_comparison import collector_session_delta, summarize_collector_session
 from .collectors import CollectorError
+from .comparison_dimensions import delta_dimensions, summary_dimensions
 from .run_store import RunStore
 from .util import content_hash
 
@@ -216,7 +217,7 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     if cleanup.get("authoritative") is True and type(cleanup.get("success")) is bool:
         cleanup_success = bool(cleanup["success"])
     scenario_digest = _safe_content_hash(snapshot.get("scenario"))
-    return {
+    summary = {
         "run_id": snapshot.get("run_id"),
         "mode": snapshot.get("mode"),
         "profile_id": snapshot.get("runner_profile_id"),
@@ -261,6 +262,13 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(row, Mapping) and row.get("execution_disposition") == "counterfactual"
         ],
     }
+    summary["dimensions"] = summary_dimensions(
+        snapshot,
+        decisions,
+        summary,
+        error_type=ComparisonError,
+    )
+    return summary
 
 
 def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, Any]:
@@ -390,6 +398,12 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         "signals": signals,
     }
     delta["frontier_explanation"] = _frontier_explanation(baseline, candidate, delta)
+    delta["dimensions"] = delta_dimensions(
+        baseline,
+        candidate,
+        delta,
+        error_type=ComparisonError,
+    )
     return delta
 
 

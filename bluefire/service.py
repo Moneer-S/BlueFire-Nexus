@@ -104,6 +104,7 @@ from .product_store import (
 )
 from .registry import BehaviorRegistry, RegistryError, load_builtin_registry
 from .replay import ReplayError, ReplayRequest, prepare_replay
+from .replay_checkpoint import CheckpointError, build_restoration_plan
 from .research import ResearchSource, ResearchSourceError
 from .run_store import RunStore, RunStoreError
 from .runner_bootstrap import RUNNER_ID, managed_product_root
@@ -2986,10 +2987,10 @@ class BlueFireService:
             self.registry,
             ReplayRequest(
                 source_run_id=str(review["source_run_id"]),
-                # A fresh Execute approval always replays prerequisite effects in
-                # its fresh workspace. Simulate can safely continue from typed,
-                # immutable seed artifacts.
-                from_step_id=(None if mode is ExecutionMode.EXECUTE else selected_step_id),
+                # Proposal continuations replay the observed prefix so the
+                # selected transition is reached through its recorded state;
+                # a not-yet-executed target may never be metadata-seeded.
+                from_step_id=None,
                 swap_step_id=selected_step_id if changes_behavior else None,
                 swap_behavior_id=selected_behavior_id if changes_behavior else None,
                 parameter_overrides=parameter_overrides,
@@ -4076,7 +4077,10 @@ class BlueFireService:
                 raise ReplayError("source run bundle failed integrity validation")
             source = self.store.get_run(run_id)
             mode = ExecutionMode(str(source.get("mode", "simulate")))
-            exact = bool(request.get("exact", False))
+            raw_exact = request.get("exact", False)
+            if not isinstance(raw_exact, bool):
+                raise ReplayError("exact replay flag must be a boolean")
+            exact = raw_exact
             collector_ids, collector_runtime = self._replay_collector_configuration(
                 request,
                 source=source,
@@ -4140,6 +4144,9 @@ class BlueFireService:
             scope_problems = self._scope_problems(request, profile, mode)
             if scope_problems:
                 raise ReplayError("; ".join(scope_problems))
+            target_scope = (
+                self._target_scope(request) if mode is ExecutionMode.EXECUTE else {"scope_refs": []}
+            )
             runner: RunnerTransport | None = None
             sandbox: Path | None = None
             runner_readiness: Mapping[str, Any] | None = None
@@ -4211,11 +4218,72 @@ class BlueFireService:
                 "collector_authority_to": collector_authority,
                 "collector_authority_changed": (source_collector_authority != collector_authority),
             }
+            restoration_plan: Mapping[str, Any] | None = None
+            if prepared.checkpoint is not None:
+                if mode is not ExecutionMode.EXECUTE or profile is None:
+                    raise ReplayError("materialized checkpoint replay requires Execute mode")
+                if not isinstance(replay_catalog_authority, Mapping):
+                    raise ReplayError("checkpoint replay requires catalog authority")
+                source_authority = prepared.checkpoint.get("source_authority")
+                if not isinstance(source_authority, Mapping):
+                    raise ReplayError("checkpoint source authority is absent")
+                source_scope = source_authority.get("target_scope")
+                if exact and (
+                    not isinstance(source_scope, Mapping)
+                    or source_scope.get("scope_hash")
+                    != content_hash({"scope_refs": sorted(target_scope.get("scope_refs", []))})
+                ):
+                    raise ReplayError("exact checkpoint replay requires the source target scope")
+                original_actions = prepared.lineage.get("action_implementations_from")
+                changed_action_steps = sorted(
+                    step_id
+                    for step_id, action_id in resolved_replay_actions.items()
+                    if not isinstance(original_actions, Mapping)
+                    or original_actions.get(step_id) != action_id
+                )
+                source_plan = prepared.checkpoint.get("source_plan")
+                source_autonomy = (
+                    source_plan.get("autonomy") if isinstance(source_plan, Mapping) else None
+                )
+                source_profile = source_authority.get("profile")
+                source_profile_id = (
+                    source_profile.get("profile_id")
+                    if isinstance(source_profile, Mapping)
+                    else None
+                )
+                variant_impact = {
+                    "parameter_steps": sorted(
+                        (prepared.lineage.get("parameter_overrides") or {}).keys()
+                    ),
+                    "behavior_steps": (
+                        [prepared.lineage["swap_step_id"]]
+                        if isinstance(prepared.lineage.get("swap_step_id"), str)
+                        else []
+                    ),
+                    "action_steps": changed_action_steps,
+                    "autonomy_changed": resolved_replay_plan.autonomy.value != source_autonomy,
+                    "profile_changed": profile.id != source_profile_id,
+                    "defense_change": prepared.lineage.get("defense_change"),
+                }
+                try:
+                    restoration_plan = build_restoration_plan(
+                        prepared.checkpoint,
+                        target_scenario=prepared.scenario.to_dict(),
+                        target_plan=resolved_replay_plan.to_dict(),
+                        target_profile=profile.to_dict(),
+                        target_scope=target_scope,
+                        target_catalog_authority=replay_catalog_authority,
+                        target_runner_readiness=dict(runner_readiness or {}),
+                        variant_impact=variant_impact,
+                    )
+                except CheckpointError as exc:
+                    raise ReplayError(str(exc)) from exc
+                replay_record["restoration_plan_hash"] = restoration_plan["plan_hash"]
             approval_record = (
                 self._bind_and_consume_approval(
                     scenario=prepared.scenario,
                     profile=profile,
-                    target_scope=self._target_scope(request),
+                    target_scope=target_scope,
                     autonomy=autonomy,
                     ai_provider=provider,
                     approved_by=approved_by,
@@ -4224,6 +4292,11 @@ class BlueFireService:
                         "replay": replay_record,
                         "resume_from_step_id": prepared.resume_from_step_id,
                         "collector_binding": collector_binding,
+                        **(
+                            {"restoration_plan": restoration_plan}
+                            if restoration_plan is not None
+                            else {}
+                        ),
                         **(
                             {"collector_registry_authority": collector_authority}
                             if collector_authority is not None
@@ -4247,6 +4320,11 @@ class BlueFireService:
                     "resume_from_step_id": prepared.resume_from_step_id,
                     "collector_binding": collector_binding,
                     **(
+                        {"restoration_plan": restoration_plan}
+                        if restoration_plan is not None
+                        else {}
+                    ),
+                    **(
                         {"collector_registry_authority": collector_authority}
                         if collector_authority is not None
                         else {}
@@ -4269,7 +4347,7 @@ class BlueFireService:
                     runner=runner,
                     scenario=prepared.scenario,
                     profile=profile,
-                    target_scope=self._target_scope(request),
+                    target_scope=target_scope,
                     autonomy=autonomy,
                     ai_provider=provider,
                     approval_context=replay_approval_context,
@@ -4285,9 +4363,7 @@ class BlueFireService:
                 mode=mode,
                 profile=profile,
                 sandbox_root=sandbox,
-                target_scope=(
-                    self._target_scope(request) if mode is ExecutionMode.EXECUTE else None
-                ),
+                target_scope=(target_scope if mode is ExecutionMode.EXECUTE else None),
                 approved_by=approved_by,
                 approval_record=approval_record,
                 autonomy=autonomy,
@@ -4295,6 +4371,8 @@ class BlueFireService:
                 replay=replay_record,
                 resume_from_step_id=prepared.resume_from_step_id,
                 seed_artifacts=prepared.seed_artifacts,
+                replay_checkpoint=prepared.checkpoint,
+                restoration_plan=restoration_plan,
                 action_implementations=resolved_replay_actions,
                 runner_readiness=runner_readiness,
                 collector_ids=collector_ids,
@@ -5046,7 +5124,12 @@ class BlueFireService:
         candidate = execution_parent / approval_id
         if candidate.is_symlink():
             raise RunnerContractError("execution workspace cannot be a symbolic link")
-        candidate.mkdir(parents=False, exist_ok=True)
+        try:
+            candidate.mkdir(parents=False, exist_ok=False)
+        except FileExistsError as exc:
+            raise RunnerContractError(
+                "execution workspace already exists; submit a fresh Execute approval"
+            ) from exc
         resolved = candidate.resolve(strict=True)
         if resolved.parent != execution_parent:
             raise RunnerContractError("execution workspace escaped the configured sandbox")

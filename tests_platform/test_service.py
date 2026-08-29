@@ -32,7 +32,7 @@ from bluefire.orchestrator import Orchestrator
 from bluefire.replay import ReplayError
 from bluefire.runner_bootstrap import RUNNER_ID
 from bluefire.runner_client import RunnerTaskCancelled, RunnerTransportError
-from bluefire.runner_contracts import current_platform
+from bluefire.runner_contracts import RunnerContractError, current_platform
 from bluefire.runner_inventory import (
     BUILTIN_RUNNER_ACTION_VERSIONS,
     RUNNER_ACTION_SDK_SCHEMA_VERSION,
@@ -1761,6 +1761,17 @@ def test_execute_approval_ids_create_distinct_contained_workspaces(tmp_path: Pat
     assert first != second
     assert first.parent == second.parent == configured / ".bluefire-executions"
     assert first.is_dir() and second.is_dir()
+
+
+def test_execute_approval_refuses_a_preexisting_workspace(tmp_path: Path) -> None:
+    configured = tmp_path / "configured-sandbox"
+    configured.mkdir()
+    approval = {"approval_id": "approval-" + "a" * 32}
+
+    BlueFireService._isolated_execution_sandbox(configured, approval)
+
+    with pytest.raises(RunnerContractError, match="execution workspace already exists"):
+        BlueFireService._isolated_execution_sandbox(configured, approval)
 
 
 def test_execute_confirmation_becomes_a_consumed_exact_envelope_approval(

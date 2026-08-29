@@ -311,6 +311,11 @@ def _parser() -> argparse.ArgumentParser:
     replay.add_argument("run_id")
     replay.add_argument("--exact", action="store_true")
     replay.add_argument("--from-step-id")
+    replay.add_argument(
+        "--parameter-overrides",
+        type=Path,
+        help="JSON object mapping replay step IDs to typed parameter changes",
+    )
     replay.add_argument("--swap-step-id")
     replay.add_argument("--swap-behavior-id")
     replay.add_argument("--profile")
@@ -687,6 +692,8 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
             replay_payload["ai_provider_id"] = args.ai_provider
         if args.scope_ref:
             replay_payload["target_scope"] = {"scope_refs": list(dict.fromkeys(args.scope_ref))}
+        if args.parameter_overrides is not None:
+            replay_payload["parameter_overrides"] = _json_object(args.parameter_overrides)
         action_implementations = _action_implementation_arguments(args.action_implementation)
         if action_implementations:
             replay_payload["action_implementations"] = action_implementations

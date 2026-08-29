@@ -60,6 +60,16 @@ from .provider_runner_contracts import (
     canonical_provider_bindings,
 )
 from .registry import BehaviorRegistry, RegistryError
+from .replay_checkpoint import (
+    CheckpointError,
+    build_checkpoint,
+    validate_checkpoint,
+    validate_restoration_plan,
+)
+from .replay_checkpoint_binding import (
+    CheckpointBindingError,
+    checkpoint_source_binding_hash,
+)
 from .run_store import RunHandle, RunStore
 from .runner_adapter import AdaptedAction, RunnerActionAdapter, RunnerAdapterError
 from .runner_client import (
@@ -105,6 +115,22 @@ _MAX_DISCOVERED_RECEIPTS = 512
 _MAX_RECEIPT_BYTES = 256 * 1024
 _MAX_RECOVERY_FILES = 512
 _MAX_RECOVERY_FILE_BYTES = 1024 * 1024 * 1024 * 1024
+_CHECKPOINTABLE_PREFIX_ACTIONS = frozenset(
+    {
+        "sandbox.fixture.create.v1",
+        "sandbox.fixture.transform.v1",
+        "sandbox.discovery.list.v1",
+        "sandbox.discovery.metadata.v1",
+    }
+)
+_CHECKPOINT_FILE_ARTIFACTS = frozenset(
+    {
+        "artifact.sandbox.workspace.v1",
+        "artifact.sandbox.fixture.v1",
+        "artifact.sandbox.discovery.records.v1",
+    }
+)
+_CHECKPOINT_TRANSIENT_ARTIFACT_KEYS = frozenset({"receipt_id", "receipt_ids"})
 
 
 def _is_lower_hex_digest(value: Any) -> bool:
@@ -143,6 +169,60 @@ def _safe_receipt_path(value: Any) -> str | None:
             return None
     normalized = candidate.as_posix()
     return normalized if normalized == value else None
+
+
+def _checkpoint_artifact_value(value: Any, *, depth: int = 0) -> Any:
+    """Remove workspace-local receipt capabilities from bounded logical artifacts."""
+
+    if depth > 12:
+        raise OrchestrationError("checkpoint logical artifacts exceed the depth bound")
+    if value is None or isinstance(value, (str, bool, int)):
+        if isinstance(value, str) and len(value) > 16_384:
+            raise OrchestrationError("checkpoint logical artifact text exceeds the byte bound")
+        return value
+    if isinstance(value, float):
+        if not (-1.0e100 < value < 1.0e100):
+            raise OrchestrationError("checkpoint logical artifact number is invalid")
+        return value
+    if isinstance(value, Mapping):
+        if len(value) > 128:
+            raise OrchestrationError("checkpoint logical artifact object is too large")
+        result: dict[str, Any] = {}
+        for raw_key, item in value.items():
+            if not isinstance(raw_key, str) or not raw_key or len(raw_key) > 128:
+                raise OrchestrationError("checkpoint logical artifact key is invalid")
+            key = raw_key.casefold()
+            if raw_key in _CHECKPOINT_TRANSIENT_ARTIFACT_KEYS:
+                continue
+            if any(marker in key for marker in ("password", "secret", "token", "credential")):
+                raise OrchestrationError("checkpoint logical artifacts may not contain secrets")
+            result[raw_key] = _checkpoint_artifact_value(item, depth=depth + 1)
+        return result
+    if isinstance(value, (list, tuple)):
+        if len(value) > 512:
+            raise OrchestrationError("checkpoint logical artifact list is too large")
+        return [_checkpoint_artifact_value(item, depth=depth + 1) for item in value]
+    raise OrchestrationError("checkpoint logical artifacts must be canonical JSON values")
+
+
+def _checkpoint_material_paths(value: Any, *, depth: int = 0) -> tuple[str, ...]:
+    if depth > 12:
+        raise OrchestrationError("checkpoint material artifact graph exceeds the depth bound")
+    paths: list[str] = []
+    if isinstance(value, Mapping):
+        artifact_type = value.get("type")
+        if artifact_type in _CHECKPOINT_FILE_ARTIFACTS:
+            field = "fixture_path" if artifact_type == "artifact.sandbox.workspace.v1" else "path"
+            path = _safe_receipt_path(value.get(field))
+            if path is None:
+                raise OrchestrationError("checkpoint material artifact has an unsafe path")
+            paths.append(path)
+        for item in value.values():
+            paths.extend(_checkpoint_material_paths(item, depth=depth + 1))
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            paths.extend(_checkpoint_material_paths(item, depth=depth + 1))
+    return tuple(dict.fromkeys(paths))
 
 
 def _valid_owned_receipt_paths(paths: Any, *, max_files: int, max_bytes: int) -> bool:
@@ -441,6 +521,8 @@ class Orchestrator:
         replay: Mapping[str, Any] | None = None,
         resume_from_step_id: str | None = None,
         seed_artifacts: Mapping[str, Any] | None = None,
+        replay_checkpoint: Mapping[str, Any] | None = None,
+        restoration_plan: Mapping[str, Any] | None = None,
         checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
         cancel_event: threading.Event | None = None,
         action_implementations: Mapping[str, str] | None = None,
@@ -456,6 +538,16 @@ class Orchestrator:
             )
         if collector_runtime_settings is not None and mode is not ExecutionMode.EXECUTE:
             raise OrchestrationError("Simulate does not accept collector runtime settings")
+        if (replay_checkpoint is None) != (restoration_plan is None):
+            raise OrchestrationError(
+                "checkpoint replay requires both a checkpoint and restoration plan"
+            )
+        if replay_checkpoint is not None and mode is not ExecutionMode.EXECUTE:
+            raise OrchestrationError("materialized checkpoint replay requires Execute mode")
+        if replay_checkpoint is not None and resume_from_step_id is None:
+            raise OrchestrationError("materialized checkpoint replay requires a restart node")
+        if mode is ExecutionMode.EXECUTE and resume_from_step_id is not None and seed_artifacts:
+            raise OrchestrationError("Execute restart cannot trust metadata-seeded artifacts")
         if checkpoint is not None:
             checkpoint({"phase": "planning", "completed_steps": 0})
         preflight = self.preflight(
@@ -523,6 +615,8 @@ class Orchestrator:
                         "resume_from_step_id": resume_from_step_id,
                     }
                 )
+            if restoration_plan is not None:
+                approval_context["restoration_plan"] = dict(restoration_plan)
             if collector_ids or collector_runtime_settings is not None:
                 approval_context["collector_binding"] = self._collector_binding(
                     collector_ids,
@@ -645,6 +739,8 @@ class Orchestrator:
                 replay=replay,
                 resume_from_step_id=resume_from_step_id,
                 seed_artifacts=seed_artifacts,
+                replay_checkpoint=replay_checkpoint,
+                restoration_plan=restoration_plan,
                 preflight=preflight,
                 plan=plan,
                 handle=handle,
@@ -696,6 +792,8 @@ class Orchestrator:
         replay: Mapping[str, Any] | None,
         resume_from_step_id: str | None,
         seed_artifacts: Mapping[str, Any] | None,
+        replay_checkpoint: Mapping[str, Any] | None,
+        restoration_plan: Mapping[str, Any] | None,
         preflight: PreflightReport,
         plan: ExecutionPlan,
         handle: RunHandle,
@@ -712,6 +810,9 @@ class Orchestrator:
         evidence = EvidenceGraph()
         artifacts: dict[str, Any] = dict(seed_artifacts or {})
         step_rows: list[dict[str, Any]] = []
+        materialization_rows: list[dict[str, Any]] = []
+        materialization_report: Mapping[str, Any] | None = None
+        checkpoint_drafts: list[Mapping[str, Any]] = []
         policy_rows: list[dict[str, Any]] = []
         decisions: list[dict[str, Any]] = []
         ai_proposals: list[dict[str, Any]] = []
@@ -738,6 +839,45 @@ class Orchestrator:
         collection_session: CollectionSession | None = None
         proposal_resolution = replay.get("proposal_resolution") if replay is not None else None
         proposal_resolution_applied = False
+        if replay_checkpoint is not None:
+            assert restoration_plan is not None
+            assert profile is not None
+            assert runner_profile is not None
+            assert observer is not None
+            try:
+                validated_checkpoint = validate_checkpoint(
+                    replay_checkpoint,
+                    expected_step_id=resume_from_step_id,
+                )
+                validated_restoration = validate_restoration_plan(
+                    restoration_plan,
+                    validated_checkpoint,
+                )
+            except CheckpointError as exc:
+                raise OrchestrationError(str(exc)) from exc
+            materialization_rows, materialization_report = self._materialize_replay_checkpoint(
+                run_id=handle.run_id,
+                scenario=scenario,
+                plan=plan,
+                checkpoint_manifest=validated_checkpoint,
+                restoration_plan=validated_restoration,
+                profile=profile,
+                runner_profile=runner_profile,
+                runner_readiness=runner_readiness,
+                observer=observer,
+                approved_by=approved_by,
+                approval_record=approval_record,
+                authorized_target_scope=authorized_target_scope,
+                receipt_ids=receipt_ids,
+                artifacts=artifacts,
+                evidence=evidence,
+                policy_rows=policy_rows,
+                deadline=deadline,
+                cleanup_reserve=cleanup_reserve,
+                cancel_event=cancel_event,
+                execution_attempts=execution_attempts,
+                progress=checkpoint,
+            )
         if isinstance(proposal_resolution, Mapping) and resume_from_step_id is not None:
             if mode is ExecutionMode.EXECUTE:
                 raise OrchestrationError(
@@ -749,16 +889,42 @@ class Orchestrator:
                 )
             proposal_resolution_applied = True
 
-        while current_step_id and len(step_rows) < max_steps:
+        while current_step_id and len(step_rows) + len(materialization_rows) < max_steps:
             if checkpoint is not None:
                 checkpoint(
                     {
                         "phase": "running",
                         "current_step_id": current_step_id,
-                        "completed_steps": len(step_rows),
+                        "completed_steps": len(step_rows) + len(materialization_rows),
                         "total_steps": max_steps,
                     }
                 )
+            if (
+                mode is ExecutionMode.EXECUTE
+                and replay is None
+                and observer is not None
+                and profile is not None
+                and step_rows
+                and not any(
+                    draft.get("checkpoint_before_step_id") == current_step_id
+                    for draft in checkpoint_drafts
+                )
+            ):
+                draft = self._capture_replay_checkpoint_draft(
+                    run_id=handle.run_id,
+                    checkpoint_before_step_id=current_step_id,
+                    scenario=scenario,
+                    plan=plan,
+                    profile=profile,
+                    observer=observer,
+                    authorized_target_scope=authorized_target_scope,
+                    runner_readiness=runner_readiness,
+                    collector_registry_authority=collector_registry_authority,
+                    step_rows=step_rows,
+                    artifacts=artifacts,
+                )
+                if draft is not None:
+                    checkpoint_drafts.append(draft)
             if current_step_id in visited and not forced_cleanup:
                 raise OrchestrationError("scenario traversal attempted to revisit a step")
             visited.add(current_step_id)
@@ -931,7 +1097,7 @@ class Orchestrator:
                     {
                         "phase": "running",
                         "current_step_id": current_step_id,
-                        "completed_steps": len(step_rows),
+                        "completed_steps": len(step_rows) + len(materialization_rows),
                         "total_steps": max_steps,
                     }
                 )
@@ -1031,7 +1197,7 @@ class Orchestrator:
                     state=state,
                     planner_decision=planner_decision,
                     retries_used=retries_used,
-                    remaining_steps=max_steps - len(step_rows),
+                    remaining_steps=max_steps - len(step_rows) - len(materialization_rows),
                 )
             if proposal_record is not None:
                 ai_proposals.append(proposal_record)
@@ -1137,6 +1303,53 @@ class Orchestrator:
             and not cleanup_forced
             and (cleanup_success if cleanup_required else True)
         )
+        replay_checkpoints: list[Mapping[str, Any]] = []
+        if (
+            mode is ExecutionMode.EXECUTE
+            and replay is None
+            and objective_reached
+            and cleanup_attempted
+            and cleanup_success
+            and not receipt_ids
+        ):
+            source_cleanup = {
+                "attempted": True,
+                "success": True,
+                "outstanding_receipt_count": 0,
+            }
+            try:
+                if approval_binding is None:
+                    raise CheckpointBindingError("checkpoint source approval binding is absent")
+                source_binding_hash = checkpoint_source_binding_hash(
+                    source_run_id=handle.run_id,
+                    scenario=scenario.to_dict(),
+                    plan=plan.to_dict(),
+                    approval_binding=approval_binding,
+                )
+                for draft in checkpoint_drafts:
+                    replay_checkpoints.append(
+                        build_checkpoint(
+                            source_run_id=handle.run_id,
+                            source_binding_hash=source_binding_hash,
+                            scenario=scenario.to_dict(),
+                            plan=plan.to_dict(),
+                            checkpoint_before_step_id=str(draft["checkpoint_before_step_id"]),
+                            executed_steps=draft["executed_steps"],
+                            artifacts=draft["artifacts"],
+                            material_files=draft["material_files"],
+                            source_authority=draft["source_authority"],
+                            source_cleanup=source_cleanup,
+                            collector_lineage=draft.get("collector_lineage"),
+                        )
+                    )
+            except (
+                CheckpointBindingError,
+                CheckpointError,
+                KeyError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                raise OrchestrationError(f"checkpoint finalization failed: {exc}") from exc
         result = {
             "schema_version": "bluefire.run-result.v1",
             "run_id": handle.run_id,
@@ -1167,6 +1380,9 @@ class Orchestrator:
                 "cleanup_satisfied": cleanup_success if cleanup_required else None,
             },
             "steps": step_rows,
+            "materialization_steps": materialization_rows,
+            "checkpoint_materialization": materialization_report,
+            "replay_checkpoints": replay_checkpoints,
             "planner_decisions": decisions,
             "ai_proposals": ai_proposals,
             "cleanup": {
@@ -1181,6 +1397,9 @@ class Orchestrator:
             "limitations": list(scenario.limitations),
             "runtime_budget": {
                 "configured_seconds": total_seconds,
+                "configured_steps": max_steps,
+                "consumed_steps": len(step_rows) + len(materialization_rows),
+                "remaining_steps": max(max_steps - len(step_rows) - len(materialization_rows), 0),
                 "cleanup_reserve_seconds": cleanup_reserve,
                 "elapsed_seconds": round(time.monotonic() - execution_started, 3),
                 "collector_elapsed_seconds": round(collector_elapsed_seconds, 3),
@@ -1330,6 +1549,308 @@ class Orchestrator:
             "policy": decision.to_dict(),
             "evidence": [record.to_dict() for record in records],
         }
+
+    def _capture_replay_checkpoint_draft(
+        self,
+        *,
+        run_id: str,
+        checkpoint_before_step_id: str,
+        scenario: ScenarioDefinition,
+        plan: ExecutionPlan,
+        profile: RunnerProfile,
+        observer: SandboxObserver,
+        authorized_target_scope: Mapping[str, Any],
+        runner_readiness: Mapping[str, Any] | None,
+        collector_registry_authority: Mapping[str, Any] | None,
+        step_rows: Sequence[Mapping[str, Any]],
+        artifacts: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        """Capture a bounded source-state draft while its files still exist."""
+
+        executed_steps: list[Mapping[str, Any]] = []
+        for row in step_rows:
+            step_id = row.get("step_id")
+            if not isinstance(step_id, str):
+                return None
+            try:
+                scenario_step = scenario.step(step_id)
+                plan_step = self._plan_step(plan, step_id)
+            except (KeyError, OrchestrationError):
+                return None
+            if (
+                plan_step.action_id not in _CHECKPOINTABLE_PREFIX_ACTIONS
+                or row.get("status") != StepOutcome.SUCCESS.value
+                or row.get("execution_disposition") != "execute"
+            ):
+                return None
+            executed_steps.append(
+                {
+                    "step_id": step_id,
+                    "behavior_id": scenario_step.behavior_id,
+                    "action_id": plan_step.action_id,
+                    "status": str(row["status"]),
+                }
+            )
+
+        public_state = _checkpoint_artifact_value(
+            {step_id: artifacts[step_id] for step_id in (row["step_id"] for row in step_rows)}
+        )
+        material_bindings: list[tuple[str, str, str]] = []
+        for source_step_id, raw_step_artifacts in public_state.items():
+            if not isinstance(raw_step_artifacts, Mapping):
+                continue
+            for artifact_name, raw_artifact in raw_step_artifacts.items():
+                if not isinstance(raw_artifact, Mapping):
+                    continue
+                relative_path = _safe_receipt_path(
+                    raw_artifact.get("path", raw_artifact.get("artifact"))
+                )
+                digest = raw_artifact.get("sha256")
+                if relative_path is None or not _is_lower_hex_digest(digest):
+                    continue
+                material_bindings.append((source_step_id, artifact_name, relative_path))
+        if not material_bindings:
+            return None
+        material_files: list[Mapping[str, Any]] = []
+        seen_paths: set[str] = set()
+        for source_step_id, artifact_name, relative_path in sorted(material_bindings):
+            if relative_path in seen_paths:
+                continue
+            seen_paths.add(relative_path)
+            try:
+                observed = observer.observe_file(
+                    relative_path=relative_path,
+                    run_id=run_id,
+                    step_id=f"checkpoint-before-{checkpoint_before_step_id}",
+                    behavior_id="bluefire.checkpoint.materialization.v1",
+                    action_id="bluefire.checkpoint.observe.v1",
+                    runner_profile_id=profile.id,
+                )
+            except (EvidenceError, OSError):
+                return None
+            material_files.append(
+                {
+                    "relative_path": relative_path,
+                    "kind": "file",
+                    "size_bytes": observed.content["size_bytes"],
+                    "sha256": "sha256:" + str(observed.content["sha256"]),
+                    "source_step_id": source_step_id,
+                    "artifact_name": artifact_name,
+                }
+            )
+        if (
+            not isinstance(self.catalog_authority, Mapping)
+            or self.catalog_authority.get("schema_version")
+            != "bluefire.action-catalog-authority.v1"
+            or not isinstance(runner_readiness, Mapping)
+            or runner_readiness.get("schema_version") != "bluefire.execute-readiness.v1"
+        ):
+            return None
+        source_authority = {
+            "profile": profile.to_dict(),
+            "target_scope": dict(authorized_target_scope),
+            "catalog_authority": dict(self.catalog_authority),
+            "runner_readiness": dict(runner_readiness),
+        }
+        collector_lineage = (
+            {
+                "settings_hash": content_hash(collector_registry_authority),
+                "source_session_hash": None,
+                "descriptor_set_digest": content_hash(collector_registry_authority),
+                "source_authority_hash": content_hash(collector_registry_authority),
+            }
+            if collector_registry_authority is not None
+            else None
+        )
+        return {
+            "checkpoint_before_step_id": checkpoint_before_step_id,
+            "executed_steps": executed_steps,
+            "artifacts": public_state,
+            "material_files": material_files,
+            "source_authority": source_authority,
+            "collector_lineage": collector_lineage,
+        }
+
+    def _materialize_replay_checkpoint(
+        self,
+        *,
+        run_id: str,
+        scenario: ScenarioDefinition,
+        plan: ExecutionPlan,
+        checkpoint_manifest: Mapping[str, Any],
+        restoration_plan: Mapping[str, Any],
+        profile: RunnerProfile,
+        runner_profile: Mapping[str, Any],
+        runner_readiness: Mapping[str, Any] | None,
+        observer: SandboxObserver,
+        approved_by: str | None,
+        approval_record: Mapping[str, Any] | None,
+        authorized_target_scope: Mapping[str, Any],
+        receipt_ids: list[str],
+        artifacts: dict[str, Any],
+        evidence: EvidenceGraph,
+        policy_rows: list[dict[str, Any]],
+        deadline: float | None,
+        cleanup_reserve: float,
+        cancel_event: threading.Event | None,
+        execution_attempts: dict[str, int],
+        progress: Callable[[Mapping[str, Any]], None] | None,
+    ) -> tuple[list[dict[str, Any]], Mapping[str, Any]]:
+        target = restoration_plan.get("target")
+        normalized_scope = {"scope_refs": sorted(authorized_target_scope.get("scope_refs", []))}
+        if (
+            not isinstance(target, Mapping)
+            or target.get("scenario_hash") != content_hash(scenario.to_dict())
+            or target.get("compiled_plan_hash") != content_hash(plan.to_dict())
+            or target.get("profile_hash") != content_hash(profile.to_dict())
+            or target.get("scope_hash") != content_hash(normalized_scope)
+            or target.get("catalog_hash") != content_hash(self.catalog_authority or {})
+            or target.get("runner_readiness_hash") != content_hash(runner_readiness or {})
+        ):
+            raise OrchestrationError(
+                "checkpoint restoration no longer matches the approved execution state"
+            )
+        prefix = checkpoint_manifest.get("executed_steps")
+        expected_files = checkpoint_manifest.get("material_files")
+        if not isinstance(prefix, list) or not isinstance(expected_files, list):
+            raise OrchestrationError("checkpoint materialization manifest is invalid")
+        rows: list[dict[str, Any]] = []
+        prefix_receipts_before = frozenset(receipt_ids)
+        for expected in prefix:
+            if not isinstance(expected, Mapping):
+                raise OrchestrationError("checkpoint prefix row is invalid")
+            step_id = expected.get("step_id")
+            if not isinstance(step_id, str):
+                raise OrchestrationError("checkpoint prefix step is invalid")
+            scenario_step = scenario.step(step_id)
+            plan_step = self._plan_step(plan, step_id)
+            if (
+                expected.get("behavior_id") != scenario_step.behavior_id
+                or expected.get("action_id") != plan_step.action_id
+                or plan_step.action_id not in _CHECKPOINTABLE_PREFIX_ACTIONS
+                or expected.get("status")
+                not in {
+                    StepOutcome.SUCCESS.value,
+                    StepOutcome.PARTIAL.value,
+                }
+            ):
+                raise OrchestrationError("checkpoint prefix no longer matches the approved plan")
+            bound_inputs, parent_ids = self._bind_inputs(
+                scenario_step.inputs,
+                artifacts,
+                evidence,
+            )
+            remaining = max((deadline or time.monotonic()) - time.monotonic(), 0.0)
+            action_timeout_ms = int(max(remaining - cleanup_reserve, 0.0) * 1000)
+            if action_timeout_ms < 1:
+                raise OrchestrationError("checkpoint materialization exhausted the run budget")
+            attempt = execution_attempts.get(step_id, 0) + 1
+            execution_attempts[step_id] = attempt
+            row, records, decision, returned_receipts = self._execute_step(
+                run_id=run_id,
+                step=plan_step,
+                bound_inputs=bound_inputs,
+                parent_ids=parent_ids,
+                profile=profile,
+                runner_profile=runner_profile,
+                observer=observer,
+                approved_by=approved_by,
+                approval_record=approval_record,
+                authorized_target_scope=authorized_target_scope,
+                receipt_ids=receipt_ids,
+                action_timeout_ms=action_timeout_ms,
+                cancel_event=cancel_event,
+                execution_attempt=attempt,
+            )
+            if row.get("status") != expected.get("status"):
+                raise OrchestrationError("checkpoint prefix recreation changed its outcome")
+            public_artifacts = _checkpoint_artifact_value(row.get("artifacts", {}))
+            if content_hash(public_artifacts) != expected.get("artifacts_hash"):
+                raise OrchestrationError("checkpoint prefix recreation changed logical artifacts")
+            if any(receipt in prefix_receipts_before for receipt in returned_receipts):
+                raise OrchestrationError("checkpoint recreation reused a prior receipt")
+            evidence.extend(records)
+            artifacts[step_id] = row.get("artifacts", {})
+            materialized_row = {
+                **row,
+                "materialization_phase": "checkpoint_prefix_recreation",
+                "checkpoint_id": checkpoint_manifest["checkpoint_id"],
+            }
+            rows.append(materialized_row)
+            policy_rows.append(decision.to_dict())
+            self.store.append_event(run_id, "checkpoint.materialization.step", materialized_row)
+            if progress is not None:
+                progress(
+                    {
+                        "phase": "materializing_checkpoint",
+                        "current_step_id": step_id,
+                        "completed_steps": len(rows),
+                        "total_steps": len(prefix),
+                    }
+                )
+
+        observed_files: list[Mapping[str, Any]] = []
+        parent_ids = tuple(rows[-1].get("evidence_ids", ())) if rows else ()
+        for expected in expected_files:
+            if not isinstance(expected, Mapping):
+                raise OrchestrationError("checkpoint material file row is invalid")
+            relative_path = expected.get("relative_path")
+            if not isinstance(relative_path, str):
+                raise OrchestrationError("checkpoint material file path is invalid")
+            observed = observer.observe_file(
+                relative_path=relative_path,
+                run_id=run_id,
+                step_id="checkpoint_materialization",
+                behavior_id="bluefire.checkpoint.materialization.v1",
+                action_id="bluefire.checkpoint.verify.v1",
+                runner_profile_id=profile.id,
+                parent_evidence_ids=parent_ids,
+            )
+            actual_digest = "sha256:" + str(observed.content["sha256"])
+            actual_size = observed.content["size_bytes"]
+            if actual_digest != expected.get("sha256") or actual_size != expected.get("size_bytes"):
+                raise OrchestrationError("checkpoint material file failed content verification")
+            evidence.add(observed)
+            observed_files.append(
+                {
+                    "source_step_id": expected.get("source_step_id"),
+                    "artifact_name": expected.get("artifact_name"),
+                    "relative_path": relative_path,
+                    "expected_sha256": expected.get("sha256"),
+                    "actual_sha256": actual_digest,
+                    "actual_size_bytes": actual_size,
+                    "evidence_id": observed.evidence_id,
+                }
+            )
+        fresh_receipts = [
+            receipt_id for receipt_id in receipt_ids if receipt_id not in prefix_receipts_before
+        ]
+        if expected_files and not fresh_receipts:
+            raise OrchestrationError("checkpoint materialization minted no cleanup receipts")
+        report_body = {
+            "schema_version": "bluefire.checkpoint-materialization.v1",
+            "checkpoint_id": checkpoint_manifest["checkpoint_id"],
+            "manifest_hash": checkpoint_manifest["manifest_hash"],
+            "restoration_plan_hash": restoration_plan["plan_hash"],
+            "candidate_run_id": run_id,
+            "approval_id": (
+                approval_record.get("approval_id") if isinstance(approval_record, Mapping) else None
+            ),
+            "prefix_steps": [
+                {
+                    "step_id": row["step_id"],
+                    "runner_task_id": row.get("runner_task_id"),
+                    "outcome": row["status"],
+                    "evidence_ids": list(row.get("evidence_ids", ())),
+                }
+                for row in rows
+            ],
+            "artifacts": observed_files,
+            "fresh_receipt_count": len(fresh_receipts),
+            "source_receipts_reused": False,
+            "status": "verified",
+        }
+        return rows, {**report_body, "receipt_hash": content_hash(report_body)}
 
     def _propose_next_step(
         self,

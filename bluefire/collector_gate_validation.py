@@ -78,8 +78,15 @@ _EXPECTED_REPLAY_LINEAGE_FIELDS = {
     "ai_provider_changed",
     "ai_provider_from",
     "ai_provider_to",
+    "profile_from",
+    "profile_to",
     "profile_changed",
+    "checkpoint_id",
+    "checkpoint_manifest_hash",
+    "checkpoint_materialization_mode",
     "defense_change",
+    "defense_change_declared",
+    "defense_change_digest",
     "catalog_authority_from",
     "catalog_authority_to",
     "catalog_authority_changed",
@@ -434,15 +441,26 @@ def _validate_replay_lineage(
         and type(lineage.get("action_implementations_changed")) is bool
         and lineage.get("action_implementations_changed") == (baseline_actions != replay_actions)
         and lineage.get("action_reselection_steps") == []
-        and lineage.get("ai_changed") is True
+        and type(lineage.get("ai_changed")) is bool
+        and lineage.get("ai_changed")
+        == (baseline_run.get("autonomy") != replay_run.get("autonomy"))
         and lineage.get("autonomy_from") == baseline_run.get("autonomy")
         and lineage.get("autonomy_to") == replay_run.get("autonomy")
-        and lineage.get("ai_provider_changed") is True
+        and type(lineage.get("ai_provider_changed")) is bool
+        and lineage.get("ai_provider_changed") == (baseline_provider != replay_provider)
         and lineage.get("ai_provider_from") == baseline_provider
         and lineage.get("ai_provider_to") == replay_provider
         and baseline_run.get("runner_profile_id") != replay_run.get("runner_profile_id")
+        and lineage.get("profile_from") == baseline_run.get("runner_profile_id")
+        and lineage.get("profile_to") == replay_run.get("runner_profile_id")
         and lineage.get("profile_changed") is True
+        and lineage.get("checkpoint_id") is None
+        and lineage.get("checkpoint_manifest_hash") is None
+        and lineage.get("checkpoint_materialization_mode") is None
         and lineage.get("defense_change") == _EXPECTED_DEFENSE_CHANGE
+        and lineage.get("defense_change_declared") is True
+        and lineage.get("defense_change_digest")
+        == content_hash({"defense_change": _EXPECTED_DEFENSE_CHANGE})
         and lineage.get("catalog_authority_from") == baseline_catalog
         and lineage.get("catalog_authority_to") == replay_catalog
         and type(lineage.get("catalog_authority_changed")) is bool

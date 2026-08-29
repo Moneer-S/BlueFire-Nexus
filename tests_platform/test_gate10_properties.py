@@ -84,13 +84,20 @@ def test_authenticated_decoder_preserves_seeded_canonical_objects_and_rejects_mu
 def test_replay_request_invariants_hold_across_seeded_variant_combinations() -> None:
     randomizer = random.Random(10_202_601)
     exact_variants: tuple[dict[str, Any], ...] = (
-        {"from_step_id": "step-a"},
         {"swap_step_id": "step-a", "swap_behavior_id": "behavior-a"},
         {"parameter_overrides": {"step-a": {"count": 2}}},
         {"action_implementations": {"step-a": "action-a"}},
         {"ai_enabled": True},
         {"runner_profile_id": "profile-a"},
         {"defense_change": "enabled"},
+    )
+    assert (
+        ReplayRequest(
+            source_run_id="run-checkpoint",
+            exact=True,
+            from_step_id="step-a",
+        ).from_step_id
+        == "step-a"
     )
     for _iteration in range(200):
         source = f"run-{randomizer.randrange(1_000_000)}"

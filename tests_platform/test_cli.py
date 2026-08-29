@@ -59,6 +59,61 @@ class _RecordingService:
         return record
 
 
+def test_cli_replay_forwards_checkpoint_node_and_typed_parameter_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _RecordingService()
+    monkeypatch.setattr(cli, "_service", lambda _args: service)
+    overrides = tmp_path / "overrides.json"
+    overrides.write_text(
+        json.dumps({"stage_records": {"bundle_format": "json"}}),
+        encoding="utf-8",
+    )
+
+    _execute(
+        _parser().parse_args(
+            [
+                "replay",
+                "run-" + "a" * 32,
+                "--from-step-id",
+                "discover_records",
+                "--parameter-overrides",
+                str(overrides),
+                "--scope-ref",
+                "sandbox.workspace",
+                "--approve",
+                "--approved-by",
+                "checkpoint-reviewer",
+            ]
+        )
+    )
+
+    assert service.calls == [
+        (
+            "replay",
+            (
+                "run-" + "a" * 32,
+                {
+                    "exact": False,
+                    "from_step_id": "discover_records",
+                    "swap_step_id": None,
+                    "swap_behavior_id": None,
+                    "runner_profile_id": None,
+                    "defense_change": None,
+                    "parameter_overrides": {"stage_records": {"bundle_format": "json"}},
+                    "target_scope": {"scope_refs": ["sandbox.workspace"]},
+                    "approval": {
+                        "confirmed": True,
+                        "approved_by": "checkpoint-reviewer",
+                    },
+                },
+            ),
+            {},
+        )
+    ]
+
+
 def test_cli_scenario_and_run_history_commands_use_shared_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

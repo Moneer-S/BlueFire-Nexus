@@ -32,6 +32,9 @@
         "bluefire.defense_frontier_report_validation",
         "bluefire.defense_frontier_validation",
         "bluefire.product_gates",
+        "bluefire.replay_gate",
+        "bluefire.replay_gate_validation",
+        "bluefire.replay_journey",
         "tools",
         "tools.*"
       ]
@@ -61,6 +64,7 @@
       "patterns": [
         "bluefire.bootstrap",
         "bluefire.comparison",
+        "bluefire.comparison_dimensions",
         "bluefire.detection_lab",
         "bluefire.job_runtime",
         "bluefire.orchestrator",
@@ -117,8 +121,10 @@
         "bluefire.plugins",
         "bluefire.policy",
         "bluefire.provider_runner_contracts",
-        "bluefire.registry",
-        "bluefire.research",
+          "bluefire.registry",
+          "bluefire.replay_checkpoint",
+          "bluefire.replay_checkpoint_binding",
+          "bluefire.research",
         "bluefire.runner_contracts",
         "bluefire.runner_inventory",
         "bluefire.simulation"
