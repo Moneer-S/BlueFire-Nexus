@@ -318,6 +318,35 @@ def test_public_baselines_require_an_exact_registered_pinned_source(
     source = service.resource("research_source", source_id)["resource"]
     source_document = source["document"]
     assert isinstance(source_document, Mapping)
+    baseline_v2 = {
+        "schema_version": "bluefire.public-baseline.v2",
+        "research_source_id": source_id,
+        "source_digest": str(source["digest"]),
+        "pin": str(source_document["pin"]),
+        "version": str(source_document["version"]),
+        "exact_ref": str(source_document["exact_ref"]),
+        "retrieved_at": str(source_document["retrieved_at"]),
+        "license": str(source_document["license"]),
+        "file_level_license_review": str(source_document["file_level_license_review"]),
+        "trademark_considerations": str(source_document["trademark_considerations"]),
+        "license_review": str(source_document["license_review"]),
+        "relationship": str(source_document["relationship"]),
+        "use_classification": str(source_document["use_classification"]),
+        "use": "comparison",
+        "attribution": str(source_document["attribution"]),
+        "security_review": str(source_document["security_review"]),
+        "last_verified_at": str(source_document["last_verified_at"]),
+        "update_status": str(source_document["update_status"]),
+    }
+    v2_hypothesis = _hypothesis()
+    v2_hypothesis["selection"] = {
+        "artifact_type": "file_observation",
+        "path|startswith": "staged/",
+    }
+    v2_hypothesis["public_baselines"] = [baseline_v2]
+    v2_created = _candidate_document(service.upsert_detection_hypothesis(v2_hypothesis))
+    assert v2_created["public_baselines"] == [baseline_v2]
+
     with pytest.raises(APIError) as rewrite:
         service.save_resource(
             "research_source",
@@ -793,3 +822,196 @@ rule bluefire_staging_marker {
     )
     assert _candidate_document(exercised)["state"] == "fixture_exercised"
     assert _candidate_document(benign)["state"] == "benign_evaluated"
+
+
+def test_yara_l_is_not_misrepresented_as_yara_python(service: BlueFireService) -> None:
+    health = service.detection_health()["languages"]["yara-l"]
+    assert health == {
+        "ready": False,
+        "authoritative": False,
+        "backend": "No local YARA-L evaluator",
+        "version": None,
+    }
+
+    created = service.upsert_detection_hypothesis(_hypothesis("yara-l"))
+    candidate_id = str(_candidate_document(created)["candidate_id"])
+    with pytest.raises(APIError) as refused:
+        service.parse_detection_candidate(
+            candidate_id,
+            {"source": "rule not_really_yara_l { condition: true }"},
+        )
+
+    assert refused.value.status == 503
+    assert refused.value.code == "detection_backend_unavailable"
+    persisted = _candidate_document(service.detection_candidate(candidate_id))
+    assert persisted["state"] == "hypothesis"
+    assert persisted["lifecycle_history"] == created["candidate"]["document"]["lifecycle_history"]
+
+
+def test_sigma_conversion_executes_fixtures_and_immutable_observed_evidence(
+    service: BlueFireService,
+) -> None:
+    pytest.importorskip("sigma.backends.sqlite")
+
+    health = service.detection_health()["languages"]
+    assert health["sigma"]["authoritative"] is True
+    assert health["sigma"]["backend"] == "pySigma SQLite"
+    assert health["sqlite"]["authoritative"] is True
+    assert health["sqlite"]["backend"] == "SQLite bounded executor"
+
+    created = service.upsert_detection_hypothesis(_hypothesis("sigma"))
+    candidate_id = str(_candidate_document(created)["candidate_id"])
+    sigma_source = """
+title: Sandbox staging execution
+id: 22222222-2222-4222-8222-222222222222
+status: test
+logsource:
+  category: file_event
+detection:
+  selection:
+    path|contains: 'staged/'
+  condition: selection
+falsepositives:
+  - Approved fixture staging
+level: low
+"""
+    parsed = _candidate_document(
+        service.parse_detection_candidate(candidate_id, {"source": sigma_source})
+    )
+    assert parsed["state"] == "parsed"
+    assert parsed["validation"]["conversion_backend"] == "pySigma SQLite"
+    assert parsed["validation"]["mapped_fields"] == ["path"]
+    assert parsed["validation"]["unsupported_fields"] == []
+    assert parsed["validation"]["source_rule_executed"] is False
+
+    exercised = _candidate_document(
+        service.exercise_detection_fixtures(
+            candidate_id,
+            {
+                "fixtures": [
+                    {
+                        "fixture_id": "sigma-malicious",
+                        "artifact_type": "file_observation",
+                        "path": "staged/a.txt",
+                    },
+                    {
+                        "fixture_id": "sigma-nonmatch",
+                        "artifact_type": "file_observation",
+                        "path": "documents/a.txt",
+                    },
+                ]
+            },
+        )
+    )
+    assert exercised["state"] == "fixture_exercised"
+    assert exercised["validation"]["source_rule_executed"] is True
+    assert exercised["validation"]["evaluated_fixture_ids"] == [
+        "sigma-malicious",
+        "sigma-nonmatch",
+    ]
+    assert exercised["validation"]["matched_fixture_ids"] == ["sigma-malicious"]
+    assert exercised["validation"]["executed_query_sha256"] == parsed["validation"]["query_sha256"]
+
+    run_id, evidence = _finalized_observed_run(service, path="staged/observed.txt")
+    observed = _candidate_document(
+        service.exercise_detection_observed(
+            candidate_id,
+            {"run_id": run_id, "evidence_ids": [evidence.evidence_id]},
+        )
+    )
+    assert observed["state"] == "observed_exercised"
+    assert observed["observed_evidence_ids"] == [evidence.evidence_id]
+    assert observed["validation"]["evaluated_evidence_ids"] == [evidence.evidence_id]
+    assert observed["validation"]["matched_evidence_ids"] == [evidence.evidence_id]
+    assert observed["validation"]["observed_exercise"] == {
+        "run_id": run_id,
+        "evidence_ids": [evidence.evidence_id],
+        "immutable_bundle_validated": True,
+        "source_rule_executed": True,
+    }
+
+    benign = _candidate_document(
+        service.evaluate_detection_benign(
+            candidate_id,
+            {
+                "fixtures": [
+                    {
+                        "fixture_id": "sigma-benign",
+                        "artifact_type": "file_observation",
+                        "path": "documents/ordinary.txt",
+                    }
+                ],
+                "notes": ["Approved document storage did not match."],
+            },
+        )
+    )
+    assert benign["state"] == "benign_evaluated"
+    assert benign["benign_match_count"] == 0
+    assert benign["validation"]["benign_evaluated_fixture_ids"] == ["sigma-benign"]
+    assert benign["validation"]["benign_matched_fixture_ids"] == []
+    assert benign["false_positive_notes"] == ["Approved document storage did not match."]
+
+
+def test_native_sqlite_candidate_uses_the_same_bounded_execution_lifecycle(
+    service: BlueFireService,
+) -> None:
+    created = service.upsert_detection_hypothesis(_hypothesis("sqlite"))
+    candidate_id = str(_candidate_document(created)["candidate_id"])
+    source = "SELECT * FROM logs WHERE artifact_type = 'file_observation' AND path LIKE '%staged/%'"
+
+    parsed = _candidate_document(
+        service.parse_detection_candidate(candidate_id, {"source": source})
+    )
+    assert parsed["state"] == "parsed"
+    assert parsed["parser_backend"]["name"] == "SQLite bounded executor"
+    assert parsed["validation"]["mapped_fields"] == ["artifact_type", "path"]
+    assert parsed["validation"]["source_rule_executed"] is False
+
+    exercised = _candidate_document(
+        service.exercise_detection_fixtures(
+            candidate_id,
+            {
+                "fixtures": [
+                    {
+                        "fixture_id": "sqlite-malicious",
+                        "artifact_type": "file_observation",
+                        "path": "staged/native.txt",
+                        "unmapped_context": "retained only in fixture provenance",
+                    }
+                ]
+            },
+        )
+    )
+    assert exercised["state"] == "fixture_exercised"
+    assert exercised["match_count"] == 1
+    assert exercised["validation"]["last_execution"]["query_only"] is True
+    assert exercised["validation"]["last_execution"]["authorizer"] is True
+    assert exercised["validation"]["last_execution"]["unsupported_fixture_fields"] == [
+        "unmapped_context"
+    ]
+    assert exercised["validation"]["matched_fixture_ids"] == ["sqlite-malicious"]
+
+
+def test_native_sqlite_parse_rejects_non_select_and_missing_identity_output(
+    service: BlueFireService,
+) -> None:
+    first = service.upsert_detection_hypothesis(_hypothesis("sqlite"))
+    first_id = str(_candidate_document(first)["candidate_id"])
+    rejected = _candidate_document(
+        service.parse_detection_candidate(first_id, {"source": "DELETE FROM logs"})
+    )
+    assert rejected["state"] == "rejected"
+    assert rejected["validation"]["source_rule_executed"] is False
+
+    tuned_request = _hypothesis("sqlite")
+    tuned_request["selection"] = {
+        "artifact_type": "file_observation",
+        "path|startswith": "staged/",
+    }
+    second = service.upsert_detection_hypothesis(tuned_request)
+    second_id = str(_candidate_document(second)["candidate_id"])
+    missing_identity = _candidate_document(
+        service.parse_detection_candidate(second_id, {"source": "SELECT path FROM logs"})
+    )
+    assert missing_identity["state"] == "rejected"
+    assert "fixture_id" in str(missing_identity["rejection_reason"])

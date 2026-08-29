@@ -51,6 +51,7 @@ Issues = "https://github.com/Moneer-S/BlueFire-Nexus/issues"
 [project.optional-dependencies]
 detections = [
   "pysigma==1.5.0",
+  "pysigma-backend-sqlite==1.2.2",
   "yara-python==4.5.4",
 ]
 dev = [

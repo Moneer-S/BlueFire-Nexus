@@ -17,7 +17,7 @@ A newly created `bluefire.detection.v2` candidate records (`v1` is accepted only
 - lifecycle state and an ordered, input-digested transition history.
 - immutable revision number, lineage root/parent IDs, revision kind, and definition digest.
 
-Supported target language labels are `internal`, `sigma`, `yara`/`yara-l`, and `spl`.
+Executable target language labels are `internal`, `sigma`, `sqlite`, and `yara`; `spl` is structural-only. Legacy `yara-l` candidates remain readable but unavailable because YARA-L is not YARA and has no authoritative local evaluator in this release.
 
 ## Lifecycle
 
@@ -57,18 +57,26 @@ comparison does not mutate either revision.
 
 `ExternalDetectionValidator.health()` reports actual local readiness and version:
 
-- **pySigma**: parses exactly one Sigma rule and retains parser errors/version.
+- **pySigma plus SQLite backend**: parses exactly one Sigma rule, converts it through the exact pinned 1.2.2 backend, retains both versions and the converted-query digest, and refuses unsupported query fields.
+- **bounded SQLite executor**: executes converted Sigma or native SQLite `SELECT` candidates against a fresh fixed `logs` table. It permits no attachment, extension loading, schema mutation, data mutation, multiple statement, alias/join, or unbounded result path; a query-only connection, authorizer, VM/deadline limits, and row/field/byte caps are independently recorded.
 - **YARA-Python**: compiles with includes disabled and warnings as errors; fixture data is bounded and matching uses a timeout.
 - **SPL structural checker**: checks bounded source, quotes, delimiters, and control characters. It is not an authoritative Splunk parser, so a successful structural check remains `hypothesis`.
 
 Install the pinned optional adapters into the project virtual environment:
 
 ```bash
-python -m pip install "pysigma==1.5.0" "yara-python==4.5.4"
+python -m pip install "pysigma==1.5.0" "pysigma-backend-sqlite==1.2.2" "yara-python==4.5.4"
 python -m pytest tests_platform/test_detections.py
 ```
 
-The installable YARA adapter uses the latest published PyPI build, 4.5.4. The pinned research-source record separately tracks upstream source tag v4.5.5 and does not claim that tag is available from PyPI.
+The installable YARA adapter and its reviewed upstream research-source record are both pinned to 4.5.4.
+
+The SQLite backend record pins upstream tag `v1.2.2` at commit
+`cfc0a2dd75470f73e2e375c3e58aecc21a33fbc6`, records PyPI's attested wheel and source
+distribution hashes, and identifies the LGPL-3.0-only license. The upstream plugin directory marks
+the backend `testing`; keep the exact pin and require focused local conversion and execution tests.
+See [Third-party notices](../THIRD_PARTY_NOTICES.md). The intake record alone does not claim that an
+artifact was installed or that generated SQL ran; only a persisted lifecycle execution result does.
 
 If an optional package is absent, the candidate remains a hypothesis. Do not catch that condition and mark it parsed.
 
@@ -76,14 +84,16 @@ If an optional package is absent, the candidate remains a hypothesis. Do not cat
 
 1. Create a `target_language="sigma"` hypothesis.
 2. Render or author one reviewed Sigma YAML rule.
-3. Call `parse_sigma`; retain pySigma version and all rule/collection errors.
-4. Exercise deterministic malicious fixtures using a backend or field-normalized harness appropriate to the rule.
+3. Call `parse_sigma`; retain the pySigma/backend versions, source and converted-query digests, fixed table, mapping, and all rule/collection errors.
+4. Exercise deterministic malicious fixtures through the bounded SQLite executor.
 5. Link independent observed evidence only after mapping actual telemetry fields.
 6. Evaluate benign fixtures and document false-positive tradeoffs.
 
-BlueFire currently parses Sigma source but does not ship backend-specific Sigma conversion or a SIEM deployment connector.
+Parsing and conversion record `source_rule_executed: false`. Before each fixture or observed-evidence action, BlueFire reconverts the persisted Sigma source and verifies its source digest, query digest, parser version, conversion backend, and conversion version. Only a successful bounded evaluation records `source_rule_executed: true`, evaluated/matched IDs, mapped and unsupported fixture fields, result fields, and executor limits. This is local rule evaluation, not a claim that a SIEM deployed or executed the rule.
 
-The local fixture and observed-evidence actions can evaluate the candidate's explicitly declared normalized selection after pySigma accepts the source. They record `source_rule_executed: false`; this is not a claim that a SIEM executed the Sigma rule.
+## Native SQLite workflow
+
+Create a `target_language="sqlite"` hypothesis and submit exactly one bounded `SELECT` from the fixed `logs` table. The query must return `fixture_id` exactly once so results remain attributable. Only declared schema fields are available; extra fixture fields are reported but never become identifiers or schema changes. Native queries use the same malicious, immutable observed-evidence, and benign lifecycle actions and the same execution caps as converted Sigma.
 
 ## YARA workflow
 
@@ -93,7 +103,7 @@ The local fixture and observed-evidence actions can evaluate the candidate's exp
 4. Record every evaluated fixture ID and only the matched IDs.
 5. Evaluate benign fixtures with the same compiled source before production use.
 
-Includes are disabled to avoid unexpected filesystem access. Each fixture is limited to 1 MiB and the source to 256 KiB. BlueFire does not import or vendor a public YARA corpus.
+Includes are disabled to avoid unexpected filesystem access. The fixture collection is limited to 1 MiB in total and the source to 256 KiB. BlueFire does not import or vendor a public YARA corpus.
 
 ## Internal matcher
 
@@ -117,7 +127,7 @@ Public rules are research references, not automatic evasion targets. New Detecti
 
 The current revision comparison reports changes to registered public-baseline metadata alongside the two candidates' own malicious/benign fixture, observed-evidence, field, rule, and lifecycle deltas. It does not fetch a public corpus, execute a public rule, or compute candidate-only/baseline-only public-rule hit sets.
 
-BlueFire's built-in research registry references MITRE ATT&CK, Sigma specification, pySigma, and yara-python. It does not synchronize SigmaHQ, Elastic, Splunk, or commercial rule corpora.
+BlueFire's built-in research registry references MITRE ATT&CK, Sigma specification, pySigma, the pinned pySigma SQLite backend, and yara-python. It does not synchronize SigmaHQ, Elastic, Splunk, or commercial rule corpora.
 
 ## UI behavior
 
@@ -130,6 +140,7 @@ Observed evidence cannot be supplied by a client. The service reads a finalized 
 - Is the candidate linked to a registered behavior?
 - Did an authoritative parser/compiler produce the claimed state?
 - Are parser/backend names and versions retained?
+- If Sigma was converted, is the exact converted-query identity retained and is execution distinguished from conversion?
 - Are malicious and benign fixtures deterministic, sanitized, and attributed?
 - Does observed exercise use only `observed` evidence and only actual matches?
 - Are predicted/observed field mappings explicit?

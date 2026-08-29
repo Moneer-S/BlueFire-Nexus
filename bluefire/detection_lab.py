@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 import threading
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -99,8 +100,16 @@ class DetectionLabService:
                 "sigma": {
                     "ready": bool(sigma.get("ready")),
                     "authoritative": bool(sigma.get("ready")),
-                    "backend": "pySigma",
-                    "version": sigma.get("version"),
+                    "backend": sigma.get("conversion_backend", "pySigma SQLite"),
+                    "version": sigma.get("conversion_backend_version"),
+                    "parser_backend": "pySigma",
+                    "parser_version": sigma.get("version"),
+                },
+                "sqlite": {
+                    "ready": True,
+                    "authoritative": True,
+                    "backend": "SQLite bounded executor",
+                    "version": sqlite3.sqlite_version,
                 },
                 "yara": {
                     "ready": bool(yara.get("ready")),
@@ -109,10 +118,10 @@ class DetectionLabService:
                     "version": yara.get("version"),
                 },
                 "yara-l": {
-                    "ready": bool(yara.get("ready")),
-                    "authoritative": bool(yara.get("ready")),
-                    "backend": "YARA-Python",
-                    "version": yara.get("version"),
+                    "ready": False,
+                    "authoritative": False,
+                    "backend": "No local YARA-L evaluator",
+                    "version": None,
                 },
                 "spl": {
                     "ready": bool(spl.get("ready")),
@@ -317,8 +326,15 @@ class DetectionLabService:
                     after = self.pipeline.parse(before)
                 elif before.target_language == "sigma":
                     after = self.validator.parse_sigma(before, str(request["source"]))
-                elif before.target_language in {"yara", "yara-l"}:
+                elif before.target_language == "sqlite":
+                    after = self.validator.parse_sqlite(before, str(request["source"]))
+                elif before.target_language == "yara":
                     after = self.validator.compile_yara(before, str(request["source"]))
+                elif before.target_language == "yara-l":
+                    raise DetectionError(
+                        "YARA-L is unavailable because it has no authoritative local evaluator; "
+                        "candidate remains a hypothesis"
+                    )
                 elif before.target_language == "spl":
                     after = self.validator.check_spl(before, str(request["source"]))
                 else:  # pragma: no cover - guarded by strict rehydration
@@ -340,19 +356,23 @@ class DetectionLabService:
             resource = self._resource(candidate_id)
             before = self._candidate_from_resource(resource)
             try:
-                if before.target_language in {"internal", "sigma"}:
+                if before.target_language == "internal":
                     after = self.pipeline.exercise_fixtures(before, fixtures)
                     after = replace(
                         after,
                         validation={
                             **dict(after.validation),
                             "fixture_backend": self.pipeline.parser_name,
-                            "source_rule_executed": before.target_language == "internal",
+                            "source_rule_executed": True,
                         },
                     )
-                elif before.target_language in {"yara", "yara-l"}:
+                elif before.target_language in {"sigma", "sqlite"}:
+                    after = self.validator.exercise_query_fixtures(before, fixtures)
+                elif before.target_language == "yara":
                     self._yara_fixture_shape(fixtures)
                     after = self.validator.exercise_yara_fixtures(before, fixtures)
+                elif before.target_language == "yara-l":
+                    raise DetectionError("YARA-L fixture execution is unavailable")
                 else:
                     raise DetectionError(
                         "SPL structural validation cannot advance to fixture exercise"
@@ -387,15 +407,18 @@ class DetectionLabService:
         with self._lock:
             resource = self._resource(candidate_id)
             before = self._candidate_from_resource(resource)
-            if before.target_language not in {"internal", "sigma"}:
+            if before.target_language not in {"internal", "sigma", "sqlite"}:
                 raise APIError(
                     HTTPStatus.CONFLICT,
                     "detection_observed_unsupported",
-                    "Observed JSON evidence can be evaluated only by internal or normalized Sigma selection semantics.",
+                    "Observed JSON evidence can be evaluated only by internal or bounded query semantics.",
                 )
             records = self._immutable_evidence(run_id, selected_ids)
             try:
-                after = self.pipeline.exercise_observed(before, records)
+                if before.target_language == "internal":
+                    after = self.pipeline.exercise_observed(before, records)
+                else:
+                    after = self.validator.exercise_query_observed(before, records)
             except DetectionError as exc:
                 self._raise_detection_error(exc, action="exercise observed evidence")
             observed_fields = tuple(sorted(self._observed_fields(records)))
@@ -414,7 +437,7 @@ class DetectionLabService:
                         "run_id": run_id,
                         "evidence_ids": [record.evidence_id for record in records],
                         "immutable_bundle_validated": True,
-                        "source_rule_executed": before.target_language == "internal",
+                        "source_rule_executed": True,
                     },
                 },
             )
@@ -440,19 +463,27 @@ class DetectionLabService:
             resource = self._resource(candidate_id)
             before = self._candidate_from_resource(resource)
             try:
-                if before.target_language in {"internal", "sigma"}:
+                if before.target_language == "internal":
                     after = self.pipeline.evaluate_benign(before, fixtures, notes=notes)
                     after = replace(
                         after,
                         validation={
                             **dict(after.validation),
                             "benign_fixture_backend": self.pipeline.parser_name,
-                            "source_rule_executed": before.target_language == "internal",
+                            "source_rule_executed": True,
                         },
                     )
-                elif before.target_language in {"yara", "yara-l"}:
+                elif before.target_language in {"sigma", "sqlite"}:
+                    after = self.validator.evaluate_query_benign(
+                        before,
+                        fixtures,
+                        notes=notes,
+                    )
+                elif before.target_language == "yara":
                     self._yara_fixture_shape(fixtures)
                     after = self.validator.evaluate_yara_benign(before, fixtures, notes=notes)
+                elif before.target_language == "yara-l":
+                    raise DetectionError("YARA-L benign execution is unavailable")
                 else:
                     raise DetectionError("SPL structural validation cannot be benign-evaluated")
             except DetectionError as exc:
@@ -672,16 +703,34 @@ class DetectionLabService:
                     "A referenced public baseline source failed strict validation.",
                     [reference.research_source_id],
                 ) from exc
-            expected = PublicBaselineReference(
-                schema_version="bluefire.public-baseline.v1",
-                research_source_id=source.id,
-                source_digest=str(resource.get("digest")),
-                pin=source.pin,
-                version=source.version,
-                license=source.license,
-                license_review=source.license_review.value,
-                relationship=source.relationship.value,
-                use="comparison",
+            expected_value: dict[str, str] = {
+                "schema_version": reference.schema_version,
+                "research_source_id": source.id,
+                "source_digest": str(resource.get("digest")),
+                "pin": source.pin,
+                "version": source.version,
+                "license": source.license,
+                "license_review": source.license_review.value,
+                "relationship": source.relationship.value,
+                "use": "comparison",
+            }
+            if reference.schema_version == "bluefire.public-baseline.v2":
+                expected_value.update(
+                    {
+                        "exact_ref": source.exact_ref,
+                        "retrieved_at": source.retrieved_at,
+                        "file_level_license_review": source.file_level_license_review,
+                        "trademark_considerations": source.trademark_considerations,
+                        "use_classification": source.use_classification.value,
+                        "attribution": source.attribution,
+                        "security_review": source.security_review,
+                        "last_verified_at": source.last_verified_at,
+                        "update_status": source.update_status,
+                    }
+                )
+            expected = PublicBaselineReference.from_mapping(
+                expected_value,
+                f"registered baseline {source.id}",
             )
             if (
                 resource.get("id") != source.id

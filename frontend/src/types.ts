@@ -458,7 +458,7 @@ export interface DetectionCandidate {
   language?: string;
   summary?: string;
   evidence_ids?: string[];
-  target_language?: "internal" | "sigma" | "yara" | "yara-l" | "spl" | string;
+  target_language?: "internal" | "sigma" | "sqlite" | "yara" | "yara-l" | "spl" | string;
   logsource?: Record<string, unknown>;
   selection?: Record<string, unknown>;
   provenance?: Record<string, unknown>;

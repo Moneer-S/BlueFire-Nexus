@@ -61,7 +61,7 @@ AI does not create a third mode. Enabling `assist` or `auto` cannot widen target
 - Eight sanitized scenario graphs, including blocked-path fallback, platform discovery, archive/staging, detection regression, AI-adaptive, restricted-tier canary, representative operator-loop, and deep endpoint-lab examples.
 - A deterministic offline AI provider and an OpenAI-compatible Responses provider using strict structured output, timeouts, retries, token limits, redaction, and deterministic fallback.
 - A bounded filesystem observer and JSONL fixture-log collector, with Execute binding the ready filesystem collector into preflight/approval for declared sandbox artifacts, plus honest readiness descriptors for optional auditd, Sysmon/Event Log, packet-capture, and SIEM adapters.
-- pySigma parsing and YARA compilation/fixture exercise when their optional pinned packages are installed; SPL receives structural checks only.
+- Authoritative pySigma-to-SQLite conversion, bounded in-memory execution for converted Sigma and native SQLite candidates, and YARA compilation/fixture execution when their optional pinned packages are installed; SPL receives structural checks only.
 - Content-addressed evidence records, hash-chained run events, finalized bundle manifests, exact/variant replay, and multi-run comparison.
 - A migrated local SQLite product store for secret-safe settings, content-addressed scenario versions, typed resources, approval/job state, restart recovery, and indexed run summaries.
 
@@ -387,14 +387,17 @@ Detection candidates move through `hypothesis` → `parsed` → `fixture_exercis
 For authoritative parser/compiler adapters:
 
 ```bash
-python -m pip install "pysigma==1.5.0" "yara-python==4.5.4"
+python -m pip install "pysigma==1.5.0" "pysigma-backend-sqlite==1.2.2" "yara-python==4.5.4"
 python -m pytest tests_platform/test_detections.py
 ```
 
-The installable YARA adapter is pinned to the latest published PyPI build, 4.5.4. The research registry separately tracks the upstream source tag v4.5.5; a source tag is not reported as an installable package version.
+The installable YARA adapter and its reviewed upstream research record are both pinned to 4.5.4. YARA-L is a different language and is not represented as executable through YARA-Python.
 
-- Sigma uses pySigma parsing and records parser version/errors.
-- YARA uses YARA-Python compilation with includes disabled and warnings as errors, then bounded fixture matching.
+The optional SQLite conversion backend is pinned to package version 1.2.2 and reviewed upstream tag `v1.2.2` at commit `cfc0a2dd75470f73e2e375c3e58aecc21a33fbc6`. It is LGPL-3.0-only and the official plugin directory labels it `testing`. Installing the package or recording its provenance is not evidence that BlueFire converted or executed a Sigma rule; trust only persisted lifecycle results containing the exact source/query digests, backend versions, field assessment, and bounded execution outcome.
+
+- Sigma uses pySigma to parse exactly one rule, converts it through the pinned SQLite backend, and freshly reconverts before every bounded execution.
+- Native `target_language="sqlite"` candidates use the same fixed-schema, query-only, authorizer-guarded in-memory executor. Conversion/parse leaves `source_rule_executed: false`; real fixture or observed-record evaluation changes it to `true`.
+- YARA uses YARA-Python compilation with includes disabled and warnings as errors, then bounded malicious and benign fixture execution with evaluated/matched IDs.
 - SPL has a bounded structural checker but remains a hypothesis without a real backend parser.
 - Public rules are provenance-retaining baselines, not automatic evasion targets.
 
@@ -402,7 +405,7 @@ See [Evidence model](docs/EVIDENCE_MODEL.md) and [Detection Lab](docs/DETECTION_
 
 ## Research provenance
 
-The built-in registry records project, authority, pin-bearing HTTPS reference, version/pin/exact ref, retrieval and verification dates, license, file-level review, trademark considerations, relationship, use classification (`reference_only`, `metadata_import`, `clean_reimplementation`, `external_adapter`, `compatible_code_adaptation`, or `incompatible_or_restricted`), intended use, imported/adapted paths, attribution, security review, transformation history, update status, and cache policy. The registry validates that the URL contains the declared non-moving pin, but it does not fetch remote bytes or prove that a remote tag or URL target cannot move. It currently references MITRE ATT&CK Enterprise data 19.2 at commit `6cda5ad8462c79e14fbb872f4e09059b18e0cfc4`, Sigma specification 2.1.0, pySigma 1.5.0, yara-python 4.5.5, and an Atomic Red Team comparative snapshot at commit `6132b92779873cb0d05bef07ba0a480d47eb1cc8`. External datasets, scripts, and corpora are not vendored or executed during source intake. See [Source intake](docs/SOURCE_INTAKE.md) and [Third-party notices](THIRD_PARTY_NOTICES.md).
+The built-in registry records project, authority, pin-bearing HTTPS reference, version/pin/exact ref, retrieval and verification dates, license, file-level review, trademark considerations, relationship, use classification (`reference_only`, `metadata_import`, `clean_reimplementation`, `external_adapter`, `compatible_code_adaptation`, or `incompatible_or_restricted`), intended use, imported/adapted paths, attribution, security review, transformation history, update status, and cache policy. The registry validates that the URL contains the declared non-moving pin, but it does not fetch remote bytes or prove that a remote tag or URL target cannot move. It currently references MITRE ATT&CK Enterprise data 19.2 at commit `6cda5ad8462c79e14fbb872f4e09059b18e0cfc4`, Sigma specification 2.1.0, pySigma 1.5.0, the pySigma SQLite backend 1.2.2 at commit `cfc0a2dd75470f73e2e375c3e58aecc21a33fbc6`, yara-python 4.5.4, and an Atomic Red Team comparative snapshot at commit `6132b92779873cb0d05bef07ba0a480d47eb1cc8`. External datasets, scripts, and corpora are not vendored or executed during source intake. See [Source intake](docs/SOURCE_INTAKE.md) and [Third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Supported platforms
 
@@ -473,7 +476,7 @@ For the historical pre-1.0 product boundary and explicit non-claims, see the [pr
 - Plugin activation inventories reviewed metadata only; it does not download/load a package or add dynamic behaviors/actions.
 - One restricted persistence-detection canary and one authorized same-host disposable peer exercise are available only through narrow profiles; real host persistence changes and the broad credential, remote lateral-movement, and defense-evasion `research.*` families remain unavailable for Execute.
 - Built-in independent observation is limited to declared sandbox files and disposable JSONL fixtures. Execute defaults to the ready filesystem collector and rejects unavailable collector selections; optional audit/SIEM collectors report unavailable until separately implemented and configured.
-- The Detection Lab backend offers candidate and validator primitives; backend-specific Sigma conversion and production SPL validation are not included.
+- Detection Lab executes converted Sigma and native SQLite candidates in a bounded local evaluator, but it is not a production SIEM deployment connector and SPL remains structural-only.
 - Real-account AI transport is not part of offline acceptance, and no single dynamically verified product journey currently demonstrates Auto mutation through replay and comparison.
 - Restart-from-node replay carries normalized prior artifact metadata but does not materialize a content-addressed trusted checkpoint in a fresh Execute workspace.
 - Bundle/event hashes detect modification but are not digital signatures or proof of who produced a bundle.

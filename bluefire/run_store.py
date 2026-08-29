@@ -180,17 +180,13 @@ class RunStore:
         evidence: Iterable[Mapping[str, Any]],
         detections: Iterable[Mapping[str, Any]],
     ) -> Mapping[str, Any]:
-        self.write_json(
-            run_id, "evidence.json", {"schema_version": "1.0", "records": list(evidence)}
-        )
-        self.write_json(
-            run_id,
-            "detections.json",
-            {"schema_version": "1.0", "candidates": list(detections)},
-        )
         initial_result = self.read_json(run_id, "result.json")
         binding = initial_result.get("acceptance_binding")
+        created_at = initial_result.get("created_at")
         final_result = dict(result)
+        if final_result.get("created_at", created_at) != created_at:
+            raise RunStoreError("run creation timestamp changed before finalization")
+        final_result["created_at"] = created_at
         if binding is not None:
             if (
                 not isinstance(binding, Mapping)
@@ -200,6 +196,14 @@ class RunStore:
             final_result["acceptance_binding"] = dict(binding)
         elif "acceptance_binding" in final_result:
             raise RunStoreError("acceptance run binding cannot be supplied by a caller")
+        self.write_json(
+            run_id, "evidence.json", {"schema_version": "1.0", "records": list(evidence)}
+        )
+        self.write_json(
+            run_id,
+            "detections.json",
+            {"schema_version": "1.0", "candidates": list(detections)},
+        )
         final_result["run_id"] = run_id
         final_result["finalized_at"] = utc_now()
         self.write_json(run_id, "result.json", final_result)

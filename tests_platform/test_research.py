@@ -77,7 +77,8 @@ def test_builtin_registry_uses_reviewed_immutable_current_references() -> None:
         "6cda5ad8462c79e14fbb872f4e09059b18e0cfc4"  # pragma: allowlist secret
     )
     assert sources["research.pysigma.v1"].version == "1.5.0"
-    assert sources["research.yara-python.v1"].version == "4.5.5"
+    assert sources["research.yara-python.v1"].version == "4.5.4"
+    assert sources["research.pysigma-backend-sqlite.v1"].version == "1.2.2"
     assert sources["research.atomic-red-team.v1"].pin == (
         "6132b92779873cb0d05bef07ba0a480d47eb1cc8"  # pragma: allowlist secret
     )
@@ -149,9 +150,7 @@ def test_source_intake_classification_enforces_content_boundaries() -> None:
             )
         )
     with pytest.raises(ResearchSourceError, match="adapted/copied paths"):
-        ResearchSource.from_mapping(
-            _source(use_classification="compatible_code_adaptation")
-        )
+        ResearchSource.from_mapping(_source(use_classification="compatible_code_adaptation"))
     with pytest.raises(ResearchSourceError, match="external executable content"):
         ResearchSource.from_mapping(
             _source(use_classification="external_adapter", executable_content=False)

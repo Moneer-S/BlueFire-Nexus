@@ -109,6 +109,10 @@ function shortDigest(value: string) {
   return value.length > 24 ? `${value.slice(0, 15)}…${value.slice(-8)}` : value;
 }
 
+function stringList(value: unknown) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value.join(", ") || "None" : "Not reported";
+}
+
 export function DetectionLabPage() {
   const runsQuery = useQuery({ queryKey: ["runs"], queryFn: api.runs });
   const catalogQuery = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
@@ -212,7 +216,7 @@ export function DetectionLabPage() {
         <div className="detail-body">
           <Field label="Title"><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={200} /></Field>
           <Field label="Registered behavior"><select value={behaviorId} onChange={(event) => setBehaviorId(event.target.value)}>{catalogQuery.data.behaviors.map((behavior) => <option key={behavior.id} value={behavior.id}>{behavior.title}</option>)}</select></Field>
-          <Field label="Target language"><select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="internal">Internal structured matcher</option><option value="sigma">Sigma</option><option value="yara">YARA</option><option value="yara-l">YARA-L</option><option value="spl">SPL structural check</option></select></Field>
+          <Field label="Target language"><select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="internal">Internal structured matcher</option><option value="sigma">Sigma converted to bounded SQLite</option><option value="sqlite">SQLite query (bounded executor)</option><option value="yara">YARA</option><option value="spl">SPL structural check</option></select></Field>
           <Button variant="primary" onClick={() => createMutation.mutate()} disabled={createMutation.isPending || !title || !behaviorId}><Plus />Save strict hypothesis</Button>
         </div>
       </Panel>
@@ -221,7 +225,7 @@ export function DetectionLabPage() {
         <div className="detail-body">{Object.entries(healthQuery.data.languages).map(([id, backend]) => <article className="secret-row" key={id}><span><Code2 /></span><div><strong>{sentence(id)}</strong><small>{backend.backend} · {backend.version ?? "Version unavailable"}</small></div><div className="row-badges"><Badge tone={backend.ready ? "success" : "warning"}>{backend.ready ? "Ready" : "Unavailable"}</Badge><Badge tone={backend.authoritative ? "info" : "neutral"}>{backend.authoritative ? "Authoritative" : "Structural only"}</Badge></div></article>)}</div>
       </Panel>
     </div>
-    <Callout title="Lifecycle semantics">Rendered text is not validation. SPL structural success remains a hypothesis. Observed exercise accepts only verified, immutable, independently observed evidence records. Clone and tune create new content-addressed candidates; they never rewrite their parent.</Callout>
+    <Callout title="Lifecycle semantics">Rendered text is not validation. Sigma is converted through pySigma and SQLite is inspected locally; neither advances beyond parsed until its bounded query really executes. SPL structural success remains a hypothesis. Observed exercise accepts only verified, immutable, independently observed evidence records. Clone and tune create new content-addressed candidates; they never rewrite their parent.</Callout>
     <div className="lifecycle-strip" aria-label="Detection lifecycle counts">{lifecycle.map((state, index) => <div key={state} className={state === "rejected" ? "rejected" : ""}><span>{index + 1}</span><strong>{sentence(state)}</strong><em>{counts[state]}</em></div>)}</div>
     <div className="detection-layout">
       <Panel className="candidate-list">
@@ -308,7 +312,7 @@ function CandidateWorkspace({
   const defaultCompareId = comparisonChoices[0]?.resourceId ?? "";
 
   useEffect(() => {
-    const yara = language === "yara" || language === "yara-l";
+    const yara = language === "yara";
     setFixtures(yara ? '[{"fixture_id":"malicious-1","data":"bounded fixture text"}]' : '[{"fixture_id":"malicious-1","artifact_type":"file_observation","path":"staged/a.txt"}]');
     setBenign(yara ? '[{"fixture_id":"benign-1","data":"ordinary fixture text"}]' : '[{"fixture_id":"benign-1","artifact_type":"file_observation","path":"documents/a.txt"}]');
     setSource(candidate.rule_source ?? "");
@@ -326,10 +330,14 @@ function CandidateWorkspace({
   }, [candidate.resolvedId, defaultCompareId, lineageSeed]);
 
   const authoritativeParsed = Boolean(backend?.authoritative && candidate.parser_backend?.name && candidate.state !== "hypothesis");
+  const queryValidation = candidate.validation ?? {};
+  const lastExecution = queryValidation.last_execution && typeof queryValidation.last_execution === "object" && !Array.isArray(queryValidation.last_execution)
+    ? queryValidation.last_execution as Record<string, unknown>
+    : undefined;
   const persisted = Boolean(resource);
   const canParse = persisted && candidate.state === "hypothesis";
   const canFixture = persisted && candidate.state === "parsed";
-  const canObserved = persisted && ["internal", "sigma"].includes(language) && ["parsed", "fixture_exercised"].includes(candidate.state);
+  const canObserved = persisted && ["internal", "sigma", "sqlite"].includes(language) && ["parsed", "fixture_exercised"].includes(candidate.state);
   const canBenign = persisted && ["fixture_exercised", "observed_exercised"].includes(candidate.state);
   const canReject = persisted && candidate.state !== "rejected";
   const availableBaselines = useMemo(() => researchSources.map(publicBaselineFromSource).filter((item): item is PublicBaselineReference => Boolean(item)), [researchSources]);
@@ -410,6 +418,19 @@ function CandidateWorkspace({
           { label: "Parser", value: candidate.parser_backend?.name ?? backend?.backend ?? "Not run" },
           { label: "Parser version", value: candidate.parser_backend?.version ?? backend?.version ?? "Not reported" },
         ]} />
+        {["sigma", "sqlite"].includes(language) && Object.keys(queryValidation).length ? <>
+          <DataList items={[
+            { label: "Converted query digest", value: typeof queryValidation.query_sha256 === "string" ? <code>{queryValidation.query_sha256}</code> : "Not reported" },
+            { label: "Conversion backend", value: [queryValidation.conversion_backend, queryValidation.conversion_backend_version].filter((item): item is string => typeof item === "string").join(" · ") || "Native bounded SQLite" },
+            { label: "Execution backend", value: [queryValidation.execution_backend, queryValidation.execution_backend_version].filter((item): item is string => typeof item === "string").join(" · ") || "Not executed" },
+            { label: "Source query executed", value: queryValidation.source_rule_executed === true ? "Yes" : "No" },
+            { label: "Mapped fields", value: stringList(queryValidation.mapped_fields) },
+            { label: "Unsupported fields", value: stringList(queryValidation.unsupported_fields) },
+            { label: "Evaluated records", value: stringList(lastExecution?.fixture_ids) },
+            { label: "Matched records", value: stringList(lastExecution?.matched_fixture_ids) },
+          ]} />
+          {typeof queryValidation.converted_query === "string" ? <details><summary>Show converted bounded query</summary><pre>{queryValidation.converted_query}</pre></details> : null}
+        </> : null}
         <PublicBaselineList baselines={candidate.public_baselines ?? []} sourcesById={sourcesById} empty="No reviewed public comparison baseline is pinned to this revision." />
       </> : tab === "revisions" ? <RevisionWorkspace
         candidate={candidate}
@@ -439,14 +460,14 @@ function CandidateWorkspace({
         onSubmit={submitRevision}
         onCompare={onCompare}
       /> : tab === "fixtures" ? <>
-        <Field label="Malicious fixtures JSON" hint={language === "yara" || language === "yara-l" ? "YARA fixtures require exactly fixture_id and bounded text data." : "Structured fixtures use fields referenced by the candidate selection."}><textarea rows={8} value={fixtures} onChange={(event) => setFixtures(event.target.value)} disabled={!canFixture} /></Field>
+        <Field label="Malicious fixtures JSON" hint={language === "yara" ? "YARA fixtures require exactly fixture_id and bounded text data." : "Structured fixtures use fields referenced by the candidate selection."}><textarea rows={8} value={fixtures} onChange={(event) => setFixtures(event.target.value)} disabled={!canFixture} /></Field>
         <Button size="small" onClick={() => submitFixtures("exercise-fixtures")} disabled={!canFixture || lifecyclePending}><Beaker />Exercise malicious fixtures</Button>
         <Field label="Benign fixtures JSON"><textarea rows={8} value={benign} onChange={(event) => setBenign(event.target.value)} disabled={!canBenign} /></Field>
         <Field label="Benign evaluation notes"><textarea rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} disabled={!canBenign} /></Field>
         <Button size="small" onClick={() => submitFixtures("evaluate-benign")} disabled={!canBenign || lifecyclePending || !notes.trim()}><CheckCircle2 />Evaluate benign fixtures</Button>
         <div className="fixture-grid"><article><Beaker /><strong>Malicious fixtures</strong><Badge tone={candidate.malicious_fixtures?.length ? "success" : "neutral"}>{candidate.malicious_fixtures?.length ?? 0} retained</Badge></article><article><CheckCircle2 /><strong>Benign fixtures</strong><Badge tone={candidate.benign_fixtures?.length ? "success" : "neutral"}>{candidate.benign_fixtures?.length ?? 0} retained</Badge></article></div>
       </> : tab === "observed" ? <>
-        <Callout title="Immutable observed evidence only">The control plane verifies the finalized run bundle and independently observed provenance. Evidence content cannot be pasted here.{!["internal", "sigma"].includes(language) ? " This language has no normalized observed-JSON evaluator." : ""}</Callout>
+        <Callout title="Immutable observed evidence only">The control plane verifies the finalized run bundle and independently observed provenance. Evidence content cannot be pasted here.{!["internal", "sigma", "sqlite"].includes(language) ? " This language has no normalized observed-JSON evaluator." : ""}</Callout>
         <Field label="Finalized run"><select value={runId} onChange={(event) => setRunId(event.target.value)} disabled={!canObserved}><option value="">Select run</option>{finalizedRuns.map((run) => <option key={run.run_id} value={run.run_id}>{run.run_id}</option>)}</select></Field>
         <Field label="Evidence IDs" hint="Comma-separated immutable evidence identifiers. Leave empty to use all eligible observed records."><input value={evidenceIds} onChange={(event) => setEvidenceIds(event.target.value)} disabled={!canObserved} /></Field>
         <Button size="small" onClick={() => onAction("exercise-observed", { run_id: runId, ...(evidenceIds.trim() ? { evidence_ids: evidenceIds.split(",").map((item) => item.trim()).filter(Boolean) } : {}) })} disabled={!canObserved || lifecyclePending || !runId}><FileCheck2 />Exercise observed evidence</Button>

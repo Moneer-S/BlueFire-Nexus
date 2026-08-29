@@ -182,7 +182,7 @@ bluefire detections tune CANDIDATE_ID tune.json
 bluefire detections compare BASELINE_CANDIDATE_ID comparison.json
 ```
 
-An internal candidate parses with no request file. Sigma, YARA/YARA-L, and SPL require `source.json`:
+An internal candidate parses with no request file. Sigma, SQLite, YARA, and SPL require `source.json`:
 
 ```json
 {
@@ -190,7 +190,7 @@ An internal candidate parses with no request file. Sigma, YARA/YARA-L, and SPL r
 }
 ```
 
-SPL checking is structural only and cannot advance past hypothesis. Sigma requires the installed pySigma adapter for authoritative parsing; YARA/YARA-L requires YARA-Python for compilation and fixture execution.
+SPL checking is structural only and cannot advance past hypothesis. Sigma requires exact pinned pySigma plus its SQLite backend for parse/conversion and uses a bounded local executor for lifecycle evaluation. Native SQLite accepts one fixed-schema `SELECT` that returns `fixture_id`. YARA requires YARA-Python for compilation and fixture execution; YARA-L remains unavailable because it is not the same language.
 
 ### Detection request files
 

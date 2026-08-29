@@ -989,6 +989,7 @@ def test_incomplete_enrollment_stage_refuses_before_native_probe(
 def test_bootstrap_rejects_broad_or_preexisting_unowned_roots_without_mutation(
     tmp_path: Path,
     secret_provider: ProcessTestSecretProvider,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with pytest.raises(RunnerLifecycleError, match="configuration is invalid"):
         ManagedRunnerLifecycle(Path(tmp_path.anchor), secret_provider=secret_provider)
@@ -1006,6 +1007,16 @@ def test_bootstrap_rejects_broad_or_preexisting_unowned_roots_without_mutation(
         _bootstrap(manager)
     assert sentinel.read_bytes() == b"operator-owned"
     assert not manager.root_marker_path.exists()
+
+    def unavailable_home() -> Path:
+        raise RuntimeError("home directory is intentionally unavailable")
+
+    monkeypatch.setattr(runner_lifecycle_module.Path, "home", unavailable_home)
+    isolated = ManagedRunnerLifecycle(
+        tmp_path / "no-home",
+        secret_provider=secret_provider,
+    )
+    assert isolated.root == tmp_path / "no-home"
 
 
 def test_operation_lock_path_replacement_cannot_split_serialization(

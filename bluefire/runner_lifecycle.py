@@ -2125,7 +2125,11 @@ def _valid_root_marker(value: Any, runner_id: str, resolved_root: Path) -> bool:
 def _broad_root(root: Path) -> bool:
     lexical = os.path.normcase(os.path.normpath(str(root)))
     candidates = {os.path.normcase(os.path.normpath(str(Path(root.anchor))))}
-    for candidate in (Path.home(), Path.cwd()):
+    for provider in (Path.home, Path.cwd):
+        try:
+            candidate = provider()
+        except (OSError, RuntimeError):
+            continue
         try:
             candidates.add(os.path.normcase(os.path.normpath(str(candidate.resolve()))))
         except OSError:

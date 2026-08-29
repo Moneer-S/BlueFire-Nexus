@@ -104,6 +104,25 @@ def test_event_stream_is_monotonic_and_bundle_detects_tampering(tmp_path: Path) 
     )
     assert manifest["bundle_hash"].startswith("sha256:")
     assert store.validate_bundle(handle.run_id)["valid"] is True
+    finalized = store.get_run(handle.run_id)
+    assert finalized["created_at"] == handle.created_at
+    assert finalized["events"][0]["data"]["created_at"] == handle.created_at
+
+    conflicting = _create(store)
+    with pytest.raises(RunStoreError, match="creation timestamp changed"):
+        store.finalize(
+            conflicting.run_id,
+            result={
+                "schema_version": "bluefire.run.v1",
+                "status": "success",
+                "created_at": "2026-01-01T00:00:00Z",
+            },
+            evidence=[],
+            detections=[],
+        )
+    unchanged = store.get_run(conflicting.run_id)
+    assert unchanged["status"] == "created"
+    assert unchanged["evidence"]["records"] == []
 
     result_path = handle.path / "result.json"
     value = json.loads(result_path.read_text(encoding="utf-8"))

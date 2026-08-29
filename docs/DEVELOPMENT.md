@@ -32,10 +32,17 @@ python -m pip install -e ".[dev]"
 Optional maintained detection adapters:
 
 ```bash
-python -m pip install "pysigma==1.5.0" "yara-python==4.5.4"
+python -m pip install "pysigma==1.5.0" "pysigma-backend-sqlite==1.2.2" "yara-python==4.5.4"
 ```
 
-The upstream v4.5.5 source tag is retained as research provenance; 4.5.4 is the latest installable PyPI adapter build.
+The installed YARA adapter and reviewed upstream research record are both pinned to 4.5.4.
+
+The optional SQLite backend pin is package version 1.2.2, upstream tag `v1.2.2`, commit
+`cfc0a2dd75470f73e2e375c3e58aecc21a33fbc6`, and license LGPL-3.0-only. The official
+plugin directory currently labels it `testing`, so keep the exact pin and focused conversion/
+execution contract tests. Installing it is not evidence that an application path imported it or
+executed generated SQL. The package declares pySigma as its only runtime dependency and does not
+justify another `pip-audit` exception.
 
 Do not install project dependencies globally. Keep test run stores, databases, sandboxes, caches, and build artifacts untracked.
 

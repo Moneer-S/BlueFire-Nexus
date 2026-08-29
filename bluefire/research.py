@@ -42,7 +42,13 @@ class SourceUseClassification(str, Enum):
 
 _SOURCE_TYPES = {"dataset", "documentation", "software", "rule_corpus"}
 _CACHE_POLICIES = {"external_only", "metadata_only"}
-_USES = {"behavior_mapping", "comparison", "parser_validation", "research_reference"}
+_USES = {
+    "backend_conversion",
+    "behavior_mapping",
+    "comparison",
+    "parser_validation",
+    "research_reference",
+}
 _UPDATE_STATUSES = {"current", "review_due", "superseded", "blocked"}
 
 
@@ -199,10 +205,14 @@ class ResearchSource:
         except (TypeError, ValueError) as exc:
             raise ResearchSourceError(f"{context}.use_classification is unsupported") from exc
         imported_paths = _string_tuple(data["imported_paths"], f"{context}.imported_paths")
-        if use_classification in {
-            SourceUseClassification.REFERENCE_ONLY,
-            SourceUseClassification.INCOMPATIBLE_OR_RESTRICTED,
-        } and imported_paths:
+        if (
+            use_classification
+            in {
+                SourceUseClassification.REFERENCE_ONLY,
+                SourceUseClassification.INCOMPATIBLE_OR_RESTRICTED,
+            }
+            and imported_paths
+        ):
             raise ResearchSourceError(
                 f"{context}.imported_paths must be empty for {use_classification.value}"
             )

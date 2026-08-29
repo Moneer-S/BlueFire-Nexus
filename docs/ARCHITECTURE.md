@@ -54,7 +54,8 @@ The UI and CLI are adapters over the same service boundary. Neither browser stat
 | bluefire/runner_client.py, bluefire/runner_transport.py, bluefire/runner_host.py, and bluefire/runner_lifecycle.py | Authenticated loopback task transport, durable replay/cancellation state, exact managed-process ownership, and fixed invocation of one verified runner binary | Shell execution, cross-host exposure, or behavior implementation |
 | runner/ | Strict manifest/profile validation and compiled sandbox actions | Simulation, planning, UI, or arbitrary execution |
 | bluefire/evidence.py and bluefire/collectors.py | Provenance records, same-run evidence graph, bounded sandbox/fixture observation, health, and explicit gaps | Treating runner self-report as independent observation |
-| bluefire/detections.py | Detection lifecycle, internal matcher, pySigma/YARA adapters, SPL structural checks, fields and baselines | Claiming target-language production validity |
+| bluefire/detections.py | Detection candidate lifecycle, internal matcher, fields, revisions, and public baselines | Claiming target-language production validity |
+| bluefire/detection_backends.py | Exact-pinned Sigma conversion, bounded SQLite execution, YARA execution, SPL structural checks, and backend provenance | SIEM deployment or arbitrary query execution |
 | bluefire/run_store.py | Contained run directories, atomic JSON snapshots, append-only events, hashes, and bundle validation | Remote storage or digital signing |
 | bluefire/product_store.py and bluefire/bootstrap.py | SQLite migrations, versioned scenarios, secret-safe settings/resources, approvals/jobs, run index, recovery, and idempotent built-in seeding | Replacing immutable evidence bundles or exposing a public persistence API |
 | bluefire/research.py | Strict pinned source/version/license/relationship registry | Fetching or executing external research |
@@ -186,7 +187,7 @@ EvidenceGraph rejects missing and cross-run parents. SandboxObserver resolves no
 
 Detection candidates begin as hypotheses. Their lifecycle distinguishes parsed, fixture_exercised, observed_exercised, benign_evaluated, and rejected states.
 
-The included structured matcher supports deterministic internal fixtures only. Optional pySigma parses Sigma and optional YARA-Python compiles YARA with includes disabled and warnings as errors, then exercises bounded fixtures. SPL receives structural checks and remains a hypothesis without an authoritative backend. Production claims still require the target backend/version, environment-specific fixtures, observed evidence where appropriate, benign evaluation, known misses, false-positive notes, and tuning decisions.
+The included structured matcher supports deterministic internal fixtures only. Exact pinned pySigma and its SQLite backend parse and convert one Sigma rule; converted Sigma and native SQLite candidates execute only against a fixed-schema, query-only, authorizer-guarded in-memory database with strict input/VM/time/result caps. Optional YARA-Python compiles YARA with includes disabled and warnings as errors, then exercises bounded fixtures. SPL receives structural checks and remains a hypothesis without an authoritative backend. Production claims still require the target backend/version, environment-specific fixtures, observed evidence where appropriate, benign evaluation, known misses, false-positive notes, and tuning decisions.
 
 Multiple renderings of the same hypothesis do not count as independent validation.
 
@@ -227,7 +228,7 @@ The wheel does not include repository tests. Compatible platform-specific wheels
 - The maintained action catalog is a bounded eighteen-action endpoint/sandbox pack, not a general execution agent.
 - The four `research.*` entries remain metadata-only. A separate persistence-detection behavior has one fixed non-executable marker action under a dedicated restricted profile; no host persistence mechanism is shipped.
 - No configured remote telemetry collector, SIEM connector, cloud action, identity action, or general network target is part of the baseline.
-- Sigma/YARA validation requires optional pinned packages; production SPL/backend validation is not included.
+- Sigma/YARA validation requires optional pinned packages; Sigma/SQLite evaluation is local and bounded rather than a production SIEM connector, and production SPL validation is not included.
 - Runner transport is same-user loopback only. Local enrollment, revocation, TLS 1.3 mutual authentication, durable task replay protection, cancellation, and recovery are implemented; cross-host transport/enrollment and asymmetric signed task/profile/result artifacts are not.
 - Run hashes do not prove author identity.
 - Execute depends on a compatible verified native artifact (packaged or an explicit development override), active local enrollment, authenticated host readiness, inventory parity, profile configuration, policy, and approval; it is unavailable when any prerequisite fails.

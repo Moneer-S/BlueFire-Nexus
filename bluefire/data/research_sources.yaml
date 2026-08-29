@@ -9,7 +9,7 @@ sources:
     reference_url: https://github.com/mitre-attack/attack-stix-data/blob/6cda5ad8462c79e14fbb872f4e09059b18e0cfc4/enterprise-attack/enterprise-attack-19.2.json
     version: "19.2"
     pin: 6cda5ad8462c79e14fbb872f4e09059b18e0cfc4  # pragma: allowlist secret -- public Git commit
-    exact_ref: 6cda5ad8462c79e14fbb872f4e09059b18e0cfc4
+    exact_ref: 6cda5ad8462c79e14fbb872f4e09059b18e0cfc4  # pragma: allowlist secret -- public Git commit
     retrieved_at: "2026-08-25"
     license: CC-BY-4.0
     license_url: https://github.com/mitre-attack/attack-stix-data/blob/6cda5ad8462c79e14fbb872f4e09059b18e0cfc4/LICENSE.txt
@@ -93,13 +93,13 @@ sources:
     source_type: software
     project: VirusTotal/yara-python
     authority: VirusTotal
-    reference_url: https://github.com/VirusTotal/yara-python/tree/v4.5.5
-    version: 4.5.5
-    pin: v4.5.5
-    exact_ref: v4.5.5
+    reference_url: https://github.com/VirusTotal/yara-python/tree/v4.5.4
+    version: 4.5.4
+    pin: v4.5.4
+    exact_ref: v4.5.4
     retrieved_at: "2026-08-25"
     license: Apache-2.0
-    license_url: https://github.com/VirusTotal/yara-python/blob/v4.5.5/LICENSE
+    license_url: https://github.com/VirusTotal/yara-python/blob/v4.5.4/LICENSE
     file_level_license_review: Package license reviewed at the pinned tag; source is not vendored into BlueFire.
     trademark_considerations: YARA and yara-python names are used descriptively for optional parser compatibility.
     license_review: reviewed
@@ -117,6 +117,35 @@ sources:
     notes: The pinned Python binding compiles generated YARA candidates with includes disabled; no public YARA corpus is vendored.
 
   - schema_version: bluefire.research-source.v1
+    id: research.pysigma-backend-sqlite.v1
+    name: pySigma SQLite backend
+    source_type: software
+    project: SigmaHQ/pySigma-backend-sqlite
+    authority: SigmaHQ
+    reference_url: https://github.com/SigmaHQ/pySigma-backend-sqlite/tree/cfc0a2dd75470f73e2e375c3e58aecc21a33fbc6  # pragma: allowlist secret -- public Git commit
+    version: 1.2.2
+    pin: cfc0a2dd75470f73e2e375c3e58aecc21a33fbc6  # pragma: allowlist secret -- public Git commit
+    exact_ref: cfc0a2dd75470f73e2e375c3e58aecc21a33fbc6  # pragma: allowlist secret -- public Git commit
+    retrieved_at: "2026-08-29"
+    license: LGPL-3.0-only
+    license_url: https://github.com/SigmaHQ/pySigma-backend-sqlite/blob/cfc0a2dd75470f73e2e375c3e58aecc21a33fbc6/LICENSE  # pragma: allowlist secret -- public Git commit
+    file_level_license_review: Package metadata, backend source, and repository license were reviewed at the pinned v1.2.2 commit; source is not vendored into BlueFire.
+    trademark_considerations: pySigma and SigmaHQ names are used descriptively for optional backend compatibility and do not imply endorsement.
+    license_review: reviewed
+    relationship: imported
+    use_classification: external_adapter
+    uses: [backend_conversion]
+    imported_paths: []
+    cache_policy: external_only
+    executable_content: true
+    attribution: The pySigma SQLite backend is attributed in detection-adapter and research-source metadata.
+    security_review: The separately installed converter generates SQLite queries but does not make their execution authoritative; source intake does not auto-discover plugins, fetch rules or pipelines, load SQLite extensions, or execute upstream scripts. The official plugin directory labels this backend testing, so the exact package remains pinned and requires focused local contract tests before lifecycle claims advance.
+    last_verified_at: "2026-08-29"
+    update_status: current
+    transformation_history: BlueFire pins the unmodified optional distribution for adapter integration; no upstream source or tests are copied into this repository.
+    notes: Upstream tag v1.2.2 resolves to the pinned commit. PyPI Trusted Publishing records wheel SHA-256 db553c8af13aa4290a5769f4e3754ecd8970a33254b8d00a65df48039cdc0e76 and sdist SHA-256 3970518045192d5aeb93f444221dce4661388e7b5b1aab289568930dacbfd247; recording these public digests does not prove installation, import, conversion, or query execution.  # pragma: allowlist secret -- public package digests
+
+  - schema_version: bluefire.research-source.v1
     id: research.atomic-red-team.v1
     name: Atomic Red Team
     source_type: rule_corpus
@@ -125,7 +154,7 @@ sources:
     reference_url: https://github.com/redcanaryco/atomic-red-team/tree/6132b92779873cb0d05bef07ba0a480d47eb1cc8
     version: "2026-08-24 snapshot"
     pin: 6132b92779873cb0d05bef07ba0a480d47eb1cc8  # pragma: allowlist secret -- public Git commit
-    exact_ref: 6132b92779873cb0d05bef07ba0a480d47eb1cc8
+    exact_ref: 6132b92779873cb0d05bef07ba0a480d47eb1cc8  # pragma: allowlist secret -- public Git commit
     retrieved_at: "2026-08-25"
     license: MIT
     license_url: https://github.com/redcanaryco/atomic-red-team/blob/6132b92779873cb0d05bef07ba0a480d47eb1cc8/LICENSE.txt

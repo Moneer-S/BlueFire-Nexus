@@ -207,7 +207,7 @@ The first run is the baseline. Treat `improved`, `regressed`, and `mixed` as sum
 ## Detection workflow
 
 1. Start with a behavior-linked hypothesis.
-2. Parse Sigma with pySigma or compile YARA with YARA-Python.
+2. Parse and convert Sigma through the pinned SQLite backend, parse a bounded native SQLite query, or compile YARA with YARA-Python.
 3. Exercise deterministic malicious fixtures.
 4. Link only independently `observed` evidence for observed exercise.
 5. Evaluate benign fixtures and record false-positive notes.
@@ -219,6 +219,8 @@ The first run is the baseline. Treat `improved`, `regressed`, and `mixed` as sum
 The Detection Lab UI creates strict hypotheses, exposes clone/tune as new content-addressed revisions, and compares siblings without overwriting their parents. Its public-baseline selector uses only registered pinned Research Source records and preserves the digest of the validated registered metadata document, pin, version, license review, relationship, source-intake classification, and comparison use. That digest is not a hash of fetched external bytes; BlueFire does not fetch the reference. The CLI exposes the same lifecycle through `bluefire detections ...`; see the [detection command reference](CLI.md#detection-lab) and [Source intake](SOURCE_INTAKE.md).
 
 Backend parser/compiler functionality is provided by `ExternalDetectionValidator`; rendered source or an enabled browser button is not evidence that validation ran. Trust the persisted candidate state, backend name/version, ordered lifecycle history, and immutable definition/lineage digests. See [Detection Lab](DETECTION_LAB.md).
+
+The optional detection dependency set pins `pysigma-backend-sqlite==1.2.2`. The pin and its Research Source record do not mean a candidate was converted or executed. A parsed Sigma response retains the conversion backend, versions, source/query identity, mapping, and unsupported fields while explicitly recording `source_rule_executed: false`; malicious-fixture or immutable observed-evidence evaluation must execute the freshly reconverted query before that claim becomes true. Native SQLite candidates use the same bounded executor.
 
 ## Settings authority
 
@@ -274,7 +276,7 @@ BlueFire is local-first and pre-1.0. Keep these limits visible when interpreting
 - only the narrow sandbox persistence-detection canary and authorized same-host disposable peer exercise are available under dedicated profiles; real host persistence plus broad credential, remote lateral-movement, and defense-evasion `research.*` Execute families remain unavailable;
 - built-in independent observation is limited to declared sandbox files and disposable JSONL fixtures; optional audit/SIEM collectors remain unavailable until separately implemented and configured;
 - plugins are declarative metadata only and do not load Python entry points or add connector capabilities;
-- Detection Lab does not include backend-specific Sigma conversion, production SPL validation, or automatic public-corpus synchronization;
+- Detection Lab provides bounded local Sigma/SQLite execution but no SIEM deployment connector, production SPL validation, or automatic public-corpus synchronization;
 - hashes establish bundle consistency, not a digital signature or producer identity.
 
 See the README's [current limitations](../README.md#current-limitations), [Threat model](THREAT_MODEL.md), and [Responsible use](RESPONSIBLE_USE.md) before broadening any lab.
