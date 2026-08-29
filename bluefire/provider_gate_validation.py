@@ -238,7 +238,7 @@ def _validate_packaged_runner(value: Any) -> Mapping[str, Any]:
         "receipt_protocol": "bluefire.runner-receipt-wal.v2",
         "platform": "windows",
         "provider_runtime_count": 1,
-        "core_action_count": 18,
+        "core_action_count": 19,
     }:
         raise ValueError("provider journey runner inventory contract is invalid")
     hard_limits = runtime.get("hard_limits")

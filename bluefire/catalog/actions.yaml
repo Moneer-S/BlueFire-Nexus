@@ -105,6 +105,22 @@ items:
     provenance: *authored
 
   - schema_version: bluefire.action.v1
+    id: endpoint.discovery.windows-version.v1
+    title: Discover the Windows version
+    purpose: Report only the Windows major, minor, and build version through the fixed compiled RtlGetVersion API.
+    safety_tier: safe
+    capabilities: [system.discovery]
+    platforms: [windows]
+    inputs: []
+    outputs:
+      - name: windows_version
+        type: artifact.endpoint.windows-version.v1
+    parameters: []
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
     id: endpoint.discovery.processes.v1
     title: Discover bounded process identities
     purpose: Enumerate process IDs and names through one compiled platform adapter with bounded output.

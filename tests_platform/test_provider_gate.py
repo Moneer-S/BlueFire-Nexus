@@ -423,7 +423,7 @@ def _journey_report() -> dict[str, Any]:
                 "receipt_protocol": "bluefire.runner-receipt-wal.v2",
                 "platform": "windows",
                 "provider_runtime_count": 1,
-                "core_action_count": 18,
+                "core_action_count": 19,
             },
             "provider_runtime": {
                 **runtime_contract,

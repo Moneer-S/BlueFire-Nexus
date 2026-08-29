@@ -488,6 +488,46 @@ fn package_alias_dispatch_preserves_logical_result_and_evidence_identity() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[cfg(windows)]
+#[test]
+fn latent_windows_version_opcode_executes_only_through_a_package_alias() {
+    let root = std::env::temp_dir().join(format!(
+        "bluefire-runner-windows-version-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let binding = alias_binding(
+        "acme.windows-version.v1",
+        "acme.windows-version-action.v1",
+        "endpoint.discovery.windows-version.v1",
+    );
+    let (profile, manifest) = alias_documents(&root, binding, json!({}));
+
+    let result = Runner::new().unwrap().execute(manifest, profile);
+
+    assert_eq!(result.status, TaskStatus::Success, "{result:#?}");
+    let object = result.output.as_object().expect("output must be an object");
+    assert_eq!(
+        object.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "build_number",
+            "major_version",
+            "minor_version",
+            "operating_system",
+        ])
+    );
+    assert_eq!(result.output["operating_system"], "windows");
+    assert!(result.output["major_version"].as_u64().is_some());
+    assert!(result.output["minor_version"].as_u64().is_some());
+    assert!(result.output["build_number"].as_u64().is_some());
+    assert!(result.receipt_ids.is_empty());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn package_alias_receipt_retains_the_logical_action_identity() {
     let root = std::env::temp_dir().join(format!(

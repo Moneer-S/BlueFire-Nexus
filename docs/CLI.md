@@ -376,6 +376,48 @@ bluefire --runs-dir .bluefire-runs compare BASELINE_RUN_ID CANDIDATE_RUN_ID
 
 Comparison retains path, outcome, evidence, detection, telemetry, controls, cleanup, AI, budget, duration, and replay-lineage deltas. Improvement/regression labels are descriptive signals, not causal proof. See [Replay and compare](REPLAY_COMPARE.md).
 
+## Reviewed source intake
+
+Import the shipped, reviewed MITRE ATT&CK T1082 metadata into a new namespace under the selected
+BlueFire product-state root:
+
+```bash
+bluefire --runs-dir .bluefire-runs research intake-t1082 \
+  --destination-id operator-review-20260829 \
+  --profile sandbox-execute.v1 \
+  --operator local-source-reviewer
+```
+
+`--destination-id` is a lowercase logical identifier, not a filesystem path. The command refuses an
+existing namespace, traversal, absolute paths, platform device names, and arbitrary source or
+transform requests. `--profile` must select an Execute profile whose authenticated runner reports
+the fixed reviewed system-discovery opcode ready; `--operator` supplies the printable local audit
+identity for trust, install, and activation.
+
+The JSON result includes a relative product-state reference, canonical envelope SHA-256 and byte
+count, record/output digests, the complete reviewed provenance envelope, and an exact
+size/SHA/required-notice binding for the packaged license bytes; it does not expose an absolute path.
+Missing or changed license bytes refuse the operation. The source contributes declarative metadata
+only. BlueFire separately signs the fixed independent package recipe with an in-memory-only local
+key, persists local trust and the package, verifies it against the selected runner, and activates its
+behavior and action in the durable catalog. No private key or upstream executable content is saved,
+and no network request occurs. A bounded private recovery stage retains only the public key and
+signed envelope until package installation completes, so an interrupted install can reuse the exact
+trusted signature without retaining private material.
+
+Each success atomically writes a canonical per-destination operation receipt and returns its
+path-free `operation_receipt` descriptor. The record binds the intake and artifact hashes, local
+operator and runner profile, signed package digests, activation outcome, resulting catalog
+generation/digest, and UTC completion time. A caught interrupted publication releases the
+destination; after a hard stop, the same destination securely resumes only if its existing state is
+the exact canonical artifact expected by the reviewed intake.
+
+If runner activation fails after package installation, rerun the same command and destination after
+restoring readiness; the released destination is recreated and the exact installed package is
+resumed. Retrying a completed destination replays its immutable receipt without another activation.
+A later intentional review therefore uses a new destination; it revalidates an already-active exact
+package without another install, trust event, or catalog generation.
+
 ## Managed runner lifecycle
 
 Lifecycle operations are explicit and local:
@@ -397,10 +439,11 @@ bluefire --config config/bluefire.example.yaml runner remove --confirm-runner-id
 ```bash
 bluefire plugins inventory
 bluefire research status
+bluefire --runs-dir .bluefire-runs research intake-t1082 --destination-id operator-review --profile sandbox-execute.v1 --operator local-source-reviewer
 bluefire ui --host 127.0.0.1 --port 8765
 ```
 
-`plugins inventory` reports the static loader boundary and does not read saved/active manifests; use `resources list plugin` or the local API/UI for managed plugin metadata. Research status lists metadata-only behaviors; it does not download or execute public research. The UI and API bind loopback only. `bluefire ui` prints its one-use capability URL only after a successful bind; open that exact URL, do not log or share it, and relaunch if the local browser session is absent or expired.
+`plugins inventory` reports the static loader boundary and does not read saved/active manifests; use `resources list plugin` or the local API/UI for managed plugin metadata. Research status lists metadata-only behaviors; it does not download or execute public research. The reviewed intake command uses only the already-vendored pinned T1082 asset; it performs no network access. The UI and API bind loopback only. `bluefire ui` prints its one-use capability URL only after a successful bind; open that exact URL, do not log or share it, and relaunch if the local browser session is absent or expired.
 
 ## JSON request-file rules
 

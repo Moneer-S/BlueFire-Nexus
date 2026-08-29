@@ -691,6 +691,7 @@ def test_runner_contract_versions_fail_closed_across_breaking_semantic_schemas()
     assert SUPPORTED_RUNNER_ACTION_VERSIONS == {
         "endpoint.discovery.processes.v1": "1.0.0",
         "endpoint.discovery.system.v1": "1.0.0",
+        "endpoint.discovery.windows-version.v1": "1.0.0",
         "sandbox.archive.tar.v1": "1.0.0",
         "sandbox.cleanup.v1": "1.1.0",
         "sandbox.collection.stage.v1": "2.0.0",

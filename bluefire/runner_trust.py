@@ -101,6 +101,7 @@ _LOCAL_TRANSITION_LOCKS: dict[str, threading.RLock] = {}
 _WINDOWS_GENERIC_READ = 0x80000000
 _WINDOWS_GENERIC_WRITE = 0x40000000
 _WINDOWS_DELETE = 0x00010000
+_WINDOWS_WRITE_DAC = 0x00040000
 _WINDOWS_FILE_SHARE_READ = 0x00000001
 _WINDOWS_FILE_SHARE_WRITE = 0x00000002
 _WINDOWS_OPEN_EXISTING = 3
@@ -1244,12 +1245,15 @@ def _windows_open_pinned(
     directory: bool,
     delete: bool,
     write: bool = False,
+    write_dac: bool = False,
+    share_write: bool = True,
 ) -> int:
     create_file, _, _, _ = _windows_kernel_functions()
     access = (
         _WINDOWS_GENERIC_READ
         | (_WINDOWS_GENERIC_WRITE if write else 0)
         | (_WINDOWS_DELETE if delete else 0)
+        | (_WINDOWS_WRITE_DAC if write_dac else 0)
     )
     flags = _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
     if directory:
@@ -1257,7 +1261,7 @@ def _windows_open_pinned(
     handle = create_file(
         str(path),
         access,
-        _WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE,
+        _WINDOWS_FILE_SHARE_READ | (_WINDOWS_FILE_SHARE_WRITE if share_write else 0),
         None,
         _WINDOWS_OPEN_EXISTING,
         flags,
@@ -1274,7 +1278,7 @@ def _windows_create_pinned(path: Path) -> int:
     create_file, _, _, _ = _windows_kernel_functions()
     handle = create_file(
         str(path),
-        _WINDOWS_GENERIC_READ | _WINDOWS_GENERIC_WRITE | _WINDOWS_DELETE,
+        _WINDOWS_GENERIC_READ | _WINDOWS_GENERIC_WRITE | _WINDOWS_DELETE | _WINDOWS_WRITE_DAC,
         _WINDOWS_FILE_SHARE_READ | _WINDOWS_FILE_SHARE_WRITE,
         None,
         _WINDOWS_CREATE_NEW,
@@ -1391,13 +1395,14 @@ def _pinned_regular_update(
                 directory=False,
                 delete=False,
                 write=True,
+                write_dac=True,
             )
             information = _validate_windows_regular_information(
                 _windows_file_information(handle),
                 maximum=maximum,
             )
             identity = _windows_information_identity(information)
-            _owner_private(path, directory=False)
+            _owner_private_native_handle(handle, directory=False)
             final = _validate_windows_regular_information(
                 _windows_file_information(handle),
                 maximum=maximum,
@@ -1505,6 +1510,7 @@ class _PinnedDirectory:
                     self.path,
                     directory=True,
                     delete=self.delete,
+                    write_dac=self.private,
                 )
                 information = _windows_file_information(self._handle)
                 attributes = int(information.dwFileAttributes)
@@ -1515,7 +1521,7 @@ class _PinnedDirectory:
                     raise RunnerTrustError("Enrollment directory is unavailable or unsafe.")
                 self._identity = _windows_information_identity(information)
                 if self.private:
-                    _owner_private(self.path, directory=True)
+                    _owner_private_native_handle(self._handle, directory=True)
                 if (
                     _windows_information_identity(_windows_file_information(self._handle))
                     != self.identity
@@ -1549,11 +1555,13 @@ class _PinnedDirectory:
                 raise RunnerTrustError("Enrollment directory is unavailable or unsafe.")
             self._identity = details.st_dev, details.st_ino
             if self.private:
-                _posix_fchmod(self._descriptor, 0o700)
-                details = os.fstat(self._descriptor)
                 getuid = getattr(os, "getuid", None)
                 if callable(getuid) and details.st_uid != getuid():
                     raise RunnerTrustError("Enrollment material is not owned by this user.")
+                _posix_fchmod(self._descriptor, 0o700)
+                details = os.fstat(self._descriptor)
+                if stat.S_IMODE(details.st_mode) != 0o700:
+                    raise RunnerTrustError("Enrollment permissions could not be restricted.")
             return self
         except RunnerTrustError:
             self.close()
@@ -1609,7 +1617,7 @@ class _PinnedDirectory:
                 try:
                     _write_descriptor_all(descriptor, payload)
                     os.fsync(descriptor)
-                    _owner_private(self.path / name, directory=False)
+                    _owner_private_handle(descriptor, directory=False)
                     windows_final = _windows_file_information(msvcrt.get_osfhandle(descriptor))
                     _validate_windows_regular_information(
                         windows_final,
@@ -1651,9 +1659,10 @@ class _PinnedDirectory:
                     maximum=_MAX_MATERIAL_BYTES,
                 )
                 if (
-                    posix_final.st_dev,
-                    posix_final.st_ino,
-                ) != identity or posix_final.st_size != len(payload):
+                    (posix_final.st_dev, posix_final.st_ino) != identity
+                    or posix_final.st_size != len(payload)
+                    or stat.S_IMODE(posix_final.st_mode) != 0o600
+                ):
                     raise RunnerTrustError("Enrollment material could not be written safely.")
                 return identity
             finally:
@@ -1663,35 +1672,87 @@ class _PinnedDirectory:
         except (MemoryError, OSError):
             raise RunnerTrustError("Enrollment material could not be written safely.") from None
 
-    def read(self, name: str, *, maximum: int) -> bytes:
+    def read_with_identity(
+        self,
+        name: str,
+        *,
+        maximum: int,
+        exclusive: bool = False,
+    ) -> tuple[bytes, tuple[int, int], tuple[int, int, int, int, int]]:
+        """Read one exact owner-bound file and return its handle-derived identity."""
+
         if not name or Path(name).name != name:
             raise RunnerTrustError("Enrollment material is unavailable or unsafe.")
         if os.name == "nt":
-            handle = _windows_open_pinned(self.path / name, directory=False, delete=False)
+            handle = _windows_open_pinned(
+                self.path / name,
+                directory=False,
+                delete=False,
+                write_dac=True,
+                share_write=not exclusive,
+            )
             try:
                 windows_initial = _validate_windows_regular_information(
                     _windows_file_information(handle), maximum=maximum
                 )
-                _owner_private(self.path / name, directory=False)
-                if _windows_information_identity(
-                    _windows_file_information(handle)
-                ) != _windows_information_identity(windows_initial):
+                identity = _windows_information_identity(windows_initial)
+                initial_write_time = (
+                    int(windows_initial.ftLastWriteTime.dwHighDateTime) << 32
+                ) | int(windows_initial.ftLastWriteTime.dwLowDateTime)
+                _owner_private_native_handle(handle, directory=False)
+                if _windows_information_identity(_windows_file_information(handle)) != identity:
                     raise RunnerTrustError("Enrollment material is unavailable or unsafe.")
                 import msvcrt
 
                 descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, "O_BINARY", 0))
                 handle = -1
                 try:
+                    stat_initial = os.fstat(descriptor)
                     payload = _read_descriptor_bounded(descriptor, maximum)
-                    final = os.fstat(descriptor)
+                    stat_final = os.fstat(descriptor)
+                    windows_final = _validate_windows_regular_information(
+                        _windows_file_information(msvcrt.get_osfhandle(descriptor)),
+                        maximum=maximum,
+                    )
+                    final_write_time = (
+                        int(windows_final.ftLastWriteTime.dwHighDateTime) << 32
+                    ) | int(windows_final.ftLastWriteTime.dwLowDateTime)
+                    final_size = (int(windows_final.nFileSizeHigh) << 32) | int(
+                        windows_final.nFileSizeLow
+                    )
                     if (
-                        not stat.S_ISREG(final.st_mode)
-                        or final.st_nlink != 1
-                        or final.st_size > maximum
-                        or final.st_size != len(payload)
+                        _windows_information_identity(windows_final) != identity
+                        or final_write_time != initial_write_time
+                        or final_size != len(payload)
+                        or not stat.S_ISREG(stat_final.st_mode)
+                        or stat_final.st_nlink != 1
+                        or (
+                            stat_initial.st_dev,
+                            stat_initial.st_ino,
+                            stat_initial.st_mode,
+                            stat_initial.st_size,
+                            stat_initial.st_mtime_ns,
+                        )
+                        != (
+                            stat_final.st_dev,
+                            stat_final.st_ino,
+                            stat_final.st_mode,
+                            stat_final.st_size,
+                            stat_final.st_mtime_ns,
+                        )
                     ):
                         raise RunnerTrustError("Enrollment material is unavailable or unsafe.")
-                    return payload
+                    return (
+                        payload,
+                        identity,
+                        (
+                            stat_final.st_dev,
+                            stat_final.st_ino,
+                            stat_final.st_mode,
+                            stat_final.st_size,
+                            stat_final.st_mtime_ns,
+                        ),
+                    )
                 finally:
                     os.close(descriptor)
             finally:
@@ -1708,18 +1769,40 @@ class _PinnedDirectory:
                 _posix_fchmod(descriptor, 0o600)
                 payload = _read_descriptor_bounded(descriptor, maximum)
                 posix_final = _validate_posix_regular_descriptor(descriptor, maximum=maximum)
-                if (posix_initial.st_dev, posix_initial.st_ino) != (
-                    posix_final.st_dev,
-                    posix_final.st_ino,
-                ) or posix_final.st_size != len(payload):
+                if (
+                    (posix_initial.st_dev, posix_initial.st_ino)
+                    != (
+                        posix_final.st_dev,
+                        posix_final.st_ino,
+                    )
+                    or posix_final.st_size != len(payload)
+                    or (
+                        posix_final.st_mtime_ns != posix_initial.st_mtime_ns
+                        or stat.S_IMODE(posix_final.st_mode) != 0o600
+                    )
+                ):
                     raise RunnerTrustError("Enrollment material is unavailable or unsafe.")
-                return payload
+                return (
+                    payload,
+                    (posix_final.st_dev, posix_final.st_ino),
+                    (
+                        posix_final.st_dev,
+                        posix_final.st_ino,
+                        posix_final.st_mode,
+                        posix_final.st_size,
+                        posix_final.st_mtime_ns,
+                    ),
+                )
             finally:
                 os.close(descriptor)
         except RunnerTrustError:
             raise
         except OSError:
             raise RunnerTrustError("Enrollment material is unavailable or unsafe.") from None
+
+    def read(self, name: str, *, maximum: int) -> bytes:
+        payload, _identity, _snapshot = self.read_with_identity(name, maximum=maximum)
+        return payload
 
     def validate(self, name: str, *, maximum: int) -> None:
         self.read(name, maximum=maximum)
@@ -1734,7 +1817,12 @@ class _PinnedDirectory:
         if not name or Path(name).name != name:
             raise RunnerTrustError("Enrollment material is unavailable or unsafe.")
         if os.name == "nt":
-            handle = _windows_open_pinned(self.path / name, directory=False, delete=True)
+            handle = _windows_open_pinned(
+                self.path / name,
+                directory=False,
+                delete=True,
+                write_dac=True,
+            )
             try:
                 windows_initial = _validate_windows_regular_information(
                     _windows_file_information(handle), maximum=maximum
@@ -1744,7 +1832,7 @@ class _PinnedDirectory:
                     and _windows_information_identity(windows_initial) != expected_identity
                 ):
                     raise RunnerTrustError("Enrollment material is unavailable or unsafe.")
-                _owner_private(self.path / name, directory=False)
+                _owner_private_native_handle(handle, directory=False)
                 windows_final = _validate_windows_regular_information(
                     _windows_file_information(handle), maximum=maximum
                 )
@@ -2282,6 +2370,21 @@ def _owner_private_handle(descriptor: int, *, directory: bool) -> None:
             descriptor,
             directory=directory,
         )
+    except (OSError, WindowsOwnerAclError):
+        raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
+
+
+def _owner_private_native_handle(handle: int, *, directory: bool) -> None:
+    """Apply and verify a private Windows DACL on an already pinned native handle."""
+
+    if os.name != "nt":
+        raise RunnerTrustError("Windows enrollment permissions are unavailable.")
+    try:
+        from .windows_owner_acl import WindowsOwnerAclError, apply_owner_private_acl_handle
+    except ImportError:
+        raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
+    try:
+        apply_owner_private_acl_handle(handle, directory=directory)
     except (OSError, WindowsOwnerAclError):
         raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
 

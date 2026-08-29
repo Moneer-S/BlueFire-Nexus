@@ -136,6 +136,7 @@ _ALLOWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, frozenset[str] | type[int]
         {
             "endpoint.discovery.processes.v1": MappingProxyType({}),
             "endpoint.discovery.system.v1": MappingProxyType({}),
+            "endpoint.discovery.windows-version.v1": MappingProxyType({}),
             "sandbox.execution.native-canary.v1": MappingProxyType({}),
             "sandbox.identity-material.inspect.v1": MappingProxyType({}),
             "sandbox.identity-material.seed.v1": MappingProxyType({}),

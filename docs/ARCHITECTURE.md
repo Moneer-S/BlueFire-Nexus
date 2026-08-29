@@ -197,7 +197,7 @@ RunStore creates internally named, contained run directories. It stores scenario
 
 Hashes are tamper indicators, not signatures.
 
-ProductStore is a separate migrated SQLite store under the run root by default. At startup the service migrates it, marks interrupted background jobs, recovers unfinalized run bundles, idempotently seeds eight scenarios, eighteen actions, profiles, providers, six collector records, research sources, and three detection backends, backfills the run index, and exposes a safe storage/recovery summary in catalog metadata. Settings and resources are JSON documents that reject secret-shaped plaintext values; environment references remain declarative.
+ProductStore is a separate migrated SQLite store under the run root by default. At startup the service migrates it, marks interrupted background jobs, recovers unfinalized run bundles, idempotently seeds eight scenarios, nineteen actions, profiles, providers, six collector records, research sources, and three detection backends, backfills the run index, and exposes a safe storage/recovery summary in catalog metadata. Settings and resources are JSON documents that reject secret-shaped plaintext values; environment references remain declarative.
 
 Replay reads a captured source scenario snapshot without writing it. It can prepare an exact replay, resume after prior artifacts, substitute a contract-compatible behavior, change typed parameters, select a registered action implementation, or record declared AI, profile, or defense changes. Each replay receives lineage with a source scenario digest and the exact declared overrides.
 
@@ -225,8 +225,8 @@ The wheel does not include repository tests. Compatible platform-specific wheels
 
 ## Current limitations
 
-- The maintained action catalog is a bounded eighteen-action endpoint/sandbox pack, not a general execution agent.
-- The four `research.*` entries remain metadata-only. A separate persistence-detection behavior has one fixed non-executable marker action under a dedicated restricted profile; no host persistence mechanism is shipped.
+- The maintained action catalog is a bounded nineteen-action endpoint/sandbox pack, not a general execution agent.
+- Research entries without an approved import or adaptation remain metadata-only. The reviewed T1082 intake vendors only pinned MITRE metadata and license bytes, then activates a separately implemented fixed Windows discovery action. A separate persistence-detection behavior has one fixed non-executable marker action under a dedicated restricted profile; no host persistence mechanism is shipped.
 - No configured remote telemetry collector, SIEM connector, cloud action, identity action, or general network target is part of the baseline.
 - Sigma/YARA validation requires optional pinned packages; Sigma/SQLite evaluation is local and bounded rather than a production SIEM connector, and production SPL validation is not included.
 - Runner transport is same-user loopback only. Local enrollment, revocation, TLS 1.3 mutual authentication, durable task replay protection, cancellation, and recovery are implemented; cross-host transport/enrollment and asymmetric signed task/profile/result artifacts are not.

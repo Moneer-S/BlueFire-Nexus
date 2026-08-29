@@ -30,6 +30,7 @@ Do not expose this API through a reverse proxy, tunnel, port forward, or contain
 | GET | `/api/v1/scenario-versions/{scenario_id}/versions/{version}` | Exact saved scenario version |
 | GET | `/api/v1/resources/{kind}` | List one allowlisted resource kind |
 | GET, POST | `/api/v1/resources/{kind}/{resource_id}` | Get or upsert one resource |
+| POST | `/api/v1/research-intakes/mitre-attack-t1082-v19-2` | Import the shipped reviewed T1082 metadata into a new product-state namespace (`201`) |
 | POST | `/api/v1/resources/runner-profiles/{resource_id}/activate` | Validate and activate a stored runner profile |
 | POST | `/api/v1/resources/runner-profiles/{resource_id}/deactivate` | Persistently withdraw a runner profile |
 | POST | `/api/v1/resources/runner-profiles/{resource_id}/probe` | Bounded, sanitized runner inventory/health probe |
@@ -114,6 +115,61 @@ BlueFire derives identity, graph bindings, provenance, and limitations, then
 validates the normalized document against the registry. The draft is never
 saved, run, approved, or otherwise authoritative; use the ordinary scenario
 version and run workflows as separate explicit operations.
+
+### Reviewed T1082 source intake
+
+`POST /api/v1/research-intakes/mitre-attack-t1082-v19-2` accepts one exact local activation
+request:
+
+```json
+{
+  "destination_id": "operator-review-20260829",
+  "runner_profile_id": "sandbox-execute.v1",
+  "operator_id": "local-source-reviewer"
+}
+```
+
+The ID must be a stable lowercase management identifier and must name a new namespace. BlueFire
+maps it to `source-intakes/{destination_id}/` beneath the configured run-state root; the API does
+not accept or return an absolute filesystem path. Existing namespaces, traversal, platform device
+names, query parameters, alternate source paths, and caller-supplied transform requests are
+refused. `runner_profile_id` must select an Execute profile that enables the fixed reviewed
+`endpoint.discovery.windows-version.v1` opcode, and its authenticated runner inventory must report that
+opcode ready. `operator_id` is written to the local trust, installation, and activation audit trail.
+
+The operation reads only the shipped, digest-pinned ATT&CK v19.2 T1082 JSON asset and invokes the
+fixed reviewed metadata transformer. A `201` result includes the complete validated intake
+envelope, its record and projected-output digests, and an artifact object containing a product-state
+reference, byte count, media type, and SHA-256 of the canonical envelope. A separate
+`license_review` object binds the exact packaged license ID, URL, byte count, SHA-256, required
+notice, and successful byte-verification state. Missing, linked, resized, changed, or digest-mismatched
+license bytes refuse the intake. The upstream source contributes no executable material. Instead,
+BlueFire builds its fixed, independently implemented action-package recipe, creates an Ed25519 key
+only in process memory, records truthful local publisher trust, discards the private key without
+persisting or returning it, durably installs the signed package, and activates it only after the
+ordinary exact runner and catalog checks pass. Before trust publication, only the public key and
+signed envelope are placed in a bounded private recovery stage; this lets a process or installation
+failure reuse the exact signer without retaining private material. No network request occurs.
+
+`package_activation` reports the immutable package identity, whether this call installed or merely
+resumed it, the runner verification digests, and the exact catalog generation/digest delta. A fresh
+success adds `research.attack.system-information-discovery.v1` and
+`research.attack.system-information-discovery-action.v1` to the live and restart-durable catalog.
+If activation fails after installation, the caller's destination reservation is released and an
+exact retry may resume the already verified installed package. If the package is already active, a
+new destination performs a fresh runner revalidation without creating another package, trust event,
+or catalog generation. Retrying a successfully published destination returns its exact immutable
+receipt without another activation; use a new destination ID for a separate review.
+
+Every successful destination also receives its own canonical
+`intake.mitre-t1082.v1.operation-receipt.json`. The returned `operation_receipt` descriptor contains
+only a relative state reference, media type, SHA-256, byte count, and the exact receipt record. That
+record binds the destination/operator/profile, intake record and artifact digests, package identity
+and digests, activation operation, resulting catalog generation/digest, and UTC completion time.
+Receipt publication is exclusive and atomic. A caught failed publication releases the new
+destination; a hard interruption resumes only an exact artifact-only destination under the durable
+catalog lease. Revalidating an already-active package still produces a distinct receipt for the new
+destination without fabricating another activation event.
 
 ### Validate
 

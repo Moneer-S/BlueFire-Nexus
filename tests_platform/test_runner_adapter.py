@@ -14,6 +14,7 @@ ACTION_IDS = {
     "sandbox.discovery.list.v1",
     "sandbox.discovery.metadata.v1",
     "endpoint.discovery.system.v1",
+    "endpoint.discovery.windows-version.v1",
     "endpoint.discovery.processes.v1",
     "sandbox.discovery.recursive.v1",
     "sandbox.execution.native-canary.v1",
@@ -122,6 +123,14 @@ def _step(action_id: str, parameters: Mapping[str, Any] | None = None) -> PlanSt
             (),
             AdaptedAction(params={}, filesystem_scope=()),
             id="system-discovery",
+        ),
+        pytest.param(
+            "endpoint.discovery.windows-version.v1",
+            {},
+            {},
+            (),
+            AdaptedAction(params={}, filesystem_scope=()),
+            id="windows-version-discovery",
         ),
         pytest.param(
             "endpoint.discovery.processes.v1",
@@ -374,6 +383,78 @@ def test_restricted_marker_refuses_unreviewed_labels() -> None:
     with pytest.raises(RunnerAdapterError, match="label is not reviewed"):
         RunnerActionAdapter().adapt(
             _step("sandbox.restricted.persistence-marker.v1", {"label": "custom-path"}),
+            bound_inputs={},
+            receipt_ids=(),
+        )
+
+
+def test_windows_version_output_is_distinct_exact_and_typed() -> None:
+    output = {
+        "operating_system": "windows",
+        "major_version": 10,
+        "minor_version": 0,
+        "build_number": 26100,
+    }
+
+    assert RunnerActionAdapter().logical_outputs(
+        _step("endpoint.discovery.windows-version.v1"),
+        bound_inputs={},
+        runner_output=output,
+        receipt_ids=(),
+    ) == {
+        "windows_version": {
+            "type": "artifact.endpoint.windows-version.v1",
+            "details": output,
+        }
+    }
+
+
+@pytest.mark.parametrize(
+    "runner_output",
+    [
+        {
+            "operating_system": "windows",
+            "major_version": True,
+            "minor_version": 0,
+            "build_number": 26100,
+        },
+        {
+            "operating_system": "windows",
+            "major_version": 10,
+            "minor_version": False,
+            "build_number": 26100,
+        },
+        {
+            "operating_system": "windows",
+            "major_version": 10,
+            "minor_version": 0,
+            "build_number": True,
+        },
+        {
+            "operating_system": "windows",
+            "major_version": 10,
+            "minor_version": 0,
+            "build_number": 26100,
+            "architecture": "x86_64",
+        },
+    ],
+)
+def test_windows_version_output_rejects_booleans_and_extra_fields(
+    runner_output: Mapping[str, Any],
+) -> None:
+    with pytest.raises(RunnerAdapterError):
+        RunnerActionAdapter().logical_outputs(
+            _step("endpoint.discovery.windows-version.v1"),
+            bound_inputs={},
+            runner_output=runner_output,
+            receipt_ids=(),
+        )
+
+
+def test_windows_version_action_rejects_all_logical_parameters() -> None:
+    with pytest.raises(RunnerAdapterError, match="contains unreviewed parameters"):
+        RunnerActionAdapter().adapt(
+            _step("endpoint.discovery.windows-version.v1", {"command": "systeminfo"}),
             bound_inputs={},
             receipt_ids=(),
         )

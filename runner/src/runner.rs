@@ -289,6 +289,7 @@ fn reviewed_program_constants(opcode: &str) -> Option<BTreeMap<String, Value>> {
         )]),
         "endpoint.discovery.processes.v1"
         | "endpoint.discovery.system.v1"
+        | "endpoint.discovery.windows-version.v1"
         | "sandbox.cleanup.v1"
         | "sandbox.collection.stage.v1"
         | "sandbox.discovery.list.v1"

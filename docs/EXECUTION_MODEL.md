@@ -122,13 +122,14 @@ Transport failure is not action success. Invalid JSON, output overflow, timeout,
 
 ## Rust action boundary
 
-The current Rust registry contains eighteen IDs:
+The current Rust registry contains nineteen IDs:
 
 - sandbox.fixture.create.v1
 - sandbox.fixture.transform.v1
 - sandbox.discovery.list.v1
 - sandbox.discovery.metadata.v1
 - endpoint.discovery.system.v1
+- endpoint.discovery.windows-version.v1
 - endpoint.discovery.processes.v1
 - sandbox.discovery.recursive.v1
 - sandbox.archive.tar.v1

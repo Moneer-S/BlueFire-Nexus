@@ -57,7 +57,7 @@ AI does not create a third mode. Enabling `assist` or `auto` cannot widen target
 
 - A strict Python control plane for catalog, scenario, planning, policy, simulation, execution dispatch, evidence, detections, replay, comparison, and local run bundles.
 - A React/TypeScript workspace with Overview, Scenarios, Builder, Runs, Compare, Behaviors, Runner Profiles, Runners, Actions, Detection Lab, Research Sources, AI Planner, Settings, and Help areas.
-- Eighteen compiled Rust actions with versioned inventory descriptors, strict parameter schemas, resource bounds, structured results, and cleanup receipts.
+- Nineteen compiled Rust actions with versioned inventory descriptors, strict parameter schemas, resource bounds, structured results, and cleanup receipts.
 - Eight sanitized scenario graphs, including blocked-path fallback, platform discovery, archive/staging, detection regression, AI-adaptive, restricted-tier canary, representative operator-loop, and deep endpoint-lab examples.
 - A deterministic offline AI provider and an OpenAI-compatible Responses provider using strict structured output, timeouts, retries, token limits, redaction, and deterministic fallback.
 - A bounded filesystem observer and JSONL fixture-log collector, with Execute binding the ready filesystem collector into preflight/approval for declared sandbox artifacts, plus honest readiness descriptors for optional auditd, Sysmon/Event Log, packet-capture, and SIEM adapters.
@@ -74,6 +74,7 @@ AI does not create a third mode. Enabling `assist` or `auto` cannot widen target
 | `sandbox.discovery.list.v1` | safe | Return one metadata record for the exact bound fixture without enumerating siblings or reading contents |
 | `sandbox.discovery.metadata.v1` | safe | Return one metadata record, including read-only state, for the exact bound fixture without reading contents |
 | `endpoint.discovery.system.v1` | safe | Report OS and architecture facts from compiled APIs |
+| `endpoint.discovery.windows-version.v1` | safe | Report the Windows major, minor, and build version through the fixed compiled `RtlGetVersion` boundary; it remains latent until a reviewed behavior package binds it |
 | `endpoint.discovery.processes.v1` | safe | Return a bounded PID/name inventory through a native or fixed adapter |
 | `sandbox.discovery.recursive.v1` | safe | Traverse a runner-owned subtree without following links |
 | `sandbox.archive.tar.v1` | controlled | Build a deterministic uncompressed ustar archive from approved files |
@@ -405,7 +406,28 @@ See [Evidence model](docs/EVIDENCE_MODEL.md) and [Detection Lab](docs/DETECTION_
 
 ## Research provenance
 
-The built-in registry records project, authority, pin-bearing HTTPS reference, version/pin/exact ref, retrieval and verification dates, license, file-level review, trademark considerations, relationship, use classification (`reference_only`, `metadata_import`, `clean_reimplementation`, `external_adapter`, `compatible_code_adaptation`, or `incompatible_or_restricted`), intended use, imported/adapted paths, attribution, security review, transformation history, update status, and cache policy. The registry validates that the URL contains the declared non-moving pin, but it does not fetch remote bytes or prove that a remote tag or URL target cannot move. It currently references MITRE ATT&CK Enterprise data 19.2 at commit `6cda5ad8462c79e14fbb872f4e09059b18e0cfc4`, Sigma specification 2.1.0, pySigma 1.5.0, the pySigma SQLite backend 1.2.2 at commit `cfc0a2dd75470f73e2e375c3e58aecc21a33fbc6`, yara-python 4.5.4, and an Atomic Red Team comparative snapshot at commit `6132b92779873cb0d05bef07ba0a480d47eb1cc8`. External datasets, scripts, and corpora are not vendored or executed during source intake. See [Source intake](docs/SOURCE_INTAKE.md) and [Third-party notices](THIRD_PARTY_NOTICES.md).
+The built-in registry records project, authority, pin-bearing HTTPS reference, version/pin/exact ref, retrieval and verification dates, license, file-level review, trademark considerations, relationship, use classification (`reference_only`, `metadata_import`, `clean_reimplementation`, `external_adapter`, `compatible_code_adaptation`, or `incompatible_or_restricted`), intended use, imported/adapted paths, attribution, security review, transformation history, update status, and cache policy. The registry validates that the URL contains the declared non-moving pin, but it does not fetch remote bytes or prove that a remote tag or URL target cannot move.
+
+One reviewed declarative source is vendored: the exact MITRE ATT&CK® Enterprise v19.2 T1082
+STIX record at `bluefire/data/mitre_attack_t1082_v19_2.json`, pinned to commit
+`8543c5b05bd9bbcace9fc37f30bba96b675b6f33`, together with its
+complete pinned `LicenseRef-MITRE-ATTACK-2026` license. The required notice is “© 2026 The
+MITRE Corporation. This work is reproduced and distributed with the permission of The MITRE
+Corporation.” Deterministic intake validates the source digest, discards descriptions,
+citations, procedures, command examples, and unrelated references, and projects only neutral
+metadata. Generated envelopes and signed packages remain content-addressed acceptance/runtime
+state rather than checked-in artifacts. No upstream code or payload is executed, and the mapped
+`endpoint.discovery.windows-version.v1` action is an independently implemented, Windows-only
+compiled BlueFire operation that returns exact major, minor, and build fields through the fixed
+`RtlGetVersion` API. It has no built-in behavior and becomes operator-usable only through the
+reviewed intake package; no MITRE endorsement is implied.
+
+Other registry entries reference Sigma specification 2.1.0, pySigma 1.5.0, the pySigma SQLite
+backend 1.2.2 at commit `cfc0a2dd75470f73e2e375c3e58aecc21a33fbc6`,
+yara-python 4.5.4, and an Atomic Red Team comparative snapshot at commit
+`6132b92779873cb0d05bef07ba0a480d47eb1cc8`. Those external datasets, scripts, and corpora
+are not vendored or executed during source intake. See [Source intake](docs/SOURCE_INTAKE.md)
+and [Third-party notices](THIRD_PARTY_NOTICES.md).
 
 ## Supported platforms
 

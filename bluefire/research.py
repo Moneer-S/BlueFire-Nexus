@@ -1,4 +1,4 @@
-"""Pinned public-research provenance without vendoring external corpora."""
+"""Pinned public-research provenance and reviewed declarative intake metadata."""
 
 from __future__ import annotations
 
@@ -40,8 +40,59 @@ class SourceUseClassification(str, Enum):
     INCOMPATIBLE_OR_RESTRICTED = "incompatible_or_restricted"
 
 
+_CLASSIFICATION_HANDLING = {
+    SourceUseClassification.REFERENCE_ONLY: (
+        frozenset({ResearchRelationship.INSPIRED, ResearchRelationship.COMPARATIVE}),
+        frozenset({LicenseReview.REVIEWED, LicenseReview.CONDITIONAL}),
+        frozenset({"external_only", "metadata_only"}),
+        False,
+        False,
+    ),
+    SourceUseClassification.METADATA_IMPORT: (
+        frozenset({ResearchRelationship.IMPORTED}),
+        frozenset({LicenseReview.REVIEWED}),
+        frozenset({"vendored_declarative"}),
+        False,
+        True,
+    ),
+    SourceUseClassification.CLEAN_REIMPLEMENTATION: (
+        frozenset({ResearchRelationship.INSPIRED, ResearchRelationship.COMPARATIVE}),
+        frozenset({LicenseReview.REVIEWED, LicenseReview.CONDITIONAL}),
+        frozenset({"external_only", "metadata_only"}),
+        False,
+        False,
+    ),
+    SourceUseClassification.EXTERNAL_ADAPTER: (
+        frozenset({ResearchRelationship.IMPORTED}),
+        frozenset({LicenseReview.REVIEWED, LicenseReview.CONDITIONAL}),
+        frozenset({"external_only"}),
+        True,
+        False,
+    ),
+    SourceUseClassification.COMPATIBLE_CODE_ADAPTATION: (
+        frozenset({ResearchRelationship.ADAPTED}),
+        frozenset({LicenseReview.REVIEWED}),
+        frozenset({"vendored_code"}),
+        True,
+        True,
+    ),
+    SourceUseClassification.INCOMPATIBLE_OR_RESTRICTED: (
+        frozenset({ResearchRelationship.INSPIRED, ResearchRelationship.COMPARATIVE}),
+        frozenset({LicenseReview.PROHIBITED}),
+        frozenset({"external_only", "metadata_only"}),
+        False,
+        False,
+    ),
+}
+
+
 _SOURCE_TYPES = {"dataset", "documentation", "software", "rule_corpus"}
-_CACHE_POLICIES = {"external_only", "metadata_only"}
+_CACHE_POLICIES = {
+    "external_only",
+    "metadata_only",
+    "vendored_code",
+    "vendored_declarative",
+}
 _USES = {
     "backend_conversion",
     "behavior_mapping",
@@ -204,7 +255,7 @@ class ResearchSource:
             use_classification = SourceUseClassification(data["use_classification"])
         except (TypeError, ValueError) as exc:
             raise ResearchSourceError(f"{context}.use_classification is unsupported") from exc
-        imported_paths = _string_tuple(data["imported_paths"], f"{context}.imported_paths")
+        imported_paths = _repository_path_tuple(data["imported_paths"], f"{context}.imported_paths")
         if (
             use_classification
             in {
@@ -225,6 +276,14 @@ class ResearchSource:
                 raise ResearchSourceError(
                     f"{context}.license_review must be reviewed before code adaptation"
                 )
+            if (
+                relationship is not ResearchRelationship.ADAPTED
+                or cache_policy != "vendored_code"
+                or not executable_content
+            ):
+                raise ResearchSourceError(
+                    f"{context}.compatible_code_adaptation requires reviewed vendored adapted code"
+                )
         if use_classification is SourceUseClassification.INCOMPATIBLE_OR_RESTRICTED:
             if license_review is not LicenseReview.PROHIBITED:
                 raise ResearchSourceError(
@@ -235,6 +294,34 @@ class ResearchSource:
                 raise ResearchSourceError(
                     f"{context}.external_adapter sources must remain external executable content"
                 )
+        if cache_policy == "vendored_declarative":
+            if (
+                use_classification is not SourceUseClassification.METADATA_IMPORT
+                or relationship is not ResearchRelationship.IMPORTED
+                or license_review is not LicenseReview.REVIEWED
+                or executable_content
+                or not imported_paths
+            ):
+                raise ResearchSourceError(
+                    f"{context}.vendored_declarative requires reviewed imported metadata paths"
+                )
+        (
+            allowed_relationships,
+            allowed_license_reviews,
+            allowed_cache_policies,
+            expected_executable_content,
+            requires_imported_paths,
+        ) = _CLASSIFICATION_HANDLING[use_classification]
+        if (
+            relationship not in allowed_relationships
+            or license_review not in allowed_license_reviews
+            or cache_policy not in allowed_cache_policies
+            or executable_content is not expected_executable_content
+            or bool(imported_paths) is not requires_imported_paths
+        ):
+            raise ResearchSourceError(
+                f"{context}.{use_classification.value} has inconsistent content handling"
+            )
         update_status = _string(data["update_status"], f"{context}.update_status")
         if update_status not in _UPDATE_STATUSES:
             raise ResearchSourceError(f"{context}.update_status is unsupported")
@@ -374,6 +461,24 @@ def _string_tuple(value: Any, context: str) -> tuple[str, ...]:
     items = tuple(_string(item, context) for item in value)
     if len(items) != len(set(items)):
         raise ResearchSourceError(f"{context} must not contain duplicates")
+    return items
+
+
+def _repository_path_tuple(value: Any, context: str) -> tuple[str, ...]:
+    items = _string_tuple(value, context)
+    for item in items:
+        parts = item.split("/")
+        if (
+            len(item) > 512
+            or item.startswith("/")
+            or "\\" in item
+            or ":" in item
+            or any(part in {"", ".", ".."} for part in parts)
+            or any(ord(character) < 32 or ord(character) == 127 for character in item)
+        ):
+            raise ResearchSourceError(
+                f"{context} must contain normalized repository-relative POSIX paths"
+            )
     return items
 
 

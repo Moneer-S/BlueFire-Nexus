@@ -414,14 +414,32 @@ def _apply_owner_private_acl(
     owner_sid: str,
     directory: bool,
 ) -> None:
+    handle = _handle_from_descriptor(descriptor)
+    _apply_owner_private_acl_to_handle(
+        handle,
+        access_sid=access_sid,
+        owner_sid=owner_sid,
+        directory=directory,
+    )
+
+
+def _apply_owner_private_acl_to_handle(
+    handle: int,
+    *,
+    access_sid: str,
+    owner_sid: str,
+    directory: bool,
+) -> None:
     if (
         os.name != "nt"
+        or not isinstance(handle, int)
+        or isinstance(handle, bool)
+        or handle < 0
         or _SID.fullmatch(access_sid) is None
         or _SID.fullmatch(owner_sid) is None
         or not isinstance(directory, bool)
     ):
         raise WindowsOwnerAclError("Windows owner-private ACL input is invalid")
-    handle = _handle_from_descriptor(descriptor)
     input_descriptor = ctypes.c_void_p()
     access_sid_pointer = ctypes.c_void_p()
     owner_sid_pointer = ctypes.c_void_p()
@@ -494,9 +512,30 @@ def apply_owner_private_acl(descriptor: int, *, directory: bool) -> None:
     )
 
 
+def apply_owner_private_acl_handle(handle: int, *, directory: bool) -> None:
+    """Apply and verify token-private access through an already pinned native handle."""
+
+    if (
+        os.name != "nt"
+        or not isinstance(handle, int)
+        or isinstance(handle, bool)
+        or handle < 0
+        or not isinstance(directory, bool)
+    ):
+        raise WindowsOwnerAclError("Windows owner-private ACL input is invalid")
+    access_sid, owner_sid = _current_token_sids()
+    _apply_owner_private_acl_to_handle(
+        handle,
+        access_sid=access_sid,
+        owner_sid=owner_sid,
+        directory=directory,
+    )
+
+
 __all__ = [
     "WindowsOwnerAclError",
     "apply_owner_private_acl",
+    "apply_owner_private_acl_handle",
     "current_owner_sid",
     "current_user_sid",
 ]

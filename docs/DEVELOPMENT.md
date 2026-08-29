@@ -211,7 +211,7 @@ Do not push, merge, rewrite history, publish packages/releases, or change remote
 
 - Python, Rust, frontend, browser, security, package, installed-wheel, API, CLI, and opt-in disposable E2E checks pass.
 - Version is consistent across Python, Rust, and frontend metadata.
-- Eight packaged/check-out scenarios and eighteen action descriptors remain in parity.
+- Eight packaged/check-out scenarios and nineteen action descriptors remain in parity.
 - Research pins/licenses and optional dependency versions are current and reviewed.
 - Generated screenshots use real UI with sanitized seeded data.
 - README/docs match shipped behavior and limitations.

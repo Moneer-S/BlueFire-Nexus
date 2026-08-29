@@ -75,7 +75,8 @@ _QUOTED_FIELDS = ", ".join(f'"{field}"' for field in SQLITE_LOG_FIELDS)
 _CREATE_LOGS_SQL = "CREATE TABLE logs (" + ", ".join(
     '"fixture_id" TEXT NOT NULL PRIMARY KEY' if field == "fixture_id" else f'"{field}"' for field in SQLITE_LOG_FIELDS
 ) + ") WITHOUT ROWID"
-_INSERT_LOG_SQL = f"INSERT INTO logs ({_QUOTED_FIELDS}) VALUES (" + ", ".join("?" for _ in SQLITE_LOG_FIELDS) + ")"
+# Identifiers are fixed module constants; every record value uses a placeholder.
+_INSERT_LOG_SQL = f"INSERT INTO logs ({_QUOTED_FIELDS}) VALUES (" + ", ".join("?" for _ in SQLITE_LOG_FIELDS) + ")"  # nosec B608
 _SQL_KEYWORDS = frozenset("""all and as asc between blob by case cast collate desc distinct else end escape false from glob group
     having in integer is like limit not null numeric offset or order real select text then true when where""".split())
 _FORBIDDEN_SQL = frozenset("""alter analyze attach begin commit create delete detach drop except insert intersect into join
@@ -583,7 +584,10 @@ class ExternalDetectionValidator:
         details: dict[str, Any] = {}
         try:
             inspection = inspect_sqlite_query(source)
-            details = {"converted_query": inspection["query"], **{key: value for key, value in inspection.items() if key != "query"}}  # fmt: skip
+            details = {
+                "converted_query": inspection["query"],
+                **{key: value for key, value in inspection.items() if key != "query"},
+            }
             if inspection["unsupported_fields"]:
                 raise DetectionBackendError(
                     "SQLite query references unsupported fields: "
@@ -661,9 +665,16 @@ class ExternalDetectionValidator:
         observed_fields = tuple(result["mapped_fixture_fields"])
         predicted_fields = tuple(candidate.validation.get("mapped_fields", ()))
         drift = self.field_drift(predicted_fields, observed_fields)
-        validation = self._execution_validation(candidate, result, evaluated_evidence_ids=list(result["fixture_ids"]), matched_evidence_ids=list(matched_ids))  # fmt: skip
+        validation = self._execution_validation(
+            candidate,
+            result,
+            evaluated_evidence_ids=list(result["fixture_ids"]),
+            matched_evidence_ids=list(matched_ids),
+        )
         if not matched_ids:
-            return replace(candidate, observed_fields=observed_fields, field_drift=drift, validation=validation)  # fmt: skip
+            return replace(
+                candidate, observed_fields=observed_fields, field_drift=drift, validation=validation
+            )
         return candidate.transition(
             DetectionState.OBSERVED_EXERCISED,
             observed_evidence_ids=matched_ids,
@@ -806,7 +817,9 @@ class ExternalDetectionValidator:
         if candidate.state is not DetectionState.PARSED or not candidate.rule_source:
             raise DetectionError("YARA candidate must be compiled before fixture exercise")
         fixture_ids, matched_ids = self._yara_matches(candidate, fixtures)
-        validation = self._yara_execution_validation(candidate, fixture_ids, matched_ids, "evaluated_fixture_ids", "matched_fixture_ids")  # fmt: skip
+        validation = self._yara_execution_validation(
+            candidate, fixture_ids, matched_ids, "evaluated_fixture_ids", "matched_fixture_ids"
+        )
         if not matched_ids:
             return candidate.transition(
                 DetectionState.REJECTED,
@@ -870,7 +883,11 @@ class ExternalDetectionValidator:
     def _yara_matches(
         self, candidate: Any, fixtures: Sequence[Mapping[str, Any]]
     ) -> tuple[list[str], list[str]]:
-        if isinstance(fixtures, (str, bytes)) or not isinstance(fixtures, Sequence) or len(fixtures) > _MAX_FIXTURES:  # fmt: skip
+        if (
+            isinstance(fixtures, (str, bytes))
+            or not isinstance(fixtures, Sequence)
+            or len(fixtures) > _MAX_FIXTURES
+        ):
             raise DetectionError("YARA fixture inventory is invalid or exceeds its limit")
         try:
             version = _package_version("yara-python", _YARA_PIN)
@@ -899,7 +916,11 @@ class ExternalDetectionValidator:
             if not isinstance(fixture, Mapping):
                 raise DetectionError("each YARA fixture must be an object")
             fixture_id = fixture.get("fixture_id")
-            if not isinstance(fixture_id, str) or _FIXTURE_ID.fullmatch(fixture_id) is None or fixture_id in fixture_ids:  # fmt: skip
+            if (
+                not isinstance(fixture_id, str)
+                or _FIXTURE_ID.fullmatch(fixture_id) is None
+                or fixture_id in fixture_ids
+            ):
                 raise DetectionError("YARA fixture IDs must be valid and unique")
             payload = fixture.get("data", b"")
             if isinstance(payload, str):
@@ -962,7 +983,11 @@ class ExternalDetectionValidator:
     ) -> Mapping[str, tuple[str, ...]]:
         predicted = {str(item) for item in predicted_fields if str(item)}
         observed = {str(item) for item in observed_fields if str(item)}
-        return {"predicted_only": tuple(sorted(predicted - observed)), "observed_only": tuple(sorted(observed - predicted)), "intersection": tuple(sorted(predicted & observed))}  # fmt: skip
+        return {
+            "predicted_only": tuple(sorted(predicted - observed)),
+            "observed_only": tuple(sorted(observed - predicted)),
+            "intersection": tuple(sorted(predicted & observed)),
+        }
 
     @staticmethod
     def compare_public_baseline(
@@ -970,7 +995,12 @@ class ExternalDetectionValidator:
     ) -> Mapping[str, Any]:
         candidate = set(candidate_matches)
         baseline = set(baseline_matches)
-        return {"candidate_only": sorted(candidate - baseline), "baseline_only": sorted(baseline - candidate), "overlap": sorted(candidate & baseline), "incremental_candidate_matches": len(candidate - baseline)}  # fmt: skip
+        return {
+            "candidate_only": sorted(candidate - baseline),
+            "baseline_only": sorted(baseline - candidate),
+            "overlap": sorted(candidate & baseline),
+            "incremental_candidate_matches": len(candidate - baseline),
+        }
 
     def _source(self, source: str) -> str:
         if not isinstance(source, str) or not source.strip():
@@ -987,4 +1017,4 @@ class ExternalDetectionValidator:
             raise DetectionError("only a hypothesis can be parsed")
 
 
-__all__ = "DetectionBackendError DetectionBackendUnavailable DetectionError DetectionState ExternalDetectionValidator SQLITE_LOG_FIELDS convert_sigma_to_sqlite execute_sqlite_query inspect_sqlite_query".split()  # fmt: skip
+__all__ = "DetectionBackendError DetectionBackendUnavailable DetectionError DetectionState ExternalDetectionValidator SQLITE_LOG_FIELDS convert_sigma_to_sqlite execute_sqlite_query inspect_sqlite_query".split()

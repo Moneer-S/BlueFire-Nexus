@@ -11,6 +11,77 @@ export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
 export const BROWSER_SESSION_RELAUNCH_MESSAGE = "This local browser session is unavailable. Close this tab and relaunch BlueFire with `bluefire ui`.";
 const EMPTY_ACTION_PACKAGE_CATALOG_DIGEST = `sha256:${"0".repeat(64)}`;
 
+export interface ReviewedT1082IntakeResult {
+  schema_version: "bluefire.reviewed-source-intake-result.v1";
+  destination_id: string;
+  artifact: {
+    media_type: string;
+    sha256: string;
+    size_bytes: number;
+    state_ref: string;
+  };
+  intake: {
+    intake_id: string;
+    record_sha256: string;
+    output_sha256: string;
+    execution_material_imported: false;
+  };
+  operation_receipt: {
+    media_type: string;
+    sha256: string;
+    size_bytes: number;
+    state_ref: string;
+    record: {
+      schema_version: "bluefire.reviewed-source-intake-operation-receipt.v1";
+      destination_id: string;
+      operator_id: string;
+      runner_profile_id: string;
+      completed_at: string;
+    } & Record<string, unknown>;
+  };
+  package_activation: {
+    schema_version: "bluefire.reviewed-source-intake-activation.v1";
+    operation: "installed_and_activated" | "resumed_activation" | "already_active_revalidated";
+    package: {
+      package_id: string;
+      version: string;
+      package_digest: string;
+      content_digest: string;
+      publisher_id: string;
+      key_id: string;
+      status: string;
+    };
+    catalog_delta: {
+      changed: boolean;
+      generation_before: number;
+      generation_after: number;
+      catalog_digest_before: string;
+      catalog_digest_after: string;
+      behavior_ids_added: string[];
+      action_ids_added: string[];
+    };
+    availability: {
+      behavior_id: string;
+      behavior_available: boolean;
+      action_id: string;
+      action_available: boolean;
+    };
+    runner: {
+      profile_id: string;
+      identity_digest: string;
+      inventory_digest: string;
+      activation_revalidated: true;
+    };
+    persistence: {
+      installed_now: boolean;
+      activated_now: boolean;
+      durable_product_store: true;
+      signing_key_lifecycle: string;
+      private_signing_key_persisted: false;
+    };
+  };
+}
+
 export class ApiError extends Error {
   constructor(message: string, public readonly code = "request_failed", public readonly details?: unknown, public readonly status?: number) {
     super(message);
@@ -178,6 +249,13 @@ export const api = {
     return request("/ai/drafts", { method: "POST", body: JSON.stringify({ objective, ...(providerId ? { provider_id: providerId } : {}), max_nodes: maxNodes, max_edges: maxEdges }) });
   },
   async catalog(): Promise<CatalogResponse> { return DEMO_MODE ? structuredClone(demoCatalog) : request("/catalog"); },
+  async intakeReviewedT1082(destinationId: string, runnerProfileId: string, operatorId: string): Promise<ReviewedT1082IntakeResult> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot activate reviewed source content.", "demo_source_intake_refused", undefined, 409);
+    return request("/research-intakes/mitre-attack-t1082-v19-2", {
+      method: "POST",
+      body: JSON.stringify({ destination_id: destinationId, runner_profile_id: runnerProfileId, operator_id: operatorId }),
+    }, RUNNER_TRUST_MUTATION_TIMEOUT_MS);
+  },
   async actionPackages(): Promise<ActionPackageInventory> {
     if (DEMO_MODE) return {
       schema_version: "bluefire.action-package-inventory.v1",

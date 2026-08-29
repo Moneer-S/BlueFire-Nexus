@@ -92,6 +92,7 @@ The logical catalog describes operator intent. It must not expose executor-only 
 | `sandbox.discovery.list.v1` | `path` | Return one metadata record for the exact regular-file fixture; do not enumerate siblings or read contents |
 | `sandbox.discovery.metadata.v1` | `path` | Return one metadata record, including read-only state, for the exact regular-file fixture; do not read contents |
 | `endpoint.discovery.system.v1` | empty object | OS/architecture facts |
+| `endpoint.discovery.windows-version.v1` | empty object | Windows major, minor, and build version through a fixed compiled native API; latent until a reviewed package supplies a behavior |
 | `endpoint.discovery.processes.v1` | `max_entries` | PID/name records through fixed platform adapter |
 | `sandbox.discovery.recursive.v1` | `path`, `max_entries`, `max_depth` | Non-link-following subtree inventory |
 | `sandbox.archive.tar.v1` | `inputs`, `destination` | Deterministic create-new ustar archive |

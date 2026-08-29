@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_BUILTIN_RUNNER_ACTION_VERSIONS = {
     "endpoint.discovery.processes.v1": "1.0.0",
     "endpoint.discovery.system.v1": "1.0.0",
+    "endpoint.discovery.windows-version.v1": "1.0.0",
     "sandbox.archive.tar.v1": "1.0.0",
     "sandbox.cleanup.v1": "1.1.0",
     "sandbox.collection.stage.v1": "2.0.0",
@@ -56,6 +57,7 @@ EXPECTED_EXECUTE_ACTIONS = [
     "sandbox.discovery.list.v1",
     "sandbox.discovery.metadata.v1",
     "endpoint.discovery.system.v1",
+    "endpoint.discovery.windows-version.v1",
     "endpoint.discovery.processes.v1",
     "sandbox.discovery.recursive.v1",
     "sandbox.collection.stage.v1",
@@ -68,10 +70,10 @@ EXPECTED_EXECUTE_ACTIONS = [
 ]
 
 
-def test_python_authority_contains_exactly_eighteen_compiled_actions() -> None:
+def test_python_authority_contains_exactly_nineteen_compiled_actions() -> None:
     assert dict(BUILTIN_RUNNER_ACTION_VERSIONS) == EXPECTED_BUILTIN_RUNNER_ACTION_VERSIONS
     assert BUILTIN_RUNNER_ACTION_IDS == frozenset(EXPECTED_BUILTIN_RUNNER_ACTION_VERSIONS)
-    assert len(BUILTIN_RUNNER_ACTION_IDS) == 18
+    assert len(BUILTIN_RUNNER_ACTION_IDS) == 19
 
 
 def _execution_binding(

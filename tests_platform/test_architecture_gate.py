@@ -319,6 +319,7 @@ def test_dynamic_suite_rejects_skipped_tests(
         return subprocess.CompletedProcess(command, 0, b"", b"")
 
     monkeypatch.setattr(architecture_gate.subprocess, "run", fake_run)
+    monkeypatch.setattr(architecture_gate, "_runtime_temp_parent", lambda: tmp_path)
     report = architecture_gate._run_pytest_suite(
         tmp_path,
         tmp_path,

@@ -25,7 +25,8 @@ def test_example_config_uses_exactly_two_modes_and_loopback_only() -> None:
     assert config.mode is ExecutionMode.SIMULATE
     assert config.active_runner_profile.environment_type is EnvironmentType.DISPOSABLE
     for profile in config.runner_profiles:
-        assert profile.platforms == ("windows", "linux", "macos")
+        assert profile.platforms
+        assert set(profile.platforms) <= {"windows", "linux", "macos"}
         assert all(
             ipaddress.ip_network(network).is_loopback for network in profile.network_allowlist
         )

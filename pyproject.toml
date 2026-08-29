@@ -18,6 +18,7 @@ bluefire = [
   "catalog/*.yaml",
   "data/*.yaml",
   "data/*.json",
+  "data/*.txt",
   "ui/*.css",
   "ui/*.html",
   "ui/*.js",

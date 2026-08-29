@@ -12,10 +12,12 @@ import re
 import subprocess
 import sys
 import tempfile
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosec B405
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from .defense_frontier import _runtime_temp_parent
 
 POLICY_SCHEMA_VERSION = "bluefire.architecture-policy.v1"
 REPORT_SCHEMA_VERSION = "bluefire.architecture-audit.v1"
@@ -706,7 +708,8 @@ def audit_repository(
 
 
 def _junit_summary(path: Path) -> dict[str, Any]:
-    root = ET.parse(path).getroot()
+    # The input is pytest-generated JUnit in an owner-private, process-token temp root.
+    root = ET.parse(path).getroot()  # nosec B314
     cases = list(root.iter("testcase"))
     failed: list[str] = []
     skipped: list[str] = []
@@ -746,8 +749,11 @@ def _run_pytest_suite(
         "--junitxml={temporary}",
     ]
     try:
+        # Parametrized node IDs consume substantial Windows path budget. Use
+        # the process-token-owned temp parent rather than an arbitrarily deep
+        # evidence path or a caller-controlled TEMP alias.
         with tempfile.TemporaryDirectory(
-            prefix=f".{suite_id}-pytest-", dir=evidence_dir
+            prefix=".pytest-", dir=_runtime_temp_parent()
         ) as temporary:
             temporary_root = Path(temporary)
             junit = temporary_root / "junit.xml"

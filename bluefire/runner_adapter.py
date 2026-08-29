@@ -291,7 +291,7 @@ def _exact_fixture_discovery_record(
 
 
 class RunnerActionAdapter:
-    """Compile only the eighteen reviewed action IDs into strict runner params.
+    """Compile only the nineteen reviewed action IDs into strict runner params.
 
     Paths are constants or validated outputs of earlier runner actions.  No
     scenario parameter can become an executable, command, or filesystem path.
@@ -304,6 +304,7 @@ class RunnerActionAdapter:
             "sandbox.discovery.list.v1",
             "sandbox.discovery.metadata.v1",
             "endpoint.discovery.system.v1",
+            "endpoint.discovery.windows-version.v1",
             "endpoint.discovery.processes.v1",
             "sandbox.discovery.recursive.v1",
             "sandbox.archive.tar.v1",
@@ -428,6 +429,13 @@ class RunnerActionAdapter:
                 filesystem_scope=(fixture,),
             )
         elif action_id == "endpoint.discovery.system.v1":
+            adapted = AdaptedAction(params={}, filesystem_scope=())
+        elif action_id == "endpoint.discovery.windows-version.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset(),
+                context="Windows version discovery",
+            )
             adapted = AdaptedAction(params={}, filesystem_scope=())
         elif action_id == "endpoint.discovery.processes.v1":
             maximum = _bounded_integer(
@@ -876,6 +884,45 @@ class RunnerActionAdapter:
                 "system": {
                     "type": "artifact.endpoint.system-profile.v1",
                     "details": dict(runner_output),
+                }
+            }
+        if action_id == "endpoint.discovery.windows-version.v1":
+            if set(runner_output) != {
+                "operating_system",
+                "major_version",
+                "minor_version",
+                "build_number",
+            }:
+                raise RunnerAdapterError("runner Windows version output shape is invalid")
+            major_version = _bounded_integer(
+                runner_output.get("major_version"),
+                "runner Windows version output.major_version",
+                0,
+                2**32 - 1,
+            )
+            minor_version = _bounded_integer(
+                runner_output.get("minor_version"),
+                "runner Windows version output.minor_version",
+                0,
+                2**32 - 1,
+            )
+            build_number = _bounded_integer(
+                runner_output.get("build_number"),
+                "runner Windows version output.build_number",
+                0,
+                2**32 - 1,
+            )
+            if runner_output.get("operating_system") != "windows":
+                raise RunnerAdapterError("runner Windows version operating system is invalid")
+            return {
+                "windows_version": {
+                    "type": "artifact.endpoint.windows-version.v1",
+                    "details": {
+                        "operating_system": "windows",
+                        "major_version": major_version,
+                        "minor_version": minor_version,
+                        "build_number": build_number,
+                    },
                 }
             }
         if action_id == "endpoint.discovery.processes.v1":

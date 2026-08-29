@@ -348,6 +348,25 @@ def _parser() -> argparse.ArgumentParser:
     research = commands.add_parser("research", help="Inspect restricted research metadata")
     research_commands = research.add_subparsers(dest="research_command", required=True)
     research_commands.add_parser("status", help="Show metadata-only research entries")
+    research_intake = research_commands.add_parser(
+        "intake-t1082",
+        help="Import the shipped reviewed ATT&CK T1082 metadata",
+    )
+    research_intake.add_argument(
+        "--destination-id",
+        required=True,
+        help="New lowercase namespace below BlueFire's product-controlled intake state",
+    )
+    research_intake.add_argument(
+        "--profile",
+        required=True,
+        help="Execute runner profile used to verify and activate the reviewed package",
+    )
+    research_intake.add_argument(
+        "--operator",
+        required=True,
+        help="Printable local operator identity recorded for trust, install, and activation",
+    )
 
     acceptance = commands.add_parser(
         "acceptance", help="Run the locked machine-verifiable release contract"
@@ -715,6 +734,14 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
             "installed": [],
         }
     if args.command == "research":
+        if args.research_command == "intake-t1082":
+            return service.intake_reviewed_t1082(
+                {
+                    "destination_id": args.destination_id,
+                    "runner_profile_id": args.profile,
+                    "operator_id": args.operator,
+                }
+            )
         rows = []
         for behavior_id in service.registry.behavior_ids:
             behavior = service.registry.get_behavior(behavior_id)

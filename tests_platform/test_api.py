@@ -81,6 +81,13 @@ class StubService:
         self.calls.append(("resource", kind, resource_id))
         return {"resource": {"kind": kind, "id": resource_id}}
 
+    def intake_reviewed_t1082(self, request: Mapping[str, Any]):
+        self.calls.append(("intake_reviewed_t1082", request))
+        return {
+            "schema_version": "bluefire.reviewed-source-intake-result.v1",
+            "destination_id": request.get("destination_id"),
+        }
+
     def save_resource(
         self,
         kind: str,
@@ -908,6 +915,31 @@ def test_post_routes_forward_json_objects_without_orchestration() -> None:
 
         assert ("upsert_setting", "ui.preferences", body) in service.calls
         assert ("save_resource", "collector", RESOURCE_ID, body) in service.calls
+
+
+def test_reviewed_t1082_intake_route_is_post_only_and_forwards_the_destination() -> None:
+    route = "/api/v1/research-intakes/mitre-attack-t1082-v19-2"
+    body = {
+        "destination_id": "operator-review-20260829",
+        "runner_profile_id": "sandbox-execute.v1",
+        "operator_id": "local-source-reviewer",
+    }
+    with running_server() as (server, service):
+        status, headers, payload = request(server, "GET", route)
+        assert status == 405
+        assert headers["Allow"] == "POST"
+        assert json_body(payload)["error"]["code"] == "method_not_allowed"
+
+        status, headers, payload = request(server, "POST", route, body=body)
+        assert status == 201
+        assert headers["Content-Type"] == "application/json; charset=utf-8"
+        assert json_body(payload)["destination_id"] == body["destination_id"]
+
+        status, _, payload = request(server, "POST", route + "?source=arbitrary", body=body)
+        assert status == 400
+        assert json_body(payload)["error"]["code"] == "invalid_management_query"
+
+    assert service.calls == [("intake_reviewed_t1082", body)]
 
 
 def test_action_package_routes_dispatch_exact_lifecycle_authority() -> None:

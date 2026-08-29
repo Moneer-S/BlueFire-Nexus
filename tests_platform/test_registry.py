@@ -23,6 +23,7 @@ EXPECTED_ACTION_IDS = {
     "sandbox.discovery.list.v1",
     "sandbox.discovery.metadata.v1",
     "endpoint.discovery.system.v1",
+    "endpoint.discovery.windows-version.v1",
     "endpoint.discovery.processes.v1",
     "sandbox.discovery.recursive.v1",
     "sandbox.archive.tar.v1",
@@ -32,7 +33,9 @@ EXPECTED_ACTION_IDS = {
     "sandbox.restricted.persistence-marker.v1",
     "sandbox.cleanup.v1",
 } | REPRESENTATIVE_ACTION_IDS
-EXPECTED_EXECUTABLE_BEHAVIOR_IDS = EXPECTED_ACTION_IDS | {"sandbox.credential.peer-challenge.v1"}
+EXPECTED_EXECUTABLE_BEHAVIOR_IDS = (
+    EXPECTED_ACTION_IDS - {"endpoint.discovery.windows-version.v1"}
+) | {"sandbox.credential.peer-challenge.v1"}
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -48,6 +51,17 @@ def test_builtin_registry_has_only_reviewed_bounded_actions() -> None:
         "command" not in action_id and "script" not in action_id
         for action_id in registry.action_ids
     )
+
+
+def test_windows_version_action_is_latent_until_a_package_adds_its_behavior() -> None:
+    registry = load_builtin_registry()
+    action = registry.get_action("endpoint.discovery.windows-version.v1")
+
+    assert action.platforms == ("windows",)
+    assert action.capabilities == ("system.discovery",)
+    assert action.outputs[0].name == "windows_version"
+    assert action.outputs[0].type == "artifact.endpoint.windows-version.v1"
+    assert "endpoint.discovery.windows-version.v1" not in registry.behavior_ids
 
 
 def test_representative_actions_are_versioned_bounded_and_cross_platform() -> None:
@@ -127,7 +141,7 @@ def test_representative_logical_parameters_expose_no_path_host_or_command() -> N
 
 def test_action_and_behavior_parameter_contracts_are_identical() -> None:
     registry = load_builtin_registry()
-    for action_id in EXPECTED_ACTION_IDS:
+    for action_id in EXPECTED_ACTION_IDS - {"endpoint.discovery.windows-version.v1"}:
         behavior = registry.get_behavior(action_id)
         action = registry.get_action(action_id)
         assert behavior.parameters == action.parameters

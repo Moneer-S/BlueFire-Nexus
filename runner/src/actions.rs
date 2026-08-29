@@ -23,6 +23,7 @@ use crate::safety::{
 };
 
 const ALL_PLATFORMS: &[Platform] = &[Platform::Windows, Platform::Linux, Platform::Macos];
+const WINDOWS_PLATFORMS: &[Platform] = &[Platform::Windows];
 pub const ACTION_SDK_SCHEMA_VERSION: &str = "bluefire.runner-action-sdk.v1";
 const MAX_RECURSIVE_DEPTH: usize = 16;
 const MAX_RECURSIVE_ENTRIES: usize = 4_096;
@@ -473,6 +474,15 @@ fn cleanup_schema() -> Value {
 }
 
 fn system_discovery_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+    })
+}
+
+fn windows_version_schema() -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1392,6 +1402,112 @@ impl Action for SystemDiscoveryAction {
     fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
         let _: SystemDiscoveryParams = parse_params(params)?;
         Ok(Box::new(SystemDiscoveryPrepared))
+    }
+}
+
+// -------------------------------------------------------------------------
+// endpoint.discovery.windows-version.v1
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowsVersionParams {}
+
+#[cfg(windows)]
+#[repr(C)]
+struct RtlOsVersionInfoW {
+    size: u32,
+    major_version: u32,
+    minor_version: u32,
+    build_number: u32,
+    platform_id: u32,
+    service_pack: [u16; 128],
+}
+
+#[cfg(windows)]
+#[link(name = "ntdll")]
+extern "system" {
+    fn RtlGetVersion(version_information: *mut RtlOsVersionInfoW) -> i32;
+}
+
+#[cfg(windows)]
+fn read_windows_version() -> Result<(u32, u32, u32), ActionFailure> {
+    let mut version = RtlOsVersionInfoW {
+        size: std::mem::size_of::<RtlOsVersionInfoW>() as u32,
+        major_version: 0,
+        minor_version: 0,
+        build_number: 0,
+        platform_id: 0,
+        service_pack: [0; 128],
+    };
+    // SAFETY: `version` is a writable, correctly sized RTL_OSVERSIONINFOW and
+    // remains alive for the duration of this fixed, parameter-free call.
+    let status = unsafe { RtlGetVersion(&mut version) };
+    if status < 0 {
+        return Err(ActionFailure::failed(
+            "windows_version_query_failed",
+            format!("RtlGetVersion returned NTSTATUS 0x{:08x}", status as u32),
+        ));
+    }
+    Ok((
+        version.major_version,
+        version.minor_version,
+        version.build_number,
+    ))
+}
+
+#[cfg(not(windows))]
+fn read_windows_version() -> Result<(u32, u32, u32), ActionFailure> {
+    Err(ActionFailure::blocked(
+        "platform_blocked",
+        "the Windows version action is available only on Windows",
+    ))
+}
+
+struct WindowsVersionPrepared;
+
+impl PreparedAction for WindowsVersionPrepared {
+    fn execute(
+        self: Box<Self>,
+        _context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        let (major_version, minor_version, build_number) = read_windows_version()?;
+        Ok(ActionOutcome::success(json!({
+            "operating_system": "windows",
+            "major_version": major_version,
+            "minor_version": minor_version,
+            "build_number": build_number,
+        })))
+    }
+}
+
+struct WindowsVersionAction;
+static WINDOWS_VERSION_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    platforms: WINDOWS_PLATFORMS,
+    ..reviewed_descriptor! {
+        id: "endpoint.discovery.windows-version.v1",
+        version: "1.0.0",
+        behavior_ids: &[],
+        summary: "Report the Windows major, minor, and build version through the fixed RtlGetVersion API.",
+        schema: windows_version_schema,
+        capabilities: &[Capability::SystemDiscovery],
+        tier: SafetyTier::Safe,
+        readiness: ActionReadiness::Ready,
+        targets: &["endpoint"],
+        hints: &[ObservationHint { source: "runner", signal: "windows_version_discovery" }],
+        cleanup: None,
+        limits: TASK_LIMITS,
+        effects: (false, false, false),
+        receipt: false,
+    }
+};
+impl Action for WindowsVersionAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        &WINDOWS_VERSION_DESCRIPTOR
+    }
+
+    fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        let _: WindowsVersionParams = parse_params(params)?;
+        Ok(Box::new(WindowsVersionPrepared))
     }
 }
 
@@ -4006,6 +4122,7 @@ static FIXTURE_TRANSFORM: FixtureTransformAction = FixtureTransformAction;
 static DISCOVERY_LIST: DiscoveryListAction = DiscoveryListAction;
 static DISCOVERY_METADATA: DiscoveryMetadataAction = DiscoveryMetadataAction;
 static SYSTEM_DISCOVERY: SystemDiscoveryAction = SystemDiscoveryAction;
+static WINDOWS_VERSION: WindowsVersionAction = WindowsVersionAction;
 static PROCESS_DISCOVERY: ProcessDiscoveryAction = ProcessDiscoveryAction;
 static RECURSIVE_DISCOVERY: RecursiveDiscoveryAction = RecursiveDiscoveryAction;
 static ARCHIVE_TAR: ArchiveTarAction = ArchiveTarAction;
@@ -4018,7 +4135,7 @@ static RESTRICTED_PERSISTENCE_MARKER: RestrictedPersistenceMarkerAction =
     RestrictedPersistenceMarkerAction;
 static CLEANUP: CleanupAction = CleanupAction;
 
-static REGISTRY: [&'static dyn Action; 18] = [
+static REGISTRY: [&'static dyn Action; 19] = [
     &NATIVE_CANARY,
     &IDENTITY_MATERIAL_SEED,
     &IDENTITY_MATERIAL_INSPECT,
@@ -4027,6 +4144,7 @@ static REGISTRY: [&'static dyn Action; 18] = [
     &DISCOVERY_LIST,
     &DISCOVERY_METADATA,
     &SYSTEM_DISCOVERY,
+    &WINDOWS_VERSION,
     &PROCESS_DISCOVERY,
     &RECURSIVE_DISCOVERY,
     &ARCHIVE_TAR,
@@ -4078,6 +4196,7 @@ mod tests {
             "sandbox.discovery.list.v1",
             "sandbox.discovery.metadata.v1",
             "endpoint.discovery.system.v1",
+            "endpoint.discovery.windows-version.v1",
             "endpoint.discovery.processes.v1",
             "sandbox.discovery.recursive.v1",
             "sandbox.archive.tar.v1",
@@ -4121,6 +4240,22 @@ mod tests {
             assert_eq!(value["readiness"], "ready");
             assert_eq!(value["provenance"]["license"], "MIT");
         }
+    }
+
+    #[test]
+    fn windows_version_opcode_is_latent_and_windows_only() {
+        let descriptor = find_action("endpoint.discovery.windows-version.v1")
+            .expect("Windows version opcode must be registered")
+            .descriptor();
+        assert!(descriptor.behavior_ids.is_empty());
+        assert_eq!(descriptor.platforms, WINDOWS_PLATFORMS);
+        assert_eq!(descriptor.capabilities, &[Capability::SystemDiscovery]);
+        assert!(!descriptor.filesystem_effect);
+        assert!(!descriptor.network_effect);
+        assert!(!descriptor.process_effect);
+        assert!(!descriptor.cleanup_receipt);
+        assert!(descriptor.cleanup_action_id.is_none());
+        assert_eq!((descriptor.parameter_schema)(), windows_version_schema());
     }
 
     #[test]

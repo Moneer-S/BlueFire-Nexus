@@ -126,12 +126,12 @@ items:
     action_ids: [endpoint.discovery.system.v1]
     telemetry: [endpoint.discovery.system_observed]
     detection_hints: [System discovery is bounded to non-sensitive platform identity fields.]
-    provenance: &attack_19_2
-      source: MITRE ATT&CK Enterprise 19.2 comparative reference
-      reference: https://github.com/mitre-attack/attack-stix-data/blob/6cda5ad8462c79e14fbb872f4e09059b18e0cfc4/enterprise-attack/enterprise-attack-19.2.json
-      license: CC-BY-4.0
+    provenance:
+      source: Reviewed MITRE ATT&CK Enterprise 19.2 T1082 metadata
+      reference: https://github.com/mitre/cti/blob/8543c5b05bd9bbcace9fc37f30bba96b675b6f33/enterprise-attack/attack-pattern/attack-pattern--354a7f88-63fb-41b5-a801-ce3b377b36f1.json
+      license: LicenseRef-MITRE-ATTACK-2026
       derived: false
-      notes: Technique semantics informed the neutral mapping; no ATT&CK content or procedure was copied or executed.
+      notes: The reviewed neutral T1082 projection informs this mapping; descriptions, procedures, commands, and upstream executable content are neither copied nor executed.
     limitations: [Does not collect account, network, or host file content.]
 
   - schema_version: bluefire.behavior.v1
@@ -158,7 +158,7 @@ items:
     action_ids: [endpoint.discovery.processes.v1]
     telemetry: [endpoint.discovery.processes_observed]
     detection_hints: [Process discovery uses only a compiled API or fixed reviewed command vector.]
-    provenance: *attack_19_2
+    provenance: *authored
     limitations: [Does not accept an executable or caller-authored arguments.]
 
   - schema_version: bluefire.behavior.v1

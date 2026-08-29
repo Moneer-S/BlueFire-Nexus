@@ -37,6 +37,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXECUTE_ACTIONS = {
     "endpoint.discovery.processes.v1",
     "endpoint.discovery.system.v1",
+    "endpoint.discovery.windows-version.v1",
     "sandbox.archive.tar.v1",
     "sandbox.fixture.create.v1",
     "sandbox.fixture.transform.v1",

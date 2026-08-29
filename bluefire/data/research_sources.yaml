@@ -2,32 +2,34 @@ schema_version: bluefire.research-registry.v1
 sources:
   - schema_version: bluefire.research-source.v1
     id: research.mitre-attack-enterprise.v1
-    name: MITRE ATT&CK Enterprise STIX data
+    name: MITRE ATT&CK® Enterprise T1082 STIX metadata
     source_type: dataset
-    project: mitre-attack/attack-stix-data
+    project: mitre/cti
     authority: The MITRE Corporation
-    reference_url: https://github.com/mitre-attack/attack-stix-data/blob/6cda5ad8462c79e14fbb872f4e09059b18e0cfc4/enterprise-attack/enterprise-attack-19.2.json
+    reference_url: https://github.com/mitre/cti/blob/8543c5b05bd9bbcace9fc37f30bba96b675b6f33/enterprise-attack/attack-pattern/attack-pattern--354a7f88-63fb-41b5-a801-ce3b377b36f1.json
     version: "19.2"
-    pin: 6cda5ad8462c79e14fbb872f4e09059b18e0cfc4  # pragma: allowlist secret -- public Git commit
-    exact_ref: 6cda5ad8462c79e14fbb872f4e09059b18e0cfc4  # pragma: allowlist secret -- public Git commit
-    retrieved_at: "2026-08-25"
-    license: CC-BY-4.0
-    license_url: https://github.com/mitre-attack/attack-stix-data/blob/6cda5ad8462c79e14fbb872f4e09059b18e0cfc4/LICENSE.txt
-    file_level_license_review: Dataset file and LICENSE.txt reviewed at the pinned commit; no source tree is vendored.
-    trademark_considerations: ATT&CK and MITRE marks are attribution references only and do not imply endorsement.
+    pin: 8543c5b05bd9bbcace9fc37f30bba96b675b6f33  # pragma: allowlist secret -- public Git commit
+    exact_ref: 8543c5b05bd9bbcace9fc37f30bba96b675b6f33  # pragma: allowlist secret -- public Git commit
+    retrieved_at: "2026-08-29"
+    license: LicenseRef-MITRE-ATTACK-2026
+    license_url: https://github.com/mitre/cti/blob/8543c5b05bd9bbcace9fc37f30bba96b675b6f33/LICENSE.txt
+    file_level_license_review: The exact one-object STIX 2.0 bundle and complete MITRE LICENSE.txt were reviewed at the pinned commit and are vendored without modification at the listed imported paths; the license SHA-256 is 4de9222b0d5bc69b758f9cf0afdaea48fdcbfe7d33c7481973a6aa07d6cbea9d.
+    trademark_considerations: MITRE ATT&CK® is used only as the required initial attribution reference; ATT&CK is not used in a BlueFire product, service, trademark, or logo name, and no MITRE affiliation, sponsorship, or endorsement is implied.
     license_review: reviewed
-    relationship: comparative
+    relationship: imported
     use_classification: metadata_import
     uses: [behavior_mapping, research_reference]
-    imported_paths: [bluefire/data/behaviors.yaml]
-    cache_policy: external_only
+    imported_paths:
+      - bluefire/data/mitre_attack_t1082_v19_2.json
+      - bluefire/data/mitre_attack_v19_2_LICENSE.txt
+    cache_policy: vendored_declarative
     executable_content: false
-    attribution: MITRE ATT&CK Enterprise is attributed in behavior provenance and documentation.
-    security_review: Public STIX metadata is not executed; transformed behavior metadata remains defensive and sanitized.
-    last_verified_at: "2026-08-25"
+    attribution: "MITRE ATT&CK® T1082 metadata. © 2026 The MITRE Corporation. This work is reproduced and distributed with the permission of The MITRE Corporation."
+    security_review: One declarative T1082 STIX record is copied byte-for-byte. Upstream content is not executed; no upstream code, install script, payload, binary, container, or test harness is imported. Deterministic intake discards descriptions, citations, procedures, command examples, and unrelated references. The mapped BlueFire action uses the independently implemented endpoint.discovery.windows-version.v1 operation with fixed RtlGetVersion semantics.
+    last_verified_at: "2026-08-29"
     update_status: current
-    transformation_history: Behavior metadata references selected technique semantics without vendoring the STIX dataset.
-    notes: Versioned STIX data is referenced for behavior semantics and attribution; no ATT&CK dataset is vendored.
+    transformation_history: The exact raw STIX bundle with SHA-256 dd2e50ceef844302a690a1debac8336864e93ebd19da526eefac3072f5ee9a02 and its license are vendored as package data. A deterministic allowlisted projection produces a content-addressed intake envelope, and any signed action package is generated into acceptance/runtime state rather than checked in. The projection imports only neutral T1082 identity, version, status, timestamp, and primary-reference metadata; the executable action mapping remains independent BlueFire code.
+    notes: "Signed annotated ref refs/tags/ATT&CK-v19.2 has tag-object SHA-1 8378689cbd8cf6ad7d566d3924c3c9755417cf43 and points to commit 8543c5b05bd9bbcace9fc37f30bba96b675b6f33. Source path enterprise-attack/attack-pattern/attack-pattern--354a7f88-63fb-41b5-a801-ce3b377b36f1.json has Git blob SHA-1 456248b9947555603bfe2981ae8d931cb2ba88a7, 6617 bytes, and SHA-256 dd2e50ceef844302a690a1debac8336864e93ebd19da526eefac3072f5ee9a02. LICENSE.txt has Git blob SHA-1 ecac4fdc83b412256b233fc25d5f3502f2eaa07a, 2311 bytes, and SHA-256 4de9222b0d5bc69b758f9cf0afdaea48fdcbfe7d33c7481973a6aa07d6cbea9d. vendored_declarative identifies reviewed non-executable package-data assets; no runtime remote cache is populated."  # pragma: allowlist secret -- public Git object and file digests
 
   - schema_version: bluefire.research-source.v1
     id: research.sigma-specification.v1

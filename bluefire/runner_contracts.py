@@ -86,6 +86,7 @@ _EXECUTION_BINDING_FIELDS = frozenset(
 _REVIEWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, Any]] = {
     "endpoint.discovery.processes.v1": {},
     "endpoint.discovery.system.v1": {},
+    "endpoint.discovery.windows-version.v1": {},
     "sandbox.execution.native-canary.v1": {},
     "sandbox.identity-material.inspect.v1": {},
     "sandbox.identity-material.seed.v1": {},

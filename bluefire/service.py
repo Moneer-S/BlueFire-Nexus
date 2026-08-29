@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import json
 import math
 import os
 import re
 import stat
+import tempfile
 import threading
 from contextlib import AbstractContextManager
 from dataclasses import replace
@@ -19,7 +22,9 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 import yaml
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from . import source_intake_package
 from .action_catalog import (
     ActionCatalogError,
     ActionCatalogSnapshot,
@@ -29,6 +34,7 @@ from .action_packages import (
     ActionPackageError,
     VerifiedActionPackageActivation,
     audit_action_package,
+    canonical_public_key_b64u,
     verify_action_package,
 )
 from .ai import (
@@ -119,6 +125,8 @@ from .runner_client import (
 )
 from .runner_contracts import RunnerContractError
 from .runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError
+from .runner_trust import RunnerTrustError, _PinnedDirectory
+from .source_intake import SourceIntakeError, perform_source_intake
 from .util import canonical_json_bytes, content_hash, file_hash
 
 RunnerFactory = Callable[[RunnerProfile], tuple[RunnerTransport, Path]]
@@ -162,6 +170,18 @@ _AVAILABLE_RUNTIME_COLLECTORS = frozenset(
 _RUNTIME_COLLECTOR_STATUSES = frozenset(
     {"available_per_run", "available_native_session", "requires_managed_receiver"}
 )
+_WINDOWS_REPARSE_POINT = 0x0400
+_WINDOWS_DEVICE_NAMES = frozenset(
+    {"aux", "con", "nul", "prn"}
+    | {f"com{index}" for index in range(1, 10)}
+    | {f"lpt{index}" for index in range(1, 10)}
+)
+_REVIEWED_T1082_STAGE_FILE = "mitre-attack-t1082-v19-2-action-package.json"
+_REVIEWED_T1082_STAGE_SCHEMA = "bluefire.reviewed-source-intake-package-stage.v1"
+_MAX_REVIEWED_T1082_STAGE_BYTES = 1_048_576
+_REVIEWED_T1082_RECEIPT_FILE = "intake.mitre-t1082.v1.operation-receipt.json"
+_REVIEWED_T1082_RECEIPT_SCHEMA = "bluefire.reviewed-source-intake-operation-receipt.v1"
+_MAX_REVIEWED_T1082_RECEIPT_BYTES = 32 * 1024
 
 
 def _default_ai_provider_factory(config: AIConfig, provider_id: str) -> AIProvider:
@@ -259,7 +279,7 @@ class BlueFireService:
         active: list[ActivatedActionPackage] = []
         ordered_packages = sorted(
             raw_packages,
-            key=lambda item: (str(item.get("package_id")) if isinstance(item, Mapping) else ""),
+            key=lambda item: str(item.get("package_id")) if isinstance(item, Mapping) else "",
         )
         for row in ordered_packages:
             if not isinstance(row, Mapping):
@@ -1097,6 +1117,706 @@ class BlueFireService:
                 "Resource was not found.",
             ) from exc
         return {"schema_version": "bluefire.resource.v1", "resource": resource}
+
+    def intake_reviewed_t1082(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Import and activate the one shipped, reviewed ATT&CK T1082 source."""
+
+        if set(request) != {"destination_id", "runner_profile_id", "operator_id"}:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "source_intake_request_invalid",
+                (
+                    "Reviewed T1082 intake requires exactly destination_id, "
+                    "runner_profile_id, and operator_id."
+                ),
+            )
+        destination_id = _management_identifier(
+            request.get("destination_id"), "source-intake destination ID"
+        )
+        runner_profile_id = request.get("runner_profile_id")
+        profile = self._profile(runner_profile_id, ExecutionMode.EXECUTE)
+        if profile is None:  # pragma: no cover - explicit value is required above
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "source_intake_request_invalid",
+                "Reviewed T1082 intake requires an explicit Execute runner profile.",
+            )
+        operator_id = _source_intake_operator(request.get("operator_id"))
+        if destination_id.split(".", 1)[0] in _WINDOWS_DEVICE_NAMES:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "source_intake_destination_invalid",
+                "The source-intake destination ID is reserved by a supported platform.",
+            )
+
+        # The database inode lease is the durable operation owner. Holding it
+        # from namespace allocation through receipt publication prevents a
+        # second service instance from mistaking a live operation for a crash,
+        # and keeps every snapshot-derived lifecycle label authoritative.
+        try:
+            with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+                return self._intake_reviewed_t1082_owned(
+                    destination_id=destination_id,
+                    runner_profile_id=profile.id,
+                    operator_id=operator_id,
+                )
+        except ProductStoreError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "source_intake_operation_unavailable",
+                "The reviewed T1082 intake operation lease is unavailable.",
+            ) from exc
+
+    def _intake_reviewed_t1082_owned(
+        self,
+        *,
+        destination_id: str,
+        runner_profile_id: str,
+        operator_id: str,
+    ) -> Mapping[str, Any]:
+        """Complete one intake while its durable operation lease is held."""
+
+        destination, destination_identity, intake_root_identity, destination_created = (
+            _allocate_source_intake_destination(self.store.root, destination_id)
+        )
+        published_artifact: tuple[Path, tuple[int, int, int], bytes] | None = None
+        published_receipt: tuple[Path, tuple[int, int, int], bytes] | None = None
+        try:
+            license_resource = files("bluefire.data").joinpath(source_intake_package.LICENSE_ASSET)
+            with as_file(license_resource) as license_path:
+                license_review = _verify_reviewed_source_license(license_path)
+            existing_receipt: tuple[Mapping[str, Any], bytes, tuple[int, int, int]] | None = None
+            if destination_created:
+                source_resource = files("bluefire.data").joinpath(
+                    source_intake_package.SOURCE_ASSET
+                )
+                with as_file(source_resource) as source_path:
+                    result = perform_source_intake(
+                        source_path.parent,
+                        destination,
+                        source_intake_package.gate09_intake_request(),
+                    )
+                published_metadata = result.path.lstat()
+                published_payload = canonical_json_bytes(result.envelope)
+                if (
+                    result.path.parent != destination
+                    or result.path.name != f"{source_intake_package.INTAKE_ID}.json"
+                    or _unsafe_regular_file_metadata(published_metadata)
+                ):
+                    raise SourceIntakeError("source intake returned an unsafe published artifact")
+                published_artifact = (
+                    result.path,
+                    _filesystem_identity(published_metadata),
+                    published_payload,
+                )
+                envelope = source_intake_package.validate_gate09_intake_envelope(result.envelope)
+            else:
+                envelope, existing_receipt = _read_interrupted_t1082_destination(
+                    destination,
+                    destination_identity=destination_identity,
+                )
+            artifact_payload = canonical_json_bytes(envelope)
+            artifact_ref = f"source-intakes/{destination_id}/{source_intake_package.INTAKE_ID}.json"
+            if existing_receipt is None:
+                package_activation = self._activate_reviewed_t1082_intake(
+                    envelope,
+                    runner_profile_id=runner_profile_id,
+                    operator_id=operator_id,
+                )
+                receipt_record = _build_reviewed_t1082_operation_receipt(
+                    destination_id=destination_id,
+                    operator_id=operator_id,
+                    runner_profile_id=runner_profile_id,
+                    envelope=envelope,
+                    artifact_ref=artifact_ref,
+                    artifact_size_bytes=len(artifact_payload),
+                    package_activation=package_activation,
+                )
+                receipt_record = _validate_reviewed_t1082_operation_receipt(
+                    receipt_record,
+                    destination_id=destination_id,
+                    operator_id=operator_id,
+                    runner_profile_id=runner_profile_id,
+                    envelope=envelope,
+                    artifact_ref=artifact_ref,
+                    artifact_size_bytes=len(artifact_payload),
+                    package_activation=package_activation,
+                )
+                receipt_path, receipt_identity, receipt_payload = (
+                    _publish_reviewed_t1082_operation_receipt(
+                        destination,
+                        destination_identity=destination_identity,
+                        receipt=receipt_record,
+                    )
+                )
+                published_receipt = (receipt_path, receipt_identity, receipt_payload)
+            else:
+                receipt_record, receipt_payload, _receipt_identity = existing_receipt
+                package_activation = self._completed_reviewed_t1082_activation(
+                    receipt_record,
+                    envelope=envelope,
+                )
+                receipt_record = _validate_reviewed_t1082_operation_receipt(
+                    receipt_record,
+                    destination_id=destination_id,
+                    operator_id=operator_id,
+                    runner_profile_id=runner_profile_id,
+                    envelope=envelope,
+                    artifact_ref=artifact_ref,
+                    artifact_size_bytes=len(artifact_payload),
+                    package_activation=package_activation,
+                )
+            operation_receipt = {
+                "media_type": (
+                    "application/vnd.bluefire.reviewed-source-intake-operation-receipt+json"
+                ),
+                "sha256": content_hash(receipt_record),
+                "size_bytes": len(receipt_payload),
+                "state_ref": (f"source-intakes/{destination_id}/{_REVIEWED_T1082_RECEIPT_FILE}"),
+                "record": receipt_record,
+            }
+        except (OSError, SourceIntakeError, source_intake_package.SourceIntakePackageError) as exc:
+            _release_failed_source_intake_destination(
+                destination,
+                destination_identity=destination_identity,
+                intake_root_identity=intake_root_identity,
+                destination_created=destination_created,
+                published_artifact=published_artifact,
+                published_receipt=published_receipt,
+            )
+            raise APIError(
+                HTTPStatus.UNPROCESSABLE_ENTITY,
+                "source_intake_rejected",
+                "The reviewed T1082 source intake was rejected.",
+                (
+                    [str(exc)]
+                    if isinstance(
+                        exc,
+                        (SourceIntakeError, source_intake_package.SourceIntakePackageError),
+                    )
+                    else None
+                ),
+            ) from exc
+        except Exception:
+            _release_failed_source_intake_destination(
+                destination,
+                destination_identity=destination_identity,
+                intake_root_identity=intake_root_identity,
+                destination_created=destination_created,
+                published_artifact=published_artifact,
+                published_receipt=published_receipt,
+            )
+            raise
+
+        return {
+            "schema_version": "bluefire.reviewed-source-intake-result.v1",
+            "destination_id": destination_id,
+            "artifact": {
+                "media_type": "application/vnd.bluefire.source-intake+json",
+                "sha256": content_hash(envelope),
+                "size_bytes": len(artifact_payload),
+                "state_ref": artifact_ref,
+            },
+            "intake": {
+                "intake_id": source_intake_package.INTAKE_ID,
+                "record_sha256": envelope["record_sha256"],
+                "output_sha256": envelope["record"]["transformation_history"][0]["output_sha256"],
+                "execution_material_imported": False,
+            },
+            "license_review": license_review,
+            "package_activation": package_activation,
+            "operation_receipt": operation_receipt,
+            "envelope": envelope,
+        }
+
+    def _activate_reviewed_t1082_intake(
+        self,
+        envelope: Mapping[str, Any],
+        *,
+        runner_profile_id: str,
+        operator_id: str,
+    ) -> Mapping[str, Any]:
+        """Install or resume the fixed local package and revalidate its activation."""
+
+        expected_manifest, expected_payload = source_intake_package.gate09_package_components(
+            envelope
+        )
+        with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+            before = self._action_catalog_boundary()
+            behavior_was_available = (
+                source_intake_package.BEHAVIOR_ID in before.registry.behavior_ids
+            )
+            action_was_available = source_intake_package.ACTION_ID in before.registry.action_ids
+            try:
+                package_heads = self.product_store.list_action_packages()
+                matching_heads = [
+                    item
+                    for item in package_heads
+                    if item.get("package_id") == source_intake_package.PACKAGE_ID
+                ]
+                if len(matching_heads) > 1:  # pragma: no cover - store uniqueness invariant
+                    raise ProductStoreError("reviewed source package has multiple installed heads")
+                existing = (
+                    None
+                    if not matching_heads
+                    else self.product_store.get_action_package(
+                        source_intake_package.PACKAGE_ID,
+                        source_intake_package.PACKAGE_VERSION,
+                    )
+                )
+            except (
+                ActionPackageIntegrityError,
+                ProductStoreError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "source_intake_package_conflict",
+                    "Existing local action-package state cannot accept the reviewed T1082 package.",
+                    [str(exc)],
+                ) from exc
+
+            installed_now = existing is None
+            active_before = bool(existing is not None and existing.get("active") is True)
+            signing_key_lifecycle = "existing_locally_trusted_package"
+            if existing is not None:
+                self._validate_reviewed_t1082_package(
+                    existing,
+                    expected_manifest=expected_manifest,
+                    expected_payload=expected_payload,
+                )
+                staged = _read_reviewed_t1082_package_stage(self.store.root)
+                if staged is not None:
+                    staged_document, staged_bytes, _stage_identity = staged
+                    staged_envelope, _public_key, staged_trust_actor = (
+                        self._validate_reviewed_t1082_stage(
+                            staged_document,
+                            expected_manifest=expected_manifest,
+                            expected_payload=expected_payload,
+                            expected_record_sha256=str(envelope["record_sha256"]),
+                        )
+                    )
+                    if staged_trust_actor != operator_id:
+                        raise APIError(
+                            HTTPStatus.CONFLICT,
+                            "source_intake_operator_conflict",
+                            (
+                                "The recoverable signed package stage belongs to a "
+                                "different operator."
+                            ),
+                        )
+                    if canonical_json_bytes(staged_envelope) != existing.get(
+                        "canonical_envelope_bytes"
+                    ):
+                        raise APIError(
+                            HTTPStatus.CONFLICT,
+                            "source_intake_package_conflict",
+                            "The recoverable signed package stage differs from the installed package.",
+                        )
+                    _remove_reviewed_t1082_package_stage(
+                        self.store.root,
+                        expected_payload=staged_bytes,
+                    )
+            else:
+                private_key = Ed25519PrivateKey.generate()
+                public_key = canonical_public_key_b64u(private_key.public_key())
+                envelope_bytes = source_intake_package.build_gate09_action_package(
+                    envelope,
+                    private_key=private_key,
+                )
+                del private_key
+                try:
+                    signed_envelope = json.loads(envelope_bytes)
+                except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+                    raise APIError(
+                        HTTPStatus.UNPROCESSABLE_ENTITY,
+                        "source_intake_package_rejected",
+                        "The fixed reviewed T1082 package recipe produced invalid bytes.",
+                    ) from exc
+                proposed_stage = {
+                    "schema_version": _REVIEWED_T1082_STAGE_SCHEMA,
+                    "source_record_sha256": envelope["record_sha256"],
+                    "public_key": public_key,
+                    "trust_actor": operator_id,
+                    "package_envelope": signed_envelope,
+                }
+                staged_document, stage_created, staged_bytes = _stage_reviewed_t1082_package(
+                    self.store.root, proposed_stage
+                )
+                signed_envelope, public_key, trust_actor = self._validate_reviewed_t1082_stage(
+                    staged_document,
+                    expected_manifest=expected_manifest,
+                    expected_payload=expected_payload,
+                    expected_record_sha256=str(envelope["record_sha256"]),
+                )
+                if trust_actor != operator_id:
+                    raise APIError(
+                        HTTPStatus.CONFLICT,
+                        "source_intake_operator_conflict",
+                        ("The recoverable signed package stage belongs to a different operator."),
+                    )
+                self.trust_action_package_publisher(
+                    {
+                        "publisher_id": source_intake_package.PUBLISHER_ID,
+                        "key_id": source_intake_package.KEY_ID,
+                        "public_key": public_key,
+                        "provenance": {
+                            "schema_version": "bluefire.source-intake-signer-provenance.v1",
+                            "source_intake_id": source_intake_package.INTAKE_ID,
+                            "source_record_sha256": envelope["record_sha256"],
+                            "purpose": "Local signing of the fixed reviewed T1082 package recipe.",
+                            "private_key_lifecycle": "generated_in_memory_and_not_persisted",  # pragma: allowlist secret -- lifecycle label only
+                            "network_used": False,
+                        },
+                        "trusted_by": trust_actor,
+                    }
+                )
+                self.install_action_package(
+                    {
+                        "envelope": signed_envelope,
+                        "installed_by": operator_id,
+                    }
+                )
+                _remove_reviewed_t1082_package_stage(
+                    self.store.root,
+                    expected_payload=staged_bytes,
+                )
+                signing_key_lifecycle = (
+                    "generated_in_memory_and_not_persisted"
+                    if stage_created
+                    else "resumed_recoverable_signed_envelope"
+                )
+
+            activation = self.activate_action_package(
+                source_intake_package.PACKAGE_ID,
+                source_intake_package.PACKAGE_VERSION,
+                {
+                    "runner_profile_id": runner_profile_id,
+                    "activated_by": operator_id,
+                    "reason": "Activate the fixed locally signed reviewed T1082 intake package.",
+                },
+            )
+            after = self._action_catalog_boundary()
+            behavior_is_available = source_intake_package.BEHAVIOR_ID in after.registry.behavior_ids
+            action_is_available = source_intake_package.ACTION_ID in after.registry.action_ids
+            if not behavior_is_available or not action_is_available:
+                raise ActionCatalogError(
+                    "reviewed T1082 activation did not publish its behavior and action"
+                )
+
+        package = activation.get("package")
+        if not isinstance(package, Mapping):  # pragma: no cover - activation response invariant
+            raise ActionCatalogError("reviewed T1082 activation returned no package")
+        if installed_now:
+            operation = "installed_and_activated"
+        elif active_before:
+            operation = "already_active_revalidated"
+        else:
+            operation = "resumed_activation"
+        return {
+            "schema_version": "bluefire.reviewed-source-intake-activation.v1",
+            "operation": operation,
+            "package": {
+                "package_id": source_intake_package.PACKAGE_ID,
+                "version": source_intake_package.PACKAGE_VERSION,
+                "package_digest": package.get("package_digest"),
+                "content_digest": package.get("content_digest"),
+                "publisher_id": package.get("publisher_id"),
+                "key_id": package.get("key_id"),
+                "status": package.get("status"),
+            },
+            "catalog_delta": {
+                "changed": (
+                    before.generation != after.generation
+                    or before.catalog_digest != after.catalog_digest
+                ),
+                "generation_before": before.generation,
+                "generation_after": after.generation,
+                "catalog_digest_before": before.catalog_digest,
+                "catalog_digest_after": after.catalog_digest,
+                "behavior_ids_added": (
+                    [] if behavior_was_available else [source_intake_package.BEHAVIOR_ID]
+                ),
+                "action_ids_added": (
+                    [] if action_was_available else [source_intake_package.ACTION_ID]
+                ),
+            },
+            "availability": {
+                "behavior_id": source_intake_package.BEHAVIOR_ID,
+                "behavior_available": behavior_is_available,
+                "action_id": source_intake_package.ACTION_ID,
+                "action_available": action_is_available,
+            },
+            "runner": {
+                "profile_id": runner_profile_id,
+                "identity_digest": activation.get("runner_identity_digest"),
+                "inventory_digest": activation.get("runner_inventory_digest"),
+                "activation_revalidated": True,
+            },
+            "persistence": {
+                "installed_now": installed_now,
+                "activated_now": not active_before,
+                "durable_product_store": True,
+                "signing_key_lifecycle": signing_key_lifecycle,
+                "private_signing_key_persisted": False,
+            },
+        }
+
+    def _completed_reviewed_t1082_activation(
+        self,
+        receipt: Mapping[str, Any],
+        *,
+        envelope: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Reconstruct completed authority without dispatching another activation."""
+
+        activation_record = receipt.get("activation")
+        receipt_package = receipt.get("package")
+        if not isinstance(activation_record, Mapping) or not isinstance(receipt_package, Mapping):
+            raise SourceIntakeError("completed source-intake receipt authority is incomplete")
+        generation = activation_record.get("catalog_generation")
+        catalog_digest = activation_record.get("catalog_digest")
+        operation = activation_record.get("operation")
+        if (
+            isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation < 1
+            or not isinstance(catalog_digest, str)
+            or operation
+            not in {"installed_and_activated", "resumed_activation", "already_active_revalidated"}
+        ):
+            raise SourceIntakeError("completed source-intake receipt authority is invalid")
+
+        expected_manifest, expected_payload = source_intake_package.gate09_package_components(
+            envelope
+        )
+        with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+            try:
+                package = self.product_store.get_action_package(
+                    source_intake_package.PACKAGE_ID,
+                    source_intake_package.PACKAGE_VERSION,
+                )
+                self._validate_reviewed_t1082_package(
+                    package,
+                    expected_manifest=expected_manifest,
+                    expected_payload=expected_payload,
+                )
+                after = self._load_action_catalog_snapshot(generation)
+                before_generation = (
+                    generation if operation == "already_active_revalidated" else generation - 1
+                )
+                before = self._load_action_catalog_snapshot(before_generation)
+                current = self._action_catalog_boundary()
+            except (
+                ActionCatalogError,
+                ActionPackageIntegrityError,
+                ProductStoreError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                raise SourceIntakeError(
+                    "completed source-intake package authority could not be reconstructed"
+                ) from exc
+
+        package_row = next(
+            (
+                item
+                for item in after.packages
+                if item.get("package_id") == source_intake_package.PACKAGE_ID
+                and item.get("package_version") == source_intake_package.PACKAGE_VERSION
+            ),
+            None,
+        )
+        changed = operation != "already_active_revalidated"
+        if (
+            after.catalog_digest != catalog_digest
+            or not isinstance(package_row, Mapping)
+            or package_row.get("package_digest") != receipt_package.get("package_digest")
+            or package_row.get("content_digest") != receipt_package.get("content_digest")
+            or receipt_package.get("package_id") != source_intake_package.PACKAGE_ID
+            or receipt_package.get("version") != source_intake_package.PACKAGE_VERSION
+            or package.get("active") is not True
+            or (changed and package_row.get("activated_generation") != generation)
+            or source_intake_package.BEHAVIOR_ID not in after.registry.behavior_ids
+            or source_intake_package.ACTION_ID not in after.registry.action_ids
+            or source_intake_package.BEHAVIOR_ID not in current.registry.behavior_ids
+            or source_intake_package.ACTION_ID not in current.registry.action_ids
+        ):
+            raise SourceIntakeError(
+                "completed source-intake receipt does not match historical package authority"
+            )
+        behavior_was_available = source_intake_package.BEHAVIOR_ID in before.registry.behavior_ids
+        action_was_available = source_intake_package.ACTION_ID in before.registry.action_ids
+        return {
+            "schema_version": "bluefire.reviewed-source-intake-activation.v1",
+            "operation": operation,
+            "package": {
+                "package_id": source_intake_package.PACKAGE_ID,
+                "version": source_intake_package.PACKAGE_VERSION,
+                "package_digest": package_row.get("package_digest"),
+                "content_digest": package_row.get("content_digest"),
+                "publisher_id": package_row.get("publisher_id"),
+                "key_id": package_row.get("key_id"),
+                "status": "active",
+            },
+            "catalog_delta": {
+                "changed": changed,
+                "generation_before": before.generation,
+                "generation_after": after.generation,
+                "catalog_digest_before": before.catalog_digest,
+                "catalog_digest_after": after.catalog_digest,
+                "behavior_ids_added": (
+                    [] if behavior_was_available else [source_intake_package.BEHAVIOR_ID]
+                ),
+                "action_ids_added": (
+                    [] if action_was_available else [source_intake_package.ACTION_ID]
+                ),
+            },
+            "availability": {
+                "behavior_id": source_intake_package.BEHAVIOR_ID,
+                "behavior_available": True,
+                "action_id": source_intake_package.ACTION_ID,
+                "action_available": True,
+            },
+            "runner": {
+                "profile_id": receipt.get("runner_profile_id"),
+                "identity_digest": package_row.get("runner_identity_digest"),
+                "inventory_digest": package_row.get("runner_inventory_digest"),
+                "activation_revalidated": True,
+            },
+            "persistence": {
+                "installed_now": operation == "installed_and_activated",
+                "activated_now": changed,
+                "durable_product_store": True,
+                "signing_key_lifecycle": (
+                    "generated_in_memory_and_not_persisted"
+                    if operation == "installed_and_activated"
+                    else "existing_locally_trusted_package"
+                ),
+                "private_signing_key_persisted": False,
+            },
+        }
+
+    @staticmethod
+    def _validate_reviewed_t1082_package(
+        package: Mapping[str, Any],
+        *,
+        expected_manifest: Mapping[str, Any],
+        expected_payload: Mapping[str, Any],
+    ) -> None:
+        """Reject a same-ID package unless its audited immutable recipe is exact."""
+
+        envelope_bytes = package.get("canonical_envelope_bytes")
+        try:
+            document = json.loads(envelope_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "source_intake_package_conflict",
+                "The installed reviewed-source package envelope is invalid.",
+            ) from exc
+        signature = document.get("signature") if isinstance(document, Mapping) else None
+        if (
+            not isinstance(envelope_bytes, bytes)
+            or not isinstance(document, Mapping)
+            or canonical_json_bytes(document) != envelope_bytes
+            or package.get("package_id") != source_intake_package.PACKAGE_ID
+            or package.get("version") != source_intake_package.PACKAGE_VERSION
+            or package.get("publisher_id") != source_intake_package.PUBLISHER_ID
+            or package.get("key_id") != source_intake_package.KEY_ID
+            or package.get("manifest") != expected_manifest
+            or document.get("manifest") != expected_manifest
+            or document.get("payload") != expected_payload
+            or not isinstance(signature, Mapping)
+            or signature.get("key_id") != source_intake_package.KEY_ID
+        ):
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "source_intake_package_conflict",
+                "The installed same-ID package is not the fixed reviewed T1082 recipe.",
+            )
+
+    @staticmethod
+    def _validate_reviewed_t1082_stage(
+        stage: Mapping[str, Any],
+        *,
+        expected_manifest: Mapping[str, Any],
+        expected_payload: Mapping[str, Any],
+        expected_record_sha256: str,
+    ) -> tuple[Mapping[str, Any], str, str]:
+        """Cryptographically revalidate a crash-recoverable signed package stage."""
+
+        if (
+            set(stage)
+            != {
+                "schema_version",
+                "source_record_sha256",
+                "public_key",
+                "trust_actor",
+                "package_envelope",
+            }
+            or stage.get("schema_version") != _REVIEWED_T1082_STAGE_SCHEMA
+        ):
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "source_intake_package_conflict",
+                "The recoverable signed package stage has an invalid contract.",
+            )
+        if stage.get("source_record_sha256") != expected_record_sha256:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "source_intake_package_conflict",
+                "The recoverable signed package stage belongs to another source record.",
+            )
+        public_key = stage.get("public_key")
+        trust_actor = _source_intake_operator(stage.get("trust_actor"))
+        signed_envelope = stage.get("package_envelope")
+        if not isinstance(public_key, str) or not isinstance(signed_envelope, Mapping):
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "source_intake_package_conflict",
+                "The recoverable signed package stage is incomplete.",
+            )
+        try:
+            if re.fullmatch(r"[A-Za-z0-9_-]{43}", public_key) is None:
+                raise ActionPackageError("staged public key is not canonical base64url")
+            decoded_public_key = base64.urlsafe_b64decode(public_key + "=")
+            if (
+                len(decoded_public_key) != 32
+                or base64.urlsafe_b64encode(decoded_public_key).rstrip(b"=").decode("ascii")
+                != public_key
+            ):
+                raise ActionPackageError("staged public key is not canonical Ed25519 material")
+            audited = audit_action_package(
+                canonical_json_bytes(signed_envelope),
+                trusted_signers={
+                    (
+                        source_intake_package.PUBLISHER_ID,
+                        source_intake_package.KEY_ID,
+                    ): decoded_public_key
+                },
+            )
+        except (ActionPackageError, binascii.Error, TypeError, ValueError) as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "source_intake_package_conflict",
+                "The recoverable signed package stage failed cryptographic verification.",
+            ) from exc
+        document = dict(signed_envelope)
+        if (
+            audited.manifest.to_dict() != expected_manifest
+            or audited.publisher_id != source_intake_package.PUBLISHER_ID
+            or audited.key_id != source_intake_package.KEY_ID
+            or document.get("manifest") != expected_manifest
+            or document.get("payload") != expected_payload
+        ):
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "source_intake_package_conflict",
+                "The recoverable signed package stage is not the fixed reviewed T1082 recipe.",
+            )
+        return signed_envelope, public_key, trust_actor
 
     def detection_health(self) -> Mapping[str, Any]:
         """Report honest parser/compiler and persistence readiness."""
@@ -6573,6 +7293,1021 @@ def _management_identifier(value: Any, context: str) -> str:
             f"{context} must be a stable lowercase identifier of at most 200 characters.",
         )
     return value
+
+
+def _source_intake_operator(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 128
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise APIError(
+            HTTPStatus.BAD_REQUEST,
+            "source_intake_operator_invalid",
+            "operator_id must be a printable non-empty string of at most 128 characters.",
+        )
+    return value
+
+
+def _allocate_source_intake_destination(
+    root: Path, destination_id: str
+) -> tuple[Path, tuple[int, int, int], tuple[int, int, int], bool]:
+    """Allocate a namespace or securely select an exact interrupted namespace."""
+
+    try:
+        state_root = root.resolve(strict=True)
+        state_metadata = state_root.lstat()
+        intake_root = state_root / "source-intakes"
+        intake_root.mkdir(mode=0o700, exist_ok=True)
+        with _PinnedDirectory(intake_root, private=True):
+            pass
+        intake_metadata = intake_root.lstat()
+        resolved_intake_root = intake_root.resolve(strict=True)
+    except (OSError, RunnerTrustError) as exc:
+        raise APIError(
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "source_intake_state_unavailable",
+            "The product-controlled source-intake state root is unavailable.",
+        ) from exc
+    if (
+        _unsafe_directory_metadata(state_metadata)
+        or _unsafe_directory_metadata(intake_metadata)
+        or resolved_intake_root.parent != state_root
+        or not _same_filesystem_owner(intake_metadata, state_metadata)
+        or (os.name != "nt" and stat.S_IMODE(intake_metadata.st_mode) != 0o700)
+    ):
+        raise APIError(
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "source_intake_state_unsafe",
+            "The product-controlled source-intake state root is unsafe.",
+        )
+
+    destination = intake_root / destination_id
+    created = True
+    allocated_identity: tuple[int, int] | None = None
+    try:
+        destination.mkdir(mode=0o700, exist_ok=False)
+    except FileExistsError:
+        created = False
+    except (OSError, RunnerTrustError) as exc:
+        raise APIError(
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "source_intake_destination_unavailable",
+            "The source-intake destination could not be allocated.",
+        ) from exc
+
+    try:
+        if created:
+            with _PinnedDirectory(destination, private=False) as allocated:
+                allocated_identity = allocated.identity
+        with _PinnedDirectory(destination, private=True):
+            pass
+        destination_metadata = destination.lstat()
+        resolved_destination = destination.resolve(strict=True)
+        current_intake_metadata = intake_root.lstat()
+    except (OSError, RunnerTrustError) as exc:
+        if created and allocated_identity is not None:
+            try:
+                with _PinnedDirectory(destination, private=False, delete=True) as allocated:
+                    if allocated.identity == allocated_identity:
+                        allocated.remove()
+            except (OSError, RunnerTrustError):
+                pass
+        raise APIError(
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "source_intake_destination_unsafe",
+            "The source-intake destination did not remain available.",
+        ) from exc
+    if (
+        _unsafe_directory_metadata(destination_metadata)
+        or resolved_destination.parent != resolved_intake_root
+        or _filesystem_identity(current_intake_metadata) != _filesystem_identity(intake_metadata)
+        or not _same_filesystem_owner(destination_metadata, intake_metadata)
+        or not _same_filesystem_owner(intake_metadata, state_metadata)
+        or (os.name != "nt" and bool(stat.S_IMODE(destination_metadata.st_mode) & 0o077))
+    ):
+        raise APIError(
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            "source_intake_destination_unsafe",
+            "The source-intake destination is unsafe.",
+        )
+    return (
+        resolved_destination,
+        _filesystem_identity(destination_metadata),
+        _filesystem_identity(intake_metadata),
+        created,
+    )
+
+
+def _read_interrupted_t1082_destination(
+    destination: Path,
+    *,
+    destination_identity: tuple[int, int, int],
+) -> tuple[
+    Mapping[str, Any],
+    tuple[Mapping[str, Any], bytes, tuple[int, int, int]] | None,
+]:
+    """Read only an exact artifact-only or completed interrupted namespace."""
+
+    artifact_name = f"{source_intake_package.INTAKE_ID}.json"
+    allowed_names = {artifact_name, _REVIEWED_T1082_RECEIPT_FILE}
+    try:
+        before = destination.lstat()
+        entries = tuple(destination.iterdir())
+    except OSError as exc:
+        raise SourceIntakeError("interrupted source-intake destination is unavailable") from exc
+    names = [entry.name for entry in entries]
+    if (
+        _unsafe_directory_metadata(before)
+        or _filesystem_identity(before) != destination_identity
+        or len(names) != len(set(names))
+        or artifact_name not in names
+        or not set(names).issubset(allowed_names)
+    ):
+        raise SourceIntakeError("interrupted source-intake destination contains unexpected state")
+
+    artifact, artifact_payload, _artifact_identity = _read_owned_canonical_document(
+        destination / artifact_name,
+        directory=destination,
+        directory_identity=destination_identity,
+        maximum_bytes=_MAX_REVIEWED_T1082_STAGE_BYTES,
+        context="interrupted source-intake artifact",
+    )
+    try:
+        envelope = source_intake_package.validate_gate09_intake_envelope(artifact)
+    except source_intake_package.SourceIntakePackageError as exc:
+        raise SourceIntakeError(
+            "interrupted source-intake artifact failed its reviewed contract"
+        ) from exc
+    if canonical_json_bytes(envelope) != artifact_payload:
+        raise SourceIntakeError("interrupted source-intake artifact is not canonical")
+
+    receipt: tuple[Mapping[str, Any], bytes, tuple[int, int, int]] | None = None
+    if _REVIEWED_T1082_RECEIPT_FILE in names:
+        receipt = _read_owned_canonical_document(
+            destination / _REVIEWED_T1082_RECEIPT_FILE,
+            directory=destination,
+            directory_identity=destination_identity,
+            maximum_bytes=_MAX_REVIEWED_T1082_RECEIPT_BYTES,
+            context="completed source-intake receipt",
+        )
+    try:
+        after = destination.lstat()
+        final_names = {entry.name for entry in destination.iterdir()}
+    except OSError as exc:
+        raise SourceIntakeError(
+            "interrupted source-intake destination changed during recovery"
+        ) from exc
+    if (
+        _filesystem_identity(after) != destination_identity
+        or after.st_mtime_ns != before.st_mtime_ns
+        or final_names != set(names)
+    ):
+        raise SourceIntakeError("interrupted source-intake destination changed during recovery")
+    return envelope, receipt
+
+
+def _read_owned_canonical_document(
+    path: Path,
+    *,
+    directory: Path,
+    directory_identity: tuple[int, int, int],
+    maximum_bytes: int,
+    context: str,
+) -> tuple[Mapping[str, Any], bytes, tuple[int, int, int]]:
+    """Read one bounded canonical singly-linked file under an exact directory."""
+
+    try:
+        directory_metadata = directory.lstat()
+        metadata = path.lstat()
+    except OSError as exc:
+        raise SourceIntakeError(f"{context} is unavailable") from exc
+    if (
+        path.parent != directory
+        or _unsafe_directory_metadata(directory_metadata)
+        or _filesystem_identity(directory_metadata) != directory_identity
+        or _unsafe_regular_file_metadata(metadata)
+        or not _same_filesystem_owner(metadata, directory_metadata)
+        or not 1 <= metadata.st_size <= maximum_bytes
+    ):
+        raise SourceIntakeError(f"{context} identity or size is invalid")
+    identity = _filesystem_identity(metadata)
+    descriptor: int | None = None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        descriptor_before = os.fstat(descriptor)
+        observed = bytearray()
+        while len(observed) <= maximum_bytes:
+            block = os.read(
+                descriptor,
+                min(64 * 1024, maximum_bytes + 1 - len(observed)),
+            )
+            if not block:
+                break
+            observed.extend(block)
+        descriptor_after = os.fstat(descriptor)
+    except OSError as exc:
+        raise SourceIntakeError(f"{context} could not be read safely") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    try:
+        current_directory = directory.lstat()
+        current = path.lstat()
+    except OSError as exc:
+        raise SourceIntakeError(f"{context} changed while it was read") from exc
+    payload = bytes(observed)
+    if (
+        _unsafe_regular_file_metadata(descriptor_before)
+        or _filesystem_identity(descriptor_before) != identity
+        or _filesystem_identity(descriptor_after) != identity
+        or _filesystem_identity(current) != identity
+        or _filesystem_identity(current_directory) != directory_identity
+        or descriptor_after.st_size != descriptor_before.st_size
+        or descriptor_after.st_mtime_ns != descriptor_before.st_mtime_ns
+        or len(payload) != descriptor_before.st_size
+        or len(payload) > maximum_bytes
+    ):
+        raise SourceIntakeError(f"{context} changed while it was read")
+    try:
+        document = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise SourceIntakeError(f"{context} is not canonical JSON") from exc
+    if not isinstance(document, Mapping) or canonical_json_bytes(document) != payload:
+        raise SourceIntakeError(f"{context} is not canonical JSON")
+    return document, payload, identity
+
+
+def _build_reviewed_t1082_operation_receipt(
+    *,
+    destination_id: str,
+    operator_id: str,
+    runner_profile_id: str,
+    envelope: Mapping[str, Any],
+    artifact_ref: str,
+    artifact_size_bytes: int,
+    package_activation: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Build one immutable proof of the exact completed product operation."""
+
+    package = package_activation.get("package")
+    catalog_delta = package_activation.get("catalog_delta")
+    history = envelope.get("record", {}).get("transformation_history")
+    if (
+        not isinstance(package, Mapping)
+        or not isinstance(catalog_delta, Mapping)
+        or not isinstance(history, list)
+        or len(history) != 1
+        or not isinstance(history[0], Mapping)
+    ):
+        raise SourceIntakeError("reviewed source operation receipt inputs are incomplete")
+    completed_at = (
+        datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    )
+    receipt = {
+        "schema_version": _REVIEWED_T1082_RECEIPT_SCHEMA,
+        "destination_id": destination_id,
+        "operator_id": operator_id,
+        "runner_profile_id": runner_profile_id,
+        "intake": {
+            "intake_id": source_intake_package.INTAKE_ID,
+            "record_sha256": envelope.get("record_sha256"),
+            "output_sha256": history[0].get("output_sha256"),
+        },
+        "artifact": {
+            "state_ref": artifact_ref,
+            "sha256": content_hash(envelope),
+            "size_bytes": artifact_size_bytes,
+        },
+        "package": {
+            "package_id": package.get("package_id"),
+            "version": package.get("version"),
+            "package_digest": package.get("package_digest"),
+            "content_digest": package.get("content_digest"),
+        },
+        "activation": {
+            "operation": package_activation.get("operation"),
+            "catalog_generation": catalog_delta.get("generation_after"),
+            "catalog_digest": catalog_delta.get("catalog_digest_after"),
+        },
+        "completed_at": completed_at,
+    }
+    return _validate_reviewed_t1082_operation_receipt(
+        receipt,
+        destination_id=destination_id,
+        operator_id=operator_id,
+        runner_profile_id=runner_profile_id,
+        envelope=envelope,
+        artifact_ref=artifact_ref,
+        artifact_size_bytes=artifact_size_bytes,
+        package_activation=package_activation,
+    )
+
+
+def _validate_reviewed_t1082_operation_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    destination_id: str,
+    operator_id: str,
+    runner_profile_id: str,
+    envelope: Mapping[str, Any],
+    artifact_ref: str,
+    artifact_size_bytes: int,
+    package_activation: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Bind receipt bytes to the exact envelope, package, and resulting catalog."""
+
+    validated_envelope = source_intake_package.validate_gate09_intake_envelope(envelope)
+    package = package_activation.get("package")
+    catalog_delta = package_activation.get("catalog_delta")
+    history = validated_envelope["record"]["transformation_history"]
+    completed_at = receipt.get("completed_at")
+    try:
+        parsed_completed_at = datetime.fromisoformat(completed_at.removesuffix("Z") + "+00:00")
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SourceIntakeError(
+            "reviewed source operation receipt completion time is invalid"
+        ) from exc
+    if (
+        not isinstance(completed_at, str)
+        or not completed_at.endswith("Z")
+        or parsed_completed_at.tzinfo is None
+        or parsed_completed_at.utcoffset() != timedelta(0)
+        or not isinstance(package, Mapping)
+        or not isinstance(catalog_delta, Mapping)
+    ):
+        raise SourceIntakeError("reviewed source operation receipt authority is invalid")
+    expected = {
+        "schema_version": _REVIEWED_T1082_RECEIPT_SCHEMA,
+        "destination_id": destination_id,
+        "operator_id": operator_id,
+        "runner_profile_id": runner_profile_id,
+        "intake": {
+            "intake_id": source_intake_package.INTAKE_ID,
+            "record_sha256": validated_envelope["record_sha256"],
+            "output_sha256": history[0]["output_sha256"],
+        },
+        "artifact": {
+            "state_ref": artifact_ref,
+            "sha256": content_hash(validated_envelope),
+            "size_bytes": artifact_size_bytes,
+        },
+        "package": {
+            "package_id": source_intake_package.PACKAGE_ID,
+            "version": source_intake_package.PACKAGE_VERSION,
+            "package_digest": package.get("package_digest"),
+            "content_digest": package.get("content_digest"),
+        },
+        "activation": {
+            "operation": package_activation.get("operation"),
+            "catalog_generation": catalog_delta.get("generation_after"),
+            "catalog_digest": catalog_delta.get("catalog_digest_after"),
+        },
+        "completed_at": completed_at,
+    }
+    if (
+        dict(receipt) != expected
+        or package.get("package_id") != source_intake_package.PACKAGE_ID
+        or package.get("version") != source_intake_package.PACKAGE_VERSION
+        or package.get("status") != "active"
+        or package_activation.get("operation")
+        not in {"installed_and_activated", "resumed_activation", "already_active_revalidated"}
+        or not isinstance(catalog_delta.get("generation_after"), int)
+        or isinstance(catalog_delta.get("generation_after"), bool)
+        or not isinstance(catalog_delta.get("catalog_digest_after"), str)
+        or any(
+            not isinstance(value, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None
+            for value in (
+                package.get("package_digest"),
+                package.get("content_digest"),
+                catalog_delta.get("catalog_digest_after"),
+            )
+        )
+    ):
+        raise SourceIntakeError(
+            "reviewed source operation receipt is not bound to the completed operation"
+        )
+    return expected
+
+
+def _publish_reviewed_t1082_operation_receipt(
+    destination: Path,
+    *,
+    destination_identity: tuple[int, int, int],
+    receipt: Mapping[str, Any],
+) -> tuple[Path, tuple[int, int, int], bytes]:
+    """Exclusively publish canonical receipt bytes in the allocated destination."""
+
+    payload = canonical_json_bytes(receipt)
+    if not 1 <= len(payload) <= _MAX_REVIEWED_T1082_RECEIPT_BYTES:
+        raise SourceIntakeError("reviewed source operation receipt exceeds its byte bound")
+    target = destination / _REVIEWED_T1082_RECEIPT_FILE
+    try:
+        destination_metadata = destination.lstat()
+        resolved_destination = destination.resolve(strict=True)
+        if (
+            _unsafe_directory_metadata(destination_metadata)
+            or _filesystem_identity(destination_metadata) != destination_identity
+            or target.parent != resolved_destination
+        ):
+            raise OSError("source-intake receipt destination identity changed")
+        identity = _publish_owned_payload_no_replace(
+            resolved_destination,
+            directory_identity=destination_identity,
+            target=target,
+            payload=payload,
+            context="reviewed source operation receipt",
+        )
+    except FileExistsError as exc:
+        raise SourceIntakeError(
+            "reviewed source operation receipt already exists in the new destination"
+        ) from exc
+    except OSError as exc:
+        raise SourceIntakeError(
+            "reviewed source operation receipt could not be published safely"
+        ) from exc
+    return target, identity, payload
+
+
+def _release_failed_source_intake_destination(
+    destination: Path,
+    *,
+    destination_identity: tuple[int, int, int],
+    intake_root_identity: tuple[int, int, int],
+    destination_created: bool,
+    published_artifact: tuple[Path, tuple[int, int, int], bytes] | None,
+    published_receipt: tuple[Path, tuple[int, int, int], bytes] | None,
+) -> None:
+    """Remove only exact unchanged output and state allocated by this call."""
+
+    try:
+        intake_root = destination.parent
+        intake_metadata = intake_root.lstat()
+        destination_metadata = destination.lstat()
+        resolved_intake_root = intake_root.resolve(strict=True)
+        resolved_destination = destination.resolve(strict=True)
+        if (
+            intake_root.name != "source-intakes"
+            or _unsafe_directory_metadata(intake_metadata)
+            or _unsafe_directory_metadata(destination_metadata)
+            or _filesystem_identity(intake_metadata) != intake_root_identity
+            or _filesystem_identity(destination_metadata) != destination_identity
+            or resolved_destination.parent != resolved_intake_root
+        ):
+            return
+        if published_receipt is not None and not _remove_exact_source_intake_file(
+            destination,
+            published_receipt,
+            expected_name=_REVIEWED_T1082_RECEIPT_FILE,
+        ):
+            return
+        if published_artifact is not None and not _remove_exact_source_intake_file(
+            destination,
+            published_artifact,
+            expected_name=f"{source_intake_package.INTAKE_ID}.json",
+        ):
+            return
+        if destination_created:
+            destination.rmdir()
+    except OSError:
+        return
+
+
+def _remove_exact_source_intake_file(
+    destination: Path,
+    published: tuple[Path, tuple[int, int, int], bytes],
+    *,
+    expected_name: str,
+) -> bool:
+    path, identity, expected_payload = published
+    if path.parent != destination or path.name != expected_name:
+        return False
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        observed = bytearray()
+        while len(observed) <= len(expected_payload):
+            block = os.read(
+                descriptor,
+                min(64 * 1024, len(expected_payload) + 1 - len(observed)),
+            )
+            if not block:
+                break
+            observed.extend(block)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    current = path.lstat()
+    if (
+        _unsafe_regular_file_metadata(before)
+        or _filesystem_identity(before) != identity
+        or _filesystem_identity(after) != identity
+        or after.st_size != before.st_size
+        or after.st_mtime_ns != before.st_mtime_ns
+        or _filesystem_identity(current) != identity
+        or bytes(observed) != expected_payload
+    ):
+        return False
+    path.unlink()
+    return True
+
+
+def _reviewed_t1082_stage_location(
+    root: Path,
+    *,
+    create: bool,
+) -> tuple[Path, Path, tuple[int, int, int]] | None:
+    """Resolve staging without making an absent read mutate product state."""
+
+    try:
+        state_root = root.resolve(strict=True)
+        state_metadata = state_root.lstat()
+        stage_root = state_root / "source-intake-package-staging"
+        if create:
+            stage_root.mkdir(mode=0o700, exist_ok=True)
+        stage_metadata = stage_root.lstat()
+        resolved_stage_root = stage_root.resolve(strict=True)
+    except FileNotFoundError:
+        if not create:
+            return None
+        raise SourceIntakeError("reviewed source package staging is unavailable") from None
+    except OSError as exc:
+        raise SourceIntakeError("reviewed source package staging is unavailable") from exc
+    if (
+        _unsafe_directory_metadata(state_metadata)
+        or _unsafe_directory_metadata(stage_metadata)
+        or resolved_stage_root.parent != state_root
+    ):
+        raise SourceIntakeError("reviewed source package staging is unsafe")
+    try:
+        with _PinnedDirectory(resolved_stage_root, private=True):
+            pass
+        current_stage_metadata = resolved_stage_root.lstat()
+        current_state_metadata = state_root.lstat()
+    except (OSError, RunnerTrustError) as exc:
+        raise SourceIntakeError("reviewed source package staging is not owner-private") from exc
+    if (
+        _filesystem_identity(current_stage_metadata) != _filesystem_identity(stage_metadata)
+        or _filesystem_identity(current_state_metadata) != _filesystem_identity(state_metadata)
+        or not _same_filesystem_owner(current_stage_metadata, current_state_metadata)
+        or (os.name != "nt" and stat.S_IMODE(current_stage_metadata.st_mode) != 0o700)
+    ):
+        raise SourceIntakeError("reviewed source package staging is not owner-private")
+    return (
+        resolved_stage_root / _REVIEWED_T1082_STAGE_FILE,
+        resolved_stage_root,
+        _filesystem_identity(current_stage_metadata),
+    )
+
+
+def _constrain_reviewed_t1082_stage_file(
+    path: Path,
+    *,
+    stage_root: Path,
+    stage_root_identity: tuple[int, int, int],
+) -> tuple[bytes, tuple[int, int], tuple[int, int, int, int, int]]:
+    """Apply and verify private access before staged signing authority is trusted."""
+
+    try:
+        with _PinnedDirectory(stage_root, private=True) as pinned:
+            payload, identity, snapshot = pinned.read_with_identity(
+                path.name,
+                maximum=_MAX_REVIEWED_T1082_STAGE_BYTES,
+                exclusive=True,
+            )
+        current_root = stage_root.lstat()
+        current = path.lstat()
+    except (OSError, RunnerTrustError) as exc:
+        raise SourceIntakeError("reviewed source package stage is not owner-private") from exc
+    if (
+        path.parent != stage_root
+        or _unsafe_directory_metadata(current_root)
+        or _unsafe_regular_file_metadata(current)
+        or _filesystem_identity(current_root) != stage_root_identity
+        or not _same_filesystem_owner(current, current_root)
+        or _filesystem_snapshot(current) != snapshot
+        or (
+            os.name != "nt"
+            and (
+                stat.S_IMODE(current_root.st_mode) != 0o700
+                or stat.S_IMODE(current.st_mode) != 0o600
+            )
+        )
+    ):
+        raise SourceIntakeError("reviewed source package stage is not owner-private")
+    return payload, identity, snapshot
+
+
+def _read_reviewed_t1082_package_stage(
+    root: Path,
+) -> tuple[Mapping[str, Any], bytes, tuple[int, int]] | None:
+    location = _reviewed_t1082_stage_location(root, create=False)
+    if location is None:
+        return None
+    path, stage_root, stage_root_identity = location
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        try:
+            with _PinnedDirectory(stage_root, private=True, delete=True) as pinned:
+                pinned.remove()
+        except (OSError, RunnerTrustError):
+            pass
+        return None
+    except OSError as exc:
+        raise SourceIntakeError("reviewed source package stage could not be inspected") from exc
+    if (
+        _unsafe_regular_file_metadata(metadata)
+        or not 1 <= metadata.st_size <= _MAX_REVIEWED_T1082_STAGE_BYTES
+    ):
+        raise SourceIntakeError("reviewed source package stage has an unsafe identity or size")
+    payload, pinned_identity, pinned_snapshot = _constrain_reviewed_t1082_stage_file(
+        path,
+        stage_root=stage_root,
+        stage_root_identity=stage_root_identity,
+    )
+    metadata = path.lstat()
+
+    path_identity = _filesystem_identity(metadata)
+    try:
+        current_root = stage_root.lstat()
+        current = path.lstat()
+    except OSError as exc:
+        raise SourceIntakeError("reviewed source package stage changed while it was read") from exc
+    if (
+        _unsafe_directory_metadata(current_root)
+        or _unsafe_regular_file_metadata(metadata)
+        or not _same_filesystem_owner(metadata, current_root)
+        or _filesystem_identity(current_root) != stage_root_identity
+        or _filesystem_identity(current) != path_identity
+        or _filesystem_snapshot(metadata) != pinned_snapshot
+        or len(payload) != metadata.st_size
+        or len(payload) > _MAX_REVIEWED_T1082_STAGE_BYTES
+        or (
+            os.name != "nt"
+            and (
+                stat.S_IMODE(current_root.st_mode) != 0o700
+                or stat.S_IMODE(metadata.st_mode) != 0o600
+            )
+        )
+    ):
+        raise SourceIntakeError("reviewed source package stage changed while it was read")
+    try:
+        document = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise SourceIntakeError("reviewed source package stage is not canonical JSON") from exc
+    if not isinstance(document, Mapping) or canonical_json_bytes(document) != payload:
+        raise SourceIntakeError("reviewed source package stage is not canonical JSON")
+    return document, payload, pinned_identity
+
+
+def _stage_reviewed_t1082_package(
+    root: Path,
+    proposed: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], bool, bytes]:
+    """Create once, or resume, the public signed bytes needed after a process crash."""
+
+    payload = canonical_json_bytes(proposed)
+    if not 1 <= len(payload) <= _MAX_REVIEWED_T1082_STAGE_BYTES:
+        raise SourceIntakeError("reviewed source package stage is too large")
+    location = _reviewed_t1082_stage_location(root, create=True)
+    if location is None:  # pragma: no cover - create=True invariant
+        raise SourceIntakeError("reviewed source package staging is unavailable")
+    path, stage_root, stage_root_identity = location
+    try:
+        _publish_owned_payload_no_replace(
+            stage_root,
+            directory_identity=stage_root_identity,
+            target=path,
+            payload=payload,
+            context="reviewed source package stage",
+        )
+        _constrain_reviewed_t1082_stage_file(
+            path,
+            stage_root=stage_root,
+            stage_root_identity=stage_root_identity,
+        )
+    except FileExistsError:
+        existing = _read_reviewed_t1082_package_stage(root)
+        if existing is None:
+            raise SourceIntakeError(
+                "reviewed source package stage changed during recovery"
+            ) from None
+        document, existing_payload, _identity = existing
+        return document, False, existing_payload
+    except OSError as exc:
+        try:
+            stage_root.rmdir()
+        except OSError:
+            pass
+        raise SourceIntakeError("reviewed source package stage could not be published") from exc
+    return json.loads(payload), True, payload
+
+
+def _remove_reviewed_t1082_package_stage(root: Path, *, expected_payload: bytes) -> None:
+    """Remove only the exact verified stage that has reached durable package storage."""
+
+    staged = _read_reviewed_t1082_package_stage(root)
+    if staged is None:
+        return
+    _document, payload, identity = staged
+    location = _reviewed_t1082_stage_location(root, create=False)
+    if location is None:
+        raise SourceIntakeError("reviewed source package stage disappeared before cleanup")
+    path, stage_root, _stage_root_identity = location
+    try:
+        if payload != expected_payload:
+            raise SourceIntakeError("reviewed source package stage changed before recovery cleanup")
+        with _PinnedDirectory(stage_root, private=True, delete=True) as pinned:
+            pinned.unlink(
+                path.name,
+                maximum=_MAX_REVIEWED_T1082_STAGE_BYTES,
+                expected_identity=identity,
+            )
+            pinned.sync()
+            pinned.remove()
+    except SourceIntakeError:
+        raise
+    except (OSError, RunnerTrustError) as exc:
+        raise SourceIntakeError("reviewed source package stage could not be retired") from exc
+
+
+def _publish_owned_payload_no_replace(
+    directory: Path,
+    *,
+    directory_identity: tuple[int, int, int],
+    target: Path,
+    payload: bytes,
+    context: str,
+) -> tuple[int, int, int]:
+    """Fsync a private temp and hard-link it into authority without overwriting."""
+
+    if target.parent != directory or not payload:
+        raise OSError(f"{context} publication target is invalid")
+    descriptor: int | None = None
+    temporary: Path | None = None
+    temporary_identity: tuple[int, int, int] | None = None
+    target_linked = False
+    completed = False
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=directory,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+        )
+        temporary = Path(temporary_name)
+        before = os.fstat(descriptor)
+        temporary_identity = _filesystem_identity(before)
+        if (
+            temporary.parent != directory
+            or _unsafe_regular_file_metadata(before)
+            or before.st_size != 0
+        ):
+            raise OSError(f"{context} temporary file is unsafe")
+        _write_reviewed_state_payload(descriptor, payload, context=context)
+        _fsync_reviewed_state_temporary(descriptor)
+        after = os.fstat(descriptor)
+        current_directory = directory.lstat()
+        current_temporary = temporary.lstat()
+        _validate_reviewed_state_temporary(
+            current_directory=current_directory,
+            directory_identity=directory_identity,
+            descriptor_metadata=after,
+            temporary_metadata=current_temporary,
+            temporary_identity=temporary_identity,
+            expected_size=len(payload),
+            context=context,
+        )
+        os.close(descriptor)
+        descriptor = None
+        os.link(temporary, target, follow_symlinks=False)
+        target_linked = True
+        linked = target.lstat()
+        if (
+            not stat.S_ISREG(linked.st_mode)
+            or stat.S_ISLNK(linked.st_mode)
+            or bool(getattr(linked, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT)
+            or _filesystem_identity(linked) != temporary_identity
+            or linked.st_nlink != 2
+            or linked.st_size != len(payload)
+        ):
+            raise OSError(f"{context} atomic publication identity is invalid")
+        temporary.unlink()
+        temporary = None
+        published = target.lstat()
+        if (
+            _unsafe_regular_file_metadata(published)
+            or _filesystem_identity(published) != temporary_identity
+            or published.st_size != len(payload)
+        ):
+            raise OSError(f"{context} publication did not become authoritative")
+        _fsync_reviewed_state_directory(directory, directory_identity)
+        completed = True
+        return temporary_identity
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary is not None and temporary_identity is not None:
+            try:
+                current = temporary.lstat()
+                if (
+                    temporary.parent == directory
+                    and _filesystem_identity(current) == temporary_identity
+                ):
+                    temporary.unlink()
+            except OSError:
+                pass
+        if target_linked and not completed and temporary_identity is not None:
+            try:
+                current = target.lstat()
+                if (
+                    target.parent == directory
+                    and _filesystem_identity(current) == temporary_identity
+                ):
+                    target.unlink()
+            except OSError:
+                pass
+
+
+def _write_reviewed_state_payload(descriptor: int, payload: bytes, *, context: str) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = os.write(descriptor, payload[offset:])
+        if written <= 0:
+            raise OSError(f"{context} write made no progress")
+        offset += written
+
+
+def _fsync_reviewed_state_temporary(descriptor: int) -> None:
+    os.fsync(descriptor)
+
+
+def _validate_reviewed_state_temporary(
+    *,
+    current_directory: os.stat_result,
+    directory_identity: tuple[int, int, int],
+    descriptor_metadata: os.stat_result,
+    temporary_metadata: os.stat_result,
+    temporary_identity: tuple[int, int, int],
+    expected_size: int,
+    context: str,
+) -> None:
+    if (
+        _unsafe_directory_metadata(current_directory)
+        or _filesystem_identity(current_directory) != directory_identity
+        or _unsafe_regular_file_metadata(descriptor_metadata)
+        or _filesystem_identity(descriptor_metadata) != temporary_identity
+        or _filesystem_identity(temporary_metadata) != temporary_identity
+        or descriptor_metadata.st_size != expected_size
+        or temporary_metadata.st_size != expected_size
+    ):
+        raise OSError(f"{context} temporary file changed before publication")
+
+
+def _fsync_reviewed_state_directory(
+    directory: Path,
+    expected_identity: tuple[int, int, int],
+) -> None:
+    """Durably publish directory metadata where the host supports directory fsync."""
+
+    try:
+        descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        if os.name == "nt":
+            return
+        raise
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            _unsafe_directory_metadata(metadata)
+            or _filesystem_identity(metadata) != expected_identity
+        ):
+            raise OSError("reviewed state directory identity changed")
+        try:
+            os.fsync(descriptor)
+        except OSError:
+            if os.name != "nt":
+                raise
+    finally:
+        os.close(descriptor)
+
+
+def _verify_reviewed_source_license(path: Path) -> Mapping[str, Any]:
+    """Read and bind only the exact packaged license bytes reviewed for T1082."""
+
+    expected_size = source_intake_package.LICENSE_SIZE_BYTES
+    try:
+        if not path.is_absolute():
+            raise OSError("license resource path is not absolute")
+        root = path.parent
+        root_metadata = root.lstat()
+        license_metadata = path.lstat()
+        resolved_root = root.resolve(strict=True)
+        resolved_license = path.resolve(strict=True)
+    except OSError as exc:
+        raise SourceIntakeError("reviewed source license is unavailable") from exc
+    if (
+        _unsafe_directory_metadata(root_metadata)
+        or _unsafe_regular_file_metadata(license_metadata)
+        or license_metadata.st_size != expected_size
+        or resolved_license.parent != resolved_root
+    ):
+        raise SourceIntakeError("reviewed source license identity or size is invalid")
+
+    root_identity = _filesystem_identity(root_metadata)
+    license_identity = _filesystem_identity(license_metadata)
+    descriptor: int | None = None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        before = os.fstat(descriptor)
+        observed = bytearray()
+        while len(observed) <= expected_size:
+            block = os.read(descriptor, min(64 * 1024, expected_size + 1 - len(observed)))
+            if not block:
+                break
+            observed.extend(block)
+        after = os.fstat(descriptor)
+    except OSError as exc:
+        raise SourceIntakeError("reviewed source license could not be read safely") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+    try:
+        current_root = root.lstat()
+        current_license = path.lstat()
+    except OSError as exc:
+        raise SourceIntakeError("reviewed source license changed while it was read") from exc
+    payload = bytes(observed)
+    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    notice = source_intake_package.REQUIRED_NOTICE.encode("utf-8")
+    if (
+        _unsafe_directory_metadata(current_root)
+        or _unsafe_regular_file_metadata(before)
+        or _filesystem_identity(current_root) != root_identity
+        or _filesystem_identity(before) != license_identity
+        or _filesystem_identity(after) != license_identity
+        or _filesystem_identity(current_license) != license_identity
+        or len(payload) != expected_size
+        or after.st_size != before.st_size
+        or after.st_mtime_ns != before.st_mtime_ns
+        or digest != source_intake_package.LICENSE_SHA256
+        or payload.count(notice) != 1
+    ):
+        raise SourceIntakeError("reviewed source license bytes do not match their review")
+    return {
+        "license_id": source_intake_package.LICENSE_ID,
+        "reference_url": source_intake_package.LICENSE_REFERENCE,
+        "sha256": digest,
+        "size_bytes": len(payload),
+        "required_notice": source_intake_package.REQUIRED_NOTICE,
+        "status": "verified_packaged_bytes",
+    }
+
+
+def _unsafe_directory_metadata(metadata: os.stat_result) -> bool:
+    return (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or bool(getattr(metadata, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT)
+    )
+
+
+def _unsafe_regular_file_metadata(metadata: os.stat_result) -> bool:
+    return (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or bool(getattr(metadata, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT)
+    )
+
+
+def _filesystem_identity(metadata: os.stat_result) -> tuple[int, int, int]:
+    return metadata.st_dev, metadata.st_ino, metadata.st_mode
+
+
+def _filesystem_snapshot(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+
+
+def _same_filesystem_owner(left: os.stat_result, right: os.stat_result) -> bool:
+    return getattr(left, "st_uid", None) == getattr(right, "st_uid", None) and getattr(
+        left, "st_gid", None
+    ) == getattr(right, "st_gid", None)
 
 
 def _managed_resource_kind(value: Any) -> str:

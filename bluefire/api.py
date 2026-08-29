@@ -32,6 +32,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_REQUEST_BODY = 1_048_576
 API_PREFIX = "/api/v1"
+_REVIEWED_T1082_INTAKE_ROUTE = f"{API_PREFIX}/research-intakes/mitre-attack-t1082-v19-2"
 
 BROWSER_BOOTSTRAP_FRAGMENT_KEY = "bluefire-session"
 BROWSER_BOOTSTRAP_HEADER = "X-BlueFire-Browser-Bootstrap"
@@ -144,6 +145,9 @@ class PlatformService(Protocol):
 
     def resource(self, kind: str, resource_id: str) -> JsonResult:
         """Get one allowlisted product resource."""
+
+    def intake_reviewed_t1082(self, request: JsonObject) -> JsonResult:
+        """Import the shipped, reviewed T1082 metadata into product-controlled state."""
 
     def save_resource(
         self,
@@ -556,6 +560,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             if self._management_query_free():
                 self._method_not_allowed("POST")
             return
+        if path == _REVIEWED_T1082_INTAKE_ROUTE:
+            if self._management_query_free():
+                self._method_not_allowed("POST")
+            return
         if path == f"{API_PREFIX}/settings":
             if self._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.settings())
@@ -715,6 +723,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if self._is_api_path(path) and not self._require_browser_session():
             return
+        if path == _REVIEWED_T1082_INTAKE_ROUTE:
+            if self._management_query_free():
+                self._method_not_allowed("POST")
+            return
         action_package_allow = self._action_package_route_allow(path)
         if action_package_allow is not None:
             if action_package_allow:
@@ -733,6 +745,13 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         body = self._read_json_object()
         if body is None:
+            return
+        if path == _REVIEWED_T1082_INTAKE_ROUTE:
+            if self._management_query_free():
+                self._dispatch(
+                    lambda: self.platform_server.service.intake_reviewed_t1082(body),
+                    success_status=HTTPStatus.CREATED,
+                )
             return
         if path == f"{API_PREFIX}/runner":
             self._method_not_allowed("GET")
@@ -1065,6 +1084,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path is None or not self._validate_host():
             return
         if self._is_api_path(path) and not self._require_browser_session(unread_body=True):
+            return
+        if path == _REVIEWED_T1082_INTAKE_ROUTE:
+            if self._management_query_free():
+                self._method_not_allowed("POST")
             return
         action_package_allow = self._action_package_route_allow(path)
         if action_package_allow is not None:

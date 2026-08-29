@@ -39,6 +39,12 @@
         "bluefire.replay_gate",
         "bluefire.replay_gate_validation",
         "bluefire.replay_journey",
+        "bluefire.source_intake_gate",
+        "bluefire.source_intake_gate_validation",
+        "bluefire.source_intake_browser_validation",
+        "bluefire.source_intake_journey",
+        "bluefire.source_intake_receipt_validation",
+        "bluefire.source_intake_run_validation",
         "tools",
         "tools.*"
       ]
@@ -131,6 +137,9 @@
           "bluefire.replay_checkpoint",
           "bluefire.replay_checkpoint_binding",
           "bluefire.research",
+        "bluefire.source_intake",
+        "bluefire.source_intake_contracts",
+        "bluefire.source_intake_package",
         "bluefire.runner_contracts",
         "bluefire.runner_inventory",
         "bluefire.simulation"

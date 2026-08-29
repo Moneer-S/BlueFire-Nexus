@@ -87,7 +87,12 @@ if gate_id == "GATE-01" and mode == "structural-only":
 
 run_ids = []
 run_bundles = []
-if gate_id == "GATE-01" and mode in {"real-run-bundle", "stale-run-bundle"}:
+if gate_id == "GATE-01" and mode in {
+    "extra-run-directory",
+    "extra-run-file",
+    "real-run-bundle",
+    "stale-run-bundle",
+}:
     from bluefire.run_store import RunStore
 
     binding_names = [
@@ -119,6 +124,15 @@ if gate_id == "GATE-01" and mode in {"real-run-bundle", "stale-run-bundle"}:
         evidence=[],
         detections=[],
     )
+    if mode == "extra-run-file":
+        (handle.path / "unlisted-private-material.txt").write_text(
+            "must not be accepted",
+            encoding="utf-8",
+        )
+    if mode == "extra-run-directory":
+        extra = handle.path / "unlisted-private-material"
+        extra.mkdir()
+        (extra / "payload.txt").write_text("must not be accepted", encoding="utf-8")
     run_ids = [handle.run_id]
     run_bundles = [{"run_id": handle.run_id, "path": handle.run_id}]
 if gate_id == "GATE-01" and mode == "run-id-no-bundle":
@@ -703,6 +717,8 @@ def test_run_bundle_is_fresh_and_bound_to_acceptance_identity(tmp_path: Path) ->
         ("run-id-no-bundle", "every claimed run ID must bind exactly one validated run bundle"),
         ("fabricated-run-bundle", "is not a canonical finalized bundle"),
         ("stale-run-bundle", "stale, unbound"),
+        ("extra-run-file", "regular-file inventory does not match"),
+        ("extra-run-directory", "directory inventory is not canonical"),
     ],
 )
 def test_harness_rejects_non_evidence_and_false_dynamic_claims(

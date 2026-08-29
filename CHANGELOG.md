@@ -9,7 +9,7 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A canonical `bluefire` control plane with strict behavior, action, graph,
   evidence, detection, replay, comparison, plugin, and configuration contracts.
-- A modular Rust runner with eighteen reviewed endpoint/sandbox actions, a
+- A modular Rust runner with nineteen reviewed endpoint/sandbox actions, a
   versioned action SDK inventory, independent policy enforcement, structured
   partial results, bounded effects, and receipt-based cleanup.
 - Bounded cross-platform system/process discovery, recursive sandbox discovery,

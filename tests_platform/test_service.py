@@ -45,6 +45,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EXECUTE_PROFILE_ACTIONS = {
     "endpoint.discovery.processes.v1",
     "endpoint.discovery.system.v1",
+    "endpoint.discovery.windows-version.v1",
     "sandbox.archive.tar.v1",
     "sandbox.cleanup.v1",
     "sandbox.collection.stage.v1",
@@ -450,7 +451,7 @@ def test_service_seeds_durable_product_state_and_indexes_completed_runs(
 
     assert service.product_store.path == database.resolve()
     assert service.seed_counts["scenario"] == 8
-    assert service.seed_counts["action"] == 18
+    assert service.seed_counts["action"] == 19
     assert len(service.product_store.list_resources("collector")) == 10
 
     result = service.run(

@@ -154,6 +154,13 @@ runner_profiles:
     blocked_actions: [sandbox.network.loopback.v1, sandbox.peer.handoff.v1]
 
   - <<: *execute_profile
+    id: sandbox-windows-source-intake.v1
+    platforms: [windows]
+    enabled_actions:
+      - endpoint.discovery.windows-version.v1
+      - sandbox.cleanup.v1
+
+  - <<: *execute_profile
     id: sandbox-endpoint-deep-lab.v1
     scope: [sandbox.workspace, network.loopback]
     network_allowlist: [127.0.0.1/32]
