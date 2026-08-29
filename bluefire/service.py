@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import math
 import os
 import re
 import stat
@@ -13,7 +14,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from importlib.resources import as_file, files
-from pathlib import Path
+from ipaddress import ip_address
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 import yaml
@@ -52,6 +54,16 @@ from .approvals import (
     public_approval_record,
 )
 from .bootstrap import seed_product_metadata
+from .collector_comparison import summarize_collector_session
+from .collectors import (
+    CollectionSession,
+    CollectorError,
+    CollectorRegistry,
+    CollectorRuntimeSettings,
+    FilesystemCollector,
+    LoopbackReceiverCollector,
+    NativeProcessCollector,
+)
 from .comparison import ComparisonError, compare_runs
 from .config import (
     AIConfig,
@@ -109,6 +121,7 @@ from .runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError
 from .util import canonical_json_bytes, content_hash, file_hash
 
 RunnerFactory = Callable[[RunnerProfile], tuple[RunnerTransport, Path]]
+CollectorRegistryFactory = Callable[[Path], CollectorRegistry]
 AIProviderFactory = Callable[[AIConfig, str], AIProvider]
 AIDraftProviderFactory = Callable[[AIConfig, str], AIDraftProvider]
 
@@ -132,10 +145,22 @@ _RUNTIME_RESOURCE_KINDS = frozenset({"model_provider", "runner_profile"})
 _RUNNER_PROBE_MAX_ACTIONS = 512
 _RUNNER_PROBE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]*$")
 _STEP_IMPLEMENTATION_ID = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
+_RUNNER_TASK_ID = re.compile(r"^execute-[0-9a-f]{64}$")
+_COLLECTOR_PATH_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _EXECUTE_READINESS_KEY = "_execute_readiness"
 _ACTION_CATALOG_AUTHORITY_KEY = "_action_catalog_authority"
 _EXECUTE_READINESS_MAX_AGE_SECONDS = 15 * 60
 _AVAILABLE_PER_RUN_COLLECTORS = frozenset({"collector.filesystem.sandbox.v1"})
+_AVAILABLE_RUNTIME_COLLECTORS = frozenset(
+    {
+        FilesystemCollector.descriptor.id,
+        NativeProcessCollector.descriptor.id,
+        LoopbackReceiverCollector.descriptor.id,
+    }
+)
+_RUNTIME_COLLECTOR_STATUSES = frozenset(
+    {"available_per_run", "available_native_session", "requires_managed_receiver"}
+)
 
 
 def _default_ai_provider_factory(config: AIConfig, provider_id: str) -> AIProvider:
@@ -144,6 +169,12 @@ def _default_ai_provider_factory(config: AIConfig, provider_id: str) -> AIProvid
 
 def _default_ai_draft_provider_factory(config: AIConfig, provider_id: str) -> AIDraftProvider:
     return build_ai_draft_provider(config, provider_id=provider_id)
+
+
+def _default_collector_registry_factory(sandbox: Path) -> CollectorRegistry:
+    """Ship the source-free filesystem runtime in the default product composition."""
+
+    return CollectorRegistry((FilesystemCollector(sandbox),))
 
 
 class BlueFireService:
@@ -160,6 +191,7 @@ class BlueFireService:
         config: BlueFireConfig | None = None,
         runner_factory: RunnerFactory | None = None,
         runner_lifecycle: ManagedRunnerLifecycle | None = None,
+        collector_registry_factory: CollectorRegistryFactory | None = None,
         ai_provider_factory: AIProviderFactory | None = None,
         ai_draft_provider_factory: AIDraftProviderFactory | None = None,
     ) -> None:
@@ -174,6 +206,9 @@ class BlueFireService:
         self.recovered_runs = self.store.recover_interrupted_runs()
         self.runner_lifecycle = runner_lifecycle or ManagedRunnerLifecycle(managed_product_root())
         self.runner_factory = runner_factory or self._managed_runner
+        self.collector_registry_factory = (
+            collector_registry_factory or _default_collector_registry_factory
+        )
         self.ai_provider_factory = ai_provider_factory or _default_ai_provider_factory
         self.ai_draft_provider_factory = (
             ai_draft_provider_factory or _default_ai_draft_provider_factory
@@ -1587,11 +1622,13 @@ class BlueFireService:
         profile = self._profile(request.get("runner_profile_id"), mode)
         autonomy, provider = self._ai_context(request)
         action_implementations = self._action_implementations(request, mode=mode)
-        collector_ids = self._collector_ids(request, mode=mode)
-        collector_binding = self._collector_binding(collector_ids)
+        collector_ids, collector_runtime = self._collector_configuration(request, mode=mode)
+        collector_binding = self._collector_binding(collector_ids, collector_runtime)
+        collector_authority: Mapping[str, Any] | None = None
         approval = self._approval(request, required=False)
         runner: RunnerTransport | None = None
         runner_problem: str | None = None
+        collector_problem: str | None = None
         runner_readiness: Mapping[str, Any] | None = None
         if mode is ExecutionMode.EXECUTE:
             try:
@@ -1602,12 +1639,19 @@ class BlueFireService:
                     raise RunnerReadinessError(
                         "Execute readiness binding is invalid; submit a new Execute request."
                     )
-                runner, _sandbox, runner_readiness = self._execute_readiness_boundary(
+                runner, readiness_sandbox, runner_readiness = self._execute_readiness_boundary(
                     profile,
                     expected=expected_readiness,
                 )
+                if collector_runtime is not None:
+                    _, collector_authority = self._managed_collector_registry(
+                        readiness_sandbox,
+                        collector_runtime,
+                    )
             except RunnerReadinessError as exc:
                 runner_problem = str(exc)
+            except CollectorError:
+                collector_problem = "Configured collectors are not ready for Execute."
             except (RunnerContractError, RunnerTransportError, OSError, TypeError, ValueError):
                 runner_problem = (
                     "Runner readiness could not be verified; check the selected profile and retry."
@@ -1630,6 +1674,7 @@ class BlueFireService:
                 ai_provider=provider,
                 approval_present=approval is not None,
                 action_implementations=action_implementations,
+                collector_runtime_settings=collector_runtime,
             ).to_dict()
         except OrchestrationError as exc:
             raise APIError(
@@ -1642,6 +1687,8 @@ class BlueFireService:
         if runner_problem:
             problems = [item for item in problems if "Rust runner transport" not in item]
             problems.append(runner_problem)
+        if collector_problem:
+            problems.append(collector_problem)
         scope_problems = self._scope_problems(request, profile, mode)
         problems.extend(scope_problems)
         report["problems"] = problems
@@ -1661,8 +1708,12 @@ class BlueFireService:
             for step in report["plan"].get("steps", [])
             if isinstance(step, Mapping) and isinstance(step.get("action_id"), str)
         }
-        report["collectors"] = list(collector_ids)
+        report["collectors"] = list(self._selected_collector_ids(collector_ids, collector_runtime))
         report["collector_binding"] = collector_binding
+        report["collector_registry_authority"] = collector_authority
+        report["collector_runtime"] = (
+            collector_runtime.to_dict() if collector_runtime is not None else None
+        )
         report["safety_tier"] = self._maximum_tier(scenario)
         report["approval"] = (
             "present"
@@ -1679,6 +1730,7 @@ class BlueFireService:
             and profile is not None
             and not scope_problems
             and runner_problem is None
+            and collector_problem is None
             and runner_readiness is not None
         ):
             target_scope = self._target_scope(request)
@@ -1690,7 +1742,14 @@ class BlueFireService:
                 target_scope=target_scope,
                 autonomy=autonomy,
                 ai_provider=provider,
-                context={"collector_binding": collector_binding},
+                context={
+                    "collector_binding": collector_binding,
+                    **(
+                        {"collector_registry_authority": collector_authority}
+                        if collector_authority is not None
+                        else {}
+                    ),
+                },
                 runner_readiness=runner_readiness,
                 catalog_authority=self._catalog_snapshot.to_dict(),
             )
@@ -1738,8 +1797,9 @@ class BlueFireService:
         profile = self._profile(request.get("runner_profile_id"), mode)
         autonomy, provider = self._ai_context(request)
         action_implementations = self._action_implementations(request, mode=mode)
-        collector_ids = self._collector_ids(request, mode=mode)
-        collector_binding = self._collector_binding(collector_ids)
+        collector_ids, collector_runtime = self._collector_configuration(request, mode=mode)
+        collector_binding = self._collector_binding(collector_ids, collector_runtime)
+        collector_authority: Mapping[str, Any] | None = None
         approval_record = self._stored_approval(request, mode=mode)
         approved_by = (
             str(approval_record["approved_by"])
@@ -1781,6 +1841,18 @@ class BlueFireService:
                     expected=expected_readiness,
                     for_dispatch=True,
                 )
+                if collector_runtime is not None:
+                    _, collector_authority = self._managed_collector_registry(
+                        sandbox,
+                        collector_runtime,
+                    )
+            except CollectorError as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "collector_runtime_unavailable",
+                    "Configured collectors are not ready for Execute.",
+                    [str(exc)],
+                ) from exc
             except (RunnerContractError, RunnerTransportError, OSError) as exc:
                 raise APIError(
                     HTTPStatus.CONFLICT,
@@ -1798,17 +1870,31 @@ class BlueFireService:
             provider_artifacts=self._catalog_snapshot.provider_artifacts,
             catalog_authority=self._catalog_snapshot.to_dict(),
         )
+        run_approval_context = {
+            "collector_binding": collector_binding,
+            **(
+                {"collector_registry_authority": collector_authority}
+                if collector_authority is not None
+                else {}
+            ),
+        }
         try:
+            resolved_plan = orchestrator.planner.compile(
+                scenario,
+                mode=mode,
+                profile=profile,
+                autonomy=autonomy,
+                ai_provider=provider,
+                action_implementations=action_implementations,
+            )
+            Orchestrator._collector_schedule(
+                resolved_plan,
+                collector_runtime,
+                start_step_id=scenario.start,
+            )
             resolved_action_implementations = {
                 step.step_id: step.action_id
-                for step in orchestrator.planner.compile(
-                    scenario,
-                    mode=mode,
-                    profile=profile,
-                    autonomy=autonomy,
-                    ai_provider=provider,
-                    action_implementations=action_implementations,
-                ).steps
+                for step in resolved_plan.steps
                 if step.action_id is not None
             }
             bound_approval = approval_record or (
@@ -1820,7 +1906,7 @@ class BlueFireService:
                     ai_provider=provider,
                     approved_by=approved_by,
                     orchestrator=orchestrator,
-                    context={"collector_binding": collector_binding},
+                    context=run_approval_context,
                     runner_readiness=runner_readiness,
                     action_implementations=resolved_action_implementations,
                 )
@@ -1835,6 +1921,16 @@ class BlueFireService:
                     raise OrchestrationError("Execute runner binding is incomplete")
                 execution_approval_id = str(bound_approval["approval_id"])
                 execution_workspace = sandbox
+                if collector_runtime is not None:
+                    (
+                        orchestrator.collector_registry,
+                        dispatch_collector_authority,
+                    ) = self._managed_collector_registry(
+                        sandbox,
+                        collector_runtime,
+                        expected_authority=collector_authority,
+                    )
+                    collector_authority = dispatch_collector_authority
                 self._bind_execution_workspace(
                     approval_record=bound_approval,
                     workspace=sandbox,
@@ -1844,6 +1940,7 @@ class BlueFireService:
                     target_scope=self._target_scope(request),
                     autonomy=autonomy,
                     ai_provider=provider,
+                    approval_context=run_approval_context,
                     runner_readiness=runner_readiness,
                     action_implementations=resolved_action_implementations,
                     catalog_authority=self._catalog_snapshot.to_dict(),
@@ -1868,6 +1965,8 @@ class BlueFireService:
                 action_implementations=resolved_action_implementations,
                 runner_readiness=runner_readiness,
                 collector_ids=collector_ids,
+                collector_runtime_settings=collector_runtime,
+                collector_registry_authority=collector_authority,
                 checkpoint=tracked_checkpoint,
                 cancel_event=cancel_event,
             )
@@ -1890,6 +1989,7 @@ class BlueFireService:
             ) from exc
         except (
             OrchestrationError,
+            CollectorError,
             ProductStoreError,
             RunnerContractError,
             RunnerTransportError,
@@ -2853,6 +2953,16 @@ class BlueFireService:
             and selected_behavior_id != original_step.behavior_id
         )
         mode = ExecutionMode(str(source.get("mode")))
+        collector_ids, collector_runtime = self._source_collector_configuration(
+            source,
+            mode=mode,
+        )
+        source_collector_authority = self._source_collector_authority(
+            source,
+            runtime=collector_runtime,
+        )
+        collector_binding = self._collector_binding(collector_ids, collector_runtime)
+        collector_authority: Mapping[str, Any] | None = None
         parameter_overrides = (
             {selected_step_id: dict(validated.parameter_change_map)}
             if validated.proposal_type is ProposalType.CHANGE_PARAMETERS
@@ -2921,10 +3031,15 @@ class BlueFireService:
                     if raw_readiness is not None and not isinstance(raw_readiness, Mapping):
                         raise ProductStoreError("proposal continuation runner readiness is invalid")
                     expected_readiness = raw_readiness
-            runner, _sandbox, runner_readiness = self._execute_readiness_boundary(
+            runner, readiness_sandbox, runner_readiness = self._execute_readiness_boundary(
                 profile,
                 expected=expected_readiness,
             )
+            if collector_runtime is not None:
+                _, collector_authority = self._managed_collector_registry(
+                    readiness_sandbox,
+                    collector_runtime,
+                )
         orchestrator = Orchestrator(
             self.registry,
             self.store,
@@ -2942,6 +3057,7 @@ class BlueFireService:
             ai_provider=provider,
             approval_present=mode is ExecutionMode.EXECUTE,
             action_implementations=prepared.action_implementations,
+            collector_runtime_settings=collector_runtime,
         )
         if not preflight.ready:
             raise OrchestrationError("; ".join(preflight.problems))
@@ -2953,7 +3069,7 @@ class BlueFireService:
             and isinstance(step.get("action_id"), str)
         }
         proposal_resolution = {
-            "schema_version": "bluefire.ai-proposal-resolution-lineage.v2",
+            "schema_version": "bluefire.ai-proposal-resolution-lineage.v3",
             "proposal_record_id": review["proposal_record_id"],
             "source_proposal_id": review["source_proposal_id"],
             "state_digest": review["state_digest"],
@@ -2962,6 +3078,7 @@ class BlueFireService:
             "proposal_policy_digest": record["proposal_policy_digest"],
             "proposal_type": validated.proposal_type.value,
             "apply_after_step_id": record["current_step_id"],
+            "observed_outcome": record["outcome"],
             "selected_step_id": selected_step_id,
             "selected_behavior_id": selected_behavior_id,
             "selected_action_id": validated.selected_action_id,
@@ -2978,6 +3095,14 @@ class BlueFireService:
             "adaptive_retry_count": adaptive_retry_count,
             "execute_fresh_workspace_full_replay": mode is ExecutionMode.EXECUTE,
             "proposal_resolution": proposal_resolution,
+            "collector_settings_from": self._source_collector_settings_hash(source),
+            "collector_settings_to": (
+                collector_runtime.settings_hash if collector_runtime is not None else None
+            ),
+            "collector_settings_changed": False,
+            "collector_authority_from": source_collector_authority,
+            "collector_authority_to": collector_authority,
+            "collector_authority_changed": (source_collector_authority != collector_authority),
         }
         continuation_policy = {
             "schema_version": "bluefire.ai-continuation-policy.v1",
@@ -2992,6 +3117,12 @@ class BlueFireService:
         approval_context = {
             "replay": replay_record,
             "resume_from_step_id": prepared.resume_from_step_id,
+            "collector_binding": collector_binding,
+            **(
+                {"collector_registry_authority": collector_authority}
+                if collector_authority is not None
+                else {}
+            ),
         }
         binding = (
             execution_approval_binding(
@@ -3042,6 +3173,9 @@ class BlueFireService:
             "runner_readiness": runner_readiness,
             "approval_binding": binding,
             "action_implementations": resolved_actions,
+            "collector_ids": collector_ids,
+            "collector_runtime": collector_runtime,
+            "collector_authority": collector_authority,
             "audit": audit,
         }
 
@@ -3079,15 +3213,29 @@ class BlueFireService:
         approval_context = prepared_context["approval_context"]
         runner_readiness = prepared_context["runner_readiness"]
         action_implementations = prepared_context["action_implementations"]
+        collector_ids = prepared_context["collector_ids"]
+        collector_runtime = prepared_context["collector_runtime"]
+        collector_authority = prepared_context["collector_authority"]
         if not isinstance(action_implementations, Mapping) or not all(
             isinstance(step_id, str) and isinstance(action_id, str)
             for step_id, action_id in action_implementations.items()
         ):
             raise ProductStoreError("proposal continuation action choices are invalid")
+        if not isinstance(collector_ids, tuple) or not all(
+            isinstance(collector_id, str) for collector_id in collector_ids
+        ):
+            raise ProductStoreError("proposal continuation collector choices are invalid")
+        if collector_runtime is not None and not isinstance(
+            collector_runtime, CollectorRuntimeSettings
+        ):
+            raise ProductStoreError("proposal continuation collector runtime is invalid")
+        if collector_authority is not None and not isinstance(collector_authority, Mapping):
+            raise ProductStoreError("proposal continuation collector authority is invalid")
         runner: RunnerTransport | None = None
         sandbox: Path | None = None
         approval_record: Mapping[str, Any] | None = None
         approval_id: str | None = None
+        collector_registry: CollectorRegistry | None = None
         if mode is ExecutionMode.EXECUTE:
             if profile is None:
                 raise OrchestrationError("Execute proposal continuation requires a profile")
@@ -3103,69 +3251,119 @@ class BlueFireService:
             approval_id = approval_id_value
             if not isinstance(runner_readiness, Mapping):
                 raise ProductStoreError("fresh Execute runner readiness is unavailable")
-            runner, sandbox, runner_readiness = self._execute_readiness_boundary(
-                profile,
-                expected=runner_readiness,
-                for_dispatch=True,
-            )
-            sandbox = self._isolated_execution_sandbox(sandbox, approval_record)
-            self._bind_execution_workspace(
-                approval_record=approval_record,
-                workspace=sandbox,
+            try:
+                runner, sandbox, runner_readiness = self._execute_readiness_boundary(
+                    profile,
+                    expected=runner_readiness,
+                    for_dispatch=True,
+                )
+                sandbox = self._isolated_execution_sandbox(sandbox, approval_record)
+                if collector_runtime is not None:
+                    collector_registry, collector_authority = self._managed_collector_registry(
+                        sandbox,
+                        collector_runtime,
+                        expected_authority=collector_authority,
+                    )
+                self._bind_execution_workspace(
+                    approval_record=approval_record,
+                    workspace=sandbox,
+                    runner=runner,
+                    scenario=prepared.scenario,
+                    profile=profile,
+                    target_scope=target_scope,
+                    autonomy=prepared.autonomy,
+                    ai_provider=provider,
+                    approval_context=approval_context,
+                    runner_readiness=runner_readiness,
+                    action_implementations=action_implementations,
+                    catalog_authority=self._catalog_snapshot.to_dict(),
+                )
+            except (
+                CollectorError,
+                OrchestrationError,
+                ProductStoreError,
+                RunnerContractError,
+                RunnerTransportError,
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+            ):
+                if approval_id is not None and sandbox is not None:
+                    self._settle_pre_dispatch_refusal(
+                        approval_id,
+                        sandbox,
+                        expected_profile_id=profile.id,
+                    )
+                raise
+        try:
+            orchestrator = Orchestrator(
+                self.registry,
+                self.store,
                 runner=runner,
-                scenario=prepared.scenario,
+                proposal_provider=self._proposal_provider(prepared.autonomy, provider),
+                approval_store=self.product_store,
+                action_bindings=self._catalog_snapshot.action_bindings,
+                provider_artifacts=self._catalog_snapshot.provider_artifacts,
+                catalog_authority=self._catalog_snapshot.to_dict(),
+                collector_registry=collector_registry,
+            )
+            result = orchestrator.run(
+                prepared.scenario,
+                mode=mode,
                 profile=profile,
-                target_scope=target_scope,
+                sandbox_root=sandbox,
+                target_scope=target_scope if mode is ExecutionMode.EXECUTE else None,
+                approved_by=(
+                    str(approval_record["approved_by"]) if approval_record is not None else None
+                ),
+                approval_record=approval_record,
                 autonomy=prepared.autonomy,
                 ai_provider=provider,
-                approval_context=approval_context,
-                runner_readiness=runner_readiness,
+                replay=replay_record,
+                resume_from_step_id=prepared.resume_from_step_id,
+                seed_artifacts=prepared.seed_artifacts,
                 action_implementations=action_implementations,
-                catalog_authority=self._catalog_snapshot.to_dict(),
+                runner_readiness=(
+                    runner_readiness if isinstance(runner_readiness, Mapping) else None
+                ),
+                collector_ids=collector_ids,
+                collector_runtime_settings=collector_runtime,
+                collector_registry_authority=collector_authority,
+                checkpoint=(
+                    self._execution_checkpoint(approval_id, context.checkpoint)
+                    if approval_id is not None
+                    else context.checkpoint
+                ),
+                cancel_event=context.cancellation_event,
             )
-        orchestrator = Orchestrator(
-            self.registry,
-            self.store,
-            runner=runner,
-            proposal_provider=self._proposal_provider(prepared.autonomy, provider),
-            approval_store=self.product_store,
-            action_bindings=self._catalog_snapshot.action_bindings,
-            provider_artifacts=self._catalog_snapshot.provider_artifacts,
-            catalog_authority=self._catalog_snapshot.to_dict(),
-        )
-        result = orchestrator.run(
-            prepared.scenario,
-            mode=mode,
-            profile=profile,
-            sandbox_root=sandbox,
-            target_scope=target_scope if mode is ExecutionMode.EXECUTE else None,
-            approved_by=(
-                str(approval_record["approved_by"]) if approval_record is not None else None
-            ),
-            approval_record=approval_record,
-            autonomy=prepared.autonomy,
-            ai_provider=provider,
-            replay=replay_record,
-            resume_from_step_id=prepared.resume_from_step_id,
-            seed_artifacts=prepared.seed_artifacts,
-            action_implementations=action_implementations,
-            runner_readiness=(runner_readiness if isinstance(runner_readiness, Mapping) else None),
-            checkpoint=(
-                self._execution_checkpoint(approval_id, context.checkpoint)
-                if approval_id is not None
-                else context.checkpoint
-            ),
-            cancel_event=context.cancellation_event,
-        )
-        if approval_id is not None and sandbox is not None:
-            self._complete_execution_workspace(
-                approval_id,
-                sandbox,
-                result,
-                expected_profile_id=profile.id if profile is not None else None,
-            )
-        self._index_run(result)
-        return result
+            if approval_id is not None and sandbox is not None:
+                self._complete_execution_workspace(
+                    approval_id,
+                    sandbox,
+                    result,
+                    expected_profile_id=profile.id if profile is not None else None,
+                )
+            self._index_run(result)
+            return result
+        except (
+            CollectorError,
+            OrchestrationError,
+            ProductStoreError,
+            RunnerContractError,
+            RunnerTransportError,
+            OSError,
+            RuntimeError,
+            TypeError,
+            ValueError,
+        ):
+            if approval_id is not None and sandbox is not None:
+                self._settle_pre_dispatch_refusal(
+                    approval_id,
+                    sandbox,
+                    expected_profile_id=profile.id if profile is not None else None,
+                )
+            raise
 
     def close(self) -> None:
         """Cooperatively stop locally managed workers."""
@@ -3869,15 +4067,28 @@ class BlueFireService:
                 ) from exc
 
     def _replay_locked(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        replay_approval_id: str | None = None
+        replay_workspace: Path | None = None
+        replay_profile_id: str | None = None
         try:
             integrity = self.store.validate_bundle(run_id)
             if not integrity.get("valid"):
                 raise ReplayError("source run bundle failed integrity validation")
             source = self.store.get_run(run_id)
             mode = ExecutionMode(str(source.get("mode", "simulate")))
-            collector_ids = self._collector_ids(request, mode=mode)
-            collector_binding = self._collector_binding(collector_ids)
             exact = bool(request.get("exact", False))
+            collector_ids, collector_runtime = self._replay_collector_configuration(
+                request,
+                source=source,
+                mode=mode,
+                exact=exact,
+            )
+            source_runtime = self._source_collector_runtime(source)
+            source_collector_authority = self._source_collector_authority(
+                source,
+                runtime=source_runtime,
+            )
+            collector_binding = self._collector_binding(collector_ids, collector_runtime)
             source_catalog_authority = self._run_catalog_authority(source)
             replay_catalog, replay_catalog_authority = (
                 self._historical_action_catalog(source_catalog_authority)
@@ -3932,13 +4143,24 @@ class BlueFireService:
             runner: RunnerTransport | None = None
             sandbox: Path | None = None
             runner_readiness: Mapping[str, Any] | None = None
+            collector_authority: Mapping[str, Any] | None = None
             if mode is ExecutionMode.EXECUTE:
                 if profile is None:
                     raise ReplayError("Execute replay requires an explicit runner profile")
+                replay_profile_id = profile.id
                 runner, sandbox, runner_readiness = self._execute_readiness_boundary(
                     profile,
                     for_dispatch=True,
                 )
+                if collector_runtime is not None:
+                    _, collector_authority = self._managed_collector_registry(
+                        sandbox,
+                        collector_runtime,
+                    )
+                    if exact and collector_authority != source_collector_authority:
+                        raise ReplayError(
+                            "exact replay requires the approved collector registry authority"
+                        )
             orchestrator = Orchestrator(
                 replay_catalog.registry,
                 self.store,
@@ -3957,6 +4179,11 @@ class BlueFireService:
                 ai_provider=provider,
                 action_implementations=prepared.action_implementations,
             )
+            Orchestrator._collector_schedule(
+                resolved_replay_plan,
+                collector_runtime,
+                start_step_id=prepared.resume_from_step_id or prepared.scenario.start,
+            )
             resolved_replay_actions = {
                 step.step_id: step.action_id
                 for step in resolved_replay_plan.steps
@@ -3972,6 +4199,17 @@ class BlueFireService:
                 "action_implementations_changed": (
                     resolved_replay_actions != prepared.lineage.get("action_implementations_from")
                 ),
+                "collector_settings_from": self._source_collector_settings_hash(source),
+                "collector_settings_to": (
+                    collector_runtime.settings_hash if collector_runtime is not None else None
+                ),
+                "collector_settings_changed": (
+                    self._source_collector_settings_hash(source)
+                    != (collector_runtime.settings_hash if collector_runtime is not None else None)
+                ),
+                "collector_authority_from": source_collector_authority,
+                "collector_authority_to": collector_authority,
+                "collector_authority_changed": (source_collector_authority != collector_authority),
             }
             approval_record = (
                 self._bind_and_consume_approval(
@@ -3986,6 +4224,11 @@ class BlueFireService:
                         "replay": replay_record,
                         "resume_from_step_id": prepared.resume_from_step_id,
                         "collector_binding": collector_binding,
+                        **(
+                            {"collector_registry_authority": collector_authority}
+                            if collector_authority is not None
+                            else {}
+                        ),
                     },
                     runner_readiness=runner_readiness,
                     action_implementations=resolved_replay_actions,
@@ -4003,8 +4246,23 @@ class BlueFireService:
                     "replay": replay_record,
                     "resume_from_step_id": prepared.resume_from_step_id,
                     "collector_binding": collector_binding,
+                    **(
+                        {"collector_registry_authority": collector_authority}
+                        if collector_authority is not None
+                        else {}
+                    ),
                 }
                 replay_approval_id = str(approval_record["approval_id"])
+                replay_workspace = sandbox
+                if collector_runtime is not None:
+                    (
+                        orchestrator.collector_registry,
+                        collector_authority,
+                    ) = self._managed_collector_registry(
+                        sandbox,
+                        collector_runtime,
+                        expected_authority=collector_authority,
+                    )
                 self._bind_execution_workspace(
                     approval_record=approval_record,
                     workspace=sandbox,
@@ -4040,6 +4298,8 @@ class BlueFireService:
                 action_implementations=resolved_replay_actions,
                 runner_readiness=runner_readiness,
                 collector_ids=collector_ids,
+                collector_runtime_settings=collector_runtime,
+                collector_registry_authority=collector_authority,
                 checkpoint=(
                     self._execution_checkpoint(replay_approval_id, None)
                     if replay_approval_id is not None
@@ -4062,10 +4322,17 @@ class BlueFireService:
             ProductStoreError,
             RunStoreError,
             OrchestrationError,
+            CollectorError,
             RunnerContractError,
             RunnerTransportError,
             ValueError,
         ) as exc:
+            if replay_approval_id is not None and replay_workspace is not None:
+                self._settle_pre_dispatch_refusal(
+                    replay_approval_id,
+                    replay_workspace,
+                    expected_profile_id=replay_profile_id,
+                )
             raise APIError(
                 HTTPStatus.CONFLICT,
                 "replay_refused",
@@ -5592,8 +5859,618 @@ class BlueFireService:
             collector_ids.append(collector_id)
         return tuple(dict.fromkeys(collector_ids))
 
+    def _collector_configuration(
+        self,
+        request: Mapping[str, Any],
+        *,
+        mode: ExecutionMode,
+    ) -> tuple[tuple[str, ...], CollectorRuntimeSettings | None]:
+        if "collector_runtime" not in request:
+            return self._collector_ids(request, mode=mode), None
+        if mode is ExecutionMode.SIMULATE:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "collector_runtime_invalid",
+                "Simulate does not accept collector runtime settings.",
+            )
+        if request.get("collectors") not in (None, []):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "collector_runtime_invalid",
+                "Execute accepts either legacy collectors or collector_runtime, not both.",
+            )
+        value = request.get("collector_runtime")
+        if not isinstance(value, Mapping):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "collector_runtime_invalid",
+                "collector_runtime must be a versioned settings object.",
+            )
+        try:
+            runtime = CollectorRuntimeSettings.from_mapping(value)
+        except CollectorError as exc:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "collector_runtime_invalid",
+                "collector_runtime does not satisfy the versioned settings contract.",
+                [str(exc)],
+            ) from exc
+        self._validate_managed_collector_settings(runtime)
+        selected = self._selected_collector_ids((), runtime)
+        if not selected:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "collector_runtime_invalid",
+                "collector_runtime must enable at least one collector.",
+            )
+        if self.collector_registry_factory is None:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "collector_runtime_unavailable",
+                "No managed collector runtime is configured for Execute.",
+            )
+        for collector_id, row in runtime.collectors.items():
+            if row["enabled"] is not True:
+                continue
+            if collector_id not in _AVAILABLE_RUNTIME_COLLECTORS:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "collector_unavailable",
+                    "Requested collector is not available for managed per-run collection.",
+                    [collector_id],
+                )
+            try:
+                resource = self.product_store.get_resource("collector", collector_id)
+            except ProductStoreError as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "collector_unavailable",
+                    "Requested collector is not registered for managed per-run collection.",
+                    [collector_id],
+                ) from exc
+            if resource.get("status") not in _RUNTIME_COLLECTOR_STATUSES:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "collector_unavailable",
+                    "Requested collector is not ready for managed per-run collection.",
+                    [collector_id],
+                )
+        return (), runtime
+
+    def _managed_collector_registry(
+        self,
+        sandbox: Path,
+        runtime: CollectorRuntimeSettings,
+        *,
+        expected_authority: Mapping[str, Any] | None = None,
+    ) -> tuple[CollectorRegistry, Mapping[str, Any]]:
+        factory = self.collector_registry_factory
+        if factory is None:
+            raise CollectorError("managed collector registry factory is unavailable")
+        try:
+            registry = factory(sandbox)
+            if not isinstance(registry, CollectorRegistry):
+                raise CollectorError("managed collector factory returned an invalid registry")
+            registry.validate_configuration(runtime)
+            authority = registry.authority_snapshot(
+                runtime,
+                expected_sandbox=sandbox,
+            )
+            if expected_authority is not None and authority != expected_authority:
+                raise CollectorError("managed collector registry authority changed")
+        except CollectorError:
+            raise
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise CollectorError("managed collector registry is unavailable") from exc
+        return registry, authority
+
     @staticmethod
-    def _collector_binding(collector_ids: Sequence[str]) -> Mapping[str, Any]:
+    def _validate_managed_collector_settings(runtime: CollectorRuntimeSettings) -> None:
+        allowed_fields = {
+            FilesystemCollector.descriptor.id: {"collect_after_step", "paths"},
+            NativeProcessCollector.descriptor.id: {
+                "collect_after_step",
+                "process_id",
+                "expected_parent_process_id",
+            },
+            LoopbackReceiverCollector.descriptor.id: {"collect_after_step", "task_ids"},
+        }
+        for collector_id, row in runtime.collectors.items():
+            settings = row["settings"]
+            allowed = allowed_fields.get(collector_id)
+            if allowed is None or set(settings) - allowed:
+                raise APIError(
+                    HTTPStatus.BAD_REQUEST,
+                    "collector_runtime_invalid",
+                    "collector_runtime contains unsupported or unknown settings.",
+                    [collector_id],
+                )
+            if row["enabled"] is not True:
+                continue
+            step_id = settings.get("collect_after_step")
+            if not isinstance(step_id, str) or _STEP_IMPLEMENTATION_ID.fullmatch(step_id) is None:
+                raise APIError(
+                    HTTPStatus.BAD_REQUEST,
+                    "collector_runtime_invalid",
+                    "Every managed collector requires a bounded collect_after_step.",
+                    [collector_id],
+                )
+            if collector_id == FilesystemCollector.descriptor.id:
+                paths = settings.get("paths")
+                if not (
+                    isinstance(paths, (list, tuple))
+                    and 1 <= len(paths) <= 1_000
+                    and all(BlueFireService._valid_collector_path(path) for path in paths)
+                    and len(set(paths)) == len(paths)
+                ):
+                    raise APIError(
+                        HTTPStatus.BAD_REQUEST,
+                        "collector_runtime_invalid",
+                        "Filesystem collector paths must be unique bounded relative paths.",
+                    )
+            elif collector_id == NativeProcessCollector.descriptor.id:
+                process_id = settings.get("process_id")
+                parent_id = settings.get("expected_parent_process_id")
+                if any(
+                    isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                    for value in (process_id, parent_id)
+                ):
+                    raise APIError(
+                        HTTPStatus.BAD_REQUEST,
+                        "collector_runtime_invalid",
+                        "Native process settings require positive process and parent IDs.",
+                    )
+            elif collector_id == LoopbackReceiverCollector.descriptor.id:
+                task_ids = settings.get("task_ids")
+                if task_ids is not None and not (
+                    isinstance(task_ids, (list, tuple))
+                    and 1 <= len(task_ids) <= 1_000
+                    and all(
+                        isinstance(task_id, str) and _RUNNER_TASK_ID.fullmatch(task_id) is not None
+                        for task_id in task_ids
+                    )
+                    and len(set(task_ids)) == len(task_ids)
+                ):
+                    raise APIError(
+                        HTTPStatus.BAD_REQUEST,
+                        "collector_runtime_invalid",
+                        "Receiver task IDs must be unique exact runner task identities.",
+                    )
+
+    @staticmethod
+    def _valid_collector_path(value: Any) -> bool:
+        if not isinstance(value, str) or not 1 <= len(value) <= 500:
+            return False
+        logical = PurePosixPath(value)
+        return bool(
+            not logical.is_absolute()
+            and logical.parts
+            and all(
+                part not in {"", ".", ".."} and _COLLECTOR_PATH_PART.fullmatch(part) is not None
+                for part in logical.parts
+            )
+        )
+
+    def _replay_collector_configuration(
+        self,
+        request: Mapping[str, Any],
+        *,
+        source: Mapping[str, Any],
+        mode: ExecutionMode,
+        exact: bool,
+    ) -> tuple[tuple[str, ...], CollectorRuntimeSettings | None]:
+        source_ids, source_runtime = self._source_collector_configuration(source, mode=mode)
+        if source_runtime is not None and request.get("collectors") not in (None, []):
+            raise ReplayError(
+                "a collector-runtime source must be replayed with versioned collector settings"
+            )
+        collector_ids: tuple[str, ...]
+        runtime: CollectorRuntimeSettings | None
+        if (
+            (source_ids or source_runtime is not None)
+            and "collector_runtime" not in request
+            and "collectors" not in request
+        ):
+            collector_ids, runtime = source_ids, source_runtime
+        else:
+            collector_ids, runtime = self._collector_configuration(request, mode=mode)
+        if exact and (
+            source_ids != collector_ids
+            or (source_runtime is None) != (runtime is None)
+            or (
+                source_runtime is not None
+                and runtime is not None
+                and source_runtime.settings_hash != runtime.settings_hash
+            )
+        ):
+            raise ReplayError("exact replay cannot change collector runtime settings")
+        return collector_ids, runtime
+
+    @staticmethod
+    def _source_collector_runtime(
+        source: Mapping[str, Any],
+    ) -> CollectorRuntimeSettings | None:
+        value = source.get("collector_session")
+        if value is not None:
+            if not isinstance(value, Mapping):
+                raise ReplayError("source collector session is invalid")
+            try:
+                session = CollectionSession.from_mapping(value)
+                evidence = source.get("evidence")
+                rows = evidence.get("records") if isinstance(evidence, Mapping) else None
+                summarize_collector_session(
+                    value,
+                    rows,
+                    source.get("run_id"),
+                    source.get("steps"),
+                )
+            except CollectorError as exc:
+                raise ReplayError("source collector session failed integrity validation") from exc
+            binding = BlueFireService._source_collector_binding(source)
+            expected_binding = BlueFireService._collector_binding((), session.settings)
+            if (
+                binding is None
+                or binding.get("schema_version") != "bluefire.collector-binding.v2"
+                or binding != expected_binding
+            ):
+                raise ReplayError(
+                    "source collector session is not bound to its approved runtime settings"
+                )
+            authority = BlueFireService._source_collector_authority(
+                source,
+                runtime=session.settings,
+                session=session,
+            )
+            if (
+                authority is None
+                or authority.get("settings_hash") != session.settings.settings_hash
+            ):
+                raise ReplayError(
+                    "source collector session has no matching approved registry authority"
+                )
+            return session.settings
+        binding = BlueFireService._source_collector_binding(source)
+        if binding is None or binding.get("schema_version") != "bluefire.collector-binding.v2":
+            return None
+        settings = binding.get("settings")
+        if not isinstance(settings, Mapping):
+            raise ReplayError("source collector runtime binding is invalid")
+        try:
+            runtime = CollectorRuntimeSettings.from_mapping(settings)
+        except CollectorError as exc:
+            raise ReplayError("source collector runtime binding is invalid") from exc
+        if binding != BlueFireService._collector_binding((), runtime):
+            raise ReplayError("source collector runtime binding failed integrity validation")
+        if BlueFireService._source_collector_authority(source, runtime=runtime) is None:
+            raise ReplayError("source collector runtime has no approved registry authority")
+        return runtime
+
+    @staticmethod
+    def _source_collector_binding(source: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        policy = source.get("policy")
+        approval_context = policy.get("approval_context") if isinstance(policy, Mapping) else None
+        binding = (
+            approval_context.get("collector_binding")
+            if isinstance(approval_context, Mapping)
+            else None
+        )
+        if binding is None:
+            return None
+        if not isinstance(binding, Mapping):
+            raise ReplayError("source collector binding is invalid")
+        return binding
+
+    @staticmethod
+    def _source_collector_authority(
+        source: Mapping[str, Any],
+        *,
+        runtime: CollectorRuntimeSettings | None,
+        session: CollectionSession | None = None,
+    ) -> Mapping[str, Any] | None:
+        policy = source.get("policy")
+        approval_context = policy.get("approval_context") if isinstance(policy, Mapping) else None
+        value = (
+            approval_context.get("collector_registry_authority")
+            if isinstance(approval_context, Mapping)
+            else None
+        )
+        if value is None:
+            return None
+        expected_top_fields = {
+            "schema_version",
+            "settings_hash",
+            "backends",
+            "authority_hash",
+        }
+        if runtime is None or not isinstance(value, Mapping) or set(value) != expected_top_fields:
+            raise ReplayError("source collector registry authority is not bound to a runtime")
+        if session is not None and session.settings != runtime:
+            raise ReplayError("source collector registry authority session binding is invalid")
+        expected_ids = [
+            collector_id
+            for collector_id, row in runtime.collectors.items()
+            if row["enabled"] is True
+        ]
+        backends = value.get("backends")
+        if (
+            value.get("schema_version") != "bluefire.collector-registry-authority.v1"
+            or value.get("settings_hash") != runtime.settings_hash
+            or not expected_ids
+            or not isinstance(backends, list)
+            or len(backends) != len(expected_ids)
+        ):
+            raise ReplayError("source collector registry authority failed integrity validation")
+        canonical_types: dict[str, type[Any]] = {
+            FilesystemCollector.descriptor.id: FilesystemCollector,
+            NativeProcessCollector.descriptor.id: NativeProcessCollector,
+            LoopbackReceiverCollector.descriptor.id: LoopbackReceiverCollector,
+        }
+        expected_backend_fields = {
+            "collector_id",
+            "descriptor",
+            "descriptor_hash",
+            "implementation_id",
+            "source_authority",
+            "source_authority_hash",
+        }
+        normalized_backends: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for index, backend in enumerate(backends):
+            if not isinstance(backend, Mapping) or set(backend) != expected_backend_fields:
+                raise ReplayError("source collector registry authority backend is invalid")
+            collector_id = backend.get("collector_id")
+            if (
+                not isinstance(collector_id, str)
+                or collector_id in seen
+                or collector_id != expected_ids[index]
+            ):
+                raise ReplayError("source collector registry authority backend identity is invalid")
+            seen.add(collector_id)
+            canonical_type = canonical_types.get(collector_id)
+            descriptor = backend.get("descriptor")
+            source_authority = backend.get("source_authority")
+            if canonical_type is None or not isinstance(descriptor, Mapping):
+                raise ReplayError("source collector registry authority backend is not canonical")
+            canonical_descriptor = canonical_type.descriptor.to_dict()
+            implementation_id = f"{canonical_type.__module__}.{canonical_type.__qualname__}"
+            if (
+                dict(descriptor) != canonical_descriptor
+                or backend.get("descriptor_hash") != content_hash(canonical_descriptor)
+                or backend.get("implementation_id") != implementation_id
+                or not isinstance(source_authority, Mapping)
+                or not BlueFireService._valid_collector_source_authority(
+                    collector_id,
+                    source_authority,
+                    runtime,
+                )
+            ):
+                raise ReplayError("source collector registry authority backend is not canonical")
+            normalized_source = dict(source_authority)
+            if backend.get("source_authority_hash") != content_hash(normalized_source):
+                raise ReplayError("source collector registry authority source hash is invalid")
+            if (
+                session is not None
+                and session.results[collector_id].descriptor.to_dict() != canonical_descriptor
+            ):
+                raise ReplayError(
+                    "source collector registry authority does not match its collection session"
+                )
+            if session is not None and collector_id in {
+                NativeProcessCollector.descriptor.id,
+                LoopbackReceiverCollector.descriptor.id,
+            }:
+                observed = [
+                    record
+                    for record in session.results[collector_id].records
+                    if record.provenance.value == "observed"
+                ]
+                fields = observed[0].content.get("observed_fields") if len(observed) == 1 else None
+                if not isinstance(fields, Mapping):
+                    raise ReplayError(
+                        "source collector registry authority has no unique observation"
+                    )
+                if collector_id == NativeProcessCollector.descriptor.id:
+                    authorized = source_authority.get("authorized_processes")
+                    matching = (
+                        [
+                            row
+                            for row in authorized
+                            if isinstance(row, Mapping)
+                            and row.get("process_id") == fields.get("process_id")
+                        ]
+                        if isinstance(authorized, list)
+                        else []
+                    )
+                    if matching != [
+                        {
+                            "process_id": fields.get("process_id"),
+                            "parent_process_id": fields.get("parent_process_id"),
+                            "creation_identity": fields.get("creation_identity"),
+                        }
+                    ]:
+                        raise ReplayError(
+                            "source process authority does not match its native observation"
+                        )
+                elif source_authority.get("session_id") != fields.get("receiver_session_id"):
+                    raise ReplayError(
+                        "source receiver authority does not match its authenticated session"
+                    )
+            normalized_backends.append(
+                {
+                    "collector_id": collector_id,
+                    "descriptor": canonical_descriptor,
+                    "descriptor_hash": content_hash(canonical_descriptor),
+                    "implementation_id": implementation_id,
+                    "source_authority": normalized_source,
+                    "source_authority_hash": content_hash(normalized_source),
+                }
+            )
+        if seen != set(expected_ids):
+            raise ReplayError("source collector registry authority backend set is invalid")
+        body = {
+            "schema_version": "bluefire.collector-registry-authority.v1",
+            "settings_hash": runtime.settings_hash,
+            "backends": normalized_backends,
+        }
+        if value.get("authority_hash") != content_hash(body):
+            raise ReplayError("source collector registry authority hash is invalid")
+        return {**body, "authority_hash": content_hash(body)}
+
+    @staticmethod
+    def _valid_collector_source_authority(
+        collector_id: str,
+        value: Mapping[str, Any],
+        runtime: CollectorRuntimeSettings,
+    ) -> bool:
+        if collector_id == FilesystemCollector.descriptor.id:
+            maximum = value.get("max_file_bytes")
+            timeout = value.get("read_timeout_seconds")
+            return bool(
+                set(value)
+                == {
+                    "schema_version",
+                    "sandbox_binding",
+                    "max_file_bytes",
+                    "read_timeout_seconds",
+                    "path_policy",
+                }
+                and value.get("schema_version") == "bluefire.filesystem-source-authority.v1"
+                and value.get("sandbox_binding") == "exact-factory-argument"
+                and type(maximum) is int
+                and maximum > 0
+                and type(timeout) is float
+                and math.isfinite(timeout)
+                and timeout == 5.0
+                and value.get("path_policy") == "handle-pinned-contained-no-follow"
+            )
+        if collector_id == NativeProcessCollector.descriptor.id:
+            authorized = value.get("authorized_processes")
+            if (
+                set(value) != {"schema_version", "authorized_processes"}
+                or value.get("schema_version") != "bluefire.process-source-authority.v1"
+                or not isinstance(authorized, list)
+                or not 1 <= len(authorized) <= 64
+            ):
+                return False
+            identities: list[tuple[int, int]] = []
+            for row in authorized:
+                if not isinstance(row, Mapping) or set(row) != {
+                    "process_id",
+                    "parent_process_id",
+                    "creation_identity",
+                }:
+                    return False
+                process_id = row.get("process_id")
+                parent_id = row.get("parent_process_id")
+                creation_identity = row.get("creation_identity")
+                if (
+                    type(process_id) is not int
+                    or process_id <= 0
+                    or type(parent_id) is not int
+                    or parent_id <= 0
+                    or not isinstance(creation_identity, str)
+                    or re.fullmatch(r"[0-9]{1,32}", creation_identity) is None
+                ):
+                    return False
+                identities.append((process_id, parent_id))
+            if identities != sorted(identities) or len({item[0] for item in identities}) != len(
+                identities
+            ):
+                return False
+            settings = runtime.collectors[collector_id]["settings"]
+            requested = (
+                settings.get("process_id"),
+                settings.get("expected_parent_process_id"),
+            )
+            return requested in identities
+        if collector_id == LoopbackReceiverCollector.descriptor.id:
+            host = value.get("host")
+            port = value.get("port")
+            process_id = value.get("process_id")
+            session_id = value.get("session_id")
+            if (
+                set(value) != {"schema_version", "host", "port", "process_id", "session_id"}
+                or value.get("schema_version") != "bluefire.receiver-source-authority.v1"
+                or not isinstance(host, str)
+                or not host
+                or type(port) is not int
+                or not 1 <= port <= 65535
+                or type(process_id) is not int
+                or process_id <= 0
+                or not isinstance(session_id, str)
+                or re.fullmatch(r"[0-9a-f]{64}", session_id) is None
+            ):
+                return False
+            try:
+                return ip_address(host).is_loopback
+            except ValueError:
+                return False
+        return False
+
+    def _source_collector_configuration(
+        self,
+        source: Mapping[str, Any],
+        *,
+        mode: ExecutionMode,
+    ) -> tuple[tuple[str, ...], CollectorRuntimeSettings | None]:
+        binding = self._source_collector_binding(source)
+        runtime = self._source_collector_runtime(source)
+        if runtime is not None:
+            return self._collector_configuration(
+                {"collector_runtime": runtime.to_dict()},
+                mode=mode,
+            )
+        if binding is None:
+            return self._collector_configuration({}, mode=mode)
+        if binding.get("schema_version") != "bluefire.collector-binding.v1":
+            raise ReplayError("source collector binding version is unsupported")
+        collectors = binding.get("collectors")
+        if not isinstance(collectors, list) or binding != self._collector_binding(collectors):
+            raise ReplayError("source collector binding failed integrity validation")
+        return self._collector_configuration({"collectors": collectors}, mode=mode)
+
+    @classmethod
+    def _source_collector_settings_hash(cls, source: Mapping[str, Any]) -> str | None:
+        runtime = cls._source_collector_runtime(source)
+        return runtime.settings_hash if runtime is not None else None
+
+    @staticmethod
+    def _selected_collector_ids(
+        collector_ids: Sequence[str],
+        runtime: CollectorRuntimeSettings | None,
+    ) -> tuple[str, ...]:
+        if runtime is None:
+            return tuple(collector_ids)
+        return tuple(
+            collector_id
+            for collector_id, row in runtime.collectors.items()
+            if row["enabled"] is True
+        )
+
+    @staticmethod
+    def _collector_binding(
+        collector_ids: Sequence[str],
+        runtime: CollectorRuntimeSettings | None = None,
+    ) -> Mapping[str, Any]:
+        if runtime is not None:
+            enabled = [
+                collector_id
+                for collector_id, row in runtime.collectors.items()
+                if row["enabled"] is True
+            ]
+            disabled = [
+                collector_id
+                for collector_id, row in runtime.collectors.items()
+                if row["enabled"] is False
+            ]
+            return {
+                "schema_version": "bluefire.collector-binding.v2",
+                "settings": runtime.to_dict(),
+                "settings_hash": runtime.settings_hash,
+                "enabled_collectors": enabled,
+                "disabled_collectors": disabled,
+                "authority": "versioned-runtime-settings-and-independent-observation",
+            }
         return {
             "schema_version": "bluefire.collector-binding.v1",
             "collectors": list(collector_ids),

@@ -23,10 +23,15 @@ from .approvals import (
 )
 from .collectors import (
     CollectionRequest,
+    CollectionResult,
+    CollectionSession,
     CollectorError,
+    CollectorReadiness,
     CollectorRegistry,
+    CollectorRuntimeSettings,
     FilesystemCollector,
     JsonLinesFixtureCollector,
+    LoopbackReceiverCollector,
 )
 from .config import AutonomyLevel, CleanupPolicy, RunnerProfile
 from .contracts import ExecutionMode, ScenarioDefinition, StepOutcome
@@ -345,6 +350,7 @@ class Orchestrator:
         ai_enabled: bool | None = None,
         approval_present: bool = False,
         action_implementations: Mapping[str, str] | None = None,
+        collector_runtime_settings: CollectorRuntimeSettings | None = None,
     ) -> PreflightReport:
         problems: list[str] = []
         try:
@@ -373,6 +379,22 @@ class Orchestrator:
                 problems.append("Execute requires an available Rust runner transport.")
             if profile is not None and profile.approval_required and not approval_present:
                 problems.append("Explicit operator approval is required.")
+            if collector_runtime_settings is not None:
+                try:
+                    self._collector_schedule(plan, collector_runtime_settings)
+                except OrchestrationError as exc:
+                    problems.append(str(exc))
+                receiver = collector_runtime_settings.collectors.get(
+                    LoopbackReceiverCollector.descriptor.id
+                )
+                if (
+                    receiver is not None
+                    and receiver["enabled"] is True
+                    and not self._runner_supports_task_identity()
+                ):
+                    problems.append("Receiver collection requires a task-aware runner transport.")
+        elif collector_runtime_settings is not None:
+            problems.append("Simulate does not accept collector runtime settings.")
         actions = tuple(step.action_id for step in plan.steps if step.action_id is not None)
         capabilities = tuple(
             sorted({capability for step in plan.steps for capability in step.required_capabilities})
@@ -424,8 +446,16 @@ class Orchestrator:
         action_implementations: Mapping[str, str] | None = None,
         runner_readiness: Mapping[str, Any] | None = None,
         collector_ids: Sequence[str] = (),
+        collector_runtime_settings: CollectorRuntimeSettings | None = None,
+        collector_registry_authority: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         execution_started = time.monotonic()
+        if collector_ids and collector_runtime_settings is not None:
+            raise OrchestrationError(
+                "Execute accepts either legacy collectors or collector runtime settings"
+            )
+        if collector_runtime_settings is not None and mode is not ExecutionMode.EXECUTE:
+            raise OrchestrationError("Simulate does not accept collector runtime settings")
         if checkpoint is not None:
             checkpoint({"phase": "planning", "completed_steps": 0})
         preflight = self.preflight(
@@ -437,6 +467,7 @@ class Orchestrator:
             ai_enabled=ai_enabled,
             approval_present=approval_record is not None,
             action_implementations=action_implementations,
+            collector_runtime_settings=collector_runtime_settings,
         )
         if not preflight.ready:
             raise OrchestrationError("; ".join(preflight.problems))
@@ -450,6 +481,11 @@ class Orchestrator:
             ai_enabled=ai_enabled,
             action_implementations=action_implementations,
         )
+        collection_step_id = self._collector_schedule(
+            plan,
+            collector_runtime_settings,
+            start_step_id=resume_from_step_id or scenario.start,
+        )
         runner_profile_doc: Mapping[str, Any] | None = None
         observer: SandboxObserver | None = None
         authorized_target_scope: Mapping[str, Any] = {"scope_refs": []}
@@ -462,6 +498,24 @@ class Orchestrator:
                     "Execute requires an explicit profile, sandbox root, and Rust runner"
                 )
             authorized_target_scope = self._validated_target_scope(target_scope, profile)
+            if collector_runtime_settings is not None:
+                if self.collector_registry is None:
+                    raise OrchestrationError("Execute collector runtime has no configured registry")
+                try:
+                    current_collector_authority = self.collector_registry.authority_snapshot(
+                        collector_runtime_settings,
+                        expected_sandbox=sandbox_root,
+                    )
+                except CollectorError as exc:
+                    raise OrchestrationError(str(exc)) from exc
+                if (
+                    collector_registry_authority is not None
+                    and collector_registry_authority != current_collector_authority
+                ):
+                    raise OrchestrationError(
+                        "collector registry authority changed after operator approval"
+                    )
+                collector_registry_authority = current_collector_authority
             if replay is not None or resume_from_step_id is not None:
                 approval_context.update(
                     {
@@ -469,8 +523,15 @@ class Orchestrator:
                         "resume_from_step_id": resume_from_step_id,
                     }
                 )
-            if collector_ids:
-                approval_context["collector_binding"] = self._collector_binding(collector_ids)
+            if collector_ids or collector_runtime_settings is not None:
+                approval_context["collector_binding"] = self._collector_binding(
+                    collector_ids,
+                    collector_runtime_settings,
+                )
+            if collector_registry_authority is not None:
+                approval_context["collector_registry_authority"] = dict(
+                    collector_registry_authority
+                )
             approval_binding = execution_approval_binding(
                 registry=self.registry,
                 scenario=scenario,
@@ -592,6 +653,10 @@ class Orchestrator:
                 checkpoint=checkpoint,
                 cancel_event=cancel_event,
                 collector_ids=collector_ids,
+                collector_runtime_settings=collector_runtime_settings,
+                collection_step_id=collection_step_id,
+                collector_registry_authority=collector_registry_authority,
+                collector_sandbox_root=(Path(sandbox_root) if sandbox_root is not None else None),
             )
         except BaseException:
             if (
@@ -639,6 +704,10 @@ class Orchestrator:
         checkpoint: Callable[[Mapping[str, Any]], None] | None,
         cancel_event: threading.Event | None,
         collector_ids: Sequence[str] = (),
+        collector_runtime_settings: CollectorRuntimeSettings | None = None,
+        collection_step_id: str | None = None,
+        collector_registry_authority: Mapping[str, Any] | None = None,
+        collector_sandbox_root: Path | None = None,
     ) -> Mapping[str, Any]:
         evidence = EvidenceGraph()
         artifacts: dict[str, Any] = dict(seed_artifacts or {})
@@ -649,6 +718,7 @@ class Orchestrator:
         step_overrides: dict[str, PlanStep] = {}
         visited: set[str] = set()
         retries_used = self._adaptive_retry_count(replay)
+        execution_attempts: dict[str, int] = {}
         current_step_id: str | None = resume_from_step_id or scenario.start
         forced_cleanup = False
         cleanup_forced = False
@@ -664,6 +734,20 @@ class Orchestrator:
             else 0.0
         )
         budget_exhausted = False
+        collector_elapsed_seconds = 0.0
+        collection_session: CollectionSession | None = None
+        proposal_resolution = replay.get("proposal_resolution") if replay is not None else None
+        proposal_resolution_applied = False
+        if isinstance(proposal_resolution, Mapping) and resume_from_step_id is not None:
+            if mode is ExecutionMode.EXECUTE:
+                raise OrchestrationError(
+                    "Execute proposal continuations require a fresh full replay"
+                )
+            if proposal_resolution.get("selected_step_id") != resume_from_step_id:
+                raise OrchestrationError(
+                    "approved proposal continuation does not match its resume node"
+                )
+            proposal_resolution_applied = True
 
         while current_step_id and len(step_rows) < max_steps:
             if checkpoint is not None:
@@ -735,6 +819,8 @@ class Orchestrator:
                 assert profile is not None
                 assert runner_profile is not None
                 assert observer is not None
+                execution_attempt = execution_attempts.get(current_step_id, 0) + 1
+                execution_attempts[current_step_id] = execution_attempt
                 is_cleanup = self._runner_opcode(plan_step) == "sandbox.cleanup.v1"
                 remaining = max((deadline or time.monotonic()) - time.monotonic(), 0.0)
                 # Cleanup is the compensating safety boundary. A runner call can
@@ -766,12 +852,74 @@ class Orchestrator:
                     action_timeout_ms=action_timeout_ms,
                     cancel_event=cancel_event,
                     collector_ids=collector_ids,
+                    collector_runtime_active=collector_runtime_settings is not None,
+                    execution_attempt=execution_attempt,
                 )
                 policy_rows.append(decision.to_dict())
                 if self._runner_opcode(plan_step) == "sandbox.cleanup.v1":
                     cleanup_attempted = True
                     if row["status"] == StepOutcome.SUCCESS.value:
                         receipt_ids.clear()
+
+                if current_step_id == collection_step_id:
+                    if collector_runtime_settings is None:
+                        raise OrchestrationError(
+                            "configured collector schedule has no runtime settings"
+                        )
+                    if not records:
+                        raise OrchestrationError(
+                            "configured collectors lack executed evidence lineage"
+                        )
+                    collection_remaining = max(
+                        (deadline or (time.monotonic() + 5.0)) - time.monotonic() - cleanup_reserve,
+                        0.0,
+                    )
+                    if collection_remaining <= 0:
+                        budget_exhausted = True
+                        raise OrchestrationError(
+                            "configured collector phase has no remaining execution budget"
+                        )
+                    collection_started = time.monotonic()
+                    source_free_gaps: dict[str, str] = {}
+                    receiver_settings = collector_runtime_settings.collectors.get(
+                        LoopbackReceiverCollector.descriptor.id
+                    )
+                    if (
+                        records[0].provenance is not EvidenceProvenance.EXECUTED
+                        and receiver_settings is not None
+                        and receiver_settings["enabled"] is True
+                    ):
+                        source_free_gaps[LoopbackReceiverCollector.descriptor.id] = (
+                            "scheduled_runner_effect_not_executed"
+                        )
+                    attempt_session = self._collect_configured_session(
+                        run_id=handle.run_id,
+                        step=plan_step,
+                        profile=profile,
+                        parent_evidence_id=records[0].evidence_id,
+                        runner_task_id=row.get("runner_task_id"),
+                        settings=collector_runtime_settings,
+                        timeout_seconds=min(5.0, collection_remaining),
+                        expected_authority=collector_registry_authority,
+                        sandbox_root=collector_sandbox_root,
+                        source_free_gaps=source_free_gaps,
+                    )
+                    collector_elapsed_seconds += time.monotonic() - collection_started
+                    if deadline is not None and time.monotonic() > deadline - cleanup_reserve:
+                        budget_exhausted = True
+                        step_budget_exhausted = True
+                    records = (
+                        *records,
+                        *self._collection_session_records(attempt_session),
+                    )
+                    collection_session = self._merge_collection_sessions(
+                        collection_session,
+                        attempt_session,
+                    )
+                    row = {
+                        **row,
+                        "evidence_ids": [record.evidence_id for record in records],
+                    }
 
             evidence.extend(records)
             artifacts[current_step_id] = row.get("artifacts", {})
@@ -832,19 +980,29 @@ class Orchestrator:
                 "planner.decision",
                 planner_decision.to_dict(),
             )
-            replay_transition_applied, replay_transition = self._approved_replay_transition(
-                replay=replay,
-                scenario=scenario,
-                current_step_id=current_step_id,
-                outcome=outcome,
-                planner_decision=planner_decision,
-            )
+            if proposal_resolution_applied:
+                replay_transition_applied, replay_transition = False, None
+            else:
+                replay_transition_applied, replay_transition = self._approved_replay_transition(
+                    replay=replay,
+                    scenario=scenario,
+                    current_step_id=current_step_id,
+                    outcome=outcome,
+                    planner_decision=planner_decision,
+                )
             proposal_record: dict[str, Any] | None = None
             alternate_step: PlanStep | None = None
             adaptive_next_step_id: str | None = None
             retry_applied = False
             if replay_transition_applied:
+                proposal_resolution_applied = True
                 adaptive_next_step_id = replay_transition
+                resolution = replay.get("proposal_resolution") if replay else None
+                if (
+                    isinstance(resolution, Mapping)
+                    and resolution.get("proposal_type") == ProposalType.RETRY_REGISTERED.value
+                ):
+                    visited.discard(current_step_id)
                 self.store.append_event(
                     handle.run_id,
                     "ai.proposal.resumed",
@@ -938,6 +1096,19 @@ class Orchestrator:
 
         if current_step_id is not None:
             raise OrchestrationError("run exceeded its step budget")
+        if (
+            replay is not None
+            and isinstance(replay.get("proposal_resolution"), Mapping)
+            and not proposal_resolution_applied
+            and approval_pause is None
+        ):
+            raise OrchestrationError("approved proposal lineage was not reached during the replay")
+        if (
+            collector_runtime_settings is not None
+            and collection_session is None
+            and approval_pause is None
+        ):
+            raise OrchestrationError("configured collector schedule was not reached")
 
         detections = self._build_detections(evidence.records())
         cleanup_success = any(
@@ -962,6 +1133,7 @@ class Orchestrator:
         )
         objective_reached = (
             terminal_satisfied
+            and not budget_exhausted
             and not cleanup_forced
             and (cleanup_success if cleanup_required else True)
         )
@@ -1003,11 +1175,15 @@ class Orchestrator:
                 "outstanding_receipt_count": len(receipt_ids),
             },
             "replay": dict(replay) if replay else None,
+            "collector_session": (
+                collection_session.to_dict() if collection_session is not None else None
+            ),
             "limitations": list(scenario.limitations),
             "runtime_budget": {
                 "configured_seconds": total_seconds,
                 "cleanup_reserve_seconds": cleanup_reserve,
                 "elapsed_seconds": round(time.monotonic() - execution_started, 3),
+                "collector_elapsed_seconds": round(collector_elapsed_seconds, 3),
                 "exhausted": budget_exhausted,
             },
             "adaptive_retry": {
@@ -1598,10 +1774,22 @@ class Orchestrator:
             return False, None
         proposal_type = resolution.get("proposal_type")
         selected_step_id = resolution.get("selected_step_id")
+        if resolution.get("schema_version") != "bluefire.ai-proposal-resolution-lineage.v3":
+            raise OrchestrationError("approved proposal lineage version is invalid")
+        if resolution.get("observed_outcome") != outcome.value:
+            raise OrchestrationError("approved proposal lineage is stale for the replayed outcome")
         if proposal_type == ProposalType.RETRY_REGISTERED.value:
+            if outcome not in {
+                StepOutcome.PARTIAL,
+                StepOutcome.BLOCKED,
+                StepOutcome.FAILED,
+            }:
+                raise OrchestrationError(
+                    "approved retry lineage is not eligible for the replayed outcome"
+                )
             if selected_step_id != current_step_id:
                 raise OrchestrationError("approved retry lineage selected a different node")
-            return True, planner_decision.selected_step_id
+            return True, current_step_id
         if not isinstance(selected_step_id, str):
             raise OrchestrationError("approved proposal lineage has no selected node")
         if proposal_type == ProposalType.SELECT_NEXT_NODE.value:
@@ -1896,6 +2084,8 @@ class Orchestrator:
         action_timeout_ms: int | None = None,
         cancel_event: threading.Event | None = None,
         collector_ids: Sequence[str] = (),
+        collector_runtime_active: bool = False,
+        execution_attempt: int = 1,
     ) -> tuple[dict[str, Any], tuple[EvidenceRecord, ...], PolicyDecision, tuple[str, ...]]:
         action = self.registry.get_action(str(step.action_id))
         provider_binding = self._provider_execution_binding(step)
@@ -2055,10 +2245,11 @@ class Orchestrator:
                 getattr(wrapped_runner, "execute_task", None)
             )
             if callable(execute_task) and wrapped_supports_tasks:
-                request_hash = content_hash(
-                    {"manifest": dict(manifest), "profile": dict(runner_profile)}
+                task_id = self._execution_task_id(
+                    manifest,
+                    runner_profile,
+                    execution_attempt=execution_attempt,
                 )
-                task_id = "execute-" + request_hash.removeprefix("sha256:")
                 runner_task_id = task_id
                 runner_result = execute_task(
                     manifest,
@@ -2212,7 +2403,9 @@ class Orchestrator:
                 outcome = StepOutcome.PARTIAL
                 logical_outputs = {}
         if provenance is EvidenceProvenance.EXECUTED and adapted.observable_paths:
-            if collector_ids:
+            if collector_runtime_active:
+                pass
+            elif collector_ids:
                 records.extend(
                     self._collect_observable_paths(
                         run_id=run_id,
@@ -2323,7 +2516,268 @@ class Orchestrator:
         return tuple(collected)
 
     @staticmethod
-    def _collector_binding(collector_ids: Sequence[str]) -> Mapping[str, Any]:
+    def _collector_schedule(
+        plan: ExecutionPlan,
+        settings: CollectorRuntimeSettings | None,
+        *,
+        start_step_id: str | None = None,
+    ) -> str | None:
+        if settings is None:
+            return None
+        enabled_settings = [
+            row["settings"] for row in settings.collectors.values() if row["enabled"] is True
+        ]
+        if not enabled_settings:
+            raise OrchestrationError("collector runtime settings enable no collectors")
+        schedule = {
+            row.get("collect_after_step") for row in enabled_settings if isinstance(row, Mapping)
+        }
+        if (
+            len(schedule) != 1
+            or not all(isinstance(value, str) and value for value in schedule)
+            or not schedule <= {step.step_id for step in plan.steps}
+        ):
+            raise OrchestrationError(
+                "enabled collectors must share one registered collect_after_step"
+            )
+        collection_step_id = next(iter(schedule))
+        if start_step_id is not None:
+            step_ids = {step.step_id for step in plan.steps}
+            if start_step_id not in step_ids:
+                raise OrchestrationError("collector continuation start step is not registered")
+            reachable = {start_step_id}
+            frontier = [start_step_id]
+            adjacency: dict[str, set[str]] = {}
+            for edge in plan.edges:
+                from_step = edge.get("from_step")
+                to_step = edge.get("to_step")
+                if isinstance(from_step, str) and isinstance(to_step, str):
+                    adjacency.setdefault(from_step, set()).add(to_step)
+            while frontier:
+                current = frontier.pop()
+                for candidate in adjacency.get(current, set()):
+                    if candidate not in reachable:
+                        reachable.add(candidate)
+                        frontier.append(candidate)
+            if collection_step_id not in reachable:
+                raise OrchestrationError(
+                    "configured collector schedule is not reachable from the continuation"
+                )
+            frontier_with_state = [(start_step_id, start_step_id == collection_step_id)]
+            visited_states: set[tuple[str, bool]] = set()
+            while frontier_with_state:
+                current, collected = frontier_with_state.pop()
+                state = (current, collected)
+                if state in visited_states:
+                    continue
+                visited_states.add(state)
+                successors = adjacency.get(current, set())
+                if not successors and not collected:
+                    raise OrchestrationError(
+                        "configured collector schedule can be bypassed by a continuation path"
+                    )
+                for candidate in successors:
+                    frontier_with_state.append(
+                        (candidate, collected or candidate == collection_step_id)
+                    )
+        return collection_step_id
+
+    def _collect_configured_session(
+        self,
+        *,
+        run_id: str,
+        step: PlanStep,
+        profile: RunnerProfile,
+        parent_evidence_id: str,
+        runner_task_id: Any,
+        settings: CollectorRuntimeSettings | None,
+        timeout_seconds: float,
+        expected_authority: Mapping[str, Any] | None,
+        sandbox_root: Path | None,
+        source_free_gaps: Mapping[str, str] | None = None,
+    ) -> CollectionSession:
+        if self.collector_registry is None or settings is None:
+            raise OrchestrationError("Execute collector runtime is incomplete")
+        if expected_authority is None or sandbox_root is None:
+            raise OrchestrationError("Execute collector registry authority is incomplete")
+        try:
+            current_authority = self.collector_registry.authority_snapshot(
+                settings,
+                expected_sandbox=sandbox_root,
+            )
+        except CollectorError as exc:
+            raise OrchestrationError(str(exc)) from exc
+        if current_authority != expected_authority:
+            raise OrchestrationError("collector registry authority changed before collection")
+        receiver_settings = settings.collectors.get(LoopbackReceiverCollector.descriptor.id)
+        receiver_is_gapped = bool(
+            source_free_gaps and LoopbackReceiverCollector.descriptor.id in source_free_gaps
+        )
+        if (
+            receiver_settings is not None
+            and receiver_settings["enabled"] is True
+            and not receiver_is_gapped
+            and not (
+                isinstance(runner_task_id, str)
+                and runner_task_id.startswith("execute-")
+                and len(runner_task_id) == 72
+            )
+        ):
+            raise OrchestrationError(
+                "receiver collection requires the exact executed runner task identity"
+            )
+        request = CollectionRequest(
+            run_id=run_id,
+            step_id=step.step_id,
+            behavior_id=step.behavior_id,
+            action_id=str(step.action_id),
+            runner_profile_id=profile.id,
+            target_scope_ref=f"runner-profile:{profile.id}",
+            parent_evidence_ids=(parent_evidence_id,),
+            execution_binding=(
+                {"runner_task_id": runner_task_id} if isinstance(runner_task_id, str) else None
+            ),
+            timeout_seconds=timeout_seconds,
+        )
+        try:
+            session = self.collector_registry.collect_configured(
+                settings,
+                request,
+                source_free_gaps=source_free_gaps,
+            )
+        except CollectorError as exc:
+            raise OrchestrationError(str(exc)) from exc
+        records = self._collection_session_records(session)
+        if not records or any(
+            record.run_id != run_id
+            or record.step_id != step.step_id
+            or record.parent_evidence_ids != (parent_evidence_id,)
+            for record in records
+        ):
+            raise OrchestrationError("collector session evidence lineage is invalid")
+        return session
+
+    def _runner_supports_task_identity(self) -> bool:
+        if self.runner is None:
+            return False
+        execute_task = getattr(self.runner, "execute_task", None)
+        wrapped_runner = getattr(self.runner, "runner", None)
+        return callable(execute_task) and (
+            wrapped_runner is None or callable(getattr(wrapped_runner, "execute_task", None))
+        )
+
+    @staticmethod
+    def _execution_task_id(
+        manifest: Mapping[str, Any],
+        runner_profile: Mapping[str, Any],
+        *,
+        execution_attempt: int,
+    ) -> str:
+        if (
+            isinstance(execution_attempt, bool)
+            or not isinstance(execution_attempt, int)
+            or execution_attempt <= 0
+        ):
+            raise OrchestrationError("execution attempt identity is invalid")
+        digest = content_hash(
+            {
+                "manifest": dict(manifest),
+                "profile": dict(runner_profile),
+                "execution_attempt": execution_attempt,
+            }
+        )
+        return "execute-" + digest.removeprefix("sha256:")
+
+    @staticmethod
+    def _collection_session_records(
+        session: CollectionSession,
+    ) -> tuple[EvidenceRecord, ...]:
+        return tuple(record for result in session.results.values() for record in result.records)
+
+    @staticmethod
+    def _merge_collection_sessions(
+        existing: CollectionSession | None,
+        attempt: CollectionSession,
+    ) -> CollectionSession:
+        if existing is None:
+            return attempt
+        if existing.settings.settings_hash != attempt.settings.settings_hash:
+            raise OrchestrationError("collector settings changed between execution attempts")
+        if set(existing.results) != set(attempt.results):
+            raise OrchestrationError("collector result set changed between execution attempts")
+        results: dict[str, CollectionResult] = {}
+        for collector_id, current in attempt.results.items():
+            prior = existing.results.get(collector_id)
+            if prior is None or prior.descriptor != current.descriptor:
+                raise OrchestrationError("collector identity changed between execution attempts")
+            combined_records = (*prior.records, *current.records)
+            prior_attempts = prior.health.details.get("attempt_count", 1)
+            attempt_count = (
+                int(prior_attempts) + 1
+                if isinstance(prior_attempts, int) and not isinstance(prior_attempts, bool)
+                else 2
+            )
+            readiness_rank = {
+                CollectorReadiness.READY: 0,
+                CollectorReadiness.DEGRADED: 1,
+                CollectorReadiness.UNAVAILABLE: 2,
+            }
+            aggregate_readiness = max(
+                (prior.health.readiness, current.health.readiness),
+                key=readiness_rank.__getitem__,
+            )
+            observation_count = sum(
+                record.provenance is EvidenceProvenance.OBSERVED for record in combined_records
+            )
+            health = replace(
+                current.health,
+                readiness=aggregate_readiness,
+                summary="Collector completed across multiple execution attempts",
+                details={
+                    **dict(current.health.details),
+                    "attempt_count": attempt_count,
+                    "record_count": len(combined_records),
+                    "observation_count": observation_count,
+                    "gap_count": len(combined_records) - observation_count,
+                    "attempt_readiness": [
+                        prior.health.readiness.value,
+                        current.health.readiness.value,
+                    ],
+                },
+            )
+            results[collector_id] = CollectionResult(
+                descriptor=current.descriptor,
+                health=health,
+                records=combined_records,
+                elapsed_ms=min(prior.elapsed_ms + current.elapsed_ms, 3_600_000),
+                limitations=tuple(dict.fromkeys((*prior.limitations, *current.limitations))),
+            )
+        return CollectionSession(settings=attempt.settings, results=results)
+
+    @staticmethod
+    def _collector_binding(
+        collector_ids: Sequence[str],
+        runtime: CollectorRuntimeSettings | None = None,
+    ) -> Mapping[str, Any]:
+        if runtime is not None:
+            enabled = [
+                collector_id
+                for collector_id, row in runtime.collectors.items()
+                if row["enabled"] is True
+            ]
+            disabled = [
+                collector_id
+                for collector_id, row in runtime.collectors.items()
+                if row["enabled"] is False
+            ]
+            return {
+                "schema_version": "bluefire.collector-binding.v2",
+                "settings": runtime.to_dict(),
+                "settings_hash": runtime.settings_hash,
+                "enabled_collectors": enabled,
+                "disabled_collectors": disabled,
+                "authority": "versioned-runtime-settings-and-independent-observation",
+            }
         return {
             "schema_version": "bluefire.collector-binding.v1",
             "collectors": list(collector_ids),

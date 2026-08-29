@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
@@ -19,7 +21,7 @@ from bluefire.api import APIError
 from bluefire.config import AIConfig, AIProviderConfig, AutonomyLevel, load_config
 from bluefire.contracts import ExecutionMode, load_scenario
 from bluefire.job_runtime import JobState
-from bluefire.orchestrator import Orchestrator
+from bluefire.orchestrator import OrchestrationError, Orchestrator
 from bluefire.registry import BehaviorRegistry, load_builtin_registry
 from bluefire.run_store import RunStore
 from bluefire.runner_contracts import current_platform
@@ -904,9 +906,14 @@ def test_assist_proposal_rejection_and_cancellation_do_not_resume(tmp_path: Path
     service.close()
 
 
-def test_execute_proposal_acceptance_requires_a_fresh_exact_approval(tmp_path: Path) -> None:
+def test_execute_proposal_acceptance_requires_a_fresh_exact_approval(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
     runner = ProposalLifecycleRunner()
-    sandbox = tmp_path / "sandbox"
+    short_root = Path(tempfile.mkdtemp(prefix="bf-ai-proposal-"))
+    request.addfinalizer(lambda: shutil.rmtree(short_root, ignore_errors=True))
+    sandbox = short_root / "sandbox"
     sandbox.mkdir()
 
     def provider_factory(config: AIConfig, provider_id: str) -> AlternateProposalProvider:
@@ -1052,6 +1059,7 @@ def test_auto_next_node_selection_stays_on_the_observed_registered_edge(
 
 def test_execute_registered_action_change_gets_fresh_approval_and_full_replay(
     tmp_path: Path,
+    request: pytest.FixtureRequest,
 ) -> None:
     base_registry = load_builtin_registry()
     behavior_id = "sandbox.discovery.list.v1"
@@ -1075,7 +1083,9 @@ def test_execute_registered_action_change_gets_fresh_approval_and_full_replay(
         [base_registry.get_action(item_id) for item_id in base_registry.action_ids],
     )
     runner = ProposalLifecycleRunner()
-    sandbox = tmp_path / "sandbox"
+    short_root = Path(tempfile.mkdtemp(prefix="bf-ai-replay-"))
+    request.addfinalizer(lambda: shutil.rmtree(short_root, ignore_errors=True))
+    sandbox = short_root / "sandbox"
     sandbox.mkdir()
 
     def provider_factory(config: AIConfig, provider_id: str) -> ActionProposalProvider:
@@ -1184,3 +1194,103 @@ def test_auto_retry_is_single_bounded_attempt_with_distinct_evidence(
         )
         == 1
     )
+
+
+@pytest.mark.parametrize("failures", [1, 2])
+def test_approved_retry_continuation_is_outcome_bound_and_applied_once(
+    tmp_path: Path,
+    failures: int,
+) -> None:
+    orchestrator = Orchestrator(
+        load_builtin_registry(),
+        RunStore(tmp_path / "runs"),
+    )
+    simulations = FailFirstSimulations(failures=failures)
+    orchestrator.simulations = simulations  # type: ignore[assignment]
+    scenario = load_scenario(ROOT / "scenarios" / "restricted_persistence_canary.yaml")
+
+    result = orchestrator.run(
+        scenario,
+        mode=ExecutionMode.SIMULATE,
+        replay={
+            "adaptive_retry_count": 1,
+            "proposal_resolution": {
+                "schema_version": "bluefire.ai-proposal-resolution-lineage.v3",
+                "proposal_type": "retry_registered",
+                "apply_after_step_id": "create_persistence_canary",
+                "selected_step_id": "create_persistence_canary",
+                "observed_outcome": "failed",
+            },
+        },
+    )
+
+    attempts = [row for row in result["steps"] if row["step_id"] == "create_persistence_canary"]
+    assert len(attempts) == 2
+    assert attempts[0]["status"] == "failed"
+    assert simulations.attempts == 2
+    assert result["adaptive_retry"] == {"maximum": 1, "used": 1, "remaining": 0}
+
+
+def test_approved_retry_continuation_never_duplicates_a_now_successful_effect(
+    tmp_path: Path,
+) -> None:
+    orchestrator = Orchestrator(
+        load_builtin_registry(),
+        RunStore(tmp_path / "runs"),
+    )
+    simulations = FailFirstSimulations(failures=0)
+    orchestrator.simulations = simulations  # type: ignore[assignment]
+    scenario = load_scenario(ROOT / "scenarios" / "restricted_persistence_canary.yaml")
+
+    with pytest.raises(OrchestrationError, match="stale for the replayed outcome"):
+        orchestrator.run(
+            scenario,
+            mode=ExecutionMode.SIMULATE,
+            replay={
+                "adaptive_retry_count": 1,
+                "proposal_resolution": {
+                    "schema_version": "bluefire.ai-proposal-resolution-lineage.v3",
+                    "proposal_type": "retry_registered",
+                    "apply_after_step_id": "create_persistence_canary",
+                    "selected_step_id": "create_persistence_canary",
+                    "observed_outcome": "failed",
+                },
+            },
+        )
+
+    assert simulations.attempts == 1
+
+
+@pytest.mark.parametrize("failures", [0, 1])
+def test_simulate_retry_resume_represents_the_single_approved_attempt(
+    tmp_path: Path,
+    failures: int,
+) -> None:
+    orchestrator = Orchestrator(
+        load_builtin_registry(),
+        RunStore(tmp_path / "runs"),
+    )
+    simulations = FailFirstSimulations(failures=failures)
+    orchestrator.simulations = simulations  # type: ignore[assignment]
+    scenario = load_scenario(ROOT / "scenarios" / "restricted_persistence_canary.yaml")
+
+    result = orchestrator.run(
+        scenario,
+        mode=ExecutionMode.SIMULATE,
+        replay={
+            "adaptive_retry_count": 1,
+            "proposal_resolution": {
+                "schema_version": "bluefire.ai-proposal-resolution-lineage.v3",
+                "proposal_type": "retry_registered",
+                "apply_after_step_id": "create_persistence_canary",
+                "selected_step_id": "create_persistence_canary",
+                "observed_outcome": "failed",
+            },
+        },
+        resume_from_step_id="create_persistence_canary",
+    )
+
+    attempts = [row for row in result["steps"] if row["step_id"] == "create_persistence_canary"]
+    assert len(attempts) == 1
+    assert simulations.attempts == 1
+    assert result["adaptive_retry"] == {"maximum": 1, "used": 1, "remaining": 0}

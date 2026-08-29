@@ -9,6 +9,8 @@ from .ai import ai_runtime_metadata
 from .collectors import (
     FilesystemCollector,
     JsonLinesFixtureCollector,
+    LoopbackReceiverCollector,
+    NativeProcessCollector,
     optional_collector_descriptors,
 )
 from .config import BlueFireConfig
@@ -86,18 +88,22 @@ def seed_product_metadata(
     collector_descriptors = (
         FilesystemCollector.descriptor,
         JsonLinesFixtureCollector.descriptor,
+        NativeProcessCollector.descriptor,
+        LoopbackReceiverCollector.descriptor,
         *optional_collector_descriptors(),
     )
     for descriptor in collector_descriptors:
-        built_in = descriptor.id in {
-            FilesystemCollector.descriptor.id,
-            JsonLinesFixtureCollector.descriptor.id,
-        }
+        status = {
+            FilesystemCollector.descriptor.id: "available_per_run",
+            JsonLinesFixtureCollector.descriptor.id: "available_per_run",
+            NativeProcessCollector.descriptor.id: "available_native_session",
+            LoopbackReceiverCollector.descriptor.id: "requires_managed_receiver",
+        }.get(descriptor.id, "not_configured")
         store.save_resource(
             "collector",
             descriptor.id,
             descriptor.to_dict(),
-            status="available_per_run" if built_in else "not_configured",
+            status=status,
             replace_existing=False,
         )
         counts["collector"] += 1

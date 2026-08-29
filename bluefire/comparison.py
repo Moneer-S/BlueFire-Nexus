@@ -7,6 +7,8 @@ from collections import Counter
 from datetime import datetime
 from typing import Any, Mapping, Sequence
 
+from .collector_comparison import collector_session_delta, summarize_collector_session
+from .collectors import CollectorError
 from .run_store import RunStore
 from .util import content_hash
 
@@ -95,7 +97,10 @@ def compare_runs(store: RunStore, run_ids: Sequence[str]) -> Mapping[str, Any]:
         if not integrity.get("valid"):
             raise ComparisonError(f"run bundle failed integrity validation: {run_id}")
         snapshots.append(store.get_run(run_id))
-    summaries = [_summarize(snapshot) for snapshot in snapshots]
+    try:
+        summaries = [_summarize(snapshot) for snapshot in snapshots]
+    except CollectorError as exc:
+        raise ComparisonError(f"collector session failed integrity validation: {exc}") from exc
     baseline = summaries[0]
     deltas = [_delta(baseline, candidate) for candidate in summaries[1:]]
     body = {
@@ -228,6 +233,12 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "objective_reached": objective_reached,
         "evidence_provenance": dict(sorted(provenance.items())),
         "evidence_details": evidence_details,
+        "collector_session": summarize_collector_session(
+            snapshot.get("collector_session"),
+            records,
+            snapshot.get("run_id"),
+            steps,
+        ),
         "detection_states": dict(sorted(detection_states.items())),
         "detection_matches": detection_matches,
         "observed_detection_matches": observed_detection_matches,
@@ -307,6 +318,9 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
     )
     target_scope_changed = baseline["target_scope"] != candidate["target_scope"]
     replay_delta = _replay_lineage_delta(baseline["replay_lineage"], candidate["replay_lineage"])
+    collector_delta = collector_session_delta(
+        baseline["collector_session"], candidate["collector_session"]
+    )
     if observed_detection_match_delta is not None:
         if observed_detection_match_delta > 0:
             signals.append("observed_detection_matches_increased")
@@ -326,12 +340,16 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         signals.append("target_scope_changed")
     if replay_delta["changed"]:
         signals.append("replay_variant_changed")
+    if collector_delta["settings_changed"]:
+        signals.append("collector_settings_changed")
     assessment = _assessment(signals)
     configuration_changes = ["catalog_authority"] if authority_delta["changed"] else []
     if target_scope_changed:
         configuration_changes.append("target_scope")
     if replay_delta["action_implementations_changed"]:
         configuration_changes.append("action_implementations")
+    if collector_delta["settings_changed"]:
+        configuration_changes.append("collectors")
     delta = {
         "from_run_id": baseline["run_id"],
         "to_run_id": candidate["run_id"],
@@ -361,6 +379,8 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         "replay_lineage_delta": replay_delta,
         "catalog_authority_changed": authority_delta["changed"],
         "catalog_authority_delta": authority_delta,
+        "collector_session_changed": collector_delta["changed"],
+        "collector_session_delta": collector_delta,
         "material_configuration_changed": bool(configuration_changes),
         "configuration_changes": configuration_changes,
         "duration_delta_ms": _number_delta(

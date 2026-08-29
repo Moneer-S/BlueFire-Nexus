@@ -221,7 +221,12 @@ def _open_windows_database_descriptor(
 ) -> tuple[int, DatabaseIdentity]:
     handle = -1
     try:
-        handle = _windows_open_pinned(path, directory=False, delete=False, write=True)
+        handle = _windows_open_pinned(
+            path,
+            directory=False,
+            delete=False,
+            write=True,
+        )
         information = _validate_windows_regular_information(
             _windows_file_information(handle),
             maximum=_MAX_DATABASE_BYTES,
@@ -414,19 +419,29 @@ def owner_private_database_lock(
     registration: _DatabaseDescriptorRegistration | None = None
     locked = False
     try:
-        descriptor, identity, registration = _open_database_descriptor(
-            canonical,
-            expected=expected,
-        )
+        try:
+            descriptor, identity, registration = _open_database_descriptor(
+                canonical,
+                expected=expected,
+            )
+        except LocalLockError:
+            raise
+        except (MemoryError, OSError, RunnerTrustError):
+            raise LocalLockError("Local database lock is unavailable or unsafe.") from None
         state = _state_for(identity)
         with state.guard:
             process_id = os.getpid()
             thread_id = threading.get_ident()
             if state.owner_thread == thread_id:
-                if state.owner_pid != process_id or state.descriptor is None or state.depth < 1:
-                    raise LocalLockError("Local database lock ownership is inconsistent.")
-                _validate_locked_database(canonical, state.descriptor, expected)
-                _close_database_descriptor(descriptor, registration)
+                try:
+                    if state.owner_pid != process_id or state.descriptor is None or state.depth < 1:
+                        raise LocalLockError("Local database lock ownership is inconsistent.")
+                    _validate_locked_database(canonical, state.descriptor, expected)
+                    _close_database_descriptor(descriptor, registration)
+                except LocalLockError:
+                    raise
+                except (MemoryError, OSError, RunnerTrustError):
+                    raise LocalLockError("Local database lock is unavailable or unsafe.") from None
                 descriptor = None
                 registration = None
                 state.depth += 1
@@ -435,17 +450,22 @@ def owner_private_database_lock(
                 finally:
                     state.depth -= 1
                 return
-            if (
-                state.owner_pid is not None
-                or state.owner_thread is not None
-                or state.depth != 0
-                or state.descriptor is not None
-            ):
-                raise LocalLockError("Local database lock ownership is inconsistent.")
+            try:
+                if (
+                    state.owner_pid is not None
+                    or state.owner_thread is not None
+                    or state.depth != 0
+                    or state.descriptor is not None
+                ):
+                    raise LocalLockError("Local database lock ownership is inconsistent.")
 
-            _lock_database_descriptor(descriptor)
-            locked = True
-            _validate_locked_database(canonical, descriptor, expected)
+                _lock_database_descriptor(descriptor)
+                locked = True
+                _validate_locked_database(canonical, descriptor, expected)
+            except LocalLockError:
+                raise
+            except (MemoryError, OSError, RunnerTrustError):
+                raise LocalLockError("Local database lock is unavailable or unsafe.") from None
             state.owner_pid = process_id
             state.owner_thread = thread_id
             state.depth = 1
@@ -457,10 +477,6 @@ def owner_private_database_lock(
                 state.owner_pid = None
                 state.owner_thread = None
                 state.descriptor = None
-    except LocalLockError:
-        raise
-    except (MemoryError, OSError, RunnerTrustError):
-        raise LocalLockError("Local database lock is unavailable or unsafe.") from None
     finally:
         if descriptor is not None and registration is not None:
             _close_database_descriptor(descriptor, registration, unlock=locked)

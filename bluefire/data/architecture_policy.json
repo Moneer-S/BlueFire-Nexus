@@ -24,6 +24,9 @@
     {
       "layer": "acceptance",
       "patterns": [
+        "bluefire.collector_gate",
+        "bluefire.collector_gate_validation",
+        "bluefire.collector_journey",
         "bluefire.defense_frontier",
         "bluefire.defense_frontier_gate",
         "bluefire.defense_frontier_report_validation",
@@ -92,6 +95,7 @@
         "bluefire.contracts",
         "bluefire.data.__init__",
         "bluefire.native.__init__",
+        "bluefire.native_collectors",
         "bluefire.secret_store",
         "bluefire.util"
       ]
@@ -104,6 +108,8 @@
         "bluefire.ai_record_validation",
         "bluefire.ai_drafts",
         "bluefire.approvals",
+        "bluefire.collector_comparison",
+        "bluefire.collector_interfaces",
         "bluefire.collectors",
         "bluefire.detections",
         "bluefire.evidence",

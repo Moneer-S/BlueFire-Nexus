@@ -68,6 +68,14 @@ def _hard_link_or_skip(source: Path, target: Path) -> None:
         pytest.skip("filesystem does not expose hard-link counts")
 
 
+def test_catalog_lease_does_not_relabel_an_effect_body_os_error(tmp_path: Path) -> None:
+    store = ProductStore(tmp_path / "body-error.sqlite3")
+
+    with pytest.raises(FileNotFoundError, match="effect-owned missing file"):
+        with store.action_package_catalog_lease():
+            raise FileNotFoundError("effect-owned missing file")
+
+
 class _BlockingRunner:
     def __init__(self, started: threading.Event, release: threading.Event) -> None:
         self.started = started

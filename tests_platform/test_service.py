@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import shutil
@@ -14,10 +15,21 @@ import pytest
 from bluefire.ai import UrllibAIJSONTransport
 from bluefire.api import APIError
 from bluefire.approvals import execution_approval_binding, public_approval_record
+from bluefire.collectors import (
+    CollectionRequest,
+    CollectorError,
+    CollectorRegistry,
+    CollectorRuntimeSettings,
+    FilesystemCollector,
+    LoopbackReceiverCollector,
+    NativeProcessCollector,
+)
 from bluefire.config import load_config
 from bluefire.contracts import ContractError, ExecutionMode
+from bluefire.evidence import EvidenceProvenance, EvidenceRecord
 from bluefire.job_runtime import JobCancelled, JobState
 from bluefire.orchestrator import Orchestrator
+from bluefire.replay import ReplayError
 from bluefire.runner_bootstrap import RUNNER_ID
 from bluefire.runner_client import RunnerTaskCancelled, RunnerTransportError
 from bluefire.runner_contracts import current_platform
@@ -49,6 +61,122 @@ EXECUTE_PROFILE_ACTIONS = {
     "sandbox.observability.variant.v1",
     "sandbox.peer.handoff.v1",
 }
+
+
+def _rehash_collector_authority(authority: dict[str, Any]) -> None:
+    for backend in authority.get("backends", []):
+        if not isinstance(backend, dict):
+            continue
+        descriptor = backend.get("descriptor")
+        source_authority = backend.get("source_authority")
+        if isinstance(descriptor, dict):
+            backend["descriptor_hash"] = content_hash(descriptor)
+        if isinstance(source_authority, dict):
+            backend["source_authority_hash"] = content_hash(source_authority)
+    authority["authority_hash"] = content_hash(
+        {key: value for key, value in authority.items() if key != "authority_hash"}
+    )
+
+
+def _collector_authority_fixture(
+    runtime: CollectorRuntimeSettings,
+    source_authorities: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    canonical_types = {
+        FilesystemCollector.descriptor.id: FilesystemCollector,
+        NativeProcessCollector.descriptor.id: NativeProcessCollector,
+        LoopbackReceiverCollector.descriptor.id: LoopbackReceiverCollector,
+    }
+    backends: list[dict[str, Any]] = []
+    for collector_id, row in runtime.collectors.items():
+        if row["enabled"] is not True:
+            continue
+        canonical_type = canonical_types[collector_id]
+        descriptor = canonical_type.descriptor.to_dict()
+        source_authority = dict(source_authorities[collector_id])
+        backends.append(
+            {
+                "collector_id": collector_id,
+                "descriptor": descriptor,
+                "descriptor_hash": content_hash(descriptor),
+                "implementation_id": (f"{canonical_type.__module__}.{canonical_type.__qualname__}"),
+                "source_authority": source_authority,
+                "source_authority_hash": content_hash(source_authority),
+            }
+        )
+    authority = {
+        "schema_version": "bluefire.collector-registry-authority.v1",
+        "settings_hash": runtime.settings_hash,
+        "backends": backends,
+    }
+    return {**authority, "authority_hash": content_hash(authority)}
+
+
+def _canonical_collector_authority_source() -> tuple[CollectorRuntimeSettings, dict[str, Any]]:
+    runtime = CollectorRuntimeSettings(
+        collectors={
+            FilesystemCollector.descriptor.id: {
+                "enabled": True,
+                "settings": {
+                    "collect_after_step": "stage_records",
+                    "paths": ["staged/bundle.jsonl"],
+                },
+            },
+            NativeProcessCollector.descriptor.id: {
+                "enabled": True,
+                "settings": {
+                    "collect_after_step": "observe_child",
+                    "process_id": 321,
+                    "expected_parent_process_id": 123,
+                },
+            },
+            LoopbackReceiverCollector.descriptor.id: {
+                "enabled": True,
+                "settings": {
+                    "collect_after_step": "try_internal_transport",
+                    "task_ids": ["execute-" + "a" * 64],
+                },
+            },
+        }
+    )
+    authority = _collector_authority_fixture(
+        runtime,
+        {
+            FilesystemCollector.descriptor.id: {
+                "schema_version": "bluefire.filesystem-source-authority.v1",
+                "sandbox_binding": "exact-factory-argument",
+                "max_file_bytes": 64 * 1024 * 1024,
+                "read_timeout_seconds": 5.0,
+                "path_policy": "handle-pinned-contained-no-follow",
+            },
+            NativeProcessCollector.descriptor.id: {
+                "schema_version": "bluefire.process-source-authority.v1",
+                "authorized_processes": [
+                    {
+                        "process_id": 321,
+                        "parent_process_id": 123,
+                        "creation_identity": "987654321",
+                    }
+                ],
+            },
+            LoopbackReceiverCollector.descriptor.id: {
+                "schema_version": "bluefire.receiver-source-authority.v1",
+                "host": "127.0.0.1",
+                "port": 43123,
+                "process_id": 777,
+                "session_id": "b" * 64,
+            },
+        },
+    )
+    source = {
+        "policy": {
+            "approval_context": {
+                "collector_binding": BlueFireService._collector_binding((), runtime),
+                "collector_registry_authority": authority,
+            }
+        }
+    }
+    return runtime, source
 
 
 def _ready_inventory(
@@ -128,7 +256,11 @@ class CancellableTaskRunner(ReadyInventoryRunner):
     ) -> Mapping[str, Any]:
         self.execute_calls += 1
         expected_hash = content_hash(
-            {"manifest": dict(manifest), "profile": dict(profile)}
+            {
+                "manifest": dict(manifest),
+                "profile": dict(profile),
+                "execution_attempt": 1,
+            }
         ).removeprefix("sha256:")
         assert task_id == f"execute-{expected_hash}"
         self.task_id = task_id
@@ -319,7 +451,7 @@ def test_service_seeds_durable_product_state_and_indexes_completed_runs(
     assert service.product_store.path == database.resolve()
     assert service.seed_counts["scenario"] == 8
     assert service.seed_counts["action"] == 18
-    assert len(service.product_store.list_resources("collector")) == 6
+    assert len(service.product_store.list_resources("collector")) == 10
 
     result = service.run(
         {
@@ -845,6 +977,140 @@ def test_execute_preflight_binds_declared_per_run_collectors(tmp_path: Path) -> 
     service.close()
 
 
+def test_execute_preflight_binds_versioned_runtime_collector_settings(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_factory=lambda _profile: (ReadyInventoryRunner(), sandbox),
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    runtime = CollectorRuntimeSettings(
+        collectors={
+            FilesystemCollector.descriptor.id: {
+                "enabled": True,
+                "settings": {
+                    "collect_after_step": "stage_records",
+                    "paths": ["staged/bundle.jsonl"],
+                },
+            }
+        }
+    )
+    request = {
+        "scenario_id": "scenario.sandbox.research.chain.v1",
+        "mode": "execute",
+        "runner_profile_id": profile.id,
+        "autonomy": "off",
+        "target_scope": {"scope_refs": list(profile.scope)},
+        "collector_runtime": runtime.to_dict(),
+    }
+
+    report = service.preflight(request)
+
+    assert report["collectors"] == [FilesystemCollector.descriptor.id]
+    assert report["collector_runtime"] == runtime.to_dict()
+    assert report["collector_binding"] == {
+        "schema_version": "bluefire.collector-binding.v2",
+        "settings": runtime.to_dict(),
+        "settings_hash": runtime.settings_hash,
+        "enabled_collectors": [FilesystemCollector.descriptor.id],
+        "disabled_collectors": [],
+        "authority": "versioned-runtime-settings-and-independent-observation",
+    }
+    assert isinstance(report["approval_binding"], Mapping)
+    service.close()
+
+
+def test_disabled_runtime_backend_needs_no_live_source_or_operational_settings(
+    tmp_path: Path,
+) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        runner_factory=lambda _profile: (ReadyInventoryRunner(), sandbox),
+        collector_registry_factory=lambda root: CollectorRegistry((FilesystemCollector(root),)),
+    )
+    profile = next(
+        item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
+    )
+    runtime = CollectorRuntimeSettings(
+        collectors={
+            FilesystemCollector.descriptor.id: {
+                "enabled": True,
+                "settings": {
+                    "collect_after_step": "stage_records",
+                    "paths": ["staged/bundle.jsonl"],
+                },
+            },
+            "collector.process.native.v1": {"enabled": False, "settings": {}},
+            "collector.network.loopback-receiver.v1": {
+                "enabled": False,
+                "settings": {},
+            },
+        }
+    )
+
+    report = service.preflight(
+        {
+            "scenario_id": "scenario.sandbox.research.chain.v1",
+            "mode": "execute",
+            "runner_profile_id": profile.id,
+            "autonomy": "off",
+            "target_scope": {"scope_refs": list(profile.scope)},
+            "collector_runtime": runtime.to_dict(),
+        }
+    )
+
+    assert report["collectors"] == [FilesystemCollector.descriptor.id]
+    assert set(report["collector_binding"]["disabled_collectors"]) == {
+        "collector.process.native.v1",
+        "collector.network.loopback-receiver.v1",
+    }
+    service.close()
+
+
+def test_managed_collector_authority_cannot_change_between_readiness_and_dispatch(
+    tmp_path: Path,
+) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    maximums = iter((1024, 2048))
+
+    def changing_factory(root: Path) -> CollectorRegistry:
+        return CollectorRegistry((FilesystemCollector(root, max_file_bytes=next(maximums)),))
+
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        collector_registry_factory=changing_factory,
+    )
+    runtime = CollectorRuntimeSettings(
+        collectors={
+            FilesystemCollector.descriptor.id: {
+                "enabled": True,
+                "settings": {
+                    "collect_after_step": "stage_records",
+                    "paths": ["staged/bundle.jsonl"],
+                },
+            }
+        }
+    )
+    _registry, authority = service._managed_collector_registry(sandbox, runtime)
+
+    with pytest.raises(CollectorError, match="authority changed"):
+        service._managed_collector_registry(
+            sandbox,
+            runtime,
+            expected_authority=authority,
+        )
+    service.close()
+
+
 def test_execute_preflight_rejects_unavailable_collector_selection(tmp_path: Path) -> None:
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
@@ -875,6 +1141,295 @@ def test_execute_preflight_rejects_unavailable_collector_selection(tmp_path: Pat
                 "autonomy": "off",
                 "collectors": ["collector.filesystem.sandbox.v1"],
             }
+        )
+    service.close()
+
+
+def test_source_collector_session_requires_run_evidence_and_approved_binding(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "observed.txt").write_text("observed", encoding="utf-8")
+    runtime = CollectorRuntimeSettings(
+        collectors={
+            FilesystemCollector.descriptor.id: {
+                "enabled": True,
+                "settings": {
+                    "collect_after_step": "stage_records",
+                    "paths": ["observed.txt"],
+                },
+            }
+        }
+    )
+    parent = EvidenceRecord.create(
+        run_id="run-source",
+        step_id="stage_records",
+        behavior_id="collection.independent-observation.v1",
+        action_id="sandbox.collection.stage.v1",
+        provenance=EvidenceProvenance.EXECUTED,
+        producer="rust-runner.test.v1",
+        runner_profile_id="profile.test.v1",
+        target_scope_ref="runner-profile:profile.test.v1",
+        content={"artifact_type": "runner_receipt", "status": "succeeded"},
+    )
+    registry = CollectorRegistry((FilesystemCollector(tmp_path),))
+    session = registry.collect_configured(
+        runtime,
+        CollectionRequest(
+            run_id="run-source",
+            step_id="stage_records",
+            behavior_id="collection.independent-observation.v1",
+            action_id="sandbox.collection.stage.v1",
+            runner_profile_id="profile.test.v1",
+            target_scope_ref="runner-profile:profile.test.v1",
+            parent_evidence_ids=(parent.evidence_id,),
+        ),
+    )
+    records = [
+        parent.to_dict(),
+        *[record.to_dict() for result in session.results.values() for record in result.records],
+    ]
+    source = {
+        "run_id": "run-source",
+        "evidence": {"records": records},
+        "steps": [
+            {
+                "step_id": "stage_records",
+                "behavior_id": "collection.independent-observation.v1",
+                "action_id": "sandbox.collection.stage.v1",
+                "policy": {
+                    "step_id": "stage_records",
+                    "behavior_id": "collection.independent-observation.v1",
+                    "action_id": "sandbox.collection.stage.v1",
+                    "runner_profile_id": "profile.test.v1",
+                },
+                "evidence_ids": [
+                    parent.evidence_id,
+                    *[
+                        record.evidence_id
+                        for result in session.results.values()
+                        for record in result.records
+                    ],
+                ],
+            }
+        ],
+        "collector_session": session.to_dict(),
+        "policy": {
+            "approval_context": {
+                "collector_binding": BlueFireService._collector_binding((), runtime),
+                "collector_registry_authority": registry.authority_snapshot(
+                    runtime,
+                    expected_sandbox=tmp_path,
+                ),
+            }
+        },
+    }
+
+    assert BlueFireService._source_collector_runtime(source) == runtime
+
+    detached = copy.deepcopy(source)
+    detached["run_id"] = "run-detached"
+    with pytest.raises(ReplayError, match="failed integrity validation"):
+        BlueFireService._source_collector_runtime(detached)
+
+    rebound = copy.deepcopy(source)
+    rebound["policy"]["approval_context"]["collector_binding"]["settings_hash"] = (
+        "sha256:" + "0" * 64
+    )
+    with pytest.raises(ReplayError, match="not bound to its approved runtime settings"):
+        BlueFireService._source_collector_runtime(rebound)
+
+    counterfeit_session = copy.deepcopy(source)
+    stored_session = counterfeit_session["collector_session"]
+    stored_session["results"][FilesystemCollector.descriptor.id]["descriptor"][
+        "name"
+    ] = "Counterfeit filesystem observer"
+    stored_session["session_hash"] = content_hash(
+        {key: value for key, value in stored_session.items() if key != "session_hash"}
+    )
+    with pytest.raises(ReplayError, match="collection session"):
+        BlueFireService._source_collector_runtime(counterfeit_session)
+
+    additional = CollectorRegistry((FilesystemCollector(tmp_path),)).collect_configured(
+        runtime,
+        CollectionRequest(
+            run_id="run-source",
+            step_id="stage_records-retry",
+            behavior_id="collection.independent-observation.v1",
+            action_id="sandbox.collection.stage.v1",
+            runner_profile_id="profile.test.v1",
+            target_scope_ref="runner-profile:profile.test.v1",
+        ),
+    )
+    omitted = copy.deepcopy(source)
+    omitted["evidence"]["records"].extend(
+        record.to_dict() for result in additional.results.values() for record in result.records
+    )
+    with pytest.raises(ReplayError, match="failed integrity validation"):
+        BlueFireService._source_collector_runtime(omitted)
+
+
+def test_source_collector_authority_requires_backend_bijection_and_canonical_identity() -> None:
+    runtime, source = _canonical_collector_authority_source()
+
+    assert BlueFireService._source_collector_runtime(source) == runtime
+
+    authority_mutations: list[dict[str, Any]] = []
+    unexpected_top_field = copy.deepcopy(source)
+    unexpected_top_field["policy"]["approval_context"]["collector_registry_authority"][
+        "unapproved"
+    ] = True
+    authority_mutations.append(unexpected_top_field)
+
+    wrong_settings = copy.deepcopy(source)
+    wrong_settings["policy"]["approval_context"]["collector_registry_authority"][
+        "settings_hash"
+    ] = ("sha256:" + "0" * 64)
+    authority_mutations.append(wrong_settings)
+
+    missing_backend = copy.deepcopy(source)
+    missing_backend["policy"]["approval_context"]["collector_registry_authority"]["backends"].pop()
+    authority_mutations.append(missing_backend)
+
+    duplicate_backend = copy.deepcopy(source)
+    duplicate_rows = duplicate_backend["policy"]["approval_context"][
+        "collector_registry_authority"
+    ]["backends"]
+    duplicate_rows[1] = copy.deepcopy(duplicate_rows[0])
+    authority_mutations.append(duplicate_backend)
+
+    changed_descriptor = copy.deepcopy(source)
+    changed_descriptor["policy"]["approval_context"]["collector_registry_authority"]["backends"][0][
+        "descriptor"
+    ]["name"] = "Unapproved descriptor"
+    authority_mutations.append(changed_descriptor)
+
+    changed_implementation = copy.deepcopy(source)
+    changed_implementation["policy"]["approval_context"]["collector_registry_authority"][
+        "backends"
+    ][0]["implementation_id"] = "bluefire.collectors.SubstituteCollector"
+    authority_mutations.append(changed_implementation)
+
+    unexpected_backend_field = copy.deepcopy(source)
+    unexpected_backend_field["policy"]["approval_context"]["collector_registry_authority"][
+        "backends"
+    ][0]["adapter"] = "unapproved"
+    authority_mutations.append(unexpected_backend_field)
+
+    for mutated in authority_mutations:
+        _rehash_collector_authority(
+            mutated["policy"]["approval_context"]["collector_registry_authority"]
+        )
+        with pytest.raises(ReplayError, match="collector registry authority"):
+            BlueFireService._source_collector_runtime(mutated)
+
+
+def test_source_collector_authority_rejects_rehashed_source_schema_mutations() -> None:
+    runtime, source = _canonical_collector_authority_source()
+
+    assert BlueFireService._source_collector_runtime(source) == runtime
+
+    source_mutations: list[dict[str, Any]] = []
+
+    filesystem_extra = copy.deepcopy(source)
+    filesystem_extra["policy"]["approval_context"]["collector_registry_authority"]["backends"][0][
+        "source_authority"
+    ]["sandbox_path"] = "C:/unapproved"
+    source_mutations.append(filesystem_extra)
+
+    filesystem_boolean_limit = copy.deepcopy(source)
+    filesystem_boolean_limit["policy"]["approval_context"]["collector_registry_authority"][
+        "backends"
+    ][0]["source_authority"]["max_file_bytes"] = True
+    source_mutations.append(filesystem_boolean_limit)
+
+    filesystem_timeout = copy.deepcopy(source)
+    filesystem_timeout["policy"]["approval_context"]["collector_registry_authority"]["backends"][0][
+        "source_authority"
+    ]["read_timeout_seconds"] = 4.0
+    source_mutations.append(filesystem_timeout)
+
+    receiver_remote_host = copy.deepcopy(source)
+    receiver_remote_host["policy"]["approval_context"]["collector_registry_authority"]["backends"][
+        1
+    ]["source_authority"]["host"] = "192.0.2.10"
+    source_mutations.append(receiver_remote_host)
+
+    receiver_boolean_port = copy.deepcopy(source)
+    receiver_boolean_port["policy"]["approval_context"]["collector_registry_authority"]["backends"][
+        1
+    ]["source_authority"]["port"] = True
+    source_mutations.append(receiver_boolean_port)
+
+    receiver_session = copy.deepcopy(source)
+    receiver_session["policy"]["approval_context"]["collector_registry_authority"]["backends"][1][
+        "source_authority"
+    ]["session_id"] = ("B" * 64)
+    source_mutations.append(receiver_session)
+
+    process_identity = copy.deepcopy(source)
+    process_identity["policy"]["approval_context"]["collector_registry_authority"]["backends"][2][
+        "source_authority"
+    ]["authorized_processes"][0]["creation_identity"] = "pid"
+    source_mutations.append(process_identity)
+
+    process_not_authorized = copy.deepcopy(source)
+    process_not_authorized["policy"]["approval_context"]["collector_registry_authority"][
+        "backends"
+    ][2]["source_authority"]["authorized_processes"][0]["process_id"] = 322
+    source_mutations.append(process_not_authorized)
+
+    duplicate_process = copy.deepcopy(source)
+    process_rows = duplicate_process["policy"]["approval_context"]["collector_registry_authority"][
+        "backends"
+    ][2]["source_authority"]["authorized_processes"]
+    process_rows.append(copy.deepcopy(process_rows[0]))
+    source_mutations.append(duplicate_process)
+
+    for mutated in source_mutations:
+        _rehash_collector_authority(
+            mutated["policy"]["approval_context"]["collector_registry_authority"]
+        )
+        with pytest.raises(ReplayError, match="backend is not canonical"):
+            BlueFireService._source_collector_runtime(mutated)
+
+
+def test_source_collector_runtime_requires_persisted_registry_authority() -> None:
+    _runtime, source = _canonical_collector_authority_source()
+    del source["policy"]["approval_context"]["collector_registry_authority"]
+
+    with pytest.raises(ReplayError, match="no approved registry authority"):
+        BlueFireService._source_collector_runtime(source)
+
+
+def test_exact_replay_inherits_and_cannot_replace_legacy_collector_binding(
+    tmp_path: Path,
+) -> None:
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+    source = {
+        "policy": {
+            "approval_context": {
+                "collector_binding": BlueFireService._collector_binding(
+                    [FilesystemCollector.descriptor.id]
+                )
+            }
+        }
+    }
+
+    inherited, runtime = service._replay_collector_configuration(
+        {},
+        source=source,
+        mode=ExecutionMode.EXECUTE,
+        exact=True,
+    )
+    assert inherited == (FilesystemCollector.descriptor.id,)
+    assert runtime is None
+
+    with pytest.raises(APIError, match="collectors_invalid"):
+        service._replay_collector_configuration(
+            {"collectors": []},
+            source=source,
+            mode=ExecutionMode.EXECUTE,
+            exact=True,
         )
     service.close()
 

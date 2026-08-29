@@ -744,6 +744,10 @@ class LoopbackArtifactReceiver:
         return self._server.receiver_process_id
 
     @property
+    def session_id(self) -> str:
+        return self._server.session_id
+
+    @property
     def accepted_artifact_bindings(self) -> tuple[Mapping[str, object], ...]:
         """Return path-free identities observed by this receiver instance."""
 

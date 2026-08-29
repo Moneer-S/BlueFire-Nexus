@@ -12,8 +12,17 @@ from typing import Any, Mapping
 import pytest
 
 from bluefire.approvals import execution_approval_binding
+from bluefire.collectors import (
+    CollectionRequest,
+    CollectionSession,
+    CollectorReadiness,
+    CollectorRegistry,
+    CollectorRuntimeSettings,
+    FilesystemCollector,
+    LoopbackReceiverCollector,
+)
 from bluefire.config import AutonomyLevel, RunnerProfile, load_config
-from bluefire.contracts import ExecutionMode, load_scenario
+from bluefire.contracts import ExecutionMode, StepOutcome, load_scenario
 from bluefire.orchestrator import OrchestrationError, Orchestrator
 from bluefire.product_store import ProductStore
 from bluefire.registry import load_builtin_registry
@@ -1241,6 +1250,225 @@ def test_execute_observable_paths_can_be_bound_to_declared_collector(tmp_path: P
     assert delivery[1]["content"]["artifact_type"] == "evidence_gap"
     assert delivery[1]["content"]["requested_artifact"] == "fixtures/input.jsonl"
     assert delivery[1]["parent_evidence_ids"] == [delivery[0]["evidence_id"]]
+
+
+def test_execute_persists_approval_bound_runtime_collector_session(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    orchestrator = Orchestrator(
+        load_builtin_registry(),
+        RunStore(tmp_path / "runs"),
+        runner=StructuredFakeRunner(),
+        approval_store=ProductStore(tmp_path / "product.sqlite3"),
+        collector_registry=CollectorRegistry((FilesystemCollector(sandbox),)),
+    )
+    scenario = load_scenario(SCENARIO_PATH)
+    profile = _execute_profile()
+    runtime = CollectorRuntimeSettings(
+        collectors={
+            FilesystemCollector.descriptor.id: {
+                "enabled": True,
+                "settings": {
+                    "collect_after_step": "stage_records",
+                    "paths": ["staged/bundle.jsonl"],
+                },
+            }
+        }
+    )
+    collector_binding = Orchestrator._collector_binding((), runtime)
+    assert orchestrator.collector_registry is not None
+    collector_authority = orchestrator.collector_registry.authority_snapshot(
+        runtime,
+        expected_sandbox=sandbox,
+    )
+
+    result = orchestrator.run(
+        scenario,
+        mode=ExecutionMode.EXECUTE,
+        profile=profile,
+        sandbox_root=sandbox,
+        target_scope=FULL_TARGET_SCOPE,
+        collector_runtime_settings=runtime,
+        collector_registry_authority=collector_authority,
+        **_approval_kwargs(
+            orchestrator,
+            scenario=scenario,
+            profile=profile,
+            target_scope=FULL_TARGET_SCOPE,
+            context={
+                "collector_binding": collector_binding,
+                "collector_registry_authority": collector_authority,
+            },
+        ),
+    )
+
+    assert result["collector_session"]["settings_hash"] == runtime.settings_hash
+    collector_record = next(
+        row
+        for row in result["evidence"]["records"]
+        if row["producer"] == FilesystemCollector.descriptor.id
+    )
+    stage = _rows_by_step(result)["stage_records"]
+    assert collector_record["run_id"] == result["run_id"]
+    assert collector_record["provenance"] == "unknown"
+    assert collector_record["evidence_id"] in stage["evidence_ids"]
+    assert collector_record["parent_evidence_ids"] == [stage["evidence_ids"][0]]
+    assert all(row["producer"] != "sandbox-observer.v1" for row in result["evidence"]["records"])
+
+
+def test_retry_collector_session_retains_worst_health_and_all_attempt_evidence(
+    tmp_path: Path,
+) -> None:
+    runtime = CollectorRuntimeSettings(
+        collectors={
+            FilesystemCollector.descriptor.id: {
+                "enabled": True,
+                "settings": {"paths": ["retry-observed.txt"]},
+            }
+        }
+    )
+    registry = CollectorRegistry((FilesystemCollector(tmp_path),))
+
+    def collect(parent: str) -> CollectionSession:
+        return registry.collect_configured(
+            runtime,
+            CollectionRequest(
+                run_id="run-retry",
+                step_id="stage_records",
+                behavior_id="collection.independent-observation.v1",
+                action_id="sandbox.collection.stage.v1",
+                runner_profile_id="profile.test.v1",
+                target_scope_ref="runner-profile:profile.test.v1",
+                parent_evidence_ids=(parent,),
+            ),
+        )
+
+    first = collect("evidence-first")
+    (tmp_path / "retry-observed.txt").write_text("observed", encoding="utf-8")
+    second = collect("evidence-second")
+
+    merged = Orchestrator._merge_collection_sessions(first, second)
+    result = merged.results[FilesystemCollector.descriptor.id]
+    assert result.health.readiness is CollectorReadiness.DEGRADED
+    assert result.health.details["attempt_count"] == 2
+    assert result.health.details["observation_count"] == 1
+    assert result.health.details["gap_count"] == 1
+    assert len(result.records) == 2
+
+
+def test_collector_schedule_must_be_reachable_from_replay_continuation(
+    tmp_path: Path,
+) -> None:
+    scenario = load_scenario(SCENARIO_PATH)
+    plan = Orchestrator(load_builtin_registry(), RunStore(tmp_path / "runs")).planner.compile(
+        scenario,
+        mode=ExecutionMode.EXECUTE,
+        profile=_execute_profile(),
+    )
+    runtime = CollectorRuntimeSettings(
+        collectors={
+            FilesystemCollector.descriptor.id: {
+                "enabled": True,
+                "settings": {
+                    "collect_after_step": "stage_records",
+                    "paths": ["staged/bundle.jsonl"],
+                },
+            }
+        }
+    )
+
+    with pytest.raises(OrchestrationError, match="not reachable from the continuation"):
+        Orchestrator._collector_schedule(
+            plan,
+            runtime,
+            start_step_id="cleanup_workspace",
+        )
+
+
+def test_runner_task_identity_is_unique_per_retry_attempt() -> None:
+    manifest = {"request_hash": "sha256:" + "1" * 64}
+    profile = {"policy_digest": "sha256:" + "2" * 64}
+
+    first = Orchestrator._execution_task_id(manifest, profile, execution_attempt=1)
+    retry = Orchestrator._execution_task_id(manifest, profile, execution_attempt=2)
+
+    assert first.startswith("execute-") and len(first) == 72
+    assert retry.startswith("execute-") and len(retry) == 72
+    assert first != retry
+
+
+def test_approved_retry_transition_revisits_the_selected_node(tmp_path: Path) -> None:
+    scenario = load_scenario(SCENARIO_PATH)
+    orchestrator = Orchestrator(load_builtin_registry(), RunStore(tmp_path / "runs"))
+    current = "try_loopback"
+    applied, selected = orchestrator._approved_replay_transition(
+        replay={
+            "proposal_resolution": {
+                "schema_version": "bluefire.ai-proposal-resolution-lineage.v3",
+                "apply_after_step_id": current,
+                "proposal_type": "retry_registered",
+                "selected_step_id": current,
+                "observed_outcome": "blocked",
+            }
+        },
+        scenario=scenario,
+        current_step_id=current,
+        outcome=StepOutcome.BLOCKED,
+        planner_decision=None,  # type: ignore[arg-type]
+    )
+
+    assert applied is True
+    assert selected == current
+
+
+def test_approved_retry_transition_refuses_a_changed_outcome(tmp_path: Path) -> None:
+    scenario = load_scenario(SCENARIO_PATH)
+    orchestrator = Orchestrator(load_builtin_registry(), RunStore(tmp_path / "runs"))
+    current = "try_loopback"
+
+    with pytest.raises(OrchestrationError, match="stale for the replayed outcome"):
+        orchestrator._approved_replay_transition(
+            replay={
+                "proposal_resolution": {
+                    "schema_version": "bluefire.ai-proposal-resolution-lineage.v3",
+                    "apply_after_step_id": current,
+                    "proposal_type": "retry_registered",
+                    "selected_step_id": current,
+                    "observed_outcome": "blocked",
+                }
+            },
+            scenario=scenario,
+            current_step_id=current,
+            outcome=StepOutcome.SUCCESS,
+            planner_decision=None,  # type: ignore[arg-type]
+        )
+
+
+def test_receiver_runtime_requires_task_aware_runner_before_approval(tmp_path: Path) -> None:
+    orchestrator = Orchestrator(
+        load_builtin_registry(),
+        RunStore(tmp_path / "runs"),
+        runner=StructuredFakeRunner(),
+    )
+    runtime = CollectorRuntimeSettings(
+        collectors={
+            LoopbackReceiverCollector.descriptor.id: {
+                "enabled": True,
+                "settings": {"collect_after_step": "stage_records"},
+            }
+        }
+    )
+
+    report = orchestrator.preflight(
+        load_scenario(SCENARIO_PATH),
+        mode=ExecutionMode.EXECUTE,
+        profile=_execute_profile(),
+        approval_present=True,
+        collector_runtime_settings=runtime,
+    )
+
+    assert report.status == "refused"
+    assert "Receiver collection requires a task-aware runner transport." in report.problems
 
 
 @pytest.mark.parametrize(
