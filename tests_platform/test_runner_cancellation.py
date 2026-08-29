@@ -15,6 +15,7 @@ from typing import Any, Mapping
 import pytest
 
 import bluefire.runner_client as runner_client_module
+import bluefire.runner_trust as runner_trust_module
 from bluefire.runner_client import (
     RunnerDurableResultExists,
     RunnerPendingResultExists,
@@ -321,7 +322,10 @@ def test_receiver_task_key_crosses_watchdog_only_through_fixed_scrubbed_environm
     task_id = "task-receiver-auth-01"
     durable = (tmp_path / "durable" / "receiver-result.json").resolve()
     result = runner.execute_task(
-        _manifest("receiver_environment"),
+        _manifest(
+            "receiver_environment",
+            action_id="sandbox.network.loopback.v1",
+        ),
         {},
         task_id=task_id,
         cancel_event=threading.Event(),
@@ -336,6 +340,22 @@ def test_receiver_task_key_crosses_watchdog_only_through_fixed_scrubbed_environm
     }
     assert (b"ab" * 32) not in durable.read_bytes()
     assert not runner_watchdog_control_root(durable, task_id).exists()
+
+    ordinary_task = "task-no-receiver-auth-01"
+    ordinary_durable = (tmp_path / "durable" / "ordinary-result.json").resolve()
+    ordinary = runner.execute_task(
+        _manifest("receiver_environment"),
+        {},
+        task_id=ordinary_task,
+        cancel_event=threading.Event(),
+        durable_result_path=ordinary_durable,
+    )
+    assert derived_for == [task_id]
+    assert ordinary["receiver_environment"] == {
+        "names": [],
+        "task_id": None,
+        "key_is_lower_hex_64": False,
+    }
 
 
 def test_receiver_environment_is_consumed_and_invalid_key_factory_fails_closed(
@@ -365,7 +385,7 @@ def test_receiver_environment_is_consumed_and_invalid_key_factory_fails_closed(
     durable = (tmp_path / "invalid-result.json").resolve()
     with pytest.raises(RunnerTransportError, match="authentication is invalid"):
         runner.execute_task(
-            _manifest(),
+            _manifest(action_id="sandbox.network.loopback.v1"),
             {},
             task_id="task-invalid-receiver-key-01",
             cancel_event=threading.Event(),
@@ -1068,3 +1088,62 @@ def test_watchdog_crash_kills_rust_after_request_host_is_gone(tmp_path: Path) ->
         for process_id in (watchdog_pid, runner_pid):
             if process_id is not None and _pid_is_running(process_id):
                 os.kill(process_id, signal.SIGTERM)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended private path support")
+def test_watchdog_control_uses_handle_acl_beyond_legacy_path_limit(
+    tmp_path: Path,
+) -> None:
+    durable_parent = tmp_path / "durable"
+    index = 0
+    while len(os.fspath(durable_parent)) < 185:
+        durable_parent /= f"segment-{index:02d}-" + "x" * 20
+        index += 1
+    durable_parent.mkdir(parents=True)
+    durable = durable_parent / "result.json"
+    assert len(os.fspath(durable)) < 240
+
+    task_id = "task-extended-owner-acl-01"
+    control_root = runner_watchdog_control_root(durable, task_id)
+    assert os.fspath(control_root).startswith("\\\\?\\")
+    assert len(os.fspath(control_root)) >= 260
+
+    runner = _runner(tmp_path)
+    direct_durable = durable_parent / "direct.json"
+    direct_pending = runner_pending_result_path(
+        direct_durable,
+        "task-extended-direct-01",
+    )
+    assert len(os.fspath(direct_pending)) >= 260
+    direct = runner._execute_task_locally(
+        _manifest(),
+        {},
+        task_id="task-extended-direct-01",
+        cancel_event=threading.Event(),
+        durable_result_path=direct_durable,
+    )
+    assert direct["status"] == "succeeded"
+    result = runner.execute_task(
+        _manifest(),
+        {},
+        task_id=task_id,
+        cancel_event=threading.Event(),
+        durable_result_path=durable,
+    )
+
+    assert result["status"] == "succeeded"
+    assert json.loads(durable.read_text(encoding="utf-8")) == result
+    assert not control_root.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows owner ACL import boundary")
+def test_windows_owner_acl_import_failure_is_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "bluefire.windows_owner_acl", None)
+
+    with pytest.raises(
+        runner_trust_module.RunnerTrustError,
+        match="Enrollment permissions could not be restricted",
+    ):
+        runner_trust_module._owner_private_handle(-1, directory=True)

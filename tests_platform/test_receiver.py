@@ -202,6 +202,13 @@ def test_real_socket_accepts_only_digest_bound_artifact_in_memory() -> None:
             "requests_refused": 0,
         }
     ]
+    assert receiver.accepted_artifact_bindings == (
+        {
+            "task_id": TASK_ID,
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "bytes_received": len(body),
+        },
+    )
 
 
 def test_real_socket_refusal_cap_stops_without_writing(tmp_path: Path) -> None:

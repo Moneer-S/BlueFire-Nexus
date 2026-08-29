@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
+from .ai_record_validation import DurableProposalRecordError, validate_v3_proposal_record
 from .config import (
     AIConfig,
     AIProviderConfig,
@@ -624,38 +625,87 @@ class AIProposalRequest:
                 _validate_primitive_parameter(value, schema, f"parameter_changes.{name}")
 
 
+def _validate_persisted_planner_state(
+    record: Mapping[str, Any],
+    *,
+    state_digest: str,
+    policy: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    del state_digest, policy
+    try:
+        return validate_v3_proposal_record(record)
+    except DurableProposalRecordError as exc:
+        raise AIProviderError(str(exc)) from exc
+
+
+def _persisted_list(record: Mapping[str, Any], name: str) -> list[Any]:
+    value = record.get(name)
+    if not isinstance(value, list):
+        raise AIProviderError(f"persisted AI proposal {name} must be a JSON list")
+    return value
+
+
 def validate_persisted_proposal_record(record: Mapping[str, Any]) -> AIProposal:
     """Revalidate an immutable proposal record without trusting its producer."""
 
-    proposal = AIProposal.from_persisted_mapping(record.get("proposal"))
-    state_digest = record.get("state_digest")
-    if not isinstance(state_digest, str):
-        raise AIProviderError("persisted AI proposal state digest is invalid")
     try:
-        autonomy = AutonomyLevel(record.get("autonomy"))
-    except (TypeError, ValueError) as exc:
-        raise AIProviderError("persisted AI proposal autonomy is invalid") from exc
-    request = AIProposalRequest(
-        objective="Revalidate one durable adaptive proposal.",
-        current_state_digest=state_digest,
-        autonomy=autonomy,
-        allowed_step_ids=tuple(record.get("allowed_step_ids", ())),
-        allowed_behavior_ids=tuple(record.get("allowed_behavior_ids", ())),
-        allowed_action_ids=tuple(record.get("allowed_action_ids", ())),
-        allowed_edges=tuple(record.get("allowed_edges", ())),
-        allowed_parameter_schemas=record.get("allowed_parameter_schemas", {}),
-        retryable_step_ids=tuple(record.get("retryable_step_ids", ())),
-        context={},
-    )
-    request.validate_proposal(proposal)
-    proposal_digest = record.get("proposal_digest")
-    if proposal_digest != content_hash(proposal.to_dict()):
-        raise AIProviderError("persisted AI proposal digest is mismatched")
-    policy = record.get("proposal_policy")
-    policy_digest = record.get("proposal_policy_digest")
-    if not isinstance(policy, Mapping) or policy_digest != content_hash(policy):
-        raise AIProviderError("persisted AI proposal policy digest is mismatched")
-    return proposal
+        if not isinstance(record, Mapping):
+            raise AIProviderError("persisted AI proposal record must be a JSON object")
+        state_digest = record.get("state_digest")
+        if not isinstance(state_digest, str):
+            raise AIProviderError("persisted AI proposal state digest is invalid")
+        try:
+            autonomy = AutonomyLevel(record.get("autonomy"))
+        except (TypeError, ValueError) as exc:
+            raise AIProviderError("persisted AI proposal autonomy is invalid") from exc
+        policy = record.get("proposal_policy")
+        policy_digest = record.get("proposal_policy_digest")
+        if not isinstance(policy, Mapping) or policy_digest != content_hash(policy):
+            raise AIProviderError("persisted AI proposal policy digest is mismatched")
+        schema_version = record.get("schema_version")
+        if schema_version == "bluefire.ai-proposal-record.v3":
+            planner_context = _validate_persisted_planner_state(
+                record,
+                state_digest=state_digest,
+                policy=policy,
+            )
+        elif schema_version == "bluefire.ai-proposal-record.v2":
+            if "planner_state" in record or "planner_state_digest" in record:
+                raise AIProviderError("legacy AI proposal record has ambiguous planner state")
+            planner_context = {}
+        else:
+            raise AIProviderError("persisted AI proposal record schema is unsupported")
+        proposal = AIProposal.from_persisted_mapping(record.get("proposal"))
+        if schema_version == "bluefire.ai-proposal-record.v3":
+            provider = record.get("provider")
+            if (
+                not isinstance(provider, Mapping)
+                or provider.get("proposal_id") != proposal.proposal_id
+            ):
+                raise AIProviderError("persisted AI provider proposal identity is mismatched")
+        parameter_schemas = record.get("allowed_parameter_schemas")
+        if not isinstance(parameter_schemas, Mapping):
+            raise AIProviderError("persisted AI parameter schemas must be a JSON object")
+        request = AIProposalRequest(
+            objective="Revalidate one durable adaptive proposal.",
+            current_state_digest=state_digest,
+            autonomy=autonomy,
+            allowed_step_ids=tuple(_persisted_list(record, "allowed_step_ids")),
+            allowed_behavior_ids=tuple(_persisted_list(record, "allowed_behavior_ids")),
+            allowed_action_ids=tuple(_persisted_list(record, "allowed_action_ids")),
+            allowed_edges=tuple(_persisted_list(record, "allowed_edges")),
+            allowed_parameter_schemas=parameter_schemas,
+            retryable_step_ids=tuple(_persisted_list(record, "retryable_step_ids")),
+            context=planner_context,
+        )
+        request.validate_proposal(proposal)
+        if record.get("proposal_digest") != content_hash(proposal.to_dict()):
+            raise AIProviderError("persisted AI proposal digest is mismatched")
+        return proposal
+    except AIProviderError:
+        raise
+    except (KeyError, RecursionError, TypeError, ValueError) as exc:
+        raise AIProviderError("persisted AI proposal record is malformed") from exc
 
 
 @dataclass(frozen=True, slots=True)

@@ -39,6 +39,7 @@ _FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 _WINDOWS_GENERIC_READ = 0x80000000
 _WINDOWS_GENERIC_WRITE = 0x40000000
 _WINDOWS_DELETE = 0x00010000
+_WINDOWS_WRITE_DAC = 0x00040000
 _WINDOWS_FILE_SHARE_READ = 0x00000001
 _WINDOWS_FILE_SHARE_WRITE = 0x00000002
 _WINDOWS_OPEN_EXISTING = 3
@@ -46,9 +47,11 @@ _WINDOWS_CREATE_NEW = 1
 _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _WINDOWS_FILE_DISPOSITION_INFO = 4
+_WINDOWS_LEGACY_PRIVATE_ROOT_LIMIT = 240
 _RECEIVER_TASK_ID_ENV = "BLUEFIRE_RECEIVER_TASK_ID"
 _RECEIVER_TASK_KEY_ENV = "BLUEFIRE_RECEIVER_TASK_KEY"
 _RECEIVER_TASK_ENV_NAMES = frozenset({_RECEIVER_TASK_ID_ENV, _RECEIVER_TASK_KEY_ENV})
+_RECEIVER_AUTH_ACTION_IDS = frozenset({"sandbox.network.loopback.v1"})
 
 FORBIDDEN_EXECUTION_KEYS = frozenset(
     {
@@ -143,11 +146,21 @@ def _read_descriptor_bounded(descriptor: int, maximum: int) -> bytes:
     return bytes(payload)
 
 
+def _windows_extended_path(path: Path) -> Path:
+    raw_path = os.path.abspath(os.fspath(path))
+    if raw_path.startswith("\\\\?\\"):
+        return Path(raw_path)
+    if raw_path.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + raw_path[2:])
+    return Path("\\\\?\\" + raw_path)
+
+
 def _windows_open_descriptor(
     path: Path,
     *,
     directory: bool,
     write: bool = False,
+    write_dac: bool = False,
     delete: bool = False,
     create: bool = False,
 ) -> int:
@@ -155,13 +168,7 @@ def _windows_open_descriptor(
     import msvcrt
     from ctypes import wintypes
 
-    raw_path = os.path.abspath(os.fspath(path))
-    if raw_path.startswith("\\\\?\\"):
-        api_path = raw_path
-    elif raw_path.startswith("\\\\"):
-        api_path = "\\\\?\\UNC\\" + raw_path[2:]
-    else:
-        api_path = "\\\\?\\" + raw_path
+    api_path = os.fspath(_windows_extended_path(path))
 
     create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
     create_file.argtypes = (
@@ -177,6 +184,8 @@ def _windows_open_descriptor(
     access = _WINDOWS_GENERIC_READ
     if write:
         access |= _WINDOWS_GENERIC_WRITE
+    if write_dac:
+        access |= _WINDOWS_WRITE_DAC
     if delete:
         access |= _WINDOWS_DELETE
     flags = _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
@@ -302,14 +311,21 @@ class _PinnedPrivateDirectory:
         self._identity: tuple[int, int] | None = None
 
     def __enter__(self) -> _PinnedPrivateDirectory:
-        from .runner_trust import RunnerTrustError, _is_link_or_reparse, _owner_private
+        from .runner_trust import (
+            RunnerTrustError,
+            _is_link_or_reparse,
+            _owner_private_handle,
+        )
 
         if not self.path.is_absolute() or self.path.name in {"", ".", ".."}:
             raise RunnerTransportError("private directory identity is invalid")
         try:
             if os.name == "nt":
                 self._descriptor = _windows_open_descriptor(
-                    self.path, directory=True, delete=self.delete
+                    self.path,
+                    directory=True,
+                    write_dac=True,
+                    delete=self.delete,
                 )
             else:
                 flags = (
@@ -323,7 +339,9 @@ class _PinnedPrivateDirectory:
             details = os.fstat(self._require_descriptor())
             if (
                 not stat.S_ISDIR(details.st_mode)
-                or _is_link_or_reparse(self.path)
+                or _is_link_or_reparse(
+                    _windows_extended_path(self.path) if os.name == "nt" else self.path
+                )
                 or (
                     self.expected_identity is not None
                     and (details.st_dev, details.st_ino) != self.expected_identity
@@ -332,7 +350,7 @@ class _PinnedPrivateDirectory:
                 raise OSError("unsafe private directory")
             self._identity = details.st_dev, details.st_ino
             if os.name == "nt":
-                _owner_private(self.path, directory=True)
+                _owner_private_handle(self._require_descriptor(), directory=True)
             else:
                 getattr(os, "fchmod")(  # noqa: B009 - absent on Windows
                     self._require_descriptor(), 0o700
@@ -359,10 +377,11 @@ class _PinnedPrivateDirectory:
 
         descriptor = self._require_descriptor()
         details = os.fstat(descriptor)
-        current = self.path.stat(follow_symlinks=False)
+        validation_path = _windows_extended_path(self.path) if os.name == "nt" else self.path
+        current = validation_path.stat(follow_symlinks=False)
         if (
             self._identity is None
-            or _is_link_or_reparse(self.path)
+            or _is_link_or_reparse(validation_path)
             or not stat.S_ISDIR(details.st_mode)
             or not stat.S_ISDIR(current.st_mode)
             or (details.st_dev, details.st_ino) != self._identity
@@ -395,7 +414,9 @@ class _PinnedPrivateDirectory:
             raise OSError("invalid private directory entry bound")
         self._validate_directory()
         iterator = (
-            os.scandir(self.path) if os.name == "nt" else os.scandir(self._require_descriptor())
+            os.scandir(_windows_extended_path(self.path))
+            if os.name == "nt"
+            else os.scandir(self._require_descriptor())
         )
         names: list[str] = []
         try:
@@ -413,7 +434,7 @@ class _PinnedPrivateDirectory:
         self._validate_directory()
         try:
             if os.name == "nt":
-                (self.path / name).stat(follow_symlinks=False)
+                _windows_extended_path(self.path / name).stat(follow_symlinks=False)
             else:
                 os.stat(name, dir_fd=self._require_descriptor(), follow_symlinks=False)
         except FileNotFoundError:
@@ -426,7 +447,12 @@ class _PinnedPrivateDirectory:
         name = self._name(name)
         self._validate_directory()
         if os.name == "nt":
-            return _windows_open_descriptor(self.path / name, directory=False, delete=delete)
+            return _windows_open_descriptor(
+                self.path / name,
+                directory=False,
+                write_dac=True,
+                delete=delete,
+            )
         return os.open(
             name,
             os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
@@ -441,6 +467,7 @@ class _PinnedPrivateDirectory:
                 self.path / name,
                 directory=False,
                 write=True,
+                write_dac=True,
                 delete=True,
                 create=True,
             )
@@ -464,7 +491,7 @@ class _PinnedPrivateDirectory:
         apply_permissions: bool = True,
         expected_identity: tuple[int, int] | None = None,
     ) -> os.stat_result:
-        from .runner_trust import _is_link_or_reparse, _owner_private
+        from .runner_trust import _is_link_or_reparse, _owner_private_handle
 
         name = self._name(name)
         details = os.fstat(descriptor)
@@ -481,17 +508,20 @@ class _PinnedPrivateDirectory:
             raise OSError("unsafe private file")
         if apply_permissions:
             if os.name == "nt":
-                _owner_private(self.path / name, directory=False)
+                _owner_private_handle(descriptor, directory=False)
             else:
                 getattr(os, "fchmod")(descriptor, 0o600)  # noqa: B009 - absent on Windows
+        validation_path = (
+            _windows_extended_path(self.path / name) if os.name == "nt" else self.path / name
+        )
         current = (
-            (self.path / name).stat(follow_symlinks=False)
+            validation_path.stat(follow_symlinks=False)
             if os.name == "nt"
             else os.stat(name, dir_fd=self._require_descriptor(), follow_symlinks=False)
         )
         final = os.fstat(descriptor)
         if (
-            _is_link_or_reparse(self.path / name)
+            _is_link_or_reparse(validation_path)
             or not stat.S_ISREG(current.st_mode)
             or current.st_nlink != 1
             or final.st_nlink != 1
@@ -1045,7 +1075,10 @@ def runner_watchdog_control_root(
     except OSError:
         raise RunnerTransportError("runner durable result destination is invalid") from None
     identity = sha256(f"{task_id}\0{destination.name}".encode("utf-8")).hexdigest()
-    return destination.parent / f".bluefire-watchdog-{identity}"
+    root = destination.parent / f".bluefire-watchdog-{identity}"
+    if os.name == "nt" and len(os.fspath(root)) >= _WINDOWS_LEGACY_PRIVATE_ROOT_LIMIT:
+        return _windows_extended_path(root)
+    return root
 
 
 def runner_watchdog_cancel_path(
@@ -1235,7 +1268,10 @@ class SubprocessRustRunner:
             )
 
         destination, pending = self._durable_paths(durable_result_path, task_id)
-        receiver_environment = self._receiver_environment(task_id)
+        receiver_environment = self._receiver_environment(
+            task_id,
+            action_id=manifest.get("action_id"),
+        )
         control_root = runner_watchdog_control_root(destination, task_id)
         config_path = control_root / "config.json"
         start_path = control_root / "start"
@@ -1410,11 +1446,11 @@ class SubprocessRustRunner:
         except (OSError, RunnerTransportError):
             raise RunnerTransportError("runner watchdog state is unavailable") from None
 
-    def _receiver_environment(self, task_id: str) -> dict[str, str]:
+    def _receiver_environment(self, task_id: str, *, action_id: object) -> dict[str, str]:
         if not isinstance(task_id, str) or _TASK_IDENTIFIER.fullmatch(task_id) is None:
             raise RunnerTransportError("runner task identity is invalid")
         factory = self._receiver_task_key_factory
-        if factory is None:
+        if factory is None or action_id not in _RECEIVER_AUTH_ACTION_IDS:
             return {}
         try:
             task_key = factory(task_id)

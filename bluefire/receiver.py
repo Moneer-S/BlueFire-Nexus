@@ -140,6 +140,7 @@ class _RequestResult:
     response: bytes
     accepted_artifact: bool = False
     issued_challenge: bool = False
+    accepted_artifact_binding: Mapping[str, object] | None = None
 
 
 class _DeadlineReader:
@@ -270,6 +271,7 @@ class _LoopbackTCPServer(socketserver.TCPServer):
         self.requests_accepted = 0
         self.requests_refused = 0
         self.challenges_issued = 0
+        self.accepted_artifact_bindings: list[dict[str, object]] = []
         self.receiver_process_id = os.getpid()
         self.lifecycle_deadline = (
             time.monotonic() + DISPOSABLE_PEER_LIFETIME_TIMEOUT_SECONDS
@@ -316,6 +318,10 @@ class _ReceiverHandler(socketserver.BaseRequestHandler):
             response = result.response
             if result.accepted_artifact:
                 server.requests_accepted += 1
+                binding = result.accepted_artifact_binding
+                if binding is None:
+                    raise _ProtocolRefusal(500, "accepted_binding_unavailable")
+                server.accepted_artifact_bindings.append(dict(binding))
             if result.issued_challenge:
                 server.challenges_issued += 1
         except _ProtocolRefusal as exc:
@@ -570,6 +576,11 @@ def _receive_artifact(
             extra_headers={"X-BlueFire-Authentication": authentication},
         ),
         accepted_artifact=True,
+        accepted_artifact_binding={
+            "task_id": task_id,
+            "sha256": actual_digest,
+            "bytes_received": len(body),
+        },
     )
 
 
@@ -731,6 +742,12 @@ class LoopbackArtifactReceiver:
     @property
     def process_id(self) -> int:
         return self._server.receiver_process_id
+
+    @property
+    def accepted_artifact_bindings(self) -> tuple[Mapping[str, object], ...]:
+        """Return path-free identities observed by this receiver instance."""
+
+        return tuple(dict(binding) for binding in self._server.accepted_artifact_bindings)
 
     def serve(self) -> Mapping[str, object]:
         reason = "explicit_stop"

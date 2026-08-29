@@ -81,6 +81,7 @@ _SEMVER = re.compile(
 )
 _STABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*\.v[1-9][0-9]*$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_BLOCKED_STATUSES = frozenset({"blocked", "control_blocked", "refused"})
 
 
 def compare_runs(store: RunStore, run_ids: Sequence[str]) -> Mapping[str, Any]:
@@ -118,8 +119,10 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(steps, list):
         steps = []
     path: list[str] = []
+    execution_path: list[dict[str, str | None]] = []
     outcomes: dict[str, str] = {}
     first_blocked: str | None = None
+    first_block: dict[str, str | None] | None = None
     telemetry: set[str] = set()
     controls: set[str] = set()
     policy_states: Counter[str] = Counter()
@@ -131,11 +134,14 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         step_id = str(row.get("step_id", ""))
         if step_id:
             path.append(step_id)
+            execution_path.append(_execution_path_step(row, step_id))
             outcome = str(row.get("status", "unknown"))
             outcomes[step_id] = outcome
             outcome_counts[outcome] += 1
-        if first_blocked is None and row.get("status") in {"blocked", "control_blocked", "refused"}:
+        if first_blocked is None and row.get("status") in _BLOCKED_STATUSES:
             first_blocked = step_id or None
+        if first_block is None:
+            first_block = _first_block_record(row, step_id)
         for item in row.get("telemetry", []) if isinstance(row.get("telemetry"), list) else []:
             telemetry.add(str(item))
         policy = row.get("policy")
@@ -168,6 +174,13 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         for row in candidates
         if isinstance(row, Mapping) and isinstance(row.get("benign_match_count", 0), int)
     )
+    observed_detection_matches = _observed_detection_matches(candidates, records)
+    fixture_detection_matches = (
+        detection_matches - observed_detection_matches
+        if observed_detection_matches is not None
+        and detection_matches >= observed_detection_matches
+        else None
+    )
     ai_proposals = snapshot.get("ai_proposals", [])
     if not isinstance(ai_proposals, list):
         ai_proposals = []
@@ -194,26 +207,36 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         if "authorized_target_scope" in snapshot
         else snapshot.get("target_scope")
     )
+    cleanup = _cleanup_summary(snapshot.get("cleanup"), cleanup_success)
+    if cleanup.get("authoritative") is True and type(cleanup.get("success")) is bool:
+        cleanup_success = bool(cleanup["success"])
+    scenario_digest = _safe_content_hash(snapshot.get("scenario"))
     return {
         "run_id": snapshot.get("run_id"),
         "mode": snapshot.get("mode"),
         "profile_id": snapshot.get("runner_profile_id"),
         "target_scope": _target_scope_summary(target_scope),
+        "scenario_digest": scenario_digest,
         "replay_lineage": _replay_lineage_summary(snapshot.get("replay")),
         "catalog_authority": _catalog_authority_summary(snapshot),
         "path": path,
+        "execution_path": execution_path,
         "outcomes": outcomes,
         "outcome_counts": dict(sorted(outcome_counts.items())),
         "first_blocked_step": first_blocked,
+        "first_block": first_block,
         "objective_reached": objective_reached,
         "evidence_provenance": dict(sorted(provenance.items())),
         "evidence_details": evidence_details,
         "detection_states": dict(sorted(detection_states.items())),
         "detection_matches": detection_matches,
+        "observed_detection_matches": observed_detection_matches,
+        "fixture_detection_matches": fixture_detection_matches,
         "benign_matches": benign_matches,
         "telemetry": sorted(telemetry),
         "controls": sorted(controls),
         "cleanup_success": cleanup_success,
+        "cleanup": cleanup,
         "policy_states": dict(sorted(policy_states.items())),
         "autonomy": snapshot.get("autonomy", "off"),
         "ai_provider_id": _provider_id(snapshot.get("ai_provider")),
@@ -230,8 +253,8 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, Any]:
-    baseline_path = list(baseline["path"])
-    candidate_path = list(candidate["path"])
+    baseline_path = list(baseline["execution_path"])
+    candidate_path = list(candidate["execution_path"])
     first_divergence: int | None = None
     for index in range(max(len(baseline_path), len(candidate_path))):
         left = baseline_path[index] if index < len(baseline_path) else None
@@ -270,15 +293,26 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
     elif observed_delta < 0:
         signals.append("observed_evidence_decreased")
     detection_match_delta = candidate["detection_matches"] - baseline["detection_matches"]
+    observed_detection_match_delta = _number_delta(
+        baseline.get("observed_detection_matches"),
+        candidate.get("observed_detection_matches"),
+    )
+    fixture_detection_match_delta = _number_delta(
+        baseline.get("fixture_detection_matches"),
+        candidate.get("fixture_detection_matches"),
+    )
     benign_match_delta = candidate["benign_matches"] - baseline["benign_matches"]
     authority_delta = _catalog_authority_delta(
         baseline["catalog_authority"], candidate["catalog_authority"]
     )
     target_scope_changed = baseline["target_scope"] != candidate["target_scope"]
-    replay_delta = _replay_lineage_delta(
-        baseline["replay_lineage"], candidate["replay_lineage"]
-    )
-    if detection_match_delta > 0:
+    replay_delta = _replay_lineage_delta(baseline["replay_lineage"], candidate["replay_lineage"])
+    if observed_detection_match_delta is not None:
+        if observed_detection_match_delta > 0:
+            signals.append("observed_detection_matches_increased")
+        elif observed_detection_match_delta < 0:
+            signals.append("observed_detection_matches_decreased")
+    elif detection_match_delta > 0:
         signals.append("detection_matches_increased")
     elif detection_match_delta < 0:
         signals.append("detection_matches_decreased")
@@ -298,7 +332,7 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         configuration_changes.append("target_scope")
     if replay_delta["action_implementations_changed"]:
         configuration_changes.append("action_implementations")
-    return {
+    delta = {
         "from_run_id": baseline["run_id"],
         "to_run_id": candidate["run_id"],
         "first_path_divergence": first_divergence,
@@ -309,6 +343,8 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         "evidence_detail_delta": evidence_detail_delta,
         "detection_delta": detection_delta,
         "detection_match_delta": detection_match_delta,
+        "observed_detection_match_delta": observed_detection_match_delta,
+        "fixture_detection_match_delta": fixture_detection_match_delta,
         "benign_match_delta": benign_match_delta,
         "outcome_delta": {
             key: candidate_outcomes[key] - baseline_outcomes[key] for key in outcome_keys
@@ -333,6 +369,319 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         "assessment": assessment,
         "signals": signals,
     }
+    delta["frontier_explanation"] = _frontier_explanation(baseline, candidate, delta)
+    return delta
+
+
+def _execution_path_step(row: Mapping[str, Any], step_id: str) -> dict[str, str | None]:
+    return {
+        "step_id": step_id,
+        "behavior_id": row.get("behavior_id") if isinstance(row.get("behavior_id"), str) else None,
+        "action_id": row.get("action_id") if isinstance(row.get("action_id"), str) else None,
+    }
+
+
+def _first_block_record(row: Mapping[str, Any], step_id: str) -> dict[str, str | None] | None:
+    status = row.get("status") if isinstance(row.get("status"), str) else None
+    policy = row.get("policy")
+    policy_status = (
+        policy.get("status")
+        if isinstance(policy, Mapping) and isinstance(policy.get("status"), str)
+        else None
+    )
+    if status not in _BLOCKED_STATUSES and policy_status not in _BLOCKED_STATUSES:
+        return None
+    return {
+        **_execution_path_step(row, step_id),
+        "status": status,
+        "policy_status": policy_status,
+    }
+
+
+def _observed_detection_matches(candidates: Any, records: Any) -> int | None:
+    if not isinstance(candidates, list) or not candidates or not isinstance(records, list):
+        return None
+    observed_evidence_ids = {
+        row.get("evidence_id")
+        for row in records
+        if isinstance(row, Mapping)
+        and row.get("provenance") == "observed"
+        and isinstance(row.get("evidence_id"), str)
+        and row.get("evidence_id")
+    }
+    rows: list[list[Any]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            return None
+        observed_ids = candidate.get("observed_evidence_ids")
+        if not isinstance(observed_ids, list):
+            return None
+        if (
+            len(observed_ids) != len(set(observed_ids))
+            or any(
+                not isinstance(item, str) or item not in observed_evidence_ids
+                for item in observed_ids
+            )
+            or (
+                observed_ids
+                and candidate.get("state") not in {"observed_exercised", "benign_evaluated"}
+            )
+        ):
+            return None
+        rows.append(observed_ids)
+    return sum(len(row) for row in rows)
+
+
+def _cleanup_summary(value: Any, step_success: bool | None) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {
+            "authoritative": False,
+            "source": "step_heuristic" if step_success is not None else "not_recorded",
+            "attempted": None,
+            "success": step_success,
+            "outstanding_receipt_count": None,
+            "state": (
+                "success"
+                if step_success is True
+                else "failed" if step_success is False else "unknown"
+            ),
+        }
+    attempted = value.get("attempted") if type(value.get("attempted")) is bool else None
+    success_value = value.get("success")
+    success = success_value if type(success_value) is bool else None
+    outstanding_value = value.get("outstanding_receipt_count")
+    outstanding = (
+        outstanding_value if type(outstanding_value) is int and outstanding_value >= 0 else None
+    )
+    structurally_authoritative = (
+        attempted is not None
+        and "success" in value
+        and (type(success_value) is bool or success_value is None)
+        and outstanding is not None
+    )
+    internally_consistent = bool(
+        (attempted is False and success is None and outstanding == 0)
+        or (attempted is True and ((success is True and outstanding == 0) or success is False))
+    )
+    step_consistent = step_success is None or success is step_success
+    authoritative = structurally_authoritative and internally_consistent and step_consistent
+    effective_success = success if authoritative else step_success
+    if attempted is False and outstanding == 0:
+        state = "not_attempted"
+    elif authoritative and success is True:
+        state = "verified_success"
+    elif authoritative and success is False:
+        state = "failed_or_incomplete"
+    else:
+        state = "contradictory" if structurally_authoritative else "unknown"
+    return {
+        "authoritative": authoritative,
+        "source": "run_result",
+        "attempted": attempted,
+        "success": effective_success,
+        "outstanding_receipt_count": outstanding,
+        "state": state,
+    }
+
+
+def _frontier_explanation(
+    baseline: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    delta: Mapping[str, Any],
+) -> dict[str, Any]:
+    baseline_path = list(baseline.get("execution_path", []))
+    candidate_path = list(candidate.get("execution_path", []))
+    first_difference: int | None = None
+    for index in range(max(len(baseline_path), len(candidate_path))):
+        left = baseline_path[index] if index < len(baseline_path) else None
+        right = candidate_path[index] if index < len(candidate_path) else None
+        if left != right:
+            first_difference = index
+            break
+    path_changed = first_difference is not None
+    objective_success = candidate.get("objective_reached") is True
+    from_block = baseline.get("first_block")
+    to_block = candidate.get("first_block")
+    causal_cohort = _is_causal_replay_cohort(baseline, candidate)
+    prevention_supported = bool(
+        causal_cohort
+        and path_changed
+        and objective_success
+        and from_block is not None
+        and to_block is None
+    )
+    observed_delta = delta.get("observed_detection_match_delta")
+    observed_reduction = type(observed_delta) is int and observed_delta < 0
+    detection_supported = bool(
+        causal_cohort and path_changed and objective_success and observed_reduction
+    )
+    path_difference = {
+        "changed": path_changed,
+        "first_divergence_index": first_difference,
+        "from": (
+            baseline_path[first_difference]
+            if first_difference is not None and first_difference < len(baseline_path)
+            else None
+        ),
+        "to": (
+            candidate_path[first_difference]
+            if first_difference is not None and first_difference < len(candidate_path)
+            else None
+        ),
+        "from_path": baseline_path,
+        "to_path": candidate_path,
+    }
+    prevention_bypass = {
+        "occurred": prevention_supported,
+        "supported": prevention_supported,
+        "alternate_path": path_changed,
+        "objective_success": objective_success,
+        "objective_success_required": True,
+        "blocked_path_removed": from_block is not None and to_block is None,
+    }
+    detection_bypass = {
+        "occurred": detection_supported,
+        "supported": detection_supported,
+        "alternate_path": path_changed,
+        "objective_success": objective_success,
+        "objective_success_required": True,
+        "observed_reduction": observed_reduction,
+        "from_observed_matches": baseline.get("observed_detection_matches"),
+        "to_observed_matches": candidate.get("observed_detection_matches"),
+        "observed_match_delta": observed_delta,
+        "fixture_match_delta": delta.get("fixture_detection_match_delta"),
+        "total_match_delta": delta.get("detection_match_delta"),
+    }
+    cleanup = {
+        "from": baseline.get("cleanup"),
+        "to": candidate.get("cleanup"),
+        "changed": baseline.get("cleanup") != candidate.get("cleanup"),
+        "both_authoritative": bool(
+            isinstance(baseline.get("cleanup"), Mapping)
+            and baseline["cleanup"].get("authoritative") is True
+            and isinstance(candidate.get("cleanup"), Mapping)
+            and candidate["cleanup"].get("authoritative") is True
+        ),
+    }
+    explanation = {
+        "schema_version": "bluefire.frontier-explanation.v1",
+        "from_run_id": baseline.get("run_id"),
+        "to_run_id": candidate.get("run_id"),
+        "path_difference": path_difference,
+        "first_block": {
+            "changed": from_block != to_block,
+            "from": from_block,
+            "to": to_block,
+        },
+        "prevention_bypass": prevention_bypass,
+        "detection_bypass": detection_bypass,
+        "telemetry_delta": {
+            "added": list(delta.get("telemetry_added", [])),
+            "removed": list(delta.get("telemetry_removed", [])),
+            "changed": bool(delta.get("telemetry_added") or delta.get("telemetry_removed")),
+        },
+        "objective_result": {
+            "from_reached": baseline.get("objective_reached") is True,
+            "to_reached": objective_success,
+            "changed": baseline.get("objective_reached") != candidate.get("objective_reached"),
+            "outcome": _objective_delta_outcome(baseline, candidate),
+        },
+        "authoritative_cleanup": cleanup,
+    }
+    explanation["defensive_effect"] = _defensive_effect(
+        baseline,
+        candidate,
+        delta,
+        prevention_bypass=prevention_bypass,
+        detection_bypass=detection_bypass,
+        cleanup=cleanup,
+    )
+    return explanation
+
+
+def _objective_delta_outcome(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> str:
+    before = baseline.get("objective_reached") is True
+    after = candidate.get("objective_reached") is True
+    if not before and after:
+        return "recovered"
+    if before and not after:
+        return "regressed"
+    return "maintained_success" if after else "maintained_incomplete"
+
+
+def _defensive_effect(
+    baseline: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    delta: Mapping[str, Any],
+    *,
+    prevention_bypass: Mapping[str, Any],
+    detection_bypass: Mapping[str, Any],
+    cleanup: Mapping[str, Any],
+) -> dict[str, Any]:
+    improvements: list[str] = []
+    regressions: list[str] = []
+    causal_cohort = _is_causal_replay_cohort(baseline, candidate)
+    if causal_cohort:
+        if (
+            baseline.get("objective_reached") is True
+            and candidate.get("objective_reached") is False
+        ):
+            improvements.append("objective_prevented")
+        elif (
+            baseline.get("objective_reached") is False
+            and candidate.get("objective_reached") is True
+        ):
+            regressions.append("objective_recovered")
+        if prevention_bypass.get("supported") is True:
+            regressions.append("prevention_bypassed")
+        observed_delta = delta.get("observed_detection_match_delta")
+        if type(observed_delta) is int and observed_delta > 0:
+            improvements.append("observed_detection_increased")
+        elif detection_bypass.get("supported") is True:
+            regressions.append("observed_detection_bypassed")
+        elif type(observed_delta) is int and observed_delta < 0:
+            regressions.append("observed_detection_decreased")
+        if cleanup.get("both_authoritative") is True:
+            before = baseline.get("cleanup", {}).get("state")
+            after = candidate.get("cleanup", {}).get("state")
+            if before != "verified_success" and after == "verified_success":
+                improvements.append("cleanup_recovered")
+            elif before == "verified_success" and after != "verified_success":
+                regressions.append("cleanup_regressed")
+    declared = bool(delta.get("replay_lineage_delta", {}).get("defense_change_declared"))
+    if not declared or not causal_cohort:
+        assessment = "not_attributable"
+    elif improvements and regressions:
+        assessment = "mixed"
+    elif improvements:
+        assessment = "improved"
+    elif regressions:
+        assessment = "regressed"
+    else:
+        assessment = "no_material_change"
+    return {
+        "change_declared": declared,
+        "effect": {
+            "improvements": improvements,
+            "regressions": regressions,
+        },
+        "assessment": assessment,
+    }
+
+
+def _is_causal_replay_cohort(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> bool:
+    replay = candidate.get("replay_lineage")
+    baseline_run_id = baseline.get("run_id")
+    baseline_scenario_digest = baseline.get("scenario_digest")
+    return bool(
+        isinstance(replay, Mapping)
+        and replay.get("state") == "replay"
+        and isinstance(baseline_run_id, str)
+        and replay.get("source_run_id") == baseline_run_id
+        and isinstance(baseline_scenario_digest, str)
+        and candidate.get("scenario_digest") == baseline_scenario_digest
+        and replay.get("source_scenario_digest") == baseline_scenario_digest
+    )
 
 
 def _catalog_authority_summary(snapshot: Mapping[str, Any]) -> dict[str, Any]:
@@ -441,9 +790,7 @@ def _target_scope_summary(value: Any) -> dict[str, Any]:
         }
     refs = value.get("scope_refs")
     scope_ref_count = (
-        len([item for item in refs if isinstance(item, str)])
-        if isinstance(refs, list)
-        else 0
+        len([item for item in refs if isinstance(item, str)]) if isinstance(refs, list) else 0
     )
     return {
         "state": "bound",
@@ -492,11 +839,15 @@ def _replay_lineage_summary(value: Any) -> dict[str, Any]:
         if isinstance(action_overrides, Mapping)
         else []
     )
-    action_reselection_steps = [
-        str(step_id)
-        for step_id in value.get("action_reselection_steps", [])
-        if isinstance(step_id, str)
-    ] if isinstance(value.get("action_reselection_steps"), list) else []
+    action_reselection_steps = (
+        [
+            str(step_id)
+            for step_id in value.get("action_reselection_steps", [])
+            if isinstance(step_id, str)
+        ]
+        if isinstance(value.get("action_reselection_steps"), list)
+        else []
+    )
     variant_types = []
     if value.get("exact") is True:
         variant_types.append("exact")
@@ -513,33 +864,55 @@ def _replay_lineage_summary(value: Any) -> dict[str, Any]:
     if value.get("profile_changed") is True:
         variant_types.append("profile")
     defense_change = value.get("defense_change")
-    defense_change_text = defense_change if isinstance(defense_change, str) and defense_change else None
+    defense_change_text = (
+        defense_change if isinstance(defense_change, str) and defense_change else None
+    )
     if defense_change_text is not None:
         variant_types.append("defense_change")
     return {
         "state": "replay",
         "lineage_digest": content_hash(dict(value)),
-        "source_run_id": value.get("source_run_id") if isinstance(value.get("source_run_id"), str) else None,
+        "source_run_id": (
+            value.get("source_run_id") if isinstance(value.get("source_run_id"), str) else None
+        ),
         "source_scenario_digest": (
             value.get("source_scenario_digest")
             if _is_digest(value.get("source_scenario_digest"))
             else None
         ),
         "variant_types": sorted(set(variant_types)),
-        "from_step_id": value.get("from_step_id") if isinstance(value.get("from_step_id"), str) else None,
-        "swap_step_id": value.get("swap_step_id") if isinstance(value.get("swap_step_id"), str) else None,
-        "swap_behavior_id": value.get("swap_behavior_id") if isinstance(value.get("swap_behavior_id"), str) else None,
+        "from_step_id": (
+            value.get("from_step_id") if isinstance(value.get("from_step_id"), str) else None
+        ),
+        "swap_step_id": (
+            value.get("swap_step_id") if isinstance(value.get("swap_step_id"), str) else None
+        ),
+        "swap_behavior_id": (
+            value.get("swap_behavior_id")
+            if isinstance(value.get("swap_behavior_id"), str)
+            else None
+        ),
         "parameter_override_steps": sorted(parameter_override_names),
         "parameter_override_names": parameter_override_names,
         "action_implementations_changed": bool(value.get("action_implementations_changed")),
         "action_implementation_override_steps": action_override_steps,
         "action_reselection_steps": sorted(set(action_reselection_steps)),
         "ai_changed": bool(value.get("ai_changed")),
-        "autonomy_from": value.get("autonomy_from") if isinstance(value.get("autonomy_from"), str) else None,
-        "autonomy_to": value.get("autonomy_to") if isinstance(value.get("autonomy_to"), str) else None,
+        "autonomy_from": (
+            value.get("autonomy_from") if isinstance(value.get("autonomy_from"), str) else None
+        ),
+        "autonomy_to": (
+            value.get("autonomy_to") if isinstance(value.get("autonomy_to"), str) else None
+        ),
         "ai_provider_changed": bool(value.get("ai_provider_changed")),
-        "ai_provider_from": value.get("ai_provider_from") if isinstance(value.get("ai_provider_from"), str) else None,
-        "ai_provider_to": value.get("ai_provider_to") if isinstance(value.get("ai_provider_to"), str) else None,
+        "ai_provider_from": (
+            value.get("ai_provider_from")
+            if isinstance(value.get("ai_provider_from"), str)
+            else None
+        ),
+        "ai_provider_to": (
+            value.get("ai_provider_to") if isinstance(value.get("ai_provider_to"), str) else None
+        ),
         "profile_changed": bool(value.get("profile_changed")),
         "defense_change_declared": defense_change_text is not None,
         "defense_change_digest": (

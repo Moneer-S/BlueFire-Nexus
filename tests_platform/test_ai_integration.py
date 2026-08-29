@@ -641,6 +641,87 @@ def test_assist_records_and_auto_applies_only_the_registered_alternate(
     assert len(proposal_events) == len(result["ai_proposals"])
 
 
+def test_proposals_persist_the_exact_sanitized_planner_state_sent_to_provider(
+    tmp_path: Path,
+) -> None:
+    provider: AlternateProposalProvider | None = None
+
+    def factory(config: AIConfig, provider_id: str) -> AlternateProposalProvider:
+        nonlocal provider
+        provider = AlternateProposalProvider(config.provider(provider_id))
+        return provider
+
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        ai_provider_factory=factory,
+    )
+
+    result = service.run(_request("auto"))
+
+    assert provider is not None
+    durable = service.detail(str(result["run_id"]))
+    assert durable["ai_proposals"] == result["ai_proposals"]
+    assert len(provider.requests) == len(durable["ai_proposals"])
+    for index, (request, record) in enumerate(
+        zip(provider.requests, durable["ai_proposals"], strict=True)
+    ):
+        planner_state = record["planner_state"]
+        assert set(planner_state) == {
+            "schema_version",
+            "source_state_digest",
+            "mode",
+            "current_step_id",
+            "outcome",
+            "completed_steps",
+            "deterministic_decision",
+            "registered_options",
+            "remaining_budgets",
+        }
+        assert planner_state["schema_version"] == "bluefire.planner-state.v1"
+        assert record["planner_state_digest"] == content_hash(planner_state)
+        assert request.context == planner_state
+        assert request.current_state_digest == planner_state["source_state_digest"]
+        assert record["state_digest"] == request.current_state_digest
+        completed_rows = [dict(row) for row in durable["steps"][: index + 1]]
+        completed_rows[-1].pop("planner_decision_id")
+        assert request.current_state_digest == content_hash(
+            {
+                "artifacts": {row["step_id"]: row.get("artifacts", {}) for row in completed_rows},
+                "steps": completed_rows,
+            }
+        )
+        assert planner_state["current_step_id"] == record["current_step_id"]
+        assert planner_state["outcome"] == record["outcome"]
+        assert planner_state["registered_options"] == record["registered_options"]
+        assert (
+            planner_state["deterministic_decision"]["decision_id"]
+            == record["deterministic_decision_id"]
+        )
+        assert planner_state["remaining_budgets"] == {
+            "steps": record["proposal_policy"]["remaining_steps"],
+            "retries": max(
+                1 - record["proposal_policy"]["adaptive_retries_used"],
+                0,
+            ),
+        }
+        assert planner_state["completed_steps"]
+        assert planner_state["completed_steps"][-1] == {
+            "step_id": record["current_step_id"],
+            "behavior_id": next(
+                row["behavior_id"]
+                for row in durable["steps"]
+                if row["step_id"] == record["current_step_id"]
+            ),
+            "status": record["outcome"],
+        }
+        assert all(
+            set(completed) == {"step_id", "behavior_id", "status"}
+            for completed in planner_state["completed_steps"]
+        )
+    service.close()
+
+
 def test_invalid_remote_output_uses_deterministic_fallback_and_preserves_graph(
     tmp_path: Path,
 ) -> None:

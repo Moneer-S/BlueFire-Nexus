@@ -23,7 +23,15 @@
   "python_layer_rules": [
     {
       "layer": "acceptance",
-      "patterns": ["tools", "tools.*"]
+      "patterns": [
+        "bluefire.defense_frontier",
+        "bluefire.defense_frontier_gate",
+        "bluefire.defense_frontier_report_validation",
+        "bluefire.defense_frontier_validation",
+        "bluefire.product_gates",
+        "tools",
+        "tools.*"
+      ]
     },
     {
       "layer": "release",
@@ -32,7 +40,6 @@
         "bluefire.install_gate",
         "bluefire.install_gate_validation",
         "bluefire.product_acceptance*",
-        "bluefire.product_gates",
         "bluefire.provider_gate",
         "bluefire.provider_gate_validation",
         "bluefire.provider_gate_structural_validation"
@@ -74,7 +81,8 @@
         "bluefire.runner_lifecycle",
         "bluefire.runner_transport",
         "bluefire.runner_trust",
-        "bluefire.runner_watchdog"
+        "bluefire.runner_watchdog",
+        "bluefire.windows_owner_acl"
       ]
     },
     {
@@ -93,6 +101,7 @@
       "patterns": [
         "bluefire.action_*",
         "bluefire.ai",
+        "bluefire.ai_record_validation",
         "bluefire.ai_drafts",
         "bluefire.approvals",
         "bluefire.collectors",

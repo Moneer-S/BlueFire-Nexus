@@ -454,13 +454,14 @@ class Orchestrator:
         observer: SandboxObserver | None = None
         authorized_target_scope: Mapping[str, Any] = {"scope_refs": []}
         validated_approval: Mapping[str, Any] | None = None
+        approval_binding: Mapping[str, str] | None = None
+        approval_context: dict[str, Any] = {}
         if mode is ExecutionMode.EXECUTE:
             if profile is None or sandbox_root is None or self.runner is None:
                 raise OrchestrationError(
                     "Execute requires an explicit profile, sandbox root, and Rust runner"
                 )
             authorized_target_scope = self._validated_target_scope(target_scope, profile)
-            approval_context: dict[str, Any] = {}
             if replay is not None or resume_from_step_id is not None:
                 approval_context.update(
                     {
@@ -470,7 +471,7 @@ class Orchestrator:
                 )
             if collector_ids:
                 approval_context["collector_binding"] = self._collector_binding(collector_ids)
-            binding = execution_approval_binding(
+            approval_binding = execution_approval_binding(
                 registry=self.registry,
                 scenario=scenario,
                 plan=plan.to_dict(),
@@ -493,15 +494,15 @@ class Orchestrator:
                     approval_id,
                     nonce=nonce,
                     approved_by=approved_by or "",
-                    expected_state_digest=binding["state_digest"],
-                    expected_plan_digest=binding["plan_digest"],
-                    expected_target_scope_digest=binding["target_scope_digest"],
-                    expected_profile_id=binding["profile_id"],
-                    expected_maximum_tier=binding["maximum_tier"],
+                    expected_state_digest=approval_binding["state_digest"],
+                    expected_plan_digest=approval_binding["plan_digest"],
+                    expected_target_scope_digest=approval_binding["target_scope_digest"],
+                    expected_profile_id=approval_binding["profile_id"],
+                    expected_maximum_tier=approval_binding["maximum_tier"],
                 )
                 validated_approval = validate_claimed_approval(
                     claimed_approval,
-                    binding=binding,
+                    binding=approval_binding,
                     approved_by=approved_by,
                 )
             except (ApprovalError, ValueError) as exc:
@@ -544,6 +545,16 @@ class Orchestrator:
                 "autonomy": plan.autonomy.value,
                 "ai_provider": dict(plan.ai_provider),
                 "approval": dict(persisted_approval) if persisted_approval else None,
+                "approval_binding": (
+                    dict(approval_binding) if approval_binding is not None else None
+                ),
+                "approval_context": dict(approval_context),
+                "runner_readiness": (
+                    dict(runner_readiness) if runner_readiness is not None else None
+                ),
+                "catalog_authority": (
+                    dict(self.catalog_authority) if self.catalog_authority is not None else None
+                ),
             },
             profile=profile.to_dict() if profile else None,
             replay=replay,
@@ -566,6 +577,9 @@ class Orchestrator:
                 observer=observer,
                 approved_by=approved_by,
                 approval_record=validated_approval,
+                approval_binding=approval_binding,
+                approval_context=approval_context,
+                runner_readiness=runner_readiness,
                 authorized_target_scope=authorized_target_scope,
                 replay=replay,
                 resume_from_step_id=resume_from_step_id,
@@ -610,6 +624,9 @@ class Orchestrator:
         observer: SandboxObserver | None,
         approved_by: str | None,
         approval_record: Mapping[str, Any] | None,
+        approval_binding: Mapping[str, str] | None,
+        approval_context: Mapping[str, Any],
+        runner_readiness: Mapping[str, Any] | None,
         authorized_target_scope: Mapping[str, Any],
         replay: Mapping[str, Any] | None,
         resume_from_step_id: str | None,
@@ -1011,6 +1028,16 @@ class Orchestrator:
                 "autonomy": plan.autonomy.value,
                 "ai_provider": dict(plan.ai_provider),
                 "approval": public_approval_record(approval_record),
+                "approval_binding": (
+                    dict(approval_binding) if approval_binding is not None else None
+                ),
+                "approval_context": dict(approval_context),
+                "runner_readiness": (
+                    dict(runner_readiness) if runner_readiness is not None else None
+                ),
+                "catalog_authority": (
+                    dict(self.catalog_authority) if self.catalog_authority is not None else None
+                ),
             },
         )
         self.store.finalize(
@@ -1237,6 +1264,34 @@ class Orchestrator:
             "execute_mutations_require_fresh_approval": True,
             "runner_profile_id": profile.id if profile is not None else None,
         }
+        planner_state = {
+            "schema_version": "bluefire.planner-state.v1",
+            "source_state_digest": planner_decision.current_state_digest,
+            "mode": mode.value,
+            "current_step_id": current_step_id,
+            "outcome": outcome.value,
+            "completed_steps": [
+                {
+                    "step_id": row.get("step_id"),
+                    "behavior_id": row.get("behavior_id"),
+                    "status": row.get("status"),
+                }
+                for row in state.get("steps", [])
+                if isinstance(row, Mapping)
+            ],
+            "deterministic_decision": {
+                "decision_id": planner_decision.decision_id,
+                "selected_step_id": planner_decision.selected_step_id,
+                "selected_behavior_id": planner_decision.selected_behavior_id,
+                "execution_disposition": planner_decision.execution_disposition.value,
+            },
+            "registered_options": registered_options,
+            "remaining_budgets": {
+                "steps": remaining_steps,
+                "retries": max(1 - retries_used, 0),
+            },
+        }
+        planner_state_digest = content_hash(planner_state)
         request = AIProposalRequest(
             objective=plan.objective,
             current_state_digest=planner_decision.current_state_digest,
@@ -1247,34 +1302,10 @@ class Orchestrator:
             allowed_edges=registered_edges,
             allowed_parameter_schemas=allowed_parameter_schemas,
             retryable_step_ids=retryable_step_ids,
-            context={
-                "mode": mode.value,
-                "current_step_id": current_step_id,
-                "outcome": outcome.value,
-                "completed_steps": [
-                    {
-                        "step_id": row.get("step_id"),
-                        "behavior_id": row.get("behavior_id"),
-                        "status": row.get("status"),
-                    }
-                    for row in state.get("steps", [])
-                    if isinstance(row, Mapping)
-                ],
-                "deterministic_decision": {
-                    "decision_id": planner_decision.decision_id,
-                    "selected_step_id": planner_decision.selected_step_id,
-                    "selected_behavior_id": planner_decision.selected_behavior_id,
-                    "execution_disposition": planner_decision.execution_disposition.value,
-                },
-                "registered_options": registered_options,
-                "remaining_budgets": {
-                    "steps": remaining_steps,
-                    "retries": max(1 - retries_used, 0),
-                },
-            },
+            context=planner_state,
         )
         base_record: dict[str, Any] = {
-            "schema_version": "bluefire.ai-proposal-record.v2",
+            "schema_version": "bluefire.ai-proposal-record.v3",
             "run_id": run_id,
             "current_step_id": current_step_id,
             "outcome": outcome.value,
@@ -1289,6 +1320,8 @@ class Orchestrator:
             "allowed_parameter_schemas": allowed_parameter_schemas,
             "retryable_step_ids": list(retryable_step_ids),
             "registered_options": registered_options,
+            "planner_state": planner_state,
+            "planner_state_digest": planner_state_digest,
             "proposal_policy": proposal_policy,
             "proposal_policy_digest": content_hash(proposal_policy),
         }
@@ -2014,6 +2047,7 @@ class Orchestrator:
 
         pre_dispatch_receipts = discover_current_receipts()
         pre_dispatch_committed_receipts = discover_current_receipts(require_commit=True)
+        runner_task_id: str | None = None
         try:
             execute_task = getattr(self.runner, "execute_task", None)
             wrapped_runner = getattr(self.runner, "runner", None)
@@ -2025,6 +2059,7 @@ class Orchestrator:
                     {"manifest": dict(manifest), "profile": dict(runner_profile)}
                 )
                 task_id = "execute-" + request_hash.removeprefix("sha256:")
+                runner_task_id = task_id
                 runner_result = execute_task(
                     manifest,
                     runner_profile,
@@ -2090,7 +2125,11 @@ class Orchestrator:
                 runner_profile_id=profile.id,
                 environment={"environment_type": profile.environment_type.value},
                 parent_evidence_ids=parent_ids,
-                content={"error": str(exc), "execution_status": "unknown"},
+                content={
+                    "error": str(exc),
+                    "execution_status": "unknown",
+                    **({"runner_task_id": runner_task_id} if runner_task_id is not None else {}),
+                },
                 confidence=0.0,
                 limitations=("Runner transport failed; execution evidence is unavailable.",),
                 target_scope_ref=f"runner-profile:{profile.id}",
@@ -2105,6 +2144,7 @@ class Orchestrator:
                 policy=decision.to_dict(),
                 receipts=new_discovered_receipts,
                 error={"code": "runner_transport_failed", "message": str(exc)},
+                **({"runner_task_id": runner_task_id} if runner_task_id is not None else {}),
             )
             return row, (record,), decision, new_discovered_receipts
         except BaseException:
@@ -2145,6 +2185,7 @@ class Orchestrator:
             parent_evidence_ids=parent_ids,
             content={
                 "request_hash": manifest["request_hash"],
+                **({"runner_task_id": runner_task_id} if runner_task_id is not None else {}),
                 "policy_digest": runner_profile["policy_digest"],
                 "runner_status": runner_status,
                 "runner_evidence": runner_result.get("evidence", []),
@@ -2245,6 +2286,7 @@ class Orchestrator:
             receipts=effective_receipts,
             cleanup=runner_result.get("cleanup"),
             error=runner_result.get("error"),
+            **({"runner_task_id": runner_task_id} if runner_task_id is not None else {}),
         )
         return row, tuple(records), decision, effective_receipts
 
@@ -2921,7 +2963,7 @@ class Orchestrator:
 
     @staticmethod
     def _build_detections(records: Sequence[EvidenceRecord]) -> tuple[DetectionCandidate, ...]:
-        candidate = DetectionCandidate.hypothesis(
+        staging = DetectionCandidate.hypothesis(
             behavior_id="sandbox.collection.stage.v1",
             title="Runner-owned sandbox staging file",
             target_language="internal",
@@ -2931,9 +2973,9 @@ class Orchestrator:
             known_misses=("Does not inspect host or external telemetry.",),
         )
         pipeline = DetectionPipeline()
-        candidate = pipeline.parse(candidate)
-        candidate = pipeline.exercise_fixtures(
-            candidate,
+        staging = pipeline.parse(staging)
+        staging = pipeline.exercise_fixtures(
+            staging,
             [
                 {
                     "fixture_id": "fixture-staging-positive.v1",
@@ -2942,9 +2984,9 @@ class Orchestrator:
                 }
             ],
         )
-        candidate = pipeline.exercise_observed(candidate, records)
-        candidate = pipeline.evaluate_benign(
-            candidate,
+        staging = pipeline.exercise_observed(staging, records)
+        staging = pipeline.evaluate_benign(
+            staging,
             [
                 {
                     "fixture_id": "fixture-benign-source.v1",
@@ -2954,7 +2996,42 @@ class Orchestrator:
             ],
             notes=("Benign source fixture should not match the staging-path candidate.",),
         )
-        return (candidate,)
+        local_export = DetectionCandidate.hypothesis(
+            behavior_id="sandbox.export.local.v1",
+            title="Runner-owned ephemeral local export",
+            target_language="internal",
+            logsource={"category": "sandbox_observation", "product": "bluefire"},
+            selection={
+                "artifact_type": "file_observation",
+                "path|startswith": "exports/ephemeral/",
+            },
+            provenance={"source": "canonical sandbox evidence model", "license": "MIT"},
+            known_misses=("Detects only independently observed runner-owned ephemeral exports.",),
+        )
+        local_export = pipeline.parse(local_export)
+        local_export = pipeline.exercise_fixtures(
+            local_export,
+            [
+                {
+                    "fixture_id": "fixture-local-export-positive.v1",
+                    "artifact_type": "file_observation",
+                    "path": "exports/ephemeral/bundle.bin",
+                }
+            ],
+        )
+        local_export = pipeline.exercise_observed(local_export, records)
+        local_export = pipeline.evaluate_benign(
+            local_export,
+            [
+                {
+                    "fixture_id": "fixture-benign-staging.v1",
+                    "artifact_type": "file_observation",
+                    "path": "staged/bundle.jsonl",
+                }
+            ],
+            notes=("Staging evidence should not match the local-export candidate.",),
+        )
+        return staging, local_export
 
 
 __all__ = ["OrchestrationError", "Orchestrator", "PreflightReport"]

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bluefire.ai import AIProposal
+from bluefire.ai import AIProposal, validate_persisted_proposal_record
 from bluefire.contracts import load_scenario
 from bluefire.detections import DetectionCandidate
 from bluefire.product_store import ProductStore, ProductStoreError
@@ -39,42 +39,115 @@ def _review_proposal() -> dict[str, object]:
 
 
 def _review_record(proposal: dict[str, object], *, suffix: str) -> dict[str, object]:
+    state_digest = "sha256:" + "1" * 64
+    run_id = f"run-20260824T00000{suffix}Z-" + suffix * 16
+    edge = {
+        "from_step": "current_step",
+        "outcome": "success",
+        "to_step": "next_step",
+    }
+    registered_options = [
+        {
+            "role": "next",
+            "step_id": "next_step",
+            "behavior_ids": ["sandbox.discovery.v1"],
+            "action_ids_by_behavior": {"sandbox.discovery.v1": []},
+            "parameter_schemas": {},
+            "edge": edge,
+        }
+    ]
     policy = {
         "schema_version": "bluefire.ai-proposal-policy.v1",
         "mode": "simulate",
+        "autonomy": "assist",
+        "observed_outcome": "success",
+        "registered_options": registered_options,
         "maximum_adaptive_retries": 1,
+        "adaptive_retries_used": 0,
+        "remaining_steps": 2,
+        "execute_mutations_require_fresh_approval": True,
+        "runner_profile_id": None,
+    }
+    decision_id = (
+        "decision-"
+        + content_hash(
+            {
+                "run_id": run_id,
+                "current_step_id": "current_step",
+                "outcome": "success",
+                "state_digest": state_digest,
+                "selected_step_id": "next_step",
+                "disposition": "simulate",
+            }
+        ).removeprefix("sha256:")[:20]
+    )
+    planner_state = {
+        "schema_version": "bluefire.planner-state.v1",
+        "source_state_digest": state_digest,
+        "mode": "simulate",
+        "current_step_id": "current_step",
+        "outcome": "success",
+        "completed_steps": [
+            {
+                "step_id": "current_step",
+                "behavior_id": "sandbox.discovery.v1",
+                "status": "success",
+            }
+        ],
+        "deterministic_decision": {
+            "decision_id": decision_id,
+            "selected_step_id": "next_step",
+            "selected_behavior_id": "sandbox.discovery.v1",
+            "execution_disposition": "simulate",
+        },
+        "registered_options": registered_options,
+        "remaining_budgets": {"steps": 2, "retries": 1},
     }
     return {
-        "schema_version": "bluefire.ai-proposal-record.v2",
-        "run_id": f"run-20260824T00000{suffix}Z-" + suffix * 16,
+        "schema_version": "bluefire.ai-proposal-record.v3",
+        "run_id": run_id,
         "application_status": "awaiting_operator_approval",
+        "application_reason": "Awaiting an operator decision for a registered proposal.",
+        "current_step_id": "current_step",
+        "outcome": "success",
         "autonomy": "assist",
-        "state_digest": "sha256:" + "1" * 64,
+        "state_digest": state_digest,
         "plan_digest": "sha256:" + "2" * 64,
+        "deterministic_decision_id": decision_id,
         "proposal_digest": content_hash(proposal),
         "proposal_policy": policy,
         "proposal_policy_digest": content_hash(policy),
         "proposal_policy_evaluation": {
             "status": "permitted",
             "policy_digest": content_hash(policy),
+            "mutation": False,
+            "execute_requires_fresh_approval": False,
         },
         "allowed_step_ids": ["next_step"],
         "allowed_behavior_ids": ["sandbox.discovery.v1"],
         "allowed_action_ids": [],
-        "allowed_edges": [],
+        "allowed_edges": [edge],
         "allowed_parameter_schemas": {},
         "retryable_step_ids": [],
-        "registered_options": [
-            {
-                "role": "next",
-                "step_id": "next_step",
-                "behavior_ids": ["sandbox.discovery.v1"],
-                "action_ids_by_behavior": {"sandbox.discovery.v1": []},
-                "parameter_schemas": {},
-                "edge": None,
-            }
-        ],
+        "registered_options": registered_options,
+        "planner_state": planner_state,
+        "planner_state_digest": content_hash(planner_state),
+        "provider": {
+            "requested_provider_id": "deterministic-offline.v1",
+            "effective_provider_id": "deterministic-offline.v1",
+            "model": "deterministic-planner.v1",
+            "proposal_id": proposal["proposal_id"],
+            "response_id": f"offline-{suffix * 20}",
+            "attempts": 1,
+            "used_fallback": False,
+            "fallback_reason": None,
+            "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        },
         "proposal": proposal,
+        "registered_step": {
+            "step_id": "next_step",
+            "behavior_id": "sandbox.discovery.v1",
+        },
     }
 
 
@@ -496,11 +569,90 @@ def test_ai_proposal_reviews_bind_exact_digests_and_are_one_time(tmp_path: Path)
             resolution={"decision": "rejected"},
         )
 
+    legacy = _review_record(proposal, suffix="2")
+    legacy["schema_version"] = "bluefire.ai-proposal-record.v2"
+    legacy.pop("planner_state")
+    legacy.pop("planner_state_digest")
+    legacy_review = store.create_ai_proposal_review(
+        job_id=str(job["job_id"]),
+        source_run_id=str(legacy["run_id"]),
+        record=legacy,
+    )
+    assert legacy_review["record"]["schema_version"] == "bluefire.ai-proposal-record.v2"
+
 
 def test_ai_proposal_review_rejects_tampered_or_executable_content(tmp_path: Path) -> None:
     store = ProductStore(tmp_path / "bluefire.db")
     job = store.create_job("scenario.run", {"mode": "simulate"})
     proposal = _review_proposal()
+    record = _review_record(proposal, suffix="1")
+    record["planner_state_digest"] = "sha256:" + "9" * 64
+    with pytest.raises(ProductStoreError, match="strict contract validation"):
+        store.create_ai_proposal_review(
+            job_id=str(job["job_id"]),
+            source_run_id=str(record["run_id"]),
+            record=record,
+        )
+    record = _review_record(proposal, suffix="1")
+    forged_edge = {
+        "from_step": "forged_step",
+        "outcome": "failed",
+        "to_step": "next_step",
+    }
+    option = {
+        **record["registered_options"][0],
+        "edge": forged_edge,
+        "action_ids_by_behavior": {},
+    }
+    registered_options = [option]
+    policy = {**record["proposal_policy"], "registered_options": registered_options}
+    planner_state = {**record["planner_state"], "registered_options": registered_options}
+    record["allowed_edges"] = [forged_edge]
+    record["registered_options"] = registered_options
+    record["proposal_policy"] = policy
+    record["proposal_policy_digest"] = content_hash(policy)
+    record["proposal_policy_evaluation"] = {
+        **record["proposal_policy_evaluation"],
+        "policy_digest": content_hash(policy),
+    }
+    record["planner_state"] = planner_state
+    record["planner_state_digest"] = content_hash(planner_state)
+    with pytest.raises(ProductStoreError, match="strict contract validation"):
+        store.create_ai_proposal_review(
+            job_id=str(job["job_id"]),
+            source_run_id=str(record["run_id"]),
+            record=record,
+        )
+    record = _review_record(proposal, suffix="1")
+    registered_options = [*record["registered_options"], "forged"]
+    policy = {**record["proposal_policy"], "registered_options": registered_options}
+    planner_state = {**record["planner_state"], "registered_options": registered_options}
+    record["registered_options"] = registered_options
+    record["proposal_policy"] = policy
+    record["proposal_policy_digest"] = content_hash(policy)
+    record["proposal_policy_evaluation"] = {
+        **record["proposal_policy_evaluation"],
+        "policy_digest": content_hash(policy),
+    }
+    record["planner_state"] = planner_state
+    record["planner_state_digest"] = content_hash(planner_state)
+    with pytest.raises(ProductStoreError, match="strict contract validation"):
+        store.create_ai_proposal_review(
+            job_id=str(job["job_id"]),
+            source_run_id=str(record["run_id"]),
+            record=record,
+        )
+    record = _review_record(proposal, suffix="1")
+    planner_state = dict(record["planner_state"])
+    planner_state["remaining_budgets"] = {"steps": 2, "retries": True}
+    record["planner_state"] = planner_state
+    record["planner_state_digest"] = content_hash(planner_state)
+    with pytest.raises(ProductStoreError, match="strict contract validation"):
+        store.create_ai_proposal_review(
+            job_id=str(job["job_id"]),
+            source_run_id=str(record["run_id"]),
+            record=record,
+        )
     record = _review_record(proposal, suffix="1")
     proposal["command"] = "do-not-run"
     record["proposal_digest"] = content_hash(proposal)
@@ -525,6 +677,98 @@ def test_ai_proposal_review_rejects_tampered_or_executable_content(tmp_path: Pat
             source_run_id=str(record["run_id"]),
             record=record,
         )
+    proposal = _review_proposal()
+    record = _review_record(proposal, suffix="1")
+    planner_state = dict(record["planner_state"])
+    decision = dict(planner_state["deterministic_decision"])
+    decision["selected_step_id"] = "unrelated_step"
+    planner_state["deterministic_decision"] = decision
+    record["planner_state"] = planner_state
+    record["planner_state_digest"] = content_hash(planner_state)
+    with pytest.raises(ProductStoreError, match="strict contract validation"):
+        store.create_ai_proposal_review(
+            job_id=str(job["job_id"]),
+            source_run_id=str(record["run_id"]),
+            record=record,
+        )
+    record = _review_record(proposal, suffix="1")
+    planner_state = dict(record["planner_state"])
+    completed_steps = list(planner_state["completed_steps"])
+    completed_steps[-1] = {**completed_steps[-1], "status": "blocked"}
+    planner_state["completed_steps"] = completed_steps
+    record["planner_state"] = planner_state
+    record["planner_state_digest"] = content_hash(planner_state)
+    with pytest.raises(ProductStoreError, match="strict contract validation"):
+        store.create_ai_proposal_review(
+            job_id=str(job["job_id"]),
+            source_run_id=str(record["run_id"]),
+            record=record,
+        )
+    record = _review_record(proposal, suffix="1")
+    policy = dict(record["proposal_policy"])
+    policy.pop("autonomy")
+    record["proposal_policy"] = policy
+    record["proposal_policy_digest"] = content_hash(policy)
+    record["proposal_policy_evaluation"] = {
+        **record["proposal_policy_evaluation"],
+        "policy_digest": content_hash(policy),
+    }
+    with pytest.raises(ProductStoreError, match="strict contract validation"):
+        store.create_ai_proposal_review(
+            job_id=str(job["job_id"]),
+            source_run_id=str(record["run_id"]),
+            record=record,
+        )
+    record = _review_record(proposal, suffix="1")
+    planner_state = dict(record["planner_state"])
+    planner_state["source_state_digest"] = "sha256:" + "8" * 64
+    record["planner_state"] = planner_state
+    record["planner_state_digest"] = content_hash(planner_state)
+    with pytest.raises(ProductStoreError, match="strict contract validation"):
+        store.create_ai_proposal_review(
+            job_id=str(job["job_id"]),
+            source_run_id=str(record["run_id"]),
+            record=record,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("allowed_step_ids", 7),
+        ("allowed_behavior_ids", None),
+        ("allowed_action_ids", "sandbox.discovery.v1"),
+        ("allowed_edges", {}),
+        ("retryable_step_ids", 1),
+        ("allowed_parameter_schemas", []),
+    ],
+)
+def test_ai_proposal_review_rejects_malformed_container_types(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    store = ProductStore(tmp_path / f"malformed-{field}.db")
+    job = store.create_job("scenario.run", {"mode": "simulate"})
+    proposal = _review_proposal()
+    record = _review_record(proposal, suffix="1")
+    record[field] = value
+
+    with pytest.raises(ProductStoreError, match="strict contract validation"):
+        store.create_ai_proposal_review(
+            job_id=str(job["job_id"]),
+            source_run_id=str(record["run_id"]),
+            record=record,
+        )
+
+
+@pytest.mark.parametrize("usage", [{}, {"input_tokens": 3}])
+def test_ai_proposal_record_accepts_bounded_partial_provider_usage(
+    usage: dict[str, int],
+) -> None:
+    proposal = _review_proposal()
+    record = _review_record(proposal, suffix="1")
+    record["provider"] = {**record["provider"], "usage": usage}
+
+    assert validate_persisted_proposal_record(record).proposal_id == proposal["proposal_id"]
 
 
 @pytest.mark.parametrize("state", ["queued", "planning", "awaiting_approval"])

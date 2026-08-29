@@ -24,6 +24,9 @@ def _run(
     replay: dict[str, Any] | None = None,
     target_scope: dict[str, Any] | None = None,
     authorized_target_scope: Any = _UNBOUND,
+    steps: list[dict[str, Any]] | None = None,
+    cleanup: Any = _UNBOUND,
+    detection_candidates: list[dict[str, Any]] | None = None,
 ) -> str:
     policy: dict[str, Any] = {"schema_version": "bluefire.run-policy.v1"}
     if catalog_authority is not _UNBOUND:
@@ -42,43 +45,54 @@ def _run(
             for index in range(observed)
         ]
     )
-    store.finalize(
-        handle.run_id,
-        result={
-            "schema_version": "bluefire.run-result.v1",
-            "status": "completed" if objective else "incomplete",
-            "mode": "simulate",
-            "scenario_id": "scenario.test.v1",
-            "objective_reached": objective,
-            "autonomy": autonomy,
-            "ai_provider": {"provider_id": "deterministic-offline.v1"},
-            "ai_proposals": (
-                [{"application_status": "recorded_for_review"}] if autonomy != "off" else []
-            ),
-            "replay": replay,
-            "target_scope": target_scope,
-            "authorized_target_scope": (
-                target_scope if authorized_target_scope is _UNBOUND else authorized_target_scope
-            ),
-            "steps": [
+    result = {
+        "schema_version": "bluefire.run-result.v1",
+        "status": "completed" if objective else "incomplete",
+        "mode": "simulate",
+        "scenario_id": "scenario.test.v1",
+        "objective_reached": objective,
+        "autonomy": autonomy,
+        "ai_provider": {"provider_id": "deterministic-offline.v1"},
+        "ai_proposals": (
+            [{"application_status": "recorded_for_review"}] if autonomy != "off" else []
+        ),
+        "replay": replay,
+        "target_scope": target_scope,
+        "authorized_target_scope": (
+            target_scope if authorized_target_scope is _UNBOUND else authorized_target_scope
+        ),
+        "steps": (
+            steps
+            if steps is not None
+            else [
                 {
                     "step_id": "observe",
                     "status": "success" if objective else "failed",
                     "telemetry": ["fixture.observed"],
                     "policy": {"status": "allowed"},
                 }
-            ],
-            "planner_decisions": [{"remaining_budgets": {"steps": 2}}],
-        },
+            ]
+        ),
+        "planner_decisions": [{"remaining_budgets": {"steps": 2}}],
+    }
+    if cleanup is not _UNBOUND:
+        result["cleanup"] = cleanup
+    store.finalize(
+        handle.run_id,
+        result=result,
         evidence=evidence_records,
-        detections=[
-            {
-                "candidate_id": "candidate-test",
-                "state": "benign_evaluated",
-                "match_count": detection_matches,
-                "benign_match_count": benign_matches,
-            }
-        ],
+        detections=(
+            detection_candidates
+            if detection_candidates is not None
+            else [
+                {
+                    "candidate_id": "candidate-test",
+                    "state": "benign_evaluated",
+                    "match_count": detection_matches,
+                    "benign_match_count": benign_matches,
+                }
+            ]
+        ),
     )
     return handle.run_id
 
@@ -171,6 +185,285 @@ def test_comparison_reports_evidence_detection_ai_and_assessment(tmp_path: Path)
     assert delta["autonomy_changed"] is True
     assert delta["material_configuration_changed"] is False
     assert delta["assessment"] == "improved"
+
+
+def test_frontier_explanation_uses_path_identity_and_observed_detection(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    cleanup = {"attempted": True, "success": True, "outstanding_receipt_count": 0}
+    baseline = _run(
+        store,
+        objective=False,
+        observed=2,
+        detection_matches=3,
+        benign_matches=0,
+        autonomy="off",
+        steps=[
+            {
+                "step_id": "reach_objective",
+                "behavior_id": "sandbox.loopback.request.v1",
+                "action_id": "sandbox.loopback.request.v1",
+                "status": "control_blocked",
+                "telemetry": ["network.prevented"],
+                "policy": {"status": "control_blocked"},
+            },
+            {
+                "step_id": "cleanup_workspace",
+                "behavior_id": "sandbox.cleanup.v1",
+                "action_id": "sandbox.cleanup.v1",
+                "status": "success",
+                "telemetry": ["cleanup.verified"],
+                "policy": {"status": "allowed"},
+            },
+        ],
+        cleanup=cleanup,
+        detection_candidates=[
+            {
+                "candidate_id": "candidate-test",
+                "state": "observed_exercised",
+                "match_count": 3,
+                "benign_match_count": 0,
+                "observed_evidence_ids": ["evidence-0", "evidence-1"],
+            }
+        ],
+    )
+    alternate_options = {
+        "observed": 1,
+        "detection_matches": 2,
+        "benign_matches": 0,
+        "autonomy": "auto",
+        "steps": [
+            {
+                "step_id": "reach_objective",
+                "behavior_id": "sandbox.local.export.v1",
+                "action_id": "sandbox.local.export.v1",
+                "status": "success",
+                "telemetry": ["local.exported"],
+                "policy": {"status": "allowed"},
+            },
+            {
+                "step_id": "cleanup_workspace",
+                "behavior_id": "sandbox.cleanup.v1",
+                "action_id": "sandbox.cleanup.v1",
+                "status": "success",
+                "telemetry": ["cleanup.verified"],
+                "policy": {"status": "allowed"},
+            },
+        ],
+        "cleanup": cleanup,
+        "detection_candidates": [
+            {
+                "candidate_id": "candidate-test",
+                "state": "observed_exercised",
+                "match_count": 2,
+                "benign_match_count": 0,
+                "observed_evidence_ids": ["evidence-0"],
+            }
+        ],
+        "replay": {
+            "exact": False,
+            "source_run_id": baseline,
+            "source_scenario_digest": content_hash(
+                {"schema_version": "bluefire.scenario.v1", "id": "scenario.test.v1"}
+            ),
+            "defense_change": "network prevention enabled",
+        },
+    }
+    successful_alternate = _run(store, objective=True, **alternate_options)
+    unsuccessful_alternate = _run(store, objective=False, **alternate_options)
+    fixture_only_alternate = _run(
+        store,
+        objective=True,
+        **{
+            **alternate_options,
+            "detection_candidates": [
+                {
+                    "candidate_id": "candidate-test",
+                    "state": "fixture_exercised",
+                    "match_count": 1,
+                    "benign_match_count": 0,
+                }
+            ],
+        },
+    )
+
+    comparison = compare_runs(
+        store,
+        [
+            baseline,
+            successful_alternate,
+            unsuccessful_alternate,
+            fixture_only_alternate,
+        ],
+    )
+    successful = comparison["deltas"][0]
+    explanation = successful["frontier_explanation"]
+
+    assert successful["first_path_divergence"] == 0
+    assert (
+        successful["first_path_divergence"]
+        == explanation["path_difference"]["first_divergence_index"]
+    )
+    assert explanation["path_difference"]["from"] == {
+        "step_id": "reach_objective",
+        "behavior_id": "sandbox.loopback.request.v1",
+        "action_id": "sandbox.loopback.request.v1",
+    }
+    assert explanation["path_difference"]["to"] == {
+        "step_id": "reach_objective",
+        "behavior_id": "sandbox.local.export.v1",
+        "action_id": "sandbox.local.export.v1",
+    }
+    assert explanation["first_block"]["from"]["step_id"] == "reach_objective"
+    assert explanation["first_block"]["to"] is None
+    assert explanation["prevention_bypass"]["supported"] is True
+    assert successful["observed_detection_match_delta"] == -1
+    assert successful["fixture_detection_match_delta"] == 0
+    assert explanation["detection_bypass"] == {
+        "occurred": True,
+        "supported": True,
+        "alternate_path": True,
+        "objective_success": True,
+        "objective_success_required": True,
+        "observed_reduction": True,
+        "from_observed_matches": 2,
+        "to_observed_matches": 1,
+        "observed_match_delta": -1,
+        "fixture_match_delta": 0,
+        "total_match_delta": -1,
+    }
+    assert explanation["telemetry_delta"] == {
+        "added": ["local.exported"],
+        "removed": ["network.prevented"],
+        "changed": True,
+    }
+    assert explanation["objective_result"] == {
+        "from_reached": False,
+        "to_reached": True,
+        "changed": True,
+        "outcome": "recovered",
+    }
+    assert explanation["authoritative_cleanup"]["both_authoritative"] is True
+    assert explanation["defensive_effect"] == {
+        "change_declared": True,
+        "effect": {
+            "improvements": [],
+            "regressions": [
+                "objective_recovered",
+                "prevention_bypassed",
+                "observed_detection_bypassed",
+            ],
+        },
+        "assessment": "regressed",
+    }
+    assert comparison["deltas"][1]["frontier_explanation"]["detection_bypass"]["supported"] is False
+    fixture_only = comparison["deltas"][2]
+    assert fixture_only["detection_match_delta"] == -2
+    assert fixture_only["observed_detection_match_delta"] is None
+    assert fixture_only["frontier_explanation"]["detection_bypass"]["supported"] is False
+
+
+def test_frontier_explanation_rejects_detached_detection_and_lineage(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    cleanup = {"attempted": True, "success": True, "outstanding_receipt_count": 0}
+    baseline = _run(
+        store,
+        objective=False,
+        observed=1,
+        detection_matches=1,
+        benign_matches=0,
+        autonomy="off",
+        cleanup=cleanup,
+        detection_candidates=[
+            {
+                "candidate_id": "candidate-test",
+                "state": "observed_exercised",
+                "match_count": 1,
+                "benign_match_count": 0,
+                "observed_evidence_ids": ["evidence-0"],
+            }
+        ],
+    )
+    candidate = _run(
+        store,
+        objective=True,
+        observed=1,
+        detection_matches=0,
+        benign_matches=0,
+        autonomy="auto",
+        cleanup=cleanup,
+        replay={
+            "exact": False,
+            "source_run_id": "run-unrelated",
+            "source_scenario_digest": content_hash(
+                {"schema_version": "bluefire.scenario.v1", "id": "scenario.test.v1"}
+            ),
+            "defense_change": "unrelated change",
+        },
+        steps=[
+            {
+                "step_id": "alternate",
+                "behavior_id": "sandbox.local.export.v1",
+                "action_id": "sandbox.local.export.v1",
+                "status": "success",
+                "policy": {"status": "allowed"},
+            }
+        ],
+        detection_candidates=[
+            {
+                "candidate_id": "candidate-test",
+                "state": "observed_exercised",
+                "match_count": 0,
+                "benign_match_count": 0,
+                "observed_evidence_ids": ["detached-evidence-id"],
+            }
+        ],
+    )
+
+    delta = compare_runs(store, [baseline, candidate])["deltas"][0]
+    explanation = delta["frontier_explanation"]
+    assert delta["observed_detection_match_delta"] is None
+    assert explanation["prevention_bypass"]["supported"] is False
+    assert explanation["detection_bypass"]["supported"] is False
+    assert explanation["defensive_effect"]["assessment"] == "not_attributable"
+
+
+def test_comparison_rejects_contradictory_cleanup_as_authoritative(
+    tmp_path: Path,
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    run_id = _run(
+        store,
+        objective=False,
+        observed=0,
+        detection_matches=0,
+        benign_matches=0,
+        autonomy="off",
+        steps=[{"step_id": "cleanup_workspace", "status": "failed"}],
+        cleanup={"attempted": True, "success": True, "outstanding_receipt_count": 0},
+    )
+    comparison = compare_runs(
+        store,
+        [
+            run_id,
+            _run(
+                store,
+                objective=False,
+                observed=0,
+                detection_matches=0,
+                benign_matches=0,
+                autonomy="off",
+            ),
+        ],
+    )
+
+    summary = comparison["summaries"][0]
+    assert summary["cleanup"]["authoritative"] is False
+    assert summary["cleanup"]["state"] == "contradictory"
+    assert summary["cleanup_success"] is False
 
 
 def test_comparison_reports_sanitized_observed_artifact_and_gap_deltas(

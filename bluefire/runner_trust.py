@@ -2268,6 +2268,24 @@ def _owner_private(path: Path, *, directory: bool) -> None:
         raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
 
 
+def _owner_private_handle(descriptor: int, *, directory: bool) -> None:
+    """Apply and verify a private Windows DACL on one pinned object handle."""
+
+    if os.name != "nt":
+        raise RunnerTrustError("Windows enrollment permissions are unavailable.")
+    try:
+        from .windows_owner_acl import WindowsOwnerAclError, apply_owner_private_acl
+    except ImportError:
+        raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
+    try:
+        apply_owner_private_acl(
+            descriptor,
+            directory=directory,
+        )
+    except (OSError, WindowsOwnerAclError):
+        raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
+
+
 @lru_cache(maxsize=1)
 def _windows_current_sid() -> str:
     executable = _windows_system_directory() / "whoami.exe"
