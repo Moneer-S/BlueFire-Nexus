@@ -982,6 +982,42 @@ def test_workflow_environment_isolates_cargo_credentials(
     assert str(parent_cargo) not in environment.values()
 
 
+def test_playwright_browser_resource_is_resolved_before_home_isolation(
+    tmp_path: Path,
+) -> None:
+    browser_root = tmp_path / "host-browser-cache"
+    browser_root.mkdir()
+    environment = {
+        acceptance_process._PLAYWRIGHT_BROWSER_RESOURCE_ENV: str(browser_root),
+        "LOCALAPPDATA": str(tmp_path / "isolated-home"),
+    }
+
+    assert acceptance_process._playwright_browsers_path(environment) == browser_root.resolve()
+    environment[acceptance_process._PLAYWRIGHT_BROWSER_RESOURCE_ENV] = "relative-cache"
+    assert acceptance_process._playwright_browsers_path(environment) is None
+    unsafe_file = tmp_path / "browser-cache-file"
+    unsafe_file.write_bytes(b"not a browser directory")
+    environment[acceptance_process._PLAYWRIGHT_BROWSER_RESOURCE_ENV] = str(unsafe_file)
+    assert acceptance_process._playwright_browsers_path(environment) is None
+
+
+def test_playwright_browser_resource_rejects_an_aliased_ancestor(tmp_path: Path) -> None:
+    real_parent = tmp_path / "real-parent"
+    browser_root = real_parent / "host-browser-cache"
+    browser_root.mkdir(parents=True)
+    aliased_parent = tmp_path / "aliased-parent"
+    try:
+        aliased_parent.symlink_to(real_parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+
+    environment = {
+        acceptance_process._PLAYWRIGHT_BROWSER_RESOURCE_ENV: str(aliased_parent / browser_root.name)
+    }
+
+    assert acceptance_process._playwright_browsers_path(environment) is None
+
+
 def test_public_workflow_text_and_receipts_redact_paths_and_secrets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

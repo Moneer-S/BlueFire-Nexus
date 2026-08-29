@@ -15,7 +15,11 @@ from typing import Any, Mapping, Sequence
 
 from .architecture_gate import _run_pytest_suite
 from .defense_frontier import _runtime_temp_parent
-from .defense_frontier_gate import _isolated_python_environment, _run_bounded_helper_process
+from .defense_frontier_gate import (
+    _configure_isolated_browser_environment,
+    _isolated_python_environment,
+    _run_bounded_helper_process,
+)
 from .detection_gate_validation import (
     CHECK_NAMES,
     DetectionGateValidationError,
@@ -136,10 +140,12 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
     reported = ["{python}", "tools/run_detection_gate_journey.py", "{fixed-arguments}"]
     try:
         with tempfile.TemporaryDirectory(prefix=".gate07-helper-", dir=evidence_dir) as temporary:
+            temporary_root = Path(temporary)
             environment = _isolated_python_environment(
-                Path(temporary),
+                temporary_root,
                 passthrough=_ACCEPTANCE_ENVIRONMENT,
             )
+            _configure_isolated_browser_environment(temporary_root, environment)
             node_raw = shutil.which("node")
             if node_raw is None:
                 raise RuntimeError("the Gate 07 Node runtime is unavailable")

@@ -32,8 +32,10 @@ from .product_acceptance_postflight import (
 )
 from .product_acceptance_postflight import repository_state as _repository_state
 from .product_acceptance_process import (
+    _PLAYWRIGHT_BROWSER_RESOURCE_ENV,
     _execute_workflow,
     _isolated_workflow_environment,
+    _playwright_browsers_path,
     _process_containment_limitations,
     _redact_runtime_paths,
     _sanitize_gate_receipt,
@@ -638,6 +640,10 @@ def _run_gate(
         runtime_temp=runtime_temp,
         cargo_target=cargo_target,
     )
+    if gate.gate_id in {"GATE-07", "GATE-09"}:
+        playwright_browsers = _playwright_browsers_path()
+        if playwright_browsers is not None:
+            environment[_PLAYWRIGHT_BROWSER_RESOURCE_ENV] = os.fspath(playwright_browsers)
     environment.update(
         {
             "BLUEFIRE_ACCEPTANCE_ID": acceptance_id,

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 _MAX_WORKFLOW_LOG_BYTES = 4 * 1024 * 1024
+_PLAYWRIGHT_BROWSER_RESOURCE_ENV = "BLUEFIRE_ACCEPTANCE_PLAYWRIGHT_BROWSERS_PATH"
 _SENSITIVE_ENV_MARKERS = (
     "TOKEN",
     "SECRET",
@@ -86,6 +88,54 @@ def _workflow_environment() -> dict[str, str]:
     return {
         key: value for key, value in os.environ.items() if key.upper() in _WORKFLOW_ENV_ALLOWLIST
     }
+
+
+def _playwright_browsers_path(
+    environ: Mapping[str, str] | None = None,
+) -> Path | None:
+    """Resolve one existing host browser cache without trusting isolated home aliases."""
+
+    values = os.environ if environ is None else environ
+    raw = values.get(_PLAYWRIGHT_BROWSER_RESOURCE_ENV) or values.get("PLAYWRIGHT_BROWSERS_PATH")
+    if not raw:
+        if os.name == "nt":
+            base = values.get("LOCALAPPDATA")
+            raw = os.fspath(Path(base) / "ms-playwright") if base else None
+        elif sys.platform == "darwin":
+            base = values.get("HOME")
+            raw = os.fspath(Path(base) / "Library" / "Caches" / "ms-playwright") if base else None
+        else:
+            base = values.get("XDG_CACHE_HOME")
+            if base:
+                raw = os.fspath(Path(base) / "ms-playwright")
+            else:
+                home = values.get("HOME")
+                raw = os.fspath(Path(home) / ".cache" / "ms-playwright") if home else None
+    if not isinstance(raw, str) or not raw or len(raw) > 4_096 or "\0" in raw:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        return None
+    try:
+        unresolved = Path(os.path.abspath(candidate))
+        candidate_metadata = candidate.lstat()
+        resolved = candidate.resolve(strict=True)
+        metadata = resolved.lstat()
+    except OSError:
+        return None
+    candidate_attributes = int(getattr(candidate_metadata, "st_file_attributes", 0))
+    attributes = int(getattr(metadata, "st_file_attributes", 0))
+    if (
+        not stat.S_ISDIR(candidate_metadata.st_mode)
+        or candidate.is_symlink()
+        or bool(candidate_attributes & 0x400)
+        or unresolved != resolved
+        or not stat.S_ISDIR(metadata.st_mode)
+        or resolved.is_symlink()
+        or bool(attributes & 0x400)
+    ):
+        return None
+    return resolved
 
 
 def _isolated_workflow_environment(
@@ -590,9 +640,11 @@ def _execute_workflow(
 
 
 __all__ = [
+    "_PLAYWRIGHT_BROWSER_RESOURCE_ENV",
     "WorkflowOutcome",
     "_execute_workflow",
     "_isolated_workflow_environment",
+    "_playwright_browsers_path",
     "_process_containment_limitations",
     "_redact_runtime_paths",
     "_sanitize_gate_receipt",

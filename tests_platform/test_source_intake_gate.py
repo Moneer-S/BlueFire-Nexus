@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -362,6 +364,55 @@ def test_source_intake_suite_inventory_is_exact(monkeypatch: pytest.MonkeyPatch)
     assert source_intake_gate._suite_is_exact(suite) is True
     suite["passed_tests"] = [*passed_tests[:-1], "tests_platform.unrelated::test_bound"]
     assert source_intake_gate._suite_is_exact(suite) is False
+
+
+def test_gate09_helper_pins_architecture_and_browser_resource_in_private_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    browser_root = tmp_path / "playwright-browsers"
+    browser_root.mkdir()
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"node")
+    captured: dict[str, str] = {}
+    summary = {
+        "schema_version": HELPER_SCHEMA,
+        "status": "passed",
+        "reports": list(REPORT_PATHS),
+        "run_count": 1,
+        "blocking_check": None,
+    }
+
+    def run_helper(*_args: Any, **kwargs: Any) -> tuple[int, bytes]:
+        captured.update(kwargs["environment"])
+        return 0, json.dumps(summary).encode("utf-8")
+
+    monkeypatch.setenv(
+        "BLUEFIRE_ACCEPTANCE_PLAYWRIGHT_BROWSERS_PATH",
+        str(browser_root),
+    )
+    monkeypatch.setenv("BLUEFIRE_TEST_API_KEY", "must-not-cross-helper-boundary")
+    monkeypatch.setattr(source_intake_gate.shutil, "which", lambda _name: str(node))
+    monkeypatch.setattr(source_intake_gate, "current_architecture", lambda: "x86_64")
+    monkeypatch.setattr(source_intake_gate, "_run_bounded_helper_process", run_helper)
+
+    result = source_intake_gate._run_helper(ROOT, evidence)
+
+    temporary = Path(captured["TEMP"])
+    isolated_home = Path(captured["HOME"])
+    assert result["passed"] is True
+    if os.name == "nt":
+        assert captured["PROCESSOR_ARCHITECTURE"] == "AMD64"
+    else:
+        assert "PROCESSOR_ARCHITECTURE" not in captured
+    assert Path(captured["PLAYWRIGHT_BROWSERS_PATH"]) == browser_root.resolve()
+    assert isolated_home.parent == temporary
+    assert captured["USERPROFILE"] == str(isolated_home)
+    assert Path(captured["LOCALAPPDATA"]) == isolated_home / "AppData" / "Local"
+    assert Path(captured["APPDATA"]) == isolated_home / "AppData" / "Roaming"
+    assert "BLUEFIRE_TEST_API_KEY" not in captured
 
 
 def test_gate09_emits_one_exact_proof_per_assertion(

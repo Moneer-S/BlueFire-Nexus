@@ -28,7 +28,7 @@ from .defense_frontier_validation import (
     DefenseFrontierValidationError,
     validate_persisted_frontier,
 )
-from .product_acceptance_process import _execute_workflow
+from .product_acceptance_process import _execute_workflow, _playwright_browsers_path
 from .product_acceptance_run_bundle import acceptance_run_binding, validated_run_bundle
 from .runner_bootstrap import current_architecture
 
@@ -196,6 +196,31 @@ def _isolated_python_environment(
         }
     )
     return environment
+
+
+def _configure_isolated_browser_environment(
+    temporary_root: Path,
+    environment: dict[str, str],
+) -> None:
+    """Give a browser helper private writable homes and one validated host runtime cache."""
+
+    browser_root = _playwright_browsers_path()
+    if browser_root is None:
+        raise RuntimeError("the installed Playwright browser runtime is unavailable")
+    isolated_home = temporary_root / "home"
+    isolated_local = isolated_home / "AppData" / "Local"
+    isolated_roaming = isolated_home / "AppData" / "Roaming"
+    isolated_local.mkdir(parents=True)
+    isolated_roaming.mkdir(parents=True)
+    environment.update(
+        {
+            "HOME": os.fspath(isolated_home),
+            "USERPROFILE": os.fspath(isolated_home),
+            "LOCALAPPDATA": os.fspath(isolated_local),
+            "APPDATA": os.fspath(isolated_roaming),
+            "PLAYWRIGHT_BROWSERS_PATH": os.fspath(browser_root),
+        }
+    )
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -516,4 +541,8 @@ def run_gate_04(
     return Gate04Outcome(status="passed", proofs=tuple(proofs), failure_reason=None)
 
 
-__all__ = ["Gate04Outcome", "run_gate_04"]
+__all__ = [
+    "Gate04Outcome",
+    "_configure_isolated_browser_environment",
+    "run_gate_04",
+]

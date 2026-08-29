@@ -16,8 +16,13 @@ from typing import Any, Mapping, Sequence
 
 from .architecture_gate import _run_pytest_suite
 from .defense_frontier import _runtime_temp_parent
-from .defense_frontier_gate import _isolated_python_environment, _run_bounded_helper_process
+from .defense_frontier_gate import (
+    _configure_isolated_browser_environment,
+    _isolated_python_environment,
+    _run_bounded_helper_process,
+)
 from .product_acceptance_run_bundle import acceptance_run_binding, validated_run_bundle
+from .runner_bootstrap import current_architecture
 from .source_intake_gate_validation import (
     CHECK_NAMES,
     SourceIntakeGateValidationError,
@@ -60,9 +65,9 @@ _CONTRACT_TESTS = (
 )
 
 # Updated only from the sorted JUnit inventory emitted by _run_pytest_suite.
-_EXPECTED_CONTRACT_TEST_COUNT = 140
+_EXPECTED_CONTRACT_TEST_COUNT = 141
 _EXPECTED_CONTRACT_TESTS_SHA256 = (
-    "sha256:bc2f02e829f1bb8791727d04a435ba15941195ab9eaed00c6445444a8bbb50b1"
+    "sha256:a1267ee2ce93ab4dd9e958eff25020f1c7a04fc0e642107465312f258fe5906a"
 )
 
 _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str]] = {
@@ -152,10 +157,17 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
     reported = ["{python}", "tools/run_source_intake_gate_journey.py", "{fixed-arguments}"]
     try:
         with tempfile.TemporaryDirectory(prefix=".gate09-helper-", dir=evidence_dir) as temporary:
+            temporary_root = Path(temporary)
             environment = _isolated_python_environment(
-                Path(temporary),
+                temporary_root,
                 passthrough=_ACCEPTANCE_ENVIRONMENT,
             )
+            _configure_isolated_browser_environment(temporary_root, environment)
+            if os.name == "nt":
+                environment["PROCESSOR_ARCHITECTURE"] = {
+                    "x86_64": "AMD64",
+                    "aarch64": "ARM64",
+                }[current_architecture()]
             node_raw = shutil.which("node")
             if node_raw is None:
                 raise RuntimeError("the Gate 09 Node runtime is unavailable")

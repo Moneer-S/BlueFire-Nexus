@@ -600,6 +600,11 @@ def test_detection_helper_protocol_does_not_treat_browser_pending_as_passed(
 ) -> None:
     evidence = tmp_path / "evidence"
     evidence.mkdir()
+    browser_root = tmp_path / "playwright-browsers"
+    browser_root.mkdir()
+    node = tmp_path / "node.exe"
+    node.write_bytes(b"node")
+    captured: dict[str, str] = {}
     summary = {
         "schema_version": HELPER_SCHEMA,
         "status": "incomplete",
@@ -607,17 +612,31 @@ def test_detection_helper_protocol_does_not_treat_browser_pending_as_passed(
         "run_count": 1,
         "blocking_check": "production_browser_interaction",
     }
-    monkeypatch.setattr(
-        detection_gate,
-        "_run_bounded_helper_process",
-        lambda *_args, **_kwargs: (1, json.dumps(summary).encode("utf-8")),
+
+    def run_helper(*_args: Any, **kwargs: Any) -> tuple[int, bytes]:
+        captured.update(kwargs["environment"])
+        return 1, json.dumps(summary).encode("utf-8")
+
+    monkeypatch.setenv(
+        "BLUEFIRE_ACCEPTANCE_PLAYWRIGHT_BROWSERS_PATH",
+        str(browser_root),
     )
+    monkeypatch.setenv("BLUEFIRE_TEST_API_KEY", "must-not-cross-helper-boundary")
+    monkeypatch.setattr(detection_gate.shutil, "which", lambda _name: str(node))
+    monkeypatch.setattr(detection_gate, "_run_bounded_helper_process", run_helper)
 
     result = detection_gate._run_helper(ROOT, evidence)
 
     assert result["protocol_valid"] is True
     assert result["passed"] is False
     assert result["blocking_check"] == "production_browser_interaction"
+    isolated_home = Path(captured["HOME"])
+    assert Path(captured["PLAYWRIGHT_BROWSERS_PATH"]) == browser_root.resolve()
+    assert isolated_home.parent == Path(captured["TEMP"])
+    assert captured["USERPROFILE"] == str(isolated_home)
+    assert Path(captured["LOCALAPPDATA"]) == isolated_home / "AppData" / "Local"
+    assert Path(captured["APPDATA"]) == isolated_home / "AppData" / "Roaming"
+    assert "BLUEFIRE_TEST_API_KEY" not in captured
 
     lifecycle = object()
     expected_root = evidence / ".gate07-managed-runner"
