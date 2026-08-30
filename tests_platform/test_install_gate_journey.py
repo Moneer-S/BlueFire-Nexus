@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from bluefire.collectors import CollectionRequest, FilesystemCollector
 from bluefire.registry import load_builtin_registry
 from bluefire.util import content_hash
 from tools import install_gate_journey_support as support
@@ -21,6 +22,7 @@ _JOB_ID = "job-0123456789abcdef0123456789abcdef"
 _DIGEST_A = "sha256:" + "a" * 64
 _DIGEST_C = "sha256:" + "c" * 64
 _ARTIFACT_DIGEST = "sha256:" + "d" * 64
+_OBSERVATION_KEY = "filesystem/path-utf8-" + support.CANARY_PATH.encode("utf-8").hex()
 
 
 def _binding() -> dict[str, str]:
@@ -169,12 +171,26 @@ def _run() -> dict[str, Any]:
             "behavior_id": "sandbox.restricted.persistence-marker.v1",
             "action_id": "sandbox.restricted.persistence-marker.v1",
             "parent_evidence_ids": [executed_id],
+            "environment": {
+                "environment_type": "disposable",
+                "collector_id": support.COLLECTOR_ID,
+                "collector_version": support.COLLECTOR_VERSION,
+            },
             "content": {
-                "artifact_type": "file_observation",
+                "artifact_type": "collector_observation",
                 "collector_id": support.COLLECTOR_ID,
                 "path": support.CANARY_PATH,
                 "sha256": _ARTIFACT_DIGEST[7:],
                 "size_bytes": 151,
+                "modified_ns": 1,
+                "observation_key": _OBSERVATION_KEY,
+                "observation_kind": "filesystem",
+                "observed_fields": {
+                    "path": support.CANARY_PATH,
+                    "sha256": _ARTIFACT_DIGEST[7:],
+                    "size_bytes": 151,
+                },
+                "mechanism": "independent-file-handle-read",
             },
         },
         {
@@ -376,6 +392,41 @@ def test_run_requires_exact_observer_lineage_and_real_workspace_cleanup(tmp_path
             replay_of=None,
         )
 
+    wrong_parent = deepcopy(run)
+    wrong_parent["evidence"]["records"][1]["parent_evidence_ids"] = []
+    with pytest.raises(support.SupportError, match="observer evidence"):
+        support.validate_run(
+            wrong_parent,
+            sandbox_root=sandbox,
+            approval_binding=_binding(),
+            approved_by="gate01-release-operator",
+            replay_of=None,
+        )
+
+    legacy_observation = deepcopy(run)
+    legacy_observation["evidence"]["records"][1]["content"]["artifact_type"] = "file_observation"
+    with pytest.raises(support.SupportError, match="canonical collector observation"):
+        support.validate_run(
+            legacy_observation,
+            sandbox_root=sandbox,
+            approval_binding=_binding(),
+            approved_by="gate01-release-operator",
+            replay_of=None,
+        )
+
+    inconsistent_observation = deepcopy(run)
+    inconsistent_observation["evidence"]["records"][1]["content"]["observed_fields"]["sha256"] = (
+        "0" * 64
+    )
+    with pytest.raises(support.SupportError, match="canonical collector observation"):
+        support.validate_run(
+            inconsistent_observation,
+            sandbox_root=sandbox,
+            approval_binding=_binding(),
+            approved_by="gate01-release-operator",
+            replay_of=None,
+        )
+
     wrong_observation_behavior = deepcopy(run)
     wrong_observation_behavior["evidence"]["records"][0]["behavior_id"] = "wrong.behavior"
     wrong_observation_behavior["evidence"]["records"][1]["behavior_id"] = "wrong.behavior"
@@ -410,6 +461,51 @@ def test_run_requires_exact_observer_lineage_and_real_workspace_cleanup(tmp_path
             approved_by="gate01-release-operator",
             replay_of=None,
         )
+
+
+def test_gate01_validator_accepts_the_production_filesystem_collector_contract(
+    tmp_path: Path,
+) -> None:
+    sandbox, workspace = _workspace(tmp_path)
+    marker = workspace / support.CANARY_PATH
+    marker.parent.mkdir()
+    marker.write_bytes(b'{"label":"persistence_detection_canary"}\n')
+    run = _run()
+    executed_id = str(run["evidence"]["records"][0]["evidence_id"])
+    collected = FilesystemCollector(workspace).collect(
+        CollectionRequest(
+            run_id=_RUN_ID,
+            step_id="create_persistence_canary",
+            behavior_id="sandbox.restricted.persistence-marker.v1",
+            action_id="sandbox.restricted.persistence-marker.v1",
+            runner_profile_id=support.PROFILE_ID,
+            target_scope_ref=f"runner-profile:{support.PROFILE_ID}",
+            parent_evidence_ids=(executed_id,),
+            settings={"paths": [support.CANARY_PATH]},
+            timeout_seconds=5.0,
+        )
+    )
+    observed = collected.records[0].to_dict()
+    observed_id = str(observed["evidence_id"])
+    artifact_digest = "sha256:" + str(observed["content"]["sha256"])
+    run["evidence"]["records"][1] = observed
+    run["evidence"]["records"][0]["content"]["output"]["sha256"] = artifact_digest
+    run["evidence"]["records"][2]["parent_evidence_ids"] = [executed_id, observed_id]
+    run["steps"][0]["evidence_ids"] = [executed_id, observed_id]
+    run["steps"][0]["artifacts"]["marker"]["sha256"] = artifact_digest
+    marker.unlink()
+    marker.parent.rmdir()
+
+    summary = support.validate_run(
+        run,
+        sandbox_root=sandbox,
+        approval_binding=_binding(),
+        approved_by="gate01-release-operator",
+        replay_of=None,
+    )
+
+    assert summary["observation"]["artifact_digest"] == artifact_digest
+    assert summary["observation"]["parent_linked"] is True
 
 
 def test_residual_check_rejects_a_path_outside_the_lifecycle_runtime(tmp_path: Path) -> None:

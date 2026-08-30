@@ -17,9 +17,11 @@ from typing import Any, Callable, Mapping, Sequence
 PROFILE_ID = "sandbox-restricted-owned.v1"
 SCENARIO_ID = "scenario.restricted.persistence-canary.v1"
 COLLECTOR_ID = "collector.filesystem.sandbox.v1"
+COLLECTOR_VERSION = "1.0.0"
 RUNNER_ID = "bluefire-rust-runner.v1"
 SCOPE = {"scope_refs": ["sandbox.workspace"]}
 CANARY_PATH = "restricted/persistence-marker.json"
+_CANARY_OBSERVATION_KEY = "filesystem/path-utf8-" + CANARY_PATH.encode("utf-8").hex()
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _APPROVAL_FIELDS = (
     "state_digest",
@@ -796,7 +798,11 @@ def _validate_evidence(
     observed_id = observed.get("evidence_id")
     cleaned_id = cleaned.get("evidence_id")
     output = executed.get("content", {}).get("output", {})
-    observed_content = observed.get("content", {})
+    raw_observed_content = observed.get("content", {})
+    observed_content = raw_observed_content if isinstance(raw_observed_content, Mapping) else {}
+    observed_environment = observed.get("environment")
+    observed_fields = observed_content.get("observed_fields")
+    observed_size = observed_content.get("size_bytes")
     artifact_digest = output.get("sha256")
     cleanup_output = cleaned.get("content", {}).get("output", {})
     marker = steps[0].get("artifacts", {}).get("marker", {})
@@ -819,18 +825,39 @@ def _validate_evidence(
         and observed.get("behavior_id") == _SEEDED_STEPS[0][1]
         and observed.get("step_id") == executed.get("step_id")
         and observed.get("parent_evidence_ids") == [executed_id]
-        and observed_content.get("artifact_type") == "file_observation"
         and observed_content.get("collector_id") == COLLECTOR_ID
         and observed_content.get("path") == CANARY_PATH
         and observed_content.get("sha256") == artifact_digest[7:]
-        and isinstance(observed_content.get("size_bytes"), int)
-        and observed_content["size_bytes"] > 0
+        and type(observed_size) is int
+        and observed_size > 0
         and marker.get("path") == CANARY_PATH
         and marker.get("sha256") == artifact_digest
         and steps[0].get("evidence_ids") == [executed_id, observed_id]
         and executed_id != observed_id,
         "observer_lineage_invalid",
         "independent observer evidence is not linked to the executed canary artifact",
+    )
+    _require(
+        observed_content.get("artifact_type") == "collector_observation"
+        and observed_content.get("observation_key") == _CANARY_OBSERVATION_KEY
+        and observed_content.get("observation_kind") == "filesystem"
+        and observed_content.get("mechanism") == "independent-file-handle-read"
+        and type(observed_content.get("modified_ns")) is int
+        and observed_content["modified_ns"] > 0
+        and observed_fields
+        == {
+            "path": CANARY_PATH,
+            "sha256": artifact_digest[7:],
+            "size_bytes": observed_size,
+        }
+        and observed_environment
+        == {
+            "environment_type": "disposable",
+            "collector_id": COLLECTOR_ID,
+            "collector_version": COLLECTOR_VERSION,
+        },
+        "observer_observation_invalid",
+        "independent observer evidence is not a canonical collector observation",
     )
     _require(
         cleaned.get("producer") == "bluefire-rust-runner"
