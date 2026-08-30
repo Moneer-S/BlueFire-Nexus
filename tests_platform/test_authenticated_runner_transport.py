@@ -16,12 +16,16 @@ from typing import Any, Mapping
 import pytest
 
 import bluefire.runner_transport as wire
+from bluefire.orchestrator import Orchestrator
 from bluefire.runner_client import (
+    InventoryBoundRunner,
     RunnerTaskCancelled,
     RunnerTaskTimedOut,
     RunnerTransportError,
     SubprocessRustRunner,
+    canonical_runner_inventory,
     runner_pending_result_path,
+    runner_transport_identity,
     runner_watchdog_cancel_path,
     runner_watchdog_control_root,
 )
@@ -784,6 +788,45 @@ def test_authenticated_client_cannot_dispatch_same_payload_under_alternate_task_
 
     assert error.value.code == "request_invalid"
     assert runner.calls == 0
+
+
+def test_orchestrator_identity_dispatches_through_inventory_bound_authenticated_client(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> None:
+    runner = RecordingRunner()
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        runner,
+        tmp_path / "transport.sqlite3",
+        secret_provider=secret_provider,
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        inventory = client.inventory()
+        bound = InventoryBoundRunner(
+            client,
+            expected_inventory_digest=content_hash(canonical_runner_inventory(inventory)),
+            expected_identity_digest=content_hash(runner_transport_identity(client, inventory)),
+            recovery_identity={},
+        )
+        task_id = Orchestrator._execution_task_id(manifest, profile)
+        result = bound.execute_task(
+            manifest,
+            profile,
+            task_id=task_id,
+            cancel_event=threading.Event(),
+            durable_result_path=(tmp_path / "caller-result.json").resolve(),
+        )
+        request_hash = content_hash({"manifest": dict(manifest), "profile": dict(profile)})
+        recovered = client.recover(task_id, request_hash)
+
+    assert result["status"] == "success"
+    assert runner.calls == 1
+    assert client.last_execution_identity == (task_id, request_hash)
+    assert recovered["state"] == "completed"
 
 
 def test_second_live_server_for_same_ledger_is_refused(

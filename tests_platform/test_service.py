@@ -31,7 +31,11 @@ from bluefire.job_runtime import JobCancelled, JobState
 from bluefire.orchestrator import Orchestrator
 from bluefire.replay import ReplayError
 from bluefire.runner_bootstrap import RUNNER_ID
-from bluefire.runner_client import RunnerTaskCancelled, RunnerTransportError
+from bluefire.runner_client import (
+    RunnerTaskCancelled,
+    RunnerTransportError,
+    execution_task_identity,
+)
 from bluefire.runner_contracts import RunnerContractError, current_platform
 from bluefire.runner_inventory import (
     BUILTIN_RUNNER_ACTION_VERSIONS,
@@ -257,14 +261,8 @@ class CancellableTaskRunner(ReadyInventoryRunner):
         durable_result_path: str | Path,
     ) -> Mapping[str, Any]:
         self.execute_calls += 1
-        expected_hash = content_hash(
-            {
-                "manifest": dict(manifest),
-                "profile": dict(profile),
-                "execution_attempt": 1,
-            }
-        ).removeprefix("sha256:")
-        assert task_id == f"execute-{expected_hash}"
+        expected_task_id, _request_hash = execution_task_identity(manifest, profile)
+        assert task_id == expected_task_id
         self.task_id = task_id
         self.durable_result_path = Path(durable_result_path)
         self.started.set()

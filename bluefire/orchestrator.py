@@ -79,6 +79,7 @@ from .runner_client import (
     RunnerTransportError,
     _PinnedPrivateDirectory,
     canonical_runner_inventory,
+    execution_task_identity,
 )
 from .runner_contracts import build_execution_manifest, build_runner_profile, current_platform
 from .runner_inventory import (
@@ -819,7 +820,6 @@ class Orchestrator:
         step_overrides: dict[str, PlanStep] = {}
         visited: set[str] = set()
         retries_used = self._adaptive_retry_count(replay)
-        execution_attempts: dict[str, int] = {}
         current_step_id: str | None = resume_from_step_id or scenario.start
         forced_cleanup = False
         cleanup_forced = False
@@ -875,7 +875,6 @@ class Orchestrator:
                 deadline=deadline,
                 cleanup_reserve=cleanup_reserve,
                 cancel_event=cancel_event,
-                execution_attempts=execution_attempts,
                 progress=checkpoint,
             )
         if isinstance(proposal_resolution, Mapping) and resume_from_step_id is not None:
@@ -985,8 +984,6 @@ class Orchestrator:
                 assert profile is not None
                 assert runner_profile is not None
                 assert observer is not None
-                execution_attempt = execution_attempts.get(current_step_id, 0) + 1
-                execution_attempts[current_step_id] = execution_attempt
                 is_cleanup = self._runner_opcode(plan_step) == "sandbox.cleanup.v1"
                 remaining = max((deadline or time.monotonic()) - time.monotonic(), 0.0)
                 # Cleanup is the compensating safety boundary. A runner call can
@@ -1019,7 +1016,6 @@ class Orchestrator:
                     cancel_event=cancel_event,
                     collector_ids=collector_ids,
                     collector_runtime_active=collector_runtime_settings is not None,
-                    execution_attempt=execution_attempt,
                 )
                 policy_rows.append(decision.to_dict())
                 if self._runner_opcode(plan_step) == "sandbox.cleanup.v1":
@@ -1693,7 +1689,6 @@ class Orchestrator:
         deadline: float | None,
         cleanup_reserve: float,
         cancel_event: threading.Event | None,
-        execution_attempts: dict[str, int],
         progress: Callable[[Mapping[str, Any]], None] | None,
     ) -> tuple[list[dict[str, Any]], Mapping[str, Any]]:
         target = restoration_plan.get("target")
@@ -1744,8 +1739,6 @@ class Orchestrator:
             action_timeout_ms = int(max(remaining - cleanup_reserve, 0.0) * 1000)
             if action_timeout_ms < 1:
                 raise OrchestrationError("checkpoint materialization exhausted the run budget")
-            attempt = execution_attempts.get(step_id, 0) + 1
-            execution_attempts[step_id] = attempt
             row, records, decision, returned_receipts = self._execute_step(
                 run_id=run_id,
                 step=plan_step,
@@ -1760,7 +1753,6 @@ class Orchestrator:
                 receipt_ids=receipt_ids,
                 action_timeout_ms=action_timeout_ms,
                 cancel_event=cancel_event,
-                execution_attempt=attempt,
             )
             if row.get("status") != expected.get("status"):
                 raise OrchestrationError("checkpoint prefix recreation changed its outcome")
@@ -2606,7 +2598,6 @@ class Orchestrator:
         cancel_event: threading.Event | None = None,
         collector_ids: Sequence[str] = (),
         collector_runtime_active: bool = False,
-        execution_attempt: int = 1,
     ) -> tuple[dict[str, Any], tuple[EvidenceRecord, ...], PolicyDecision, tuple[str, ...]]:
         action = self.registry.get_action(str(step.action_id))
         provider_binding = self._provider_execution_binding(step)
@@ -2769,7 +2760,6 @@ class Orchestrator:
                 task_id = self._execution_task_id(
                     manifest,
                     runner_profile,
-                    execution_attempt=execution_attempt,
                 )
                 runner_task_id = task_id
                 runner_result = execute_task(
@@ -3191,23 +3181,9 @@ class Orchestrator:
     def _execution_task_id(
         manifest: Mapping[str, Any],
         runner_profile: Mapping[str, Any],
-        *,
-        execution_attempt: int,
     ) -> str:
-        if (
-            isinstance(execution_attempt, bool)
-            or not isinstance(execution_attempt, int)
-            or execution_attempt <= 0
-        ):
-            raise OrchestrationError("execution attempt identity is invalid")
-        digest = content_hash(
-            {
-                "manifest": dict(manifest),
-                "profile": dict(runner_profile),
-                "execution_attempt": execution_attempt,
-            }
-        )
-        return "execute-" + digest.removeprefix("sha256:")
+        task_id, _request_hash = execution_task_identity(manifest, runner_profile)
+        return task_id
 
     @staticmethod
     def _collection_session_records(

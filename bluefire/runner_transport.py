@@ -37,6 +37,7 @@ from .runner_client import (
     _windows_open_descriptor,
     canonical_runner_inventory,
     cleanup_runner_watchdog_terminal_state,
+    execution_task_identity,
     request_runner_task_cancel,
     runner_pending_result_path,
     runner_watchdog_control_root,
@@ -3565,9 +3566,7 @@ class AuthenticatedRunnerClient:
     def execution_identity(
         manifest: Mapping[str, Any], profile: Mapping[str, Any]
     ) -> tuple[str, str]:
-        payload = {"manifest": dict(manifest), "profile": dict(profile)}
-        request_hash = content_hash(payload)
-        return _execute_task_id(request_hash), request_hash
+        return execution_task_identity(manifest, profile)
 
     def execute(self, manifest: Mapping[str, Any], profile: Mapping[str, Any]) -> Mapping[str, Any]:
         if profile.get("profile_id") != self.profile_id:

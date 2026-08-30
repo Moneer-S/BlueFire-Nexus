@@ -349,6 +349,16 @@ class TaskAwareRunnerTransport(RunnerTransport, Protocol):
     ) -> Mapping[str, Any]: ...
 
 
+def execution_task_identity(
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> tuple[str, str]:
+    """Bind one task identifier to the exact canonical execute payload."""
+
+    request_hash = content_hash({"manifest": dict(manifest), "profile": dict(profile)})
+    return "execute-" + request_hash.removeprefix("sha256:"), request_hash
+
+
 def canonical_runner_inventory(inventory: Mapping[str, Any]) -> Mapping[str, Any]:
     """Validate and normalize the stable identity-bearing runner inventory."""
 
@@ -2740,6 +2750,7 @@ __all__ = [
     "SubprocessRustRunner",
     "TaskAwareRunnerTransport",
     "canonical_runner_inventory",
+    "execution_task_identity",
     "reject_forbidden_execution_keys",
     "runner_inventory_digest",
     "runner_pending_result_path",

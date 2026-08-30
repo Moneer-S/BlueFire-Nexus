@@ -33,6 +33,7 @@ from bluefire.runner_inventory import (
     BUILTIN_RUNNER_ACTION_VERSIONS,
     RUNNER_ACTION_SDK_SCHEMA_VERSION,
 )
+from bluefire.runner_transport import AuthenticatedRunnerClient
 from bluefire.util import content_hash
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1385,14 +1386,24 @@ def test_collector_schedule_must_be_reachable_from_replay_continuation(
         )
 
 
-def test_runner_task_identity_is_unique_per_retry_attempt() -> None:
-    manifest = {"request_hash": "sha256:" + "1" * 64}
+def test_runner_task_identity_matches_the_authenticated_execute_payload() -> None:
+    manifest = {
+        "request_id": "request-first",
+        "request_hash": "sha256:" + "1" * 64,
+    }
     profile = {"policy_digest": "sha256:" + "2" * 64}
 
-    first = Orchestrator._execution_task_id(manifest, profile, execution_attempt=1)
-    retry = Orchestrator._execution_task_id(manifest, profile, execution_attempt=2)
+    first = Orchestrator._execution_task_id(manifest, profile)
+    authenticated, request_hash = AuthenticatedRunnerClient.execution_identity(
+        manifest,
+        profile,
+    )
+    retry_manifest = {**manifest, "request_id": "request-retry"}
+    retry = Orchestrator._execution_task_id(retry_manifest, profile)
 
+    assert request_hash == content_hash({"manifest": manifest, "profile": profile})
     assert first.startswith("execute-") and len(first) == 72
+    assert first == authenticated
     assert retry.startswith("execute-") and len(retry) == 72
     assert first != retry
 
