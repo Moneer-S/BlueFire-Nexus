@@ -6,7 +6,7 @@ Replay answers “what happens if I repeat or declare one controlled change?” 
 
 - The source run and its scenario snapshot are never mutated.
 - Every replay has a new run ID, timestamps, events, evidence, detections, and bundle digest.
-- Reusing source artifact metadata does not upgrade provenance.
+- Restored material keeps its source lineage; replay does not upgrade provenance merely because the prefix was recreated and verified.
 - Execute replay still requires current runner availability, target scope, policy, and approval.
 - A defense-change note is metadata; BlueFire does not deploy the defense change.
 
@@ -51,7 +51,14 @@ Execute replay preserves every untouched source action choice. An explicit actio
 
 ### Restart from node
 
-BlueFire seeds normalized artifact metadata from completed source steps before the selected start. It does not materialize a content-addressed trusted checkpoint into a fresh Execute workspace. The new run validates the scenario and bindings again; prior runner-owned files may no longer exist or may belong to a different sandbox, so Execute preflight/adapter/runner must refuse unusable or out-of-scope state. Treat restart as a convenience for controlled, preserved labs—not proof that old effects are present.
+Execute restart selects a trusted content-addressed materialized checkpoint captured before the requested node.
+The manifest binds the source run, scenario and plan, executed prefix, material file hashes,
+artifacts, profile, scope, catalog authority, runner identity and inventory, collector lineage, and
+successful cleanup state. A fresh Execute workspace deterministically recreates the prefix and
+verifies its material and artifact hashes before continuing. It never reuses source receipts or
+approval; current authority is revalidated and a new exact approval and cleanup receipts are
+required. Corrupt, missing, cross-profile, out-of-scope, or prefix-mutating checkpoints are
+refused before continuation.
 
 ### Node substitution
 

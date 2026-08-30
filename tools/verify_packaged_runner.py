@@ -59,6 +59,19 @@ def _within(child: Path, parent: Path) -> bool:
     return True
 
 
+def _native_runner_members(names: Sequence[str], executable_name: str) -> list[str]:
+    expected = [name for name in names if name.endswith(f"/bluefire/native/{executable_name}")]
+    candidates = [
+        name
+        for name in names
+        if name.endswith("/bluefire/native/bluefire-runner")
+        or name.endswith("/bluefire/native/bluefire-runner.exe")
+    ]
+    if len(expected) != 1 or candidates != expected:
+        raise RuntimeError("wheel must contain exactly one target-native runner")
+    return expected
+
+
 def _disposable_workspace_proof(
     *,
     work_root: Path,
@@ -124,10 +137,8 @@ def inspect_wheel(args: argparse.Namespace) -> int:
         manifests = [
             name for name in names if name.endswith("/bluefire/native/runner-manifest.json")
         ]
-        executables = [
-            name for name in names if name.endswith(f"/bluefire/native/{executable_name}")
-        ]
-        if len(wheel_metadata) != 1 or len(manifests) != 1 or len(executables) != 1:
+        executables = _native_runner_members(names, executable_name)
+        if len(wheel_metadata) != 1 or len(manifests) != 1:
             raise RuntimeError("wheel must contain exactly one metadata file, manifest, and runner")
         metadata = archive.read(wheel_metadata[0]).decode("utf-8")
         if f"Tag: {expected_tag}" not in metadata.splitlines():

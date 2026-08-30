@@ -18,12 +18,13 @@ import socket
 import sys
 import threading
 import time
-from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 from urllib.parse import parse_qsl, unquote, urlsplit
+
+from .application_errors import APIError
 
 JsonObject = Mapping[str, Any]
 JsonResult = Mapping[str, Any] | Sequence[Any]
@@ -346,16 +347,6 @@ class PlatformService(Protocol):
 
     def compare(self, request: JsonObject) -> JsonResult:
         """Compare two or more runs from canonical records."""
-
-
-@dataclass(slots=True)
-class APIError(Exception):
-    """Safe, explicit service error that may cross the HTTP boundary."""
-
-    status: int
-    code: str
-    message: str
-    details: JsonResult | None = None
 
 
 def generate_browser_bootstrap_capability() -> str:

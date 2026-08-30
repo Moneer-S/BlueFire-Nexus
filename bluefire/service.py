@@ -19,7 +19,7 @@ from http import HTTPStatus
 from importlib.resources import as_file, files
 from ipaddress import ip_address
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, cast
 
 import yaml
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -53,7 +53,7 @@ from .ai_drafts import (
     build_ai_draft_provider,
     normalize_ai_graph_draft,
 )
-from .api import APIError
+from .application_errors import APIError
 from .approvals import (
     execution_approval_binding,
     execution_approval_envelope,
@@ -113,7 +113,7 @@ from .replay import ReplayError, ReplayRequest, prepare_replay
 from .replay_checkpoint import CheckpointError, build_restoration_plan
 from .research import ResearchSource, ResearchSourceError
 from .run_store import RunStore, RunStoreError
-from .runner_bootstrap import RUNNER_ID, managed_product_root
+from .runner_bootstrap import managed_product_root
 from .runner_client import (
     InventoryBoundRunner,
     RunnerReadinessError,
@@ -125,6 +125,7 @@ from .runner_client import (
 )
 from .runner_contracts import RunnerContractError
 from .runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError
+from .runner_management_service import RunnerManagementServiceMixin
 from .runner_trust import RunnerTrustError, _PinnedDirectory
 from .source_intake import SourceIntakeError, perform_source_intake
 from .util import canonical_json_bytes, content_hash, file_hash
@@ -198,7 +199,7 @@ def _default_collector_registry_factory(sandbox: Path) -> CollectorRegistry:
     return CollectorRegistry((FilesystemCollector(sandbox),))
 
 
-class BlueFireService:
+class BlueFireService(RunnerManagementServiceMixin):
     """Synchronous, JSON-only product boundary used by every frontend."""
 
     def __init__(
@@ -1709,7 +1710,7 @@ class BlueFireService:
 
         envelope_bytes = package.get("canonical_envelope_bytes")
         try:
-            document = json.loads(envelope_bytes)
+            document = json.loads(cast(str | bytes | bytearray, envelope_bytes))
         except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
             raise APIError(
                 HTTPStatus.CONFLICT,
@@ -2186,115 +2187,6 @@ class BlueFireService:
         if not isinstance(inventory, Mapping):
             return unavailable
         return self._sanitized_runner_probe(profile, inventory)
-
-    def runner_status(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
-        """Return path-free managed-runner state without starting or bootstrapping it."""
-
-        selected = self._runner_lifecycle_profile(profile_id)
-        try:
-            return self.runner_lifecycle.status(
-                profile_id=selected.id if selected is not None else None
-            )
-        except RunnerLifecycleError as exc:
-            raise APIError(
-                HTTPStatus.CONFLICT,
-                "runner_lifecycle_unavailable",
-                "Managed runner status could not be verified.",
-                [str(exc)],
-            ) from exc
-
-    def bootstrap_runner(
-        self,
-        *,
-        profile_id: str | None = None,
-        allow_upgrade: bool = False,
-    ) -> Mapping[str, Any]:
-        """Explicitly install/verify the packaged runner and local enrollment."""
-
-        if type(allow_upgrade) is not bool:
-            raise APIError(
-                HTTPStatus.BAD_REQUEST,
-                "runner_bootstrap_invalid",
-                "Runner upgrade confirmation must be boolean.",
-            )
-        self._runner_lifecycle_profile(profile_id)
-        profiles = tuple(
-            profile for profile in self._runner_profiles() if profile.mode is ExecutionMode.EXECUTE
-        )
-        if not profiles:
-            raise APIError(
-                HTTPStatus.CONFLICT,
-                "runner_profile_unavailable",
-                "No Execute runner profile is available for enrollment.",
-            )
-        try:
-            return self.runner_lifecycle.bootstrap(
-                allowed_profile_ids=tuple(profile.id for profile in profiles),
-                allow_upgrade=allow_upgrade,
-            )
-        except RunnerLifecycleError as exc:
-            raise APIError(
-                HTTPStatus.CONFLICT,
-                "runner_bootstrap_refused",
-                "Managed runner bootstrap was refused.",
-                [str(exc)],
-            ) from exc
-
-    def start_runner(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
-        selected = self._runner_lifecycle_profile(profile_id)
-        try:
-            return self.runner_lifecycle.start(
-                profile_id=selected.id if selected is not None else None
-            )
-        except RunnerLifecycleError as exc:
-            raise APIError(
-                HTTPStatus.CONFLICT,
-                "runner_start_refused",
-                "Managed runner start was refused.",
-                [str(exc)],
-            ) from exc
-
-    def stop_runner(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
-        selected = self._runner_lifecycle_profile(profile_id)
-        try:
-            return self.runner_lifecycle.stop(
-                profile_id=selected.id if selected is not None else None
-            )
-        except RunnerLifecycleError as exc:
-            raise APIError(
-                HTTPStatus.CONFLICT,
-                "runner_stop_refused",
-                "Managed runner stop was refused.",
-                [str(exc)],
-            ) from exc
-
-    def revoke_runner(self) -> Mapping[str, Any]:
-        try:
-            return self.runner_lifecycle.revoke()
-        except RunnerLifecycleError as exc:
-            raise APIError(
-                HTTPStatus.CONFLICT,
-                "runner_revoke_refused",
-                "Managed runner trust revocation was refused.",
-                [str(exc)],
-            ) from exc
-
-    def remove_runner(self, *, confirm_runner_id: str) -> Mapping[str, Any]:
-        if confirm_runner_id != RUNNER_ID:
-            raise APIError(
-                HTTPStatus.BAD_REQUEST,
-                "runner_remove_confirmation_invalid",
-                "Runner removal requires the exact managed runner ID.",
-            )
-        try:
-            return self.runner_lifecycle.remove(confirm_runner_id=confirm_runner_id)
-        except RunnerLifecycleError as exc:
-            raise APIError(
-                HTTPStatus.CONFLICT,
-                "runner_remove_refused",
-                "Managed runner removal was refused.",
-                [str(exc)],
-            ) from exc
 
     def validate(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
@@ -7626,7 +7518,9 @@ def _validate_reviewed_t1082_operation_receipt(
     history = validated_envelope["record"]["transformation_history"]
     completed_at = receipt.get("completed_at")
     try:
-        parsed_completed_at = datetime.fromisoformat(completed_at.removesuffix("Z") + "+00:00")
+        parsed_completed_at = datetime.fromisoformat(
+            cast(str, completed_at).removesuffix("Z") + "+00:00"
+        )
     except (AttributeError, TypeError, ValueError) as exc:
         raise SourceIntakeError(
             "reviewed source operation receipt completion time is invalid"

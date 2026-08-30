@@ -36,8 +36,8 @@ from .contracts import (
     ScenarioDefinition,
     StepOutcome,
 )
+from .execution_contracts import ExecutionContractError, reject_forbidden_execution_keys
 from .registry import BehaviorRegistry, RegistryError
-from .runner_client import RunnerTransportError, reject_forbidden_execution_keys
 from .util import canonical_json_bytes, content_hash, json_clone
 
 _STEP_ID = re.compile(r"^[a-z][a-z0-9_]{0,99}$")
@@ -406,7 +406,7 @@ class AIGraphDraftCandidate:
             raise AIDraftError("AI graph draft fields do not match the strict contract")
         try:
             reject_forbidden_execution_keys(value)
-        except RunnerTransportError as exc:
+        except ExecutionContractError as exc:
             raise AIDraftError("AI graph draft contains executable fields") from exc
         try:
             detached = json_clone(value)

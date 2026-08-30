@@ -28,6 +28,7 @@ EXPECTED_ACTION_IDS = {
     "sandbox.discovery.recursive.v1",
     "sandbox.archive.tar.v1",
     "sandbox.collection.stage.v1",
+    "sandbox.execution.process-tree-cancellation-witness.v1",
     "sandbox.network.loopback.v1",
     "sandbox.export.local.v1",
     "sandbox.restricted.persistence-marker.v1",
@@ -62,6 +63,25 @@ def test_windows_version_action_is_latent_until_a_package_adds_its_behavior() ->
     assert action.outputs[0].name == "windows_version"
     assert action.outputs[0].type == "artifact.endpoint.windows-version.v1"
     assert "endpoint.discovery.windows-version.v1" not in registry.behavior_ids
+
+
+def test_process_tree_cancellation_witness_is_fixed_and_windows_only() -> None:
+    registry = load_builtin_registry()
+    action = registry.get_action("sandbox.execution.process-tree-cancellation-witness.v1")
+    behavior = registry.get_behavior(action.id)
+
+    assert action.platforms == ("windows",)
+    assert behavior.platforms == action.platforms
+    assert action.capabilities == (
+        "native.execution",
+        "filesystem.read",
+        "filesystem.write",
+        "process.spawn",
+    )
+    assert action.parameters == behavior.parameters == ()
+    assert action.outputs == behavior.outputs == ()
+    assert action.mutates is False
+    assert action.cleanup_action_id is None
 
 
 def test_representative_actions_are_versioned_bounded_and_cross_platform() -> None:

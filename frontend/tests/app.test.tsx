@@ -216,6 +216,51 @@ describe("product application", () => {
     expect(screen.getByText(/Immutable references, no blind imports/i)).toBeVisible();
   });
 
+  it("creates a local scenario draft before navigating to Builder", async () => {
+    const user = userEvent.setup();
+    renderApp("/scenarios");
+
+    expect(await screen.findByRole("heading", { name: "Reusable security experiments" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "New scenario" }));
+    await waitFor(() => expect(document.querySelector<HTMLInputElement>(".dialog-content input")).not.toBeNull());
+    const title = document.querySelector<HTMLInputElement>(".dialog-content input")!;
+    await user.clear(title);
+    await user.type(title, "Gate 08 local draft");
+    await user.click(screen.getByRole("button", { name: "Create draft" }));
+
+    expect(await screen.findByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
+    expect(screen.getByText("Start with a registered behavior")).toBeVisible();
+    expect(screen.getByDisplayValue("Gate 08 local draft")).toBeVisible();
+  });
+
+  it("replaces the stale demo fallback with a registered production scenario", async () => {
+    const canonicalScenario = {
+      ...structuredClone(demoScenario),
+      id: "scenario.registered.production.v1",
+      title: "Registered production scenario",
+      start: "place_fixture",
+      steps: [structuredClone(demoScenario.steps[0]!)],
+      edges: [],
+    };
+    const productionCatalog = {
+      ...demoCatalog,
+      behaviors: demoCatalog.behaviors.filter((item) => item.id !== "sandbox.program.fixed.v1"),
+    };
+    const fetchMock = vi.mocked(fetch);
+    const fallback = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/catalog")) return json(productionCatalog);
+      if (path.endsWith("/scenarios")) return json({ scenarios: [canonicalScenario] });
+      return fallback(input, init);
+    });
+
+    renderApp("/builder");
+
+    expect(await screen.findByDisplayValue("Registered production scenario")).toBeVisible();
+    expect(screen.queryByDisplayValue(demoScenario.title)).not.toBeInTheDocument();
+  });
+
   it("guides first-run users through honest local readiness and Simulate", async () => {
     const user = userEvent.setup();
     renderApp("/getting-started");

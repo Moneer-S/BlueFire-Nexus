@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 from .api import (
     BROWSER_BOOTSTRAP_HEADER,
@@ -127,7 +127,8 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
 def _candidate(response: Mapping[str, Any]) -> Mapping[str, Any]:
     resource = response.get("candidate")
     document = resource.get("document") if isinstance(resource, Mapping) else None
-    _require(isinstance(document, Mapping), "a Detection Lab response omitted its candidate")
+    if not isinstance(document, Mapping):
+        raise DetectionJourneyError("a Detection Lab response omitted its candidate")
     candidate_id = document.get("candidate_id")
     _require(
         isinstance(candidate_id, str) and _DETECTION_ID.fullmatch(candidate_id) is not None,
@@ -419,7 +420,8 @@ def _json_response(payload: bytes) -> Mapping[str, Any]:
         value = json.loads(payload.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise DetectionJourneyError("a management response was not JSON") from exc
-    _require(isinstance(value, Mapping), "a management response was not an object")
+    if not isinstance(value, Mapping):
+        raise DetectionJourneyError("a management response was not an object")
     return value
 
 
@@ -587,7 +589,8 @@ def _cli_evidence(
 
 def _node_binary() -> Path:
     raw = os.environ.get("BLUEFIRE_GATE_NODE") or shutil.which("node")
-    _require(isinstance(raw, str) and raw, "the pinned Gate 07 Node runtime is unavailable")
+    if not isinstance(raw, str) or not raw:
+        raise DetectionJourneyError("the pinned Gate 07 Node runtime is unavailable")
     node = Path(raw).resolve(strict=True)
     _require(node.is_file(), "the pinned Gate 07 Node runtime is invalid")
     return node
@@ -705,6 +708,7 @@ def _browser_evidence(
         and _DETECTION_ID.fullmatch(candidate_id) is not None,
         "the production browser report did not identify a completed candidate",
     )
+    candidate_id = cast(str, candidate_id)
     candidate = _candidate(service.detection_candidate(candidate_id))
     _require(
         candidate.get("state") == "fixture_exercised"
@@ -812,7 +816,8 @@ def produce_detection_gate_evidence(
             "browser": browser_candidate,
         }
         listed = service.detection_candidates().get("candidates")
-        _require(isinstance(listed, list), "the persisted Detection Lab list is invalid")
+        if not isinstance(listed, list):
+            raise DetectionJourneyError("the persisted Detection Lab list is invalid")
         listed_ids = sorted(
             str(resource.get("id")) for resource in listed if isinstance(resource, Mapping)
         )

@@ -15,8 +15,8 @@ from .contracts import (
     ScenarioStep,
     StepOutcome,
 )
+from .execution_contracts import ExecutionContractError, reject_forbidden_execution_keys
 from .registry import BehaviorRegistry
-from .runner_client import reject_forbidden_execution_keys
 from .util import content_hash
 
 
@@ -450,7 +450,10 @@ class AIProposalValidator:
         expected_run_id: str,
         expected_state_digest: str,
     ) -> PlannerDecision:
-        reject_forbidden_execution_keys(payload)
+        try:
+            reject_forbidden_execution_keys(payload)
+        except ExecutionContractError as exc:
+            raise PlannerError("AI decision contains forbidden executable fields") from exc
         unknown = set(payload) - self._FIELDS
         missing = self._FIELDS - set(payload)
         if unknown or missing:

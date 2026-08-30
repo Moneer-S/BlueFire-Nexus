@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -19,7 +20,11 @@ from bluefire.api import APIError
 from bluefire.config import RunnerProfile
 from bluefire.contracts import ExecutionMode
 from bluefire.orchestrator import Orchestrator
-from bluefire.runner_client import RunnerReadinessError, RunnerTransportError
+from bluefire.runner_client import (
+    RunnerReadinessError,
+    RunnerTransportError,
+    _windows_extended_path,
+)
 from bluefire.runner_contracts import current_platform
 from bluefire.service import BlueFireService
 from bluefire.util import canonical_json_bytes, content_hash
@@ -73,12 +78,16 @@ def _write_bound_receipt(
     }
     receipt_id = content_hash(identity).removeprefix("sha256:")
     receipt_root = workspace / ".bluefire" / "receipts"
+    if os.name == "nt":
+        receipt_root = _windows_extended_path(receipt_root)
     receipt_root.mkdir(parents=True, exist_ok=True)
     (receipt_root / f"{receipt_id}.json").write_bytes(
         canonical_json_bytes({"receipt_id": receipt_id, **identity})
     )
     if committed:
         commit_root = workspace / ".bluefire" / "receipt-commits"
+        if os.name == "nt":
+            commit_root = _windows_extended_path(commit_root)
         commit_root.mkdir(parents=True, exist_ok=True)
         (commit_root / f"{receipt_id}.json").write_bytes(
             canonical_json_bytes(
@@ -878,6 +887,9 @@ def test_execute_run_holds_catalog_lease_through_registered_cleanup(
             workspace = Path(str(runner_profile["sandbox_root"]))
             receipt_root = workspace / ".bluefire" / "receipts"
             commit_root = workspace / ".bluefire" / "receipt-commits"
+            if os.name == "nt":
+                receipt_root = _windows_extended_path(receipt_root)
+                commit_root = _windows_extended_path(commit_root)
             for requested_id in requested:
                 (receipt_root / f"{requested_id}.json").unlink(missing_ok=True)
                 (commit_root / f"{requested_id}.json").unlink(missing_ok=True)

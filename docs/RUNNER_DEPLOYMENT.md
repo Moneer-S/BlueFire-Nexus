@@ -1,6 +1,12 @@
 # Runner deployment
 
-The Rust runner is BlueFire's execution authority. Compatible platform-native wheels include a manifest-bound runner artifact. Explicit `bluefire runner bootstrap` verifies its platform, architecture, size, digest, and inventory before installing it in an owner-private per-user root and creating local enrollment. `bluefire runner start` launches a separate unprivileged per-user host process; it never installs an operating-system service or daemon. The control plane reaches that host only over literal loopback with TLS 1.3 mutual authentication, enrollment-bound request authentication, and a durable task ledger. Managed bootstrap never downloads executable content.
+The Rust runner is BlueFire's execution authority. The current Windows x86_64 wheel includes one
+manifest-bound runner artifact. Explicit `bluefire runner bootstrap` verifies its platform,
+architecture, size, digest, and inventory before installing it in an owner-private per-user root
+and creating local enrollment. `bluefire runner start` launches a separate unprivileged per-user
+host process; it never installs an operating-system service or daemon. The control plane reaches
+that host only over literal loopback with TLS 1.3 mutual authentication, enrollment-bound request
+authentication, and a durable task ledger. Managed bootstrap never downloads executable content.
 
 ## Requirements
 
@@ -11,6 +17,32 @@ The Rust runner is BlueFire's execution authority. Compatible platform-native wh
 - Explicit authorization for the lab.
 
 Do not run the runner as administrator/root, install it as a system service, or point the sandbox at a home directory, repository root, system directory, network share, or cloud-synced personal folder.
+
+## Packaged artifact layout
+
+The checked-in release staging tree used by the Windows-hosted release workflow is deliberately
+split by target:
+
+```text
+bluefire/native/
+|-- runner-manifest.json
+|-- bluefire-runner.exe
+`-- linux-x86_64/
+    |-- runner-manifest.json
+    `-- bluefire-runner
+```
+
+The top-level pair is the Windows x86_64 wheel payload. The build hook verifies its executable
+header, size, SHA-256 digest, product/runner versions, and platform tag and emits a non-pure
+`py3-none-win_amd64` wheel. Release wheel inspection requires exactly that manifest/binary pair
+and refuses a foreign native runner sibling.
+
+The nested pair is a separately staged `x86_64-unknown-linux-musl` release artifact for the
+cross-platform acceptance journey. It stays out of the Windows wheel. GATE-11 reads both Linux
+files from the exact accepted Git commit and tree, verifies their blob identities, manifest,
+ELF64 architecture, size, and digest, and only then stages them into a disposable Linux task
+environment. This layout does not claim that the Windows wheel is Linux-compatible or that a
+general Linux installer has been exercised.
 
 ## Build and verify from source
 
@@ -27,6 +59,39 @@ The release helper has a fixed Cargo argument list. It resolves the host home, w
 for unremapped UTF-8 or UTF-16 host paths. It replaces inherited `RUSTFLAGS` and encoded Rust flags.
 Controlled build environments may set `CARGO` and the three root variables before invoking the
 helper; relative roots are resolved beneath the checkout.
+
+The helper also accepts the reviewed explicit targets
+`x86_64-pc-windows-gnu` and `x86_64-unknown-linux-musl`. Those cross-target builds still require
+the corresponding installed Rust target and linker; target support in the helper is not proof
+that a produced binary ran on that operating system. Use `tools/stage_native_runner.py` to create
+an atomic manifest/binary resource tree only after independently obtaining the compiled inventory.
+
+## Cross-platform release validation
+
+GATE-11 separates dynamic and structural claims:
+
+- Windows proof builds the wheel from the exact committed source, verifies its `RECORD` and native
+  resource, bootstraps that extracted resource, starts the managed runner, and executes the
+  packaged Windows journey. Separate dynamic checks bind an authenticated one-shot receiver,
+  interrupt and recover the managed host while preserving the authenticated task-ledger
+  generation, and verify the fixed packaged cancellation-witness process tree is absent.
+- Linux proof requires an existing WSL2 base distribution named
+  `BlueFire-Gate11-Base-v1`, CPython 3.12, and the exact offline dependency wheelhouse named by
+  `BLUEFIRE_GATE11_LINUX_WHEELHOUSE`. The harness stream-clones the base to a randomly named
+  disposable WSL2 distribution, executes the commit-bound musl runner and canonical
+  Linux/container path, verifies authenticated receiver success, POSIX watchdog containment,
+  run-bundle integrity, and cleanup, then unregisters the clone and checks that its storage is
+  gone.
+- macOS validation checks package metadata, platform contracts, and the fixed process-adapter
+  boundary when no macOS host is available. It is labeled structural and is never reported as
+  dynamic execution.
+
+The harness only probes the named WSL base; it does not install or modify that persistent base.
+If WSL2, the exact distribution, CPython runtime, wheelhouse, or native dependency set is absent
+or incompatible, the report carries a typed environment limitation and Linux dynamic proof does
+not pass. A successful Linux run proves only the disposable WSL2 boundary and exact staged
+artifact exercised by that acceptance run, not arbitrary distributions, containers, kernels, or
+production hosts.
 
 Read the compiled inventory on Linux/macOS:
 

@@ -9,7 +9,7 @@ import sqlite3
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from .detection_backends import (
     DetectionBackendError,
@@ -190,6 +190,8 @@ def _run_evidence(
         and bundle.get("path") == f"runs/{run_id}",
         "the GATE-07 journey has an invalid run-bundle reference",
     )
+    run_id = cast(str, run_id)
+    bundle = cast(Mapping[str, Any], bundle)
     store = RunStore(evidence_dir / "runs")
     try:
         validation = store.validate_bundle(run_id)
@@ -211,6 +213,7 @@ def _run_evidence(
         isinstance(rows, list) and len(rows) == 1 and isinstance(rows[0], Mapping),
         "the GATE-07 observed run must contain exactly one evidence record",
     )
+    rows = cast(list[Any], rows)
     try:
         record = EvidenceRecord.from_mapping(rows[0])
     except (EvidenceError, TypeError, ValueError) as exc:
@@ -235,19 +238,21 @@ def _query_execution(
     Mapping[str, Any],
     Mapping[str, Any],
 ]:
+    rule_source = candidate.rule_source
     _require(
         candidate.state.value == "benign_evaluated"
-        and candidate.rule_source is not None
+        and rule_source is not None
         and candidate.validation.get("source_rule_executed") is True,
         f"the {candidate.target_language} candidate did not reach executed benign evaluation",
     )
+    rule_source = cast(str, rule_source)
     if candidate.target_language == "sigma":
-        conversion = convert_sigma_to_sqlite(candidate.rule_source)
+        conversion = convert_sigma_to_sqlite(rule_source)
         query = str(conversion["converted_query"])
         digest = conversion["query_sha256"]
         backend_details = conversion
         _require(
-            candidate.rule_source == SIGMA_SOURCE
+            rule_source == SIGMA_SOURCE
             and candidate.parser_backend.get("name") == "pySigma"
             and candidate.parser_backend.get("conversion_backend") == "pySigma SQLite"
             and candidate.parser_backend
@@ -261,23 +266,23 @@ def _query_execution(
             and candidate.validation.get("version") == "1.5.0"
             and candidate.validation.get("conversion_backend") == "pySigma SQLite"
             and candidate.validation.get("conversion_backend_version") == "1.2.2"
-            and candidate.validation.get("source_sha256") == _sha256_text(candidate.rule_source)
+            and candidate.validation.get("source_sha256") == _sha256_text(rule_source)
             and candidate.validation.get("query_sha256") == digest
             and candidate.validation.get("converted_query") == query,
             "the Sigma candidate is not bound to a fresh pySigma backend conversion",
         )
     elif candidate.target_language == "sqlite":
-        inspection = inspect_sqlite_query(candidate.rule_source)
+        inspection = inspect_sqlite_query(rule_source)
         query = str(inspection["query"])
         digest = inspection["query_sha256"]
         backend_details = inspection
         _require(
-            candidate.rule_source == SQLITE_SOURCE
+            rule_source == SQLITE_SOURCE
             and candidate.parser_backend
             == {"name": "SQLite bounded executor", "version": sqlite3.sqlite_version}
             and candidate.validation.get("backend") == "SQLite bounded executor"
             and candidate.validation.get("version") == sqlite3.sqlite_version
-            and candidate.validation.get("source_sha256") == _sha256_text(candidate.rule_source)
+            and candidate.validation.get("source_sha256") == _sha256_text(rule_source)
             and candidate.validation.get("query_sha256") == digest,
             "the SQLite candidate is not bound to its freshly inspected query",
         )

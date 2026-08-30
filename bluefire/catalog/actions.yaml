@@ -287,6 +287,20 @@ items:
     provenance: *authored
 
   - schema_version: bluefire.action.v1
+    id: sandbox.execution.process-tree-cancellation-witness.v1
+    title: Witness cooperative and forced process-tree cancellation
+    purpose: Launch only a fixed child mode of the packaged Rust runner, acknowledge one request-bound private cancellation nonce, and remain inside watchdog containment until the complete process tree is stopped.
+    safety_tier: safe
+    capabilities: [native.execution, filesystem.read, filesystem.write, process.spawn]
+    platforms: [windows]
+    inputs: []
+    outputs: []
+    parameters: []
+    mutates: false
+    cleanup_action_id: null
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
     id: sandbox.identity-material.seed.v1
     title: Seed public identity material canary
     purpose: Write one fixed public, non-secret canary document at identity-material/public-canary.json inside the runner-owned workspace.

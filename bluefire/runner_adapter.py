@@ -18,6 +18,7 @@ _IDENTITY_MATERIAL_SIZE = 189
 _OBSERVABILITY_VARIANT_PATH = "observability/variant.bin"
 _STAGED_BUNDLE_PATHS = frozenset({"staged/bundle.json", "staged/bundle.jsonl"})
 _NATIVE_CANARY_SEED = b"bluefire-native-execution-canary-v1"
+_CANCELLATION_WITNESS_PATHS = (".bluefire-cancellation-witness-v1",)
 _PROVIDER_ACTION_OUTPUT_SCHEMA = "bluefire.provider-action-output.v1"
 
 
@@ -132,8 +133,9 @@ def _validate_provider_parameter(spec: Mapping[str, Any], value: Any, context: s
         "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
         "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
         "boolean": lambda item: isinstance(item, bool),
-        "string_list": lambda item: isinstance(item, list)
-        and all(isinstance(child, str) for child in item),
+        "string_list": lambda item: (
+            isinstance(item, list) and all(isinstance(child, str) for child in item)
+        ),
     }.get(str(parameter_type), lambda _item: False)(value)
     if not valid:
         raise RunnerAdapterError(f"{context} does not match the signed provider parameter type")
@@ -291,7 +293,7 @@ def _exact_fixture_discovery_record(
 
 
 class RunnerActionAdapter:
-    """Compile only the nineteen reviewed action IDs into strict runner params.
+    """Compile only the reviewed built-in action IDs into strict runner params.
 
     Paths are constants or validated outputs of earlier runner actions.  No
     scenario parameter can become an executable, command, or filesystem path.
@@ -310,6 +312,7 @@ class RunnerActionAdapter:
             "sandbox.archive.tar.v1",
             "sandbox.collection.stage.v1",
             "sandbox.execution.native-canary.v1",
+            "sandbox.execution.process-tree-cancellation-witness.v1",
             "sandbox.identity-material.seed.v1",
             "sandbox.identity-material.inspect.v1",
             "sandbox.network.loopback.v1",
@@ -351,6 +354,16 @@ class RunnerActionAdapter:
             )
             rounds = _bounded_integer(step.parameters.get("rounds", 256), "rounds", 1, 4096)
             adapted = AdaptedAction(params={"rounds": rounds}, filesystem_scope=())
+        elif action_id == "sandbox.execution.process-tree-cancellation-witness.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset(),
+                context="process-tree cancellation witness",
+            )
+            adapted = AdaptedAction(
+                params={},
+                filesystem_scope=_CANCELLATION_WITNESS_PATHS,
+            )
         elif action_id == "sandbox.identity-material.seed.v1":
             _exact_parameter_keys(
                 step.parameters,
@@ -886,6 +899,15 @@ class RunnerActionAdapter:
                     "details": dict(runner_output),
                 }
             }
+        if action_id == "sandbox.execution.process-tree-cancellation-witness.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset(),
+                context="process-tree cancellation witness",
+            )
+            if runner_output or receipt_ids:
+                raise RunnerAdapterError("the cancellation witness cannot report normal completion")
+            return {}
         if action_id == "endpoint.discovery.windows-version.v1":
             if set(runner_output) != {
                 "operating_system",

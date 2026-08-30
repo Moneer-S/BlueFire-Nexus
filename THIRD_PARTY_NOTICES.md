@@ -64,3 +64,47 @@ corresponding-source rights required by that license.
 | wat `=1.239.0` | Development-only compilation of provider test fixtures | Apache-2.0 with LLVM exception, Apache-2.0, or MIT. It is not a production runner dependency. |
 
 These packages are obtained from their normal Python or Rust package registries; their source is not copied into this repository. Redistributors must preserve the license texts shipped with the resolved packages and any compiled native-runner distribution.
+
+## Release dependency rights inventory
+
+The release rights review dated 2026-08-30 is recorded in
+`bluefire/data/release_rights_policy.json`. The offline verifier in
+`bluefire/release_rights_audit.py` compares that reviewed record with the Python manifests and
+locked wheel inventory, the production closure of `frontend/pnpm-lock.yaml`, the complete
+`runner/Cargo.lock`, and every bundled or generated asset. An added, removed, or changed
+dependency or asset is not silently accepted: it requires an updated classification. A nonempty
+`unresolved_items` list fails the review.
+
+The base Python artifact declares PyYAML (MIT), cryptography (Apache-2.0 or BSD-3-Clause), and
+PyNaCl (Apache-2.0). Its locked Linux release set additionally contains cffi (MIT-0) and pycparser
+(BSD-3-Clause). The exact five wheel versions and SHA-256 values are part of the committed
+inventory. PyNaCl wheels can incorporate libsodium (ISC); that nested notice must be retained
+from the resolved wheel.
+
+The packaged web application has 69 packages in its production lock closure: 58 MIT packages;
+the ISC-licensed D3 modules `d3-color`, `d3-dispatch`, `d3-drag`, `d3-interpolate`,
+`d3-selection`, `d3-timer`, `d3-transition`, and `d3-zoom`; ISC-licensed `lucide-react`;
+BSD-3-Clause `d3-ease`; and 0BSD `tslib`. The exact name/version inventory is in the policy.
+The remaining entries in the 391-package pnpm lock are build, test, platform, or development
+entries and are not represented as shipped browser code by this review.
+
+The native runner review classifies all 48 external crates in `Cargo.lock`; the conservative
+release graph contains 42 of them. Observed terms are MIT, Apache-2.0, BSD-3-Clause, Zlib,
+Unlicense, Unicode-3.0, and the LLVM exception, alone or in the expressions recorded in the
+policy. `wat` and its exclusive closure are test-only. The native runner is statically generated
+from the reviewed Rust graph, so binary redistributors must carry the upstream notices and
+license choices applicable to that build.
+
+The `detections` Python extra is environment-dependent and is not embedded in the base wheel.
+Its direct packages are pySigma 1.5.0 (LGPL-2.1-only), pySigma SQLite backend 1.2.2
+(LGPL-3.0-only), and yara-python 4.5.4 (Apache-2.0). A distributor who bundles that optional
+environment must perform a fresh transitive inventory and satisfy the corresponding LGPL and
+other upstream obligations; this base-release review does not authorize such a bundle.
+
+## Release license decision
+
+BlueFire Nexus remains MIT licensed. The repository does not contain contributor assignments,
+a complete copyright ownership record, or equivalent evidence that would authorize relicensing
+all project-authored history as AGPL-3.0-only with separate commercial licensing. Therefore this
+review does not perform or recommend that relicense. It preserves the existing MIT license and
+history, while continuing to apply the separate MITRE terms to the pinned declarative metadata.

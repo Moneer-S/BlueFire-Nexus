@@ -7,6 +7,8 @@ import {
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { api, DEMO_MODE } from "../lib/api";
+import { demoScenario } from "../lib/demo";
+import { useProduct } from "../state/ProductContext";
 import { Badge, IconButton } from "./Primitives";
 
 const groups = [
@@ -38,7 +40,16 @@ export function AppShell() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
+  const { scenario, setScenario } = useProduct();
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, retry: 1, staleTime: 60_000 });
+  const scenarios = useQuery({ queryKey: ["scenarios"], queryFn: api.scenarios, retry: 1, staleTime: 60_000 });
+  useEffect(() => {
+    if (DEMO_MODE || scenario.id !== demoScenario.id || !catalog.data || !scenarios.data) return;
+    const registered = new Set(catalog.data.behaviors.map((behavior) => behavior.id));
+    if (scenario.steps.every((step) => registered.has(step.behavior_id))) return;
+    const replacement = scenarios.data.scenarios.find((candidate) => candidate.steps.length > 0 && candidate.steps.every((step) => registered.has(step.behavior_id)));
+    if (replacement) setScenario(structuredClone(replacement), false);
+  }, [catalog.data, scenario, scenarios.data, setScenario]);
   useEffect(() => {
     setMobileOpen(false);
     window.scrollTo({ top: 0, left: 0, behavior: "auto" });

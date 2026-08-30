@@ -37,38 +37,37 @@ from .local_lock import (
     pinned_regular_file_identity,
     prepare_owner_private_database_file,
 )
+from .product_store_action_package_lifecycle import install_action_package_version
+from .product_store_contracts import (
+    MAX_OCCUPIED_PACKAGE_IDS,
+    STABLE_IDENTIFIER_PATTERN,
+)
+from .product_store_contracts import (
+    occupied_package_ids as _occupied_package_ids,
+)
+from .product_store_contracts import (
+    package_actor as _package_actor,
+)
+from .product_store_contracts import (
+    stable_identifier as _identifier,
+)
+from .product_store_errors import (
+    ActionPackageConflictError,
+    ActionPackageIntegrityError,
+    DetectionRevisionIntegrityError,
+    DetectionRevisionLimitError,
+    ProductStoreError,
+    ResearchSourceIntegrityError,
+)
+from .product_store_serialization import canonical_json as _canonical_json
+from .product_store_serialization import utc_now
 from .util import canonical_json_bytes, content_hash, json_clone
 
 if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-class ProductStoreError(ValueError):
-    """Raised when product metadata or a state transition is invalid."""
-
-
-class ResearchSourceIntegrityError(ProductStoreError):
-    """Raised when a persisted research-source identity would be rewritten."""
-
-
-class DetectionRevisionIntegrityError(ProductStoreError):
-    """Raised when an immutable detection revision identity conflicts."""
-
-
-class DetectionRevisionLimitError(DetectionRevisionIntegrityError):
-    """Raised when a detection lineage has reached its configured bound."""
-
-
-class ActionPackageIntegrityError(ProductStoreError):
-    """Raised when package bytes or persisted package identity fail verification."""
-
-
-class ActionPackageConflictError(ActionPackageIntegrityError):
-    """Raised when an immutable package or publisher identity would be rewritten."""
-
-
 SCHEMA_VERSION = 7
-_IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -76,8 +75,6 @@ _ACTION_PACKAGE_VERSION = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 _MAX_ACTION_PACKAGE_ENVELOPE_BYTES = 256 * 1024
-_MAX_ACTION_PACKAGE_ACTOR_CHARS = 128
-_MAX_OCCUPIED_PACKAGE_IDS = 4096
 _ACTION_PACKAGE_ACTIVATION_EVENT_ID = re.compile(r"^action-package-activation-[0-9a-f]{32}$")
 _ACTION_PACKAGE_ACTIVATION_CAUSES = {"operator", "trust_suspended", "trust_revoked"}
 _EMPTY_ACTION_PACKAGE_CATALOG_DIGEST = content_hash(
@@ -166,26 +163,6 @@ _JOB_TRANSITIONS = {
 }
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    )
-
-
-def _identifier(value: Any, context: str) -> str:
-    if not isinstance(value, str) or not _IDENTIFIER.fullmatch(value):
-        raise ProductStoreError(f"{context} must be a stable lowercase identifier")
-    return value
-
-
 def _exact_sha256_digest(value: Any, context: str) -> str:
     if not isinstance(value, str) or not _DIGEST.fullmatch(value):
         raise ActionPackageIntegrityError(f"{context} must be an exact lowercase sha256 digest")
@@ -217,21 +194,6 @@ def _canonical_package_object(value: bytes, context: str) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], document)
 
 
-def _package_actor(value: Any, context: str) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or value != value.strip()
-        or len(value) > _MAX_ACTION_PACKAGE_ACTOR_CHARS
-        or any(ord(character) < 32 or ord(character) == 127 for character in value)
-    ):
-        raise ProductStoreError(
-            f"{context} must be a non-empty printable string no longer than "
-            f"{_MAX_ACTION_PACKAGE_ACTOR_CHARS} characters"
-        )
-    return value
-
-
 def _package_trust_reason(value: Any) -> str:
     if (
         not isinstance(value, str)
@@ -245,22 +207,6 @@ def _package_trust_reason(value: Any) -> str:
             "than 512 characters"
         )
     return value
-
-
-def _occupied_package_ids(value: Any, context: str) -> tuple[str, ...]:
-    if isinstance(value, (str, bytes)) or not isinstance(value, Collection):
-        raise ProductStoreError(f"{context} must be a collection of stable identifiers")
-    if len(value) > _MAX_OCCUPIED_PACKAGE_IDS:
-        raise ProductStoreError(
-            f"{context} cannot contain more than {_MAX_OCCUPIED_PACKAGE_IDS} identifiers"
-        )
-    normalized: set[str] = set()
-    for item in value:
-        stable_id = _identifier(item, context)
-        if len(stable_id) > 128:
-            raise ProductStoreError(f"{context} identifiers cannot exceed 128 characters")
-        normalized.add(stable_id)
-    return tuple(sorted(normalized))
 
 
 def _safe_document(value: Any, *, context: str = "document") -> Any:
@@ -2085,252 +2031,12 @@ class ProductStore:
         occupied_action_ids: Collection[str] = (),
     ) -> Mapping[str, Any]:
         with self.action_package_catalog_lease():
-            return self._install_action_package_locked(
+            return install_action_package_version(
+                self,
                 verified,
                 installed_by=installed_by,
                 occupied_behavior_ids=occupied_behavior_ids,
                 occupied_action_ids=occupied_action_ids,
-            )
-
-    def _install_action_package_locked(
-        self,
-        verified: VerifiedActionPackage,
-        *,
-        installed_by: str,
-        occupied_behavior_ids: Collection[str] = (),
-        occupied_action_ids: Collection[str] = (),
-    ) -> Mapping[str, Any]:
-        """Atomically persist one already-verified immutable package version.
-
-        The verifier result is still cross-bound to its exact canonical bytes
-        and hashes here.  Installation additionally requires the signer to
-        match an independently enrolled local publisher/key record.
-        """
-
-        from .action_packages import ActionPackageError, SemVer, verify_action_package
-
-        package = self._validated_verified_action_package(verified)
-        actor = _package_actor(installed_by, "action-package installation actor")
-        occupied_behaviors = _occupied_package_ids(occupied_behavior_ids, "occupied behavior IDs")
-        occupied_actions = _occupied_package_ids(occupied_action_ids, "occupied action IDs")
-        package_id = str(package["package_id"])
-        version = str(package["version"])
-        now = utc_now()
-        with self._connection(write=True) as connection:
-            installed_behaviors, installed_actions = self._permanent_action_package_occupied_ids(
-                connection,
-                excluding_package_id=package_id,
-            )
-            occupied_behaviors = tuple(sorted(set(occupied_behaviors) | installed_behaviors))
-            occupied_actions = tuple(sorted(set(occupied_actions) | installed_actions))
-            trust_row = connection.execute(
-                self._trusted_action_package_publisher_select_sql()
-                + " WHERE p.publisher_id = ? AND p.key_id = ?",
-                (package["publisher_id"], package["key_id"]),
-            ).fetchone()
-            if trust_row is None:
-                raise ActionPackageIntegrityError(
-                    "action-package signer is not enrolled in local publisher trust"
-                )
-            trust = self._trusted_action_package_publisher_with_audit(connection, trust_row)
-            if trust["trust_state"] != "trusted":
-                raise ActionPackageIntegrityError(
-                    "action-package signer local trust is suspended or revoked"
-                )
-            if trust["key_fingerprint"] != package["signer_fingerprint"]:
-                raise ActionPackageIntegrityError(
-                    "action-package signer fingerprint does not match local publisher trust"
-                )
-            try:
-                independently_verified = verify_action_package(
-                    bytes(package["canonical_envelope_bytes"]),
-                    trusted_signers={
-                        (str(package["publisher_id"]), str(package["key_id"])): bytes(
-                            trust_row["public_key_bytes"]
-                        )
-                    },
-                    bluefire_version=None,
-                    platform=None,
-                    occupied_behavior_ids=occupied_behaviors,
-                    occupied_action_ids=occupied_actions,
-                )
-            except ActionPackageError as exc:
-                raise ActionPackageIntegrityError(
-                    "action package failed independent local cryptographic verification"
-                ) from exc
-            if independently_verified != verified:
-                raise ActionPackageIntegrityError(
-                    "action-package verifier result does not exactly match local verification"
-                )
-
-            existing = connection.execute(
-                """
-                SELECT * FROM action_package_versions
-                WHERE package_id = ? AND version = ?
-                """,
-                (package_id, version),
-            ).fetchone()
-            if existing is not None:
-                requested_identity = (
-                    package["package_digest"],
-                    package["content_digest"],
-                    package["publisher_id"],
-                    package["key_id"],
-                    package["signer_fingerprint"],
-                    package["signature_b64u"],
-                    package["manifest_json"],
-                    package["canonical_envelope_bytes"],
-                    package["canonical_content_bytes"],
-                )
-                persisted_identity = (
-                    str(existing["package_digest"]),
-                    str(existing["content_digest"]),
-                    str(existing["publisher_id"]),
-                    str(existing["key_id"]),
-                    str(existing["signer_fingerprint"]),
-                    str(existing["signature_b64u"]),
-                    str(existing["manifest_json"]),
-                    bytes(existing["canonical_envelope_bytes"]),
-                    bytes(existing["canonical_content_bytes"]),
-                )
-                if persisted_identity != requested_identity:
-                    raise ActionPackageConflictError(
-                        "action-package version already exists with different immutable content"
-                    )
-                # Idempotency preserves the original actor/time, installed head,
-                # and append-only event count.
-                return self._action_package_detail_from_connection(
-                    connection,
-                    package_id,
-                    version,
-                    include_bytes=True,
-                )
-
-            digest_owner = connection.execute(
-                """
-                SELECT package_id, version FROM action_package_versions
-                WHERE package_digest = ?
-                """,
-                (package["package_digest"],),
-            ).fetchone()
-            if digest_owner is not None:
-                raise ActionPackageConflictError(
-                    "action-package digest is already bound to another package version"
-                )
-            publisher_owner = connection.execute(
-                """
-                SELECT publisher_id FROM action_package_versions
-                WHERE package_id = ? ORDER BY installed_at, version LIMIT 1
-                """,
-                (package_id,),
-            ).fetchone()
-            if (
-                publisher_owner is not None
-                and str(publisher_owner["publisher_id"]) != package["publisher_id"]
-            ):
-                raise ActionPackageConflictError(
-                    "action-package identity is already owned by another publisher"
-                )
-
-            new_precedence = SemVer.parse(version, "action-package version")
-            version_rows = connection.execute(
-                "SELECT version FROM action_package_versions WHERE package_id = ?",
-                (package_id,),
-            ).fetchall()
-            for version_row in version_rows:
-                installed_version = str(version_row["version"])
-                installed_precedence = SemVer.parse(
-                    installed_version, "installed action-package version"
-                )
-                if (
-                    installed_version != version
-                    and not new_precedence < installed_precedence
-                    and not new_precedence > installed_precedence
-                ):
-                    raise ActionPackageConflictError(
-                        "distinct action-package versions cannot share SemVer precedence"
-                    )
-
-            # Installation publishes a new immutable *installed* head only. An
-            # already-active older version remains authoritative until a
-            # separately verified activation event upgrades it.
-            self._audit_action_package_activation_events(connection)
-            previous_version = self._derived_action_package_installed_head(connection, package_id)
-            selected_as_installed_head = previous_version is None or new_precedence > SemVer.parse(
-                previous_version, "installed action-package version"
-            )
-            connection.execute(
-                """
-                INSERT INTO action_package_versions(
-                    package_id, version, package_digest, content_digest,
-                    publisher_id, key_id, signer_fingerprint, signature_b64u,
-                    occupied_behavior_ids_json, occupied_action_ids_json,
-                    manifest_json, canonical_envelope_bytes, canonical_content_bytes,
-                    installed_by, installed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    package_id,
-                    version,
-                    package["package_digest"],
-                    package["content_digest"],
-                    package["publisher_id"],
-                    package["key_id"],
-                    package["signer_fingerprint"],
-                    package["signature_b64u"],
-                    _canonical_json(list(occupied_behaviors)),
-                    _canonical_json(list(occupied_actions)),
-                    package["manifest_json"],
-                    package["canonical_envelope_bytes"],
-                    package["canonical_content_bytes"],
-                    actor,
-                    now,
-                ),
-            )
-            selected_version = (
-                version if selected_as_installed_head else cast(str, previous_version)
-            )
-            connection.execute(
-                """
-                INSERT INTO action_package_heads(
-                    package_id, installed_version, active_version, updated_at
-                ) VALUES (?, ?, NULL, ?)
-                ON CONFLICT(package_id) DO UPDATE SET
-                    installed_version = excluded.installed_version,
-                    updated_at = excluded.updated_at
-                """,
-                (package_id, selected_version, now),
-            )
-            event_details = {
-                "schema_version": "bluefire.action-package-lifecycle-details.v1",
-                "package_digest": package["package_digest"],
-                "content_digest": package["content_digest"],
-                "publisher_id": package["publisher_id"],
-                "key_id": package["key_id"],
-                "previous_installed_version": previous_version,
-                "selected_as_installed_head": selected_as_installed_head,
-            }
-            connection.execute(
-                """
-                INSERT INTO action_package_lifecycle_events(
-                    event_id, package_id, version, event_type,
-                    actor, details_json, created_at
-                ) VALUES (?, ?, ?, 'installed', ?, ?, ?)
-                """,
-                (
-                    f"action-package-event-{uuid.uuid4().hex}",
-                    package_id,
-                    version,
-                    actor,
-                    _canonical_json(event_details),
-                    now,
-                ),
-            )
-            return self._action_package_detail_from_connection(
-                connection,
-                package_id,
-                version,
-                include_bytes=True,
             )
 
     @staticmethod
@@ -2394,8 +2100,8 @@ class ProductStore:
                     "persisted action-package ID inventory is malformed"
                 ) from exc
             if (
-                len(behavior_ids) > _MAX_OCCUPIED_PACKAGE_IDS
-                or len(action_ids) > _MAX_OCCUPIED_PACKAGE_IDS
+                len(behavior_ids) > MAX_OCCUPIED_PACKAGE_IDS
+                or len(action_ids) > MAX_OCCUPIED_PACKAGE_IDS
             ):
                 raise ActionPackageIntegrityError(
                     "persisted action-package ID inventory exceeds its bound"
@@ -2933,8 +2639,8 @@ class ProductStore:
     ) -> VerifiedActionPackageActivation:
         """Reverify and bind the exact installed head to one catalog/runner snapshot."""
 
-        from . import __version__
         from .action_packages import ActionPackageError, verify_action_package_for_activation
+        from .version import __version__
 
         stable_id = _identifier(package_id, "action-package ID")
         if not isinstance(version, str) or _ACTION_PACKAGE_VERSION.fullmatch(version) is None:
@@ -3006,12 +2712,12 @@ class ProductStore:
     ) -> Mapping[str, Any]:
         """Atomically publish one independently reverified activation generation."""
 
-        from . import __version__
         from .action_packages import (
             ActionPackageError,
             VerifiedActionPackageActivation,
             verify_action_package_for_activation,
         )
+        from .version import __version__
 
         if not isinstance(activation, VerifiedActionPackageActivation):
             raise ActionPackageIntegrityError(
@@ -4243,7 +3949,7 @@ class ProductStore:
         a process or host restart.
         """
 
-        if not isinstance(profile_id, str) or not _IDENTIFIER.fullmatch(profile_id):
+        if not isinstance(profile_id, str) or not STABLE_IDENTIFIER_PATTERN.fullmatch(profile_id):
             raise ProductStoreError("execution workspace profile ID is invalid")
         candidate = Path(workspace_path)
         if not candidate.is_absolute():

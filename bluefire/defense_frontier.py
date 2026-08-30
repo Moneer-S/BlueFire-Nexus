@@ -10,7 +10,6 @@ is bound before any approval is created.
 from __future__ import annotations
 
 import base64
-import ctypes
 import json
 import os
 import re
@@ -19,10 +18,8 @@ import shutil
 import stat
 import tempfile
 import threading
-import uuid
-from ctypes import wintypes
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, cast
 
 from .ai import OpenAIResponsesProvider, build_ai_provider
 from .comparison import compare_runs
@@ -33,6 +30,12 @@ from .receiver_auth import derive_receiver_task_key
 from .runner_bootstrap import RunnerBootstrapError, bootstrap_runner, current_platform
 from .runner_client import SubprocessRustRunner
 from .runner_lifecycle import ManagedRunnerLifecycle
+from .runtime_paths import (
+    _TOKEN_KNOWN_FOLDER_ACCESS as _RUNTIME_TOKEN_KNOWN_FOLDER_ACCESS,
+)
+from .runtime_paths import (
+    runtime_temp_parent as _runtime_temp_parent,
+)
 from .service import BlueFireService
 from .util import content_hash, file_hash
 
@@ -42,6 +45,7 @@ FRONTIER_PROFILE_ID = "sandbox-blocked-network.v1"
 COLLECTOR_ID = "collector.filesystem.sandbox.v1"
 PROVIDER_ID = "deterministic-offline.v1"
 REAL_PROVIDER_ID = "openai-responses.v1"
+_TOKEN_KNOWN_FOLDER_ACCESS = _RUNTIME_TOKEN_KNOWN_FOLDER_ACCESS
 
 JOURNEY_REPORT = "gate04-journey-report.json"
 DEFENSE_REPORT = "gate04-defense-change-report.json"
@@ -68,7 +72,6 @@ _TASK_RESULT = re.compile(r"^execute-[0-9a-f]{64}\.json$")
 _RUN_ID = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
 _MAX_REPORT_BYTES = 8 * 1024 * 1024
 _MAX_SCAN_BYTES = 128 * 1024 * 1024
-_TOKEN_KNOWN_FOLDER_ACCESS = 0x0008 | 0x0004  # TOKEN_QUERY | TOKEN_IMPERSONATE
 
 
 class DefenseFrontierError(ValueError):
@@ -86,67 +89,6 @@ class _RuntimeCleanupError(DefenseFrontierError):
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise DefenseFrontierError(message)
-
-
-def _runtime_temp_parent() -> Path:
-    """Resolve temp storage from the process token, not isolated env aliases."""
-
-    if os.name != "nt":
-        return Path(tempfile.gettempdir()).resolve(strict=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
-    kernel32.GetCurrentProcess.argtypes = ()
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    advapi32.OpenProcessToken.argtypes = (
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.HANDLE),
-    )
-    advapi32.OpenProcessToken.restype = wintypes.BOOL
-    shell32.SHGetKnownFolderPath.argtypes = (
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-        ctypes.POINTER(wintypes.LPWSTR),
-    )
-    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
-    ole32.CoTaskMemFree.argtypes = (ctypes.c_void_p,)
-    ole32.CoTaskMemFree.restype = None
-    token = wintypes.HANDLE()
-    value = wintypes.LPWSTR()
-    try:
-        if not advapi32.OpenProcessToken(
-            kernel32.GetCurrentProcess(),
-            _TOKEN_KNOWN_FOLDER_ACCESS,
-            ctypes.byref(token),
-        ):
-            raise OSError("the GATE-04 process token is unavailable")
-        local_app_data = ctypes.create_string_buffer(
-            uuid.UUID("f1b32785-6fba-4fcf-9d55-7b8e7f157091").bytes_le
-        )
-        if (
-            shell32.SHGetKnownFolderPath(
-                ctypes.byref(local_app_data),
-                0,
-                token,
-                ctypes.byref(value),
-            )
-            != 0
-            or not value.value
-        ):
-            raise OSError("the GATE-04 token temp root is unavailable")
-        parent = (Path(value.value) / "Temp").resolve(strict=True)
-        _require(parent.is_dir(), "the GATE-04 token temp root is invalid")
-        return parent
-    finally:
-        if value:
-            ole32.CoTaskMemFree(value)
-        if token:
-            kernel32.CloseHandle(token)
 
 
 def _close_runtime_and_remove(runtime: Path, close_service: Callable[[], None]) -> None:
@@ -260,12 +202,14 @@ def _scenario_with_bound_port(repository: Path, port: int) -> dict[str, Any]:
     steps = scenario.get("steps")
     _require(isinstance(steps, list), "the frontier scenario steps are invalid")
     matches = [
-        row for row in steps if isinstance(row, dict) and row.get("id") == "try_internal_transport"
+        row
+        for row in cast(list[Any], steps)
+        if isinstance(row, dict) and row.get("id") == "try_internal_transport"
     ]
     _require(len(matches) == 1, "the frontier transport step is ambiguous")
     parameters = matches[0].get("parameters")
     _require(isinstance(parameters, dict), "the frontier transport parameters are invalid")
-    parameters["port"] = port
+    cast(dict[str, Any], parameters)["port"] = port
     return scenario
 
 
@@ -302,7 +246,7 @@ def _observed_records(run: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     _require(isinstance(records, list), "frontier run evidence is invalid")
     return [
         row
-        for row in records
+        for row in cast(list[Any], records)
         if isinstance(row, Mapping)
         and row.get("provenance") == "observed"
         and row.get("producer") == COLLECTOR_ID
@@ -324,13 +268,13 @@ def _proposal_after_block(run: Mapping[str, Any]) -> Mapping[str, Any]:
     _require(isinstance(proposals, list), "frontier proposal records are invalid")
     matches = [
         row
-        for row in proposals
+        for row in cast(list[Any], proposals)
         if isinstance(row, Mapping)
         and row.get("current_step_id") == "try_internal_transport"
         and row.get("outcome") == "blocked"
     ]
     _require(len(matches) == 1, "the blocked frontier proposal is missing or ambiguous")
-    return matches[0]
+    return cast(Mapping[str, Any], matches[0])
 
 
 def _execution_summary(run: Mapping[str, Any], *, role: str) -> dict[str, Any]:
@@ -348,8 +292,8 @@ def _execution_summary(run: Mapping[str, Any], *, role: str) -> dict[str, Any]:
         "profile_id": run.get("runner_profile_id"),
         "status": run.get("status"),
         "objective_reached": run.get("objective_reached"),
-        "approval_id": approval.get("approval_id"),
-        "approval_status": approval.get("status"),
+        "approval_id": cast(Mapping[str, Any], approval).get("approval_id"),
+        "approval_status": cast(Mapping[str, Any], approval).get("status"),
         "path": [
             {
                 "step_id": row.get("step_id"),
@@ -357,7 +301,7 @@ def _execution_summary(run: Mapping[str, Any], *, role: str) -> dict[str, Any]:
                 "action_id": row.get("action_id"),
                 "status": row.get("status"),
             }
-            for row in steps
+            for row in cast(list[Any], steps)
             if isinstance(row, Mapping)
         ],
         "observed_evidence_ids": [
@@ -366,7 +310,8 @@ def _execution_summary(run: Mapping[str, Any], *, role: str) -> dict[str, Any]:
             if isinstance(row.get("evidence_id"), str)
         ],
         "cleanup": {
-            key: cleanup.get(key) for key in ("attempted", "success", "outstanding_receipt_count")
+            key: cast(Mapping[str, Any], cleanup).get(key)
+            for key in ("attempted", "success", "outstanding_receipt_count")
         },
     }
 
@@ -383,20 +328,21 @@ def _detection_observed_matches(run: Mapping[str, Any], behavior_id: str) -> int
     _require(isinstance(candidates, list), "frontier detections are invalid")
     matches = [
         row
-        for row in candidates
+        for row in cast(list[Any], candidates)
         if isinstance(row, Mapping) and row.get("behavior_id") == behavior_id
     ]
     _require(len(matches) == 1, f"frontier detection {behavior_id} is unavailable")
     observed = matches[0].get("observed_evidence_ids")
     _require(isinstance(observed, list), "frontier observed detection bindings are invalid")
-    return len(observed)
+    return len(cast(list[Any], observed))
 
 
 def _transport_receiver_binding(run: Mapping[str, Any]) -> Mapping[str, object]:
     step = _step(run, "try_internal_transport")
     _require(step is not None and step.get("status") == "success", "transport step is unavailable")
-    runner_task_id = step.get("runner_task_id")
-    artifacts = step.get("artifacts")
+    verified_step = cast(Mapping[str, Any], step)
+    runner_task_id = verified_step.get("runner_task_id")
+    artifacts = verified_step.get("artifacts")
     receipt = artifacts.get("receipt") if isinstance(artifacts, Mapping) else None
     details = receipt.get("details") if isinstance(receipt, Mapping) else None
     digest = details.get("sha256") if isinstance(details, Mapping) else None
@@ -600,6 +546,7 @@ def _structural_report(repository: Path) -> Mapping[str, Any]:
         real.api_key is not None and real.api_key.env == "OPENAI_API_KEY",
         "the real provider credential reference is invalid",
     )
+    credential_reference = real.api_key.env if real.api_key is not None else ""
     _require(
         config.ai.fallback.id == PROVIDER_ID, "the real provider fallback is not deterministic"
     )
@@ -619,7 +566,7 @@ def _structural_report(repository: Path) -> Mapping[str, Any]:
             "provider_id": REAL_PROVIDER_ID,
             "kind": real.kind.value,
             "endpoint_scheme": "https",
-            "credential_reference": real.api_key.env,
+            "credential_reference": credential_reference,
             "fallback_provider_id": config.ai.fallback.id,
             "manual_key_required_for_release": False,
             "proposal_only": True,

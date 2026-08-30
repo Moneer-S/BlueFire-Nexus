@@ -9,6 +9,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -16,8 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
+from .product_acceptance_artifacts import inspect_regular_file, public_text_contains_private_path
+
 _MAX_WORKFLOW_LOG_BYTES = 4 * 1024 * 1024
 _PLAYWRIGHT_BROWSER_RESOURCE_ENV = "BLUEFIRE_ACCEPTANCE_PLAYWRIGHT_BROWSERS_PATH"
+_CARGO_HOME_RESOURCE_ENV = "BLUEFIRE_ACCEPTANCE_CARGO_CACHE_HOME"
 _SENSITIVE_ENV_MARKERS = (
     "TOKEN",
     "SECRET",
@@ -38,6 +42,13 @@ _PRIVATE_KEY_BLOCK = re.compile(
     r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
     re.DOTALL,
 )
+_HOST_IDENTITY_ENV = {
+    "COMPUTERNAME": "{machine}",
+    "HOSTNAME": "{machine}",
+    "LOGNAME": "{user}",
+    "USER": "{user}",
+    "USERNAME": "{user}",
+}
 _WORKFLOW_ENV_ALLOWLIST = frozenset(
     {
         "APPDATA",
@@ -133,6 +144,47 @@ def _playwright_browsers_path(
         or not stat.S_ISDIR(metadata.st_mode)
         or resolved.is_symlink()
         or bool(attributes & 0x400)
+    ):
+        return None
+    return resolved
+
+
+def _cargo_cache_home_path(
+    environ: Mapping[str, str] | None = None,
+) -> Path | None:
+    """Resolve an explicit, credential-free Cargo cache for offline release checks."""
+
+    values = os.environ if environ is None else environ
+    raw = values.get(_CARGO_HOME_RESOURCE_ENV)
+    if not isinstance(raw, str) or not raw or len(raw) > 4_096 or "\0" in raw:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        return None
+    try:
+        unresolved = Path(os.path.abspath(candidate))
+        candidate_metadata = candidate.lstat()
+        resolved = candidate.resolve(strict=True)
+        metadata = resolved.lstat()
+        registry = (resolved / "registry").resolve(strict=True)
+    except OSError:
+        return None
+    candidate_attributes = int(getattr(candidate_metadata, "st_file_attributes", 0))
+    attributes = int(getattr(metadata, "st_file_attributes", 0))
+    if (
+        not stat.S_ISDIR(candidate_metadata.st_mode)
+        or candidate.is_symlink()
+        or bool(candidate_attributes & 0x400)
+        or unresolved != resolved
+        or not stat.S_ISDIR(metadata.st_mode)
+        or resolved.is_symlink()
+        or bool(attributes & 0x400)
+        or registry != resolved / "registry"
+        or not registry.is_dir()
+        or any(
+            (resolved / name).exists()
+            for name in ("config", "config.toml", "credentials", "credentials.toml")
+        )
     ):
         return None
     return resolved
@@ -278,6 +330,16 @@ def _redact_runtime_paths(text: str, *, repository: Path, run_dir: Path) -> str:
     for name, value in os.environ.items():
         if len(value) >= 8 and any(marker in name.upper() for marker in _SENSITIVE_ENV_MARKERS):
             result = result.replace(value, "{redacted-secret}")
+    for name, replacement in _HOST_IDENTITY_ENV.items():
+        value = os.environ.get(name, "").strip()
+        if len(value) < 3:
+            continue
+        result = re.sub(
+            rf"(?<![A-Za-z0-9_.-]){re.escape(value)}(?![A-Za-z0-9_.-])",
+            replacement,
+            result,
+            flags=re.IGNORECASE,
+        )
     result = _PRIVATE_KEY_BLOCK.sub("{redacted-private-key}", result)
     result = _BEARER_TOKEN.sub("Bearer {redacted-secret}", result)
     result = _PREFIXED_TOKEN.sub("{redacted-secret}", result)
@@ -285,22 +347,56 @@ def _redact_runtime_paths(text: str, *, repository: Path, run_dir: Path) -> str:
         lambda match: match.group(1) + match.group(2) + "{redacted-secret}",
         result,
     )
-    return result
+    sanitized_lines: list[str] = []
+    for line in result.splitlines(keepends=True):
+        ending = ""
+        content = line
+        if content.endswith("\r\n"):
+            content, ending = content[:-2], "\r\n"
+        elif content.endswith(("\r", "\n")):
+            content, ending = content[:-1], content[-1:]
+        if public_text_contains_private_path(content):
+            content = "[private-path-redacted]"
+        sanitized_lines.append(content + ending)
+    if not sanitized_lines and public_text_contains_private_path(result):
+        return "[private-path-redacted]"
+    return "".join(sanitized_lines)
 
 
 def _sanitize_workflow_log(path: Path, *, repository: Path, run_dir: Path) -> None:
-    payload = path.read_bytes()
-    text = payload.decode("utf-8", "replace")
-    path.write_text(
+    relative = path.absolute().relative_to(run_dir.resolve()).as_posix()
+    inspection = inspect_regular_file(run_dir, relative, label="workflow log")
+    text = inspection.payload.decode("utf-8", "replace")
+    _atomic_replace_text(
+        path,
         _redact_runtime_paths(text, repository=repository, run_dir=run_dir),
-        encoding="utf-8",
     )
+
+
+def _atomic_replace_text(path: Path, value: str) -> None:
+    descriptor, raw_temporary = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=path.name + ".",
+        suffix=".sanitizing",
+        text=False,
+    )
+    temporary = Path(raw_temporary)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as destination:
+            destination.write(value)
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _sanitize_gate_receipt(path: Path, *, repository: Path, run_dir: Path) -> None:
     """Redact public receipt strings before parsing and hashing the receipt."""
 
-    raw = path.read_text(encoding="utf-8", errors="replace")
+    relative = path.absolute().relative_to(run_dir.resolve()).as_posix()
+    inspection = inspect_regular_file(run_dir, relative, label="gate receipt")
+    raw = inspection.payload.decode("utf-8", "replace")
     try:
         value = json.loads(raw)
     except json.JSONDecodeError:
@@ -317,15 +413,14 @@ def _sanitize_gate_receipt(path: Path, *, repository: Path, run_dir: Path) -> No
             return item
 
         sanitized = json.dumps(redact(value), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-    temporary = path.with_name(path.name + ".sanitizing")
-    temporary.write_text(sanitized, encoding="utf-8")
-    os.replace(temporary, path)
+    _atomic_replace_text(path, sanitized)
 
 
 def _write_gate_assessment(path: Path, assessment: Mapping[str, Any]) -> None:
+    inspection = inspect_regular_file(path.parent, path.name, label="gate receipt")
     try:
-        receipt = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        receipt = json.loads(inspection.payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("gate receipt cannot receive its harness assessment") from exc
     if (
         not isinstance(receipt, dict)
@@ -337,12 +432,10 @@ def _write_gate_assessment(path: Path, assessment: Mapping[str, Any]) -> None:
     ):
         raise ValueError("gate receipt harness assessment slot is invalid")
     receipt["harness_assessment"] = dict(assessment)
-    temporary = path.with_name(path.name + ".assessing")
-    temporary.write_text(
+    _atomic_replace_text(
+        path,
         json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
-    os.replace(temporary, path)
 
 
 def _failure_excerpt(path: Path) -> str:
@@ -640,8 +733,10 @@ def _execute_workflow(
 
 
 __all__ = [
+    "_CARGO_HOME_RESOURCE_ENV",
     "_PLAYWRIGHT_BROWSER_RESOURCE_ENV",
     "WorkflowOutcome",
+    "_cargo_cache_home_path",
     "_execute_workflow",
     "_isolated_workflow_environment",
     "_playwright_browsers_path",

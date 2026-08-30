@@ -605,12 +605,21 @@ def _write_watchdog_status(
     result_path: Path | None = None,
 ) -> None:
     status: dict[str, Any] = {
-        "schema_version": "bluefire.runner-watchdog-status.v1",
+        "schema_version": "bluefire.runner-watchdog-status.v2",
         "task_id": task_id,
         "state": state,
         "error_code": error_code,
         "watchdog_pid": 4242,
     }
+    if state == "cancelled":
+        status.update(
+            {
+                "cooperative_requested": False,
+                "cooperative_acknowledged": False,
+                "forced_tree_termination": True,
+                "control_cleanup_verified": True,
+            }
+        )
     if state == "succeeded":
         if result_path is None:
             raise AssertionError("succeeded watchdog status requires a result")
@@ -903,7 +912,7 @@ def test_completed_result_is_recoverable_after_server_restart(
     (watchdog_root / "status.json").write_bytes(
         canonical_json_bytes(
             {
-                "schema_version": "bluefire.runner-watchdog-status.v1",
+                "schema_version": "bluefire.runner-watchdog-status.v2",
                 "task_id": task_id,
                 "state": "succeeded",
                 "error_code": None,
@@ -1962,6 +1971,55 @@ def test_restart_reconciles_confirmed_watchdog_terminal_status(
     assert recovered["error_code"] == expected_error
     assert second_runner.calls == 0
     assert not control_root.exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "non_boolean", "ack_without_request", "cleanup_unverified", "extra"],
+)
+def test_current_watchdog_cancellation_requires_exact_proof_fields(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    task_id = "execute-" + "a" * 64
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        RecordingRunner(),
+        tmp_path / "transport.sqlite3",
+        secret_provider=secret_provider,
+    ) as server:
+        control_root = runner_watchdog_control_root(server.durable_result_path(task_id), task_id)
+        control_root.mkdir()
+        status: dict[str, Any] = {
+            "schema_version": "bluefire.runner-watchdog-status.v2",
+            "task_id": task_id,
+            "state": "cancelled",
+            "error_code": "cancelled",
+            "watchdog_pid": 4242,
+            "cooperative_requested": False,
+            "cooperative_acknowledged": False,
+            "forced_tree_termination": True,
+            "control_cleanup_verified": True,
+        }
+        if mutation == "missing":
+            del status["forced_tree_termination"]
+        elif mutation == "non_boolean":
+            status["forced_tree_termination"] = 1
+        elif mutation == "ack_without_request":
+            status["cooperative_acknowledged"] = True
+        elif mutation == "cleanup_unverified":
+            status["control_cleanup_verified"] = False
+        else:
+            status["claim_only"] = True
+        status_path = control_root / "status.json"
+        status_path.write_bytes(canonical_json_bytes(status))
+
+        with pytest.raises(RunnerTransportError, match="watchdog status is invalid"):
+            server._read_watchdog_status(task_id)
+        status_path.unlink()
+        control_root.rmdir()
 
 
 @pytest.mark.parametrize(

@@ -53,6 +53,7 @@ EXECUTE_PROFILE_ACTIONS = {
     "sandbox.discovery.metadata.v1",
     "sandbox.discovery.recursive.v1",
     "sandbox.execution.native-canary.v1",
+    "sandbox.execution.process-tree-cancellation-witness.v1",
     "sandbox.export.local.v1",
     "sandbox.fixture.create.v1",
     "sandbox.fixture.transform.v1",
@@ -451,7 +452,7 @@ def test_service_seeds_durable_product_state_and_indexes_completed_runs(
 
     assert service.product_store.path == database.resolve()
     assert service.seed_counts["scenario"] == 8
-    assert service.seed_counts["action"] == 19
+    assert service.seed_counts["action"] == 20
     assert len(service.product_store.list_resources("collector")) == 10
 
     result = service.run(

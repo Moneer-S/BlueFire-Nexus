@@ -336,6 +336,25 @@ items:
     limitations: [Performs only deterministic in-process computation and has no process, filesystem, or network effect.]
 
   - schema_version: bluefire.behavior.v1
+    id: sandbox.execution.process-tree-cancellation-witness.v1
+    title: Witness cooperative and forced process-tree cancellation
+    purpose: Prove that the packaged Rust runner acknowledges a request-bound private cancellation signal and that Windows Job containment removes its fixed descendant tree.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows]
+    techniques: []
+    capabilities: [native.execution, filesystem.read, filesystem.write, process.spawn]
+    inputs: []
+    outputs: []
+    parameters: []
+    simulation_id: simulation.sandbox.execution.process-tree-cancellation-witness.v1
+    action_ids: [sandbox.execution.process-tree-cancellation-witness.v1]
+    telemetry: [sandbox.execution.process_tree_cancellation_witnessed]
+    detection_hints: [Treat success as a control-plane simulation only; dynamic proof requires a packaged Windows runner, nonce acknowledgement, and identity-bound absence probes.]
+    provenance: *authored
+    limitations: [Windows-only cancellation witness; it accepts no executable, command, path, script, or caller-selected process input.]
+
+  - schema_version: bluefire.behavior.v1
     id: sandbox.identity-material.seed.v1
     title: Seed public identity material canary
     purpose: Write one fixed public, non-secret canary document at identity-material/public-canary.json inside the runner-owned workspace.

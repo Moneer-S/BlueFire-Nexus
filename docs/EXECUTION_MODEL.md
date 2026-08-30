@@ -122,7 +122,7 @@ Transport failure is not action success. Invalid JSON, output overflow, timeout,
 
 ## Rust action boundary
 
-The current Rust registry contains nineteen IDs:
+The current Rust registry contains twenty IDs:
 
 - sandbox.fixture.create.v1
 - sandbox.fixture.transform.v1
@@ -137,6 +137,7 @@ The current Rust registry contains nineteen IDs:
 - sandbox.network.loopback.v1
 - sandbox.export.local.v1
 - sandbox.execution.native-canary.v1
+- sandbox.execution.process-tree-cancellation-witness.v1
 - sandbox.identity-material.seed.v1
 - sandbox.identity-material.inspect.v1
 - sandbox.peer.handoff.v1
@@ -144,7 +145,7 @@ The current Rust registry contains nineteen IDs:
 - sandbox.restricted.persistence-marker.v1
 - sandbox.cleanup.v1
 
-Their scope is deliberately narrow: create/transform deterministic fixtures; inspect one exact fixture's metadata plus bounded system, process, and recursive-file facts; create a deterministic archive; stage one fixture as one bundle; send one bounded artifact to a literal allowlisted loopback socket; create a temporary policy-labelled copy at a fixed runner-owned export path; run bounded in-process computation; seed and inspect one public fixed-path identity-material canary; authenticate one staged-bundle handoff to literal IPv4 loopback; create one fixed-path reversible observability representation; write one fixed non-executable restricted-tier canary marker; and clean receipt-bound objects. The canary never changes host persistence settings.
+Their scope is deliberately narrow: create/transform deterministic fixtures; inspect one exact fixture's metadata plus bounded system, process, and recursive-file facts; create a deterministic archive; stage one fixture as one bundle; send one bounded artifact to a literal allowlisted loopback socket; create a temporary policy-labelled copy at a fixed runner-owned export path; run bounded in-process computation; prove cancellation of one fixed Windows Job-contained child tree; seed and inspect one public fixed-path identity-material canary; authenticate one staged-bundle handoff to literal IPv4 loopback; create one fixed-path reversible observability representation; write one fixed non-executable restricted-tier canary marker; and clean receipt-bound objects. The canary never changes host persistence settings.
 
 The native-canary, identity-seed, identity-inspection, and observability-variant representative descriptors are implementation version `1.0.0`; peer handoff is `2.0.0`. All report inventory readiness `ready`. Native canary accepts only `rounds` from 1 through 4096 and has no compiled effect capability beyond `NativeExecution`; it launches no process and has no filesystem or network effect. Identity seed has no logical parameter and writes the exact public synthetic document at `identity-material/public-canary.json`. Identity inspection accepts only the resulting typed artifact and returns byte count, field count, and SHA-256 digest without returning values. It is not credential access.
 

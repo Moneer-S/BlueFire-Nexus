@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from typing import Any, Mapping, NoReturn, Sequence
 
-from .api import APIError
+from .application_errors import APIError
 from .detections import (
     DetectionCandidate,
     DetectionError,

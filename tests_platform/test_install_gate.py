@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import zipfile
@@ -45,7 +46,7 @@ def _inspection() -> dict[str, Any]:
 def _provision() -> dict[str, Any]:
     versions = {
         "PyYAML": "6.0.3",
-        "cryptography": "46.0.3",
+        "cryptography": "50.0.0",
         "PyNaCl": "1.6.2",
         "cffi": "2.0.0",
         "pycparser": "2.23",
@@ -66,7 +67,7 @@ def _provision() -> dict[str, Any]:
 
 def _wheel_dependency_metadata() -> dict[str, Any]:
     requirements = [
-        {"name": "cryptography", "specifier": "<47,>=45"},
+        {"name": "cryptography", "specifier": "<51,>=50"},
         {"name": "pynacl", "specifier": "<2,>=1.5"},
         {"name": "pyyaml", "specifier": "<7,>=6.0.1"},
     ]
@@ -98,7 +99,7 @@ def _runtime() -> dict[str, Any]:
         },
         "dependencies": {
             "PyYAML": "6.0.3",
-            "cryptography": "46.0.3",
+            "cryptography": "50.0.0",
             "PyNaCl": "1.6.2",
         },
         "source_overrides_absent": True,
@@ -520,12 +521,12 @@ def test_wheel_requires_dist_is_read_from_the_built_artifact(tmp_path: Path) -> 
 name = "bluefire-nexus"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6.0.1,<7", "cryptography>=45,<47", "PyNaCl>=1.5,<2"]
+dependencies = ["PyYAML>=6.0.1,<7", "cryptography>=50,<51", "PyNaCl>=1.5,<2"]
 """,
         encoding="utf-8",
     )
     wheel = tmp_path / "bluefire_nexus-0.1.0-py3-none-win_amd64.whl"
-    requirements = ["PyYAML<7,>=6.0.1", "cryptography<47,>=45", "PyNaCl<2,>=1.5"]
+    requirements = ["PyYAML<7,>=6.0.1", "cryptography<51,>=50", "PyNaCl<2,>=1.5"]
     _write_metadata_wheel(wheel, requirements + ['pytest>=8; extra == "dev"'])
 
     report = install_gate._wheel_dependency_metadata_report(source, wheel)
@@ -733,12 +734,162 @@ def test_gate01_runtime_allocation_refuses_an_unsafe_windows_path_budget(
         install_gate._allocate_short_runtime_root(destination)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows short external runtime contract")
+def test_long_checkout_uses_a_private_short_external_gate01_workspace() -> None:
+    repository = REPOSITORY.resolve(strict=True)
+    documented_default = (
+        repository
+        / "build"
+        / "product-acceptance"
+        / "acceptance-20300101T000000Z-0123456789ab-01234567"
+        / "gate-01"
+    )
+    assert len(os.fspath(documented_default)) > install_gate._WINDOWS_RUNTIME_ROOT_MAX_CHARS
+
+    parent, workspace, staged_evidence = install_gate._allocate_external_workspace(repository)
+    runtime: Path | None = None
+    try:
+        runtime = install_gate._allocate_short_runtime_root(
+            staged_evidence,
+            repository_root=repository,
+        )
+
+        assert workspace.parent == parent
+        assert staged_evidence.parent == workspace
+        assert runtime.parent == parent
+        assert len(os.fspath(runtime)) <= install_gate._WINDOWS_RUNTIME_ROOT_MAX_CHARS
+        assert not workspace.is_relative_to(repository)
+        assert not runtime.is_relative_to(repository)
+        assert install_gate._WORKSPACE_DIRECTORY.fullmatch(workspace.name)
+        assert install_gate._RUNTIME_DIRECTORY.fullmatch(runtime.name)
+        assert not install_gate._is_link_or_reparse(workspace)
+        assert not install_gate._is_link_or_reparse(runtime)
+    finally:
+        if runtime is not None:
+            assert install_gate._bounded_remove(parent, runtime)
+        assert install_gate._bounded_remove(parent, workspace)
+
+
+def test_documented_in_checkout_default_reaches_external_gate01_allocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "long-checkout"
+    destination = (
+        repository
+        / "build"
+        / "product-acceptance"
+        / "acceptance-20300101T000000Z-0123456789ab-01234567"
+        / "gate-01"
+    )
+    destination.mkdir(parents=True)
+    workspace = tmp_path / "a12345678"
+    staged_evidence = workspace / "g"
+    staged_evidence.mkdir(parents=True)
+    observed: list[tuple[Path, Path]] = []
+    gate = SimpleNamespace(
+        assertions=tuple(
+            SimpleNamespace(assertion_id=assertion_id, proof=row[0])
+            for assertion_id, row in install_gate._EXPECTED_ASSERTIONS.items()
+        )
+    )
+
+    monkeypatch.setattr(
+        install_gate,
+        "_allocate_external_workspace",
+        lambda actual: (tmp_path, workspace, staged_evidence),
+    )
+
+    def stop_at_runtime_allocation(
+        actual: Path,
+        *,
+        repository_root: Path | None = None,
+    ) -> Path:
+        observed.append((actual, repository_root or Path()))
+        raise ValueError("allocation checkpoint reached")
+
+    monkeypatch.setattr(
+        install_gate,
+        "_allocate_short_runtime_root",
+        stop_at_runtime_allocation,
+    )
+
+    outcome = install_gate.run_gate_01(gate, destination, repository_root=repository)
+
+    assert observed == [(staged_evidence, repository.resolve())]
+    assert outcome.status == "failed"
+    assert outcome.failure_reason == "GATE-01 failed: allocation checkpoint reached"
+    assert not workspace.exists()
+
+
+def test_gate01_rejects_stale_durable_evidence_before_external_allocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    destination = repository / "build" / "product-acceptance" / "acceptance-test" / "gate-01"
+    destination.mkdir(parents=True)
+    (destination / "gate01-journey-report.json").write_text("{}\n", encoding="utf-8")
+    gate = SimpleNamespace(
+        assertions=tuple(
+            SimpleNamespace(assertion_id=assertion_id, proof=row[0])
+            for assertion_id, row in install_gate._EXPECTED_ASSERTIONS.items()
+        )
+    )
+
+    def should_not_allocate(_repository: Path) -> tuple[Path, Path, Path]:
+        raise AssertionError("stale evidence must fail before external allocation")
+
+    monkeypatch.setattr(install_gate, "_allocate_external_workspace", should_not_allocate)
+
+    outcome = install_gate.run_gate_01(gate, destination, repository_root=repository)
+
+    assert outcome.status == "failed"
+    assert outcome.failure_reason == (
+        "GATE-01 failed: Gate 01 evidence directory contains stale or unsafe artifacts"
+    )
+
+
+def test_gate01_rejects_an_aliased_evidence_root_before_external_allocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    destination = tmp_path / "evidence"
+    destination.mkdir()
+    alias = tmp_path / "evidence-alias"
+    try:
+        alias.symlink_to(destination, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlinks are unavailable")
+    gate = SimpleNamespace(
+        assertions=tuple(
+            SimpleNamespace(assertion_id=assertion_id, proof=row[0])
+            for assertion_id, row in install_gate._EXPECTED_ASSERTIONS.items()
+        )
+    )
+
+    def should_not_allocate(_repository: Path) -> tuple[Path, Path, Path]:
+        raise AssertionError("unsafe evidence must fail before external allocation")
+
+    monkeypatch.setattr(install_gate, "_allocate_external_workspace", should_not_allocate)
+
+    outcome = install_gate.run_gate_01(gate, alias, repository_root=repository)
+
+    assert outcome.status == "failed"
+    assert outcome.failure_reason == "GATE-01 failed: Gate 01 evidence root is unsafe"
+
+
 def test_successful_journey_bundles_are_removed_if_ephemeral_cleanup_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     destination = tmp_path / "evidence"
     destination.mkdir()
+    external_workspace = tmp_path / "a12345678"
+    staged_evidence = external_workspace / "g"
+    staged_evidence.mkdir(parents=True)
     gate = SimpleNamespace(
         assertions=tuple(
             SimpleNamespace(assertion_id=assertion_id, proof=row[0])
@@ -758,23 +909,31 @@ def test_successful_journey_bundles_are_removed_if_ephemeral_cleanup_fails(
     )
     monkeypatch.setattr(
         install_gate,
+        "_allocate_external_workspace",
+        lambda _repository: (tmp_path, external_workspace, staged_evidence),
+    )
+    monkeypatch.setattr(
+        install_gate,
         "_allocate_short_runtime_root",
-        lambda _destination: tmp_path.parent / "b12345678",
+        lambda _destination, **_kwargs: tmp_path / "b12345678",
     )
     monkeypatch.setattr(install_gate, "_run_installed_helper", lambda *_args: {})
     monkeypatch.setattr(install_gate, "_structural_report", lambda _repository: _structural())
     monkeypatch.setattr(install_gate, "_validate_reports", lambda _evidence: _RUN_IDS)
+    monkeypatch.setattr(install_gate, "_publish_gate_evidence", lambda *_args: _RUN_IDS)
     removed: list[str] = []
 
-    def remove_with_locked_source(_destination: Path, path: Path) -> bool:
+    def remove_with_locked_workspace(_destination: Path, path: Path) -> bool:
         removed.append(path.name)
-        return path.name != "s"
+        return path.name != external_workspace.name
 
-    monkeypatch.setattr(install_gate, "_bounded_remove", remove_with_locked_source)
+    monkeypatch.setattr(install_gate, "_bounded_remove", remove_with_locked_workspace)
 
     outcome = install_gate.run_gate_01(gate, destination, repository_root=REPOSITORY)
 
     assert outcome.status == "failed"
-    assert outcome.failure_reason == "GATE-01 failed: ephemeral Gate 01 cleanup failed: s"
+    assert outcome.failure_reason == (
+        "GATE-01 failed: ephemeral Gate 01 cleanup failed: external-workspace"
+    )
     assert "runs" in removed
     assert "b12345678" in removed

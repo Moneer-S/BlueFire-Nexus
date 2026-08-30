@@ -11,9 +11,9 @@ import stat
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
-from .action_packages import SUPPORTED_RUNNER_ACTION_VERSIONS
+from .action_packages import SUPPORTED_RUNNER_ACTION_VERSIONS, VerifiedActionPackageActivation
 from .product_store import ActionPackageIntegrityError, ProductStore, ProductStoreError
 from .registry import load_builtin_registry
 from .research import SourceUseClassification, load_builtin_research_registry
@@ -77,8 +77,7 @@ from .source_intake_receipt_validation import (
 from .source_intake_run_validation import validate_native_system_step
 from .util import canonical_json_bytes, content_hash, file_hash
 
-_MAX_REPORT_BYTES = 2 * 1024 * 1024
-_MAX_DATABASE_BYTES = 64 * 1024 * 1024
+_MAX_REPORT_BYTES, _MAX_DATABASE_BYTES = 2 * 1024 * 1024, 64 * 1024 * 1024
 _RUN_ID = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
@@ -101,8 +100,7 @@ def _mapping(value: Any, message: str) -> Mapping[str, Any]:
 def _object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     value: dict[str, Any] = {}
     for key, item in pairs:
-        if key in value:
-            raise SourceIntakeGateValidationError("persisted JSON contains duplicate keys")
+        _require(key not in value, "persisted JSON contains duplicate keys")
         value[key] = item
     return value
 
@@ -304,6 +302,7 @@ def _validate_intake(
         isinstance(envelope, Mapping) and raw == canonical_json_bytes(envelope),
         "the source-intake envelope is not canonical JSON",
     )
+    envelope = cast(Mapping[str, Any], envelope)
     try:
         validate_gate09_intake_envelope(envelope)
     except SourceIntakePackageError as exc:
@@ -617,14 +616,14 @@ def _validate_run(
     catalog: Mapping[str, Any],
     intake: Mapping[str, Any],
 ) -> tuple[Mapping[str, str], Mapping[str, Any]]:
-    run_id = execution.get("run_id")
-    reference = execution.get("run_bundle")
+    run_id, reference = execution.get("run_id"), execution.get("run_bundle")
     _require(
         isinstance(run_id, str)
         and _RUN_ID.fullmatch(run_id) is not None
         and reference == {"run_id": run_id, "path": f"runs/{run_id}"},
         "the Gate 09 run-bundle reference is invalid",
     )
+    run_id = cast(str, run_id)
     store = RunStore(evidence_dir / "runs")
     try:
         integrity = store.validate_bundle(run_id)
@@ -665,6 +664,7 @@ def _validate_run(
     runner_environment = runner_row.get("environment") if isinstance(runner_row, Mapping) else None
     runner_content = runner_row.get("content") if isinstance(runner_row, Mapping) else None
     _require(isinstance(runner_content, Mapping), "the Gate 09 runner evidence is absent")
+    runner_content = cast(Mapping[str, Any], runner_content)
     catalog_packages = catalog.get("packages")
     catalog_package = (
         catalog_packages[0]
@@ -675,7 +675,9 @@ def _validate_run(
     activation = _mapping(package.get("activation"), "the active package binding is absent")
     verified_activation = catalog_package.get("verified_activation")
     try:
-        verified_activation_document = verified_activation.to_dict()
+        verified_activation_document = cast(
+            VerifiedActionPackageActivation, verified_activation
+        ).to_dict()
     except (AttributeError, TypeError, ValueError):
         verified_activation_document = None
     delta = _mapping(execution.get("catalog_delta"), "the catalog delta is absent")
@@ -783,8 +785,7 @@ def _validate_run(
 
 
 def _validate_safety(report: Mapping[str, Any]) -> None:
-    refused = report.get("refused_without_output")
-    transformer = report.get("trusted_transformer")
+    refused, transformer = report.get("refused_without_output"), report.get("trusted_transformer")
     _require(
         set(report)
         == {
@@ -845,7 +846,7 @@ def _validate_browser(
             browser_receipt_payload=receipt_raw,
             profile_id=profile_id,
             package=package,
-            catalog_generation=catalog.get("generation"),
+            catalog_generation=cast(int, catalog.get("generation")),
             catalog_digest=str(catalog.get("catalog_digest")),
             not_before=not_before,
             not_after=not_after,
@@ -881,7 +882,7 @@ def _validate_primary_operation_receipt(
             intake=intake,
             package=package,
             activation_operation="installed_and_activated",
-            catalog_generation=catalog.get("generation"),
+            catalog_generation=cast(int, catalog.get("generation")),
             catalog_digest=str(catalog.get("catalog_digest")),
             not_before=not_before,
             not_after=not_after,

@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Mapping, Sequence
 
+from .product_acceptance_artifacts import public_text_contains_private_path
+
 RESULT_SCHEMA_VERSION = "bluefire.product-acceptance-result.v1"
 EXPECTED_GATE_IDS = tuple(f"GATE-{index:02d}" for index in range(1, 13))
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -33,6 +35,17 @@ def _unique_text_list(value: Any, field: str, *, nonempty: bool = False) -> list
     if len(value) != len(set(value)):
         raise ValueError(f"{field} must contain unique values")
     return value
+
+
+def _contains_private_path(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any(
+            _contains_private_path(key) or _contains_private_path(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_contains_private_path(item) for item in value)
+    return isinstance(value, str) and public_text_contains_private_path(value)
 
 
 def _relative_path(value: Any, field: str) -> str:
@@ -226,6 +239,8 @@ def validate_result_structure(result: Mapping[str, Any]) -> None:
     expected_status = "failed" if expected_failure is not None else "passed"
     if result["status"] != expected_status or result["failure_reason"] != expected_failure:
         raise ValueError("acceptance status and failure reason do not match the derived verdict")
+    if _contains_private_path(result):
+        raise ValueError("acceptance result discloses a local absolute path")
 
     environment = result["environment"]
     if not isinstance(environment, Mapping) or set(environment) != {

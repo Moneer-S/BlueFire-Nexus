@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from .util import content_hash
 
@@ -94,12 +94,12 @@ def _mapping(value: Any, context: str) -> Mapping[str, Any]:
         isinstance(value, Mapping) and all(isinstance(key, str) for key in value),
         f"{context} is invalid",
     )
-    return value
+    return cast(Mapping[str, Any], value)
 
 
 def _list(value: Any, context: str) -> list[Any]:
     _require(isinstance(value, list), f"{context} is invalid")
-    return value
+    return cast(list[Any], value)
 
 
 def _validate_provider(record: Mapping[str, Any]) -> None:
@@ -149,7 +149,7 @@ def _validate_evaluation(record: Mapping[str, Any]) -> Mapping[str, Any]:
         "permitted": {"status", "policy_digest", "mutation", "execute_requires_fresh_approval"},
         "refused": {"status", "policy_digest", "reason"},
         "not_applicable": {"status", "policy_digest"},
-    }.get(status)
+    }.get(status if isinstance(status, str) else "")
     _require(expected is not None and set(evaluation) == expected, "policy evaluation is invalid")
     _require(
         evaluation.get("policy_digest") == record.get("proposal_policy_digest"),
@@ -272,7 +272,7 @@ def _validate_registered_options(record: Mapping[str, Any]) -> None:
             and schemas == parameter_schemas.get(step_id, {}),
             "persisted AI registered option boundary is invalid",
         )
-        roles.add(role)
+        roles.add(cast(str, role))
         for behavior_id, raw_actions in actions_by_behavior.items():
             actions = _list(raw_actions, f"registered actions for {behavior_id}")
             _require(
@@ -376,7 +376,7 @@ def _validate_planner_state(
         and isinstance(remaining_retries, int)
         and remaining_retries >= 0
         and remaining_steps == policy.get("remaining_steps")
-        and remaining_retries == max(maximum_retries - retries_used, 0),
+        and remaining_retries == max(cast(int, maximum_retries) - cast(int, retries_used), 0),
         "persisted AI planner budgets are invalid",
     )
     decision = _mapping(state.get("deterministic_decision"), "persisted planner decision")

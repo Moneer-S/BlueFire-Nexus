@@ -112,6 +112,7 @@ class SimulationRegistry:
             "simulation.sandbox.archive.tar.v1",
             "simulation.sandbox.collection.stage.v1",
             "simulation.sandbox.execution.native-canary.v1",
+            "simulation.sandbox.execution.process-tree-cancellation-witness.v1",
             "simulation.sandbox.identity-material.seed.v1",
             "simulation.sandbox.identity-material.inspect.v1",
             "simulation.sandbox.network.loopback.v1",
@@ -137,7 +138,7 @@ class SimulationRegistry:
         base_limitations = (
             "Synthetic projection only; no Rust runner action or host effect occurred.",
         )
-        limitations = base_limitations
+        limitations: tuple[str, ...] = base_limitations
         artifacts: dict[str, Any]
         telemetry: tuple[str, ...]
         if simulation_id == "simulation.sandbox.execution.native-canary.v1":
@@ -160,6 +161,18 @@ class SimulationRegistry:
                 }
             }
             telemetry = ("sandbox.execution.native_canary_completed",)
+        elif simulation_id == "simulation.sandbox.execution.process-tree-cancellation-witness.v1":
+            _exact_parameter_keys(
+                step.parameters,
+                allowed=frozenset(),
+                context="process-tree cancellation witness simulation",
+            )
+            artifacts = {}
+            telemetry = ("sandbox.execution.process_tree_cancellation_witnessed",)
+            limitations = (
+                *base_limitations,
+                "No cooperative nonce or process-tree termination was exercised.",
+            )
         elif simulation_id == "simulation.sandbox.identity-material.seed.v1":
             _exact_parameter_keys(
                 step.parameters,
@@ -505,7 +518,8 @@ class SimulationRegistry:
             )
         elif simulation_id == "simulation.sandbox.network.loopback.v1":
             bundle = _mapping(bound_inputs.get("bundle"), "bundle")
-            bundle_hash = bundle.get("content_hash")
+            bundle_hash_value = bundle.get("content_hash")
+            bundle_hash = bundle_hash_value if isinstance(bundle_hash_value, str) else ""
             if not isinstance(bundle_hash, str) or not bundle_hash:
                 raise SimulationError("bundle.content_hash must be a non-empty digest")
             port = _bounded_integer(step.parameters.get("port", 4317), "port", 1024, 65535)
@@ -519,7 +533,8 @@ class SimulationRegistry:
             telemetry = ("sandbox.network.loopback_attempted",)
         elif simulation_id == "simulation.sandbox.export.local.v1":
             bundle = _mapping(bound_inputs.get("bundle"), "bundle")
-            bundle_hash = bundle.get("content_hash")
+            bundle_hash_value = bundle.get("content_hash")
+            bundle_hash = bundle_hash_value if isinstance(bundle_hash_value, str) else ""
             if not isinstance(bundle_hash, str) or not bundle_hash:
                 raise SimulationError("bundle.content_hash must be a non-empty digest")
             retention_label = _choice(

@@ -243,7 +243,7 @@ def _structural_report() -> dict[str, Any]:
                             "passed": True,
                             "unexpected_findings": [],
                             "shell_imports": 1,
-                            "process_calls": ["subprocess.Popen"],
+                            "process_calls": ["subprocess.Popen", "subprocess.Popen"],
                         },
                         "runner_bootstrap.py": {
                             "passed": True,
@@ -807,12 +807,21 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
 
     dynamic_argv = client_source.replace(
-        "            process = subprocess.Popen(  # nosec B603\n                argv,\n",
-        "            process = subprocess.Popen(  # nosec B603\n                ['fixed-program'],\n",
+        "                process = subprocess.Popen(  # nosec B603\n                    argv,\n",
+        "                process = subprocess.Popen(  # nosec B603\n                    ['fixed-program'],\n",
         1,
     )
     assert dynamic_argv != client_source
     mutated_client.write_text(dynamic_argv, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    dynamic_parent_death_command = client_source.replace(
+        '                            "-I",\n',
+        '                            "-c",\n',
+        1,
+    )
+    assert dynamic_parent_death_command != client_source
+    mutated_client.write_text(dynamic_parent_death_command, encoding="utf-8")
     assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
 
     lifecycle_source = runner_lifecycle.read_text(encoding="utf-8")

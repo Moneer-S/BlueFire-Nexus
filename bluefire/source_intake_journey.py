@@ -13,13 +13,14 @@ import subprocess
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 from .api import (
     browser_console_url,
     create_server,
     generate_browser_bootstrap_capability,
 )
+from .config import RunnerProfile
 from .defense_frontier import (
     _close_runtime_and_remove,
     _remove_runner_journal,
@@ -256,7 +257,7 @@ def _verified_file_payload(
         "a reviewed GATE-09 source asset failed exact integrity validation",
     )
     _require(payload is not None, "a reviewed GATE-09 source asset is unavailable")
-    return artifact, payload
+    return artifact, cast(bytes, payload)
 
 
 def _verified_file(path: Path, expected_size: int, expected_hash: str) -> Mapping[str, Any]:
@@ -265,7 +266,8 @@ def _verified_file(path: Path, expected_size: int, expected_hash: str) -> Mappin
 
 def _node_binary() -> Path:
     raw = os.environ.get("BLUEFIRE_GATE_NODE") or shutil.which("node")
-    _require(isinstance(raw, str) and raw, "the pinned Gate 09 Node runtime is unavailable")
+    if not isinstance(raw, str) or not raw:
+        raise SourceIntakeJourneyError("the pinned Gate 09 Node runtime is unavailable")
     node = Path(raw).resolve(strict=True)
     _require(node.is_file(), "the pinned Gate 09 Node runtime is invalid")
     return node
@@ -378,7 +380,7 @@ def _browser_evidence(
             capture_payload=True,
         )
         _require(report_payload is not None, "the Gate 09 browser report is invalid")
-        browser = json.loads(report_payload)
+        browser = json.loads(cast(bytes, report_payload))
     except (OSError, json.JSONDecodeError, UnicodeError) as exc:
         raise SourceIntakeJourneyError("the Gate 09 browser report is invalid") from exc
     _require(
@@ -401,14 +403,14 @@ def _browser_evidence(
         == f"source-intakes/{BROWSER_INTAKE_DESTINATION_ID}/{INTAKE_ID}.json"
         and browser.get("operation_receipt_visible") is True
         and isinstance(browser.get("operation_receipt_sha256"), str)
-        and re.fullmatch(r"sha256:[0-9a-f]{64}", browser["operation_receipt_sha256"])
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", browser["operation_receipt_sha256"]) is not None
         and browser.get("operation_receipt_state_ref")
         == (f"source-intakes/{BROWSER_INTAKE_DESTINATION_ID}/{OPERATION_RECEIPT_FILENAME}")
         and browser.get("runner_profile_id") == profile_id
         and browser.get("operation_sequence") == list(BROWSER_OPERATION_SEQUENCE),
         "the production browser report did not prove source and behavior provenance",
     )
-    return browser
+    return cast(Mapping[str, Any], browser)
 
 
 def _refused_without_output(
@@ -505,10 +507,8 @@ def _research_source(service: BlueFireService) -> Mapping[str, Any]:
     _require(len(matches) == 1, "the pinned source was not seeded into the ProductStore")
     resource = matches[0]
     document = resource.get("document")
-    _require(
-        resource.get("status") == "pinned" and isinstance(document, Mapping),
-        "the ProductStore source record is not pinned",
-    )
+    if resource.get("status") != "pinned" or not isinstance(document, Mapping):
+        raise SourceIntakeJourneyError("the ProductStore source record is not pinned")
     return document
 
 
@@ -661,6 +661,7 @@ def produce_source_intake_gate_evidence(
             ),
             "the source-intake package IDs unexpectedly existed before activation",
         )
+        initial_authority = cast(Mapping[str, Any], initial_authority)
         source = _research_source(service)
         profile = next(
             (
@@ -673,6 +674,7 @@ def produce_source_intake_gate_evidence(
             None,
         )
         _require(profile is not None, "no reviewed Execute profile can dispatch the source action")
+        profile = cast(RunnerProfile, profile)
         product_intake = service.intake_reviewed_t1082(
             {
                 "destination_id": PRIMARY_INTAKE_DESTINATION_ID,
@@ -772,6 +774,12 @@ def produce_source_intake_gate_evidence(
             and str(receipt_record["completed_at"]).endswith("Z"),
             "the public reviewed-source intake operation returned a detached result",
         )
+        intake_summary = cast(Mapping[str, Any], intake_summary)
+        artifact_summary = cast(Mapping[str, Any], artifact_summary)
+        activation_summary = cast(Mapping[str, Any], activation_summary)
+        receipt_summary = cast(Mapping[str, Any], receipt_summary)
+        package_summary = cast(Mapping[str, Any], package_summary)
+        activation_delta = cast(Mapping[str, Any], activation_delta)
         run = service.run(
             {
                 "scenario": _scenario(str(intake_envelope["record_sha256"])),
@@ -815,6 +823,7 @@ def produce_source_intake_gate_evidence(
             and isinstance(active_authority, Mapping),
             "the imported behavior or action is absent from the active catalog",
         )
+        active_authority = cast(Mapping[str, Any], active_authority)
         browser = _browser_evidence(
             root,
             destination,

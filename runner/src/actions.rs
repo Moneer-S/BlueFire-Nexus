@@ -5,7 +5,6 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
-use hmac::{Hmac, Mac};
 use serde::de::DeserializeOwned;
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
@@ -17,6 +16,11 @@ use crate::contract::{
     Platform, RunnerProfile, SafetyTier, TaskStatus,
 };
 use crate::process::run_process_discovery;
+use crate::receiver_auth::{
+    authentication_value as receiver_authentication_value, opaque_hmac_handle,
+    opaque_public_handle, valid_lower_hex_32,
+    verify_authentication as verify_receiver_authentication,
+};
 use crate::safety::{
     ensure_network_authorized, ensure_path_authorized, normalize_relative, owned_directories,
     owned_file, read_file_bounded, OwnedPath, ReceiptIntent, SafeRoot,
@@ -650,6 +654,99 @@ impl Action for NativeCanaryAction {
     }
     fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
         Ok(Box::new(NativeCanaryPrepared(parse_params(params)?)))
+    }
+}
+
+// -------------------------------------------------------------------------
+// sandbox.execution.process-tree-cancellation-witness.v1
+
+struct ProcessTreeCancellationWitnessPrepared;
+
+impl PreparedAction for ProcessTreeCancellationWitnessPrepared {
+    fn execute(
+        self: Box<Self>,
+        context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        let map_failure = |error: crate::cancellation_witness::WitnessFailure| match error.kind {
+            crate::cancellation_witness::WitnessFailureKind::Blocked => {
+                ActionFailure::blocked("cancellation_witness_blocked", error.message)
+            }
+            crate::cancellation_witness::WitnessFailureKind::Failed => {
+                ActionFailure::failed("cancellation_witness_failed", error.message)
+            }
+            crate::cancellation_witness::WitnessFailureKind::TimedOut => {
+                ActionFailure::timed_out("cancellation_witness_timeout", error.message)
+            }
+        };
+        let layout = crate::cancellation_witness::witness_layout(&context.manifest.request_hash)
+            .map_err(map_failure)?;
+        for relative in [
+            crate::cancellation_witness::CONTROL_PARENT_DIRECTORY,
+            layout.task_relative_path.as_str(),
+            layout.lease_relative_path.as_str(),
+            layout.ready_relative_path.as_str(),
+            layout.request_relative_path.as_str(),
+            layout.ack_relative_path.as_str(),
+        ] {
+            authorize_path(context, relative, false)?;
+        }
+        let expires_remaining = context
+            .manifest
+            .expires_at
+            .signed_duration_since(crate::contract::utc_now())
+            .to_std()
+            .map_err(|_| {
+                ActionFailure::timed_out(
+                    "cancellation_witness_timeout",
+                    "the sealed manifest deadline elapsed before the cancellation witness started",
+                )
+            })?;
+        let remaining =
+            expires_remaining.min(Duration::from_millis(context.manifest.limits.timeout_ms));
+        if remaining.is_zero() {
+            return Err(ActionFailure::timed_out(
+                "cancellation_witness_timeout",
+                "the cancellation witness has no remaining sealed execution time",
+            ));
+        }
+        crate::cancellation_witness::run_process_tree_cancellation_witness(
+            context.root,
+            remaining,
+            &layout,
+        )
+        .map(ActionOutcome::success)
+        .map_err(map_failure)
+    }
+}
+
+struct ProcessTreeCancellationWitnessAction;
+static PROCESS_TREE_CANCELLATION_WITNESS_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    platforms: WINDOWS_PLATFORMS,
+    ..reviewed_descriptor! {
+        id: "sandbox.execution.process-tree-cancellation-witness.v1",
+        version: "1.0.0",
+        behavior_ids: &["sandbox.execution.process-tree-cancellation-witness.v1"],
+        summary: "Cooperatively acknowledge a private nonce, then require Windows Job termination of the native runner and its fixed self-spawned descendant.",
+        schema: empty_action_schema,
+        capabilities: &[Capability::NativeExecution, Capability::FilesystemRead, Capability::FilesystemWrite, Capability::ProcessSpawn],
+        tier: SafetyTier::Safe,
+        readiness: ActionReadiness::Ready,
+        targets: &["sandbox", "runner_process"],
+        hints: &[ObservationHint { source: "process", signal: "process_tree_cancellation" }],
+        cleanup: None,
+        limits: TASK_LIMITS,
+        effects: (true, false, true),
+        receipt: false,
+    }
+};
+impl Action for ProcessTreeCancellationWitnessAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        &PROCESS_TREE_CANCELLATION_WITNESS_DESCRIPTOR
+    }
+
+    fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        let _: EmptyParams = parse_params(params)?;
+        Ok(Box::new(ProcessTreeCancellationWitnessPrepared))
     }
 }
 
@@ -2731,8 +2828,6 @@ const LAB_SOURCE_PEER_HANDLE_DOMAIN: &[u8] = b"bluefire.disposable-lab.source-pe
 const LAB_DESTINATION_PEER_HANDLE_DOMAIN: &[u8] = b"bluefire.disposable-lab.destination-peer.v1\0";
 const LOOPBACK_RECEIVER_PROTOCOL_LIMIT: usize = 32 * 1024;
 
-type HmacSha256 = Hmac<Sha256>;
-
 struct LoopbackReceiverTaskAuthentication {
     task_id: String,
     task_key: [u8; 32],
@@ -2799,13 +2894,6 @@ fn valid_receiver_task_id(value: &str) -> bool {
         })
 }
 
-fn valid_lower_hex_32(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 fn receiver_task_authentication() -> Result<LoopbackReceiverTaskAuthentication, ActionFailure> {
     let task_id = env::var_os(LOOPBACK_RECEIVER_TASK_ID_ENV);
     let task_key = env::var_os(LOOPBACK_RECEIVER_TASK_KEY_ENV);
@@ -2849,52 +2937,6 @@ fn receiver_task_authentication() -> Result<LoopbackReceiverTaskAuthentication, 
         )
     })?;
     Ok(LoopbackReceiverTaskAuthentication { task_id, task_key })
-}
-
-fn receiver_authentication_value(key: &[u8; 32], domain: &[u8], payload: &[u8]) -> String {
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC-SHA256 accepts a 32-byte key");
-    mac.update(domain);
-    mac.update(payload);
-    format!("sha256:{}", hex::encode(mac.finalize().into_bytes()))
-}
-
-fn opaque_hmac_handle(key: &[u8; 32], domain: &[u8], payload: &[u8]) -> String {
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC-SHA256 accepts a 32-byte key");
-    mac.update(domain);
-    mac.update(payload);
-    hex::encode(mac.finalize().into_bytes())
-}
-
-fn opaque_public_handle(domain: &[u8], payloads: &[&[u8]]) -> String {
-    let mut digest = Sha256::new();
-    digest.update(domain);
-    for payload in payloads {
-        digest.update(payload);
-    }
-    hex::encode(digest.finalize())
-}
-
-fn verify_receiver_authentication(
-    key: &[u8; 32],
-    domain: &[u8],
-    payloads: &[&[u8]],
-    authentication: &str,
-) -> bool {
-    let Some(encoded) = authentication.strip_prefix("sha256:") else {
-        return false;
-    };
-    if !valid_lower_hex_32(encoded) {
-        return false;
-    }
-    let Ok(candidate) = hex::decode(encoded) else {
-        return false;
-    };
-    let mut mac = HmacSha256::new_from_slice(key).expect("HMAC-SHA256 accepts a 32-byte key");
-    mac.update(domain);
-    for payload in payloads {
-        mac.update(payload);
-    }
-    mac.verify_slice(&candidate).is_ok()
 }
 
 fn remaining_deadline(started: Instant, budget: Duration) -> Result<Duration, String> {
@@ -3229,15 +3271,19 @@ fn validate_loopback_challenge(
     Ok(challenge)
 }
 
+struct LoopbackAcknowledgementContext<'a> {
+    authentication: &'a LoopbackReceiverTaskAuthentication,
+    request_authentication: &'a str,
+    challenge: &'a LoopbackReceiverChallenge,
+    expected_sha256: &'a str,
+    expected_bytes: usize,
+    require_disposable_peer: bool,
+}
+
 fn validate_loopback_acknowledgement(
     response: &[u8],
     truncated: bool,
-    authentication: &LoopbackReceiverTaskAuthentication,
-    request_authentication: &str,
-    challenge: &LoopbackReceiverChallenge,
-    expected_sha256: &str,
-    expected_bytes: usize,
-    require_disposable_peer: bool,
+    context: &LoopbackAcknowledgementContext<'_>,
 ) -> Result<LoopbackReceiverResult, String> {
     let response = parse_authenticated_loopback_response(response, truncated)?;
     if !matches!(response.status_code, 200 | 201) {
@@ -3245,9 +3291,13 @@ fn validate_loopback_acknowledgement(
     }
     let value = parse_canonical_json(&response.body, "receiver acknowledgement")?;
     if !verify_receiver_authentication(
-        &authentication.task_key,
+        &context.authentication.task_key,
         LOOPBACK_RECEIVER_RESPONSE_DOMAIN,
-        &[request_authentication.as_bytes(), b"\0", &response.body],
+        &[
+            context.request_authentication.as_bytes(),
+            b"\0",
+            &response.body,
+        ],
         &response.authentication,
     ) {
         return Err("receiver acknowledgement authentication failed".to_string());
@@ -3258,25 +3308,25 @@ fn validate_loopback_acknowledgement(
     if !acknowledgement.accepted {
         return Err("receiver did not acknowledge the artifact".to_string());
     }
-    if acknowledgement.task_id != authentication.task_id
-        || acknowledgement.session_id != challenge.session_id
+    if acknowledgement.task_id != context.authentication.task_id
+        || acknowledgement.session_id != context.challenge.session_id
     {
         return Err("receiver acknowledgement task or session did not match".to_string());
     }
-    if acknowledgement.sha256 != expected_sha256 {
+    if acknowledgement.sha256 != context.expected_sha256 {
         return Err("receiver acknowledgement digest did not match".to_string());
     }
-    if acknowledgement.bytes_received != expected_bytes as u64 {
+    if acknowledgement.bytes_received != context.expected_bytes as u64 {
         return Err("receiver acknowledgement byte count did not match".to_string());
     }
     if (response.status_code == 201) != acknowledgement.stored {
         return Err("receiver acknowledgement storage status did not match".to_string());
     }
-    if require_disposable_peer {
+    if context.require_disposable_peer {
         if acknowledgement.schema_version != DISPOSABLE_PEER_RESULT_SCHEMA_VERSION
             || response.status_code != 200
             || acknowledgement.stored
-            || acknowledgement.receiver_process_id != challenge.receiver_process_id
+            || acknowledgement.receiver_process_id != context.challenge.receiver_process_id
             || acknowledgement.receiver_mode.as_deref() != Some("disposable_peer")
             || acknowledgement.terminal_disposition.as_deref() != Some("exit_after_response")
         {
@@ -3459,15 +3509,18 @@ impl PreparedAction for NetworkLoopbackPrepared {
         let acknowledgement = if timed_out {
             None
         } else {
+            let context = LoopbackAcknowledgementContext {
+                authentication: &receiver_authentication,
+                request_authentication: &request_authentication,
+                challenge: &challenge,
+                expected_sha256: &body_sha256,
+                expected_bytes: body.len(),
+                require_disposable_peer: self.include_disposable_lab_evidence,
+            };
             Some(validate_loopback_acknowledgement(
                 &response_bytes,
                 response.truncated,
-                &receiver_authentication,
-                &request_authentication,
-                &challenge,
-                &body_sha256,
-                body.len(),
-                self.include_disposable_lab_evidence,
+                &context,
             ))
         };
         let receiver_stored = acknowledgement
@@ -4115,6 +4168,8 @@ impl Action for CleanupAction {
 }
 
 static NATIVE_CANARY: NativeCanaryAction = NativeCanaryAction;
+static PROCESS_TREE_CANCELLATION_WITNESS: ProcessTreeCancellationWitnessAction =
+    ProcessTreeCancellationWitnessAction;
 static IDENTITY_MATERIAL_SEED: IdentityMaterialSeedAction = IdentityMaterialSeedAction;
 static IDENTITY_MATERIAL_INSPECT: IdentityMaterialInspectAction = IdentityMaterialInspectAction;
 static FIXTURE_CREATE: FixtureCreateAction = FixtureCreateAction;
@@ -4135,8 +4190,9 @@ static RESTRICTED_PERSISTENCE_MARKER: RestrictedPersistenceMarkerAction =
     RestrictedPersistenceMarkerAction;
 static CLEANUP: CleanupAction = CleanupAction;
 
-static REGISTRY: [&'static dyn Action; 19] = [
+static REGISTRY: [&'static dyn Action; 20] = [
     &NATIVE_CANARY,
+    &PROCESS_TREE_CANCELLATION_WITNESS,
     &IDENTITY_MATERIAL_SEED,
     &IDENTITY_MATERIAL_INSPECT,
     &FIXTURE_CREATE,
@@ -4189,6 +4245,7 @@ mod tests {
             .collect::<BTreeSet<_>>();
         let expected = BTreeSet::from([
             "sandbox.execution.native-canary.v1",
+            "sandbox.execution.process-tree-cancellation-witness.v1",
             "sandbox.identity-material.seed.v1",
             "sandbox.identity-material.inspect.v1",
             "sandbox.fixture.create.v1",
@@ -4256,6 +4313,31 @@ mod tests {
         assert!(!descriptor.cleanup_receipt);
         assert!(descriptor.cleanup_action_id.is_none());
         assert_eq!((descriptor.parameter_schema)(), windows_version_schema());
+    }
+
+    #[test]
+    fn cancellation_witness_is_a_fixed_windows_process_tree_contract() {
+        let descriptor = find_action("sandbox.execution.process-tree-cancellation-witness.v1")
+            .expect("cancellation witness must be registered")
+            .descriptor();
+        assert_eq!(descriptor.platforms, WINDOWS_PLATFORMS);
+        assert_eq!(
+            descriptor.capabilities,
+            &[
+                Capability::NativeExecution,
+                Capability::FilesystemRead,
+                Capability::FilesystemWrite,
+                Capability::ProcessSpawn
+            ]
+        );
+        assert_eq!(descriptor.safety_tier, SafetyTier::Safe);
+        assert!(descriptor.filesystem_effect);
+        assert!(!descriptor.network_effect);
+        assert!(descriptor.process_effect);
+        assert!(!descriptor.cleanup_receipt);
+        assert!(descriptor.cleanup_action_id.is_none());
+        assert_eq!((descriptor.parameter_schema)(), empty_action_schema());
+        assert!(descriptor.behavior_ids.contains(&descriptor.action_id));
     }
 
     #[test]

@@ -86,7 +86,7 @@ test("Execute approval cannot bypass canonical review and legacy authority is sc
 
   await page.evaluate(() => window.localStorage.setItem("bluefire.local.run-config.v1", JSON.stringify({ mode: "execute", approved: true, approvedBy: "persisted-e2e" })));
   await page.reload();
-  await expect(page.getByRole("radio", { name: /Simulate/ })).toBeChecked();
+  await expect(page.getByRole("radio", { name: "Simulate Synthetic evidence" })).toBeChecked();
   await expect(page.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => JSON.parse(window.localStorage.getItem("bluefire.local.run-config.v1") ?? "{}"))).toEqual({
     schema_version: "bluefire.ui-preferences.v1",

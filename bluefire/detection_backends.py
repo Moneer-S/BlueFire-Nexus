@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from importlib import metadata
 from time import monotonic
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Protocol, Sequence, cast
 
 from .detection_backend_health import PYSIGMA_PIN as _PYSIGMA_PIN
 from .detection_backend_health import (
@@ -62,8 +62,14 @@ _EXECUTION_LIMITS = {
     "result_fields": _MAX_RESULT_FIELDS, "result_bytes": _MAX_RESULT_BYTES,
     "vm_steps": _MAX_VM_STEPS, "deadline_ms": int(_QUERY_DEADLINE_SECONDS * 1000),
 }
-_SQLITE_LIMITS = ((sqlite3.SQLITE_LIMIT_LENGTH, _MAX_RESULT_BYTES), (sqlite3.SQLITE_LIMIT_SQL_LENGTH, _MAX_QUERY_BYTES),
-    (sqlite3.SQLITE_LIMIT_COLUMN, _MAX_RESULT_FIELDS), (sqlite3.SQLITE_LIMIT_EXPR_DEPTH, 32), (sqlite3.SQLITE_LIMIT_COMPOUND_SELECT, 1), (sqlite3.SQLITE_LIMIT_VDBE_OP, _MAX_VM_STEPS), (sqlite3.SQLITE_LIMIT_FUNCTION_ARG, 16), (sqlite3.SQLITE_LIMIT_ATTACHED, 0), (sqlite3.SQLITE_LIMIT_LIKE_PATTERN_LENGTH, 4096), (sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 0))
+
+
+def _sqlite_constant(name: str) -> int:
+    return cast(int, getattr(sqlite3, name))
+
+
+_SQLITE_LIMITS = ((_sqlite_constant("SQLITE_LIMIT_LENGTH"), _MAX_RESULT_BYTES), (_sqlite_constant("SQLITE_LIMIT_SQL_LENGTH"), _MAX_QUERY_BYTES),
+    (_sqlite_constant("SQLITE_LIMIT_COLUMN"), _MAX_RESULT_FIELDS), (_sqlite_constant("SQLITE_LIMIT_EXPR_DEPTH"), 32), (_sqlite_constant("SQLITE_LIMIT_COMPOUND_SELECT"), 1), (_sqlite_constant("SQLITE_LIMIT_VDBE_OP"), _MAX_VM_STEPS), (_sqlite_constant("SQLITE_LIMIT_FUNCTION_ARG"), 16), (_sqlite_constant("SQLITE_LIMIT_ATTACHED"), 0), (_sqlite_constant("SQLITE_LIMIT_LIKE_PATTERN_LENGTH"), 4096), (_sqlite_constant("SQLITE_LIMIT_VARIABLE_NUMBER"), 0))
 SQLITE_LOG_FIELDS = tuple("""fixture_id timestamp EventID Channel Provider_Name Computer User Image OriginalFileName CommandLine
     ParentImage ParentCommandLine CurrentDirectory IntegrityLevel Hashes ProcessId ParentProcessId TargetFilename CreationUtcTime
     SourceIp SourcePort DestinationIp DestinationPort Protocol QueryName QueryStatus EventType TargetObject Details SubjectUserName
@@ -231,12 +237,12 @@ def inspect_sqlite_query(query: str) -> Mapping[str, Any]:
             continue
         lowered = token.value.casefold()
         previous = tokens[index - 1].value.casefold() if index else ""
-        following = tokens[index + 1].value if index + 1 < len(tokens) else ""
+        following_value = tokens[index + 1].value if index + 1 < len(tokens) else ""
         if (
             lowered in _SQL_KEYWORDS
             or lowered == "logs"
             or previous in {"as", "collate"}
-            or following == "("
+            or following_value == "("
         ):
             continue
         canonical = _FIELD_INDEX.get(lowered)
@@ -403,9 +409,14 @@ def _prepare_fixtures(
     return fixture_ids, inserts, sorted(mapped_fields), sorted(unsupported_fields)
 
 
+class _LimitConnection(Protocol):
+    def setlimit(self, category: int, limit: int) -> int: ...
+
+
 def _configure_limits(connection: sqlite3.Connection) -> None:
+    limited_connection = cast(_LimitConnection, connection)
     for category, limit in _SQLITE_LIMITS:
-        connection.setlimit(category, limit)
+        limited_connection.setlimit(category, limit)
 
 
 def _sqlite_authorizer(
@@ -533,6 +544,7 @@ class ExternalDetectionValidator:
     def health() -> Mapping[str, Mapping[str, Any]]:
         return detection_backend_health()
 
+    # fmt: off
     def parse_sigma(self, candidate: Any, source: str) -> Any:
         self._require_hypothesis(candidate, "sigma")
         source = self._source(source)
@@ -553,28 +565,13 @@ class ExternalDetectionValidator:
                 DetectionState.REJECTED,
                 rule_source=source,
                 rejection_reason=str(exc)[:1000],
-                validation={
-                    **details,
-                    "backend": "pySigma",
-                    "errors": [str(exc)[:300]],
-                    "source_sha256": _sha256_text(source),
-                    "source_rule_executed": False,
-                },
+                validation={**details, "backend": "pySigma", "errors": [str(exc)[:300]], "source_sha256": _sha256_text(source), "source_rule_executed": False},
             )
-        conversion.update(
-            query_compiled=True,
-            dry_run_result_fields=dry_run["result_fields"],
-            source_rule_executed=False,
-        )
+        conversion.update(query_compiled=True, dry_run_result_fields=dry_run["result_fields"], source_rule_executed=False)
         return candidate.transition(
             DetectionState.PARSED,
             rule_source=source,
-            parser_backend={
-                "name": "pySigma",
-                "version": str(conversion["version"]),
-                "conversion_backend": str(conversion["conversion_backend"]),
-                "conversion_backend_version": str(conversion["conversion_backend_version"]),
-            },
+            parser_backend={"name": "pySigma", "version": str(conversion["version"]), "conversion_backend": str(conversion["conversion_backend"]), "conversion_backend_version": str(conversion["conversion_backend_version"])},
             validation=conversion,
         )
 
@@ -584,10 +581,7 @@ class ExternalDetectionValidator:
         details: dict[str, Any] = {}
         try:
             inspection = inspect_sqlite_query(source)
-            details = {
-                "converted_query": inspection["query"],
-                **{key: value for key, value in inspection.items() if key != "query"},
-            }
+            details = {"converted_query": inspection["query"], **{key: value for key, value in inspection.items() if key != "query"}}
             if inspection["unsupported_fields"]:
                 raise DetectionBackendError(
                     "SQLite query references unsupported fields: "
@@ -599,33 +593,16 @@ class ExternalDetectionValidator:
                 DetectionState.REJECTED,
                 rule_source=source,
                 rejection_reason=str(exc)[:1000],
-                validation={
-                    **details,
-                    "backend": "SQLite bounded executor",
-                    "version": sqlite3.sqlite_version,
-                    "errors": [str(exc)[:300]],
-                    "source_sha256": _sha256_text(source),
-                    "source_rule_executed": False,
-                },
+                validation={**details, "backend": "SQLite bounded executor", "version": sqlite3.sqlite_version, "errors": [str(exc)[:300]], "source_sha256": _sha256_text(source), "source_rule_executed": False},
             )
-        validation = {
-            "backend": "SQLite bounded executor",
-            "version": sqlite3.sqlite_version,
-            "conversion_table": "logs",
-            "errors": [],
-            "source_sha256": _sha256_text(source),
-            "converted_query": inspection["query"],
-            **{key: value for key, value in inspection.items() if key != "query"},
-            "query_compiled": True,
-            "dry_run_result_fields": dry_run["result_fields"],
-            "source_rule_executed": False,
-        }
+        validation = {"backend": "SQLite bounded executor", "version": sqlite3.sqlite_version, "conversion_table": "logs", "errors": [], "source_sha256": _sha256_text(source), "converted_query": inspection["query"], **{key: value for key, value in inspection.items() if key != "query"}, "query_compiled": True, "dry_run_result_fields": dry_run["result_fields"], "source_rule_executed": False}
         return candidate.transition(
             DetectionState.PARSED,
             rule_source=source,
             parser_backend={"name": "SQLite bounded executor", "version": sqlite3.sqlite_version},
             validation=validation,
         )
+    # fmt: on
 
     def exercise_query_fixtures(self, candidate: Any, fixtures: Sequence[Mapping[str, Any]]) -> Any:
         if candidate.state is not DetectionState.PARSED:

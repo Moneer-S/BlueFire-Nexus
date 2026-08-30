@@ -391,7 +391,7 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
                 },
             }
         )
-        if receiver_process is not None:
+        if receiver_process is not None and result["objective_reached"] is True:
             receiver_process.wait(timeout=10)
     finally:
         if receiver_thread is not None:

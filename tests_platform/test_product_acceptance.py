@@ -13,6 +13,7 @@ from jsonschema import Draft202012Validator, FormatChecker, ValidationError
 
 import bluefire.cli as cli
 import bluefire.product_acceptance as acceptance
+import bluefire.product_acceptance_artifacts as acceptance_artifacts
 import bluefire.product_acceptance_process as acceptance_process
 import bluefire.product_acceptance_verifier as acceptance_verifier
 import bluefire.product_gates as product_gates
@@ -751,6 +752,118 @@ def test_harness_kills_timed_out_workflow_and_records_exact_failure(tmp_path: Pa
     assert "exceeded its 1-second timeout" in result["gates"][0]["failure_reason"]
 
 
+def _integrity_repository(tmp_path: Path, *, attributes: str | None = None) -> Path:
+    repository = tmp_path / "integrity-repository"
+    repository.mkdir()
+    (repository / "tracked.txt").write_bytes(b"first line\nsecond line\n")
+    if attributes is not None:
+        (repository / ".gitattributes").write_text(attributes, encoding="utf-8")
+    for command in (
+        ("init", "-q"),
+        ("config", "user.email", "acceptance@example.invalid"),
+        ("config", "user.name", "Acceptance Test"),
+        ("add", "."),
+        ("commit", "-qm", "fixture"),
+    ):
+        subprocess.run(
+            ["git", *command],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+    return repository
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected_tag"),
+    [
+        (("--assume-unchanged",), "h"),
+        (("--skip-worktree",), "S"),
+        (("--assume-unchanged", "--skip-worktree"), "s"),
+    ],
+)
+def test_repository_state_rejects_hidden_tracked_content(
+    tmp_path: Path, flags: tuple[str, ...], expected_tag: str
+) -> None:
+    repository = _integrity_repository(tmp_path)
+    for flag in flags:
+        subprocess.run(
+            ["git", "update-index", flag, "tracked.txt"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+    (repository / "tracked.txt").write_bytes(b"hidden replacement\n")
+
+    porcelain = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    tagged = subprocess.run(
+        ["git", "ls-files", "-v", "tracked.txt"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert porcelain.stdout == b""
+    assert tagged.stdout.startswith(expected_tag + " ")
+
+    state = acceptance._repository_state(repository)
+
+    assert state["available"] is True
+    assert state["clean"] is False
+    assert any(f"forbidden Git index flag {expected_tag}" in item for item in state["status"])
+    assert any("content differs from the Git index" in item for item in state["status"])
+
+
+def test_repository_state_accepts_builtin_crlf_checkout_normalization(tmp_path: Path) -> None:
+    repository = _integrity_repository(tmp_path, attributes="*.txt text eol=crlf\n")
+    (repository / "tracked.txt").write_bytes(b"first line\r\nsecond line\r\n")
+    subprocess.run(
+        ["git", "add", "tracked.txt"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+
+    assert b"\r\n" in (repository / "tracked.txt").read_bytes()
+    state = acceptance._repository_state(repository)
+
+    assert state["available"] is True
+    assert state["status"] == []
+    assert state["clean"] is True
+
+
+@pytest.mark.parametrize(
+    ("attributes", "attribute_name"),
+    [
+        ("*.txt filter=private-cleaner\n", "filter"),
+        ("*.txt working-tree-encoding=UTF-8\n", "working-tree-encoding"),
+        ("*.txt ident\n", "ident"),
+    ],
+)
+def test_repository_state_rejects_non_eol_content_transform_attributes(
+    tmp_path: Path, attributes: str, attribute_name: str
+) -> None:
+    repository = _integrity_repository(tmp_path, attributes=attributes)
+    porcelain = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    assert porcelain.stdout == b""
+
+    state = acceptance._repository_state(repository)
+
+    assert state["available"] is True
+    assert state["clean"] is False
+    assert any(f"forbidden {attribute_name} attribute" in item for item in state["status"])
+
+
 def test_release_precondition_refuses_dirty_workflow_code_without_execution(tmp_path: Path) -> None:
     contract = _fixture_contract(tmp_path)
     repository = tmp_path / "repository"
@@ -1018,6 +1131,19 @@ def test_playwright_browser_resource_rejects_an_aliased_ancestor(tmp_path: Path)
     assert acceptance_process._playwright_browsers_path(environment) is None
 
 
+def test_cargo_cache_resource_is_explicit_and_rejects_credentials(tmp_path: Path) -> None:
+    cargo_home = tmp_path / "cargo-cache"
+    (cargo_home / "registry").mkdir(parents=True)
+    environment = {acceptance_process._CARGO_HOME_RESOURCE_ENV: str(cargo_home)}
+
+    assert acceptance_process._cargo_cache_home_path(environment) == cargo_home.resolve()
+    (cargo_home / "credentials.toml").write_text("[registry]\ntoken = 'secret'\n", encoding="utf-8")
+    assert acceptance_process._cargo_cache_home_path(environment) is None
+
+    environment[acceptance_process._CARGO_HOME_RESOURCE_ENV] = "relative-cache"
+    assert acceptance_process._cargo_cache_home_path(environment) is None
+
+
 def test_public_workflow_text_and_receipts_redact_paths_and_secrets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1042,9 +1168,38 @@ def test_public_workflow_text_and_receipts_redact_paths_and_secrets(
     assert "bearer-token-value-123456" not in redacted
     assert "ghp_1234567890abcdefghijkl" not in redacted  # pragma: allowlist secret
 
+    private_paths = (
+        r"Z:\private-host\case\artifact.json",
+        r"\\private-server\private-share\artifact.json",
+        "/mnt/c/" + "Users/private-user/artifact.json",
+        "/opt/private-host/case/artifact.json",
+        "file:///" + "home/private-user/artifact.json",
+    )
+    for private_path in private_paths:
+        value = acceptance_process._redact_runtime_paths(
+            f"failure at {private_path}",
+            repository=repository,
+            run_dir=run_dir,
+        )
+        assert private_path not in value
+        assert value == "[private-path-redacted]"
+    assert (
+        acceptance_process._redact_runtime_paths(
+            "remote=https://example.invalid/api/v1/status",
+            repository=repository,
+            run_dir=run_dir,
+        )
+        == "remote=https://example.invalid/api/v1/status"
+    )
+
     receipt = run_dir / "gate-receipt.json"
     receipt.write_text(
-        json.dumps({"failure_reason": raw, "environment_limitations": [raw]}),
+        json.dumps(
+            {
+                "failure_reason": raw,
+                "environment_limitations": [raw, *private_paths],
+            }
+        ),
         encoding="utf-8",
     )
     acceptance_process._sanitize_gate_receipt(
@@ -1055,6 +1210,95 @@ def test_public_workflow_text_and_receipts_redact_paths_and_secrets(
     sanitized = receipt.read_text(encoding="utf-8")
     assert secret not in sanitized
     assert str(repository) not in sanitized
+    assert all(private_path not in sanitized for private_path in private_paths)
+
+
+def test_public_evidence_rejects_private_paths_links_and_unstable_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_dir = tmp_path / "acceptance"
+    gate_dir = run_dir / "gate-01"
+    gate_dir.mkdir(parents=True)
+    artifact = gate_dir / "proof.json"
+    private_paths = (
+        r"Z:\private-host\case\artifact.json",
+        r"\\private-server\private-share\artifact.json",
+        "/mnt/c/" + "Users/private-user/artifact.json",
+        "/opt/private-host/case/artifact.json",
+    )
+    for private_path in private_paths:
+        artifact.write_text(json.dumps({"path": private_path}), encoding="utf-8")
+        with pytest.raises(ValueError, match="discloses a local absolute path"):
+            acceptance._relative_artifact(run_dir, artifact, "declared-proof")
+
+    outside = tmp_path / "outside-private-evidence.json"
+    outside.write_text("{}", encoding="utf-8")
+    hard_link = gate_dir / "hard-link.json"
+    try:
+        os.link(outside, hard_link)
+    except OSError:
+        pass
+    else:
+        with pytest.raises(ValueError, match="multiply-linked"):
+            acceptance._relative_artifact(run_dir, hard_link, "declared-proof")
+
+    target = gate_dir / "target.json"
+    target.write_text("{}", encoding="utf-8")
+    alias = gate_dir / "alias.json"
+    try:
+        alias.symlink_to(target.name)
+    except OSError:
+        pass
+    else:
+        with pytest.raises(ValueError, match="safe regular file"):
+            acceptance._relative_artifact(run_dir, alias, "declared-proof")
+
+    stable = gate_dir / "stable.json"
+    stable.write_text("{}", encoding="utf-8")
+    real_identity = acceptance_artifacts._identity
+    calls = 0
+
+    def changed_identity(details):
+        nonlocal calls
+        calls += 1
+        identity = real_identity(details)
+        if calls == 4:
+            return (*identity[:-4], identity[-4] + 1, *identity[-3:])
+        return identity
+
+    monkeypatch.setattr(acceptance_artifacts, "_identity", changed_identity)
+    with pytest.raises(ValueError, match="identity changed while being read"):
+        acceptance._relative_artifact(run_dir, stable, "declared-proof")
+
+
+def test_persisted_verifier_rejects_multiply_linked_evidence(tmp_path: Path) -> None:
+    probe_source = tmp_path / "hard-link-probe-source"
+    probe_link = tmp_path / "hard-link-probe-link"
+    probe_source.write_bytes(b"probe")
+    try:
+        os.link(probe_source, probe_link)
+    except OSError:
+        pytest.skip("hard links are unavailable")
+    probe_link.unlink()
+    probe_source.unlink()
+
+    result = _run_fixture(tmp_path)
+    result_path = next((tmp_path / "results").glob("*/acceptance-result.json"))
+    proof = result_path.parent / "gate-01" / "proof.json"
+    outside = tmp_path / "outside-proof.json"
+    outside.write_bytes(proof.read_bytes())
+    proof.unlink()
+    os.link(outside, proof)
+
+    contract = _fixture_contract(tmp_path)
+    with pytest.raises(ValueError, match="multiply-linked"):
+        acceptance_verifier.verify_result_file(
+            result_path,
+            contract=contract.document,
+            contract_digest=contract.digest,
+        )
+    assert result["status"] == "passed"
 
 
 def test_harness_detects_evidence_changed_by_a_later_gate(tmp_path: Path) -> None:

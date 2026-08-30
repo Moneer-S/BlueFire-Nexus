@@ -366,7 +366,7 @@ bluefire --runs-dir .bluefire-runs replay RUN_ID \
   --defense-change "Enabled reviewed detection revision 2"
 ```
 
-Execute replay requires a selected Execute profile, a fresh disposable workspace, current runner readiness, current scope/policy checks, and fresh exact approval. It never reuses the source run's approval. A restart-from-node variant seeds normalized prior artifact metadata but does not materialize a trusted checkpoint or replay prerequisite effects; missing or out-of-scope runner-owned state must be refused.
+Execute replay requires a selected Execute profile, a fresh disposable workspace, current runner readiness, current scope/policy checks, and fresh exact approval. It never reuses the source run's approval. A restart-from-node variant selects a content-addressed trusted checkpoint, recreates and verifies its materialized prefix in the fresh workspace, and refuses missing, corrupt, authority-incompatible, or out-of-scope state before continuation.
 
 Compare two or more finalized runs; the first is the baseline:
 

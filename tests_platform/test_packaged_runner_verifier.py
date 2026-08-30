@@ -2,7 +2,26 @@ from __future__ import annotations
 
 import pytest
 
-from tools.verify_packaged_runner import _disposable_workspace_proof
+from bluefire.cross_platform_wheel import _write_member
+from tools.verify_packaged_runner import _disposable_workspace_proof, _native_runner_members
+
+
+def test_packaged_wheel_refuses_foreign_native_runner_sibling() -> None:
+    root = "bluefire_nexus-0.1.0.data/purelib/bluefire/native"
+    with pytest.raises(RuntimeError, match="exactly one target-native runner"):
+        _native_runner_members(
+            [f"{root}/bluefire-runner.exe", f"{root}/bluefire-runner"],
+            "bluefire-runner.exe",
+        )
+
+
+def test_wheel_member_extraction_preserves_binary_bytes(tmp_path) -> None:
+    payload = b"MZ\n\x1a\n\x00binary\r\npayload\n"
+    destination = tmp_path / "bluefire-runner.exe"
+
+    _write_member(destination, payload)
+
+    assert destination.read_bytes() == payload
 
 
 def test_disposable_workspace_proof_is_sanitized_and_machine_checkable(tmp_path):

@@ -106,6 +106,26 @@ def _keyword_is_literal_false(call: ast.Call, name: str) -> bool:
     return len(values) == 1 and isinstance(values[0], ast.Constant) and values[0].value is False
 
 
+def _expression_matches(node: ast.AST | None, expression: str) -> bool:
+    if node is None:
+        return False
+    expected = ast.parse(expression, mode="eval")
+    return ast.dump(node, include_attributes=False) == ast.dump(
+        expected.body,
+        include_attributes=False,
+    )
+
+
+def _keyword_expressions_match(
+    call: ast.Call,
+    expected: tuple[tuple[str | None, str], ...],
+) -> bool:
+    return [keyword.arg for keyword in call.keywords] == [name for name, _ in expected] and all(
+        _expression_matches(keyword.value, expression)
+        for keyword, (_, expression) in zip(call.keywords, expected, strict=True)
+    )
+
+
 def _enclosing_function(
     node: ast.AST, parents: Mapping[ast.AST, ast.AST]
 ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
@@ -123,6 +143,7 @@ def _fixed_options_mapping(
     name: str,
     initial_keys: set[str],
     assigned_keys: set[str],
+    forwarded_to: tuple[str, str] | None = None,
 ) -> bool:
     initializers = [
         node
@@ -148,6 +169,7 @@ def _fixed_options_mapping(
         child: parent for parent in ast.walk(function) for child in ast.iter_child_nodes(parent)
     }
     expansions = 0
+    forwards = 0
     observed_assigned_keys: set[str] = set()
     for node in ast.walk(function):
         target: ast.AST | None = None
@@ -183,6 +205,18 @@ def _fixed_options_mapping(
             if isinstance(parent, ast.keyword) and parent.arg is None:
                 expansions += 1
                 continue
+            if (
+                forwarded_to is not None
+                and isinstance(parent, ast.keyword)
+                and parent.arg == forwarded_to[1]
+            ):
+                owner = parents.get(parent)
+                if (
+                    isinstance(owner, ast.Call)
+                    and _ast_qualified_name(owner.func) == forwarded_to[0]
+                ):
+                    forwards += 1
+                    continue
             return False
         if (
             isinstance(node, ast.Call)
@@ -191,7 +225,96 @@ def _fixed_options_mapping(
             and node.func.value.id == name
         ):
             return False
-    return expansions == 1 and observed_assigned_keys == assigned_keys
+    expected_forwards = 1 if forwarded_to is not None else 0
+    return (
+        expansions == 1
+        and forwards == expected_forwards
+        and observed_assigned_keys == assigned_keys
+    )
+
+
+def _copied_options_mapping(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    name: str,
+    source_name: str,
+    assigned_keys: set[str],
+) -> bool:
+    assignments = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr))
+        and any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in _simple_assignment_targets(node)
+        )
+    ]
+    if len(assignments) != 1:
+        return False
+    initializer = assignments[0]
+    targets = _simple_assignment_targets(initializer)
+    value = _assignment_value(initializer)
+    if (
+        len(targets) != 1
+        or not isinstance(targets[0], ast.Name)
+        or not _expression_matches(value, f"dict({source_name})")
+    ):
+        return False
+
+    parents = {
+        child: parent for parent in ast.walk(function) for child in ast.iter_child_nodes(parent)
+    }
+    expansions = 0
+    observed_assigned_keys: set[str] = set()
+    for node in ast.walk(function):
+        target: ast.AST | None = None
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            candidates = node.targets if isinstance(node, ast.Assign) else (node.target,)
+            for candidate in candidates:
+                if (
+                    isinstance(candidate, ast.Subscript)
+                    and isinstance(candidate.value, ast.Name)
+                    and candidate.value.id == name
+                ):
+                    target = candidate
+                    break
+                if (
+                    isinstance(candidate, ast.Name)
+                    and candidate.id == name
+                    and node is not initializer
+                ):
+                    return False
+        if isinstance(target, ast.Subscript):
+            key = target.slice
+            if not (
+                isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and key.value in assigned_keys
+            ):
+                return False
+            observed_assigned_keys.add(key.value)
+        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load):
+            parent = parents.get(node)
+            if isinstance(parent, ast.Subscript) and parent.value is node:
+                continue
+            if isinstance(parent, ast.keyword) and parent.arg is None:
+                expansions += 1
+                continue
+            return False
+
+    source_loads = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Name) and node.id == source_name and isinstance(node.ctx, ast.Load)
+    ]
+    return (
+        expansions == 1
+        and observed_assigned_keys == assigned_keys
+        and len(source_loads) == 1
+        and isinstance(value, ast.Call)
+        and source_loads[0] in value.args
+        and _function_parameter_is_unmodified(function, source_name)
+    )
 
 
 def _function_parameter_is_unmodified(
@@ -214,30 +337,115 @@ def _runner_client_popen_contract(path: Path) -> bool:
         if isinstance(node, ast.Call)
         and _resolved_python_name(node.func, module_aliases, symbol_aliases) == "subprocess.Popen"
     ]
-    if len(calls) != 1:
+    if len(calls) != 2:
         return False
-    call = calls[0]
     parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
-    function = _enclosing_function(call, parents)
-    if function is None or function.name != "_spawn":
+    calls_by_function: dict[str, list[ast.Call]] = {}
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    for call in calls:
+        function = _enclosing_function(call, parents)
+        if function is None:
+            return False
+        calls_by_function.setdefault(function.name, []).append(call)
+        functions[function.name] = function
+    if set(calls_by_function) != {"_spawn", "_spawn_linux_parent_death"} or any(
+        len(function_calls) != 1 for function_calls in calls_by_function.values()
+    ):
         return False
-    keyword_names = [keyword.arg for keyword in call.keywords]
-    return (
-        len(call.args) == 1
-        and isinstance(call.args[0], ast.Name)
-        and call.args[0].id == "argv"
-        and _function_parameter_is_unmodified(function, "argv")
-        and keyword_names == ["cwd", "env", "stdin", "stdout", "stderr", "shell", None]
-        and isinstance(call.keywords[-1].value, ast.Name)
-        and call.keywords[-1].value.id == "options"
-        and _keyword_is_literal_false(call, "shell")
+
+    spawn = functions["_spawn"]
+    spawn_call = calls_by_function["_spawn"][0]
+    parent_death_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _ast_qualified_name(node.func) == "self._spawn_linux_parent_death"
+    ]
+    if (
+        len(parent_death_calls) != 1
+        or _enclosing_function(parent_death_calls[0], parents) is not spawn
+    ):
+        return False
+    parent_death_forward = parent_death_calls[0]
+    spawn_valid = (
+        len(spawn_call.args) == 1
+        and _expression_matches(spawn_call.args[0], "argv")
+        and _function_parameter_is_unmodified(spawn, "argv")
+        and _keyword_expressions_match(
+            spawn_call,
+            (
+                ("cwd", "self.work_root"),
+                ("env", "environment"),
+                ("stdin", "subprocess.DEVNULL"),
+                ("stdout", "stdout"),
+                ("stderr", "stderr"),
+                ("shell", "False"),
+                (None, "options"),
+            ),
+        )
+        and len(parent_death_forward.args) == 1
+        and _expression_matches(parent_death_forward.args[0], "argv")
+        and _keyword_expressions_match(
+            parent_death_forward,
+            (
+                ("stdout", "stdout"),
+                ("stderr", "stderr"),
+                ("environment", "environment"),
+                ("inherited_descriptors", "inherited_descriptors"),
+                ("options", "options"),
+            ),
+        )
         and _fixed_options_mapping(
-            function,
+            spawn,
             name="options",
             initial_keys=set(),
-            assigned_keys={"creationflags", "start_new_session"},
+            assigned_keys={"creationflags", "start_new_session", "pass_fds"},
+            forwarded_to=("self._spawn_linux_parent_death", "options"),
         )
     )
+
+    parent_death = functions["_spawn_linux_parent_death"]
+    parent_death_call = calls_by_function["_spawn_linux_parent_death"][0]
+    parent_death_valid = (
+        len(parent_death_call.args) == 1
+        and _expression_matches(
+            parent_death_call.args[0],
+            """[
+                interpreter_launch[0],
+                "-I",
+                "-B",
+                "-X",
+                "utf8",
+                helper_launch[0],
+                str(os.getpid()),
+                str(child_socket.fileno()),
+                str(target_descriptor),
+                nonce,
+                ",".join(str(value) for value in helper_descriptors),
+                *argv,
+            ]""",
+        )
+        and _function_parameter_is_unmodified(parent_death, "argv")
+        and _keyword_expressions_match(
+            parent_death_call,
+            (
+                ("cwd", "self.work_root"),
+                ("env", "dict(environment)"),
+                ("stdin", "subprocess.DEVNULL"),
+                ("stdout", "stdout"),
+                ("stderr", "stderr"),
+                ("shell", "False"),
+                (None, "launch_options"),
+            ),
+        )
+        and _copied_options_mapping(
+            parent_death,
+            name="launch_options",
+            source_name="options",
+            assigned_keys={"pass_fds"},
+        )
+    )
+    return spawn_valid and parent_death_valid
 
 
 def _runner_lifecycle_popen_contract(path: Path) -> bool:
@@ -295,7 +503,7 @@ def _python_shell_findings(path: Path, repository: Path) -> list[dict[str, Any]]
 
     for node in ast.walk(tree):
         value = _assignment_value(node)
-        if value is None:
+        if value is None or not isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
             continue
         resolved_value = _resolved_python_name(value, module_aliases, symbol_aliases)
         targets = _simple_assignment_targets(node)
@@ -384,17 +592,16 @@ def _python_shell_findings(path: Path, repository: Path) -> list[dict[str, Any]]
         if resolved_name in {"getattr", "builtins.getattr"} and len(node.args) >= 2:
             attribute = node.args[1]
             resolved_target = _resolved_python_name(node.args[0], module_aliases, symbol_aliases)
-            dynamic_attribute = not (
-                isinstance(attribute, ast.Constant) and isinstance(attribute.value, str)
+            attribute_name = (
+                attribute.value
+                if isinstance(attribute, ast.Constant) and isinstance(attribute.value, str)
+                else None
             )
-            dangerous_attribute = (
-                isinstance(attribute, ast.Constant)
-                and isinstance(attribute.value, str)
-                and (
-                    attribute.value in PYTHON_SHELL_CALLS
-                    or attribute.value.startswith("exec")
-                    or attribute.value.startswith("spawn")
-                )
+            dynamic_attribute = attribute_name is None
+            dangerous_attribute = attribute_name is not None and (
+                attribute_name in PYTHON_SHELL_CALLS
+                or attribute_name.startswith("exec")
+                or attribute_name.startswith("spawn")
             )
             if resolved_target in {"asyncio", "os", "subprocess"} and (
                 dynamic_attribute or dangerous_attribute
@@ -404,7 +611,7 @@ def _python_shell_findings(path: Path, repository: Path) -> list[dict[str, Any]]
                         "kind": "dynamic_execution_lookup",
                         "line": node.lineno,
                         "call": (
-                            f"{resolved_target}.{attribute.value}"
+                            f"{resolved_target}.{attribute_name}"
                             if not dynamic_attribute
                             else f"{resolved_target}.<dynamic>"
                         ),
@@ -434,7 +641,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
     }
     texts = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
     expected_calls = {
-        "runner_client.py": ["subprocess.Popen"],
+        "runner_client.py": ["subprocess.Popen", "subprocess.Popen"],
         "runner_bootstrap.py": ["subprocess.run", "subprocess.run"],
         "runner_lifecycle.py": ["subprocess.Popen"],
         "runner_trust.py": ["subprocess.run", "subprocess.run"],

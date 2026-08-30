@@ -2,6 +2,8 @@
 use std::collections::BTreeMap;
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
 use std::io::{self, Read};
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::Path;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -11,6 +13,8 @@ use std::process::{Command, Stdio};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::thread;
 use std::time::{Duration, Instant};
+#[cfg(target_os = "linux")]
+use std::{ffi::CString, os::unix::ffi::OsStrExt, os::unix::fs::MetadataExt};
 
 use crate::contract::{BoundedOutput, ExecutionLimits};
 
@@ -36,17 +40,86 @@ pub(crate) struct ProcessOutcome {
 fn first_reviewed_program(candidates: &[&str]) -> Result<PathBuf, String> {
     for candidate in candidates {
         let path = Path::new(candidate);
-        if path
-            .metadata()
-            .map(|metadata| metadata.is_file())
-            .unwrap_or(false)
-        {
-            return path
-                .canonicalize()
-                .map_err(|error| format!("cannot canonicalize reviewed process tool: {error}"));
-        }
+        let canonical = match path.canonicalize() {
+            Ok(canonical) => canonical,
+            Err(_) => continue,
+        };
+        let metadata = match canonical.metadata() {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => continue,
+            Err(error) => {
+                return Err(format!("cannot inspect reviewed process tool: {error}"));
+            }
+        };
+        #[cfg(target_os = "linux")]
+        validate_linux_program_security(&canonical, metadata.mode())?;
+        return Ok(canonical);
     }
     Err("the reviewed operating-system process inventory tool is unavailable".to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn validate_linux_program_security(path: &Path, mode: u32) -> Result<(), String> {
+    validate_linux_program_security_properties(mode, linux_file_capability_size(path)?)
+}
+
+#[cfg(target_os = "linux")]
+fn validate_linux_program_security_properties(
+    mode: u32,
+    file_capability_size: usize,
+) -> Result<(), String> {
+    const SET_USER_ID: u32 = 0o4000;
+    const SET_GROUP_ID: u32 = 0o2000;
+
+    if mode & (SET_USER_ID | SET_GROUP_ID) != 0 {
+        return Err(
+            "the reviewed process inventory tool has set-user-ID or set-group-ID mode".to_string(),
+        );
+    }
+    if file_capability_size != 0 {
+        return Err("the reviewed process inventory tool has Linux file capabilities".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn linux_file_capability_size(path: &Path) -> Result<usize, String> {
+    use std::os::raw::{c_char, c_void};
+
+    const ENODATA: i32 = 61;
+    const CAPABILITY_ATTRIBUTE: &[u8] = b"security.capability\0";
+
+    unsafe extern "C" {
+        fn getxattr(
+            path: *const c_char,
+            name: *const c_char,
+            value: *mut c_void,
+            size: usize,
+        ) -> isize;
+    }
+
+    let encoded_path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| "the reviewed process inventory path contains a NUL byte".to_string())?;
+    // SAFETY: both C strings are NUL terminated and the null value buffer is
+    // valid for this size-only getxattr query.
+    let size = unsafe {
+        getxattr(
+            encoded_path.as_ptr(),
+            CAPABILITY_ATTRIBUTE.as_ptr().cast(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if size >= 0 {
+        return Ok(size as usize);
+    }
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ENODATA) {
+        return Ok(0);
+    }
+    Err(format!(
+        "cannot verify reviewed process tool Linux capabilities: {error}"
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -57,6 +130,38 @@ fn process_discovery_spec() -> Result<FixedProcessSpec, String> {
         environment: BTreeMap::from([("LC_ALL", "C".to_string()), ("LANG", "C".to_string())]),
         output_format: "pid ppid command",
     })
+}
+
+#[cfg(target_os = "linux")]
+fn arm_linux_parent_death(command: &mut Command) {
+    use std::os::raw::c_int;
+
+    const PR_SET_PDEATHSIG: c_int = 1;
+    const SIGKILL: c_int = 9;
+    const ESRCH: c_int = 3;
+
+    unsafe extern "C" {
+        fn getppid() -> c_int;
+        fn prctl(option: c_int, ...) -> c_int;
+    }
+
+    let expected_parent = std::process::id() as c_int;
+    // SAFETY: the callback calls only async-signal-safe Linux primitives and
+    // constructs fixed OS errors; it allocates nothing between fork and exec.
+    unsafe {
+        command.pre_exec(move || {
+            if getppid() != expected_parent {
+                return Err(io::Error::from_raw_os_error(ESRCH));
+            }
+            if prctl(PR_SET_PDEATHSIG, SIGKILL, 0_usize, 0_usize, 0_usize) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if getppid() != expected_parent {
+                return Err(io::Error::from_raw_os_error(ESRCH));
+            }
+            Ok(())
+        });
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -106,6 +211,8 @@ pub(crate) fn run_process_discovery(
     for (name, value) in &spec.environment {
         command.env(name, value);
     }
+    #[cfg(target_os = "linux")]
+    arm_linux_parent_death(&mut command);
 
     let mut child = command
         .spawn()
@@ -311,6 +418,9 @@ pub(crate) fn run_process_discovery(
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    const PARENT_DEATH_TEST_PATH: &str = "BLUEFIRE_PARENT_DEATH_TEST_PID_PATH";
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn process_discovery_spec_is_fixed_and_absolute() {
@@ -322,6 +432,90 @@ mod tests {
             .iter()
             .any(|arg| matches!(*arg, "sh" | "cmd" | "-c" | "/C")));
         assert!(!spec.environment.is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reviewed_program_rejects_set_id_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "bluefire-set-id-program-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"not executed").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o4755)).unwrap();
+        let error = first_reviewed_program(&[path.to_str().unwrap()]).unwrap_err();
+        let _ = std::fs::remove_file(path);
+        assert!(error.contains("set-user-ID or set-group-ID"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reviewed_program_rejects_nonempty_file_capabilities() {
+        let error = validate_linux_program_security_properties(0o755, 20).unwrap_err();
+        assert!(error.contains("Linux file capabilities"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "launched by linux_child_spawn_dies_with_its_runner_parent"]
+    fn linux_parent_death_supervisor() {
+        let Ok(path) = std::env::var(PARENT_DEATH_TEST_PATH) else {
+            return;
+        };
+        let mut command = Command::new("/bin/sleep");
+        command
+            .arg("60")
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        arm_linux_parent_death(&mut command);
+        let child = command.spawn().unwrap();
+        std::fs::write(path, format!("{}\n", child.id())).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_child_spawn_dies_with_its_runner_parent() {
+        let path = std::env::temp_dir().join(format!(
+            "bluefire-parent-death-{}-{}.pid",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "process::tests::linux_parent_death_supervisor",
+            ])
+            .env(PARENT_DEATH_TEST_PATH, &path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let process_id = std::fs::read_to_string(&path)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        let process_path = PathBuf::from("/proc").join(process_id.to_string());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process_path.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_file(path);
+        assert!(!process_path.exists());
     }
 
     #[cfg(target_os = "windows")]

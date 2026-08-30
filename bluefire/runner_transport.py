@@ -27,9 +27,6 @@ from contextlib import closing, contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Callable, Iterator, Mapping, cast
 
-from cryptography import x509
-from cryptography.x509.oid import NameOID
-
 from .runner_client import (
     RunnerTaskCancelled,
     RunnerTaskTimedOut,
@@ -44,14 +41,38 @@ from .runner_client import (
     runner_pending_result_path,
     runner_watchdog_control_root,
 )
+from .runner_result_persistence import commit_durable_result
+from .runner_transport_errors import (
+    AuthenticatedRunnerTransportError,
+    RunnerAuthenticationError,
+    RunnerConnectionError,
+)
+from .runner_transport_security import (
+    client_context as _build_client_context,
+)
+from .runner_transport_security import (
+    request_authentication,
+)
+from .runner_transport_security import (
+    server_context as _build_server_context,
+)
+from .runner_transport_security import (
+    sign_request as _authenticate_request,
+)
+from .runner_transport_security import (
+    sign_response as _authenticate_response,
+)
+from .runner_transport_security import (
+    verify_peer as _verify_authenticated_peer,
+)
 from .runner_trust import (
     RunnerEnrollment,
     RunnerTrustError,
     _is_link_or_reparse,
     _owner_private,
-    certificate_fingerprint,
     load_local_enrollment,
 )
+from .runner_watchdog_status import validate_runner_watchdog_terminal_status
 from .secret_store import SecretProvider
 from .util import canonical_json_bytes, content_hash, file_hash
 
@@ -262,18 +283,6 @@ _LEDGER_UNRESOLVED_STATES = frozenset({"running", "indeterminate", "recovery_req
 _LEDGER_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
 
-class AuthenticatedRunnerTransportError(RunnerTransportError):
-    """A secret- and path-safe authenticated transport failure."""
-
-
-class RunnerConnectionError(AuthenticatedRunnerTransportError):
-    """The loopback transport could not complete an exchange."""
-
-
-class RunnerAuthenticationError(AuthenticatedRunnerTransportError):
-    """TLS, enrollment, framing, or message authentication failed."""
-
-
 class RunnerRemoteError(AuthenticatedRunnerTransportError):
     """An authenticated refusal returned by the runner service."""
 
@@ -406,14 +415,12 @@ def _ledger_application_objects(
 ) -> tuple[tuple[str, str, str, str | None], ...]:
     return tuple(
         (str(row[0]), str(row[1]), str(row[2]), None if row[3] is None else str(row[3]))
-        for row in connection.execute(
-            """
+        for row in connection.execute("""
             SELECT type, name, tbl_name, sql
             FROM sqlite_master
             WHERE name NOT LIKE 'sqlite_%'
             ORDER BY type, name
-            """
-        ).fetchall()
+            """).fetchall()
     )
 
 
@@ -483,12 +490,10 @@ def _validated_ledger_generation(connection: sqlite3.Connection) -> str:
     )
     if columns != _LEDGER_METADATA_COLUMNS:
         raise sqlite3.DatabaseError("invalid ledger metadata columns")
-    rows = connection.execute(
-        """
+    rows = connection.execute("""
         SELECT singleton, schema_version, ledger_generation
         FROM runner_ledger_metadata ORDER BY singleton LIMIT 2
-        """
-    ).fetchall()
+        """).fetchall()
     if len(rows) != 1:
         raise sqlite3.DatabaseError("invalid ledger metadata cardinality")
     singleton, schema_version, ledger_generation = rows[0]
@@ -665,8 +670,7 @@ def audit_runner_ledger(
             if len(integrity) != 1 or str(integrity[0][0]) != "ok":
                 raise sqlite3.DatabaseError("ledger integrity check failed")
             total = execute = unresolved = active = cleanup_required = 0
-            rows = connection.execute(
-                """
+            rows = connection.execute("""
                 SELECT task_id, operation, profile_id, request_hash, runner_id, client_id,
                        peer_fingerprint, ca_fingerprint, server_fingerprint,
                        client_fingerprint, enrollment_generation, nonce, state,
@@ -674,8 +678,7 @@ def audit_runner_ledger(
                        cleanup_required, effect_dispatched, error_code, executor_instance,
                        cancellation_requested, created_at, updated_at
                 FROM transport_tasks ORDER BY task_id
-                """
-            )
+                """)
             for row in rows:
                 total += 1
                 if total > 1_000_000:
@@ -816,19 +819,12 @@ def runner_result_namespace_path(
     )
 
 
-def _request_mac(enrollment: RunnerEnrollment, unsigned: Mapping[str, Any]) -> str:
-    digest = hmac.new(
-        enrollment.hmac_key(), canonical_json_bytes(dict(unsigned)), hashlib.sha256
-    ).hexdigest()
-    return "sha256:" + digest
-
-
 def _sign_request(enrollment: RunnerEnrollment, unsigned: Mapping[str, Any]) -> dict[str, Any]:
-    return {**dict(unsigned), "authentication": _request_mac(enrollment, unsigned)}
+    return _authenticate_request(enrollment, unsigned)
 
 
 def _sign_response(enrollment: RunnerEnrollment, unsigned: Mapping[str, Any]) -> dict[str, Any]:
-    return {**dict(unsigned), "authentication": _request_mac(enrollment, unsigned)}
+    return _authenticate_response(enrollment, unsigned)
 
 
 def _duplicates_rejected(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -961,69 +957,25 @@ def _send_frame(connection: ssl.SSLSocket, value: Mapping[str, Any], maximum: in
     connection.sendall(_FRAME_HEADER.pack(len(payload)) + payload)
 
 
-def _certificate_common_name(certificate_bytes: bytes) -> str:
-    try:
-        certificate = x509.load_der_x509_certificate(certificate_bytes)
-        names = certificate.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
-    except (TypeError, ValueError):
-        raise RunnerAuthenticationError("Runner peer certificate is invalid.") from None
-    if len(names) != 1 or not isinstance(names[0].value, str):
-        raise RunnerAuthenticationError("Runner peer certificate identity is invalid.")
-    return names[0].value
-
-
 def _verify_peer(
     connection: ssl.SSLSocket,
     *,
     expected_fingerprint: str,
     expected_common_name: str,
 ) -> str:
-    certificate = connection.getpeercert(binary_form=True)
-    if not certificate:
-        raise RunnerAuthenticationError("Runner peer did not present a certificate.")
-    fingerprint = certificate_fingerprint(certificate)
-    if not hmac.compare_digest(fingerprint, expected_fingerprint):
-        raise RunnerAuthenticationError("Runner peer certificate identity does not match.")
-    if not hmac.compare_digest(_certificate_common_name(certificate), expected_common_name):
-        raise RunnerAuthenticationError("Runner peer certificate identity does not match.")
-    if connection.version() != "TLSv1.3":
-        raise RunnerAuthenticationError("Runner transport did not negotiate TLS 1.3.")
-    return fingerprint
+    return _verify_authenticated_peer(
+        connection,
+        expected_fingerprint=expected_fingerprint,
+        expected_common_name=expected_common_name,
+    )
 
 
-def _server_context(enrollment: RunnerEnrollment) -> ssl.SSLContext:
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.minimum_version = ssl.TLSVersion.TLSv1_3
-    context.maximum_version = ssl.TLSVersion.TLSv1_3
-    context.verify_mode = ssl.CERT_REQUIRED
-    try:
-        context.load_verify_locations(cafile=str(enrollment.ca_certificate))
-        context.load_cert_chain(
-            certfile=str(enrollment.server_certificate),
-            keyfile=str(enrollment.server_private_key),
-            password=enrollment.server_key_password(),
-        )
-    except (OSError, ssl.SSLError):
-        raise RunnerAuthenticationError("Runner server identity could not be loaded.") from None
-    return context
+def _server_context(enrollment: RunnerEnrollment):
+    return _build_server_context(enrollment)
 
 
-def _client_context(enrollment: RunnerEnrollment) -> ssl.SSLContext:
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    context.minimum_version = ssl.TLSVersion.TLSv1_3
-    context.maximum_version = ssl.TLSVersion.TLSv1_3
-    context.verify_mode = ssl.CERT_REQUIRED
-    context.check_hostname = True
-    try:
-        context.load_verify_locations(cafile=str(enrollment.ca_certificate))
-        context.load_cert_chain(
-            certfile=str(enrollment.client_certificate),
-            keyfile=str(enrollment.client_private_key),
-            password=enrollment.client_key_password(),
-        )
-    except (OSError, ssl.SSLError):
-        raise RunnerAuthenticationError("Runner client identity could not be loaded.") from None
-    return context
+def _client_context(enrollment: RunnerEnrollment):
+    return _build_client_context(enrollment)
 
 
 class AuthenticatedRunnerServer:
@@ -1358,27 +1310,17 @@ class AuthenticatedRunnerServer:
         payload = self._read_private_result_payload(path)
         return None if payload is None else _decode_durable_json_object(payload)
 
-    def _persist_durable_result(self, task_id: str, result: Mapping[str, Any]) -> None:
+    def _commit_durable_result(self, task_id: str, result: Mapping[str, Any]) -> None:
         destination = self._durable_result_path(task_id)
-        encoded = canonical_json_bytes(dict(result))
-        if len(encoded) > self.max_frame_bytes:
-            raise RunnerTransportError("runner durable result exceeds the transport limit")
         try:
-            with _PinnedPrivateDirectory(self.result_root) as pinned:
-                try:
-                    pinned.create(
-                        destination.name,
-                        encoded,
-                        maximum=self.max_frame_bytes,
-                    )
-                except FileExistsError:
-                    existing = pinned.read(
-                        destination.name,
-                        maximum=self.max_frame_bytes,
-                    )
-                    if existing != encoded:
-                        raise OSError("durable result identity conflicts") from None
-        except (OSError, RunnerTransportError):
+            commit_durable_result(
+                result_root=self.result_root,
+                destination_name=destination.name,
+                result=result,
+                maximum=self.max_frame_bytes,
+                pinned_directory_factory=_PinnedPrivateDirectory,
+            )
+        except (OSError, ValueError, RunnerTransportError):
             raise RunnerTransportError("runner durable result could not be committed") from None
 
     def _promote_pending_result(
@@ -2244,45 +2186,7 @@ class AuthenticatedRunnerServer:
             return None
         except (OSError, RunnerTransportError):
             raise RunnerTransportError("runner watchdog status is unavailable or unsafe") from None
-        if not isinstance(status, dict):
-            raise RunnerTransportError("runner watchdog status is invalid")
-        common = {
-            "schema_version",
-            "task_id",
-            "state",
-            "error_code",
-            "watchdog_pid",
-        }
-        state = status.get("state")
-        error_code = status.get("error_code")
-        watchdog_pid = status.get("watchdog_pid")
-        if (
-            status.get("schema_version") != "bluefire.runner-watchdog-status.v1"
-            or status.get("task_id") != task_id
-            or state not in {"succeeded", "failed", "cancelled"}
-            or isinstance(watchdog_pid, bool)
-            or not isinstance(watchdog_pid, int)
-            or not 1 <= watchdog_pid <= 2**31 - 1
-        ):
-            raise RunnerTransportError("runner watchdog status is invalid")
-        if state == "succeeded":
-            result_digest = status.get("result_digest")
-            if (
-                set(status) != common | {"result_digest"}
-                or error_code is not None
-                or not isinstance(result_digest, str)
-                or _DIGEST.fullmatch(result_digest) is None
-            ):
-                raise RunnerTransportError("runner watchdog status is invalid")
-        elif (
-            set(status) != common
-            or not isinstance(error_code, str)
-            or not 1 <= len(error_code) <= 64
-            or (state == "cancelled" and error_code != "cancelled")
-            or (state == "failed" and error_code == "cancelled")
-        ):
-            raise RunnerTransportError("runner watchdog status is invalid")
-        return status
+        return validate_runner_watchdog_terminal_status(status, task_id=task_id)
 
     def _set_confirmed_execute_terminal(self, task_id: str, *, state: str, error_code: str) -> None:
         if state not in {"cancelled", "timed_out"}:
@@ -2402,13 +2306,11 @@ class AuthenticatedRunnerServer:
 
     def _reconcile_interrupted_tasks(self) -> None:
         with self._database() as connection:
-            rows = connection.execute(
-                """
+            rows = connection.execute("""
                 SELECT task_id, operation, effect_dispatched
                 FROM transport_tasks WHERE state = 'running'
                 ORDER BY created_at ASC, task_id ASC
-                """
-            ).fetchall()
+                """).fetchall()
         for row in rows:
             task_id = str(row["task_id"])
             if row["operation"] == "execute" and bool(row["effect_dispatched"]):
@@ -2709,7 +2611,7 @@ class AuthenticatedRunnerServer:
         if content_hash(payload) != request_hash:
             raise _RequestRefusal("authentication_failed")
         unsigned = {key: request[key] for key in request if key != "authentication"}
-        expected = _request_mac(enrollment, unsigned)
+        expected = request_authentication(enrollment, unsigned)
         if not hmac.compare_digest(authentication, expected):
             raise _RequestRefusal("authentication_failed")
         if operation == "execute" and task_id != _execute_task_id(request_hash):
@@ -2788,14 +2690,10 @@ class AuthenticatedRunnerServer:
                 if shutdown_request is None:
                     raise _RequestRefusal("request_invalid")
                 with self._database() as connection:
-                    active_execute = int(
-                        connection.execute(
-                            """
+                    active_execute = int(connection.execute("""
                             SELECT COUNT(*) FROM transport_tasks
                             WHERE operation = 'execute' AND state = 'running'
-                            """
-                        ).fetchone()[0]
-                    )
+                            """).fetchone()[0])
                 if active_execute:
                     raise _RequestRefusal("active_tasks")
                 payload = {
@@ -2924,7 +2822,7 @@ class AuthenticatedRunnerServer:
                 checked = self._validated_execute_result(result, manifest, profile)
                 durable = self._recover_durable_result(task_id, manifest, profile)
                 if durable is None:
-                    self._persist_durable_result(task_id, checked)
+                    self._commit_durable_result(task_id, checked)
                 elif canonical_json_bytes(durable) != canonical_json_bytes(checked):
                     raise RunnerTransportError("runner durable result identity conflicts")
             except _RequestRefusal:
@@ -3008,8 +2906,7 @@ class AuthenticatedRunnerServer:
 
     @staticmethod
     def _reclaim_oldest_terminal_control(connection: sqlite3.Connection) -> bool:
-        cursor = connection.execute(
-            """
+        cursor = connection.execute("""
             DELETE FROM transport_tasks WHERE task_id = (
                 SELECT task_id FROM transport_tasks
                 WHERE operation != 'execute'
@@ -3017,8 +2914,7 @@ class AuthenticatedRunnerServer:
                 ORDER BY updated_at ASC, task_id ASC
                 LIMIT 1
             )
-            """
-        )
+            """)
         return cursor.rowcount == 1
 
     def _begin_request(self, request: Mapping[str, Any], binding: Mapping[str, str]) -> None:
@@ -3142,6 +3038,7 @@ class AuthenticatedRunnerServer:
         with self._dispatch_state_lock:
             admission_open = self._accepting_execute
         return {
+            "generation": "sha256:" + self.ledger_generation,
             "rows": rows,
             "capacity": self.max_ledger_rows,
             "execute_rows": execute_rows,
@@ -3224,15 +3121,11 @@ class AuthenticatedRunnerServer:
                     """,
                     (cutoff,),
                 )
-                count = int(
-                    connection.execute(
-                        """
+                count = int(connection.execute("""
                         SELECT COUNT(*) FROM transport_tasks
                         WHERE operation != 'execute'
                           AND state NOT IN ('running', 'indeterminate', 'recovery_required')
-                        """
-                    ).fetchone()[0]
-                )
+                        """).fetchone()[0])
                 excess = max(count - polling_limit, 0)
                 if excess:
                     connection.execute(
@@ -4117,7 +4010,7 @@ class AuthenticatedRunnerClient:
         ):
             raise RunnerAuthenticationError("Runner response authentication is invalid.")
         unsigned = {key: response[key] for key in response if key != "authentication"}
-        if not hmac.compare_digest(authentication, _request_mac(enrollment, unsigned)):
+        if not hmac.compare_digest(authentication, request_authentication(enrollment, unsigned)):
             raise RunnerAuthenticationError("Runner response authentication is invalid.")
         ok = response.get("ok")
         status = response.get("status")

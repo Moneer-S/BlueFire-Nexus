@@ -63,6 +63,6 @@ function NewScenarioForm({ onCreate }: { onCreate: (scenario: Scenario) => void 
   const [title, setTitle] = useState("Untitled control validation");
   return <form className="dialog-form" onSubmit={(event) => { event.preventDefault(); const stem = title.toLowerCase().replace(/[^a-z0-9]+/g, ".").replace(/^\.|\.$/g, "") || "local.scenario"; const id = `${stem}.v1`; onCreate({ schema_version: "bluefire.scenario.v1", id, title, purpose: `Validate observable outcomes for ${title}.`, start: "missing_start", steps: [], edges: [], provenance: { source: "local operator draft", reference: id, license: "private", derived: true, notes: "Authored as an unsaved local working draft." }, limitations: ["Runner and policy readiness must be resolved during preflight."], layout: {} }); }}>
     <Field label="Scenario title" hint="Creates a working draft; Builder saves validated, content-addressed versions."><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={100} required autoFocus /></Field>
-    <div className="dialog-actions"><Dialog.Close asChild><Button variant="ghost" type="button">Cancel</Button></Dialog.Close><Dialog.Close asChild><Button variant="primary" type="submit">Create draft</Button></Dialog.Close></div>
+    <div className="dialog-actions"><Dialog.Close asChild><Button variant="ghost" type="button">Cancel</Button></Dialog.Close><Button variant="primary" type="submit">Create draft</Button></div>
   </form>;
 }

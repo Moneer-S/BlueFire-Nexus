@@ -12,9 +12,9 @@ use sha2::{Digest, Sha256};
 use crate::contract::{
     sha256_hex, utc_now, ExecutionManifest, NetworkDestination, RunnerProfile, TargetScope,
 };
+use crate::receipt_store::DurableReceiptCommit;
 
 const RECEIPT_SCHEMA: &str = "bluefire.receipt/v1";
-const RECEIPT_COMMIT_SCHEMA: &str = "bluefire.receipt-commit/v1";
 pub const RECEIPT_PROTOCOL_VERSION: &str = "bluefire.runner-receipt-wal.v2";
 const STATE_DIR: &str = ".bluefire";
 const RECEIPT_DIR: &str = "receipts";
@@ -83,16 +83,6 @@ pub struct ReceiptRecord {
     pub workspace_id: String,
     pub created_at: chrono::DateTime<Utc>,
     pub paths: Vec<OwnedPath>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReceiptCommitRecord {
-    schema_version: String,
-    receipt_id: String,
-    runner_profile_id: String,
-    workspace_id: String,
-    committed_at: chrono::DateTime<Utc>,
 }
 
 fn receipt_identity(
@@ -243,6 +233,13 @@ struct CleanupQuarantine<'a> {
 #[cfg(unix)]
 mod cleanup_platform {
     use super::*;
+    #[cfg(all(
+        target_os = "linux",
+        not(any(target_arch = "x86_64", target_arch = "aarch64"))
+    ))]
+    compile_error!("Linux cleanup is supported only on x86_64 and aarch64 targets");
+    #[cfg(target_os = "linux")]
+    use std::ffi::c_long;
     use std::ffi::{c_char, c_int, CString};
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
@@ -279,7 +276,14 @@ mod cleanup_platform {
         fn fchmod(descriptor: c_int, mode: u32) -> c_int;
         fn geteuid() -> u32;
         fn unlinkat(directory: c_int, path: *const c_char, flags: c_int) -> c_int;
+        #[cfg(target_os = "linux")]
+        fn syscall(number: c_long, ...) -> c_long;
     }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    const SYS_RENAMEAT2: c_long = 316;
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    const SYS_RENAMEAT2: c_long = 276;
 
     fn portable_name(name: &OsStr, subject: &str) -> Result<CString, String> {
         CString::new(name.as_bytes()).map_err(|_| format!("{subject} contains NUL"))
@@ -408,21 +412,15 @@ mod cleanup_platform {
         destination_name: &OsStr,
     ) -> Result<(), String> {
         const RENAME_NOREPLACE: u32 = 1;
-        extern "C" {
-            fn renameat2(
-                old_directory: c_int,
-                old_path: *const c_char,
-                new_directory: c_int,
-                new_path: *const c_char,
-                flags: u32,
-            ) -> c_int;
-        }
         let old = portable_name(source_name, "cleanup source")?;
         let new = portable_name(destination_name, "cleanup destination")?;
         // SAFETY: both names are NUL-terminated basenames and both directory
-        // descriptors remain alive for the call.
+        // descriptors remain alive for the call. Calling the kernel primitive
+        // directly keeps the runner linkable with both glibc and static musl;
+        // some libc implementations do not export a renameat2 wrapper.
         let moved = unsafe {
-            renameat2(
+            syscall(
+                SYS_RENAMEAT2,
                 source_directory.as_raw_fd(),
                 old.as_ptr(),
                 destination_directory.as_raw_fd(),
@@ -1342,14 +1340,10 @@ impl SafeRoot {
                 }
             }
         }
-        let commit = ReceiptCommitRecord {
-            schema_version: RECEIPT_COMMIT_SCHEMA.to_string(),
-            receipt_id: intent.id().to_string(),
-            runner_profile_id: profile.profile_id.clone(),
-            workspace_id: workspace_id.clone(),
-            committed_at: utc_now(),
-        };
-        let encoded = serde_json::to_vec_pretty(&commit)
+        let commit =
+            DurableReceiptCommit::new(intent.id(), &profile.profile_id, &workspace_id, utc_now());
+        let encoded = commit
+            .encode_pretty()
             .map_err(|error| format!("cannot serialize receipt commit: {error}"))?;
         let dirs = self.ensure_state_dirs()?;
         let commit_path = dirs.commits.join(format!("{}.json", intent.id()));
@@ -1359,16 +1353,12 @@ impl SafeRoot {
                     return Err("receipt commit exceeds its size limit".to_string());
                 }
                 self.verify_contained(&commit_path)?;
-                let existing: ReceiptCommitRecord = serde_json::from_slice(
+                let existing = DurableReceiptCommit::decode(
                     &fs::read(&commit_path)
                         .map_err(|error| format!("cannot read receipt commit: {error}"))?,
                 )
                 .map_err(|error| format!("receipt commit schema is invalid: {error}"))?;
-                if existing.schema_version != RECEIPT_COMMIT_SCHEMA
-                    || existing.receipt_id != intent.id()
-                    || existing.runner_profile_id != profile.profile_id
-                    || existing.workspace_id != workspace_id
-                {
+                if !existing.has_identity(intent.id(), &profile.profile_id, &workspace_id) {
                     return Err("receipt commit identity is invalid".to_string());
                 }
                 return Ok(intent.id().to_string());

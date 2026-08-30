@@ -8,7 +8,7 @@ import re
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 from .ai import AIProviderError, validate_persisted_proposal_record
 from .approvals import execution_approval_binding
@@ -129,7 +129,7 @@ def load_report(path: Path) -> Mapping[str, Any]:
         if descriptor is not None:
             os.close(descriptor)
     _require(isinstance(value, Mapping), "a GATE-04 report is not an object")
-    return value
+    return cast(Mapping[str, Any], value)
 
 
 def _step(run: Mapping[str, Any], step_id: str) -> Mapping[str, Any] | None:
@@ -347,7 +347,7 @@ def _approval_id(run: Mapping[str, Any]) -> str:
         and claimed_at <= created_at <= finalized_at < expires_at,
         "run approval was not freshly claimed against its exact execution boundary",
     )
-    return value
+    return cast(str, value)
 
 
 def _cleanup(run: Mapping[str, Any]) -> None:
@@ -743,8 +743,9 @@ def _validate_journey(
     runtime_parameters = _mapping(
         runtime_transport[0].get("parameters"), "runtime transport parameters"
     )
-    maintained_parameters = _mapping(
-        maintained_transport[0].get("parameters"), "maintained transport parameters"
+    maintained_parameters = cast(
+        dict[str, Any],
+        _mapping(maintained_transport[0].get("parameters"), "maintained transport parameters"),
     )
     runtime_port = runtime_parameters.get("port")
     _require(

@@ -18,6 +18,7 @@ ACTION_IDS = {
     "endpoint.discovery.processes.v1",
     "sandbox.discovery.recursive.v1",
     "sandbox.execution.native-canary.v1",
+    "sandbox.execution.process-tree-cancellation-witness.v1",
     "sandbox.archive.tar.v1",
     "sandbox.collection.stage.v1",
     "sandbox.identity-material.seed.v1",
@@ -150,6 +151,17 @@ def _step(action_id: str, parameters: Mapping[str, Any] | None = None) -> PlanSt
                 filesystem_scope=("fixtures",),
             ),
             id="recursive-discovery",
+        ),
+        pytest.param(
+            "sandbox.execution.process-tree-cancellation-witness.v1",
+            {},
+            {},
+            (),
+            AdaptedAction(
+                params={},
+                filesystem_scope=(".bluefire-cancellation-witness-v1",),
+            ),
+            id="process-tree-cancellation-witness",
         ),
         pytest.param(
             "sandbox.archive.tar.v1",

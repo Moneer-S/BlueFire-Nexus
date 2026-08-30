@@ -18,7 +18,7 @@ Open the exact one-use URL printed after the listener is ready. Its fragment cap
 |---|---|
 | Overview | Readiness, recent runs, evidence mix, and next actions |
 | Getting Started | Follow live readiness checks from scenario selection through durable review |
-| Scenarios | Browse the six seeded versioned graphs and open the authoritative active definition for editing/running |
+| Scenarios | Browse the eight seeded versioned graphs and open the authoritative active definition for editing/running |
 | Builder | Edit typed nodes, parameters, bindings, outcomes, alternates, and route-depth layout; use focus mode and commands |
 | Runs | Configure, preflight, start, and open durable run history or deep links |
 | Compare | Select a baseline and one or more candidate runs |

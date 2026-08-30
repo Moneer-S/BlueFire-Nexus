@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
+from .product_acceptance_artifacts import contained_regular_file, inspect_regular_file
 from .product_acceptance_run_bundle import acceptance_run_binding, validated_run_bundle
 from .product_acceptance_schema import (
     result_postflight_assessment,
@@ -34,18 +35,6 @@ def _canonical_digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
-def _contained_file(root: Path, raw: Any, label: str) -> Path:
-    if not isinstance(raw, str) or not raw:
-        raise ValueError(f"{label} path is invalid")
-    relative = Path(raw)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError(f"{label} path escapes the acceptance directory")
-    path = (root / relative).resolve(strict=True)
-    if not path.is_relative_to(root) or not path.is_file():
-        raise ValueError(f"{label} is not a contained regular file")
-    return path
-
-
 def _utc_timestamp(raw: Any, label: str, *, require_z: bool = False) -> datetime:
     if not isinstance(raw, str) or (require_z and not raw.endswith("Z")):
         raise ValueError(f"{label} is invalid")
@@ -63,12 +52,7 @@ def _utc_timestamp(raw: Any, label: str, *, require_z: bool = False) -> datetime
 def _gate_artifact(root: Path, gate_dir: Path, raw: Any, label: str) -> str:
     if not isinstance(raw, str) or not raw:
         raise ValueError(f"{label} path is invalid")
-    relative = Path(raw)
-    if relative.is_absolute() or ".." in relative.parts:
-        raise ValueError(f"{label} path escapes its gate directory")
-    path = (gate_dir / relative).resolve(strict=True)
-    if not path.is_relative_to(gate_dir) or not path.is_file():
-        raise ValueError(f"{label} is not a contained regular file")
+    path = contained_regular_file(gate_dir, raw, label=label)
     return path.relative_to(root).as_posix()
 
 
@@ -174,10 +158,20 @@ def _verify_gate_receipt(
     )
     if not isinstance(receipt_artifact, Mapping) or receipt_artifact.get("role") != "gate-receipt":
         raise ValueError(f"{gate_id} receipt artifact role is invalid")
-    receipt_path = _contained_file(root, receipt_relative, f"{gate_id} receipt")
+    receipt_inspection = inspect_regular_file(
+        root,
+        receipt_relative,
+        label=f"{gate_id} receipt",
+    )
+    if receipt_inspection.contains_private_path:
+        raise ValueError(f"{gate_id} receipt discloses a local absolute path")
+    if receipt_inspection.size_bytes != receipt_artifact.get(
+        "size_bytes"
+    ) or receipt_inspection.sha256 != receipt_artifact.get("sha256"):
+        raise ValueError(f"{gate_id} receipt bytes do not match its artifact binding")
     try:
-        raw_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raw_receipt = json.loads(receipt_inspection.payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"{gate_id} receipt is not valid UTF-8 JSON") from exc
     fields = {
         "schema_version",
@@ -308,12 +302,18 @@ def verify_result_file(
         raise ValueError("acceptance result companion hash does not match")
 
     evidence = result["evidence"]
-    contract_path = _contained_file(root, evidence["contract_path"], "contract snapshot")
-    if _sha256_file(contract_path) != evidence["contract_file_sha256"]:
+    contract_inspection = inspect_regular_file(
+        root,
+        evidence["contract_path"],
+        label="contract snapshot",
+    )
+    if contract_inspection.contains_private_path:
+        raise ValueError("acceptance contract snapshot discloses a local absolute path")
+    if contract_inspection.sha256 != evidence["contract_file_sha256"]:
         raise ValueError("acceptance contract snapshot hash does not match")
     try:
-        contract_snapshot = json.loads(contract_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        contract_snapshot = json.loads(contract_inspection.payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("acceptance contract snapshot is invalid") from exc
     if _canonical_digest(contract_snapshot) != contract_digest or contract_snapshot != contract:
         raise ValueError("acceptance contract snapshot is not the locked contract")
@@ -324,19 +324,31 @@ def verify_result_file(
         for artifact in gate["evidence_artifacts"]:
             if not artifact["path"].replace("\\", "/").startswith(expected_prefix):
                 raise ValueError(f"{gate_id} artifact is outside its gate evidence directory")
-            path = _contained_file(root, artifact["path"], f"{gate_id} artifact")
-            if path.stat().st_size != artifact["size_bytes"]:
+            inspection = inspect_regular_file(
+                root,
+                artifact["path"],
+                label=f"{gate_id} artifact",
+            )
+            if inspection.contains_private_path:
+                raise ValueError(f"{gate_id} artifact discloses a local absolute path")
+            if inspection.size_bytes != artifact["size_bytes"]:
                 raise ValueError(f"{gate_id} artifact size does not match")
-            if _sha256_file(path) != artifact["sha256"]:
+            if inspection.sha256 != artifact["sha256"]:
                 raise ValueError(f"{gate_id} artifact hash does not match")
         _verify_gate_receipt(root, result, gate, contract.get("receipt_schema_version"))
 
-    postflight_path = _contained_file(root, evidence["postflight_path"], "postflight assessment")
-    if _sha256_file(postflight_path) != evidence["postflight_file_sha256"]:
+    postflight_inspection = inspect_regular_file(
+        root,
+        evidence["postflight_path"],
+        label="postflight assessment",
+    )
+    if postflight_inspection.contains_private_path:
+        raise ValueError("acceptance postflight assessment discloses a local absolute path")
+    if postflight_inspection.sha256 != evidence["postflight_file_sha256"]:
         raise ValueError("acceptance postflight assessment hash does not match")
     try:
-        postflight = json.loads(postflight_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        postflight = json.loads(postflight_inspection.payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("acceptance postflight assessment is invalid") from exc
     if postflight != result_postflight_assessment(result):
         raise ValueError("acceptance postflight assessment does not match the result")

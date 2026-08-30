@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import signal
+import socket
 import stat
 
 # Only the fixed, absolute Rust runner boundary uses subprocess.
@@ -16,13 +17,52 @@ import sys
 import tempfile
 import threading
 import time
+import weakref
 from contextlib import AbstractContextManager, contextmanager
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator, Mapping, Protocol, cast, runtime_checkable
 
+from .execution_contracts import (
+    ExecutionContractError,
+)
+from .execution_contracts import (
+    reject_forbidden_execution_keys as _reject_forbidden_execution_keys,
+)
 from .runner_inventory import RunnerInventoryAuthorityError
 from .runner_inventory import canonical_runner_inventory as _canonical_runner_inventory
+from .runner_private_files import (
+    _WINDOWS_LEGACY_PRIVATE_ROOT_LIMIT as _WINDOWS_LEGACY_PRIVATE_ROOT_LIMIT,
+)
+from .runner_private_files import (
+    _GuardedBinaryFile as _GuardedBinaryFile,
+)
+from .runner_private_files import (
+    _PinnedPrivateDirectory as _PinnedPrivateDirectory,
+)
+from .runner_private_files import (
+    _read_descriptor_bounded as _read_descriptor_bounded,
+)
+from .runner_private_files import (
+    _windows_extended_path as _windows_extended_path,
+)
+from .runner_private_files import (
+    _windows_mark_delete_descriptor as _windows_mark_delete_descriptor,
+)
+from .runner_private_files import (
+    _windows_open_descriptor as _windows_open_descriptor,
+)
+from .runner_private_files import (
+    _windows_rename_descriptor as _windows_rename_descriptor,
+)
+from .runner_transport_errors import (
+    RunnerDurableResultExists,
+    RunnerPendingResultExists,
+    RunnerReadinessError,
+    RunnerTaskCancelled,
+    RunnerTaskTimedOut,
+    RunnerTransportError,
+)
 from .util import canonical_json_bytes, content_hash, file_hash
 
 _TASK_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
@@ -33,64 +73,38 @@ _PROCESS_KILL_GRACE_SECONDS = 5.0
 _WATCHDOG_START_GRACE_SECONDS = 10.0
 _WATCHDOG_EXIT_GRACE_SECONDS = 12.0
 _WATCHDOG_CONFIG_LIMIT_BYTES = 8 * 1024 * 1024
+_RUNNER_BINARY_LIMIT_BYTES = 256 * 1024 * 1024
 _WATCHDOG_CONTROL_NAMES = frozenset({"config.json", "start", "cancel", "ready.json", "status.json"})
+_WATCHDOG_STATUS_SCHEMA = "bluefire.runner-watchdog-status.v2"
+_LEGACY_WATCHDOG_STATUS_SCHEMA = "bluefire.runner-watchdog-status.v1"
 _KILL_PROCESS_GROUP = getattr(os, "killpg", None)
+_GET_PROCESS_GROUP = getattr(os, "getpgrp", None)
+_GET_PROCESS_GROUP_ID = getattr(os, "getpgid", None)
+_GET_SESSION_ID = getattr(os, "getsid", None)
+_PIDFD_OPEN = getattr(os, "pidfd_open", None)
+_PIDFD_SEND_SIGNAL = getattr(signal, "pidfd_send_signal", None)
+_WAIT_ID = getattr(os, "waitid", None)
+_PIDFD_ID_TYPE = getattr(os, "P_PIDFD", None)
+_WAIT_EXITED = getattr(os, "WEXITED", 0)
+_WAIT_NO_HANG = getattr(os, "WNOHANG", 0)
+_WAIT_NO_REAP = getattr(os, "WNOWAIT", 0)
 _FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
-_WINDOWS_GENERIC_READ = 0x80000000
-_WINDOWS_GENERIC_WRITE = 0x40000000
-_WINDOWS_DELETE = 0x00010000
-_WINDOWS_WRITE_DAC = 0x00040000
-_WINDOWS_FILE_SHARE_READ = 0x00000001
-_WINDOWS_FILE_SHARE_WRITE = 0x00000002
-_WINDOWS_OPEN_EXISTING = 3
-_WINDOWS_CREATE_NEW = 1
-_WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
-_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
-_WINDOWS_FILE_DISPOSITION_INFO = 4
-_WINDOWS_LEGACY_PRIVATE_ROOT_LIMIT = 240
 _RECEIVER_TASK_ID_ENV = "BLUEFIRE_RECEIVER_TASK_ID"
 _RECEIVER_TASK_KEY_ENV = "BLUEFIRE_RECEIVER_TASK_KEY"
 _RECEIVER_TASK_ENV_NAMES = frozenset({_RECEIVER_TASK_ID_ENV, _RECEIVER_TASK_KEY_ENV})
-_RECEIVER_AUTH_ACTION_IDS = frozenset({"sandbox.network.loopback.v1"})
-
-FORBIDDEN_EXECUTION_KEYS = frozenset(
-    {
-        "command",
-        "cmd",
-        "shell",
-        "script",
-        "script_body",
-        "payload",
-        "binary",
-        "shellcode",
-        "interpreter",
-        "executable",
-    }
+_RECEIVER_AUTH_ACTION_IDS = frozenset({"sandbox.network.loopback.v1", "sandbox.peer.handoff.v1"})
+_CANCELLATION_ACTION_ID = "sandbox.execution.process-tree-cancellation-witness.v1"
+_CANCELLATION_CONTROL_PARENT = ".bluefire-cancellation-witness-v1"
+_CANCELLATION_READY_SCHEMA = "bluefire.process-tree-cancellation-ready.v1"
+_CANCELLATION_READY_NAME = "ready.json"
+_CANCELLATION_REQUEST_NAME = "cancel.request"
+_CANCELLATION_ACK_NAME = "cancel.ack"
+_CANCELLATION_LEASE_NAME = ".lease"
+_CANCELLATION_LEASE_ENV = "BLUEFIRE_CANCELLATION_LEASE_TOKEN"
+_CANCELLATION_STAGING_NAMES = frozenset(
+    {".ready.json.bluefire-staging", ".cancel.ack.bluefire-staging"}
 )
-
-
-class RunnerTransportError(RuntimeError):
-    pass
-
-
-class RunnerReadinessError(RunnerTransportError):
-    """A sanitized refusal raised before an Execute effect can be dispatched."""
-
-
-class RunnerTaskCancelled(RunnerTransportError):
-    """The complete runner process tree was confirmed stopped after cancellation."""
-
-
-class RunnerTaskTimedOut(RunnerTransportError):
-    """The complete runner process tree was confirmed stopped after a timeout."""
-
-
-class RunnerPendingResultExists(RunnerTransportError):
-    """A prior task attempt left crash-recovery output that must be reconciled."""
-
-
-class RunnerDurableResultExists(RunnerTransportError):
-    """A final task result already exists and was not overwritten."""
+_SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def _validated_receiver_task_environment(
@@ -131,718 +145,182 @@ def _consume_receiver_task_environment(*, expected_task_id: str) -> dict[str, st
     )
 
 
-def _read_descriptor_bounded(descriptor: int, maximum: int) -> bytes:
-    if isinstance(maximum, bool) or maximum < 0:
-        raise OSError("invalid bounded read")
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    payload = bytearray()
-    while len(payload) <= maximum:
-        block = os.read(descriptor, min(64 * 1024, maximum + 1 - len(payload)))
-        if not block:
-            break
-        payload.extend(block)
-    if len(payload) > maximum:
-        raise OSError("private file exceeds its size limit")
-    return bytes(payload)
-
-
-def _windows_extended_path(path: Path) -> Path:
-    raw_path = os.path.abspath(os.fspath(path))
-    if raw_path.startswith("\\\\?\\"):
-        return Path(raw_path)
-    if raw_path.startswith("\\\\"):
-        return Path("\\\\?\\UNC\\" + raw_path[2:])
-    return Path("\\\\?\\" + raw_path)
-
-
-def _windows_open_descriptor(
+@contextmanager
+def _pinned_launch_file(
     path: Path,
-    *,
-    directory: bool,
-    write: bool = False,
-    write_dac: bool = False,
-    delete: bool = False,
-    create: bool = False,
-) -> int:
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
+    expected_digest: str,
+) -> Iterator[tuple[str, tuple[int, ...]]]:
+    """Bind a launch path to the exact file descriptor that was verified."""
 
-    api_path = os.fspath(_windows_extended_path(path))
-
-    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
-    create_file.argtypes = (
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    )
-    create_file.restype = wintypes.HANDLE
-    access = _WINDOWS_GENERIC_READ
-    if write:
-        access |= _WINDOWS_GENERIC_WRITE
-    if write_dac:
-        access |= _WINDOWS_WRITE_DAC
-    if delete:
-        access |= _WINDOWS_DELETE
-    flags = _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
-    if directory:
-        flags |= _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS
-    share = _WINDOWS_FILE_SHARE_READ | (_WINDOWS_FILE_SHARE_WRITE if directory else 0)
-    handle = create_file(
-        api_path,
-        access,
-        share,
-        None,
-        _WINDOWS_CREATE_NEW if create else _WINDOWS_OPEN_EXISTING,
-        flags,
-        None,
-    )
-    invalid = wintypes.HANDLE(-1).value
-    if handle == invalid:
-        error = ctypes.get_last_error()
-        if create and error in {80, 183}:
-            raise FileExistsError(error, "CreateFileW target exists", str(path))
-        if not create and error in {2, 3}:
-            raise FileNotFoundError(error, "CreateFileW target is absent", str(path))
-        raise OSError(error, "CreateFileW failed", str(path))
+    descriptor = -1
     try:
-        return msvcrt.open_osfhandle(
-            int(handle),
-            (os.O_RDWR if write else os.O_RDONLY) | getattr(os, "O_BINARY", 0),
-        )
-    except BaseException:
-        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
-        raise
+        if os.name == "nt":
+            descriptor = _windows_open_descriptor(path, directory=False)
+        else:
+            descriptor = os.open(
+                path,
+                os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            )
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+            raise OSError("launch input is not a single-link regular file")
+        payload = _read_descriptor_bounded(descriptor, _RUNNER_BINARY_LIMIT_BYTES)
+        if "sha256:" + sha256(payload).hexdigest() != expected_digest:
+            raise OSError("launch input digest changed")
+        if os.name == "nt":
+            yield str(path), ()
+        else:
+            descriptor_path = next(
+                (
+                    candidate
+                    for candidate in (
+                        f"/proc/self/fd/{descriptor}",
+                        f"/dev/fd/{descriptor}",
+                    )
+                    if os.path.exists(candidate)
+                ),
+                None,
+            )
+            if descriptor_path is None:
+                raise OSError("descriptor-backed launch path is unavailable")
+            descriptor_details = os.stat(descriptor_path)
+            if (descriptor_details.st_dev, descriptor_details.st_ino) != (
+                details.st_dev,
+                details.st_ino,
+            ):
+                raise OSError("descriptor-backed launch identity changed")
+            yield descriptor_path, (descriptor,)
+    except OSError:
+        raise RunnerTransportError("verified launch input is unavailable") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
-def _windows_mark_delete_descriptor(descriptor: int) -> None:
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    class _Disposition(ctypes.Structure):
-        _fields_ = [("DeleteFile", wintypes.BOOL)]
-
-    set_information = ctypes.WinDLL("kernel32", use_last_error=True).SetFileInformationByHandle
-    set_information.argtypes = (
-        wintypes.HANDLE,
-        ctypes.c_int,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-    )
-    set_information.restype = wintypes.BOOL
-    disposition = _Disposition(True)
-    if not set_information(
-        wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),
-        _WINDOWS_FILE_DISPOSITION_INFO,
-        ctypes.byref(disposition),
-        ctypes.sizeof(disposition),
-    ):
-        raise OSError(ctypes.get_last_error(), "handle deletion failed")
-
-
-def _windows_rename_descriptor(descriptor: int, root_descriptor: int, target_name: str) -> None:
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    if not target_name or Path(target_name).name != target_name:
-        raise OSError("invalid rename target")
-
-    class _IoStatusBlock(ctypes.Structure):
-        _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
-
-    class _FileRename(ctypes.Structure):
-        _fields_ = [
-            ("ReplaceIfExists", ctypes.c_ubyte),
-            ("RootDirectory", wintypes.HANDLE),
-            ("FileNameLength", wintypes.DWORD),
-            ("FileName", ctypes.c_wchar * len(target_name)),
-        ]
-
-    rename = _FileRename()
-    rename.ReplaceIfExists = 0
-    rename.RootDirectory = wintypes.HANDLE(msvcrt.get_osfhandle(root_descriptor))
-    rename.FileNameLength = len(target_name.encode("utf-16-le"))
-    rename.FileName = target_name
-    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
-    rename_file = ntdll.NtSetInformationFile
-    rename_file.argtypes = (
-        wintypes.HANDLE,
-        ctypes.POINTER(_IoStatusBlock),
-        ctypes.c_void_p,
-        wintypes.ULONG,
-        ctypes.c_int,
-    )
-    rename_file.restype = ctypes.c_long
-    status = _IoStatusBlock()
-    result = rename_file(
-        wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),
-        ctypes.byref(status),
-        ctypes.byref(rename),
-        ctypes.sizeof(rename),
-        10,  # FileRenameInformation
-    )
-    if result != 0:
-        if ctypes.c_ulong(result).value == 0xC0000035:  # STATUS_OBJECT_NAME_COLLISION
-            raise FileExistsError("handle rename target exists")
-        raise OSError(int(result), "handle rename failed")
-
-
-class _PinnedPrivateDirectory:
-    """Pin one exact private directory for bounded child-file operations."""
+class _CancellationControlLease:
+    """Trusted ownership of one request-bound cancellation namespace."""
 
     def __init__(
         self,
-        path: Path,
         *,
-        delete: bool = False,
-        expected_identity: tuple[int, int] | None = None,
+        sandbox: _PinnedPrivateDirectory,
+        parent: _PinnedPrivateDirectory,
+        task: _PinnedPrivateDirectory,
+        parent_created: bool,
+        task_id: str,
+        request_hash: str,
+        token: str,
     ) -> None:
-        self.path = path
-        self.delete = delete
-        self.expected_identity = expected_identity
-        self._descriptor: int | None = None
-        self._parent_descriptor: int | None = None
-        self._identity: tuple[int, int] | None = None
+        self.sandbox = sandbox
+        self.parent = parent
+        self.task = task
+        self.parent_created = parent_created
+        self.task_id = task_id
+        self.request_hash = request_hash
+        self.token = token
+        self._closed = False
 
-    def __enter__(self) -> _PinnedPrivateDirectory:
-        from .runner_trust import (
-            RunnerTrustError,
-            _is_link_or_reparse,
-            _owner_private_handle,
-        )
-
-        if not self.path.is_absolute() or self.path.name in {"", ".", ".."}:
-            raise RunnerTransportError("private directory identity is invalid")
-        try:
-            if os.name == "nt":
-                self._descriptor = _windows_open_descriptor(
-                    self.path,
-                    directory=True,
-                    write_dac=True,
-                    delete=self.delete,
-                )
-            else:
-                flags = (
-                    os.O_RDONLY
-                    | getattr(os, "O_DIRECTORY", 0)
-                    | getattr(os, "O_CLOEXEC", 0)
-                    | getattr(os, "O_NOFOLLOW", 0)
-                )
-                self._parent_descriptor = os.open(self.path.parent, flags)
-                self._descriptor = os.open(self.path.name, flags, dir_fd=self._parent_descriptor)
-            details = os.fstat(self._require_descriptor())
-            if (
-                not stat.S_ISDIR(details.st_mode)
-                or _is_link_or_reparse(
-                    _windows_extended_path(self.path) if os.name == "nt" else self.path
-                )
-                or (
-                    self.expected_identity is not None
-                    and (details.st_dev, details.st_ino) != self.expected_identity
-                )
-            ):
-                raise OSError("unsafe private directory")
-            self._identity = details.st_dev, details.st_ino
-            if os.name == "nt":
-                _owner_private_handle(self._require_descriptor(), directory=True)
-            else:
-                getattr(os, "fchmod")(  # noqa: B009 - absent on Windows
-                    self._require_descriptor(), 0o700
-                )
-            self._validate_directory()
-            return self
-        except FileNotFoundError:
-            self.close()
-            raise
-        except (OSError, RunnerTrustError):
-            self.close()
-            raise RunnerTransportError("private directory is unavailable or unsafe") from None
-
-    def __exit__(self, *_args: object) -> None:
-        self.close()
-
-    def _require_descriptor(self) -> int:
-        if self._descriptor is None:
-            raise OSError("private directory is closed")
-        return self._descriptor
-
-    def _validate_directory(self) -> None:
-        from .runner_trust import _is_link_or_reparse
-
-        descriptor = self._require_descriptor()
-        details = os.fstat(descriptor)
-        validation_path = _windows_extended_path(self.path) if os.name == "nt" else self.path
-        current = validation_path.stat(follow_symlinks=False)
+    def _validate_ready(self, payload: bytes) -> None:
+        ready = SubprocessRustRunner._decode_json(payload, "runner cancellation readiness")
         if (
-            self._identity is None
-            or _is_link_or_reparse(validation_path)
-            or not stat.S_ISDIR(details.st_mode)
-            or not stat.S_ISDIR(current.st_mode)
-            or (details.st_dev, details.st_ino) != self._identity
-            or (current.st_dev, current.st_ino) != self._identity
+            set(ready)
+            != {
+                "schema_version",
+                "task_id",
+                "request_hash",
+                "parent_process_id",
+                "descendant_process_id",
+            }
+            or ready.get("schema_version") != _CANCELLATION_READY_SCHEMA
+            or ready.get("task_id") != self.task_id
+            or ready.get("request_hash") != self.request_hash
+            or type(ready.get("parent_process_id")) is not int
+            or int(ready["parent_process_id"]) <= 0
+            or type(ready.get("descendant_process_id")) is not int
+            or int(ready["descendant_process_id"]) <= 0
+            or ready["parent_process_id"] == ready["descendant_process_id"]
         ):
-            raise OSError("private directory identity changed")
+            raise RunnerTransportError("runner cancellation readiness is invalid")
 
-    def directory_identity(self) -> tuple[int, int]:
-        self._validate_directory()
-        if self._identity is None:
-            raise OSError("private directory identity is unavailable")
-        return self._identity
+    def cleanup(self) -> bool:
+        """Remove only protocol objects from the still-pinned owned task."""
 
-    def close(self) -> None:
-        if self._descriptor is not None:
-            os.close(self._descriptor)
-            self._descriptor = None
-        if self._parent_descriptor is not None:
-            os.close(self._parent_descriptor)
-            self._parent_descriptor = None
-
-    @staticmethod
-    def _name(name: str) -> str:
-        if not name or Path(name).name != name:
-            raise OSError("invalid private child name")
-        return name
-
-    def names(self, *, maximum: int | None = None) -> tuple[str, ...]:
-        if maximum is not None and (isinstance(maximum, bool) or maximum < 0):
-            raise OSError("invalid private directory entry bound")
-        self._validate_directory()
-        iterator = (
-            os.scandir(_windows_extended_path(self.path))
-            if os.name == "nt"
-            else os.scandir(self._require_descriptor())
-        )
-        names: list[str] = []
-        try:
-            with iterator:
-                for entry in iterator:
-                    if maximum is not None and len(names) >= maximum:
-                        raise OSError("private directory entry bound exceeded")
-                    names.append(entry.name)
-        finally:
-            self._validate_directory()
-        return tuple(names)
-
-    def has_name(self, name: str) -> bool:
-        name = self._name(name)
-        self._validate_directory()
-        try:
-            if os.name == "nt":
-                _windows_extended_path(self.path / name).stat(follow_symlinks=False)
-            else:
-                os.stat(name, dir_fd=self._require_descriptor(), follow_symlinks=False)
-        except FileNotFoundError:
-            self._validate_directory()
+        if self._closed:
             return False
-        self._validate_directory()
-        return True
-
-    def _open_existing(self, name: str, *, delete: bool = False) -> int:
-        name = self._name(name)
-        self._validate_directory()
-        if os.name == "nt":
-            return _windows_open_descriptor(
-                self.path / name,
-                directory=False,
-                write_dac=True,
-                delete=delete,
-            )
-        return os.open(
-            name,
-            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=self._require_descriptor(),
-        )
-
-    def _open_new(self, name: str) -> int:
-        name = self._name(name)
-        self._validate_directory()
-        if os.name == "nt":
-            return _windows_open_descriptor(
-                self.path / name,
-                directory=False,
-                write=True,
-                write_dac=True,
-                delete=True,
-                create=True,
-            )
-        return os.open(
-            name,
-            os.O_RDWR
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=self._require_descriptor(),
-        )
-
-    def _validate_file(
-        self,
-        name: str,
-        descriptor: int,
-        *,
-        maximum: int,
-        apply_permissions: bool = True,
-        expected_identity: tuple[int, int] | None = None,
-    ) -> os.stat_result:
-        from .runner_trust import _is_link_or_reparse, _owner_private_handle
-
-        name = self._name(name)
-        details = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(details.st_mode)
-            or details.st_nlink != 1
-            or details.st_size < 0
-            or details.st_size > maximum
-            or (
-                expected_identity is not None
-                and (details.st_dev, details.st_ino) != expected_identity
-            )
-        ):
-            raise OSError("unsafe private file")
-        if apply_permissions:
-            if os.name == "nt":
-                _owner_private_handle(descriptor, directory=False)
-            else:
-                getattr(os, "fchmod")(descriptor, 0o600)  # noqa: B009 - absent on Windows
-        validation_path = (
-            _windows_extended_path(self.path / name) if os.name == "nt" else self.path / name
-        )
-        current = (
-            validation_path.stat(follow_symlinks=False)
-            if os.name == "nt"
-            else os.stat(name, dir_fd=self._require_descriptor(), follow_symlinks=False)
-        )
-        final = os.fstat(descriptor)
-        if (
-            _is_link_or_reparse(validation_path)
-            or not stat.S_ISREG(current.st_mode)
-            or current.st_nlink != 1
-            or final.st_nlink != 1
-            or (current.st_dev, current.st_ino) != (details.st_dev, details.st_ino)
-            or (final.st_dev, final.st_ino) != (details.st_dev, details.st_ino)
-            or final.st_size > maximum
-        ):
-            raise OSError("private file identity changed")
-        return final
-
-    def read(self, name: str, *, maximum: int) -> bytes:
-        payload, _identity = self.read_with_identity(name, maximum=maximum)
-        return payload
-
-    def read_with_identity(
-        self,
-        name: str,
-        *,
-        maximum: int,
-        expected_identity: tuple[int, int] | None = None,
-    ) -> tuple[bytes, tuple[int, int]]:
-        descriptor = self._open_existing(name)
+        task_removed = False
         try:
-            before = self._validate_file(
-                name,
-                descriptor,
-                maximum=maximum,
-                expected_identity=expected_identity,
-            )
-            payload = _read_descriptor_bounded(descriptor, maximum)
-            after = self._validate_file(
-                name,
-                descriptor,
-                maximum=maximum,
-                apply_permissions=False,
-                expected_identity=(before.st_dev, before.st_ino),
-            )
-            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-                raise OSError("private file changed while read")
-            return payload, (before.st_dev, before.st_ino)
-        finally:
-            os.close(descriptor)
-
-    def file_identity(
-        self,
-        name: str,
-        *,
-        maximum: int,
-        apply_permissions: bool = True,
-    ) -> tuple[int, int]:
-        descriptor = self._open_existing(name)
-        try:
-            details = self._validate_file(
-                name,
-                descriptor,
-                maximum=maximum,
-                apply_permissions=apply_permissions,
-            )
-            return details.st_dev, details.st_ino
-        finally:
-            os.close(descriptor)
-
-    def create(self, name: str, payload: bytes, *, maximum: int) -> None:
-        if not 0 <= len(payload) <= maximum:
-            raise OSError("private payload exceeds its size limit")
-        name = self._name(name)
-        # Keep the Win32-facing ACL path short even when the pinned directory
-        # itself is near the legacy path limit. CREATE_NEW still makes the
-        # random 48-bit temporary name collision-safe and fail closed.
-        temporary = f".t-{secrets.token_hex(6)}"
-        descriptor = self._open_new(temporary)
-        written_ok = False
-        temporary_identity: tuple[int, int] | None = None
-        try:
-            self._validate_file(temporary, descriptor, maximum=maximum)
-            written = 0
-            while written < len(payload):
-                count = os.write(descriptor, payload[written:])
-                if count <= 0:
-                    raise OSError("short private file write")
-                written += count
-            os.fsync(descriptor)
-            details = self._validate_file(
-                temporary,
-                descriptor,
-                maximum=maximum,
-                apply_permissions=False,
-            )
-            temporary_identity = details.st_dev, details.st_ino
-            written_ok = True
-        finally:
-            if not written_ok:
-                try:
-                    if os.name == "nt":
-                        _windows_mark_delete_descriptor(descriptor)
-                    else:
-                        os.unlink(temporary, dir_fd=self._require_descriptor())
-                except OSError:
-                    pass
-            os.close(descriptor)
-        try:
-            if temporary_identity is None:
-                raise OSError("private temporary identity is unavailable")
-            self.promote(
-                temporary,
-                name,
-                maximum=maximum,
-                expected=payload,
-                permissions_already_private=True,
-                expected_identity=temporary_identity,
-            )
-        except BaseException:
-            try:
-                self.unlink(
-                    temporary,
+            names = set(self.task.names(maximum=6))
+            allowed = {
+                _CANCELLATION_READY_NAME,
+                _CANCELLATION_REQUEST_NAME,
+                _CANCELLATION_ACK_NAME,
+                _CANCELLATION_LEASE_NAME,
+                *_CANCELLATION_STAGING_NAMES,
+            }
+            if not names <= allowed:
+                return False
+            records: dict[str, tuple[bytes, tuple[int, int]]] = {}
+            for name in sorted(names):
+                maximum = 2048 if name in _CANCELLATION_STAGING_NAMES else 1024
+                records[name] = self.task.read_with_identity(name, maximum=maximum)
+            ready_record = records.get(_CANCELLATION_READY_NAME)
+            request_record = records.get(_CANCELLATION_REQUEST_NAME)
+            ack_record = records.get(_CANCELLATION_ACK_NAME)
+            lease_record = records.get(_CANCELLATION_LEASE_NAME)
+            if lease_record is None or lease_record[0] != (f"lease:{self.token}\n".encode("ascii")):
+                return False
+            if ready_record is not None:
+                self._validate_ready(ready_record[0])
+            if request_record is not None:
+                if re.fullmatch(rb"cancel:[0-9a-f]{64}\n", request_record[0]) is None:
+                    return False
+                if ready_record is None:
+                    return False
+            if ack_record is not None:
+                if request_record is None or ack_record[0] != b"ack:" + request_record[0][7:]:
+                    return False
+            for name in sorted(records):
+                payload, identity = records[name]
+                maximum = 2048 if name in _CANCELLATION_STAGING_NAMES else 1024
+                self.task.unlink(
+                    name,
                     maximum=maximum,
                     expected=payload,
-                    expected_identity=temporary_identity,
+                    expected_identity=identity,
                 )
-            except OSError:
-                pass
-            raise
-
-    def open_new(self, name: str, *, maximum: int) -> _GuardedBinaryFile:
-        descriptor = self._open_new(name)
-        try:
-            self._validate_file(name, descriptor, maximum=maximum)
-            handle = os.fdopen(descriptor, "w+b", buffering=0)
-            return _GuardedBinaryFile(handle, self, name, maximum)
-        except BaseException:
-            try:
-                if os.name == "nt":
-                    _windows_mark_delete_descriptor(descriptor)
-                else:
-                    os.unlink(name, dir_fd=self._require_descriptor())
-            except OSError:
-                pass
-            os.close(descriptor)
-            self.close()
-            raise
-
-    def unlink(
-        self,
-        name: str,
-        *,
-        maximum: int,
-        expected: bytes | None = None,
-        expected_identity: tuple[int, int] | None = None,
-    ) -> None:
-        descriptor = self._open_existing(name, delete=True)
-        try:
-            opened = self._validate_file(
-                name,
-                descriptor,
-                maximum=maximum,
-                expected_identity=expected_identity,
-            )
-            if expected is not None and _read_descriptor_bounded(descriptor, maximum) != expected:
-                raise OSError("private file content changed")
-            self._validate_file(
-                name,
-                descriptor,
-                maximum=maximum,
-                apply_permissions=False,
-                expected_identity=(opened.st_dev, opened.st_ino),
-            )
-            if os.name == "nt":
-                _windows_mark_delete_descriptor(descriptor)
-            else:
-                current = os.stat(name, dir_fd=self._require_descriptor(), follow_symlinks=False)
-                opened = os.fstat(descriptor)
-                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
-                    raise OSError("private file identity changed")
-                os.unlink(name, dir_fd=self._require_descriptor())
-            self.sync()
+            if self.task.names(maximum=1):
+                return False
+            self.task.remove()
+            self.task.close()
+            task_removed = True
+            if self.parent_created and not self.parent.names(maximum=1):
+                parent_path = self.parent.path
+                parent_identity = self.parent.directory_identity()
+                self.parent.close()
+                with _PinnedPrivateDirectory(
+                    parent_path,
+                    delete=True,
+                    expected_identity=parent_identity,
+                ) as removable_parent:
+                    if not removable_parent.names(maximum=1):
+                        removable_parent.remove()
+            return True
+        except (OSError, RunnerTransportError, ValueError):
+            return False
         finally:
-            os.close(descriptor)
-
-    def promote(
-        self,
-        source: str,
-        destination: str,
-        *,
-        maximum: int,
-        expected: bytes,
-        permissions_already_private: bool = False,
-        expected_identity: tuple[int, int] | None = None,
-    ) -> None:
-        source = self._name(source)
-        destination = self._name(destination)
-        descriptor = self._open_existing(source, delete=True)
-        try:
-            source_details = self._validate_file(
-                source,
-                descriptor,
-                maximum=maximum,
-                apply_permissions=not permissions_already_private,
-                expected_identity=expected_identity,
-            )
-            if _read_descriptor_bounded(descriptor, maximum) != expected:
-                raise OSError("private promotion source changed")
-            if os.name == "nt":
-                _windows_rename_descriptor(descriptor, self._require_descriptor(), destination)
-                # A handle with DELETE access can transiently deny ordinary
-                # readers even after rename. Close it immediately after the
-                # handle-relative publication, then re-open and bind the final
-                # validation to the same file identity.
-                os.close(descriptor)
-                descriptor = -1
-                final_descriptor = self._open_existing(destination)
-                try:
-                    final_details = os.fstat(final_descriptor)
-                    if (final_details.st_dev, final_details.st_ino) != (
-                        source_details.st_dev,
-                        source_details.st_ino,
-                    ):
-                        raise OSError("private promotion target changed")
-                    self._validate_file(
-                        destination,
-                        final_descriptor,
-                        maximum=maximum,
-                        apply_permissions=False,
-                    )
-                finally:
-                    os.close(final_descriptor)
-            else:
-                os.link(
-                    source,
-                    destination,
-                    src_dir_fd=self._require_descriptor(),
-                    dst_dir_fd=self._require_descriptor(),
-                    follow_symlinks=False,
-                )
-                os.unlink(source, dir_fd=self._require_descriptor())
-                self._validate_file(
-                    destination,
-                    descriptor,
-                    maximum=maximum,
-                    apply_permissions=False,
-                )
-            self.sync()
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-
-    def sync(self) -> None:
-        if os.name != "nt":
-            os.fsync(self._require_descriptor())
-
-    def remove(self) -> None:
-        if self.names():
-            raise OSError("private directory is not empty")
-        descriptor = self._require_descriptor()
-        if os.name == "nt":
-            if not self.delete:
-                raise OSError("private directory delete was not authorized")
-            _windows_mark_delete_descriptor(descriptor)
-        else:
-            if self._parent_descriptor is None:
-                raise OSError("private parent directory is unavailable")
-            current = os.stat(
-                self.path.name,
-                dir_fd=self._parent_descriptor,
-                follow_symlinks=False,
-            )
-            if self._identity is None or (current.st_dev, current.st_ino) != self._identity:
-                raise OSError("private directory identity changed")
-            os.rmdir(self.path.name, dir_fd=self._parent_descriptor)
-            os.fsync(self._parent_descriptor)
-
-
-class _GuardedBinaryFile:
-    def __init__(
-        self,
-        handle: BinaryIO,
-        directory: _PinnedPrivateDirectory,
-        name: str,
-        maximum: int,
-    ) -> None:
-        self._handle = handle
-        self._directory = directory
-        self._name = name
-        self._maximum = maximum
-
-    def fileno(self) -> int:
-        return self._handle.fileno()
-
-    def write(self, payload: bytes) -> int:
-        return self._handle.write(payload)
-
-    def flush(self) -> None:
-        self._handle.flush()
-
-    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
-        return self._handle.seek(offset, whence)
-
-    def read(self, size: int = -1) -> bytes:
-        return self._handle.read(size)
-
-    def validate_identity(self) -> None:
-        self._directory._validate_file(
-            self._name,
-            self.fileno(),
-            maximum=self._maximum,
-            apply_permissions=False,
-        )
-
-    def identity(self) -> tuple[int, int]:
-        details = self._directory._validate_file(
-            self._name,
-            self.fileno(),
-            maximum=self._maximum,
-            apply_permissions=False,
-        )
-        return details.st_dev, details.st_ino
+            if not task_removed:
+                self.task.close()
+            self.parent.close()
+            self.sandbox.close()
+            self._closed = True
 
     def close(self) -> None:
-        try:
-            self._handle.close()
-        finally:
-            self._directory.close()
+        if self._closed:
+            return
+        self.task.close()
+        self.parent.close()
+        self.sandbox.close()
+        self._closed = True
 
 
 @runtime_checkable
@@ -875,7 +353,7 @@ def canonical_runner_inventory(inventory: Mapping[str, Any]) -> Mapping[str, Any
     """Validate and normalize the stable identity-bearing runner inventory."""
 
     try:
-        return _canonical_runner_inventory(inventory)
+        return cast(Mapping[str, Any], _canonical_runner_inventory(inventory))
     except RunnerInventoryAuthorityError as exc:
         raise RunnerReadinessError(str(exc)) from exc
 
@@ -883,7 +361,7 @@ def canonical_runner_inventory(inventory: Mapping[str, Any]) -> Mapping[str, Any
 def runner_inventory_digest(inventory: Mapping[str, Any]) -> str:
     """Return the canonical digest used by the approval and dispatch gates."""
 
-    return content_hash(canonical_runner_inventory(inventory))
+    return str(content_hash(canonical_runner_inventory(inventory)))
 
 
 def runner_transport_identity(
@@ -1022,17 +500,12 @@ class InventoryBoundRunner:
 
 
 def reject_forbidden_execution_keys(value: Any, *, path: str = "$") -> None:
-    """Recursively reject free-form executable content at the transport edge."""
+    """Preserve the transport-facing error while sharing neutral validation."""
 
-    if isinstance(value, Mapping):
-        for key, child in value.items():
-            normalized = str(key).strip().casefold().replace("-", "_")
-            if normalized in FORBIDDEN_EXECUTION_KEYS:
-                raise RunnerTransportError(f"forbidden execution field at {path}.{key}")
-            reject_forbidden_execution_keys(child, path=f"{path}.{key}")
-    elif isinstance(value, list | tuple):
-        for index, child in enumerate(value):
-            reject_forbidden_execution_keys(child, path=f"{path}[{index}]")
+    try:
+        _reject_forbidden_execution_keys(value, path=path)
+    except ExecutionContractError as exc:
+        raise RunnerTransportError(str(exc)) from exc
 
 
 def runner_pending_result_path(
@@ -1159,7 +632,8 @@ def cleanup_runner_watchdog_terminal_state(
                     "runner watchdog status",
                 )
                 if (
-                    status.get("schema_version") != "bluefire.runner-watchdog-status.v1"
+                    status.get("schema_version")
+                    not in {_WATCHDOG_STATUS_SCHEMA, _LEGACY_WATCHDOG_STATUS_SCHEMA}
                     or status.get("task_id") != task_id
                     or status.get("state") not in {"succeeded", "failed", "cancelled"}
                 ):
@@ -1208,8 +682,37 @@ class SubprocessRustRunner:
         self.output_limit_bytes = output_limit_bytes
         self._receiver_task_key_factory = receiver_task_key_factory
         self._kill_child_on_job_close = bool(_kill_child_on_job_close)
+        try:
+            from .runner_trust import _is_link_or_reparse
+
+            script = Path(__file__).resolve(strict=True).with_name("runner_watchdog.py")
+            details = script.lstat()
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or details.st_nlink != 1
+                or _is_link_or_reparse(script)
+            ):
+                raise OSError("unsafe packaged watchdog script")
+            self.watchdog_script = script
+            self.watchdog_script_digest = file_hash(script)
+            parent_death_script = script.with_name("runner_parent_death.py")
+            parent_death_details = parent_death_script.lstat()
+            if (
+                not stat.S_ISREG(parent_death_details.st_mode)
+                or parent_death_details.st_nlink != 1
+                or _is_link_or_reparse(parent_death_script)
+            ):
+                raise OSError("unsafe packaged parent-death helper")
+            self.parent_death_script = parent_death_script
+            self.parent_death_script_digest = file_hash(parent_death_script)
+        except OSError:
+            raise RunnerTransportError("Packaged runner watchdog is unavailable.") from None
         self._windows_jobs: dict[int, int] = {}
         self._windows_jobs_lock = threading.Lock()
+        self._linux_process_containments: weakref.WeakKeyDictionary[
+            subprocess.Popen[bytes], tuple[int, int, int, int, int]
+        ] = weakref.WeakKeyDictionary()
+        self._released_linux_processes: weakref.WeakSet[subprocess.Popen[bytes]] = weakref.WeakSet()
         if (
             timeout_seconds <= 0
             or not 4096 <= output_limit_bytes <= _WATCHDOG_CONFIG_LIMIT_BYTES
@@ -1276,6 +779,9 @@ class SubprocessRustRunner:
         config_path = control_root / "config.json"
         start_path = control_root / "start"
         watchdog: subprocess.Popen[bytes] | None = None
+        spawned_watchdogs: list[subprocess.Popen[bytes]] = []
+        cancellation_control = self._prepare_cancellation_control(manifest, profile, task_id)
+        cancellation_error: RunnerTaskCancelled | None = None
         try:
             self._prepare_watchdog_control(control_root)
             try:
@@ -1285,16 +791,21 @@ class SubprocessRustRunner:
             if current_binary_digest != self.runner_binary_digest:
                 raise RunnerTransportError("Runner identity changed after construction.")
             config = {
-                "schema_version": "bluefire.runner-watchdog-config.v1",
+                "schema_version": "bluefire.runner-watchdog-config.v2",
                 "task_id": task_id,
                 "runner_binary": str(self.runner_binary),
                 "runner_binary_digest": self.runner_binary_digest,
+                "parent_death_script_digest": self.parent_death_script_digest,
+                "watchdog_script_digest": self.watchdog_script_digest,
                 "work_root": str(self.work_root),
                 "timeout_seconds": self.timeout_seconds,
                 "output_limit_bytes": self.output_limit_bytes,
                 "durable_result_path": str(destination),
                 "manifest": dict(manifest),
                 "profile": dict(profile),
+                "cancellation_lease_token": (
+                    cancellation_control.token if cancellation_control is not None else None
+                ),
             }
             self._write_private_control_file(
                 config_path,
@@ -1310,6 +821,8 @@ class SubprocessRustRunner:
             watchdog = self._spawn_watchdog(
                 config_path,
                 receiver_environment=receiver_environment,
+                task_id=task_id,
+                process_sink=spawned_watchdogs,
             )
             # `_spawn_watchdog` returns only after Windows job assignment. The
             # watchdog refuses to launch Rust until this exclusive gate exists.
@@ -1323,21 +836,28 @@ class SubprocessRustRunner:
                 pending=pending,
                 cancel_event=cancel_event,
             )
+        except RunnerTaskCancelled as exc:
+            cancellation_error = exc
+            raise
         except BaseException:
-            if watchdog is not None and watchdog.poll() is None:
+            if watchdog is None and spawned_watchdogs:
+                watchdog = spawned_watchdogs[-1]
+            if watchdog is not None and not self._process_exited_without_reap(watchdog):
                 try:
                     request_runner_task_cancel(destination, task_id)
                 except RunnerTransportError:
                     pass
                 stop_deadline = time.monotonic() + _WATCHDOG_EXIT_GRACE_SECONDS
-                while watchdog.poll() is None and time.monotonic() < stop_deadline:
+                while (
+                    not self._process_exited_without_reap(watchdog)
+                    and time.monotonic() < stop_deadline
+                ):
                     time.sleep(_PROCESS_POLL_SECONDS)
-                if watchdog.poll() is None:
+                if not self._process_exited_without_reap(watchdog):
                     if os.name != "nt":
-                        # Rust owns a separate POSIX process group. Killing only
-                        # the watchdog here would orphan the exact effect whose
-                        # status must remain recoverable. Leave the private state
-                        # intact and let the watchdog enforce its own deadline.
+                        # The armed Rust child dies if its watchdog does, but an
+                        # active watchdog can still commit a recoverable result.
+                        # Preserve that authority until reconciliation.
                         raise RunnerPendingResultExists(
                             "Runner watchdog remains active and requires reconciliation."
                         ) from None
@@ -1355,7 +875,24 @@ class SubprocessRustRunner:
                     ) from None
             raise
         finally:
-            if watchdog is None or watchdog.poll() is not None:
+            containment_released = watchdog is None
+            if watchdog is not None and self._process_exited_without_reap(watchdog):
+                containment_released = (
+                    self._finish_windows_job(watchdog.pid)
+                    if os.name == "nt"
+                    else self._finish_posix_process_group(watchdog)
+                )
+            cancellation_cleanup = cancellation_control is None
+            if cancellation_control is not None:
+                if containment_released:
+                    cancellation_cleanup = cancellation_control.cleanup()
+                else:
+                    cancellation_control.close()
+            if cancellation_error is not None:
+                cancellation_error.control_cleanup_verified = bool(
+                    cancellation_error.control_cleanup_verified and cancellation_cleanup
+                )
+            if containment_released:
                 self._cleanup_watchdog_control(control_root)
 
     def _execute_task_locally(
@@ -1367,6 +904,10 @@ class SubprocessRustRunner:
         cancel_event: threading.Event,
         durable_result_path: str | Path,
         receiver_environment: Mapping[str, str] | None = None,
+        cooperative_request_event: threading.Event | None = None,
+        cooperative_ack_event: threading.Event | None = None,
+        runner_process_id_sink: list[int] | None = None,
+        cancellation_lease_token: str | None = None,
     ) -> Mapping[str, Any]:
         """Watchdog-only fixed-runner execution and durable-result commit."""
 
@@ -1399,6 +940,10 @@ class SubprocessRustRunner:
                     pending_result_path=pending,
                     identity_sink=pending_identities,
                     receiver_environment=receiver_environment,
+                    cooperative_request_event=cooperative_request_event,
+                    cooperative_ack_event=cooperative_ack_event,
+                    runner_process_id_sink=runner_process_id_sink,
+                    cancellation_lease_token=cancellation_lease_token,
                 )
             result = self._validate_result(output, manifest, profile)
             self._promote_pending_result(
@@ -1431,6 +976,131 @@ class SubprocessRustRunner:
             ) from None
         except (OSError, RunnerTransportError):
             raise RunnerTransportError("runner watchdog state is unavailable") from None
+
+    @staticmethod
+    def _prepare_cancellation_control(
+        manifest: Mapping[str, Any],
+        profile: Mapping[str, Any],
+        task_id: str,
+    ) -> _CancellationControlLease | None:
+        if os.name != "nt" or manifest.get("action_id") != _CANCELLATION_ACTION_ID:
+            return None
+        request_hash = manifest.get("request_hash")
+        expected_task_id = (
+            "execute-" + request_hash.removeprefix("sha256:")
+            if isinstance(request_hash, str) and _SHA256_DIGEST.fullmatch(request_hash)
+            else None
+        )
+        sandbox_raw = profile.get("sandbox_root")
+        if (
+            manifest.get("behavior_id") != _CANCELLATION_ACTION_ID
+            or manifest.get("params") != {}
+            or manifest.get("platform") != "windows"
+            or profile.get("platform") != "windows"
+            or expected_task_id is None
+            or not isinstance(request_hash, str)
+            or task_id != expected_task_id
+            or not isinstance(sandbox_raw, str)
+        ):
+            raise RunnerTransportError("runner cancellation control contract is invalid")
+
+        sandbox_control: _PinnedPrivateDirectory | None = None
+        parent_control: _PinnedPrivateDirectory | None = None
+        task_control: _PinnedPrivateDirectory | None = None
+        parent_created = False
+        task_created = False
+        parent_path: Path | None = None
+        task_path: Path | None = None
+        lease: _CancellationControlLease | None = None
+        completed = False
+        try:
+            sandbox = Path(sandbox_raw)
+            if not sandbox.is_absolute():
+                raise OSError("cancellation sandbox is not absolute")
+            sandbox = sandbox.resolve(strict=True)
+            sandbox_control = _PinnedPrivateDirectory(sandbox)
+            sandbox_control.__enter__()
+            parent_path = sandbox / _CANCELLATION_CONTROL_PARENT
+            if parent_path.exists():
+                parent_control = _PinnedPrivateDirectory(parent_path)
+                parent_control.__enter__()
+            else:
+                parent_path.mkdir(mode=0o700, parents=False, exist_ok=False)
+                parent_created = True
+                parent_control = _PinnedPrivateDirectory(parent_path)
+                parent_control.__enter__()
+            task_path = parent_path / request_hash.removeprefix("sha256:")
+            task_path.mkdir(mode=0o700, parents=False, exist_ok=False)
+            task_created = True
+            task_control = _PinnedPrivateDirectory(task_path, delete=True)
+            task_control.__enter__()
+            if task_control.names(maximum=1):
+                raise OSError("cancellation task is not empty")
+            token = secrets.token_hex(32)
+            lease = _CancellationControlLease(
+                sandbox=sandbox_control,
+                parent=parent_control,
+                task=task_control,
+                parent_created=parent_created,
+                task_id=task_id,
+                request_hash=request_hash,
+                token=token,
+            )
+            task_control.create(
+                _CANCELLATION_LEASE_NAME,
+                f"lease:{token}\n".encode("ascii"),
+                maximum=72,
+            )
+            completed = True
+            return lease
+        except FileExistsError:
+            raise RunnerPendingResultExists(
+                "Runner cancellation state requires reconciliation before the task can start."
+            ) from None
+        except (OSError, RunnerTransportError):
+            raise RunnerTransportError("runner cancellation state is unavailable") from None
+        finally:
+            if not completed:
+                if lease is not None:
+                    lease.cleanup()
+                    task_control = None
+                    parent_control = None
+                    sandbox_control = None
+                elif task_control is not None:
+                    try:
+                        if not task_control.names(maximum=1):
+                            task_control.remove()
+                    except (OSError, RunnerTransportError):
+                        pass
+                    task_control.close()
+                elif task_created and task_path is not None:
+                    try:
+                        task_path.rmdir()
+                    except OSError:
+                        pass
+                if parent_control is not None:
+                    if parent_created and parent_path is not None:
+                        try:
+                            if not parent_control.names(maximum=1):
+                                parent_identity = parent_control.directory_identity()
+                                parent_control.close()
+                                with _PinnedPrivateDirectory(
+                                    parent_path,
+                                    delete=True,
+                                    expected_identity=parent_identity,
+                                ) as removable_parent:
+                                    if not removable_parent.names(maximum=1):
+                                        removable_parent.remove()
+                        except (OSError, RunnerTransportError):
+                            pass
+                    parent_control.close()
+                elif parent_created and parent_path is not None:
+                    try:
+                        parent_path.rmdir()
+                    except OSError:
+                        pass
+                if sandbox_control is not None:
+                    sandbox_control.close()
 
     @staticmethod
     def _write_private_control_file(path: Path, payload: bytes, *, maximum: int) -> None:
@@ -1471,25 +1141,99 @@ class SubprocessRustRunner:
         config_path: Path,
         *,
         receiver_environment: Mapping[str, str],
+        task_id: str,
+        process_sink: list[subprocess.Popen[bytes]],
     ) -> subprocess.Popen[bytes]:
         try:
-            interpreter = Path(sys.executable).resolve(strict=True)
+            runtime = getattr(sys, "_base_executable", sys.executable)
+            interpreter = Path(runtime).resolve(strict=True)
             if not interpreter.is_file():
                 raise OSError("Python runtime is unavailable")
+            interpreter_digest = file_hash(interpreter)
         except OSError:
             raise RunnerTransportError("Runner watchdog runtime is unavailable") from None
-        return self._spawn(
-            [
-                str(interpreter),
-                "-I",
-                "-m",
-                "bluefire.runner_watchdog",
-                str(config_path),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            receiver_environment=receiver_environment,
-        )
+        script = self.watchdog_script
+        try:
+            current_digest = file_hash(script)
+        except OSError:
+            raise RunnerTransportError("Packaged runner watchdog is unavailable") from None
+        if current_digest != self.watchdog_script_digest:
+            raise RunnerTransportError("Packaged runner watchdog identity changed")
+        with _pinned_launch_file(interpreter, interpreter_digest) as interpreter_launch:
+            with _pinned_launch_file(
+                script,
+                self.watchdog_script_digest,
+            ) as script_launch:
+                process = self._spawn(
+                    [
+                        interpreter_launch[0],
+                        "-I",
+                        "-B",
+                        "-X",
+                        "utf8",
+                        script_launch[0],
+                        str(config_path),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    receiver_environment=receiver_environment,
+                    inherited_descriptors=interpreter_launch[1] + script_launch[1],
+                )
+                process_sink.append(process)
+                try:
+                    self._await_watchdog_readiness(process, config_path.parent, task_id)
+                except BaseException:
+                    if not self._terminate_process_tree(process):
+                        raise RunnerTransportError(
+                            "Runner watchdog process tree could not be stopped safely"
+                        ) from None
+                    raise
+        return process
+
+    def _await_watchdog_readiness(
+        self,
+        process: subprocess.Popen[bytes],
+        control_root: Path,
+        task_id: str,
+    ) -> None:
+        deadline = time.monotonic() + _WATCHDOG_START_GRACE_SECONDS
+        while time.monotonic() < deadline:
+            if self._process_exited_without_reap(process):
+                raise RunnerTransportError("Runner watchdog exited before readiness")
+            try:
+                with _PinnedPrivateDirectory(control_root) as pinned:
+                    payload = pinned.read("ready.json", maximum=4096)
+                ready = SubprocessRustRunner._decode_json(payload, "runner watchdog readiness")
+                watchdog_pid = ready.get("watchdog_pid")
+                exact_shape = set(ready) == {
+                    "schema_version",
+                    "task_id",
+                    "watchdog_pid",
+                }
+                exact_identity = (
+                    type(watchdog_pid) is int
+                    and 1 <= watchdog_pid <= 2**31 - 1
+                    and watchdog_pid == process.pid
+                )
+                if (
+                    exact_shape
+                    and ready.get("schema_version") == "bluefire.runner-watchdog-ready.v1"
+                    and ready.get("task_id") == task_id
+                    and exact_identity
+                ):
+                    return
+                raise RunnerTransportError("Runner watchdog readiness is invalid")
+            except FileNotFoundError:
+                time.sleep(_PROCESS_POLL_SECONDS)
+            except OSError as exc:
+                windows_error = getattr(exc, "winerror", None)
+                if windows_error is None:
+                    windows_error = exc.errno
+                if os.name == "nt" and windows_error in {32, 33}:
+                    time.sleep(_PROCESS_POLL_SECONDS)
+                    continue
+                raise RunnerTransportError("Runner watchdog readiness is unavailable") from None
+        raise RunnerTransportError("Runner watchdog did not become ready")
 
     def _await_watchdog(
         self,
@@ -1510,8 +1254,7 @@ class SubprocessRustRunner:
         )
         cancellation_requested = False
         while True:
-            return_code = process.poll()
-            if return_code is not None:
+            if self._process_exited_without_reap(process):
                 if os.name == "nt" and not self._finish_windows_job(process.pid):
                     raise RunnerTransportError("Runner watchdog containment could not be released")
                 if os.name != "nt" and not self._finish_posix_process_group(process):
@@ -1525,9 +1268,12 @@ class SubprocessRustRunner:
                     request_runner_task_cancel(destination, task_id)
                     cancellation_requested = True
                 grace_deadline = time.monotonic() + _WATCHDOG_EXIT_GRACE_SECONDS
-                while process.poll() is None and time.monotonic() < grace_deadline:
+                while (
+                    not self._process_exited_without_reap(process)
+                    and time.monotonic() < grace_deadline
+                ):
                     time.sleep(_PROCESS_POLL_SECONDS)
-                if process.poll() is None:
+                if not self._process_exited_without_reap(process):
                     if os.name != "nt":
                         raise RunnerPendingResultExists(
                             "Runner watchdog remains active and requires reconciliation."
@@ -1552,14 +1298,48 @@ class SubprocessRustRunner:
         except (OSError, RunnerTransportError):
             status = None
         if status is not None and (
-            status.get("schema_version") != "bluefire.runner-watchdog-status.v1"
+            status.get("schema_version") != _WATCHDOG_STATUS_SCHEMA
             or status.get("task_id") != task_id
         ):
             status = None
         code = status.get("error_code") if status is not None else None
         state = status.get("state") if status is not None else None
         if code == "cancelled":
-            raise RunnerTaskCancelled("Runner task was cancelled after its process tree stopped.")
+            expected_fields = {
+                "schema_version",
+                "task_id",
+                "state",
+                "error_code",
+                "watchdog_pid",
+                "cooperative_requested",
+                "cooperative_acknowledged",
+                "forced_tree_termination",
+                "control_cleanup_verified",
+            }
+            requested = status.get("cooperative_requested") if status is not None else None
+            acknowledged = status.get("cooperative_acknowledged") if status is not None else None
+            forced = status.get("forced_tree_termination") if status is not None else None
+            cleanup_verified = (
+                status.get("control_cleanup_verified") if status is not None else None
+            )
+            if (
+                status is None
+                or set(status) != expected_fields
+                or state != "cancelled"
+                or type(requested) is not bool
+                or type(acknowledged) is not bool
+                or type(forced) is not bool
+                or type(cleanup_verified) is not bool
+                or (acknowledged and not requested)
+            ):
+                raise RunnerTransportError("runner cancellation proof is invalid")
+            raise RunnerTaskCancelled(
+                "Runner task was cancelled after its process tree stopped.",
+                cooperative_requested=requested,
+                cooperative_acknowledged=acknowledged,
+                forced_tree_termination=forced,
+                control_cleanup_verified=cleanup_verified,
+            )
         if code == "timed_out":
             raise RunnerTaskTimedOut("Runner task timed out after its process tree stopped.")
         if code == "output_limit":
@@ -1671,7 +1451,12 @@ class SubprocessRustRunner:
         return result
 
     def _invoke(self, argv: list[str]) -> bytes:
-        process = self._spawn(argv, stdout=subprocess.PIPE)
+        with _pinned_launch_file(self.runner_binary, self.runner_binary_digest) as launch:
+            process = self._spawn(
+                [launch[0], *argv[1:]],
+                stdout=subprocess.PIPE,
+                inherited_descriptors=launch[1],
+            )
         stdout = bytearray()
         stderr = bytearray()
         overflow = threading.Event()
@@ -1720,6 +1505,10 @@ class SubprocessRustRunner:
         pending_result_path: Path,
         identity_sink: list[tuple[int, int]],
         receiver_environment: Mapping[str, str] | None,
+        cooperative_request_event: threading.Event | None,
+        cooperative_ack_event: threading.Event | None,
+        runner_process_id_sink: list[int] | None,
+        cancellation_lease_token: str | None,
     ) -> tuple[bytes, tuple[int, int]]:
         output = self._open_pending_result(pending_result_path)
         guarded_output = cast(_GuardedBinaryFile, output)
@@ -1728,11 +1517,21 @@ class SubprocessRustRunner:
         overflow = threading.Event()
         process: subprocess.Popen[bytes] | None = None
         try:
-            process = self._spawn(
-                argv,
-                stdout=output,
-                receiver_environment=receiver_environment,
-            )
+            with _pinned_launch_file(
+                self.runner_binary,
+                self.runner_binary_digest,
+            ) as launch:
+                process = self._spawn(
+                    [launch[0], *argv[1:]],
+                    stdout=output,
+                    receiver_environment=receiver_environment,
+                    cancellation_lease_token=cancellation_lease_token,
+                    inherited_descriptors=launch[1],
+                )
+            if runner_process_id_sink is not None:
+                if runner_process_id_sink:
+                    raise RunnerTransportError("runner process identity sink is not empty")
+                runner_process_id_sink.append(process.pid)
 
             def drain_stderr(stream: BinaryIO | None) -> None:
                 if stream is None:
@@ -1760,6 +1559,8 @@ class SubprocessRustRunner:
                     cancel_event=cancel_event,
                     overflow=overflow,
                     output_descriptor=output.fileno(),
+                    cooperative_request_event=cooperative_request_event,
+                    cooperative_ack_event=cooperative_ack_event,
                 )
             finally:
                 reader.join(timeout=_PROCESS_KILL_GRACE_SECONDS)
@@ -1770,7 +1571,7 @@ class SubprocessRustRunner:
             output.seek(0)
             result_output = output.read(self.output_limit_bytes + 1)
         except BaseException as exc:
-            if process is not None and process.poll() is None:
+            if process is not None and not self._process_exited_without_reap(process):
                 if not self._stop_process_tree(process):
                     raise RunnerTransportError(
                         "Runner process tree could not be stopped safely"
@@ -1789,6 +1590,175 @@ class SubprocessRustRunner:
             raise RunnerTransportError("Rust runner exited with an unexpected status")
         return result_output, pending_identity
 
+    def _spawn_linux_parent_death(
+        self,
+        argv: list[str],
+        *,
+        stdout: int | BinaryIO | None,
+        stderr: int | BinaryIO | None,
+        environment: Mapping[str, str],
+        inherited_descriptors: tuple[int, ...],
+        options: Mapping[str, Any],
+    ) -> subprocess.Popen[bytes]:
+        if not sys.platform.startswith("linux") or not hasattr(socket, "SOCK_SEQPACKET"):
+            raise RunnerTransportError("Linux parent-death containment is unavailable")
+        target_match = re.fullmatch(r"/(?:proc/self|dev)/fd/([0-9]+)", argv[0])
+        target_descriptor = int(target_match.group(1)) if target_match is not None else -1
+        if target_descriptor not in inherited_descriptors:
+            raise RunnerTransportError("Linux parent-death target is not descriptor-bound")
+        try:
+            runtime = Path(getattr(sys, "_base_executable", sys.executable)).resolve(strict=True)
+            runtime_digest = file_hash(runtime)
+            if file_hash(self.parent_death_script) != self.parent_death_script_digest:
+                raise OSError("parent-death helper identity changed")
+            parent_socket, child_socket = socket.socketpair(
+                socket.AF_UNIX,
+                socket.SOCK_SEQPACKET,
+            )
+            parent_socket.settimeout(_WATCHDOG_START_GRACE_SECONDS)
+        except OSError:
+            raise RunnerTransportError("Linux parent-death containment is unavailable") from None
+        process: subprocess.Popen[bytes] | None = None
+        nonce = secrets.token_hex(32)
+        try:
+            with _pinned_launch_file(runtime, runtime_digest) as interpreter_launch:
+                with _pinned_launch_file(
+                    self.parent_death_script,
+                    self.parent_death_script_digest,
+                ) as helper_launch:
+                    helper_descriptors = interpreter_launch[1] + helper_launch[1]
+                    pass_fds = tuple(
+                        sorted(
+                            set(inherited_descriptors + helper_descriptors)
+                            | {child_socket.fileno()}
+                        )
+                    )
+                    launch_options = dict(options)
+                    launch_options["pass_fds"] = pass_fds
+                    process = subprocess.Popen(  # nosec B603
+                        [
+                            interpreter_launch[0],
+                            "-I",
+                            "-B",
+                            "-X",
+                            "utf8",
+                            helper_launch[0],
+                            str(os.getpid()),
+                            str(child_socket.fileno()),
+                            str(target_descriptor),
+                            nonce,
+                            ",".join(str(value) for value in helper_descriptors),
+                            *argv,
+                        ],
+                        cwd=self.work_root,
+                        env=dict(environment),
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout,
+                        stderr=stderr,
+                        shell=False,
+                        **launch_options,
+                    )
+                    child_socket.close()
+                    armed = parent_socket.recv(256)
+                    expected = f"armed-v1:{nonce}:{process.pid}:{os.getpid()}".encode("ascii")
+                    if (
+                        armed != expected
+                        or not callable(_GET_PROCESS_GROUP_ID)
+                        or not callable(_GET_SESSION_ID)
+                        or _GET_PROCESS_GROUP_ID(process.pid) != os.getpid()
+                        or _GET_SESSION_ID(process.pid) != os.getpid()
+                    ):
+                        raise OSError("parent-death handshake is invalid")
+                    parent_socket.sendall(f"go-v1:{nonce}".encode("ascii"))
+                    if parent_socket.recv(256) != b"":
+                        raise OSError("parent-death target execution failed")
+            return process
+        except (OSError, socket.timeout):
+            if process is not None:
+                try:
+                    process.kill()
+                    process.wait(timeout=_PROCESS_KILL_GRACE_SECONDS)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            raise RunnerTransportError("Linux parent-death containment failed") from None
+        finally:
+            parent_socket.close()
+            child_socket.close()
+
+    @staticmethod
+    def _linux_process_identity(process_id: int) -> tuple[int, int, int, int]:
+        try:
+            payload = (Path("/proc") / str(process_id) / "stat").read_bytes()
+        except FileNotFoundError:
+            raise ProcessLookupError(process_id) from None
+        except OSError:
+            raise RunnerTransportError("Linux process identity is unavailable") from None
+        close = payload.rfind(b")")
+        fields = payload[close + 2 :].split() if 0 < close < len(payload) - 2 else []
+        try:
+            identity = (
+                process_id,
+                int(fields[19]),
+                int(fields[2]),
+                int(fields[3]),
+            )
+        except (IndexError, ValueError):
+            raise RunnerTransportError("Linux process identity is invalid") from None
+        if not 0 < len(payload) <= 4096 or not all(value > 0 for value in identity):
+            raise RunnerTransportError("Linux process identity is invalid")
+        return identity
+
+    def _register_linux_private_process(self, process: subprocess.Popen[bytes]) -> None:
+        descriptor = -1
+        try:
+            if not callable(_PIDFD_OPEN):
+                raise OSError("pidfd_open unavailable")
+            before = self._linux_process_identity(process.pid)
+            descriptor = int(_PIDFD_OPEN(process.pid, 0))
+            after = self._linux_process_identity(process.pid)
+            if before != after or before[2:] != (process.pid, process.pid):
+                raise OSError("private process identity mismatch")
+            self._linux_process_containments[process] = (*before, descriptor)
+            descriptor = -1
+        except (OSError, ProcessLookupError, RunnerTransportError):
+            try:
+                process.kill()
+                process.wait(timeout=_PROCESS_KILL_GRACE_SECONDS)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            raise RunnerTransportError("Linux private process containment is unavailable") from None
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _process_exited_without_reap(self, process: subprocess.Popen[bytes]) -> bool:
+        if process in self._released_linux_processes:
+            return process.returncode is not None
+        containment = self._linux_process_containments.get(process)
+        if containment is None:
+            return process.poll() is not None
+        if (
+            not callable(_WAIT_ID)
+            or _PIDFD_ID_TYPE is None
+            or not _WAIT_EXITED
+            or not _WAIT_NO_HANG
+            or not _WAIT_NO_REAP
+        ):
+            raise RunnerTransportError("Linux unreaped process observation is unavailable")
+        try:
+            observed = _WAIT_ID(
+                _PIDFD_ID_TYPE,
+                containment[4],
+                _WAIT_EXITED | _WAIT_NO_HANG | _WAIT_NO_REAP,
+            )
+        except (ChildProcessError, OSError):
+            raise RunnerTransportError("Linux process was reaped before containment") from None
+        if observed is None:
+            return False
+        if int(getattr(observed, "si_pid", 0)) != process.pid:
+            raise RunnerTransportError("Linux exit identity is invalid")
+        return True
+
     def _spawn(
         self,
         argv: list[str],
@@ -1796,9 +1766,15 @@ class SubprocessRustRunner:
         stdout: int | BinaryIO | None,
         stderr: int | BinaryIO | None = subprocess.PIPE,
         receiver_environment: Mapping[str, str] | None = None,
+        cancellation_lease_token: str | None = None,
+        inherited_descriptors: tuple[int, ...] = (),
     ) -> subprocess.Popen[bytes]:
         environment: dict[str, str] = {"LC_ALL": "C", "LANG": "C"}
         environment.update(_validated_receiver_task_environment(receiver_environment))
+        if cancellation_lease_token is not None:
+            if _RECEIVER_TASK_KEY.fullmatch(cancellation_lease_token) is None:
+                raise RunnerTransportError("runner cancellation lease is invalid")
+            environment[_CANCELLATION_LEASE_ENV] = cancellation_lease_token
         options: dict[str, Any] = {}
         windows_job: int | None = None
         windows_suspended = False
@@ -1816,19 +1792,61 @@ class SubprocessRustRunner:
                 windows_suspended = True
             windows_job = self._create_windows_job()
         else:
-            options["start_new_session"] = True
+            if self._kill_child_on_job_close:
+                try:
+                    private_session = bool(
+                        callable(_GET_PROCESS_GROUP)
+                        and callable(_GET_SESSION_ID)
+                        and _GET_PROCESS_GROUP() == os.getpid() == _GET_SESSION_ID(0)
+                    )
+                except OSError:
+                    private_session = False
+                if not private_session:
+                    raise RunnerTransportError("POSIX watchdog process containment is unavailable")
+                # The watchdog is already the leader of a private session and
+                # group. Its child inherits both and arms a kernel parent-death
+                # signal before the verified runner inode executes.
+            else:
+                if sys.platform.startswith("linux") and (
+                    not callable(_PIDFD_OPEN)
+                    or not callable(_PIDFD_SEND_SIGNAL)
+                    or not callable(_WAIT_ID)
+                    or _PIDFD_ID_TYPE is None
+                    or not _WAIT_EXITED
+                    or not _WAIT_NO_HANG
+                    or not _WAIT_NO_REAP
+                ):
+                    raise RunnerTransportError("Linux private process containment is unavailable")
+                options["start_new_session"] = True
+            options["pass_fds"] = inherited_descriptors
         try:
             # argv[0] is a validated absolute executable path and the grammar is fixed.
-            process = subprocess.Popen(  # nosec B603
-                argv,
-                cwd=self.work_root,
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=stdout,
-                stderr=stderr,
-                shell=False,
-                **options,
-            )
+            if self._kill_child_on_job_close and os.name != "nt":
+                process = self._spawn_linux_parent_death(
+                    argv,
+                    stdout=stdout,
+                    stderr=stderr,
+                    environment=environment,
+                    inherited_descriptors=inherited_descriptors,
+                    options=options,
+                )
+            else:
+                process = subprocess.Popen(  # nosec B603
+                    argv,
+                    cwd=self.work_root,
+                    env=environment,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout,
+                    stderr=stderr,
+                    shell=False,
+                    **options,
+                )
+            if (
+                os.name != "nt"
+                and sys.platform.startswith("linux")
+                and not self._kill_child_on_job_close
+            ):
+                self._register_linux_private_process(process)
             if windows_job is not None:
                 self._assign_windows_job(windows_job, process)
                 windows_job = None  # ownership moved to `_windows_jobs`
@@ -1858,11 +1876,12 @@ class SubprocessRustRunner:
         cancel_event: threading.Event | None = None,
         overflow: threading.Event,
         output_descriptor: int | None = None,
+        cooperative_request_event: threading.Event | None = None,
+        cooperative_ack_event: threading.Event | None = None,
     ) -> int:
         deadline = time.monotonic() + self.timeout_seconds
         while True:
-            return_code = process.poll()
-            if return_code is not None:
+            if self._process_exited_without_reap(process):
                 released = (
                     self._finish_windows_job(process.pid)
                     if os.name == "nt"
@@ -1873,7 +1892,9 @@ class SubprocessRustRunner:
                     released = True
                 if not released:
                     raise RunnerTransportError("Runner process tree state could not be released")
-                return return_code
+                if process.returncode is None:
+                    raise RunnerTransportError("Runner process exit status is unavailable")
+                return process.returncode
             output_unsafe = False
             if output_descriptor is not None:
                 try:
@@ -1893,7 +1914,14 @@ class SubprocessRustRunner:
                 if not self._stop_process_tree(process):
                     raise RunnerTransportError("Runner process tree could not be stopped safely")
                 raise RunnerTaskCancelled(
-                    "Runner task was cancelled after its process tree stopped."
+                    "Runner task was cancelled after its process tree stopped.",
+                    cooperative_requested=(
+                        cooperative_request_event is not None and cooperative_request_event.is_set()
+                    ),
+                    cooperative_acknowledged=(
+                        cooperative_ack_event is not None and cooperative_ack_event.is_set()
+                    ),
+                    forced_tree_termination=True,
                 )
             if time.monotonic() >= deadline:
                 if not self._stop_process_tree(process):
@@ -1941,6 +1969,12 @@ class SubprocessRustRunner:
         return True
 
     def _terminate_posix_process_tree(self, process: subprocess.Popen[bytes]) -> bool:
+        if self._kill_child_on_job_close:
+            return self._terminate_inherited_posix_process_tree(process)
+        if process in self._released_linux_processes:
+            return process.returncode is not None
+        if process in self._linux_process_containments:
+            return self._release_linux_private_process(process, terminate=True)
         if not callable(_KILL_PROCESS_GROUP):
             return False
         process_group = process.pid
@@ -1974,7 +2008,231 @@ class SubprocessRustRunner:
             time.sleep(_PROCESS_POLL_SECONDS)
         return process.poll() is not None
 
+    def _linux_private_session_identities(
+        self,
+        containment: tuple[int, int, int, int, int],
+    ) -> list[tuple[int, int, int, int]] | None:
+        identities: list[tuple[int, int, int, int]] = []
+        try:
+            with os.scandir("/proc") as entries:
+                for entry in entries:
+                    if not entry.name.isdecimal():
+                        continue
+                    try:
+                        identity = self._linux_process_identity(int(entry.name))
+                    except ProcessLookupError:
+                        continue
+                    if identity[3] == containment[3]:
+                        identities.append(identity)
+        except (OSError, RunnerTransportError):
+            return None
+        if containment[:4] not in identities:
+            return None
+        return identities
+
+    @staticmethod
+    def _signal_linux_process_identity(
+        identity: tuple[int, int, int, int],
+        signum: int,
+    ) -> bool:
+        descriptor = -1
+        try:
+            if not callable(_PIDFD_OPEN) or not callable(_PIDFD_SEND_SIGNAL):
+                return False
+            before = SubprocessRustRunner._linux_process_identity(identity[0])
+            if before != identity:
+                return False
+            descriptor = int(_PIDFD_OPEN(identity[0], 0))
+            try:
+                after = SubprocessRustRunner._linux_process_identity(identity[0])
+            except ProcessLookupError:
+                return True
+            if after != identity:
+                return False
+            _PIDFD_SEND_SIGNAL(descriptor, signum, None, 0)
+            return True
+        except ProcessLookupError:
+            return True
+        except (OSError, RunnerTransportError):
+            return False
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _signal_linux_private_leader(
+        self,
+        containment: tuple[int, int, int, int, int],
+        signum: int,
+    ) -> bool:
+        try:
+            if (
+                not callable(_PIDFD_SEND_SIGNAL)
+                or self._linux_process_identity(containment[0]) != containment[:4]
+            ):
+                return False
+            _PIDFD_SEND_SIGNAL(containment[4], signum, None, 0)
+            return True
+        except ProcessLookupError:
+            return True
+        except (OSError, RunnerTransportError):
+            return False
+
+    def _release_linux_private_process(
+        self,
+        process: subprocess.Popen[bytes],
+        *,
+        terminate: bool,
+    ) -> bool:
+        containment = self._linux_process_containments.get(process)
+        if containment is None:
+            return False
+        if terminate and not self._process_exited_without_reap(process):
+            if not self._signal_linux_private_leader(containment, signal.SIGTERM):
+                return False
+            graceful_deadline = time.monotonic() + _PROCESS_TERM_GRACE_SECONDS
+            while (
+                not self._process_exited_without_reap(process)
+                and time.monotonic() < graceful_deadline
+            ):
+                time.sleep(_PROCESS_POLL_SECONDS)
+            if not self._process_exited_without_reap(process):
+                if not self._signal_linux_private_leader(containment, _FORCE_KILL_SIGNAL):
+                    return False
+        exit_deadline = time.monotonic() + _PROCESS_KILL_GRACE_SECONDS
+        while not self._process_exited_without_reap(process) and time.monotonic() < exit_deadline:
+            time.sleep(_PROCESS_POLL_SECONDS)
+        if not self._process_exited_without_reap(process):
+            return False
+
+        descendant_grace = time.monotonic() + _PROCESS_TERM_GRACE_SECONDS
+        descendant_deadline = descendant_grace + _PROCESS_KILL_GRACE_SECONDS
+        while True:
+            identities = self._linux_private_session_identities(containment)
+            if identities is None:
+                return False
+            targets = [identity for identity in identities if identity != containment[:4]]
+            if not targets:
+                break
+            now = time.monotonic()
+            if now >= descendant_deadline:
+                return False
+            signum = _FORCE_KILL_SIGNAL if now >= descendant_grace else signal.SIGTERM
+            if not all(
+                self._signal_linux_process_identity(identity, signum) for identity in targets
+            ):
+                return False
+            time.sleep(_PROCESS_POLL_SECONDS)
+        try:
+            process.wait(timeout=_PROCESS_KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            return False
+        self._linux_process_containments.pop(process, None)
+        self._released_linux_processes.add(process)
+        os.close(containment[4])
+        return process.returncode is not None
+
+    @staticmethod
+    def _private_posix_session_members(session_id: int) -> set[int] | None:
+        """Enumerate one Linux-private watchdog session without trusting names."""
+
+        if not sys.platform.startswith("linux") or not callable(_GET_SESSION_ID):
+            return None
+        members: set[int] = set()
+        try:
+            with os.scandir("/proc") as entries:
+                for entry in entries:
+                    if not entry.name.isdecimal():
+                        continue
+                    process_id = int(entry.name)
+                    try:
+                        if _GET_SESSION_ID(process_id) == session_id:
+                            members.add(process_id)
+                    except ProcessLookupError:
+                        continue
+        except OSError:
+            return None
+        return members
+
+    @staticmethod
+    def _signal_private_posix_session_members(
+        session_id: int,
+        process_ids: set[int],
+        signum: int,
+    ) -> bool:
+        """Signal immutable process identities while excluding the watchdog itself."""
+
+        pidfd_open = getattr(os, "pidfd_open", None)
+        pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
+        if (
+            not callable(pidfd_open)
+            or not callable(pidfd_send_signal)
+            or not callable(_GET_SESSION_ID)
+        ):
+            return False
+        current_process = os.getpid()
+        for process_id in sorted(process_ids - {current_process}, reverse=True):
+            descriptor = -1
+            try:
+                descriptor = pidfd_open(process_id, 0)
+                if _GET_SESSION_ID(process_id) != session_id:
+                    continue
+                pidfd_send_signal(descriptor, signum, None, 0)
+            except ProcessLookupError:
+                continue
+            except OSError:
+                return False
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+        return True
+
+    def _terminate_inherited_posix_process_tree(
+        self,
+        process: subprocess.Popen[bytes],
+    ) -> bool:
+        """Stop every child in the watchdog's private session without killing it."""
+
+        try:
+            if not callable(_GET_PROCESS_GROUP) or not callable(_GET_SESSION_ID):
+                return False
+            process_group = _GET_PROCESS_GROUP()
+            session_id = _GET_SESSION_ID(0)
+            if process_group != os.getpid() or session_id != os.getpid():
+                return False
+        except OSError:
+            return False
+
+        graceful_deadline = time.monotonic() + _PROCESS_TERM_GRACE_SECONDS
+        force = False
+        stopped_deadline = graceful_deadline + _PROCESS_KILL_GRACE_SECONDS
+        while True:
+            process.poll()
+            members = self._private_posix_session_members(session_id)
+            if members is None or os.getpid() not in members:
+                return False
+            targets = members - {os.getpid()}
+            if not targets:
+                return process.poll() is not None
+            now = time.monotonic()
+            if now >= stopped_deadline:
+                return False
+            if now >= graceful_deadline:
+                force = True
+            if not self._signal_private_posix_session_members(
+                session_id,
+                targets,
+                _FORCE_KILL_SIGNAL if force else signal.SIGTERM,
+            ):
+                return False
+            time.sleep(_PROCESS_POLL_SECONDS)
+
     def _finish_posix_process_group(self, process: subprocess.Popen[bytes]) -> bool:
+        if self._kill_child_on_job_close:
+            return self._terminate_inherited_posix_process_tree(process)
+        if process in self._released_linux_processes:
+            return process.returncode is not None
+        if process in self._linux_process_containments:
+            return self._release_linux_private_process(process, terminate=False)
         if not self._posix_process_group_exists(process.pid):
             return process.poll() is not None
         return self._terminate_posix_process_tree(process)

@@ -85,10 +85,10 @@ def validate_source_intake_operation_receipt(
         "the source-intake operation receipt is not canonical JSON",
     )
     intake_record = intake.get("record")
-    _require(
-        isinstance(intake_record, Mapping),
-        "the operation receipt intake binding is unavailable",
-    )
+    if not isinstance(intake_record, Mapping):
+        raise SourceIntakeReceiptValidationError(
+            "the operation receipt intake binding is unavailable"
+        )
     expected_artifact_ref = f"source-intakes/{destination_id}/{INTAKE_ID}.json"
     completed_at = _utc_timestamp(record.get("completed_at"))
     _require(

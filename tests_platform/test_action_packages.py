@@ -699,6 +699,7 @@ def test_runner_contract_versions_fail_closed_across_breaking_semantic_schemas()
         "sandbox.discovery.metadata.v1": "2.0.0",
         "sandbox.discovery.recursive.v1": "1.0.0",
         "sandbox.execution.native-canary.v1": "1.0.0",
+        "sandbox.execution.process-tree-cancellation-witness.v1": "1.0.0",
         "sandbox.export.local.v1": "2.0.0",
         "sandbox.fixture.create.v1": "2.0.0",
         "sandbox.fixture.transform.v1": "2.0.0",

@@ -8,15 +8,21 @@ sees it, and the resulting executable is scanned before it is accepted.
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Mapping, NoReturn, Sequence, cast
 
 RUSTFLAG_SEPARATOR = "\x1f"
 RUNNER_BINARY = "bluefire-runner"
+SUPPORTED_TARGETS = (
+    "x86_64-unknown-linux-musl",
+    "x86_64-pc-windows-gnu",
+)
+WINDOWS_TARGETS = frozenset(("x86_64-pc-windows-gnu",))
 
 
 class RunnerBuildError(RuntimeError):
@@ -33,6 +39,7 @@ class RunnerBuildPlan:
     output_path: Path
     remaps: tuple[tuple[str, str], ...]
     private_path_markers: tuple[tuple[str, str], ...]
+    target: str | None = None
 
 
 def _absolute_path(value: str | Path, *, relative_to: Path) -> Path:
@@ -104,20 +111,47 @@ def _encoded_rustflags(remaps: Sequence[tuple[str, str]]) -> str:
     return RUSTFLAG_SEPARATOR.join(flags)
 
 
+def _validated_target(target: str | None) -> str | None:
+    if target is None:
+        return None
+    if not isinstance(target, str) or target not in SUPPORTED_TARGETS:
+        supported = ", ".join(SUPPORTED_TARGETS)
+        raise RunnerBuildError(f"unsupported runner target; expected one of: {supported}")
+    return target
+
+
+def _validate_environment_target(
+    environment: Mapping[str, str],
+    target: str | None,
+) -> None:
+    configured = environment.get("CARGO_BUILD_TARGET")
+    if configured is None:
+        return
+    if not isinstance(configured, str) or not configured.strip():
+        raise RunnerBuildError("CARGO_BUILD_TARGET must not be empty")
+    if target is None:
+        raise RunnerBuildError("CARGO_BUILD_TARGET requires an explicit --target")
+    if configured != target:
+        raise RunnerBuildError("CARGO_BUILD_TARGET conflicts with the explicit --target")
+
+
 def create_runner_build_plan(
     repo_root: str | Path,
     *,
     environment: Mapping[str, str] | None = None,
     windows: bool | None = None,
+    target: str | None = None,
 ) -> RunnerBuildPlan:
     """Construct a private-path-safe, fixed-argument release build plan."""
 
+    selected_target = _validated_target(target)
     root = _absolute_path(repo_root, relative_to=Path.cwd())
     manifest = root / "runner" / "Cargo.toml"
     if not manifest.is_file():
         raise RunnerBuildError("runner/Cargo.toml is unavailable")
 
     inherited = dict(os.environ if environment is None else environment)
+    _validate_environment_target(inherited, selected_target)
     home_value = inherited.get("USERPROFILE") or inherited.get("HOME")
     host_home = _environment_root(
         {},
@@ -155,6 +189,7 @@ def create_runner_build_plan(
 
     build_environment = dict(inherited)
     build_environment.pop("RUSTFLAGS", None)
+    build_environment.pop("CARGO_BUILD_TARGET", None)
     build_environment["CARGO_HOME"] = str(cargo_home)
     build_environment["RUSTUP_HOME"] = str(rustup_home)
     build_environment["CARGO_TARGET_DIR"] = str(target_dir)
@@ -164,23 +199,36 @@ def create_runner_build_plan(
     cargo = inherited.get("CARGO", "cargo")
     if not cargo or "\x00" in cargo:
         raise RunnerBuildError("CARGO must name one executable")
-    argv = (
+    argv_prefix = (
         cargo,
         "build",
         "--locked",
         "--release",
+    )
+    target_arguments = ("--target", selected_target) if selected_target else ()
+    argv = (
+        *argv_prefix,
+        *target_arguments,
         "--manifest-path",
         str(manifest),
         "--bin",
         RUNNER_BINARY,
     )
-    is_windows = sys.platform == "win32" if windows is None else windows
+    if selected_target is None:
+        is_windows = sys.platform == "win32" if windows is None else windows
+        output_directory = target_dir / "release"
+    else:
+        target_is_windows = selected_target in WINDOWS_TARGETS
+        if windows is not None and windows != target_is_windows:
+            raise RunnerBuildError("windows override conflicts with the explicit --target")
+        is_windows = target_is_windows
+        output_directory = target_dir / selected_target / "release"
     filename = f"{RUNNER_BINARY}.exe" if is_windows else RUNNER_BINARY
     markers = tuple(
         (label, spelling)
         for label, path in (
             ("home", host_home),
-            *(((("workspace", workspace_root),) if workspace_root else ())),
+            *((("workspace", workspace_root),) if workspace_root else ()),
             ("source", root),
             ("target", target_dir),
             ("cargo-home", cargo_home),
@@ -192,9 +240,10 @@ def create_runner_build_plan(
         argv=argv,
         cwd=root,
         environment=build_environment,
-        output_path=target_dir / "release" / filename,
+        output_path=output_directory / filename,
         remaps=remaps,
         private_path_markers=markers,
+        target=selected_target,
     )
 
 
@@ -247,9 +296,30 @@ def build_release_runner(plan: RunnerBuildPlan) -> Path:
     return plan.output_path
 
 
-def main() -> int:
+class _RunnerBuildArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> NoReturn:
+        raise RunnerBuildError(f"invalid build arguments: {message}")
+
+
+def _target_from_argv(argv: Sequence[str] | None) -> str | None:
+    parser = _RunnerBuildArgumentParser(
+        description="Build a private-path-safe release runner.",
+    )
+    parser.add_argument("--target", action="append", dest="targets", metavar="TRIPLE")
+    namespace = parser.parse_args(argv)
+    targets = cast(list[str] | None, namespace.targets)
+    if targets is not None and len(targets) > 1:
+        raise RunnerBuildError("--target may be supplied only once")
+    return _validated_target(targets[0] if targets else None)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     try:
-        plan = create_runner_build_plan(Path(__file__).resolve().parents[1])
+        target = _target_from_argv(argv)
+        plan = create_runner_build_plan(
+            Path(__file__).resolve().parents[1],
+            target=target,
+        )
         build_release_runner(plan)
     except RunnerBuildError as exc:
         print(str(exc), file=sys.stderr)

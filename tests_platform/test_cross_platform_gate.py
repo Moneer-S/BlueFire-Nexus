@@ -1,0 +1,395 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import zipfile
+from pathlib import Path
+from typing import Any, Mapping
+
+import pytest
+
+import bluefire.cross_platform_cancellation_validation as cancellation_validation_module
+import bluefire.cross_platform_gate as gate_module
+import bluefire.cross_platform_gate_validation as validation_module
+import bluefire.product_gates as product_gates
+from bluefire.cross_platform_artifact_validation import (
+    CrossPlatformArtifactValidationError,
+    validate_transport_recovery_report,
+)
+from bluefire.cross_platform_gate_validation import (
+    ASSERTION_REPORTS,
+    CHECK_NAMES,
+    LINUX_DEPENDENCIES_UNAVAILABLE_REASON,
+    LINUX_REPORT,
+    LINUX_UNAVAILABLE_REASON,
+    REPORT_PATHS,
+    CrossPlatformGateValidationError,
+    validate_linux_typed_unavailable_report,
+)
+from bluefire.cross_platform_linux import (
+    LinuxDependenciesUnavailableError,
+    LinuxJourneyError,
+    _stage_wheelhouse,
+    linux_dependencies_unavailable_report,
+    linux_unavailable_report,
+)
+from bluefire.cross_platform_readiness import WSL_DISTRIBUTION_ID
+from bluefire.product_acceptance import load_release_contract
+from bluefire.util import content_hash
+
+
+def _wsl_facts(state: str) -> Mapping[str, Any]:
+    configured, version = {
+        "absent": (False, None),
+        "incompatible": (True, "1"),
+        "ready": (True, "2"),
+    }[state]
+    facts = {
+        "provider": "wsl2",
+        "probe_state": state,
+        "configured": configured,
+        "distribution_id": WSL_DISTRIBUTION_ID,
+        "version": version,
+    }
+    return {**facts, "facts_digest": content_hash(facts)}
+
+
+def _write_report(path: Path, value: Mapping[str, Any]) -> None:
+    path.write_bytes(
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+    )
+
+
+def _patch_linux_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    facts: Mapping[str, Any],
+    *,
+    wheelhouse_unavailable: bool = True,
+) -> None:
+    monkeypatch.setattr(validation_module, "_reprobe_wsl", lambda: facts)
+    monkeypatch.setattr(
+        validation_module,
+        "linux_wheelhouse_unavailable",
+        lambda _repository: wheelhouse_unavailable,
+    )
+
+
+def test_gate11_locked_contract_matches_authoritative_workflow() -> None:
+    gate = next(item for item in load_release_contract().gates if item.gate_id == "GATE-11")
+
+    assert {assertion.assertion_id: assertion.proof for assertion in gate.assertions} == {
+        assertion_id: details[0]
+        for assertion_id, details in gate_module._EXPECTED_ASSERTIONS.items()
+    }
+    assert tuple(assertion.assertion_id for assertion in gate.assertions) == tuple(
+        assertion_id for assertion_id, _kind, _report in ASSERTION_REPORTS
+    )
+    assert set(details[1] for details in gate_module._EXPECTED_ASSERTIONS.values()) == CHECK_NAMES
+    assert product_gates._WORKFLOWS["GATE-11"] is product_gates._gate_11_workflow
+
+
+def test_gate11_publishes_only_acceptance_bundle_reference_fields() -> None:
+    run_id = "run-20260829T120000Z-0123456789abcdef"
+    validated = {
+        "run_id": run_id,
+        "path": f"runs/{run_id}",
+        "manifest_sha256": "sha256:" + "a" * 64,
+    }
+
+    assert validation_module._receipt_run_reference(validated) == {
+        "run_id": run_id,
+        "path": f"runs/{run_id}",
+    }
+
+
+@pytest.mark.parametrize("state", ["absent", "incompatible"])
+def test_linux_distribution_unavailability_is_exact_and_typed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+) -> None:
+    facts = _wsl_facts(state)
+    _patch_linux_probe(monkeypatch, facts)
+    _write_report(tmp_path / LINUX_REPORT, linux_unavailable_report(facts))
+
+    assert validate_linux_typed_unavailable_report(tmp_path) == LINUX_UNAVAILABLE_REASON
+
+
+def test_linux_dependency_unavailability_is_exact_and_typed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facts = _wsl_facts("ready")
+    _patch_linux_probe(monkeypatch, facts)
+    _write_report(tmp_path / LINUX_REPORT, linux_dependencies_unavailable_report(facts))
+
+    assert (
+        validate_linux_typed_unavailable_report(tmp_path) == LINUX_DEPENDENCIES_UNAVAILABLE_REASON
+    )
+
+
+def test_gate11_fails_with_the_exact_typed_linux_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = tmp_path / "gate-11"
+    evidence.mkdir()
+    facts = _wsl_facts("absent")
+    _patch_linux_probe(monkeypatch, facts)
+
+    def blocked(_repository: Path, destination: Path) -> Mapping[str, Any]:
+        _write_report(destination / LINUX_REPORT, linux_unavailable_report(facts))
+        return {
+            "schema_version": gate_module.HELPER_SCHEMA,
+            "status": "failed",
+            "blocking_check": "linux_container_execute",
+            "reports": list(REPORT_PATHS),
+            "run_count": 0,
+            "exit_code": 1,
+            "command": [
+                "{python}",
+                "tools/run_cross_platform_gate_journey.py",
+                "{fixed-arguments}",
+            ],
+            "protocol_valid": True,
+            "passed": False,
+        }
+
+    monkeypatch.setattr(gate_module, "_run_helper", blocked)
+    gate = next(item for item in load_release_contract().gates if item.gate_id == "GATE-11")
+    outcome = gate_module.run_gate_11(
+        gate,
+        evidence,
+        repository_root=Path(__file__).resolve().parents[1],
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.proofs == ()
+    assert outcome.failure_reason == LINUX_UNAVAILABLE_REASON
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"schema_version":NaN}\n',
+        b'{"schema_version":"bluefire.cross-platform-linux-execute.v1"}',
+    ],
+    ids=("nonfinite", "noncanonical"),
+)
+def test_linux_report_reader_rejects_nonfinite_or_noncanonical_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+) -> None:
+    _patch_linux_probe(monkeypatch, _wsl_facts("absent"))
+    (tmp_path / LINUX_REPORT).write_bytes(payload)
+
+    with pytest.raises(CrossPlatformGateValidationError):
+        validate_linux_typed_unavailable_report(tmp_path)
+
+
+def test_boolean_only_recovery_claim_is_not_evidence() -> None:
+    with pytest.raises(CrossPlatformArtifactValidationError, match="recovery"):
+        validate_transport_recovery_report(
+            {
+                "schema_version": "bluefire.cross-platform-transport-recovery.v1",
+                "passed": True,
+                "proof_kind": "dynamic",
+                "platform": "windows",
+                "transport": {"multiprocess": True},
+                "recovery": {"result_identical": True},
+            }
+        )
+
+    facts = _wsl_facts("ready")
+    boundary = {
+        **facts,
+        "source_distribution_persistent": True,
+        "execution_distribution_id": "BlueFire-Gate11-Run-0123456789abcdef",
+        "execution_distribution_disposable": True,
+        "execution_distribution_removed": True,
+        "distribution_storage_removed": True,
+        "distribution_absence_probes": [
+            {"delay_ms": delay, "registered": False} for delay in (0, 100, 250)
+        ],
+        "workspace_disposable": True,
+        "workspace_removed": True,
+        "worker_process_exited": True,
+        "worker_process_id": 101,
+        "process_group_id": 101,
+        "session_id": 101,
+        "worker_start_time_ticks": 202,
+        "survivor_probes": [
+            {"delay_ms": 0, "running": False},
+            {"delay_ms": 100, "running": False},
+            {"delay_ms": 250, "running": False},
+        ],
+    }
+    boolean_only = {
+        "workspace_absent": True,
+        "process_identities_absent": True,
+    }
+    for claimed in (None, boolean_only):
+        candidate = dict(boundary)
+        if claimed is not None:
+            candidate["cleanup_verification"] = claimed
+        with pytest.raises(CrossPlatformGateValidationError):
+            validation_module._linux_boundary(candidate, fresh_wsl=facts, ready=True)
+
+
+def _cancellation_report(
+    binary_digest: str,
+    *,
+    request_character: str = "a",
+    parent_pid: int = 101,
+    descendant_pid: int = 202,
+) -> dict[str, Any]:
+    request_hash = "sha256:" + request_character * 64
+    parent = {"process_id": parent_pid, "creation_time_100ns": 1001}
+    descendant = {"process_id": descendant_pid, "creation_time_100ns": 2002}
+    identity_material = (f"{parent_pid}:1001\n{descendant_pid}:2002\n").encode("ascii")
+    return {
+        "schema_version": "bluefire.cross-platform-process-cancellation.v2",
+        "passed": True,
+        "proof_kind": "dynamic",
+        "platform": "windows",
+        "action_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+        "behavior_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+        "profile_id": "gate11-windows-cancellation-witness.v1",
+        "containment": "windows-job-object-kill-on-close",
+        "runner_binary_sha256": binary_digest,
+        "cancellation": {
+            "task_id": "execute-" + request_character * 64,
+            "request_hash": request_hash,
+            "terminal_state": "cancelled",
+            "parent_process_identity": parent,
+            "descendant_process_identity": descendant,
+            "cooperative_requested": True,
+            "cooperative_acknowledged": True,
+            "forced_tree_termination": True,
+            "control_cleanup_verified": True,
+            "control_state_removed": True,
+            "parent_was_running": True,
+            "descendant_was_running": True,
+            "survivor_probe_count": 3,
+            "survivor_probes": [
+                {"delay_ms": delay, "parent_running": False, "descendant_running": False}
+                for delay in (0, 100, 250)
+            ],
+            "no_survivors": True,
+            "identity_material_sha256": "sha256:" + hashlib.sha256(identity_material).hexdigest(),
+        },
+    }
+
+
+def test_cancellation_validator_reprobes_exact_process_identities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binary_digest = "sha256:" + "b" * 64
+    report = _cancellation_report(binary_digest)
+    cancellation = report["cancellation"]
+    parent = cancellation["parent_process_identity"]
+    descendant = cancellation["descendant_process_identity"]
+    runner = {"binary_sha256": binary_digest}
+    observed: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
+
+    def absent(
+        reported_parent: Mapping[str, Any],
+        reported_descendant: Mapping[str, Any],
+    ) -> bool:
+        observed.append((reported_parent, reported_descendant))
+        return True
+
+    monkeypatch.setattr(cancellation_validation_module, "process_identities_absent", absent)
+    with pytest.raises(CrossPlatformGateValidationError, match="fresh validator-owned"):
+        validation_module._cancellation(report, runner)
+    assert observed == [(parent, descendant)]
+
+    monkeypatch.setattr(
+        cancellation_validation_module,
+        "process_identities_absent",
+        lambda *_args: False,
+    )
+    with pytest.raises(CrossPlatformGateValidationError, match="cancellation"):
+        validation_module._cancellation(report, runner)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the packaged cancellation witness is Windows-only")
+def test_fresh_cancellation_validator_executes_exact_wheel_member(tmp_path: Path) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    binary = (repository / "bluefire" / "native" / "bluefire-runner.exe").read_bytes()
+    binary_digest = "sha256:" + hashlib.sha256(binary).hexdigest()
+    binary_member = "bluefire_nexus-0.1.0.data/purelib/bluefire/native/bluefire-runner.exe"
+    package = tmp_path / "evidence" / "package"
+    package.mkdir(parents=True)
+    wheel = package / "fresh-validator.whl"
+    with zipfile.ZipFile(wheel, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(binary_member, binary)
+    wheel_bytes = wheel.read_bytes()
+    runner = {
+        "wheel_file": wheel.name,
+        "wheel_sha256": "sha256:" + hashlib.sha256(wheel_bytes).hexdigest(),
+        "binary_member": binary_member,
+        "binary_sha256": binary_digest,
+        "binary_size": len(binary),
+    }
+    target_report = _cancellation_report(
+        binary_digest,
+        parent_pid=2_000_000_001,
+        descendant_pid=2_000_000_002,
+    )
+
+    proof = cancellation_validation_module.run_fresh_cancellation_validation(
+        repository,
+        package.parent,
+        runner,
+        target_report,
+    )
+
+    cancellation_validation_module.validate_fresh_cancellation_proof(
+        proof,
+        expected_runner_digest=binary_digest,
+        expected_report=target_report,
+    )
+    unrelated_report = _cancellation_report(
+        binary_digest,
+        request_character="c",
+        parent_pid=2_000_000_003,
+        descendant_pid=2_000_000_004,
+    )
+    with pytest.raises(
+        cancellation_validation_module.FreshCancellationValidationError,
+        match="fresh validator-owned",
+    ):
+        cancellation_validation_module.validate_fresh_cancellation_proof(
+            proof,
+            expected_runner_digest=binary_digest,
+            expected_report=unrelated_report,
+        )
+
+
+def test_invalid_committed_wheelhouse_lock_is_not_a_dependency_blocker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    (repository / "bluefire" / "data").mkdir(parents=True)
+    (repository / "bluefire" / "data" / "gate11_linux_wheelhouse.json").write_bytes(b"{}\n")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.delenv("BLUEFIRE_GATE11_LINUX_WHEELHOUSE", raising=False)
+
+    with pytest.raises(LinuxJourneyError, match="wheelhouse lock") as failure:
+        _stage_wheelhouse(repository, staging)
+    assert not isinstance(failure.value, LinuxDependenciesUnavailableError)
+
+
+def test_gate11_new_production_modules_stay_within_the_locked_line_budget() -> None:
+    root = Path(__file__).resolve().parents[1]
+    paths = [
+        *sorted((root / "bluefire").glob("cross_platform*.py")),
+        *sorted((root / "tools").glob("run_cross_platform*.py")),
+    ]
+    assert paths
+    assert all(len(path.read_text(encoding="utf-8").splitlines()) <= 1_000 for path in paths)

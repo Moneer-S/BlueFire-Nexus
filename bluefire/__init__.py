@@ -1,7 +1,5 @@
 """Canonical, execution-free contracts for the BlueFire control plane."""
 
-__version__ = "0.1.0"
-
 from .config import (
     AIConfig,
     AIProviderConfig,
@@ -42,6 +40,7 @@ from .plugins import (
     load_plugin_manifest,
 )
 from .registry import BehaviorRegistry, RegistryError, load_builtin_registry
+from .version import __version__
 
 __all__ = [
     "ActionDefinition",

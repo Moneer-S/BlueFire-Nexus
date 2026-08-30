@@ -50,6 +50,17 @@ def _gate_02_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowR
     )
 
 
+def _gate_03_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowResult:
+    from .deep_behavior_gate import run_gate_03
+
+    outcome = run_gate_03(gate, evidence_dir)
+    return GateWorkflowResult(
+        status=outcome.status,
+        proofs=outcome.proofs,
+        failure_reason=outcome.failure_reason,
+    )
+
+
 def _gate_04_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowResult:
     from .defense_frontier_gate import run_gate_04
 
@@ -94,6 +105,17 @@ def _gate_07_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowR
     )
 
 
+def _gate_08_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowResult:
+    from .operator_ui_gate import run_gate_08
+
+    outcome = run_gate_08(gate, evidence_dir)
+    return GateWorkflowResult(
+        status=outcome.status,
+        proofs=outcome.proofs,
+        failure_reason=outcome.failure_reason,
+    )
+
+
 def _gate_09_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowResult:
     from .source_intake_gate import run_gate_09
 
@@ -118,17 +140,43 @@ def _gate_10_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowR
     )
 
 
+def _gate_11_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowResult:
+    from .cross_platform_gate import run_gate_11
+
+    outcome = run_gate_11(gate, evidence_dir)
+    return GateWorkflowResult(
+        status=outcome.status,
+        proofs=outcome.proofs,
+        failure_reason=outcome.failure_reason,
+    )
+
+
+def _gate_12_workflow(gate: GateDefinition, evidence_dir: Path) -> GateWorkflowResult:
+    from .release_readiness_gate import run_gate_12
+
+    outcome = run_gate_12(gate, evidence_dir)
+    return GateWorkflowResult(
+        status=outcome.status,
+        proofs=outcome.proofs,
+        failure_reason=outcome.failure_reason,
+    )
+
+
 # Gate implementations are added here only after their dynamic workflow and
 # focused tests exist. Missing gates retain the explicit failing baseline.
 _WORKFLOWS: dict[str, GateWorkflow] = {
     "GATE-01": _gate_01_workflow,
     "GATE-02": _gate_02_workflow,
+    "GATE-03": _gate_03_workflow,
     "GATE-04": _gate_04_workflow,
     "GATE-05": _gate_05_workflow,
     "GATE-06": _gate_06_workflow,
     "GATE-07": _gate_07_workflow,
+    "GATE-08": _gate_08_workflow,
     "GATE-09": _gate_09_workflow,
     "GATE-10": _gate_10_workflow,
+    "GATE-11": _gate_11_workflow,
+    "GATE-12": _gate_12_workflow,
 }
 
 

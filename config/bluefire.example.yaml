@@ -202,6 +202,30 @@ runner_profiles:
       max_artifacts: 100
       max_bytes: 5242880
 
+  - <<: *execute_profile
+    id: gate11-windows-cancellation-witness.v1
+    platforms: [windows]
+    scope: [sandbox.workspace]
+    network_allowlist: []
+    capabilities:
+      - native.execution
+      - filesystem.read
+      - filesystem.write
+      - process.spawn
+      - sandbox.cleanup
+      - cleanup
+    safety_tiers: [safe]
+    enabled_actions:
+      - sandbox.execution.process-tree-cancellation-witness.v1
+      - sandbox.cleanup.v1
+    blocked_actions: []
+    secrets: {}
+    budgets:
+      max_steps: 1
+      max_seconds: 30
+      max_artifacts: 4
+      max_bytes: 65536
+
 
   - <<: *execute_profile
     id: sandbox-restricted-owned.v1

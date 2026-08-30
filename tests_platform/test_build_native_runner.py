@@ -9,8 +9,10 @@ import pytest
 from tools.build_native_runner import (
     RUSTFLAG_SEPARATOR,
     RunnerBuildError,
+    RunnerBuildPlan,
     build_release_runner,
     create_runner_build_plan,
+    main,
     verify_runner_has_no_build_paths,
 )
 
@@ -35,7 +37,7 @@ def _environment(tmp_path: Path) -> dict[str, str]:
     }
 
 
-def _decode_flags(plan: Any) -> list[str]:
+def _decode_flags(plan: RunnerBuildPlan) -> list[str]:
     return plan.environment["CARGO_ENCODED_RUSTFLAGS"].split(RUSTFLAG_SEPARATOR)
 
 
@@ -65,6 +67,97 @@ def test_build_plan_uses_fixed_argv_and_private_path_environment(tmp_path: Path)
     assert "RUSTFLAGS" not in plan.environment
     assert "inherited_encoded_flag_must_not_survive" not in _decode_flags(plan)
     assert inherited["RUSTFLAGS"] == "--cfg inherited_flag_must_not_survive"
+    assert plan.target is None
+
+
+@pytest.mark.parametrize(
+    ("target", "filename"),
+    [
+        ("x86_64-unknown-linux-musl", "bluefire-runner"),
+        ("x86_64-pc-windows-gnu", "bluefire-runner.exe"),
+    ],
+)
+def test_explicit_target_controls_cargo_and_output_path(
+    target: str,
+    filename: str,
+    tmp_path: Path,
+) -> None:
+    root = _repo(tmp_path)
+    inherited = _environment(tmp_path)
+
+    plan = create_runner_build_plan(root, environment=inherited, target=target)
+
+    assert plan.argv == (
+        "cargo-custom",
+        "build",
+        "--locked",
+        "--release",
+        "--target",
+        target,
+        "--manifest-path",
+        str(root / "runner" / "Cargo.toml"),
+        "--bin",
+        "bluefire-runner",
+    )
+    assert plan.output_path == Path(inherited["CARGO_TARGET_DIR"]) / target / "release" / filename
+    assert plan.target == target
+
+
+@pytest.mark.parametrize(
+    ("target", "windows"),
+    [
+        ("x86_64-unknown-linux-musl", True),
+        ("x86_64-pc-windows-gnu", False),
+    ],
+)
+def test_explicit_target_rejects_conflicting_windows_override(
+    target: str,
+    windows: bool,
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(RunnerBuildError, match="windows override conflicts"):
+        create_runner_build_plan(
+            _repo(tmp_path),
+            environment=_environment(tmp_path),
+            windows=windows,
+            target=target,
+        )
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["", " ", "aarch64-unknown-linux-musl", "../release", "--release", "linux\x00musl"],
+)
+def test_build_plan_rejects_noncanonical_targets(target: str, tmp_path: Path) -> None:
+    with pytest.raises(RunnerBuildError, match="unsupported runner target"):
+        create_runner_build_plan(
+            _repo(tmp_path),
+            environment=_environment(tmp_path),
+            target=target,
+        )
+
+
+def test_ambient_cargo_target_must_match_an_explicit_target(tmp_path: Path) -> None:
+    root = _repo(tmp_path)
+    environment = _environment(tmp_path)
+    environment["CARGO_BUILD_TARGET"] = "x86_64-unknown-linux-musl"
+
+    with pytest.raises(RunnerBuildError, match="requires an explicit --target"):
+        create_runner_build_plan(root, environment=environment)
+
+    with pytest.raises(RunnerBuildError, match="conflicts with the explicit --target"):
+        create_runner_build_plan(
+            root,
+            environment=environment,
+            target="x86_64-pc-windows-gnu",
+        )
+
+    plan = create_runner_build_plan(
+        root,
+        environment=environment,
+        target="x86_64-unknown-linux-musl",
+    )
+    assert "CARGO_BUILD_TARGET" not in plan.environment
 
 
 def test_build_plan_encodes_all_remaps_as_distinct_rustc_arguments(tmp_path: Path) -> None:
@@ -168,3 +261,49 @@ def test_output_scan_accepts_only_remapped_paths(tmp_path: Path) -> None:
         binary,
         (("source", str(tmp_path / "private-user" / "checkout")),),
     )
+
+
+def test_cli_forwards_one_validated_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+    sentinel = object()
+
+    def fake_plan(repo_root: Path, *, target: str | None = None) -> object:
+        observed["repo_root"] = repo_root
+        observed["target"] = target
+        return sentinel
+
+    def fake_build(plan: object) -> Path:
+        observed["plan"] = plan
+        return Path("unused")
+
+    monkeypatch.setattr("tools.build_native_runner.create_runner_build_plan", fake_plan)
+    monkeypatch.setattr("tools.build_native_runner.build_release_runner", fake_build)
+
+    assert main(["--target", "x86_64-unknown-linux-musl"]) == 0
+    assert observed["target"] == "x86_64-unknown-linux-musl"
+    assert observed["plan"] is sentinel
+
+
+def test_cli_rejects_duplicate_targets_before_planning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def unexpected_plan(*args: Any, **kwargs: Any) -> object:
+        pytest.fail("invalid CLI arguments must not create a build plan")
+
+    monkeypatch.setattr("tools.build_native_runner.create_runner_build_plan", unexpected_plan)
+
+    assert (
+        main(
+            [
+                "--target",
+                "x86_64-unknown-linux-musl",
+                "--target",
+                "x86_64-pc-windows-gnu",
+            ]
+        )
+        == 2
+    )
+    assert "--target may be supplied only once" in capsys.readouterr().err

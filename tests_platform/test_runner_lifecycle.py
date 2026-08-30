@@ -302,6 +302,7 @@ def test_real_process_boundary_requires_mtls_health_and_graceful_shutdown(
     stopped = lifecycle.stop(profile_id=PROFILE_ID)
     assert stopped["state"] == "stopped"
     assert stopped["process"] == "absent"
+    assert lifecycle._owned_processes == {}
     assert lifecycle.ledger_lock_path.exists()
 
     revoked = lifecycle.revoke()
@@ -315,6 +316,70 @@ def test_real_process_boundary_requires_mtls_health_and_graceful_shutdown(
     # A fresh enrollment cannot inherit stale replay rows or durable results.
     assert _bootstrap(lifecycle)["state"] == "stopped"
     assert not lifecycle.ledger_path.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="recovery interruption uses a Windows process handle")
+def test_recovery_interruption_requires_the_exact_retained_process_handle(
+    lifecycle: ManagedRunnerLifecycle,
+    secret_provider: ProcessTestSecretProvider,
+) -> None:
+    _bootstrap(lifecycle)
+    ready = lifecycle.start(profile_id=PROFILE_ID)
+    enrollment = load_local_enrollment(
+        lifecycle.enrollment_root,
+        secret_provider=secret_provider,
+    )
+    before = runner_host_module.read_process_record(
+        lifecycle.process_record_path,
+        enrollment=enrollment,
+        expected_binary_digest=str(ready["runner"]["binary_digest"]),
+    )
+    assert set(lifecycle._owned_processes) == {before["launch_id"]}
+
+    adopted = ManagedRunnerLifecycle(
+        lifecycle.root,
+        secret_provider=secret_provider,
+        bootstrap_factory=_fake_bootstrap,
+        host_command_factory=_host_command,
+        start_timeout_seconds=10,
+        stop_timeout_seconds=10,
+        runner_timeout_seconds=2,
+    )
+    with pytest.raises(RunnerLifecycleError, match="does not own the exact launch"):
+        adopted.interrupt_for_recovery(profile_id=PROFILE_ID)
+    assert set(lifecycle._owned_processes) == {before["launch_id"]}
+    owned = lifecycle._owned_processes[before["launch_id"]]
+    assert owned.process_id == before["pid"]
+    assert owned.process_handle is not None
+    assert owned.launcher.poll() is None
+
+    interrupted = lifecycle.interrupt_for_recovery(profile_id=PROFILE_ID)
+    assert interrupted == {
+        "profile_id": PROFILE_ID,
+        "launch_id": before["launch_id"],
+        "process_id": before["pid"],
+        "server_instance_id": before["server_instance_id"],
+        "identity_bound": True,
+        "process_handle_terminated": True,
+        "process_absent": True,
+    }
+    assert lifecycle.status(profile_id=PROFILE_ID)["state"] == "stopped"
+    assert lifecycle._owned_processes == {}
+
+    restarted = lifecycle.start(profile_id=PROFILE_ID)
+    after = runner_host_module.read_process_record(
+        lifecycle.process_record_path,
+        enrollment=enrollment,
+        expected_binary_digest=str(restarted["runner"]["binary_digest"]),
+    )
+    assert after["pid"] != before["pid"]
+    assert after["launch_id"] != before["launch_id"]
+    assert after["server_instance_id"] != before["server_instance_id"]
+
+    assert lifecycle.stop(profile_id=PROFILE_ID)["state"] == "stopped"
+    assert lifecycle._owned_processes == {}
+    assert lifecycle.revoke()["enrollment"] == "revoked"
+    assert lifecycle.remove(confirm_runner_id=RUNNER_ID)["state"] == "unbootstrapped"
 
 
 def test_remove_preflight(

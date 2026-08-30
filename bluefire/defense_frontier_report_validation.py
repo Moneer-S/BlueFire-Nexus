@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 from .comparison import compare_runs
 from .config import AIProviderKind, load_config
@@ -36,14 +36,14 @@ def _exact(value: Mapping[str, Any], fields: set[str], context: str) -> None:
 
 def _mapping(value: Any, context: str) -> Mapping[str, Any]:
     _require(isinstance(value, Mapping), f"{context} is not an object")
-    return value
+    return cast(Mapping[str, Any], value)
 
 
 def _list(value: Any, context: str, *, length: int | None = None) -> list[Any]:
     _require(isinstance(value, list), f"{context} is not a list")
     if length is not None:
         _require(len(value) == length, f"{context} has invalid cardinality")
-    return value
+    return cast(list[Any], value)
 
 
 def _validate_defense(

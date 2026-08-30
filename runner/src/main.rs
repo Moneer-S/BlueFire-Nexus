@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
 use bluefire_runner::contract::INVENTORY_SCHEMA_VERSION;
-use bluefire_runner::{execute_files, inventory, TaskStatus};
+use bluefire_runner::{
+    execute_files, inventory, run_internal_cancellation_descendant, TaskStatus,
+    INTERNAL_DESCENDANT_VERB,
+};
 use serde_json::json;
 
 fn usage() -> &'static str {
@@ -67,6 +70,12 @@ fn real_main() -> Result<i32, String> {
         return Err(usage().to_string());
     };
     match command {
+        INTERNAL_DESCENDANT_VERB => {
+            if args.len() != 1 {
+                return Err("the internal cancellation descendant accepts no arguments".to_string());
+            }
+            run_internal_cancellation_descendant()
+        }
         "inventory" => {
             if args.len() > 2 || (args.len() == 2 && args[1] != "--json") {
                 return Err(usage().to_string());

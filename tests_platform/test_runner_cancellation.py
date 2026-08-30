@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess  # nosec B404
@@ -10,12 +11,14 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Mapping
+from types import SimpleNamespace
+from typing import Any, Mapping, cast
 
 import pytest
 
 import bluefire.runner_client as runner_client_module
 import bluefire.runner_trust as runner_trust_module
+import bluefire.runner_watchdog as runner_watchdog_module
 from bluefire.runner_client import (
     RunnerDurableResultExists,
     RunnerPendingResultExists,
@@ -319,27 +322,35 @@ def test_receiver_task_key_crosses_watchdog_only_through_fixed_scrubbed_environm
         output_limit_bytes=64 * 1024,
         receiver_task_key_factory=derive,
     )
-    task_id = "task-receiver-auth-01"
-    durable = (tmp_path / "durable" / "receiver-result.json").resolve()
-    result = runner.execute_task(
-        _manifest(
-            "receiver_environment",
-            action_id="sandbox.network.loopback.v1",
-        ),
-        {},
-        task_id=task_id,
-        cancel_event=threading.Event(),
-        durable_result_path=durable,
+    authenticated_actions = (
+        "sandbox.network.loopback.v1",
+        "sandbox.peer.handoff.v1",
     )
+    authenticated_tasks: list[str] = []
+    for index, action_id in enumerate(authenticated_actions, start=1):
+        task_id = f"task-receiver-auth-{index:02d}"
+        authenticated_tasks.append(task_id)
+        durable = (tmp_path / "durable" / f"receiver-result-{index}.json").resolve()
+        result = runner.execute_task(
+            _manifest(
+                "receiver_environment",
+                action_id=action_id,
+            ),
+            {},
+            task_id=task_id,
+            cancel_event=threading.Event(),
+            durable_result_path=durable,
+        )
 
-    assert derived_for == [task_id]
-    assert result["receiver_environment"] == {
-        "names": ["BLUEFIRE_RECEIVER_TASK_ID", "BLUEFIRE_RECEIVER_TASK_KEY"],
-        "task_id": task_id,
-        "key_is_lower_hex_64": True,
-    }
-    assert (b"ab" * 32) not in durable.read_bytes()
-    assert not runner_watchdog_control_root(durable, task_id).exists()
+        assert result["receiver_environment"] == {
+            "names": ["BLUEFIRE_RECEIVER_TASK_ID", "BLUEFIRE_RECEIVER_TASK_KEY"],
+            "task_id": task_id,
+            "key_is_lower_hex_64": True,
+        }
+        assert (b"ab" * 32) not in durable.read_bytes()
+        assert not runner_watchdog_control_root(durable, task_id).exists()
+
+    assert derived_for == authenticated_tasks
 
     ordinary_task = "task-no-receiver-auth-01"
     ordinary_durable = (tmp_path / "durable" / "ordinary-result.json").resolve()
@@ -350,7 +361,7 @@ def test_receiver_task_key_crosses_watchdog_only_through_fixed_scrubbed_environm
         cancel_event=threading.Event(),
         durable_result_path=ordinary_durable,
     )
-    assert derived_for == [task_id]
+    assert derived_for == authenticated_tasks
     assert ordinary["receiver_environment"] == {
         "names": [],
         "task_id": None,
@@ -392,6 +403,339 @@ def test_receiver_environment_is_consumed_and_invalid_key_factory_fails_closed(
             durable_result_path=durable,
         )
     assert not durable.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-backed launch boundary")
+def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure(
+    tmp_path: Path,
+) -> None:
+    runner = _runner(tmp_path)
+    executable = (tmp_path / "verified-echo").resolve()
+    parked = (tmp_path / "verified-echo.parked").resolve()
+    leaked = Path(str(executable) + ".leaked")
+    shutil.copy2("/bin/echo", executable)
+    executable.chmod(0o700)
+    expected_digest = runner_client_module.file_hash(executable)
+    receiver_environment = {
+        "BLUEFIRE_RECEIVER_TASK_ID": "task-posix-launch-01",
+        "BLUEFIRE_RECEIVER_TASK_KEY": "a" * 64,
+    }
+
+    with runner_client_module._pinned_launch_file(executable, expected_digest) as launch:
+        executable.rename(parked)
+        executable.write_text(
+            '#!/bin/sh\nprintf "%s" "$BLUEFIRE_RECEIVER_TASK_KEY" > "$0.leaked"\n',
+            encoding="utf-8",
+        )
+        executable.chmod(0o700)
+        process = runner._spawn(
+            [launch[0], "trusted"],
+            stdout=subprocess.PIPE,
+            receiver_environment=receiver_environment,
+            inherited_descriptors=launch[1],
+        )
+
+    stdout, _stderr = process.communicate(timeout=5)
+    assert process.returncode == 0
+    assert runner._finish_posix_process_group(process) is True
+    assert stdout == b"trusted\n"
+    assert not leaked.exists()
+
+
+def test_watchdog_readiness_failure_retains_and_stops_spawned_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    task_id = "task-readiness-failure-01"
+    durable = (tmp_path / "durable" / "readiness-failure.json").resolve()
+    spawned: list[subprocess.Popen[bytes]] = []
+
+    def fail_readiness(
+        process: subprocess.Popen[bytes],
+        _control_root: Path,
+        _task_id: str,
+    ) -> None:
+        spawned.append(process)
+        raise RunnerTransportError("synthetic watchdog readiness failure")
+
+    monkeypatch.setattr(runner, "_await_watchdog_readiness", fail_readiness)
+    with pytest.raises(RunnerTransportError, match="synthetic watchdog readiness failure"):
+        runner.execute_task(
+            _manifest(),
+            {},
+            task_id=task_id,
+            cancel_event=threading.Event(),
+            durable_result_path=durable,
+        )
+
+    assert len(spawned) == 1
+    assert spawned[0].poll() is not None
+    assert runner._windows_jobs == {}
+    assert not runner_watchdog_control_root(durable, task_id).exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing-violation retry boundary")
+def test_watchdog_readiness_retries_only_transient_windows_sharing_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    process = cast(subprocess.Popen[bytes], SimpleNamespace(pid=4242))
+    attempts = 0
+
+    class SharingThenReady:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def __enter__(self) -> SharingThenReady:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def read(self, _name: str, *, maximum: int) -> bytes:
+            nonlocal attempts
+            assert maximum == 4096
+            attempts += 1
+            if attempts <= 2:
+                raise OSError(
+                    (32, 33)[attempts - 1],
+                    "transient Windows sharing denial",
+                )
+            return json.dumps(
+                {
+                    "schema_version": "bluefire.runner-watchdog-ready.v1",
+                    "task_id": "task-sharing-retry-01",
+                    "watchdog_pid": process.pid,
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+
+    monkeypatch.setattr(runner_client_module, "_PinnedPrivateDirectory", SharingThenReady)
+    monkeypatch.setattr(runner, "_process_exited_without_reap", lambda _process: False)
+
+    runner._await_watchdog_readiness(
+        process,
+        tmp_path,
+        "task-sharing-retry-01",
+    )
+
+    assert attempts == 3
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing-violation retry boundary")
+def test_watchdog_readiness_fails_closed_on_other_windows_io_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    process = cast(subprocess.Popen[bytes], SimpleNamespace(pid=4242))
+    attempts = 0
+
+    class AccessDenied:
+        def __init__(self, _root: Path) -> None:
+            pass
+
+        def __enter__(self) -> AccessDenied:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def read(self, _name: str, *, maximum: int) -> bytes:
+            nonlocal attempts
+            assert maximum == 4096
+            attempts += 1
+            raise OSError(5, "non-transient Windows denial")
+
+    monkeypatch.setattr(runner_client_module, "_PinnedPrivateDirectory", AccessDenied)
+    monkeypatch.setattr(runner, "_process_exited_without_reap", lambda _process: False)
+
+    with pytest.raises(RunnerTransportError, match="readiness is unavailable"):
+        runner._await_watchdog_readiness(
+            process,
+            tmp_path,
+            "task-access-denied-01",
+        )
+
+    assert attempts == 1
+
+
+def test_watchdog_rejects_parent_death_helper_digest_change(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    replacement = tmp_path / "swapped-parent-death.py"
+    replacement.write_text("raise SystemExit(0)\n", encoding="utf-8")
+    runner.parent_death_script = replacement
+    runner.parent_death_script_digest = runner_client_module.file_hash(replacement)
+    durable = (tmp_path / "durable" / "parent-death-helper-swap.json").resolve()
+    task_id = "task-parent-death-helper-swap-01"
+
+    with pytest.raises(RunnerTransportError):
+        runner.execute_task(
+            _manifest(),
+            {},
+            task_id=task_id,
+            cancel_event=threading.Event(),
+            durable_result_path=durable,
+        )
+
+    assert not durable.exists()
+    assert not runner_pending_result_path(durable, task_id).exists()
+    assert not runner_watchdog_control_root(durable, task_id).exists()
+
+
+def test_linux_identity_change_is_never_signalled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = (701, 7001, 701, 701)
+    changed = (701, 7002, 701, 701)
+    observations = iter((identity, changed))
+    descriptor = os.open(os.devnull, os.O_RDONLY)
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        SubprocessRustRunner,
+        "_linux_process_identity",
+        staticmethod(lambda _process_id: next(observations)),
+    )
+    monkeypatch.setattr(runner_client_module, "_PIDFD_OPEN", lambda _pid, _flags: descriptor)
+    monkeypatch.setattr(
+        runner_client_module,
+        "_PIDFD_SEND_SIGNAL",
+        lambda pidfd, signum, _info, _flags: signals.append((pidfd, signum)),
+    )
+
+    force_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
+    assert SubprocessRustRunner._signal_linux_process_identity(identity, force_signal) is False
+    assert signals == []
+
+
+def test_linux_private_leader_is_reaped_only_after_wnowait_and_empty_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    process_id = 801
+    identity = (process_id, 8001, process_id, process_id)
+    descriptor = os.open(os.devnull, os.O_RDONLY)
+    events: list[object] = []
+    wait_no_reap = 0x01000000
+
+    class Process:
+        pid = process_id
+        returncode: int | None = None
+
+        def poll(self) -> int | None:
+            raise AssertionError("Popen.poll must not reap a contained Linux leader")
+
+        def wait(self, *, timeout: float) -> int:
+            events.append(("reap", timeout))
+            self.returncode = 0
+            return 0
+
+    def wait_id(_kind: int, pidfd: int, options: int) -> SimpleNamespace:
+        events.append(("waitid", pidfd, options))
+        return SimpleNamespace(si_pid=process_id)
+
+    monkeypatch.setattr(runner_client_module, "_WAIT_ID", wait_id)
+    monkeypatch.setattr(runner_client_module, "_PIDFD_ID_TYPE", 3)
+    monkeypatch.setattr(runner_client_module, "_WAIT_EXITED", 4)
+    monkeypatch.setattr(runner_client_module, "_WAIT_NO_HANG", 1)
+    monkeypatch.setattr(runner_client_module, "_WAIT_NO_REAP", wait_no_reap)
+
+    def empty_session(
+        _containment: tuple[int, int, int, int, int],
+    ) -> list[tuple[int, int, int, int]]:
+        events.append("session-empty")
+        return [identity]
+
+    monkeypatch.setattr(runner, "_linux_private_session_identities", empty_session)
+
+    process = Process()
+    runner._linux_process_containments[process] = (*identity, descriptor)  # type: ignore[index]
+    assert runner._release_linux_private_process(process, terminate=False) is True  # type: ignore[arg-type]
+    wait_events = [event for event in events if isinstance(event, tuple) and event[0] == "waitid"]
+    assert wait_events
+    assert all(int(event[2]) & wait_no_reap for event in wait_events)
+    assert events.index("session-empty") < next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple) and event[0] == "reap"
+    )
+    assert process not in runner._linux_process_containments
+    assert process in runner._released_linux_processes
+    assert runner._process_exited_without_reap(process) is True  # type: ignore[arg-type]
+    assert runner._finish_posix_process_group(process) is True  # type: ignore[arg-type]
+
+
+def test_linux_private_session_cleanup_includes_alternate_process_groups(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    process_id = 901
+    leader = (process_id, 9001, process_id, process_id)
+    alternate_group_child = (902, 9002, 990, process_id)
+    descriptor = os.open(os.devnull, os.O_RDONLY)
+    inventories = iter(([leader, alternate_group_child], [leader]))
+    signalled: list[tuple[int, int, int, int]] = []
+
+    class Process:
+        pid = process_id
+        returncode: int | None = None
+
+        def wait(self, *, timeout: float) -> int:
+            self.returncode = 0
+            return 0
+
+    monkeypatch.setattr(
+        runner,
+        "_process_exited_without_reap",
+        lambda _process: True,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_linux_private_session_identities",
+        lambda _containment: list(next(inventories)),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_signal_linux_process_identity",
+        lambda identity, _signum: signalled.append(identity) or True,
+    )
+
+    process = Process()
+    runner._linux_process_containments[process] = (*leader, descriptor)  # type: ignore[index]
+    assert runner._release_linux_private_process(process, terminate=False) is True  # type: ignore[arg-type]
+    assert signalled == [alternate_group_child]
+
+
+def test_private_posix_session_members_are_not_filtered_by_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Entries:
+        def __enter__(self) -> object:
+            return iter(
+                (
+                    SimpleNamespace(name="1001"),
+                    SimpleNamespace(name="1002"),
+                    SimpleNamespace(name="2001"),
+                    SimpleNamespace(name="self"),
+                )
+            )
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(runner_client_module.sys, "platform", "linux")
+    monkeypatch.setattr(runner_client_module.os, "scandir", lambda _path: Entries())
+    monkeypatch.setattr(
+        runner_client_module,
+        "_GET_SESSION_ID",
+        lambda process_id: 1001 if process_id in {1001, 1002} else 2001,
+    )
+
+    assert SubprocessRustRunner._private_posix_session_members(1001) == {1001, 1002}
 
 
 def test_execute_task_rejects_invalid_result_without_promoting_it(tmp_path: Path) -> None:
@@ -490,7 +834,7 @@ def test_execute_task_cancellation_confirms_descendant_process_is_stopped(
         descendant_pid = int(descendant_pid_path.read_text(encoding="ascii"))
         assert _pid_is_running(descendant_pid)
         cancel_event.set()
-        with pytest.raises(RunnerTaskCancelled, match="process tree stopped"):
+        with pytest.raises(RunnerTaskCancelled, match="process tree stopped") as failure:
             future.result(timeout=10)
 
     # Cancellation is not reported merely because a kill was sent. The
@@ -499,6 +843,233 @@ def test_execute_task_cancellation_confirms_descendant_process_is_stopped(
     assert not durable.exists()
     assert not runner_pending_result_path(durable, "task-cancel-01").exists()
     assert not list(runner.work_root.glob("request-*"))
+    assert failure.value.cooperative_requested is False
+    assert failure.value.cooperative_acknowledged is False
+    assert failure.value.forced_tree_termination is True
+    assert failure.value.control_cleanup_verified is True
+
+
+def test_preexisting_or_mismatched_witness_state_never_claims_cooperative_cancel(
+    tmp_path: Path,
+) -> None:
+    sandbox = (tmp_path / "sandbox").resolve()
+    sandbox.mkdir()
+
+    def config_for(raw_digest: str) -> SimpleNamespace:
+        request_hash = "sha256:" + raw_digest
+        return SimpleNamespace(
+            task_id="execute-" + raw_digest,
+            manifest={
+                "action_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+                "behavior_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+                "params": {},
+                "platform": "windows",
+                "request_hash": request_hash,
+            },
+            profile={"platform": "windows", "sandbox_root": str(sandbox)},
+        )
+
+    def ready(config: SimpleNamespace, parent_process_id: int) -> Path:
+        root = (
+            sandbox / ".bluefire-cancellation-witness-v1" / config.task_id.removeprefix("execute-")
+        )
+        root.mkdir(parents=True)
+        (root / "ready.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "bluefire.process-tree-cancellation-ready.v1",
+                    "task_id": config.task_id,
+                    "request_hash": config.manifest["request_hash"],
+                    "parent_process_id": parent_process_id,
+                    "descendant_process_id": parent_process_id + 1,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return root
+
+    preexisting = config_for("a" * 64)
+    preexisting_root = ready(preexisting, 701)
+    (preexisting_root / "cancel.ack").write_bytes(b"ack:" + b"0" * 64 + b"\n")
+    requested = threading.Event()
+    acknowledged = threading.Event()
+    runner_watchdog_module._cooperative_cancellation(
+        preexisting,
+        requested,
+        acknowledged,
+        [701],
+    )
+    assert not requested.is_set()
+    assert not acknowledged.is_set()
+    assert not (preexisting_root / "cancel.request").exists()
+
+    mismatched = config_for("b" * 64)
+    mismatched_root = ready(mismatched, 801)
+    runner_watchdog_module._cooperative_cancellation(
+        mismatched,
+        requested,
+        acknowledged,
+        [999],
+    )
+    assert not requested.is_set()
+    assert not acknowledged.is_set()
+    assert {entry.name for entry in mismatched_root.iterdir()} == {"ready.json"}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cancellation lease boundary")
+def test_outer_cancellation_lease_owns_early_and_crash_cleanup(tmp_path: Path) -> None:
+    digest = "c" * 64
+    request_hash = "sha256:" + digest
+    task_id = "execute-" + digest
+    sandbox = (tmp_path / "sandbox").resolve()
+    sandbox.mkdir()
+    manifest = {
+        "action_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+        "behavior_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+        "params": {},
+        "platform": "windows",
+        "request_hash": request_hash,
+    }
+    profile = {"platform": "windows", "sandbox_root": str(sandbox)}
+
+    early = SubprocessRustRunner._prepare_cancellation_control(manifest, profile, task_id)
+    assert early is not None
+    early_root = sandbox / ".bluefire-cancellation-witness-v1" / digest
+    assert {item.name for item in early_root.iterdir()} == {".lease"}
+    assert early.cleanup() is True
+    assert not early_root.exists()
+    assert not early_root.parent.exists()
+
+    crashed = SubprocessRustRunner._prepare_cancellation_control(manifest, profile, task_id)
+    assert crashed is not None
+    crashed_root = sandbox / ".bluefire-cancellation-witness-v1" / digest
+    (crashed_root / "ready.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "bluefire.process-tree-cancellation-ready.v1",
+                "task_id": task_id,
+                "request_hash": request_hash,
+                "parent_process_id": 701,
+                "descendant_process_id": 702,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert crashed.cleanup() is True
+    assert not crashed_root.exists()
+    assert not crashed_root.parent.exists()
+
+
+def test_outer_cancellation_cleanup_refuses_missing_lease(tmp_path: Path) -> None:
+    digest = "f" * 64
+    sandbox = (tmp_path / "sandbox").resolve()
+    parent = sandbox / ".bluefire-cancellation-witness-v1"
+    task = parent / digest
+    task.mkdir(parents=True)
+    sandbox_control = runner_client_module._PinnedPrivateDirectory(sandbox)
+    parent_control = runner_client_module._PinnedPrivateDirectory(parent)
+    task_control = runner_client_module._PinnedPrivateDirectory(task, delete=True)
+    sandbox_control.__enter__()
+    parent_control.__enter__()
+    task_control.__enter__()
+    lease = runner_client_module._CancellationControlLease(
+        sandbox=sandbox_control,
+        parent=parent_control,
+        task=task_control,
+        parent_created=True,
+        task_id="execute-" + digest,
+        request_hash="sha256:" + digest,
+        token="e" * 64,
+    )
+
+    assert lease.cleanup() is False
+    assert task.is_dir()
+    assert parent.is_dir()
+
+
+@pytest.mark.parametrize("replaced_name", ["ready.json", "cancel.request", "cancel.ack"])
+def test_cancellation_cleanup_binds_immutable_live_handshake_identities(
+    tmp_path: Path,
+    replaced_name: str,
+) -> None:
+    digest = "d" * 64
+    request_hash = "sha256:" + digest
+    task_id = "execute-" + digest
+    sandbox = (tmp_path / "sandbox").resolve()
+    root = sandbox / ".bluefire-cancellation-witness-v1" / digest
+    root.mkdir(parents=True)
+    token = "e" * 64
+    (root / ".lease").write_bytes(f"lease:{token}\n".encode("ascii"))
+    ready_payload = (
+        json.dumps(
+            {
+                "schema_version": "bluefire.process-tree-cancellation-ready.v1",
+                "task_id": task_id,
+                "request_hash": request_hash,
+                "parent_process_id": 801,
+                "descendant_process_id": 802,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
+    (root / "ready.json").write_bytes(ready_payload)
+    config = SimpleNamespace(
+        task_id=task_id,
+        manifest={
+            "action_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+            "behavior_id": "sandbox.execution.process-tree-cancellation-witness.v1",
+            "params": {},
+            "platform": "windows",
+            "request_hash": request_hash,
+        },
+        profile={"platform": "windows", "sandbox_root": str(sandbox)},
+        cancellation_lease_token=token,
+    )
+    requested = threading.Event()
+    acknowledged = threading.Event()
+    handshakes: list[Any] = []
+
+    def acknowledge() -> None:
+        request_path = root / "cancel.request"
+        _wait_for_file(request_path)
+        request = request_path.read_bytes()
+        (root / "cancel.ack").write_bytes(b"ack:" + request[7:])
+
+    responder = threading.Thread(target=acknowledge)
+    responder.start()
+    runner_watchdog_module._cooperative_cancellation(
+        config,
+        requested,
+        acknowledged,
+        [801],
+        handshakes,
+    )
+    responder.join(timeout=5)
+    assert not responder.is_alive()
+    assert requested.is_set() and acknowledged.is_set()
+    assert len(handshakes) == 1
+
+    target = root / replaced_name
+    original = target.read_bytes()
+    target.unlink()
+    target.write_bytes(original)
+    assert (
+        runner_watchdog_module._cleanup_cooperative_cancellation(
+            config,
+            requested,
+            acknowledged,
+            handshakes,
+        )
+        is False
+    )
+    assert target.read_bytes() == original
 
 
 def test_normal_runner_exit_does_not_leave_descendants_running(tmp_path: Path) -> None:
@@ -1025,6 +1596,71 @@ def test_caller_interruption_requests_watchdog_cancel_before_unwinding(
     assert not durable.exists()
     assert not runner_pending_result_path(durable, task_id).exists()
     assert not runner_watchdog_control_root(durable, task_id).exists()
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="Linux watchdog parent-death containment",
+)
+def test_posix_watchdog_pid_death_cannot_orphan_runner(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    durable = (tmp_path / "durable" / "posix-watchdog-crash.json").resolve()
+    durable.parent.mkdir()
+    runner_pid_path = (tmp_path / "posix-watchdog-crash-runner.pid").resolve()
+    manifest_path = tmp_path / "posix-watchdog-crash-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            _manifest("self_pid_sleep", runner_pid_path=str(runner_pid_path)),
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    driver_path = tmp_path / "posix-watchdog-crash-parent.py"
+    driver_path.write_text(_PARENT_DRIVER, encoding="utf-8")
+    parent = subprocess.Popen(  # nosec B603
+        [
+            sys.executable,
+            str(driver_path),
+            sys.executable,
+            str(runner.work_root),
+            str(durable),
+            str(manifest_path),
+            "20",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        shell=False,
+    )
+    runner_pid: int | None = None
+    watchdog_pid: int | None = None
+    try:
+        _wait_for_file(runner_pid_path)
+        runner_pid = int(runner_pid_path.read_text(encoding="ascii"))
+        ready_path = runner_watchdog_ready_path(durable, "task-parent-loss-01")
+        _wait_for_file(ready_path)
+        watchdog_pid = int(json.loads(ready_path.read_text(encoding="utf-8"))["watchdog_pid"])
+        assert os.getpgid(watchdog_pid) == watchdog_pid
+        assert os.getpgid(runner_pid) == watchdog_pid
+        assert os.getsid(runner_pid) == watchdog_pid
+
+        parent.kill()
+        parent.wait(timeout=5)
+        assert _pid_is_running(watchdog_pid)
+        assert _pid_is_running(runner_pid)
+        os.kill(watchdog_pid, signal.SIGKILL)
+        stopped_deadline = time.monotonic() + 10.0
+        while _pid_is_running(runner_pid) and time.monotonic() < stopped_deadline:
+            time.sleep(0.025)
+        assert not _pid_is_running(runner_pid)
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait(timeout=5)
+        for process_id in (watchdog_pid, runner_pid):
+            if process_id is not None and _pid_is_running(process_id):
+                os.kill(process_id, signal.SIGKILL)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows KILL_ON_JOB_CLOSE guarantee")

@@ -38,6 +38,7 @@ EXPECTED_BUILTIN_RUNNER_ACTION_VERSIONS = {
     "sandbox.discovery.metadata.v1": "2.0.0",
     "sandbox.discovery.recursive.v1": "1.0.0",
     "sandbox.execution.native-canary.v1": "1.0.0",
+    "sandbox.execution.process-tree-cancellation-witness.v1": "1.0.0",
     "sandbox.export.local.v1": "2.0.0",
     "sandbox.fixture.create.v1": "2.0.0",
     "sandbox.fixture.transform.v1": "2.0.0",
@@ -70,10 +71,10 @@ EXPECTED_EXECUTE_ACTIONS = [
 ]
 
 
-def test_python_authority_contains_exactly_nineteen_compiled_actions() -> None:
+def test_python_authority_contains_exactly_twenty_compiled_actions() -> None:
     assert dict(BUILTIN_RUNNER_ACTION_VERSIONS) == EXPECTED_BUILTIN_RUNNER_ACTION_VERSIONS
     assert BUILTIN_RUNNER_ACTION_IDS == frozenset(EXPECTED_BUILTIN_RUNNER_ACTION_VERSIONS)
-    assert len(BUILTIN_RUNNER_ACTION_IDS) == 19
+    assert len(BUILTIN_RUNNER_ACTION_IDS) == 20
 
 
 def _execution_binding(

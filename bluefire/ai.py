@@ -25,7 +25,7 @@ from .config import (
     AIRedactionPolicy,
     AutonomyLevel,
 )
-from .runner_client import RunnerTransportError, reject_forbidden_execution_keys
+from .execution_contracts import ExecutionContractError, reject_forbidden_execution_keys
 from .util import canonical_json_bytes, content_hash, json_clone
 
 
@@ -332,7 +332,7 @@ class AIProposal:
             raise AIProviderError("AI proposal must be a JSON object")
         try:
             reject_forbidden_execution_keys(value)
-        except RunnerTransportError as exc:
+        except ExecutionContractError as exc:
             raise AIProviderError("AI proposal contains forbidden executable fields") from exc
         unknown = set(value) - _PROPOSAL_FIELDS
         missing = _PROPOSAL_FIELDS - set(value)

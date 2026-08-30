@@ -7,7 +7,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import date
 from pathlib import PurePosixPath
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 from urllib.parse import urlsplit
 
 MAX_SOURCE_BYTES = 1024 * 1024
@@ -87,7 +87,7 @@ def _digest(value: Any, context: str) -> str:
 def _positive_size(value: Any, context: str, *, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= maximum:
         raise _error(f"{context} must be between 1 and {maximum} bytes")
-    return value
+    return cast(int, value)
 
 
 def _iso_date(value: Any, context: str) -> str:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import importlib.metadata
 import json
@@ -11,27 +10,45 @@ import re
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
-import zipfile
 from dataclasses import dataclass
-from email.parser import BytesParser
-from email.policy import default as email_policy
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, cast
 
 from . import install_gate_validation as validation
+from . import install_gate_workspace as workspace
+from .install_gate_package_metadata import _canonical_name as _canonical_name
+from .install_gate_package_metadata import _project_dependencies as _project_dependencies
+from .install_gate_package_metadata import _project_section as _project_section
+from .install_gate_package_metadata import _project_string as _project_string
+from .install_gate_package_metadata import _project_version as _project_version
+from .install_gate_package_metadata import _requirement_row as _requirement_row
+from .install_gate_package_metadata import _static_version_value as _static_version_value
+from .install_gate_package_metadata import (
+    _wheel_dependency_metadata_report as _wheel_dependency_metadata_report,
+)
+from .runner_trust import _is_link_or_reparse, _owner_private
+from .runtime_paths import runtime_temp_parent as _runtime_temp_parent
 
 _REQUIRED_DISTRIBUTIONS = ("PyYAML", "cryptography", "PyNaCl", "cffi", "pycparser")
-_RUNTIME_DISTRIBUTIONS = frozenset({"pyyaml", "cryptography", "pynacl"})
-_REQUIREMENT_NAME = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(.*)$")
-_REQUIREMENT_SPECIFIER = re.compile(r"^(?:~=|==|!=|<=|>=|<|>)[A-Za-z0-9][A-Za-z0-9.*+!_-]*$")
 _WINDOWS = os.name == "nt"
+_WORKSPACE_DIRECTORY = re.compile(r"^a[0-9a-f]{8}$")
 _RUNTIME_DIRECTORY = re.compile(r"^b[0-9a-f]{8}$")
 _WINDOWS_RUNTIME_ROOT_MAX_CHARS = 48
+_HARNESS_EVIDENCE_ENTRIES = frozenset(
+    {
+        "runtime-cargo-target",
+        "runtime-home",
+        "runtime-temp",
+        "workflow.stderr.log",
+        "workflow.stdout.log",
+    }
+)
 _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, tuple[str, ...], str, str]] = {
     "GATE-01-FRESH-INSTALL": (
         "dynamic",
@@ -81,6 +98,15 @@ _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, tuple[str, ...], str, str]] = {
         "simple_workflow",
     ),
 }
+_EVIDENCE_REPORTS = tuple(
+    sorted(
+        {
+            artifact
+            for _kind, artifacts, _test_id, _check_name in _EXPECTED_ASSERTIONS.values()
+            for artifact in artifacts
+        }
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -202,15 +228,18 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
         return
 
     try:
-        process_group = os.getpgid(process.pid)
-        os.killpg(process_group, signal.SIGTERM)
+        process_group = os.getpgid(process.pid)  # type: ignore[attr-defined]
+        os.killpg(process_group, signal.SIGTERM)  # type: ignore[attr-defined]
     except OSError as exc:
         _kill_direct_process(process)
         raise RuntimeError("release subprocess tree termination failed") from exc
     if _wait_for_exit(process, 10):
         return
     try:
-        os.killpg(process_group, signal.SIGKILL)
+        os.killpg(  # type: ignore[attr-defined]
+            process_group,
+            signal.SIGKILL,  # type: ignore[attr-defined]
+        )
     except OSError as exc:
         _kill_direct_process(process)
         raise RuntimeError("release subprocess tree kill failed") from exc
@@ -237,9 +266,11 @@ def _bounded_remove(destination: Path, path: Path) -> bool:
         destination_resolved
     ):
         return False
+    if (path.exists() or path.is_symlink()) and _is_link_or_reparse(path):
+        return False
     for attempt in range(10):
         try:
-            if path.is_dir() and not path.is_symlink():
+            if path.is_dir():
                 shutil.rmtree(path)
             elif path.exists() or path.is_symlink():
                 path.unlink()
@@ -252,29 +283,50 @@ def _bounded_remove(destination: Path, path: Path) -> bool:
     return not path.exists() and not path.is_symlink()
 
 
-def _allocate_short_runtime_root(destination: Path) -> Path:
-    """Allocate an exact helper-owned runtime without inheriting evidence path depth."""
+def _validated_directory(path: Path, *, label: str) -> Path:
+    return workspace.validated_directory(
+        path,
+        label=label,
+        is_link_or_reparse=_is_link_or_reparse,
+    )
 
-    parent = destination.parent.parent.resolve(strict=True)
-    required_length = len(os.fspath(parent)) + 1 + len("b00000000")
-    if _WINDOWS and required_length > _WINDOWS_RUNTIME_ROOT_MAX_CHARS:
-        raise ValueError("Gate 01 acceptance output parent is too deep for Windows runtime safety")
-    for _attempt in range(32):
-        candidate = parent / ("b" + secrets.token_hex(4))
-        try:
-            candidate.mkdir(mode=0o700)
-        except FileExistsError:
-            continue
-        resolved = candidate.resolve(strict=True)
-        if (
-            candidate.is_symlink()
-            or resolved.parent != parent
-            or _RUNTIME_DIRECTORY.fullmatch(candidate.name) is None
-        ):
-            _bounded_remove(parent, candidate)
-            raise ValueError("Gate 01 runtime allocation was unsafe")
-        return resolved
-    raise OSError("Gate 01 could not allocate an isolated runtime")
+
+def _validated_evidence_destination(path: Path) -> Path:
+    return workspace.validated_evidence_destination(
+        path,
+        allowed_entries=_HARNESS_EVIDENCE_ENTRIES,
+        is_link_or_reparse=_is_link_or_reparse,
+    )
+
+
+def _workspace_dependencies() -> workspace.WorkspaceDependencies:
+    return workspace.WorkspaceDependencies(
+        windows=_WINDOWS,
+        runtime_root_max_chars=_WINDOWS_RUNTIME_ROOT_MAX_CHARS,
+        workspace_directory=_WORKSPACE_DIRECTORY,
+        runtime_directory=_RUNTIME_DIRECTORY,
+        runtime_temp_parent=_runtime_temp_parent,
+        token_hex=secrets.token_hex,
+        is_link_or_reparse=_is_link_or_reparse,
+        owner_private=_owner_private,
+        bounded_remove=_bounded_remove,
+    )
+
+
+def _allocate_external_workspace(repository: Path) -> tuple[Path, Path, Path]:
+    return workspace.allocate_external_workspace(repository, _workspace_dependencies())
+
+
+def _allocate_short_runtime_root(
+    destination: Path,
+    *,
+    repository_root: Path | None = None,
+) -> Path:
+    return workspace.allocate_short_runtime_root(
+        destination,
+        _workspace_dependencies(),
+        repository_root=repository_root,
+    )
 
 
 def _run(
@@ -401,199 +453,6 @@ def _native_target(source: Path) -> tuple[str, str, str]:
     return str(platform_name), str(architecture), str(wheel_tag)
 
 
-def _canonical_name(value: str) -> str:
-    return re.sub(r"[-_.]+", "-", value).lower()
-
-
-def _requirement_row(value: str) -> Mapping[str, str]:
-    if ";" in value or "[" in value or "]" in value or "@" in value:
-        raise ValueError("runtime dependency must be an unconditional distribution requirement")
-    match = _REQUIREMENT_NAME.fullmatch(value.strip())
-    if match is None:
-        raise ValueError("runtime dependency requirement is invalid")
-    name = _canonical_name(match.group(1))
-    specifiers = [part.strip() for part in match.group(2).split(",") if part.strip()]
-    if not specifiers or any(_REQUIREMENT_SPECIFIER.fullmatch(part) is None for part in specifiers):
-        raise ValueError("runtime dependency specifier is invalid")
-    return {"name": name, "specifier": ",".join(sorted(specifiers))}
-
-
-def _project_section(document: str) -> str:
-    match = re.search(r"(?ms)^\[project\]\s*$\n(.*?)(?=^\[|\Z)", document)
-    if match is None:
-        raise ValueError("packaging source has no project metadata")
-    return match.group(1)
-
-
-def _project_string(project: str, field: str) -> str:
-    match = re.search(rf'(?m)^{re.escape(field)}\s*=\s*("(?:\\.|[^"\\])*")\s*$', project)
-    if match is None:
-        raise ValueError(f"packaging source has no {field} value")
-    try:
-        value = json.loads(match.group(1))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"packaging source {field} value is invalid") from exc
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"packaging source {field} value is invalid")
-    return value
-
-
-def _project_version(source: Path, document: str, project: str) -> str:
-    if re.search(r"(?m)^version\s*=", project) is not None:
-        return _project_string(project, "version")
-    dynamic_match = re.search(r"(?ms)^dynamic\s*=\s*\[(.*?)\]\s*$", project)
-    if dynamic_match is None:
-        raise ValueError("packaging source has no version declaration")
-    dynamic_body = dynamic_match.group(1)
-    literals = re.findall(r'"(?:\\.|[^"\\])*"', dynamic_body)
-    remainder = re.sub(r'"(?:\\.|[^"\\])*"', "", dynamic_body)
-    if remainder.strip(" \t\r\n,"):
-        raise ValueError("packaging source dynamic metadata is invalid")
-    try:
-        dynamic_fields = [json.loads(literal) for literal in literals]
-    except json.JSONDecodeError as exc:
-        raise ValueError("packaging source dynamic metadata is invalid") from exc
-    dynamic_section = re.search(
-        r"(?ms)^\[tool\.setuptools\.dynamic\]\s*$\n(.*?)(?=^\[|\Z)", document
-    )
-    version_binding = (
-        re.findall(
-            r'(?m)^version\s*=\s*\{\s*attr\s*=\s*"bluefire\.__version__"\s*\}\s*$',
-            dynamic_section.group(1),
-        )
-        if dynamic_section is not None
-        else []
-    )
-    if dynamic_fields.count("version") != 1 or len(version_binding) != 1:
-        raise ValueError("packaging source dynamic version binding is invalid")
-    version_source = source / "bluefire" / "__init__.py"
-    try:
-        source_text = version_source.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        raise ValueError("packaging source version module is unavailable") from exc
-    if len(source_text.encode("utf-8")) > 1024 * 1024:
-        raise ValueError("packaging source version module exceeds its size bound")
-    try:
-        module = ast.parse(source_text, filename="bluefire/__init__.py")
-    except SyntaxError as exc:
-        raise ValueError("packaging source version module is invalid") from exc
-    assignments = [
-        node
-        for node in module.body
-        if (
-            isinstance(node, ast.Assign)
-            and any(
-                isinstance(target, ast.Name) and target.id == "__version__"
-                for target in node.targets
-            )
-        )
-        or (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.target.id == "__version__"
-        )
-    ]
-    if (
-        len(assignments) != 1
-        or not isinstance(assignments[0], ast.Assign)
-        or len(assignments[0].targets) != 1
-        or not isinstance(assignments[0].targets[0], ast.Name)
-        or not isinstance(assignments[0].value, ast.Constant)
-        or not isinstance(assignments[0].value.value, str)
-        or not assignments[0].value.value
-    ):
-        raise ValueError("packaging source dynamic version value is invalid")
-    return assignments[0].value.value
-
-
-def _project_dependencies(project: str) -> list[str]:
-    match = re.search(r"(?ms)^dependencies\s*=\s*\[(.*?)\]\s*$", project)
-    if match is None:
-        raise ValueError("packaging source has no runtime dependencies")
-    body = match.group(1)
-    literals = re.findall(r'"(?:\\.|[^"\\])*"', body)
-    remainder = re.sub(r'"(?:\\.|[^"\\])*"', "", body)
-    remainder = re.sub(r"(?m)#.*$", "", remainder)
-    if remainder.strip(" \t\r\n,") or not literals:
-        raise ValueError("packaging source runtime dependencies are invalid")
-    try:
-        values = [json.loads(literal) for literal in literals]
-    except json.JSONDecodeError as exc:
-        raise ValueError("packaging source runtime dependencies are invalid") from exc
-    if any(not isinstance(value, str) or not value for value in values):
-        raise ValueError("packaging source runtime dependencies are invalid")
-    return values
-
-
-def _wheel_dependency_metadata_report(source: Path, wheel: Path) -> Mapping[str, Any]:
-    document = (source / "pyproject.toml").read_text(encoding="utf-8")
-    project = _project_section(document)
-    project_name = _canonical_name(_project_string(project, "name"))
-    project_version = _project_version(source, document, project)
-    requires_python = _project_string(project, "requires-python")
-    declared = sorted(
-        (_requirement_row(requirement) for requirement in _project_dependencies(project)),
-        key=lambda row: row["name"],
-    )
-    if {row["name"] for row in declared} != _RUNTIME_DISTRIBUTIONS:
-        raise ValueError("declared BlueFire runtime dependency set is invalid")
-
-    try:
-        with zipfile.ZipFile(wheel, "r") as archive:
-            metadata_members = [
-                name
-                for name in archive.namelist()
-                if re.fullmatch(r"[^/]+\.dist-info/METADATA", name) is not None
-            ]
-            if len(metadata_members) != 1:
-                raise ValueError("built wheel does not contain exactly one metadata record")
-            metadata_bytes = archive.read(metadata_members[0])
-    except (OSError, KeyError, zipfile.BadZipFile) as exc:
-        raise ValueError("built wheel metadata is unavailable") from exc
-    if len(metadata_bytes) > 1024 * 1024:
-        raise ValueError("built wheel metadata exceeds its size bound")
-    metadata = BytesParser(policy=email_policy).parsebytes(metadata_bytes)
-    metadata_name = metadata.get("Name")
-    metadata_version = metadata.get("Version")
-    metadata_requires_python = metadata.get("Requires-Python")
-    if (
-        not isinstance(metadata_name, str)
-        or not isinstance(metadata_version, str)
-        or not isinstance(metadata_requires_python, str)
-    ):
-        raise ValueError("built wheel project metadata is incomplete")
-    wheel_requirements: list[Mapping[str, str]] = []
-    for requirement in metadata.get_all("Requires-Dist", []):
-        if not isinstance(requirement, str):
-            raise ValueError("built wheel dependency metadata is invalid")
-        marker = requirement.partition(";")[2]
-        if marker and re.search(r"\bextra\s*==", marker):
-            continue
-        wheel_requirements.append(_requirement_row(requirement))
-    wheel_requirements.sort(key=lambda row: row["name"])
-    if (
-        project_name != "bluefire-nexus"
-        or _canonical_name(metadata_name) != project_name
-        or metadata_version != project_version
-        or metadata_requires_python != requires_python
-    ):
-        raise ValueError("built wheel project metadata does not match the project declaration")
-    if wheel_requirements != declared:
-        raise ValueError(
-            "built wheel Requires-Dist metadata does not match the project declaration"
-        )
-    return {
-        "schema_version": "bluefire.gate01-wheel-dependency-metadata.v1",
-        "verified": True,
-        "project_name": project_name,
-        "project_version": project_version,
-        "requires_python": requires_python,
-        "wheel_sha256": _sha256(wheel),
-        "declared_runtime_dependencies": declared,
-        "wheel_requires_dist": wheel_requirements,
-    }
-
-
 def _build_and_inspect(
     source: Path,
     wheel_dir: Path,
@@ -663,10 +522,10 @@ def _provision_distribution(
     files = distribution.files
     if not files:
         raise ValueError(f"required distribution {name} has no installed file record")
-    source_root = Path(distribution.locate_file("")).resolve(strict=True)
+    source_root = Path(cast(os.PathLike[str], distribution.locate_file(""))).resolve(strict=True)
     copied: list[tuple[str, str]] = []
     for package_path in files:
-        source = Path(distribution.locate_file(package_path))
+        source = Path(cast(os.PathLike[str], distribution.locate_file(package_path)))
         try:
             resolved = source.resolve(strict=True)
             relative = resolved.relative_to(source_root)
@@ -928,14 +787,102 @@ def _verification_report(run_ids: Sequence[str]) -> Mapping[str, Any]:
     }
 
 
+def _copy_regular_file_exclusive(source: Path, destination: Path) -> None:
+    try:
+        before = source.lstat()
+    except OSError as exc:
+        raise ValueError("Gate 01 staged evidence is unavailable") from exc
+    if not stat.S_ISREG(before.st_mode) or _is_link_or_reparse(source):
+        raise ValueError("Gate 01 staged evidence contains an unsafe file")
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with source.open("rb") as input_file, os.fdopen(descriptor, "wb") as output_file:
+            descriptor = None
+            shutil.copyfileobj(input_file, output_file, length=1024 * 1024)
+            output_file.flush()
+            os.fsync(output_file.fileno())
+        after = source.lstat()
+        if not os.path.samestat(before, after) or _is_link_or_reparse(source):
+            raise ValueError("Gate 01 staged evidence changed during publication")
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _copy_evidence_tree(source: Path, destination: Path) -> None:
+    source_root = _validated_directory(source, label="Gate 01 staged run evidence")
+    destination.mkdir(mode=0o700)
+    for entry in os.scandir(source_root):
+        source_entry = Path(entry.path)
+        destination_entry = destination / entry.name
+        try:
+            details = source_entry.lstat()
+        except OSError as exc:
+            raise ValueError("Gate 01 staged run evidence is unavailable") from exc
+        if _is_link_or_reparse(source_entry):
+            raise ValueError("Gate 01 staged run evidence contains a link or reparse point")
+        if stat.S_ISDIR(details.st_mode):
+            _copy_evidence_tree(source_entry, destination_entry)
+        elif stat.S_ISREG(details.st_mode):
+            _copy_regular_file_exclusive(source_entry, destination_entry)
+        else:
+            raise ValueError("Gate 01 staged run evidence contains an unsafe entry")
+
+
+def _publish_gate_evidence(source: Path, destination: Path) -> tuple[str, str]:
+    staged_run_ids = _validate_reports(source)
+    staged_verification = _load_json(source / "gate01-verification-report.json")
+    if validation.validate_verification(staged_verification) != staged_run_ids:
+        raise ValueError("Gate 01 staged verification run binding is invalid")
+    names = (*_EVIDENCE_REPORTS, "runs")
+    if any((destination / name).exists() or (destination / name).is_symlink() for name in names):
+        raise ValueError("Gate 01 evidence directory contains stale owned artifacts")
+
+    published: list[Path] = []
+    try:
+        for name in _EVIDENCE_REPORTS:
+            target = destination / name
+            published.append(target)
+            _copy_regular_file_exclusive(source / name, target)
+        runs = destination / "runs"
+        published.append(runs)
+        _copy_evidence_tree(source / "runs", runs)
+        persisted_run_ids = _validate_reports(destination)
+        persisted_verification = _load_json(destination / "gate01-verification-report.json")
+        if (
+            persisted_run_ids != staged_run_ids
+            or validation.validate_verification(persisted_verification) != staged_run_ids
+        ):
+            raise ValueError("Gate 01 published evidence binding is invalid")
+        return staged_run_ids
+    except (OSError, RuntimeError, ValueError):
+        cleanup_failures = [
+            path.name for path in reversed(published) if not _bounded_remove(destination, path)
+        ]
+        if cleanup_failures:
+            raise ValueError("Gate 01 partial evidence cleanup failed") from None
+        raise
+
+
 def run_gate_01(
     gate: Any,
     evidence_dir: Path,
     *,
     repository_root: Path | None = None,
 ) -> Gate01Outcome:
-    repository = (repository_root or Path.cwd()).resolve(strict=True)
-    destination = evidence_dir.resolve(strict=True)
+    repository = _validated_directory(
+        repository_root or Path.cwd(),
+        label="Gate 01 repository root",
+    )
+    try:
+        destination = _validated_evidence_destination(evidence_dir)
+    except (OSError, ValueError) as exc:
+        return Gate01Outcome(
+            "failed",
+            (),
+            "GATE-01 failed: " + validation.bounded_failure_message(exc),
+        )
     contract_assertions = {
         assertion.assertion_id: assertion.proof for assertion in getattr(gate, "assertions", ())
     }
@@ -943,60 +890,65 @@ def run_gate_01(
     if contract_assertions != expected_kinds:
         return Gate01Outcome("failed", (), "locked GATE-01 assertion set mismatch")
 
-    archive_path = destination / "s.tar"
-    source = destination / "s"
-    wheel_dir = destination / "wheel"
-    environment_root = destination / "e"
-    helper_copy = destination / "h.py"
-    support_copy = destination / "i.py"
     completed = False
     issue: str | None = None
-    run_ids: tuple[str, str] = ()
+    run_ids: tuple[str, ...] = ()
+    external_parent: Path | None = None
+    external_workspace: Path | None = None
     runtime_root: Path | None = None
-    runtime_parent = destination.parent.parent.resolve(strict=True)
     try:
-        if destination.is_relative_to(repository):
-            raise ValueError("Gate 01 evidence must remain outside the checkout")
-        runtime_root = _allocate_short_runtime_root(destination)
+        external_parent, external_workspace, staged_evidence = _allocate_external_workspace(
+            repository
+        )
+        archive_path = staged_evidence / "s.tar"
+        source = staged_evidence / "s"
+        wheel_dir = staged_evidence / "wheel"
+        environment_root = staged_evidence / "e"
+        helper_copy = staged_evidence / "h.py"
+        support_copy = staged_evidence / "i.py"
+        runtime_root = _allocate_short_runtime_root(
+            staged_evidence,
+            repository_root=repository,
+        )
         _archive_committed_source(repository, source, archive_path)
-        wheel = _build_and_inspect(source, wheel_dir, destination)
-        fresh_python = _create_fresh_environment(environment_root, wheel, destination)
+        wheel = _build_and_inspect(source, wheel_dir, staged_evidence)
+        fresh_python = _create_fresh_environment(environment_root, wheel, staged_evidence)
         _run_installed_helper(
             source,
             repository,
-            destination,
+            staged_evidence,
             runtime_root,
             fresh_python,
             helper_copy,
             support_copy,
         )
         structural = _structural_report(source)
-        _write_json(destination / "gate01-structural-report.json", structural)
+        _write_json(staged_evidence / "gate01-structural-report.json", structural)
         validation.validate_structural(structural)
-        run_ids = _validate_reports(destination)
+        run_ids = _validate_reports(staged_evidence)
         verification = _verification_report(run_ids)
-        _write_json(destination / "gate01-verification-report.json", verification)
-        persisted_verification = _load_json(destination / "gate01-verification-report.json")
+        _write_json(staged_evidence / "gate01-verification-report.json", verification)
+        persisted_verification = _load_json(staged_evidence / "gate01-verification-report.json")
         if validation.validate_verification(persisted_verification) != run_ids:
             raise ValueError("Gate 01 verification run binding is invalid")
+        run_ids = _publish_gate_evidence(staged_evidence, destination)
         completed = True
     except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired, tarfile.TarError) as exc:
         issue = validation.bounded_failure_message(exc)
     finally:
-        cleanup_targets = [
-            source,
-            environment_root,
-            archive_path,
-            helper_copy,
-            support_copy,
-        ]
-        if not completed:
-            cleanup_targets.append(destination / "runs")
-        cleanup_failures = [
-            path.name for path in cleanup_targets if not _bounded_remove(destination, path)
-        ]
-        if runtime_root is not None and not _bounded_remove(runtime_parent, runtime_root):
+        cleanup_failures: list[str] = []
+        if (
+            runtime_root is not None
+            and external_parent is not None
+            and not _bounded_remove(external_parent, runtime_root)
+        ):
             cleanup_failures.append("external-runtime")
+        if (
+            external_workspace is not None
+            and external_parent is not None
+            and not _bounded_remove(external_parent, external_workspace)
+        ):
+            cleanup_failures.append("external-workspace")
         if cleanup_failures:
             if completed and not _bounded_remove(destination, destination / "runs"):
                 cleanup_failures.append("runs")

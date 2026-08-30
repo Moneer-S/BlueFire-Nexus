@@ -101,7 +101,7 @@ _PYTHON_BOUNDARIES = {
     "runner_client.py": {
         "passed": True,
         "shell_imports": 1,
-        "process_calls": ["subprocess.Popen"],
+        "process_calls": ["subprocess.Popen", "subprocess.Popen"],
         "unexpected_findings": [],
     },
     "runner_bootstrap.py": {

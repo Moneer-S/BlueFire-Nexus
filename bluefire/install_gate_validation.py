@@ -11,13 +11,13 @@ _APPROVAL_ID = re.compile(r"^approval-[0-9a-f]{32}$")
 _JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
 _REQUIRED_DISTRIBUTIONS = frozenset({"PyYAML", "cryptography", "PyNaCl", "cffi", "pycparser"})
 _EXPECTED_RUNTIME_REQUIREMENTS = [
-    {"name": "cryptography", "specifier": "<47,>=45"},
+    {"name": "cryptography", "specifier": "<51,>=50"},
     {"name": "pynacl", "specifier": "<2,>=1.5"},
     {"name": "pyyaml", "specifier": "<7,>=6.0.1"},
 ]
 _RUNTIME_VERSION_RANGES = {
     "PyYAML": ((6, 0, 1), (7,)),
-    "cryptography": ((45,), (47,)),
+    "cryptography": ((50,), (51,)),
     "PyNaCl": ((1, 5), (2,)),
 }
 

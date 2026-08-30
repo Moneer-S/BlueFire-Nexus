@@ -88,6 +88,7 @@ _REVIEWED_PROGRAM_CONSTANTS: Mapping[str, Mapping[str, Any]] = {
     "endpoint.discovery.system.v1": {},
     "endpoint.discovery.windows-version.v1": {},
     "sandbox.execution.native-canary.v1": {},
+    "sandbox.execution.process-tree-cancellation-witness.v1": {},
     "sandbox.identity-material.inspect.v1": {},
     "sandbox.identity-material.seed.v1": {},
     "sandbox.observability.variant.v1": {},

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .defense_frontier import _runtime_temp_parent
+from .runtime_paths import runtime_temp_parent as _runtime_temp_parent
 
 POLICY_SCHEMA_VERSION = "bluefire.architecture-policy.v1"
 REPORT_SCHEMA_VERSION = "bluefire.architecture-audit.v1"

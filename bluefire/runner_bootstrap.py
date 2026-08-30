@@ -23,7 +23,6 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 
-from . import __version__
 from .runner_inventory import (
     BUILTIN_RUNNER_ACTION_IDS,
     RUNNER_ACTION_SDK_SCHEMA_VERSION,
@@ -31,6 +30,7 @@ from .runner_inventory import (
     RunnerInventoryAuthorityError,
     validate_builtin_action_inventory,
 )
+from .version import __version__
 
 MANIFEST_SCHEMA_VERSION = "bluefire.native-runner-package.v1"
 BOOTSTRAP_STATUS_SCHEMA_VERSION = "bluefire.runner-bootstrap-status.v1"

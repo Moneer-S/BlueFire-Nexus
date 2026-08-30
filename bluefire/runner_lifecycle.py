@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence, cast
 
-from . import __version__
 from .runner_bootstrap import (
     RUNNER_ID,
     BootstrappedRunner,
@@ -59,6 +58,7 @@ from .runner_trust import (
 )
 from .secret_store import SecretProvider
 from .util import canonical_json_bytes, file_hash
+from .version import __version__
 
 LIFECYCLE_STATUS_SCHEMA_VERSION = "bluefire.runner-lifecycle-status.v1"
 BOOTSTRAP_RECORD_SCHEMA_VERSION = "bluefire.runner-lifecycle-bootstrap.v1"
@@ -189,6 +189,16 @@ class _LaunchProcess:
         return "_LaunchProcess(contained=True)"
 
 
+@dataclass(slots=True, repr=False)
+class _OwnedHostProcess:
+    launcher: subprocess.Popen[bytes]
+    process_id: int
+    process_handle: int | None = None
+
+    def __repr__(self) -> str:
+        return "_OwnedHostProcess(identity_bound=True)"
+
+
 class ManagedRunnerLifecycle:
     """Explicit lifecycle coordinator for one local enrolled runner."""
 
@@ -229,7 +239,7 @@ class ManagedRunnerLifecycle:
         self.stop_timeout_seconds = float(stop_timeout_seconds)
         self.runner_timeout_seconds = float(runner_timeout_seconds)
         self._instance_operation_lock = threading.RLock()
-        self._owned_processes: dict[str, subprocess.Popen[bytes]] = {}
+        self._owned_processes: dict[str, _OwnedHostProcess] = {}
 
     @property
     def enrollment_root(self) -> Path:
@@ -654,6 +664,8 @@ class ManagedRunnerLifecycle:
             self._remove_stale_process_record()
         elif self._ledger_lock_state() != "free":
             raise RunnerLifecycleError("Runner host ownership is unavailable; start was refused.")
+        if not self._reap_owned_processes():
+            raise RunnerLifecycleError("A previous runner host did not reach terminal absence.")
 
         launch_id = secrets.token_hex(32)
         start_gate_path = self.control_root / f".host-start-{launch_id}.gate"
@@ -685,6 +697,7 @@ class ManagedRunnerLifecycle:
             if launch.process.poll() is not None:
                 break
             if self.process_record_path.exists():
+                owned: _OwnedHostProcess | None = None
                 try:
                     record = read_process_record(
                         self.process_record_path,
@@ -694,17 +707,29 @@ class ManagedRunnerLifecycle:
                     if record["launch_id"] != launch_id:
                         raise RunnerLifecycleError("Runner launch identity did not match.")
                     self._authenticated_health(enrollment, bootstrap, record, selected)
+                    owned = _retain_owned_host_process(launch, int(record["pid"]))
+                    repeated = read_process_record(
+                        self.process_record_path,
+                        enrollment=enrollment,
+                        expected_binary_digest=bootstrap.binary_digest,
+                    )
+                    if repeated != record:
+                        raise RunnerLifecycleError("Runner launch identity changed.")
+                    self._authenticated_health(enrollment, bootstrap, repeated, selected)
+                except (OSError, RunnerHostError, RunnerLifecycleError):
+                    if owned is not None:
+                        _close_owned_host_process(owned)
+                else:
                     try:
                         _release_launch_containment(launch)
                     except OSError:
+                        _close_owned_host_process(owned)
                         self._stop_exact_failed_launch(launch)
                         raise RunnerLifecycleError(
                             "Runner launch containment could not be released."
                         ) from None
-                    self._owned_processes[launch_id] = launch.process
+                    self._owned_processes[launch_id] = owned
                     return self.status(profile_id=selected)
-                except (RunnerHostError, RunnerLifecycleError):
-                    pass
             time.sleep(0.025)
         self._stop_exact_failed_launch(launch)
         raise RunnerLifecycleError("Runner host did not reach authenticated readiness.")
@@ -741,6 +766,97 @@ class ManagedRunnerLifecycle:
         with self._operation_guard(adopt=False):
             return self._stop_locked(profile_id=profile_id)
 
+    def interrupt_for_recovery(self, *, profile_id: str) -> Mapping[str, Any]:
+        """Interrupt this instance's exact retained launch for a recovery exercise.
+
+        This deliberately refuses adopted processes.  The retained Windows process
+        handle, authenticated process record, launch identifier, and PID must all agree
+        before the process is terminated, so no PID-only signal can race process reuse.
+        """
+
+        with self._operation_guard(adopt=False):
+            enrollment = self._load_active_enrollment()
+            bootstrap = self._load_bootstrap(enrollment)
+            selected = self._selected_profile(enrollment, profile_id)
+            try:
+                record = read_process_record(
+                    self.process_record_path,
+                    enrollment=enrollment,
+                    expected_binary_digest=bootstrap.binary_digest,
+                )
+                self._authenticated_health(enrollment, bootstrap, record, selected)
+            except (RunnerHostError, RunnerLifecycleError):
+                raise RunnerLifecycleError(
+                    "Runner recovery interruption identity is unavailable."
+                ) from None
+            launch_id = str(record["launch_id"])
+            owned = self._owned_processes.get(launch_id)
+            if (
+                os.name != "nt"
+                or owned is None
+                or owned.process_handle is None
+                or owned.process_id != int(record["pid"])
+                or _windows_process_id(owned.process_handle) != int(record["pid"])
+                or not _windows_process_running(owned.process_handle)
+            ):
+                raise RunnerLifecycleError(
+                    "Runner recovery interruption does not own the exact launch."
+                )
+            host_terminated = False
+            try:
+                host_terminated = _windows_terminate_process(
+                    owned.process_handle,
+                    process_id=owned.process_id,
+                    timeout_seconds=5.0,
+                )
+                if not host_terminated:
+                    raise OSError("host termination was not confirmed")
+                try:
+                    owned.launcher.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    owned.launcher.terminate()
+                    owned.launcher.wait(timeout=5.0)
+            except OSError:
+                raise RunnerLifecycleError(
+                    "Runner recovery interruption could not be confirmed."
+                ) from None
+            except subprocess.TimeoutExpired:
+                raise RunnerLifecycleError(
+                    "Runner recovery interruption could not be confirmed."
+                ) from None
+            finally:
+                if host_terminated:
+                    _close_owned_host_process(owned)
+                    self._owned_processes.pop(launch_id, None)
+            if owned.launcher.poll() is None:
+                raise RunnerLifecycleError("Runner recovery launcher survived interruption.")
+            deadline = time.monotonic() + self.stop_timeout_seconds
+            while time.monotonic() < deadline:
+                if self._ledger_lock_state() == "free":
+                    if self.process_record_path.exists() or _is_link_or_reparse(
+                        self.process_record_path
+                    ):
+                        self._remove_stale_process_record()
+                    break
+                time.sleep(0.025)
+            if (
+                self._ledger_lock_state() != "free"
+                or self.process_record_path.exists()
+                or _is_link_or_reparse(self.process_record_path)
+            ):
+                raise RunnerLifecycleError(
+                    "Runner recovery interruption did not reach a stopped boundary."
+                )
+            return {
+                "profile_id": selected,
+                "launch_id": launch_id,
+                "process_id": int(record["pid"]),
+                "server_instance_id": str(record["server_instance_id"]),
+                "identity_bound": True,
+                "process_handle_terminated": True,
+                "process_absent": True,
+            }
+
     def _stop_locked(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
         """Stop only through the authenticated lifecycle operation."""
 
@@ -754,6 +870,8 @@ class ManagedRunnerLifecycle:
                 raise RunnerLifecycleError(
                     "Runner host ownership is unavailable; stop was refused."
                 )
+            if not self._reap_owned_processes():
+                raise RunnerLifecycleError("Runner host did not reach terminal absence.")
             return self.status(profile_id=selected)
         try:
             record = read_process_record(
@@ -768,6 +886,8 @@ class ManagedRunnerLifecycle:
                     "Runner host is unavailable; stop was refused."
                 ) from None
             self._remove_stale_process_record()
+            if not self._reap_owned_processes():
+                raise RunnerLifecycleError("Runner host did not reach terminal absence.") from None
             return self.status(profile_id=selected)
 
         try:
@@ -783,6 +903,10 @@ class ManagedRunnerLifecycle:
         except RunnerConnectionError:
             if self._ledger_lock_state() == "free":
                 self._remove_stale_process_record()
+                if not self._reap_owned_process(str(record["launch_id"])):
+                    raise RunnerLifecycleError(
+                        "Runner host did not reach terminal absence."
+                    ) from None
                 return self.status(profile_id=selected)
             raise RunnerLifecycleError(
                 "Authenticated runner shutdown was not acknowledged."
@@ -794,12 +918,14 @@ class ManagedRunnerLifecycle:
         deadline = time.monotonic() + self.stop_timeout_seconds
         while time.monotonic() < deadline:
             if not self.process_record_path.exists() and self._ledger_lock_state() == "free":
-                self._reap_owned_process(str(record["launch_id"]))
+                if not self._reap_owned_process(str(record["launch_id"])):
+                    raise RunnerLifecycleError("Runner host did not reach terminal absence.")
                 return self.status(profile_id=selected)
             time.sleep(0.025)
         if self._ledger_lock_state() == "free":
             self._remove_stale_process_record()
-            self._reap_owned_process(str(record["launch_id"]))
+            if not self._reap_owned_process(str(record["launch_id"])):
+                raise RunnerLifecycleError("Runner host did not reach terminal absence.")
             return self.status(profile_id=selected)
         raise RunnerLifecycleError("Runner host did not complete authenticated shutdown.")
 
@@ -1283,7 +1409,7 @@ class ManagedRunnerLifecycle:
         execution: bool = False,
     ) -> AuthenticatedRunnerClient:
         try:
-            return self.client_factory(
+            client = self.client_factory(
                 enrollment.root,
                 profile_id=profile_id,
                 host=LOOPBACK_HOST,
@@ -1302,6 +1428,7 @@ class ManagedRunnerLifecycle:
                 recovery_delay_seconds=0.025,
                 secret_provider=self.secret_provider,
             )
+            return client
         except (OSError, RuntimeError):
             raise RunnerLifecycleError("Runner authenticated endpoint is unavailable.") from None
 
@@ -1606,15 +1733,35 @@ class ManagedRunnerLifecycle:
         if not _terminate_contained_launch(launch):
             raise RunnerLifecycleError("Failed runner launch containment could not be confirmed.")
 
-    def _reap_owned_process(self, launch_id: str) -> None:
-        process = self._owned_processes.get(launch_id)
-        if process is None:
-            return
+    def _reap_owned_processes(self) -> bool:
+        results = [
+            self._reap_owned_process(launch_id) for launch_id in tuple(self._owned_processes)
+        ]
+        return all(results)
+
+    def _reap_owned_process(self, launch_id: str) -> bool:
+        owned = self._owned_processes.get(launch_id)
+        if owned is None:
+            return True
         try:
-            process.wait(timeout=0)
+            if (
+                os.name == "nt"
+                and owned.process_handle is not None
+                and (
+                    _windows_process_id(owned.process_handle) != owned.process_id
+                    or not _windows_wait_process_exit(
+                        owned.process_handle,
+                        timeout_seconds=5.0,
+                    )
+                )
+            ):
+                return False
+            owned.launcher.wait(timeout=5.0)
         except (OSError, subprocess.TimeoutExpired):
-            return
+            return False
+        _close_owned_host_process(owned)
         self._owned_processes.pop(launch_id, None)
+        return True
 
     def _public_runner(self, bootstrap: _BootstrapRecord) -> Mapping[str, Any]:
         return {
@@ -1705,6 +1852,38 @@ def _release_launch_containment(launch: _LaunchProcess) -> None:
     launch.containment = None
 
 
+def _retain_owned_host_process(
+    launch: _LaunchProcess,
+    process_id: int,
+) -> _OwnedHostProcess:
+    if process_id <= 0:
+        raise OSError("invalid host process identity")
+    if os.name != "nt":
+        if launch.process.pid != process_id or launch.process.poll() is not None:
+            raise OSError("host process identity did not match its launcher")
+        return _OwnedHostProcess(launcher=launch.process, process_id=process_id)
+    if launch.containment is None:
+        raise OSError("launch containment is unavailable")
+    process_handle = _windows_open_process(process_id)
+    try:
+        if not _windows_process_in_job(process_handle, int(launch.containment)):
+            raise OSError("authenticated host is outside launch containment")
+        return _OwnedHostProcess(
+            launcher=launch.process,
+            process_id=process_id,
+            process_handle=process_handle,
+        )
+    except OSError:
+        _windows_close_handle(process_handle)
+        raise
+
+
+def _close_owned_host_process(owned: _OwnedHostProcess) -> None:
+    if owned.process_handle is not None:
+        _windows_close_handle(owned.process_handle)
+        owned.process_handle = None
+
+
 def _terminate_contained_launch(launch: _LaunchProcess) -> bool:
     process = launch.process
     if os.name == "nt":
@@ -1766,6 +1945,122 @@ def _kill_process_group(group: int, signal_number: int) -> None:
     if not callable(operation):
         raise OSError("process-group signalling is unavailable")
     operation(group, signal_number)
+
+
+def _windows_open_process(process_id: int) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    process_terminate = 0x0001
+    process_query_limited_information = 0x1000
+    synchronize = 0x00100000
+    kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)  # type: ignore[attr-defined]
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    open_process.restype = wintypes.HANDLE
+    handle = open_process(
+        process_terminate | process_query_limited_information | synchronize,
+        False,
+        process_id,
+    )
+    if not handle:
+        raise OSError("host process handle is unavailable")
+    value = int(handle)
+    try:
+        if _windows_process_id(value) != process_id or not _windows_process_running(value):
+            raise OSError("host process handle identity is invalid")
+        return value
+    except OSError:
+        _windows_close_handle(value)
+        raise
+
+
+def _windows_process_id(process_handle: int) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)  # type: ignore[attr-defined]
+    get_process_id = kernel32.GetProcessId
+    get_process_id.argtypes = (wintypes.HANDLE,)
+    get_process_id.restype = wintypes.DWORD
+    process_id = int(get_process_id(wintypes.HANDLE(process_handle)))
+    if process_id <= 0:
+        raise OSError("host process identity is unavailable")
+    return process_id
+
+
+def _windows_process_running(process_handle: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)  # type: ignore[attr-defined]
+    get_exit_code = kernel32.GetExitCodeProcess
+    get_exit_code.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    get_exit_code.restype = wintypes.BOOL
+    exit_code = wintypes.DWORD()
+    if not get_exit_code(wintypes.HANDLE(process_handle), ctypes.byref(exit_code)):
+        raise OSError("host process state is unavailable")
+    return int(exit_code.value) == 259
+
+
+def _windows_process_in_job(process_handle: int, job_handle: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)  # type: ignore[attr-defined]
+    is_process_in_job = kernel32.IsProcessInJob
+    is_process_in_job.argtypes = (
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.BOOL),
+    )
+    is_process_in_job.restype = wintypes.BOOL
+    result = wintypes.BOOL()
+    if not is_process_in_job(
+        wintypes.HANDLE(process_handle),
+        wintypes.HANDLE(job_handle),
+        ctypes.byref(result),
+    ):
+        raise OSError("host process containment is unavailable")
+    return bool(result.value)
+
+
+def _windows_wait_process_exit(process_handle: int, *, timeout_seconds: float) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)  # type: ignore[attr-defined]
+    wait = kernel32.WaitForSingleObject
+    wait.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    wait.restype = wintypes.DWORD
+    timeout_ms = max(1, min(int(timeout_seconds * 1000), 0xFFFFFFFE))
+    if int(wait(wintypes.HANDLE(process_handle), timeout_ms)) != 0:
+        return False
+    return not _windows_process_running(process_handle)
+
+
+def _windows_terminate_process(
+    process_handle: int,
+    *,
+    process_id: int,
+    timeout_seconds: float,
+) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    if _windows_process_id(process_handle) != process_id or not _windows_process_running(
+        process_handle
+    ):
+        return False
+    kernel32 = ctypes.WinDLL("kernel32.dll", use_last_error=True)  # type: ignore[attr-defined]
+    terminate = kernel32.TerminateProcess
+    terminate.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    terminate.restype = wintypes.BOOL
+    if not terminate(wintypes.HANDLE(process_handle), 1):
+        return False
+    if not _windows_wait_process_exit(process_handle, timeout_seconds=timeout_seconds):
+        return False
+    return True
 
 
 def _windows_create_kill_job() -> int:

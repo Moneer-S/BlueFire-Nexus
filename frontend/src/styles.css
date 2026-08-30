@@ -364,9 +364,9 @@ td .badge { margin-left: 6px; }
 .compatibility-banner.error { border-color: rgba(255, 110, 121, 0.3); background: rgba(255, 110, 121, 0.07); color: var(--red); }
 .compatibility-banner svg { width: 15px; }
 .compatibility-banner button { margin-left: auto; border: 0; background: transparent; color: currentColor; }
-.builder-layout { min-height: 690px; display: grid; grid-template-columns: minmax(220px, 0.68fr) minmax(520px, 1.9fr) minmax(260px, 0.78fr); gap: 12px; align-items: stretch; }
-.builder-layout.palette-hidden { grid-template-columns: minmax(520px, 1.9fr) minmax(260px, 0.78fr); }
-.builder-layout.inspector-hidden { grid-template-columns: minmax(220px, 0.68fr) minmax(520px, 1.9fr); }
+.builder-layout { min-height: 690px; display: grid; grid-template-columns: minmax(220px, var(--palette-width, 290px)) minmax(520px, 1fr) minmax(260px, var(--inspector-width, 330px)); gap: 12px; align-items: stretch; }
+.builder-layout.palette-hidden { grid-template-columns: minmax(520px, 1fr) minmax(260px, var(--inspector-width, 330px)); }
+.builder-layout.inspector-hidden { grid-template-columns: minmax(220px, var(--palette-width, 290px)) minmax(520px, 1fr); }
 .builder-layout.palette-hidden.inspector-hidden { grid-template-columns: minmax(0, 1fr); }
 .builder-layout.palette-hidden .palette-panel, .builder-layout.inspector-hidden .inspector-panel { display: none; }
 .builder-layout.palette-hidden .inspector-panel { grid-column: auto; min-height: 690px; }
@@ -393,6 +393,10 @@ td .badge { margin-left: 6px; }
 .graph-view-actions .button { min-height: 34px; white-space: nowrap; }
 .graph-view-actions .button svg, .graph-view-actions .icon-button svg { width: 15px; }
 .graph-view-actions kbd { padding: 2px 5px; border: 1px solid var(--line-strong); border-radius: 5px; color: var(--muted); font: 700 var(--font-micro) ui-monospace, SFMono-Regular, Consolas, monospace; }
+.panel-width-control { display: inline-grid; grid-template-columns: auto minmax(62px, 92px) 42px; align-items: center; gap: 6px; min-height: 34px; padding: 0 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted-strong); font-size: var(--font-micro); font-weight: 700; }
+.panel-width-control input { min-width: 62px; accent-color: var(--blue); }
+.panel-width-control output { color: var(--cyan); font: 700 var(--font-micro) ui-monospace, SFMono-Regular, Consolas, monospace; text-align: right; }
+.panel-width-control:has(input:disabled) { opacity: 0.45; }
 .focus-hint { margin-left: auto; color: var(--muted); font-size: var(--font-caption); font-weight: 700; }
 .graph-edit-actions { display: flex; gap: 6px; }
 .graph-edit-actions .icon-button { width: 34px; height: 34px; }

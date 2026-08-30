@@ -6,10 +6,11 @@ import json
 import os
 import stat
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, BinaryIO, Mapping, Sequence
 
 import pytest
 
+import tools.stage_native_runner as stage_native_runner_module
 from bluefire.runner_bootstrap import (
     ACTION_SDK_VERSION,
     INVENTORY_SCHEMA_VERSION,
@@ -366,6 +367,7 @@ def test_staging_helper_writes_only_verified_platform_specific_assets(tmp_path: 
     runner = source_root / FILENAME
     runner.write_bytes(_fake_pe())
     output = tmp_path / "stage"
+    output.mkdir()
 
     manifest = stage_native_runner(
         runner.resolve(),
@@ -382,6 +384,300 @@ def test_staging_helper_writes_only_verified_platform_specific_assets(tmp_path: 
         manifest.to_dict()
     )
     assert not list(output.glob("*.tmp"))
+
+
+def test_staging_preserves_package_tree_and_replaces_only_generated_pair(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    runner = source_root / FILENAME
+    runner.write_bytes(_fake_pe())
+    output = tmp_path / "stage"
+    output.mkdir()
+    initializer = output / "__init__.py"
+    initializer.write_bytes(b"package marker\n")
+    nested = output / "linux-x86_64"
+    nested.mkdir()
+    nested_marker = nested / "artifact.lock"
+    nested_marker.write_bytes(b"preserve exact nested content\n")
+    superseded_runner = output / "bluefire-runner"
+    superseded_runner.write_bytes(b"superseded generated content")
+    (output / MANIFEST_FILENAME).write_bytes(b"superseded manifest\n")
+
+    manifest = stage_native_runner(
+        runner.resolve(),
+        output,
+        platform_name=PLATFORM,
+        architecture=ARCHITECTURE,
+        product_version=PRODUCT_VERSION,
+        inventory=_inventory(),
+    )
+
+    assert initializer.read_bytes() == b"package marker\n"
+    assert nested_marker.read_bytes() == b"preserve exact nested content\n"
+    assert not superseded_runner.exists()
+    assert (output / FILENAME).read_bytes() == runner.read_bytes()
+    assert json.loads((output / MANIFEST_FILENAME).read_bytes()) == manifest.to_dict()
+    assert not list(output.glob("*.tmp"))
+    assert not list(tmp_path.glob(".stage.bluefire-native-*"))
+
+
+def test_staging_probes_the_private_single_link_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    runner = source_root / FILENAME
+    runner.write_bytes(_fake_pe())
+    os.link(runner, source_root / "cargo-hardlink.exe")
+    output = tmp_path / "stage"
+    output.mkdir()
+    observed: list[Path] = []
+
+    def probe(binary: Path) -> Mapping[str, Any]:
+        observed.append(binary)
+        assert binary != runner
+        assert binary.stat(follow_symlinks=False).st_nlink == 1
+        return _inventory()
+
+    monkeypatch.setattr(stage_native_runner_module, "_probe_inventory", probe)
+
+    stage_native_runner(
+        runner.resolve(),
+        output,
+        platform_name=PLATFORM,
+        architecture=ARCHITECTURE,
+        product_version=PRODUCT_VERSION,
+    )
+
+    assert len(observed) == 1
+    assert observed[0].parent.name.startswith(".stage.bluefire-native-stage-")
+    assert (output / FILENAME).stat(follow_symlinks=False).st_nlink == 1
+
+
+def test_staging_preserves_a_foreign_destination_that_wins_the_publish_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    runner = source_root / FILENAME
+    runner.write_bytes(_fake_pe())
+    output = tmp_path / "stage"
+    output.mkdir()
+    original_publish = stage_native_runner_module._atomic_rename_no_replace
+    publication_calls = 0
+    winner_identity: os.stat_result | None = None
+
+    def publish_after_foreign_winner(source: Path, destination: Path) -> None:
+        nonlocal publication_calls, winner_identity
+        publication_calls += 1
+        if publication_calls == 2:
+            destination.mkdir()
+            winner_identity = destination.stat(follow_symlinks=False)
+        original_publish(source, destination)
+
+    monkeypatch.setattr(
+        stage_native_runner_module,
+        "_atomic_rename_no_replace",
+        publish_after_foreign_winner,
+    )
+
+    with pytest.raises(RunnerBootstrapError, match="could not be staged safely"):
+        stage_native_runner(
+            runner.resolve(),
+            output,
+            platform_name=PLATFORM,
+            architecture=ARCHITECTURE,
+            product_version=PRODUCT_VERSION,
+            inventory=_inventory(),
+        )
+
+    assert winner_identity is not None
+    assert os.path.samestat(output.stat(follow_symlinks=False), winner_identity)
+    assert not list(output.iterdir())
+    assert not list(tmp_path.glob(".stage.bluefire-native-*"))
+
+
+def test_staging_preserves_foreign_content_added_before_destination_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    runner = source_root / FILENAME
+    runner.write_bytes(_fake_pe())
+    output = tmp_path / "stage"
+    output.mkdir()
+    marker = output / "foreign-content"
+    original_publish = stage_native_runner_module._atomic_rename_no_replace
+    publication_calls = 0
+
+    def claim_after_foreign_write(source: Path, destination: Path) -> None:
+        nonlocal publication_calls
+        publication_calls += 1
+        if publication_calls == 1:
+            marker.write_bytes(b"preserve me")
+        original_publish(source, destination)
+
+    monkeypatch.setattr(
+        stage_native_runner_module,
+        "_atomic_rename_no_replace",
+        claim_after_foreign_write,
+    )
+
+    with pytest.raises(RunnerBootstrapError, match="changed during publication"):
+        stage_native_runner(
+            runner.resolve(),
+            output,
+            platform_name=PLATFORM,
+            architecture=ARCHITECTURE,
+            product_version=PRODUCT_VERSION,
+            inventory=_inventory(),
+        )
+
+    assert marker.read_bytes() == b"preserve me"
+    assert not (output / FILENAME).exists()
+    assert not (output / MANIFEST_FILENAME).exists()
+    assert not list(tmp_path.glob(".stage.bluefire-native-*"))
+
+
+def test_staging_publication_failure_restores_nonempty_destination_without_partial_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    runner = source_root / FILENAME
+    runner.write_bytes(_fake_pe())
+    output = tmp_path / "stage"
+    output.mkdir()
+    initializer = output / "__init__.py"
+    initializer.write_bytes(b"preserve the package marker\n")
+    nested = output / "linux-x86_64"
+    nested.mkdir()
+    nested_marker = nested / "artifact.lock"
+    nested_marker.write_bytes(b"preserve the nested artifact\n")
+    original_publish = stage_native_runner_module._atomic_rename_no_replace
+    publication_calls = 0
+
+    def fail_publication(source: Path, destination: Path) -> None:
+        nonlocal publication_calls
+        publication_calls += 1
+        if publication_calls == 2:
+            raise OSError("simulated publication failure")
+        original_publish(source, destination)
+
+    monkeypatch.setattr(
+        stage_native_runner_module,
+        "_atomic_rename_no_replace",
+        fail_publication,
+    )
+
+    with pytest.raises(RunnerBootstrapError, match="could not be staged safely"):
+        stage_native_runner(
+            runner.resolve(),
+            output,
+            platform_name=PLATFORM,
+            architecture=ARCHITECTURE,
+            product_version=PRODUCT_VERSION,
+            inventory=_inventory(),
+        )
+
+    assert output.is_dir()
+    assert initializer.read_bytes() == b"preserve the package marker\n"
+    assert nested_marker.read_bytes() == b"preserve the nested artifact\n"
+    assert sorted(path.relative_to(output) for path in output.rglob("*")) == [
+        Path("__init__.py"),
+        Path("linux-x86_64"),
+        Path("linux-x86_64/artifact.lock"),
+    ]
+    assert not list(tmp_path.glob(".stage.bluefire-native-*"))
+
+
+def test_staging_reports_mutated_superseded_tree_without_removing_foreign_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    runner = source_root / FILENAME
+    runner.write_bytes(_fake_pe())
+    output = tmp_path / "stage"
+    output.mkdir()
+    (output / "__init__.py").write_bytes(b"package marker\n")
+    original_cleanup = stage_native_runner_module._remove_snapshot_tree
+    observed_reservation: Path | None = None
+
+    def mutate_before_cleanup(
+        path: Path,
+        expected_root: os.stat_result,
+        expected_entries: Sequence[stage_native_runner_module._TreeEntry],
+    ) -> bool:
+        nonlocal observed_reservation
+        observed_reservation = path
+        (path / "foreign-race-winner").write_bytes(b"never remove me")
+        return original_cleanup(path, expected_root, expected_entries)
+
+    monkeypatch.setattr(
+        stage_native_runner_module,
+        "_remove_snapshot_tree",
+        mutate_before_cleanup,
+    )
+
+    with pytest.raises(
+        RunnerBootstrapError,
+        match="superseded native runner tree could not be removed safely",
+    ):
+        stage_native_runner(
+            runner.resolve(),
+            output,
+            platform_name=PLATFORM,
+            architecture=ARCHITECTURE,
+            product_version=PRODUCT_VERSION,
+            inventory=_inventory(),
+        )
+
+    assert (output / FILENAME).read_bytes() == runner.read_bytes()
+    assert (output / "__init__.py").read_bytes() == b"package marker\n"
+    assert observed_reservation is not None
+    assert (observed_reservation / "foreign-race-winner").read_bytes() == b"never remove me"
+
+
+def test_staging_copy_failure_removes_owned_partial_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    runner = source_root / FILENAME
+    runner.write_bytes(_fake_pe())
+    output = tmp_path / "stage"
+    output.mkdir()
+
+    def fail_after_partial_copy(_source: BinaryIO, destination: BinaryIO) -> None:
+        destination.write(b"partial owned bytes")
+        raise OSError("simulated partial copy failure")
+
+    monkeypatch.setattr(
+        stage_native_runner_module.shutil,
+        "copyfileobj",
+        fail_after_partial_copy,
+    )
+
+    with pytest.raises(RunnerBootstrapError, match="could not be staged safely"):
+        stage_native_runner(
+            runner.resolve(),
+            output,
+            platform_name=PLATFORM,
+            architecture=ARCHITECTURE,
+            product_version=PRODUCT_VERSION,
+            inventory=_inventory(),
+        )
+
+    assert output.is_dir()
+    assert not list(output.iterdir())
+    assert not list(tmp_path.glob(".stage.bluefire-native-*"))
 
 
 def test_staging_refuses_a_non_authoritative_inventory_before_copy(tmp_path: Path) -> None:
