@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
-from typing import Any, Mapping
+import sys
+from pathlib import Path
+from typing import Any, Callable, Mapping, cast
 
 SOURCE_INTAKE_POSIX_PROBE_SCHEMA = "bluefire.source-intake-posix-probes.v1"
 SOURCE_INTAKE_POSIX_PROBE_IDS = (
@@ -16,10 +19,35 @@ SOURCE_INTAKE_POSIX_PROBE_COUNT = 3
 SOURCE_INTAKE_POSIX_PROBE_IDS_SHA256 = (
     "sha256:bbdd4c7db581e50913736c64c466e9ba783679435b353adba5ea27f2c9cbe6c1"
 )
+_STAGED_PROBE_MODULE = "bluefire._gate11_source_intake_probe"
 
 
 class SourceIntakeProbeValidationError(ValueError):
     """Raised when the fixed native POSIX probe report is not exact."""
+
+
+def run_bound_staged_probe(
+    product_root: Path,
+    workspace: Path,
+    expected_identity: Mapping[str, Any],
+    identity_reader: Callable[[Path, int], tuple[int, str]],
+    error_type: type[ValueError] = SourceIntakeProbeValidationError,
+) -> Mapping[str, Any]:
+    """Verify the staged probe's exact identity before importing and executing it."""
+
+    probe_path = product_root / "bluefire" / "_gate11_source_intake_probe.py"
+    if _STAGED_PROBE_MODULE in sys.modules:
+        raise error_type("source-intake POSIX probe module was already loaded")
+    observed_identity = identity_reader(probe_path, 64 * 1024)
+    if _STAGED_PROBE_MODULE in sys.modules:
+        raise error_type("source-intake POSIX probe module loaded during identity verification")
+    if observed_identity != (expected_identity["size"], expected_identity["sha256"]):
+        raise error_type("source-intake POSIX probe identity changed")
+
+    probe_module = importlib.import_module(_STAGED_PROBE_MODULE)
+    run_probes = cast(Any, probe_module).run_probes
+
+    return cast(Mapping[str, Any], run_probes(workspace))
 
 
 def _ids_sha256(probe_ids: list[str]) -> str:
@@ -68,5 +96,6 @@ __all__ = [
     "SOURCE_INTAKE_POSIX_PROBE_IDS_SHA256",
     "SOURCE_INTAKE_POSIX_PROBE_SCHEMA",
     "SourceIntakeProbeValidationError",
+    "run_bound_staged_probe",
     "validate_probe",
 ]

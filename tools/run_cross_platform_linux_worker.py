@@ -43,7 +43,6 @@ _ACCEPTANCE_ENV = {
     "repository_tree": "BLUEFIRE_ACCEPTANCE_REPOSITORY_TREE",
     "release": "BLUEFIRE_ACCEPTANCE_RELEASE",
 }
-_SOURCE_INTAKE_PROBE_FILE = "_gate11_source_intake_probe.py"
 
 
 class WorkerError(ValueError):
@@ -779,19 +778,15 @@ def _run_product(
         os.environ[name] = str(acceptance[field])
 
     from bluefire.cross_platform_process_proof import posix_watchdog_crash_containment
+    from bluefire.cross_platform_source_intake_probe import run_bound_staged_probe
     from bluefire.receiver_auth import derive_receiver_task_key
     from bluefire.runner_client import SubprocessRustRunner
     from bluefire.service import BlueFireService
 
-    source_intake_probe = request["source_intake_probe"]
-    _require(
-        _file_identity(product_root / "bluefire" / _SOURCE_INTAKE_PROBE_FILE, 64 * 1024)
-        == (source_intake_probe["size"], source_intake_probe["sha256"]),
-        "source-intake POSIX probe identity changed",
+    probe_binding = cast(Mapping[str, Any], request["source_intake_probe"])
+    source_intake_publication = run_bound_staged_probe(
+        product_root, workspace, probe_binding, _file_identity, WorkerError
     )
-    from bluefire._gate11_source_intake_probe import run_probes
-
-    source_intake_publication = run_probes(workspace)
     watchdog_containment = posix_watchdog_crash_containment(workspace / "watchdog-containment")
     sandbox = workspace / "sandbox"
     sandbox.mkdir(mode=0o700)
