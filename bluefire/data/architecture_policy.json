@@ -150,6 +150,7 @@
         "bluefire.cross_platform_linux_bundle_validation",
         "bluefire.cross_platform_linux_cleanup_validation",
         "bluefire.cross_platform_linux_distribution",
+        "bluefire.cross_platform_observation_validation",
         "bluefire.cross_platform_process_proof",
         "bluefire.cross_platform_readiness",
         "bluefire.cross_platform_recovery",

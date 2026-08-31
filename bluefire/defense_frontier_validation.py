@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence, cast
 
 from .ai import AIProviderError, validate_persisted_proposal_record
-from .approvals import execution_approval_binding
+from .approvals import execution_approval_binding, execution_intent_id
 from .config import AutonomyLevel, RunnerProfile
 from .contracts import ExecutionMode, ScenarioDefinition, load_scenario
 from .defense_frontier import (
@@ -321,7 +321,7 @@ def _approval_id(run: Mapping[str, Any]) -> str:
         runner_readiness=runner_readiness,
         catalog_authority=catalog_authority,
     )
-    expected_intent_id = "intent-" + content_hash(expected_binding).removeprefix("sha256:")[:32]
+    expected_intent_id = execution_intent_id(expected_binding)
     requested_at = _timestamp(approval.get("requested_at"), "approval requested_at")
     approved_at = _timestamp(approval.get("approved_at"), "approval approved_at")
     consumed_at = _timestamp(approval.get("consumed_at"), "approval consumed_at")

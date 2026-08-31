@@ -57,6 +57,7 @@ from .application_errors import APIError
 from .approvals import (
     execution_approval_binding,
     execution_approval_envelope,
+    execution_intent_id,
     public_approval_record,
 )
 from .bootstrap import seed_product_metadata
@@ -2672,9 +2673,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "Execute requires an explicit runner profile.",
                 )
             expires_at = self._approval_review_expires_at()
-            intent_digest = content_hash(binding)
             approval_request = self.product_store.create_approval_request(
-                run_id="intent-" + intent_digest[7:39],
+                run_id=execution_intent_id(binding),
                 state_digest=str(binding["state_digest"]),
                 plan_digest=str(binding["plan_digest"]),
                 profile_id=str(binding["profile_id"]),
@@ -2898,9 +2898,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                 if not isinstance(binding, Mapping):
                     raise ProductStoreError("Execute proposal binding is unavailable")
                 expires_at = self._approval_review_expires_at()
-                intent_digest = content_hash(binding)
                 fresh_approval = self.product_store.create_approval_request(
-                    run_id="intent-" + intent_digest[7:39],
+                    run_id=execution_intent_id(binding),
                     state_digest=str(binding["state_digest"]),
                     plan_digest=str(binding["plan_digest"]),
                     profile_id=str(binding["profile_id"]),
@@ -5087,10 +5086,9 @@ class BlueFireService(RunnerManagementServiceMixin):
             runner_readiness=runner_readiness,
             catalog_authority=orchestrator.catalog_authority,
         )
-        intent_digest = content_hash(binding)
         expires_at = self._approval_review_expires_at()
         pending = self.product_store.create_approval_request(
-            run_id="intent-" + intent_digest[7:39],
+            run_id=execution_intent_id(binding),
             state_digest=binding["state_digest"],
             plan_digest=binding["plan_digest"],
             profile_id=profile.id,

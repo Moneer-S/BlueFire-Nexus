@@ -32,6 +32,12 @@ class ApprovalStore(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
+def execution_intent_id(binding: Mapping[str, str]) -> str:
+    """Derive the pre-run identity of one exact reviewed Execute binding."""
+
+    return "intent-" + content_hash(binding).removeprefix("sha256:")[:32]
+
+
 def execution_approval_binding(
     *,
     registry: BehaviorRegistry,
@@ -228,6 +234,7 @@ __all__ = [
     "ApprovalStore",
     "execution_approval_binding",
     "execution_approval_envelope",
+    "execution_intent_id",
     "public_approval_record",
     "validate_claimed_approval",
 ]

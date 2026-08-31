@@ -58,19 +58,13 @@ _CONTRACT_TESTS = (
         "tests_platform/test_install_gate.py::"
         "test_committed_source_archive_uses_fixed_git_outside_ambient_path"
     ),
-    (
-        "tests_platform/test_install_gate.py::"
-        "test_trusted_git_executable_ignores_ambient_path_entry"
-    ),
+    ("tests_platform/test_install_gate.py::test_trusted_git_executable_ignores_ambient_path_entry"),
     "tests_platform/test_packaged_runner_verifier.py",
     (
         "tests_platform/test_runner_cancellation.py::"
         "test_execute_task_cancellation_confirms_descendant_process_is_stopped"
     ),
-    (
-        "tests_platform/test_runner_cancellation.py::"
-        "test_linux_identity_change_is_never_signalled"
-    ),
+    ("tests_platform/test_runner_cancellation.py::test_linux_identity_change_is_never_signalled"),
     (
         "tests_platform/test_runner_cancellation.py::"
         "test_linux_process_identity_accepts_zero_scoped_namespace_process"
@@ -167,10 +161,14 @@ _EXPECTED_SUITE_TESTS = (
     "tests_platform.test_cross_platform_gate::test_boolean_only_recovery_claim_is_not_evidence",
     "tests_platform.test_cross_platform_gate::test_cancellation_validator_reprobes_exact_process_identities",
     "tests_platform.test_cross_platform_gate::test_fresh_cancellation_validator_executes_exact_wheel_member",
+    "tests_platform.test_cross_platform_gate::test_gate11_event_stream_uses_canonical_event_type",
+    "tests_platform.test_cross_platform_gate::test_gate11_execute_approval_identity_is_pre_run_intent_bound",
     "tests_platform.test_cross_platform_gate::test_gate11_fails_with_the_exact_typed_linux_reason",
     "tests_platform.test_cross_platform_gate::test_gate11_locked_contract_matches_authoritative_workflow",
     "tests_platform.test_cross_platform_gate::test_gate11_new_production_modules_stay_within_the_locked_line_budget",
+    "tests_platform.test_cross_platform_gate::test_gate11_observation_uses_canonical_filesystem_collector_contract",
     "tests_platform.test_cross_platform_gate::test_gate11_publishes_only_acceptance_bundle_reference_fields",
+    "tests_platform.test_cross_platform_gate::test_gate11_runner_evidence_uses_sealed_profile_digest",
     "tests_platform.test_cross_platform_gate::test_invalid_committed_wheelhouse_lock_is_not_a_dependency_blocker",
     "tests_platform.test_cross_platform_gate::test_linux_dependency_unavailability_is_exact_and_typed",
     "tests_platform.test_cross_platform_gate::test_linux_distribution_unavailability_is_exact_and_typed[absent]",
@@ -200,6 +198,7 @@ _EXPECTED_SUITE_TESTS = (
     "tests_platform.test_cross_platform_linux_worker_security::test_linux_run_scan_rejects_every_derived_key_encoding[5]",
     "tests_platform.test_cross_platform_linux_worker_security::test_linux_run_scan_rejects_every_derived_key_encoding[6]",
     "tests_platform.test_cross_platform_linux_worker_security::test_linux_worker_executes_only_the_registered_alternate",
+    "tests_platform.test_cross_platform_linux_worker_security::test_linux_worker_uses_gate_bound_review_identity",
     "tests_platform.test_cross_platform_linux_worker_security::test_receiver_task_key_factory_retains_every_derived_key",
     "tests_platform.test_cross_platform_posix_containment::test_failure_cleanup_stops_verified_session_members_before_reaping_leader",
     "tests_platform.test_cross_platform_posix_containment::test_linux_bundle_rejects_watchdog_containment_substitution[boolean-only]",

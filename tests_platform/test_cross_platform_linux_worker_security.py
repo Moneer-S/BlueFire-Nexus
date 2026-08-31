@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from tools.run_cross_platform_linux_worker import (
+    APPROVAL_REVIEWER,
     WorkerError,
     _retained_receiver_key_factory,
     _scan_secrets,
@@ -41,6 +42,10 @@ def test_linux_worker_executes_only_the_registered_alternate() -> None:
     assert primary_step["alternates"] == ["sandbox.discovery.metadata.v1"]
     assert alternate_step["behavior_id"] == "sandbox.discovery.metadata.v1"
     assert alternate_step["alternates"] == ["sandbox.discovery.list.v1"]
+
+
+def test_linux_worker_uses_gate_bound_review_identity() -> None:
+    assert APPROVAL_REVIEWER == "gate-11-linux-runtime-reviewer"
 
 
 @pytest.mark.parametrize("encoding_index", range(7))

@@ -61,6 +61,10 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   digest through approval, recovery, and cross-platform evidence validation.
 - Release source archives and exact-commit Linux artifact reads now invoke Git
   from validated fixed operating-system paths with a config-free environment.
+- Cross-platform run validation now recognizes the immutable, digest-bound
+  pre-run approval intent and locks the Linux journey to its Gate 11 reviewer.
+- Gate 11 semantic replay now binds canonical event streams, exact independent
+  filesystem observations, and sealed runner-profile policy digests.
 
 ### Removed
 

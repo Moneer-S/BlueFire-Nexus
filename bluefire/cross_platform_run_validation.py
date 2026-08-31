@@ -7,12 +7,17 @@ import json
 import re
 import stat
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Mapping, Sequence, cast
 
+from .approvals import execution_intent_id
 from .config import ConfigError, EnvironmentType, RunnerProfile, load_config
 from .contracts import ContractError, SafetyTier, ScenarioDefinition, load_scenario
 from .cross_platform_artifact_validation import validate_run_readiness
+from .cross_platform_observation_validation import (
+    CrossPlatformObservationValidationError,
+    validate_observed_filesystem_evidence,
+)
 from .evidence import EvidenceError, EvidenceGraph, EvidenceProvenance, EvidenceRecord
 from .planner import PlanStep
 from .run_store import RunStore, RunStoreError
@@ -24,7 +29,6 @@ _RECEIPT = re.compile(r"^[0-9a-f]{64}$")
 _TASK = re.compile(r"^execute-[0-9a-f]{64}$")
 _DECISION = re.compile(r"^decision-[0-9a-f]{20}$")
 _EVIDENCE = re.compile(r"^evidence-[0-9a-f]{20}$")
-_RAW_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
@@ -368,6 +372,10 @@ def _receipt_ids(value: Any) -> set[str]:
     return found
 
 
+def _event_payloads(events: Sequence[Mapping[str, Any]], event_type: str) -> list[Any]:
+    return [item.get("data") for item in events if item.get("event_type") == event_type]
+
+
 def _nested_evidence(
     value: Any,
     *,
@@ -409,9 +417,8 @@ def _nested_evidence(
         and row.get("kind") == "executed"
         and row.get("producer") == "bluefire-rust-runner"
         and row.get("request_hash") == step.get("request_hash") == content.get("request_hash")
-        and row.get("policy_digest")
-        == content.get("policy_digest")
-        == step["policy"].get("policy_digest")
+        and row.get("policy_digest") == content.get("policy_digest")
+        and _SHA256.fullmatch(str(row.get("policy_digest"))) is not None
         and row.get("action_id") == step.get("action_id")
         and row.get("behavior_id") == step.get("behavior_id")
         and row.get("runner_id") == "bluefire-rust-runner.v1"
@@ -436,40 +443,10 @@ def _nested_evidence(
 def _observed_evidence(
     record: EvidenceRecord, outer: EvidenceRecord, step: Mapping[str, Any]
 ) -> None:
-    content = _exact(
-        record.content,
-        _fields("artifact_type path size_bytes sha256 modified_ns"),
-        "observed filesystem evidence",
-    )
-    output = outer.content.get("output")
-    path = content.get("path")
-    logical = PurePosixPath(str(path))
-    _require(
-        record.producer == "sandbox-observer.v1"
-        and record.environment == {"environment_type": "disposable"}
-        and record.parent_evidence_ids == (outer.evidence_id,)
-        and record.confidence == 1.0
-        and record.limitations
-        == ("filesystem observation only; no host telemetry collector attached",)
-        and record.target_scope_ref == outer.target_scope_ref
-        and _utc(record.timestamp, "observed evidence timestamp") is not None
-        and content.get("artifact_type") == "file_observation"
-        and isinstance(path, str)
-        and path == logical.as_posix()
-        and not logical.is_absolute()
-        and all(part not in {"", ".", ".."} for part in logical.parts)
-        and isinstance(output, Mapping)
-        and path == output.get("artifact")
-        and content.get("sha256") == output.get("sha256")
-        and _RAW_SHA256.fullmatch(str(content.get("sha256"))) is not None
-        and content.get("size_bytes") == output.get("size")
-        and type(content.get("size_bytes")) is int
-        and content["size_bytes"] > 0
-        and type(content.get("modified_ns")) is int
-        and content["modified_ns"] > 0
-        and step.get("receipts"),
-        "observed evidence is not bound to a receipt-owning runner artifact",
-    )
+    try:
+        validate_observed_filesystem_evidence(record, outer, step)
+    except CrossPlatformObservationValidationError as exc:
+        raise CrossPlatformRunValidationError(str(exc)) from exc
 
 
 def validate_persisted_run(
@@ -684,7 +661,7 @@ def validate_persisted_run(
         and approval.get("schema_version") == "bluefire.approval-request.v1"
         and isinstance(approval.get("approval_id"), str)
         and str(approval["approval_id"]).startswith("approval-")
-        and approval.get("run_id") == run_id
+        and approval.get("run_id") == execution_intent_id(approval_binding)
         and approval.get("status") == "claimed"
         and approval.get("approved_by")
         == (
@@ -824,8 +801,8 @@ def validate_persisted_run(
             "planner decision is not bound to the completed run prefix",
         )
     events = docs["events.jsonl"]
-    planner_events = [item.get("data") for item in events if item.get("type") == "planner.decision"]
-    finalized_events = [item.get("data") for item in events if item.get("type") == "run.finalized"]
+    planner_events = _event_payloads(events, "planner.decision")
+    finalized_events = _event_payloads(events, "run.finalized")
     _require(
         planner_events == raw_decisions and finalized_events == [result],
         "event stream does not bind planner/final result",
@@ -849,7 +826,8 @@ def validate_persisted_run(
         raise CrossPlatformRunValidationError("run evidence graph could not be rehydrated") from exc
     expected_by_step = {step: (behavior, action) for step, behavior, action in result_rows}
     outer_by_step: dict[str, EvidenceRecord] = {}
-    observed_steps: set[str] = set()
+    runner_profile_digests: set[str] = set()
+    observed_by_step: dict[str, EvidenceRecord] = {}
     for record in records:
         expected_identity = expected_by_step.get(record.step_id)
         _require(
@@ -860,10 +838,15 @@ def validate_persisted_run(
             "run evidence is synthetic, orphaned, or cross-bound",
         )
         if record.provenance is EvidenceProvenance.OBSERVED:
-            observed_steps.add(record.step_id)
-        if record.producer == "bluefire-rust-runner":
             _require(
-                record.provenance is EvidenceProvenance.EXECUTED
+                record.step_id not in observed_by_step,
+                "run has duplicate independently observed receipt evidence",
+            )
+            observed_by_step[record.step_id] = record
+        if record.provenance is EvidenceProvenance.EXECUTED:
+            profile_digest = record.content.get("policy_digest")
+            _require(
+                record.producer == "bluefire-rust-runner"
                 and record.step_id not in outer_by_step
                 and record.environment == {"environment_type": "disposable", "platform": platform}
                 and record.confidence == 1.0
@@ -871,9 +854,17 @@ def validate_persisted_run(
                 and record.target_scope_ref == f"runner-profile:{profile.id}",
                 "outer runner evidence is invalid",
             )
+            if not isinstance(profile_digest, str) or _SHA256.fullmatch(profile_digest) is None:
+                raise CrossPlatformRunValidationError(
+                    "outer runner evidence profile digest is invalid"
+                )
+            runner_profile_digests.add(profile_digest)
             outer_by_step[record.step_id] = record
     _require(
-        set(outer_by_step) == set(expected_by_step) and _RECEIPT_STEPS[platform] <= observed_steps,
+        set(outer_by_step) == set(expected_by_step)
+        and len(runner_profile_digests) == 1
+        and set(observed_by_step) == _RECEIPT_STEPS[platform]
+        and len(records) == len(expected_by_step) + len(_RECEIPT_STEPS[platform]),
         "run lacks executed or independently observed receipt evidence",
     )
     for record in records:
@@ -904,7 +895,6 @@ def validate_persisted_run(
         nested = content.get("runner_evidence")
         if (
             content.get("runner_task_id") != row.get("runner_task_id")
-            or content.get("policy_digest") != row["policy"].get("policy_digest")
             or content.get("error") is not None
             or not isinstance(nested, list)
             or len(nested) != 1

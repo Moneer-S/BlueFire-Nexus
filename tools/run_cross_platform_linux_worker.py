@@ -29,6 +29,7 @@ SOURCE_DISTRO = "BlueFire-Gate11-Base-v1"
 _EXECUTION_DISTRO = re.compile(r"^BlueFire-Gate11-Run-[0-9a-f]{16}$")
 SCENARIO = "linux_container_validation.yaml"
 PROFILE = "sandbox-execute.v1"
+APPROVAL_REVIEWER = "gate-11-linux-runtime-reviewer"
 SCENARIO_VARIANTS = ("primary", "registered-alternate")
 _WORKSPACE = re.compile(r"^bluefire-gate11-[0-9a-f]{16}$")
 _RUN_ID = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
@@ -700,7 +701,7 @@ def _run_product(
                     "autonomy": "off",
                     "approval": {
                         "confirmed": True,
-                        "approved_by": "cross-platform-linux-runtime-reviewer",
+                        "approved_by": APPROVAL_REVIEWER,
                     },
                 }
             )

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -13,6 +14,7 @@ import bluefire.cross_platform_cancellation_validation as cancellation_validatio
 import bluefire.cross_platform_gate as gate_module
 import bluefire.cross_platform_gate_validation as validation_module
 import bluefire.product_gates as product_gates
+from bluefire.approvals import execution_intent_id
 from bluefire.cross_platform_artifact_validation import (
     CrossPlatformArtifactValidationError,
     validate_transport_recovery_report,
@@ -34,7 +36,17 @@ from bluefire.cross_platform_linux import (
     linux_dependencies_unavailable_report,
     linux_unavailable_report,
 )
+from bluefire.cross_platform_observation_validation import (
+    CrossPlatformObservationValidationError,
+    validate_observed_filesystem_evidence,
+)
 from bluefire.cross_platform_readiness import WSL_DISTRIBUTION_ID
+from bluefire.cross_platform_run_validation import (
+    CrossPlatformRunValidationError,
+    _event_payloads,
+    _nested_evidence,
+)
+from bluefire.evidence import EvidenceProvenance, EvidenceRecord
 from bluefire.product_acceptance import load_release_contract
 from bluefire.util import content_hash
 
@@ -88,6 +100,198 @@ def test_gate11_locked_contract_matches_authoritative_workflow() -> None:
     assert set(details[1] for details in gate_module._EXPECTED_ASSERTIONS.values()) == CHECK_NAMES
     assert gate_module._EXPECTED_SUITE_TESTS == tuple(sorted(gate_module._EXPECTED_SUITE_TESTS))
     assert product_gates._WORKFLOWS["GATE-11"] is product_gates._gate_11_workflow
+
+
+def test_gate11_execute_approval_identity_is_pre_run_intent_bound() -> None:
+    binding = {
+        "state_digest": "sha256:" + "1" * 64,
+        "plan_digest": "sha256:" + "2" * 64,
+        "target_scope_digest": "sha256:" + "3" * 64,
+        "profile_id": "sandbox-endpoint-deep-lab.v1",
+        "maximum_tier": "restricted",
+    }
+
+    intent_id = execution_intent_id(binding)
+
+    assert intent_id == "intent-" + content_hash(binding).removeprefix("sha256:")[:32]
+    assert not intent_id.startswith("run-")
+    assert execution_intent_id({**binding, "state_digest": "sha256:" + "4" * 64}) != intent_id
+
+
+def test_gate11_event_stream_uses_canonical_event_type() -> None:
+    events = [
+        {"type": "planner.decision", "data": {"source": "obsolete"}},
+        {"event_type": "planner.decision", "data": {"source": "canonical"}},
+    ]
+
+    assert _event_payloads(events, "planner.decision") == [{"source": "canonical"}]
+
+
+def test_gate11_observation_uses_canonical_filesystem_collector_contract() -> None:
+    digest = "a" * 64
+    path = "fixtures/input.jsonl"
+    scope = "runner-profile:sandbox-execute.v1"
+    outer = EvidenceRecord.create(
+        run_id="run-test",
+        step_id="create_fixture",
+        behavior_id="sandbox.fixture.create.v1",
+        action_id="sandbox.fixture.create.v1",
+        provenance=EvidenceProvenance.EXECUTED,
+        producer="bluefire-rust-runner",
+        runner_profile_id="sandbox-execute.v1",
+        content={
+            "output": {"artifact": path, "sha256": digest, "size": 7},
+            "runner_evidence": [{"details": {"receipt_ids": ["b" * 64]}}],
+        },
+        target_scope_ref=scope,
+    )
+    observed = EvidenceRecord.create(
+        run_id=outer.run_id,
+        step_id=outer.step_id,
+        behavior_id=outer.behavior_id,
+        action_id=outer.action_id,
+        provenance=EvidenceProvenance.OBSERVED,
+        producer="collector.filesystem.sandbox.v1",
+        runner_profile_id="sandbox-execute.v1",
+        environment={
+            "environment_type": "disposable",
+            "collector_id": "collector.filesystem.sandbox.v1",
+            "collector_version": "1.0.0",
+        },
+        parent_evidence_ids=(outer.evidence_id,),
+        content={
+            "artifact_type": "collector_observation",
+            "collector_id": "collector.filesystem.sandbox.v1",
+            "mechanism": "independent-file-handle-read",
+            "modified_ns": 1,
+            "observation_key": "filesystem/path-utf8-" + path.encode().hex(),
+            "observation_kind": "filesystem",
+            "observed_fields": {"path": path, "sha256": digest, "size_bytes": 7},
+            "path": path,
+            "sha256": digest,
+            "size_bytes": 7,
+        },
+        limitations=("independent filesystem metadata and digest observation only",),
+        target_scope_ref=scope,
+    )
+    step = {
+        "step_id": observed.step_id,
+        "behavior_id": observed.behavior_id,
+        "action_id": observed.action_id,
+        "evidence_ids": [outer.evidence_id, observed.evidence_id],
+        "receipts": ["b" * 64],
+    }
+
+    validate_observed_filesystem_evidence(observed, outer, step)
+    persistence_outer = replace(
+        outer,
+        action_id="sandbox.restricted.persistence-marker.v1",
+        content={
+            **outer.content,
+            "output": {"artifact": path, "sha256": "sha256:" + digest},
+        },
+    )
+    persistence_observed = replace(
+        observed,
+        action_id="sandbox.restricted.persistence-marker.v1",
+        parent_evidence_ids=(persistence_outer.evidence_id,),
+    )
+    persistence_step = {
+        **step,
+        "action_id": "sandbox.restricted.persistence-marker.v1",
+        "evidence_ids": [persistence_outer.evidence_id, persistence_observed.evidence_id],
+    }
+    validate_observed_filesystem_evidence(persistence_observed, persistence_outer, persistence_step)
+
+    tampered = (
+        replace(observed, producer="sandbox-observer.v1"),
+        replace(observed, parent_evidence_ids=()),
+        replace(observed, environment={"environment_type": "disposable"}),
+        replace(
+            observed,
+            content={**observed.content, "observation_key": "filesystem/path-utf8-00"},
+        ),
+        replace(
+            observed,
+            content={**observed.content, "observed_fields": {"path": path}},
+        ),
+    )
+    for record in tampered:
+        with pytest.raises(CrossPlatformObservationValidationError):
+            validate_observed_filesystem_evidence(record, outer, step)
+
+
+def test_gate11_runner_evidence_uses_sealed_profile_digest() -> None:
+    request_digest = "sha256:" + "1" * 64
+    profile_digest = "sha256:" + "2" * 64
+    decision_digest = "sha256:" + "3" * 64
+    output = {"artifact": "fixtures/input.jsonl"}
+    stream = {"text": "", "total_bytes": 0, "truncated": False}
+    step = {
+        "action_id": "sandbox.fixture.create.v1",
+        "behavior_id": "sandbox.fixture.create.v1",
+        "policy": {"policy_digest": decision_digest},
+        "receipts": [],
+        "request_hash": request_digest,
+        "runner_status": "success",
+    }
+    outer = EvidenceRecord.create(
+        run_id="run-test",
+        step_id="create_fixture",
+        behavior_id=step["behavior_id"],
+        action_id=step["action_id"],
+        provenance=EvidenceProvenance.EXECUTED,
+        producer="bluefire-rust-runner",
+        content={
+            "request_hash": request_digest,
+            "policy_digest": profile_digest,
+            "runner_status": "success",
+            "output": output,
+            "stdout": stream,
+            "stderr": stream,
+        },
+        target_scope_ref="runner-profile:sandbox-execute.v1",
+    )
+    nested = {
+        "evidence_id": "",
+        "kind": "executed",
+        "producer": "bluefire-rust-runner",
+        "request_hash": request_digest,
+        "policy_digest": profile_digest,
+        "action_id": step["action_id"],
+        "behavior_id": step["behavior_id"],
+        "runner_id": "bluefire-rust-runner.v1",
+        "runner_profile_id": "sandbox-execute.v1",
+        "platform": "linux",
+        "recorded_at": "2026-08-31T00:00:00Z",
+        "references": [],
+        "details": {
+            "status": "success",
+            "output_hash": content_hash(output),
+            "receipt_ids": [],
+            "stdout_total_bytes": 0,
+            "stderr_total_bytes": 0,
+        },
+    }
+    nested["evidence_id"] = content_hash(nested)
+
+    _nested_evidence(
+        nested,
+        outer=outer,
+        step=step,
+        platform="linux",
+        profile_id="sandbox-execute.v1",
+    )
+    tampered = {**nested, "policy_digest": "sha256:" + "4" * 64, "evidence_id": ""}
+    tampered["evidence_id"] = content_hash(tampered)
+    with pytest.raises(CrossPlatformRunValidationError):
+        _nested_evidence(
+            tampered,
+            outer=outer,
+            step=step,
+            platform="linux",
+            profile_id="sandbox-execute.v1",
+        )
 
 
 def test_gate11_publishes_only_acceptance_bundle_reference_fields() -> None:
