@@ -240,10 +240,24 @@ def test_production_browser_harness_is_separate_and_fail_closed() -> None:
     assert 'testMatch: "operator-production.spec.ts"' in config
     assert "VITE_DEMO_MODE" in config and "cannot run in demo mode" in config
     assert "CAPABILITY_FRAGMENT" in config and "LOOPBACK_HOSTS" in config
+    assert config.count("viewport: { width: 1600, height: 1000 }") == 2
     assert all(
         path in spec for path in ("/api/v1/runs/preflight", "/api/v1/runs", "/api/v1/comparisons")
     )
     assert all(Path(path).name in spec for path in SCREENSHOT_ARTIFACTS)
+    assert "fullPage:" not in spec
+    assert (
+        "await scenarioProof.scrollIntoViewIfNeeded();\n"
+        "  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[0]) });"
+    ) in spec
+    assert (
+        "await canonicalReviewHeading.scrollIntoViewIfNeeded();\n"
+        "  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[1]) });"
+    ) in spec
+    assert (
+        "await material.scrollIntoViewIfNeeded();\n"
+        "  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[2]) });"
+    ) in spec
 
 
 def test_builder_exposes_resizable_panels_and_three_semantic_layers() -> None:

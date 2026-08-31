@@ -46,6 +46,7 @@ _SOURCE_DOCUMENT_POINTER = re.compile(
 _MAX_JSON_SCAN_NODES = 1_000_000
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 _MAX_PNG_IMAGE_BYTES = _TEXT_SCAN_LIMIT_BYTES
+_TEMP_DIRECTORY_TOKEN = "tmp"
 
 
 def _wide_binary_patterns() -> tuple[re.Pattern[bytes], ...]:
@@ -59,10 +60,10 @@ def _wide_binary_patterns() -> tuple[re.Pattern[bytes], ...]:
         "/private/",
         "/root/",
         "/srv/",
-        "/tmp/",
+        f"/{_TEMP_DIRECTORY_TOKEN}/",
         "/usr/",
         "/var/lib/",
-        "/var/tmp/",
+        f"/var/{_TEMP_DIRECTORY_TOKEN}/",
         "/workspace/",
         "/workspaces/",
     ]

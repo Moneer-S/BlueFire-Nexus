@@ -297,8 +297,10 @@ test("production operator UI completes authoring, management, run, replay, and c
   const scenarioVersionResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/scenario-versions" && response.request().method() === "POST");
   await page.getByRole("button", { name: "Save version" }).click();
   const scenarioVersionEnvelope = await (await scenarioVersionResponse).json() as JsonObject;
-  await expect(page.locator(".compatibility-banner")).toContainText("Durable scenario version");
-  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[0]), fullPage: true });
+  const scenarioProof = page.locator(".compatibility-banner");
+  await expect(scenarioProof).toContainText("Durable scenario version");
+  await scenarioProof.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[0]) });
   completed.push("validate_and_version_scenario");
 
   await navigation.getByRole("link", { name: "Settings" }).click();
@@ -408,14 +410,16 @@ test("production operator UI completes authoring, management, run, replay, and c
   completed.push("submit_and_observe_simulate_job");
 
   await reviewLatest.click();
-  await expect(page.getByRole("heading", { name: "Canonical run review" })).toBeVisible();
+  const canonicalReviewHeading = page.getByRole("heading", { name: "Canonical run review" });
+  await expect(canonicalReviewHeading).toBeVisible();
   const runMatch = new URL(page.url()).hash.match(/^#\/runs\/(run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16})$/);
   if (!runMatch) throw new Error("Canonical run review URL omitted the run identity.");
   const browserRunId = runMatch[1]!;
   await expect(page.getByRole("heading", { name: "Proposal, policy, and application trail" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Provenance-separated records" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Candidate lifecycle" })).toBeVisible();
-  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[1]), fullPage: true });
+  await canonicalReviewHeading.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[1]) });
   completed.push("review_canonical_run");
 
   await navigation.getByRole("link", { name: "Compare" }).click();
@@ -443,7 +447,8 @@ test("production operator UI completes authoring, management, run, replay, and c
   await expect(material).toBeVisible();
   expect(Number(await material.locator("strong").innerText())).toBeGreaterThan(0);
   await expect(page.getByRole("heading", { name: "Side-by-side execution lanes" })).toBeVisible();
-  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[2]), fullPage: true });
+  await material.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[2]) });
   completed.push("compare_material_run_delta");
 
   expect(completed).toEqual(OPERATION_SEQUENCE);

@@ -1396,6 +1396,8 @@ def test_public_evidence_rejects_private_paths_links_and_unstable_identity(
         b"X" + "/etc/bluefire/private.conf".encode("utf-16-le"),
         b"X" + "/usr/local/bluefire/private.bin".encode("utf-16-le") + b"Y",
         b"X" + "/srv/bluefire/run.db".encode("utf-16"),
+        b"X" + "/tmp/bluefire/private.bin".encode("utf-16-le"),
+        b"X" + "/var/tmp/bluefire/private.bin".encode("utf-32-be"),
         b"\x00\xd8" + "/var/lib/bluefire/state.db".encode("utf-16-le"),
         b"XYZ" + "/etc/bluefire/private.conf".encode("utf-32-le"),
         b"X" + r"\\private-server\private-share\artifact.json".encode("utf-16-le"),
