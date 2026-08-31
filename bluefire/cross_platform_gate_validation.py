@@ -924,12 +924,20 @@ def validate_persisted_cross_platform_gate(
     health = status.get("health")
     linux_transfer = linux_receiver.get("transfer")
     if (
-        receiver.get("transfer") != windows_facts.get("transfer")
+        receiver.get("transfer")
+        != {
+            **windows_facts["transfer"],
+            "sha256": "sha256:" + windows_facts["transfer"]["sha256"].removeprefix("sha256:"),
+        }
         or linux_transfer
         != {
-            "task_id": linux_facts["transfer"]["runner_task_id"],
+            "run_id": linux_facts["transfer"]["run_id"],
+            "step_id": linux_facts["transfer"]["step_id"],
+            "runner_task_id": linux_facts["transfer"]["runner_task_id"],
+            "authenticated": linux_facts["transfer"]["authenticated"],
             "sha256": linux_facts["transfer"]["sha256"].removeprefix("sha256:"),
             "bytes": linux_facts["transfer"]["bytes"],
+            "destination_process_id": linux_receiver["process_id"],
         }
         or not isinstance(health, Mapping)
         or health.get("inventory_digest") != windows_facts.get("inventory_digest")

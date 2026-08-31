@@ -168,6 +168,7 @@ _EXPECTED_SUITE_TESTS = (
     "tests_platform.test_cross_platform_gate::test_gate11_new_production_modules_stay_within_the_locked_line_budget",
     "tests_platform.test_cross_platform_gate::test_gate11_observation_uses_canonical_filesystem_collector_contract",
     "tests_platform.test_cross_platform_gate::test_gate11_publishes_only_acceptance_bundle_reference_fields",
+    "tests_platform.test_cross_platform_gate::test_gate11_report_binding_uses_exact_linux_transfer_facts",
     "tests_platform.test_cross_platform_gate::test_gate11_runner_evidence_uses_sealed_profile_digest",
     "tests_platform.test_cross_platform_gate::test_invalid_committed_wheelhouse_lock_is_not_a_dependency_blocker",
     "tests_platform.test_cross_platform_gate::test_linux_dependency_unavailability_is_exact_and_typed",

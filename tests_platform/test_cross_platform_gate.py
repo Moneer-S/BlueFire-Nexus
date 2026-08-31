@@ -5,6 +5,7 @@ import json
 import os
 import zipfile
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -125,6 +126,108 @@ def test_gate11_event_stream_uses_canonical_event_type() -> None:
     ]
 
     assert _event_payloads(events, "planner.decision") == [{"source": "canonical"}]
+
+
+def test_gate11_report_binding_uses_exact_linux_transfer_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    evidence = tmp_path / "evidence"
+    repository.mkdir()
+    evidence.mkdir()
+    windows_id = "run-20260831T000000Z-0123456789abcdef"
+    linux_id = "run-20260831T000001Z-fedcba9876543210"
+    windows_reference = {"run_id": windows_id, "path": f"runs/{windows_id}"}
+    linux_reference = {"run_id": linux_id, "path": f"runs/{linux_id}"}
+    windows_facts_transfer = {
+        "run_id": windows_id,
+        "step_id": "authorized_peer_handoff",
+        "runner_task_id": "execute-" + "1" * 64,
+        "source_process_id": 10,
+        "destination_process_id": 11,
+        "authenticated": True,
+        "bytes": 12,
+        "sha256": "2" * 64,
+    }
+    windows_report_transfer = {**windows_facts_transfer, "sha256": "sha256:" + "2" * 64}
+    linux_facts = {
+        "transfer": {
+            "run_id": linux_id,
+            "step_id": "internal_transport",
+            "runner_task_id": "execute-" + "3" * 64,
+            "authenticated": True,
+            "bytes": 13,
+            "sha256": "4" * 64,
+        }
+    }
+    linux_receiver = {
+        "process_id": 14,
+        "transfer": {
+            **linux_facts["transfer"],
+            "sha256": "4" * 64,
+            "destination_process_id": 14,
+        },
+    }
+    windows_facts = {
+        "inventory_digest": "sha256:" + "5" * 64,
+        "transfer": windows_facts_transfer,
+    }
+    monkeypatch.setattr(validation_module, "_read_report", lambda *_args: {})
+    monkeypatch.setattr(validation_module, "validate_windows_wheel", lambda _root: {})
+    monkeypatch.setattr(
+        validation_module, "validate_linux_repository_runner", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(validation_module, "_reprobe_wsl", lambda: {})
+    monkeypatch.setattr(
+        validation_module,
+        "_windows",
+        lambda *_args: (windows_reference, {"run_id": windows_id}),
+    )
+    monkeypatch.setattr(
+        validation_module,
+        "_linux",
+        lambda *_args, **_kwargs: (linux_reference, {"run_id": linux_id}, linux_receiver),
+    )
+    monkeypatch.setattr(validation_module, "_cancellation", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        validation_module, "_receiver", lambda _report: {"transfer": windows_report_transfer}
+    )
+    monkeypatch.setattr(
+        validation_module, "validate_transport_recovery_report", lambda _value: None
+    )
+    monkeypatch.setattr(
+        validation_module,
+        "_readiness",
+        lambda *_args, **_kwargs: {
+            "health": {"inventory_digest": windows_facts["inventory_digest"]}
+        },
+    )
+    monkeypatch.setattr(
+        validation_module, "validate_macos_structural_contract", lambda *_args: None
+    )
+    monkeypatch.setattr(validation_module, "_classification", lambda _report: None)
+    monkeypatch.setattr(
+        validation_module,
+        "validated_run_bundle",
+        lambda _root, _parent, reference, **_kwargs: (reference, {}),
+    )
+    monkeypatch.setattr(
+        validation_module,
+        "validate_persisted_run",
+        lambda *_args, **kwargs: windows_facts if kwargs["platform"] == "windows" else linux_facts,
+    )
+    now = datetime.now(timezone.utc)
+
+    checks, bundles = validation_module.validate_persisted_cross_platform_gate(
+        repository,
+        evidence,
+        expected_binding={},
+        not_before=now,
+        not_after=now,
+    )
+
+    assert checks == {name: True for name in CHECK_NAMES}
+    assert bundles == (windows_reference, linux_reference)
 
 
 def test_gate11_observation_uses_canonical_filesystem_collector_contract() -> None:

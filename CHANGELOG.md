@@ -65,6 +65,8 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   pre-run approval intent and locks the Linux journey to its Gate 11 reviewer.
 - Gate 11 semantic replay now binds canonical event streams, exact independent
   filesystem observations, and sealed runner-profile policy digests.
+- Gate 11 cross-report replay now compares every persisted Windows and Linux
+  transfer fact while preserving each report's documented digest encoding.
 - Linux supervisor identity publication is now atomic across DrvFS, with a
   no-overwrite hard-link handoff and readiness-gated cleanup verification.
 
