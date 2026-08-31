@@ -14,6 +14,7 @@ import bluefire.product_gates as product_gates
 import bluefire.provider_gate as provider_gate
 import tools.run_provider_gate_journey as provider_gate_helper
 from bluefire.product_acceptance import load_release_contract
+from tools import provider_gate_source_audit
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 RAW_PROOF_FIELDS = {
@@ -757,7 +758,7 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     mutation_root.mkdir()
     shell_mutations = {
         "importlib.py": (
-            "import importlib\n" "importlib.import_module('subprocess').run(['fixed-program'])\n",
+            "import importlib\nimportlib.import_module('subprocess').run(['fixed-program'])\n",
             {"dynamic_shell_import"},
         ),
         "dunder-import.py": (
@@ -771,11 +772,11 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
             {"dynamic_execution_lookup"},
         ),
         "call-alias.py": (
-            "import subprocess\n" "launch = subprocess.run\n" "launch(['fixed-program'])\n",
+            "import subprocess\nlaunch = subprocess.run\nlaunch(['fixed-program'])\n",
             {"dynamic_execution_alias", "dynamic_execution_call"},
         ),
         "dynamic-builtins.py": (
-            "operation = '__import__'\n" "globals()[operation]('os').system('fixed-program')\n",
+            "operation = '__import__'\nglobals()[operation]('os').system('fixed-program')\n",
             {"dynamic_namespace_access"},
         ),
     }
@@ -835,6 +836,90 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     mutated_lifecycle = mutation_root / "runner_lifecycle.py"
     mutated_lifecycle.write_text(lifecycle_without_shell_false, encoding="utf-8")
     assert not provider_gate_helper._runner_lifecycle_popen_contract(mutated_lifecycle)
+
+    process_source = (REPOSITORY / "runner" / "src" / "process.rs").read_bytes()
+    assert len(process_source) == provider_gate_source_audit._REVIEWED_PROCESS_SOURCE_SIZE
+    assert (
+        provider_gate_source_audit._sha256_bytes(process_source)
+        == provider_gate_source_audit._REVIEWED_PROCESS_SOURCE_SHA256
+    )
+    assert provider_gate_source_audit._native_process_inventory_is_fixed(process_source)
+    process_text = process_source.decode("utf-8")
+    process_launcher = "    let mut command = Command::new(&spec.executable);"
+    widened_process_source = process_text.replace(
+        process_launcher,
+        "    let _unexpected = Command::new(&spec.executable);\n" + process_launcher,
+        1,
+    )
+    assert widened_process_source != process_text
+    assert not provider_gate_source_audit._native_process_inventory_is_fixed(
+        widened_process_source.encode("utf-8")
+    )
+
+    spaced_launcher_source = process_text.replace(
+        process_launcher,
+        "    let _unexpected = Command :: new(&spec.executable);\n" + process_launcher,
+        1,
+    )
+    assert spaced_launcher_source != process_text
+    assert "Command :: new(&spec.executable)" in spaced_launcher_source
+    assert not provider_gate_source_audit._native_process_inventory_is_fixed(
+        spaced_launcher_source.encode("utf-8")
+    )
+
+    aliased_launcher_source = process_text.replace(
+        "use std::process::{Command, Stdio};",
+        "use std::process::{Command, Stdio};\nuse std::process::Command as ProcessCommand;",
+        1,
+    ).replace(
+        process_launcher,
+        "    let _unexpected = ProcessCommand::new(&spec.executable);\n" + process_launcher,
+        1,
+    )
+    assert aliased_launcher_source != process_text
+    assert "use std::process::Command as ProcessCommand;" in aliased_launcher_source
+    assert "ProcessCommand::new(&spec.executable)" in aliased_launcher_source
+    assert not provider_gate_source_audit._native_process_inventory_is_fixed(
+        aliased_launcher_source.encode("utf-8")
+    )
+
+    macro_launcher_source = process_text.replace(
+        process_launcher,
+        "    macro_rules! hidden_command {\n"
+        "        ($ty:ident, $ctor:ident, $arg:expr) => { $ty::$ctor($arg) };\n"
+        "    }\n"
+        '    let _unexpected = hidden_command!(Command, new, concat!("/bin/", "sh"));\n'
+        + process_launcher,
+        1,
+    )
+    assert "hidden_command!(Command, new" in macro_launcher_source
+    assert not provider_gate_source_audit._native_process_inventory_is_fixed(
+        macro_launcher_source.encode("utf-8")
+    )
+
+    status_launcher_source = process_text.replace(
+        process_launcher,
+        process_launcher + "\n    let _unexpected = command.status();",
+        1,
+    )
+    assert "let _unexpected = command.status();" in status_launcher_source
+    assert not provider_gate_source_audit._native_process_inventory_is_fixed(
+        status_launcher_source.encode("utf-8")
+    )
+
+    shadowed_command_source = process_text.replace(
+        process_launcher,
+        "    type Command = std::process::Command;\n" + process_launcher,
+        1,
+    )
+    assert "type Command = std::process::Command;" in shadowed_command_source
+    assert not provider_gate_source_audit._native_process_inventory_is_fixed(
+        shadowed_command_source.encode("utf-8")
+    )
+
+    assert not provider_gate_source_audit._native_process_inventory_is_fixed(
+        process_source + b"\n}"
+    )
 
     lifecycle_dynamic_shell = lifecycle_source.replace(
         "subprocess.Popen(command, shell=False, **options)",
@@ -920,8 +1005,7 @@ def test_gate_02_propagates_only_bounded_helper_failure(
     assert outcome.proofs == ()
     assert outcome.failure_reason is not None
     assert (
-        "provider real-run helper failed [provider_gate_failed]: "
-        "provider structural checks failed"
+        "provider real-run helper failed [provider_gate_failed]: provider structural checks failed"
     ) in outcome.failure_reason
     assert str(REPOSITORY) not in outcome.failure_reason
 

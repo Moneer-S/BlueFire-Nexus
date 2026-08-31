@@ -628,6 +628,46 @@ def _python_shell_findings(path: Path, repository: Path) -> list[dict[str, Any]]
     return [{"path": relative, **finding} for finding in findings]
 
 
+_REVIEWED_PROCESS_SOURCE_SIZE = 19_269
+_REVIEWED_PROCESS_SOURCE_SHA256 = (
+    "sha256:5ed405f0a2997224a4aeefcf09a3c32fca1450b609a548cdbe4ef404bcb74553"
+)
+
+
+def _native_process_inventory_is_fixed(process_source: bytes) -> bool:
+    """Bind the complete reviewed Rust process boundary before checking its shape."""
+
+    if (
+        type(process_source) is not bytes
+        or len(process_source) != _REVIEWED_PROCESS_SOURCE_SIZE
+        or _sha256_bytes(process_source) != _REVIEWED_PROCESS_SOURCE_SHA256
+    ):
+        return False
+    try:
+        process_text = process_source.decode("utf-8")
+    except UnicodeError:
+        return False
+    return (
+        process_text.count("Command::new(") == 3
+        and process_text.count("Command::new(&spec.executable)") == 1
+        and process_text.count('Command::new("/bin/sleep")') == 1
+        and process_text.count("Command::new(std::env::current_exe().unwrap())") == 1
+        and process_text.count(".spawn()") == 2
+        and process_text.count(".status()") == 1
+        and process_text.count("use std::process::{Command, Stdio};") == 1
+        and process_text.count("struct FixedProcessSpec") == 1
+        and process_text.count('first_reviewed_program(&["/usr/bin/ps", "/bin/ps"])') == 1
+        and process_text.count('first_reviewed_program(&["/bin/ps", "/usr/bin/ps"])') == 1
+        and process_text.count('args: vec!["-eo", "pid=,ppid=,comm="]') == 1
+        and process_text.count('args: vec!["-axo", "pid=,ppid=,comm="]') == 1
+        and process_text.count(".env_clear()") == 2
+        and all(
+            token not in process_text.casefold()
+            for token in ("cmd.exe", "powershell", "/bin/sh", "/bin/bash", "sh -c")
+        )
+    )
+
+
 def _process_boundary_report(repository: Path) -> dict[str, Any]:
     paths = {
         name: repository / "bluefire" / name
@@ -673,7 +713,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
     trust_text = texts["runner_trust.py"]
     service_text = (repository / "bluefire" / "service.py").read_text(encoding="utf-8")
     host_text = (repository / "bluefire" / "runner_host.py").read_text(encoding="utf-8")
-    process_text = (repository / "runner" / "src" / "process.rs").read_text(encoding="utf-8")
+    process_source = (repository / "runner" / "src" / "process.rs").read_bytes()
     checks = {
         "python_process_call_inventory": all(
             item["passed"] is True for item in python_boundaries.values()
@@ -723,17 +763,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         "watchdog_has_no_process_launcher": not _python_shell_findings(
             paths["runner_watchdog.py"], repository
         ),
-        "native_process_inventory_is_fixed": process_text.count("Command::new(") == 1
-        and "struct FixedProcessSpec" in process_text
-        and 'first_reviewed_program(&["/usr/bin/ps", "/bin/ps"])' in process_text
-        and 'first_reviewed_program(&["/bin/ps", "/usr/bin/ps"])' in process_text
-        and 'args: vec!["-eo", "pid=,ppid=,comm="]' in process_text
-        and 'args: vec!["-axo", "pid=,ppid=,comm="]' in process_text
-        and ".env_clear()" in process_text
-        and all(
-            token not in process_text.casefold()
-            for token in ("cmd.exe", "powershell", "/bin/sh", "/bin/bash", "sh -c")
-        ),
+        "native_process_inventory_is_fixed": _native_process_inventory_is_fixed(process_source),
     }
     return {
         "passed": all(checks.values()),
