@@ -11,7 +11,7 @@ import stat
 import sys
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 _WORKSPACE = re.compile(r"^bluefire-gate11-[0-9a-f]{16}$")
 
@@ -31,17 +31,63 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         if key in value:
             raise ValueError("duplicate key")
         value[key] = item
-    return value
+    return cast(Mapping[str, Any], value)
+
+
+def _payload(path: Path, maximum: int, *, minimum: int = 1) -> bytes:
+    before = path.lstat()
+    _require(
+        stat.S_ISREG(before.st_mode)
+        and not stat.S_ISLNK(before.st_mode)
+        and before.st_nlink == 1
+        and minimum <= before.st_size <= maximum,
+        "unsafe control file",
+    )
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        opened = os.fstat(descriptor)
+        _require(
+            stat.S_ISREG(opened.st_mode)
+            and opened.st_nlink == 1
+            and (opened.st_dev, opened.st_ino, opened.st_size)
+            == (before.st_dev, before.st_ino, before.st_size),
+            "control file identity changed",
+        )
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            payload = stream.read(maximum + 1)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    current = path.lstat()
+    _require(
+        len(payload) == opened.st_size
+        and minimum <= len(payload) <= maximum
+        and (after.st_dev, after.st_ino, after.st_size)
+        == (opened.st_dev, opened.st_ino, opened.st_size)
+        and (current.st_dev, current.st_ino, current.st_size)
+        == (opened.st_dev, opened.st_ino, opened.st_size)
+        and stat.S_ISREG(current.st_mode)
+        and not stat.S_ISLNK(current.st_mode)
+        and current.st_nlink == 1,
+        "control file changed during reading",
+    )
+    return payload
 
 
 def _read(path: Path, maximum: int) -> Mapping[str, Any]:
-    details = path.lstat()
-    _require(stat.S_ISREG(details.st_mode) and details.st_nlink == 1, "unsafe control file")
-    payload = path.read_bytes()
-    _require(0 < len(payload) <= maximum, "unbounded control file")
+    payload = _payload(path, maximum)
     value = json.loads(payload.decode("utf-8"), object_pairs_hook=_strict_object)
     _require(isinstance(value, Mapping), "invalid control document")
     return value
+
+
+def _ready(path: Path) -> bool:
+    try:
+        payload = _payload(path, 0, minimum=0)
+    except FileNotFoundError:
+        return False
+    _require(not payload, "invalid supervisor ready marker")
+    return True
 
 
 def _process_row(pid: int) -> Mapping[str, Any] | None:
@@ -248,6 +294,34 @@ def _remove_workspace(workspace: Path) -> None:
     _require(not workspace.exists(), "the Linux workspace survived removal")
 
 
+def _supervisor_record(staging: Path, workspace_name: str) -> Mapping[str, Any] | None:
+    try:
+        if not _ready(staging / "supervisor.ready"):
+            return None
+        record = _read(staging / "supervisor.json", 4096)
+        fields = ("process_id", "process_group_id", "session_id", "start_time_ticks")
+        _require(
+            set(record)
+            == {
+                "schema_version",
+                "workspace_name",
+                *fields,
+            }
+            and record.get("schema_version") == "bluefire.cross-platform-linux-supervisor.v1"
+            and record.get("workspace_name") == workspace_name
+            and all(
+                type(record.get(field)) is int and 0 < int(record[field]) < 2**63
+                for field in fields
+            )
+            and record.get("process_id") == record.get("process_group_id")
+            and record.get("process_id") == record.get("session_id"),
+            "invalid Linux supervisor record",
+        )
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return record
+
+
 def run() -> Mapping[str, Any]:
     staging = Path.cwd().resolve(strict=True)
     request = _read(staging / "request.json", 64 * 1024)
@@ -257,30 +331,10 @@ def run() -> Mapping[str, Any]:
         "invalid workspace identity",
     )
     workspace = Path("/tmp") / workspace_name
-    supervisor_path = staging / "supervisor.json"
     probes: list[Mapping[str, Any]]
     identities: tuple[Mapping[str, int], ...]
-    if supervisor_path.exists():
-        record = _read(supervisor_path, 4096)
-        _require(
-            set(record)
-            == {
-                "schema_version",
-                "workspace_name",
-                "process_id",
-                "process_group_id",
-                "session_id",
-                "start_time_ticks",
-            }
-            and record.get("schema_version") == "bluefire.cross-platform-linux-supervisor.v1"
-            and record.get("workspace_name") == workspace_name
-            and type(record.get("process_id")) is int
-            and type(record.get("process_group_id")) is int
-            and record.get("process_id") == record.get("process_group_id")
-            and record.get("process_id") == record.get("session_id")
-            and type(record.get("start_time_ticks")) is int,
-            "invalid Linux supervisor record",
-        )
+    record = _supervisor_record(staging, workspace_name)
+    if record is not None:
         probes, identities = _terminate_scope(record, staging, workspace)
     else:
         probes, identities = _terminate_scope(None, staging, workspace)

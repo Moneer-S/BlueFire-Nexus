@@ -435,6 +435,156 @@ def _prepare_task_site(staging: Path, workspace: Path, request: Mapping[str, Any
     return site
 
 
+def _plain_regular(details: os.stat_result) -> bool:
+    reparse = bool(
+        int(getattr(details, "st_file_attributes", 0))
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+    return stat.S_ISREG(details.st_mode) and not stat.S_ISLNK(details.st_mode) and not reparse
+
+
+def _publish_control_file(staging: Path, payload: bytes) -> None:
+    pending = staging / ".supervisor.json.pending"
+    final = staging / "supervisor.json"
+    ready = staging / "supervisor.ready"
+    _require(
+        bool(payload)
+        and not os.path.lexists(pending)
+        and not os.path.lexists(final)
+        and not os.path.lexists(ready),
+        "the supervisor publication boundary is stale",
+    )
+    active_descriptor = os.open(
+        pending,
+        os.O_CREAT
+        | os.O_EXCL
+        | os.O_RDWR
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    descriptor: int | None = active_descriptor
+    owned_identity: tuple[int, int] | None = None
+    try:
+        opened = os.fstat(active_descriptor)
+        owned_identity = (opened.st_dev, opened.st_ino)
+        _require(
+            _plain_regular(opened) and opened.st_nlink == 1 and opened.st_size == 0,
+            "the supervisor pending file is unsafe",
+        )
+        offset = 0
+        while offset < len(payload):
+            written = os.write(active_descriptor, payload[offset:])
+            _require(written > 0, "the supervisor publication write made no progress")
+            offset += written
+        os.fsync(active_descriptor)
+        os.lseek(active_descriptor, 0, os.SEEK_SET)
+        observed = bytearray()
+        while len(observed) < len(payload) + 1:
+            chunk = os.read(active_descriptor, len(payload) + 1 - len(observed))
+            if not chunk:
+                break
+            observed.extend(chunk)
+        complete = os.fstat(active_descriptor)
+        _require(
+            bytes(observed) == payload
+            and _plain_regular(complete)
+            and complete.st_nlink == 1
+            and complete.st_size == len(payload)
+            and (complete.st_dev, complete.st_ino) == owned_identity,
+            "the supervisor pending file changed",
+        )
+        os.link(pending, final, follow_symlinks=False)
+        pending_details = pending.lstat()
+        final_details = final.lstat()
+        linked = os.fstat(active_descriptor)
+        _require(
+            _plain_regular(pending_details)
+            and _plain_regular(final_details)
+            and _plain_regular(linked)
+            and pending_details.st_nlink == final_details.st_nlink == linked.st_nlink == 2
+            and (pending_details.st_dev, pending_details.st_ino)
+            == (final_details.st_dev, final_details.st_ino)
+            == (linked.st_dev, linked.st_ino)
+            == owned_identity
+            and pending_details.st_size == final_details.st_size == linked.st_size == len(payload),
+            "the supervisor hard-link publication changed identity",
+        )
+        os.close(active_descriptor)
+        descriptor = None
+        pending_details = pending.lstat()
+        final_details = final.lstat()
+        _require(
+            pending_details.st_nlink == final_details.st_nlink == 2
+            and (pending_details.st_dev, pending_details.st_ino)
+            == (final_details.st_dev, final_details.st_ino)
+            == owned_identity,
+            "the supervisor publication identity changed before finalization",
+        )
+        os.unlink(pending)
+        final_details = final.lstat()
+        _require(
+            _plain_regular(final_details)
+            and final_details.st_nlink == 1
+            and (final_details.st_dev, final_details.st_ino) == owned_identity
+            and final_details.st_size == len(payload),
+            "the supervisor publication did not finalize safely",
+        )
+        published_descriptor = os.open(
+            final,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            published = os.fstat(published_descriptor)
+            with os.fdopen(published_descriptor, "rb", closefd=False) as stream:
+                published_payload = stream.read(len(payload) + 1)
+            after = os.fstat(published_descriptor)
+            current = final.lstat()
+            _require(
+                published_payload == payload
+                and _plain_regular(published)
+                and published.st_nlink == after.st_nlink == current.st_nlink == 1
+                and (published.st_dev, published.st_ino, published.st_size)
+                == (after.st_dev, after.st_ino, after.st_size)
+                == (current.st_dev, current.st_ino, current.st_size)
+                == (owned_identity[0], owned_identity[1], len(payload)),
+                "the supervisor publication changed during final validation",
+            )
+        finally:
+            os.close(published_descriptor)
+        marker = os.open(
+            ready,
+            os.O_CREAT
+            | os.O_EXCL
+            | os.O_WRONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        # Exclusive creation is the readiness commit point. Nothing after this
+        # point may turn a visible, valid marker into a failed publication.
+        try:
+            os.close(marker)
+        except OSError:
+            pass
+    except BaseException:
+        if descriptor is not None:
+            os.close(descriptor)
+            descriptor = None
+        if owned_identity is not None:
+            try:
+                current = pending.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                if (current.st_dev, current.st_ino) == owned_identity:
+                    os.unlink(pending)
+        raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def _publish_supervisor(staging: Path, workspace_name: str) -> None:
     process_id = os.getpid()
     process_group_id = os.getpgrp()
@@ -455,13 +605,7 @@ def _publish_supervisor(staging: Path, workspace_name: str) -> None:
         "start_time_ticks": int(fields[19]),
     }
     payload = json.dumps(record, separators=(",", ":"), sort_keys=True).encode("utf-8") + b"\n"
-    path = staging / "supervisor.json"
-    descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-    try:
-        os.write(descriptor, payload)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    _publish_control_file(staging, payload)
 
 
 def _receiver_child(authentication_key: bytes, messages: Any) -> None:

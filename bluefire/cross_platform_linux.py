@@ -153,7 +153,10 @@ def linux_dependencies_unavailable_report(wsl: Mapping[str, Any]) -> Mapping[str
     }
 
 
-def _safe_regular_payload(path: Path, maximum: int) -> tuple[bytes, tuple[int, str]]:
+def _safe_regular_payload(
+    path: Path, maximum: int, *, minimum: int = 1
+) -> tuple[bytes, tuple[int, str]]:
+    _require(0 <= minimum <= maximum, "the Linux release artifact bound is invalid")
     details = path.lstat()
     reparse = bool(
         int(getattr(details, "st_file_attributes", 0))
@@ -164,7 +167,7 @@ def _safe_regular_payload(path: Path, maximum: int) -> tuple[bytes, tuple[int, s
         and not stat.S_ISLNK(details.st_mode)
         and not reparse
         and details.st_nlink == 1
-        and 1 <= details.st_size <= maximum,
+        and minimum <= details.st_size <= maximum,
         "the Linux release artifact is not a safe bounded regular file",
     )
     before = (details.st_dev, details.st_ino, details.st_size)
@@ -444,9 +447,9 @@ def _run_fixed(
 
 
 def _control_json(path: Path, maximum: int) -> Mapping[str, Any]:
-    _safe_regular(path, maximum)
+    payload, _observed = _safe_regular_payload(path, maximum)
     try:
-        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_strict_object)
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=_strict_object)
     except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
         raise LinuxJourneyError("a Linux control record is invalid") from exc
     if not isinstance(value, Mapping):
@@ -497,6 +500,15 @@ def _supervised_worker(
         options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     stdout_path = staging / "worker.stdout"
     stderr_path = staging / "worker.stderr"
+    publication_paths = (
+        staging / ".supervisor.json.pending",
+        staging / "supervisor.json",
+        staging / "supervisor.ready",
+    )
+    _require(
+        not any(os.path.lexists(path) for path in publication_paths),
+        "the Linux supervisor publication boundary is stale",
+    )
     stdout_handle = stdout_path.open("xb")
     stderr_handle = stderr_path.open("xb")
     try:
@@ -520,8 +532,14 @@ def _supervised_worker(
     try:
         deadline = time.monotonic() + 20
         supervisor_path = staging / "supervisor.json"
+        ready_path = staging / "supervisor.ready"
         while time.monotonic() < deadline:
-            if supervisor_path.is_file():
+            try:
+                ready_payload, _ready_observed = _safe_regular_payload(ready_path, 0, minimum=0)
+            except FileNotFoundError:
+                pass
+            else:
+                _require(not ready_payload, "the Linux supervisor ready marker is invalid")
                 supervisor = _control_json(supervisor_path, 4096)
                 break
             if process.poll() is not None:
@@ -529,12 +547,23 @@ def _supervised_worker(
             time.sleep(0.025)
         _require(
             isinstance(supervisor, Mapping)
+            and set(supervisor)
+            == {
+                "schema_version",
+                "workspace_name",
+                "process_id",
+                "process_group_id",
+                "session_id",
+                "start_time_ticks",
+            }
             and supervisor.get("schema_version") == "bluefire.cross-platform-linux-supervisor.v1"
             and supervisor.get("workspace_name") == workspace_name
             and type(supervisor.get("process_id")) is int
+            and 0 < int(supervisor["process_id"]) < 2**63
             and supervisor.get("process_id") == supervisor.get("process_group_id")
             and supervisor.get("process_id") == supervisor.get("session_id")
-            and type(supervisor.get("start_time_ticks")) is int,
+            and type(supervisor.get("start_time_ticks")) is int
+            and 0 < int(supervisor["start_time_ticks"]) < 2**63,
             "the Linux worker did not publish a valid supervisor identity",
         )
         deadline = time.monotonic() + 180

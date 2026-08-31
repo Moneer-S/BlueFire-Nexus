@@ -44,13 +44,13 @@ def _canonical(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def _read(path: Path, maximum: int) -> tuple[Mapping[str, Any], bytes]:
+def _payload(path: Path, maximum: int, *, minimum: int = 1) -> bytes:
     before = path.lstat()
     _require(
         stat.S_ISREG(before.st_mode)
         and not stat.S_ISLNK(before.st_mode)
         and before.st_nlink == 1
-        and 1 <= before.st_size <= maximum,
+        and minimum <= before.st_size <= maximum,
         "unsafe cleanup verification input",
     )
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -71,6 +71,7 @@ def _read(path: Path, maximum: int) -> tuple[Mapping[str, Any], bytes]:
     current = path.lstat()
     _require(
         len(payload) == opened.st_size
+        and minimum <= len(payload) <= maximum
         and stat.S_ISREG(after.st_mode)
         and after.st_nlink == 1
         and (after.st_dev, after.st_ino, after.st_size)
@@ -82,6 +83,11 @@ def _read(path: Path, maximum: int) -> tuple[Mapping[str, Any], bytes]:
         and current.st_nlink == 1,
         "cleanup verification input changed",
     )
+    return payload
+
+
+def _read(path: Path, maximum: int) -> tuple[Mapping[str, Any], bytes]:
+    payload = _payload(path, maximum)
     try:
         value = json.loads(
             payload.decode("utf-8"),
@@ -92,6 +98,10 @@ def _read(path: Path, maximum: int) -> tuple[Mapping[str, Any], bytes]:
         raise VerificationError("cleanup verification input is not strict JSON") from exc
     _require(isinstance(value, Mapping), "cleanup verification input is not an object")
     return value, payload
+
+
+def _ready(path: Path) -> None:
+    _require(not _payload(path, 0, minimum=0), "supervisor ready marker is invalid")
 
 
 def _identity(value: Any, label: str) -> Mapping[str, int]:
@@ -145,6 +155,7 @@ def _exact_identities_absent(identities: tuple[Mapping[str, int], ...]) -> bool:
 def run() -> Mapping[str, Any]:
     staging = Path.cwd().resolve(strict=True)
     request, _request_payload = _read(staging / "request.json", 64 * 1024)
+    _ready(staging / "supervisor.ready")
     supervisor, _supervisor_payload = _read(staging / "supervisor.json", 4096)
     cleanup, cleanup_payload = _read(staging / "cleanup-proof.json", 2 * 1024 * 1024)
     workspace_name = request.get("workspace_name")
