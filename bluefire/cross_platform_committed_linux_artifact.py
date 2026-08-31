@@ -6,8 +6,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
-import stat
 import subprocess  # nosec B404 - only a fixed local Git object-reading grammar is used
 import tempfile
 from dataclasses import dataclass
@@ -15,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence
 
 from .runner_bootstrap import RunnerBootstrapError, parse_runner_manifest
+from .runtime_paths import trusted_git_environment, trusted_git_executable
 
 LINUX_ARTIFACT_SOURCE = "commit-bound-repository-release-artifact"
 LINUX_BINARY_PATH = "bluefire/native/linux-x86_64/bluefire-runner"
@@ -49,53 +48,6 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def _git_environment() -> Mapping[str, str]:
-    names = ("SystemRoot", "SYSTEMROOT", "WINDIR", "TEMP", "TMP")
-    environment = {name: os.environ[name] for name in names if os.environ.get(name)}
-    environment.update(
-        {
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_OPTIONAL_LOCKS": "0",
-            "GIT_TERMINAL_PROMPT": "0",
-            "LANG": "C",
-            "LC_ALL": "C",
-        }
-    )
-    return environment
-
-
-def _trusted_git_executable() -> Path:
-    candidates: list[Path] = []
-    discovered = shutil.which("git")
-    if discovered:
-        candidates.append(Path(discovered))
-    if os.name == "nt":
-        windows = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
-        if windows:
-            candidates.append(
-                Path(windows).resolve(strict=True).parent / "Program Files/Git/cmd/git.exe"
-            )
-    else:
-        candidates.extend((Path("/usr/bin/git"), Path("/usr/local/bin/git")))
-    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-    for candidate in candidates:
-        try:
-            details = candidate.lstat()
-            resolved = candidate.resolve(strict=True)
-        except OSError:
-            continue
-        if (
-            candidate == resolved
-            and candidate.name.casefold() in {"git", "git.exe"}
-            and stat.S_ISREG(details.st_mode)
-            and not candidate.is_symlink()
-            and not bool(int(getattr(details, "st_file_attributes", 0)) & reparse)
-        ):
-            return resolved
-    raise CommittedLinuxArtifactError("the fixed Git object reader is unavailable")
-
-
 def _git_output(
     repository: Path,
     arguments: Sequence[str],
@@ -103,19 +55,19 @@ def _git_output(
     maximum: int,
     label: str,
 ) -> bytes:
-    executable = _trusted_git_executable()
-    command = [
-        os.fspath(executable),
-        "-c",
-        f"safe.directory={repository}",
-        *arguments,
-    ]
     try:
+        executable = trusted_git_executable()
+        command = [
+            os.fspath(executable),
+            "-c",
+            f"safe.directory={repository}",
+            *arguments,
+        ]
         with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
             completed = subprocess.run(  # nosec B603 - fixed executable and argument grammar
                 command,
                 cwd=repository,
-                env=_git_environment(),
+                env=trusted_git_environment(),
                 shell=False,
                 stdin=subprocess.DEVNULL,
                 stdout=stdout,

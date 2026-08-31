@@ -54,6 +54,14 @@ _CONTRACT_TESTS = (
     "tests_platform/test_cross_platform_linux_worker_security.py",
     "tests_platform/test_cross_platform_posix_containment.py",
     "tests_platform/test_cross_platform_runtime.py",
+    (
+        "tests_platform/test_install_gate.py::"
+        "test_committed_source_archive_uses_fixed_git_outside_ambient_path"
+    ),
+    (
+        "tests_platform/test_install_gate.py::"
+        "test_trusted_git_executable_ignores_ambient_path_entry"
+    ),
     "tests_platform/test_packaged_runner_verifier.py",
     (
         "tests_platform/test_runner_cancellation.py::"
@@ -207,6 +215,8 @@ _EXPECTED_SUITE_TESTS = (
     "tests_platform.test_cross_platform_runtime::test_windows_evidence_scan_includes_derived_receiver_task_key",
     "tests_platform.test_cross_platform_runtime::test_windows_execution_summary_binds_actual_step_count",
     "tests_platform.test_disposable_receiver::test_disposable_peer_wire_documents_bind_process_and_terminal_lifecycle",
+    "tests_platform.test_install_gate::test_committed_source_archive_uses_fixed_git_outside_ambient_path",
+    "tests_platform.test_install_gate::test_trusted_git_executable_ignores_ambient_path_entry",
     "tests_platform.test_packaged_runner_verifier::test_disposable_workspace_proof_is_sanitized_and_machine_checkable",
     "tests_platform.test_packaged_runner_verifier::test_disposable_workspace_proof_refuses_checkout_work_root",
     "tests_platform.test_packaged_runner_verifier::test_disposable_workspace_proof_refuses_escaped_or_dirty_sandbox",

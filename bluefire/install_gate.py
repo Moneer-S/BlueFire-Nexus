@@ -34,6 +34,7 @@ from .install_gate_package_metadata import (
 )
 from .runner_trust import _is_link_or_reparse, _owner_private
 from .runtime_paths import runtime_temp_parent as _runtime_temp_parent
+from .runtime_paths import trusted_git_environment, trusted_git_executable
 
 _REQUIRED_DISTRIBUTIONS = ("PyYAML", "cryptography", "PyNaCl", "cffi", "pycparser")
 _WINDOWS = os.name == "nt"
@@ -404,9 +405,10 @@ def _run_json(
 
 
 def _archive_committed_source(repository: Path, source: Path, archive_path: Path) -> None:
+    git = trusted_git_executable()
     _run(
         [
-            "git",
+            os.fspath(git),
             "-c",
             f"safe.directory={repository}",
             "archive",
@@ -416,7 +418,7 @@ def _archive_committed_source(repository: Path, source: Path, archive_path: Path
             "HEAD",
         ],
         cwd=repository,
-        environment=_environment(),
+        environment=trusted_git_environment(),
         timeout_seconds=120,
         failure_label="committed source archive",
     )

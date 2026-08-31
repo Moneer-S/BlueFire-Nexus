@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tarfile
 import zipfile
 from copy import deepcopy
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 import bluefire.install_gate as install_gate
 import bluefire.install_gate_validation as validation
 import bluefire.product_gates as product_gates
+import bluefire.runtime_paths as runtime_paths
 from bluefire.product_acceptance import load_release_contract
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -667,6 +669,78 @@ def test_release_subprocess_failures_keep_a_bounded_stage_identity(
             timeout_seconds=1,
             failure_label="installed-wheel journey",
         )
+
+
+def test_trusted_git_executable_ignores_ambient_path_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ambient = tmp_path / "ambient"
+    ambient.mkdir()
+    untrusted = ambient / ("git.exe" if os.name == "nt" else "git")
+    untrusted.write_bytes(b"untrusted")
+    untrusted.chmod(0o700)
+    monkeypatch.setenv("PATH", os.fspath(ambient))
+
+    executable = runtime_paths.trusted_git_executable()
+
+    assert executable.is_absolute()
+    assert executable != untrusted.resolve()
+    assert executable.name.casefold() in {"git", "git.exe"}
+
+
+def test_committed_source_archive_uses_fixed_git_outside_ambient_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    (seed / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
+    (seed / "setup.py").write_text("from setuptools import setup\nsetup()\n", encoding="utf-8")
+    archive_path = tmp_path / "source.tar"
+    with tarfile.open(archive_path, "w:") as archive:
+        archive.add(seed / "pyproject.toml", arcname="pyproject.toml")
+        archive.add(seed / "setup.py", arcname="setup.py")
+    source = tmp_path / "source"
+    trusted = (tmp_path / "fixed" / ("git.exe" if os.name == "nt" else "git")).resolve()
+    trusted.parent.mkdir()
+    trusted.write_bytes(b"fixed")
+    captured: dict[str, Any] = {}
+
+    def record_run(command: list[str], **kwargs: Any) -> None:
+        captured["command"] = command
+        captured.update(kwargs)
+
+    monkeypatch.setattr(install_gate, "trusted_git_executable", lambda: trusted)
+    monkeypatch.setattr(install_gate, "_run", record_run)
+    monkeypatch.setenv("PATH", os.fspath(tmp_path / "ambient"))
+    monkeypatch.setenv("HOME", os.fspath(tmp_path / "ambient-home"))
+    monkeypatch.setenv("GIT_EXEC_PATH", os.fspath(tmp_path / "ambient-git-core"))
+
+    install_gate._archive_committed_source(repository, source, archive_path)
+
+    assert captured["command"][0] == os.fspath(trusted)
+    assert captured["command"][1:] == [
+        "-c",
+        f"safe.directory={repository}",
+        "archive",
+        "--format=tar",
+        "--output",
+        os.fspath(archive_path),
+        "HEAD",
+    ]
+    environment = captured["environment"]
+    assert "PATH" not in environment
+    assert "HOME" not in environment
+    assert "USERPROFILE" not in environment
+    assert "GIT_EXEC_PATH" not in environment
+    assert environment["GIT_ATTR_NOSYSTEM"] == "1"
+    assert environment["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert environment["GIT_TERMINAL_PROMPT"] == "0"
+    assert (source / "pyproject.toml").is_file()
+    assert (source / "setup.py").is_file()
 
 
 def test_ephemeral_cleanup_retries_and_refuses_paths_outside_destination(

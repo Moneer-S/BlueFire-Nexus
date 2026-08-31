@@ -59,6 +59,8 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   observers without weakening the positive, identity-bound runner lease.
 - Authenticated Execute readiness now carries the server-verified native runner
   digest through approval, recovery, and cross-platform evidence validation.
+- Release source archives and exact-commit Linux artifact reads now invoke Git
+  from validated fixed operating-system paths with a config-free environment.
 
 ### Removed
 
