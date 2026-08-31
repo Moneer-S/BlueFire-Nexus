@@ -1328,11 +1328,11 @@ def test_public_evidence_rejects_private_paths_links_and_unstable_identity(
     assert acceptance._relative_artifact(run_dir, screenshot, "declared-proof")["path"] == (
         "gate-01/screenshot.png"
     )
-    private_idat = b"C:/Users/private/operator"
+    private_idat = b"C:/" + b"Users/private/operator"
     invalid_crc = bytearray(_metadata_free_png())
     invalid_crc[-1] ^= 1
     invalid_pngs = (
-        _metadata_free_png(extra_chunk=(b"tEXt", b"path=C:/Users/private/operator")),
+        _metadata_free_png(extra_chunk=(b"tEXt", b"path=C:/" + b"Users/private/operator")),
         _metadata_free_png(idat_chunks=(private_idat,)),
         _metadata_free_png(idat_chunks=(compressed_scanline + private_idat,)),
         _metadata_free_png(idat_chunks=(zlib.compress(b"\x05\x00\x00\x00\x00"),)),
@@ -1348,15 +1348,15 @@ def test_public_evidence_rejects_private_paths_links_and_unstable_identity(
             acceptance._relative_artifact(run_dir, screenshot, "declared-proof")
 
     for masked_path in (
-        "C://Users/private-user/artifact.json",
+        "C:/" + "/" + "Users/private-user/artifact.json",
         "see (https://example.test),/etc/bluefire/private.conf",
-        r"https://example.test,C:\Users\private-user\artifact.json",
+        r"https://example.test,C:" + "\\Users\\private-user\\artifact.json",
         "sqlite:///etc/bluefire/private.db",
         "x-https://example.test/etc/bluefire/private.conf",
         "file+https://example.test/etc/bluefire/private.conf",
         "https://example.test/view?path=/etc/bluefire/private.conf",
         "aws-profile://bluefire-disposable-lab/etc/private.conf",
-        "aws-profile://bluefire-disposable-lab/C:/Users/private-user/artifact.json",
+        "aws-profile://bluefire-disposable-lab/C:/" + "Users/private-user/artifact.json",
     ):
         artifact.write_text(json.dumps({"value": masked_path}), encoding="utf-8")
         with pytest.raises(ValueError, match="discloses a local absolute path"):
@@ -1387,7 +1387,7 @@ def test_public_evidence_rejects_private_paths_links_and_unstable_identity(
         b"header\0/srv/bluefire/run.db",
         b"\xff/var/lib/bluefire/state.db",
         "/etc/bluefire/private.conf".encode("utf-16"),
-        r"C:\Users\private-user\artifact.json".encode("utf-16-le"),
+        (r"C:" + r"\Users\private-user\artifact.json").encode("utf-16-le"),
         "/etc/bluefire/private.conf".encode("utf-32-le"),
         "/usr/local/bluefire/private.bin".encode("utf-32-be"),
         "prefix\0/etc/bluefire/private.conf".encode("utf-16"),

@@ -14,16 +14,17 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from . import release_readiness_runtime as runtime_support
 from .product_acceptance_process import _playwright_browsers_path
-from .release_readiness_runtime import decode_tracked, initialize_scan_repository, temp_parent
 from .release_readiness_validation import SBOM_REPORT, SUITE_SCHEMA
 
 _MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 
 
 def _base_environment(temporary: Path) -> dict[str, str]:
-    environment = dict(os.environ)
-    browser_root = _playwright_browsers_path(environment)
+    source_environment = dict(os.environ)
+    browser_root = _playwright_browsers_path(source_environment)
+    environment = runtime_support.suite_environment(source_environment)
     home = temporary / "home"
     local = home / "AppData" / "Local"
     roaming = home / "AppData" / "Roaming"
@@ -109,30 +110,6 @@ def _row(
         "skipped_test_ids": skipped_tests,
         "details": dict(details or {}),
     }
-
-
-def _tracked_snapshot(repository: Path) -> dict[str, str]:
-    completed = subprocess.run(
-        ["git", "-C", os.fspath(repository), "ls-files", "-z"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        timeout=30,
-    )
-    if completed.returncode != 0:
-        return {}
-    result: dict[str, str] = {}
-    for raw in completed.stdout.split(b"\0"):
-        if not raw:
-            continue
-        try:
-            relative = raw.decode("utf-8", "strict")
-            payload = (repository / relative).read_bytes()
-        except (OSError, UnicodeError):
-            return {}
-        result[relative] = hashlib.sha256(payload).hexdigest()
-    return result
 
 
 def _archive_source(repository: Path, destination: Path, environment: Mapping[str, str]) -> bool:
@@ -254,7 +231,7 @@ def _python_suites(
             "-p",
             "no:cacheprovider",
             "-q",
-            f"--basetemp={temporary / 'pytest-temp'}",
+            f"--basetemp={temporary.parent / 't'}",
             f"--junitxml={junit}",
         ],
         cwd=repository,
@@ -336,7 +313,11 @@ def _rust_suites(
             "bluefire-runner",
         ],
     }
-    if cargo_raw is None:
+    try:
+        cargo = Path(cargo_raw).resolve(strict=True) if cargo_raw is not None else None
+    except OSError:
+        cargo = None
+    if cargo is None:
         return (
             [
                 _row(
@@ -350,7 +331,6 @@ def _rust_suites(
             ],
             toolchain,
         )
-    cargo = Path(cargo_raw).resolve(strict=True)
     rust_environment = dict(environment)
     rust_environment.update(
         {
@@ -532,6 +512,10 @@ def _frontend_suites(
     temporary.mkdir(parents=True, exist_ok=False)
     frontend = repository / "frontend"
     node_raw = shutil.which("node", path=environment.get("PATH"))
+    try:
+        node = Path(node_raw).resolve(strict=True) if node_raw is not None else None
+    except OSError:
+        node = None
     binaries = {
         "tsc": frontend / "node_modules/typescript/bin/tsc",
         "eslint": frontend / "node_modules/eslint/bin/eslint.js",
@@ -539,7 +523,7 @@ def _frontend_suites(
         "vite": frontend / "node_modules/vite/bin/vite.js",
         "playwright": frontend / "node_modules/@playwright/test/cli.js",
     }
-    if node_raw is None or any(not path.is_file() for path in binaries.values()):
+    if node is None or any(not path.is_file() for path in binaries.values()):
         return [
             _row(
                 suite_id,
@@ -556,7 +540,6 @@ def _frontend_suites(
                 "frontend.e2e-demo",
             )
         ]
-    node = Path(node_raw).resolve(strict=True)
     rows: list[dict[str, Any]] = []
     app_code, _stdout, _stderr = _run(
         [
@@ -763,18 +746,12 @@ def _security_suites(
             details={"history_and_worktree": True, "tool_available": gitleaks is not None},
         )
     )
-    tracked_process = subprocess.run(
-        ["git", "-C", os.fspath(repository), "ls-files", "-z"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        timeout=30,
-    )
-    tracked = decode_tracked(tracked_process.stdout) if tracked_process.returncode == 0 else []
+    tracked = runtime_support.tracked_paths(repository)
     archived = _archive_source(repository, temporary / "archive", environment)
     archive_root = temporary / "archive" / "source"
-    archive_ready = archived and initialize_scan_repository(archive_root, environment)
+    archive_ready = archived and runtime_support.initialize_scan_repository(
+        archive_root, environment
+    )
     code = None
     if tracked and archive_ready:
         code, _stdout, _stderr = _run(
@@ -833,6 +810,7 @@ def _security_suites(
                 },
             )
         )
+    raw_sbom_path = temporary / "python-sbom.raw.json"
     sbom_path = evidence_dir / SBOM_REPORT
     code, _stdout, _stderr = _run(
         [
@@ -841,25 +819,26 @@ def _security_suites(
             "cyclonedx_py",
             "environment",
             "--output-file",
-            os.fspath(sbom_path),
+            os.fspath(raw_sbom_path),
         ],
         cwd=repository,
         environment=environment,
         timeout_seconds=600,
     )
-    sbom_valid = False
-    try:
-        sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
-        sbom_valid = isinstance(sbom, Mapping) and isinstance(sbom.get("components"), list)
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        pass
+    raw_sbom_identity = runtime_support.regular_file_identity(raw_sbom_path)
+    sbom_valid = runtime_support.sanitize_sbom_file(raw_sbom_path, sbom_path)
+    raw_sbom_removed = runtime_support.remove_regular_file(raw_sbom_path, raw_sbom_identity)
     rows.append(
         _row(
             "security.sbom",
             ["{python}", "-m", "cyclonedx_py", "environment", "--output-file", SBOM_REPORT],
             code,
-            details={"artifact": SBOM_REPORT, "valid_cyclonedx": sbom_valid},
-            passed=code == 0 and sbom_valid,
+            details={
+                "artifact": SBOM_REPORT,
+                "raw_source_removed": raw_sbom_removed,
+                "valid_cyclonedx": sbom_valid,
+            },
+            passed=code == 0 and sbom_valid and raw_sbom_removed,
         )
     )
     return rows
@@ -970,17 +949,17 @@ def run_full_release_suites(
 ) -> Mapping[str, Any]:
     """Run every local release suite without writing generated output to source."""
 
-    before = _tracked_snapshot(repository)
-    with tempfile.TemporaryDirectory(prefix=".gate12-suites-", dir=temp_parent()) as raw:
+    before = runtime_support.tracked_snapshot(repository)
+    with tempfile.TemporaryDirectory(prefix=".b", dir=runtime_support.temp_parent()) as raw:
         temporary = Path(raw)
         environment = _base_environment(temporary)
-        rows = _python_suites(repository, temporary / "python", environment)
-        rust_rows, rust_toolchain = _rust_suites(repository, temporary / "rust", environment)
+        rows = _python_suites(repository, temporary / "p", environment)
+        rust_rows, rust_toolchain = _rust_suites(repository, temporary / "r", environment)
         rows.extend(rust_rows)
-        rows.extend(_frontend_suites(repository, temporary / "frontend", environment))
+        rows.extend(_frontend_suites(repository, temporary / "f", environment))
         rows.extend(_production_rows(upstream, journey))
-        rows.extend(_security_suites(repository, evidence_dir, temporary / "security", environment))
-    after = _tracked_snapshot(repository)
+        rows.extend(_security_suites(repository, evidence_dir, temporary / "s", environment))
+    after = runtime_support.tracked_snapshot(repository)
     changed = sorted(
         path for path in set(before) | set(after) if before.get(path) != after.get(path)
     )

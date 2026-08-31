@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from . import release_readiness_runtime as runtime_support
 from .architecture_gate import _run_pytest_suite
 from .defense_frontier import _runtime_temp_parent
 from .defense_frontier_gate import (
@@ -65,6 +66,17 @@ _EXPECTED_CONTRACT_TEST_COUNT = 19
 _EXPECTED_CONTRACT_TESTS_SHA256 = (
     "sha256:e72ce002f19e650f847c21da4121822100c88ecd1fcca59e232bbffea5dbc362"
 )
+_SUITE_EXCEPTION_NAMES: Mapping[type[BaseException], str] = {
+    FileNotFoundError: "FileNotFoundError",
+    IsADirectoryError: "IsADirectoryError",
+    NotADirectoryError: "NotADirectoryError",
+    OSError: "OSError",
+    PermissionError: "PermissionError",
+    RuntimeError: "RuntimeError",
+    subprocess.TimeoutExpired: "TimeoutExpired",
+    TypeError: "TypeError",
+    ValueError: "ValueError",
+}
 
 _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str, bool]] = {
     "GATE-12-README-PRODUCT-LOOP": (
@@ -322,21 +334,8 @@ def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
 
 
 def _tracked_files(repository: Path) -> list[str]:
-    completed = subprocess.run(
-        ["git", "-C", os.fspath(repository), "ls-files", "-z"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-        timeout=30,
-    )
-    if completed.returncode != 0:
-        raise ValueError("the tracked release inventory is unavailable")
-    try:
-        result = [item.decode("utf-8", "strict") for item in completed.stdout.split(b"\0") if item]
-    except UnicodeError as exc:
-        raise ValueError("the tracked release inventory is not UTF-8") from exc
-    if not result or result != sorted(set(result)):
+    result = runtime_support.tracked_inventory(repository)
+    if not result:
         raise ValueError("the tracked release inventory is invalid")
     return result
 
@@ -353,13 +352,8 @@ def _opsec_report(
     allowed_path_fixture = "tests_platform/test_defense_frontier_validation.py"
     for relative in tracked:
         path = repository / relative
-        details = path.lstat()
-        if (
-            stat.S_ISLNK(details.st_mode)
-            or bool(int(getattr(details, "st_file_attributes", 0)) & _REPARSE_POINT)
-            or not stat.S_ISREG(details.st_mode)
-            or details.st_nlink != 1
-        ):
+        payload = runtime_support.read_bounded_regular_file(path, allow_empty=True)
+        if payload is None:
             forbidden.append(relative + ":unsafe-entry")
             continue
         lowered = relative.replace("\\", "/").casefold()
@@ -369,7 +363,6 @@ def _opsec_report(
             for part in parts
         ):
             forbidden.append(relative + ":generated-or-private-artifact")
-        payload = path.read_bytes()
         hashed.append((relative, "sha256:" + hashlib.sha256(payload).hexdigest()))
         if len(payload) > 4 * 1024 * 1024 or b"\0" in payload:
             continue
@@ -606,12 +599,17 @@ def run_gate_12(
             journey=journey,
         )
         _write_json(destination / SUITE_REPORT, suites)
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        return _failure((exc,))
+    except (OSError, RuntimeError, subprocess.TimeoutExpired, TypeError, ValueError) as exc:
+        exception_name = _SUITE_EXCEPTION_NAMES.get(type(exc), "RuntimeError")
+        return _failure((f"full release suite execution raised {exception_name}",))
     if not validate_suite_report(suites):
         issues.append("the complete Python, Rust, frontend, security, or E2E suite failed")
-    opsec = _opsec_report(repository, destination, suites)
-    _write_json(destination / OPSEC_REPORT, opsec)
+    try:
+        opsec = _opsec_report(repository, destination, suites)
+        _write_json(destination / OPSEC_REPORT, opsec)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired, TypeError, ValueError) as exc:
+        exception_name = _SUITE_EXCEPTION_NAMES.get(type(exc), "RuntimeError")
+        return _failure((f"tracked-tree OPSEC execution raised {exception_name}",))
     if not validate_opsec_report(opsec):
         issues.append("the tracked-tree security or OPSEC review failed")
 

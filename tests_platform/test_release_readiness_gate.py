@@ -895,7 +895,37 @@ def test_gate12_refuses_stale_evidence_and_contract_drift(
     monkeypatch.setattr(gate_module, "run_full_release_suites", cleanup_failure)
     outcome = gate_module.run_gate_12(_gate(), tmp_path, repository_root=tmp_path)
     assert outcome.status == "failed"
-    assert "private-path-redacted" in str(outcome.failure_reason)
+    assert "full release suite execution raised PermissionError" in str(outcome.failure_reason)
+    assert r"C:\private" not in str(outcome.failure_reason)
+
+    class SpoofedPermissionError(PermissionError):
+        pass
+
+    SpoofedPermissionError.__module__ = "builtins"
+
+    def spoofed_failure(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise SpoofedPermissionError(r"C:\private\spoofed-name")
+
+    spoofed_evidence = tmp_path / "spoofed-evidence"
+    spoofed_evidence.mkdir()
+    _patch_passing_gate(monkeypatch, spoofed_evidence)
+    monkeypatch.setattr(gate_module, "run_full_release_suites", spoofed_failure)
+    outcome = gate_module.run_gate_12(_gate(), spoofed_evidence, repository_root=tmp_path)
+    assert outcome.status == "failed"
+    assert "full release suite execution raised RuntimeError" in str(outcome.failure_reason)
+    assert "SpoofedPermissionError" not in str(outcome.failure_reason)
+
+    opsec_evidence = tmp_path / "opsec-evidence"
+    opsec_evidence.mkdir()
+    _patch_passing_gate(monkeypatch, opsec_evidence)
+
+    def opsec_failure(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise PermissionError(r"C:\private\opsec-inventory")
+
+    monkeypatch.setattr(gate_module, "_opsec_report", opsec_failure)
+    outcome = gate_module.run_gate_12(_gate(), opsec_evidence, repository_root=tmp_path)
+    assert outcome.status == "failed"
+    assert "tracked-tree OPSEC execution raised PermissionError" in str(outcome.failure_reason)
     assert r"C:\private" not in str(outcome.failure_reason)
 
 
