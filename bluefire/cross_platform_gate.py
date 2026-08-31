@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -37,6 +38,29 @@ from .runner_bootstrap import current_architecture
 
 HELPER_SCHEMA = "bluefire.cross-platform-helper.v1"
 VERIFICATION_SCHEMA = "bluefire.cross-platform-gate-verification.v1"
+SUITE_FAILURE_SCHEMA = "bluefire.cross-platform-suite-failure.v1"
+SUITE_FAILURE_REPORT = "gate11-focused-suite-failure.json"
+_SUITE_INFRASTRUCTURE_FAILURES = frozenset(
+    {
+        "BlockingIOError",
+        "BrokenPipeError",
+        "ChildProcessError",
+        "ConnectionAbortedError",
+        "ConnectionError",
+        "ConnectionRefusedError",
+        "ConnectionResetError",
+        "FileExistsError",
+        "FileNotFoundError",
+        "InterruptedError",
+        "IsADirectoryError",
+        "NotADirectoryError",
+        "OSError",
+        "PermissionError",
+        "ProcessLookupError",
+        "TimeoutError",
+        "TimeoutExpired",
+    }
+)
 _ACCEPTANCE_ENVIRONMENT = (
     "BLUEFIRE_ACCEPTANCE_ID",
     "BLUEFIRE_ACCEPTANCE_GATE_ID",
@@ -395,6 +419,74 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
             os.close(descriptor)
 
 
+def _suite_failure_diagnostic(suite: Mapping[str, Any]) -> Mapping[str, Any]:
+    expected = set(_EXPECTED_SUITE_TESTS)
+    actual: dict[str, list[str]] = {}
+    invalid_entries = 0
+    for field in ("passed_tests", "failed_tests", "skipped_tests"):
+        value = suite.get(field)
+        if not isinstance(value, list):
+            actual[field] = []
+            invalid_entries += 1
+            continue
+        actual[field] = [item for item in value if isinstance(item, str)]
+        invalid_entries += len(value) - len(actual[field])
+    observed = set().union(*actual.values())
+    unexpected = sorted(observed - expected)
+    unexpected_payload = json.dumps(
+        {"identifiers": unexpected, "invalid_entries": invalid_entries},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    exit_code = suite.get("exit_code")
+    observed_tests = suite.get("tests")
+    infrastructure_failures = sorted(
+        identifier for identifier in unexpected if identifier in _SUITE_INFRASTRUCTURE_FAILURES
+    )
+    expected_fields = {
+        "schema_version",
+        "suite_id",
+        "command",
+        "exit_code",
+        "passed",
+        "tests",
+        "passed_tests",
+        "failed_tests",
+        "skipped_tests",
+    }
+    return {
+        "schema_version": SUITE_FAILURE_SCHEMA,
+        "suite_id": (
+            "cross-platform-contracts"
+            if suite.get("suite_id") == "cross-platform-contracts"
+            else "invalid"
+        ),
+        "report_field_set_valid": set(suite) == expected_fields,
+        "exit_code": exit_code if type(exit_code) is int or exit_code is None else None,
+        "passed": suite.get("passed") is True,
+        "expected_tests": len(_EXPECTED_SUITE_TESTS),
+        "observed_tests": (
+            observed_tests
+            if type(observed_tests) is int and 0 <= observed_tests <= 100_000
+            else None
+        ),
+        "known_failed_tests": sorted(set(actual["failed_tests"]) & expected),
+        "known_skipped_tests": sorted(set(actual["skipped_tests"]) & expected),
+        "missing_expected_tests": sorted(expected - observed),
+        "infrastructure_failures": infrastructure_failures,
+        "unexpected_test_count": len(unexpected) + invalid_entries,
+        "unexpected_tests_sha256": "sha256:" + hashlib.sha256(unexpected_payload).hexdigest(),
+    }
+
+
+def _persist_suite_failure_report(destination: Path, suite: Mapping[str, Any]) -> None:
+    _write_json(
+        destination / SUITE_FAILURE_REPORT,
+        _suite_failure_diagnostic(suite),
+    )
+
+
 def _run_helper(repository: Path, evidence_dir: Path) -> Mapping[str, Any]:
     command = [
         sys.executable,
@@ -615,7 +707,10 @@ def run_gate_11(
         row[0] for row in ASSERTION_REPORTS
     ):
         return _failure(("locked GATE-11 assertion set mismatch",))
-    if any((destination / name).exists() for name in (*REPORT_PATHS, VERIFICATION_REPORT, "runs")):
+    if any(
+        (destination / name).exists()
+        for name in (*REPORT_PATHS, VERIFICATION_REPORT, SUITE_FAILURE_REPORT, "runs")
+    ):
         return _failure(("Gate 11 evidence directory contains stale owned artifacts",))
 
     started = datetime.now(timezone.utc)
@@ -639,6 +734,12 @@ def run_gate_11(
     )
     issues: list[object] = []
     if not _suite_is_exact(suite):
+        try:
+            _persist_suite_failure_report(destination, suite)
+        except (OSError, TypeError, ValueError):
+            issues.append(
+                "cross-platform focused regression suite failure report could not be persisted"
+            )
         issues.append("cross-platform focused regression suite failed, changed, or skipped")
     checks: Mapping[str, bool] = {}
     bundles: tuple[Mapping[str, str], ...] = ()
@@ -740,6 +841,8 @@ def run_gate_11(
 __all__ = [
     "Gate11Outcome",
     "HELPER_SCHEMA",
+    "SUITE_FAILURE_REPORT",
+    "SUITE_FAILURE_SCHEMA",
     "VERIFICATION_SCHEMA",
     "run_gate_11",
 ]

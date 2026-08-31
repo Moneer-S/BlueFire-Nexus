@@ -338,6 +338,31 @@ def test_dynamic_suite_rejects_skipped_tests(
     assert len(suite_temporary) == 1
     assert not suite_temporary[0].exists()
 
+    class CleanupFailure:
+        def __init__(self, *, prefix: str, dir: Path) -> None:
+            self.path = Path(dir) / f"{prefix}cleanup-failure"
+            self.path.mkdir()
+
+        def __enter__(self) -> str:
+            return str(self.path)
+
+        def __exit__(self, *_args: Any) -> bool:
+            raise PermissionError("controlled cleanup failure")
+
+    monkeypatch.setattr(architecture_gate.tempfile, "TemporaryDirectory", CleanupFailure)
+    cleanup_report = architecture_gate._run_pytest_suite(
+        tmp_path,
+        tmp_path,
+        suite_id="cleanup-failure-suite",
+        tests=("test_example.py",),
+        timeout_seconds=1,
+    )
+
+    assert cleanup_report["passed"] is False
+    assert cleanup_report["tests"] == 1
+    assert cleanup_report["failed_tests"] == ["PermissionError"]
+    assert cleanup_report["skipped_tests"] == ["suite::case"]
+
 
 def test_registered_gate_emits_exact_truthful_proofs_and_bound_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

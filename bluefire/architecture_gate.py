@@ -748,6 +748,7 @@ def _run_pytest_suite(
         *tests,
         "--junitxml={temporary}",
     ]
+    report: dict[str, Any] | None = None
     try:
         # Parametrized node IDs consume substantial Windows path budget. Use
         # the process-token-owned temp parent rather than an arbitrarily deep
@@ -818,6 +819,18 @@ def _run_pytest_suite(
             "passed": report["passed"] and not temporary_root.exists(),
         }
     except (OSError, subprocess.TimeoutExpired) as exc:
+        if report is not None:
+            failed = report.get("failed_tests")
+            known_failures = (
+                [item for item in failed if isinstance(item, str)]
+                if isinstance(failed, list)
+                else []
+            )
+            return {
+                **report,
+                "passed": False,
+                "failed_tests": sorted({*known_failures, type(exc).__name__}),
+            }
         return {
             "schema_version": "bluefire.architecture-dynamic-check.v1",
             "suite_id": suite_id,

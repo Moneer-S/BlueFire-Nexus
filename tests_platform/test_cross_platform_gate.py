@@ -94,7 +94,10 @@ def _patch_linux_probe(
     )
 
 
-def test_gate11_locked_contract_matches_authoritative_workflow() -> None:
+def test_gate11_locked_contract_matches_authoritative_workflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     gate = next(item for item in load_release_contract().gates if item.gate_id == "GATE-11")
 
     assert {assertion.assertion_id: assertion.proof for assertion in gate.assertions} == {
@@ -107,6 +110,56 @@ def test_gate11_locked_contract_matches_authoritative_workflow() -> None:
     assert set(details[1] for details in gate_module._EXPECTED_ASSERTIONS.values()) == CHECK_NAMES
     assert gate_module._EXPECTED_SUITE_TESTS == tuple(sorted(gate_module._EXPECTED_SUITE_TESTS))
     assert product_gates._WORKFLOWS["GATE-11"] is product_gates._gate_11_workflow
+    known_passed = gate_module._EXPECTED_SUITE_TESTS[0]
+    known_failed = gate_module._EXPECTED_SUITE_TESTS[1]
+    private_identifier = "TenantAlphaSecretError"
+    failed_suite = {
+        "schema_version": "bluefire.architecture-dynamic-check.v1",
+        "suite_id": "cross-platform-contracts",
+        "command": ["{python}", "-m", "pytest", "{locked-tests}"],
+        "exit_code": 1,
+        "passed": False,
+        "tests": 4,
+        "passed_tests": [known_passed],
+        "failed_tests": [known_failed, private_identifier, "PermissionError"],
+        "skipped_tests": [],
+    }
+    evidence = tmp_path / "gate-11"
+    evidence.mkdir()
+    monkeypatch.setattr(gate_module, "_run_helper", lambda *_args: {"passed": True})
+    monkeypatch.setattr(gate_module, "_run_pytest_suite", lambda *_args, **_kwargs: failed_suite)
+    monkeypatch.setattr(gate_module, "_acceptance_binding", lambda: {})
+    monkeypatch.setattr(
+        gate_module,
+        "validate_persisted_cross_platform_gate",
+        lambda *_args, **_kwargs: (
+            {check: True for check in CHECK_NAMES},
+            ({"run_id": "run-one"}, {"run_id": "run-two"}),
+        ),
+    )
+    outcome = gate_module.run_gate_11(
+        gate,
+        evidence,
+        repository_root=Path(__file__).resolve().parents[1],
+    )
+
+    assert outcome.status == "failed"
+    assert outcome.failure_reason == (
+        "GATE-11 failed checks: cross-platform focused regression suite failed, changed, "
+        "or skipped"
+    )
+    raw_diagnostic = (evidence / gate_module.SUITE_FAILURE_REPORT).read_text(encoding="utf-8")
+    diagnostic = json.loads(raw_diagnostic)
+    assert private_identifier not in raw_diagnostic
+    assert diagnostic["known_failed_tests"] == [known_failed]
+    assert diagnostic["known_skipped_tests"] == []
+    assert diagnostic["infrastructure_failures"] == ["PermissionError"]
+    assert diagnostic["unexpected_test_count"] == 2
+    assert diagnostic["unexpected_tests_sha256"].startswith("sha256:")
+    assert known_passed not in diagnostic["missing_expected_tests"]
+    assert known_failed not in diagnostic["missing_expected_tests"]
+    with pytest.raises(ValueError, match="destination is unsafe"):
+        gate_module._persist_suite_failure_report(evidence, failed_suite)
     probe_report = {
         "schema_version": SOURCE_INTAKE_POSIX_PROBE_SCHEMA,
         "platform": "linux",
