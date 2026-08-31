@@ -119,6 +119,10 @@ def test_repository_audit_emits_machine_readable_concrete_blockers() -> None:
         isinstance(check["passed"], bool) and isinstance(check["findings"], list)
         for check in report["checks"].values()
     )
+    assert report["checks"]["dependency_direction"] == {
+        "passed": True,
+        "findings": [],
+    }
 
     dependencies = report["dependencies"]
     assert isinstance(dependencies["python"]["edges"], list)

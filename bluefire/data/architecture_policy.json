@@ -182,6 +182,7 @@
       "bluefire.release_readiness_artifacts",
       "bluefire.release_readiness_gate",
       "bluefire.release_readiness_journey",
+      "bluefire.release_readiness_runtime",
       "bluefire.release_readiness_suites",
       "bluefire.release_readiness_validation",
       "bluefire.replay_gate",
