@@ -11,6 +11,7 @@ import pytest
 
 import bluefire.cli as cli
 import bluefire.service as service_module
+import bluefire.source_intake as source_intake_module
 from bluefire.api import APIError
 from bluefire.runner_contracts import current_platform
 from bluefire.runner_inventory import (
@@ -344,6 +345,235 @@ def test_failed_intake_releases_exact_destination_for_retry(
     response = service.intake_reviewed_t1082(request)
     assert response["destination_id"] == "retryable-review"
     assert destination.is_dir()
+
+
+def test_failed_intake_quarantines_retained_state_without_path_deletion(
+    service: BlueFireService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = service_module.perform_source_intake
+    destination_id = "retained-retry"
+    destination = service.store.root / "source-intakes" / destination_id
+    token = "e" * 16
+    quarantine_name = f".retained-{destination_id}-{token}"
+    quarantine = destination.parent / quarantine_name
+    real_unlink = Path.unlink
+    calls = 0
+
+    def fail_once(_source: Path, retained_destination: Path, _request: Any):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            (retained_destination / ".bfi-retained").write_bytes(b"retained-owned-state")
+            raise SourceIntakeError("injected pre-publication refusal")
+        return original(_source, retained_destination, _request)
+
+    def refuse_destination_unlink(path: Path, *args: Any, **kwargs: Any) -> None:
+        if path.parent == destination:
+            raise AssertionError("retained source-intake state must not be deleted by pathname")
+        real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(service_module, "perform_source_intake", fail_once)
+    monkeypatch.setattr(service_module, "token_hex", lambda _size: token)
+    monkeypatch.setattr(Path, "unlink", refuse_destination_unlink)
+
+    with pytest.raises(APIError) as raised:
+        service.intake_reviewed_t1082(_surface_request(destination_id))
+
+    assert raised.value.code == "source_intake_rejected"
+    assert raised.value.details[-1] == (
+        f"Fail-closed retained state was quarantined at source-intakes/{quarantine_name}; "
+        "the requested destination was released for retry."
+    )
+    assert not destination.exists()
+    assert (quarantine / ".bfi-retained").read_bytes() == b"retained-owned-state"
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    response = service.intake_reviewed_t1082(_surface_request(destination_id))
+    assert response["destination_id"] == destination_id
+    assert destination.is_dir()
+
+
+def test_failed_intake_bounds_flooded_namespace_probe_before_quarantine(
+    service: BlueFireService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination_id = "retained-flood"
+    destination = service.store.root / "source-intakes" / destination_id
+    token = "d" * 16
+    quarantine_name = f".retained-{destination_id}-{token}"
+    quarantine = destination.parent / quarantine_name
+    real_names = service_module._PinnedDirectory.names
+    observed_bounds: list[int | None] = []
+
+    def fail_with_flooded_state(_source: Path, retained_destination: Path, _request: Any) -> None:
+        for index in range(64):
+            (retained_destination / f"retained-{index:02d}").write_bytes(b"retained")
+        raise SourceIntakeError("injected flooded pre-publication refusal")
+
+    def require_bounded_names(
+        pinned: Any,
+        *,
+        maximum: int | None = None,
+    ) -> tuple[str, ...]:
+        observed_bounds.append(maximum)
+        assert maximum == 1
+        return real_names(pinned, maximum=maximum)
+
+    monkeypatch.setattr(service_module, "perform_source_intake", fail_with_flooded_state)
+    monkeypatch.setattr(service_module, "token_hex", lambda _size: token)
+    monkeypatch.setattr(service_module._PinnedDirectory, "names", require_bounded_names)
+
+    with pytest.raises(APIError) as raised:
+        service.intake_reviewed_t1082(_surface_request(destination_id))
+
+    release_bounds = tuple(observed_bounds)
+    if not release_bounds:
+        # Windows may fail the delete-capable exact-pin/identity gate before enumeration.
+        # That conservative short circuit is a safe direct-to-quarantine outcome.
+        assert os.name == "nt"
+    else:
+        assert release_bounds == (1,)
+    assert raised.value.details[-1] == (
+        f"Fail-closed retained state was quarantined at source-intakes/{quarantine_name}; "
+        "the requested destination was released for retry."
+    )
+    assert not destination.exists()
+    assert (quarantine / "retained-00").read_bytes() == b"retained"
+    assert (quarantine / "retained-63").read_bytes() == b"retained"
+    with service_module._PinnedDirectory(quarantine, private=False) as pinned:
+        with pytest.raises(
+            service_module.RunnerTrustError,
+            match="directory entry bound was exceeded",
+        ):
+            pinned.names(maximum=1)
+    assert observed_bounds == [*release_bounds, 1]
+
+
+def test_failed_intake_never_replaces_a_collided_quarantine(
+    service: BlueFireService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination_id = "retained-collision"
+    intake_root = service.store.root / "source-intakes"
+    intake_root.mkdir(mode=0o700)
+    token = "f" * 16
+    quarantine = intake_root / f".retained-{destination_id}-{token}"
+    quarantine.mkdir(mode=0o700)
+    foreign = quarantine / "foreign.txt"
+    foreign.write_bytes(b"foreign-quarantine")
+
+    def fail_with_retained_state(_source: Path, destination: Path, _request: Any) -> None:
+        (destination / ".bfi-retained").write_bytes(b"retained-owned-state")
+        raise SourceIntakeError("injected pre-publication refusal")
+
+    monkeypatch.setattr(service_module, "perform_source_intake", fail_with_retained_state)
+    monkeypatch.setattr(service_module, "token_hex", lambda _size: token)
+
+    with pytest.raises(APIError) as raised:
+        service.intake_reviewed_t1082(_surface_request(destination_id))
+
+    destination = intake_root / destination_id
+    assert raised.value.details[-1] == (
+        f"Retained state remains at source-intakes/{destination_id}; the requested destination "
+        "could not be released safely and no retained path was deleted."
+    )
+    assert foreign.read_bytes() == b"foreign-quarantine"
+    assert (destination / ".bfi-retained").read_bytes() == b"retained-owned-state"
+
+
+def test_failed_intake_reports_a_destination_rebound_after_exact_quarantine(
+    service: BlueFireService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination_id = "retained-rebound"
+    destination = service.store.root / "source-intakes" / destination_id
+    token = "a" * 16
+    quarantine_name = f".retained-{destination_id}-{token}"
+    quarantine = destination.parent / quarantine_name
+
+    def fail_with_retained_state(_source: Path, retained_destination: Path, _request: Any) -> None:
+        (retained_destination / ".bfi-retained").write_bytes(b"retained-owned-state")
+        raise SourceIntakeError("injected pre-publication refusal")
+
+    monkeypatch.setattr(service_module, "perform_source_intake", fail_with_retained_state)
+    monkeypatch.setattr(service_module, "token_hex", lambda _size: token)
+    if os.name == "nt":
+        real_rename = source_intake_module._windows_rename_descriptor
+
+        def rename_then_rebind(descriptor: int, root_descriptor: int, target_name: str) -> None:
+            real_rename(descriptor, root_descriptor, target_name)
+            destination.mkdir(mode=0o700)
+            (destination / "foreign.txt").write_bytes(b"foreign-destination")
+
+        monkeypatch.setattr(
+            source_intake_module,
+            "_windows_rename_descriptor",
+            rename_then_rebind,
+        )
+    else:
+        real_posix_rename = source_intake_module._posix_rename_no_replace
+
+        def rename_then_rebind(root_descriptor: int, source_name: str, target_name: str) -> None:
+            real_posix_rename(root_descriptor, source_name, target_name)
+            destination.mkdir(mode=0o700)
+            (destination / "foreign.txt").write_bytes(b"foreign-destination")
+
+        monkeypatch.setattr(
+            source_intake_module,
+            "_posix_rename_no_replace",
+            rename_then_rebind,
+        )
+
+    with pytest.raises(APIError) as raised:
+        service.intake_reviewed_t1082(_surface_request(destination_id))
+
+    assert raised.value.details[-1] == (
+        f"Exact retained state was quarantined at source-intakes/{quarantine_name}, but the "
+        "requested destination was rebound to unowned state and was not modified."
+    )
+    assert (quarantine / ".bfi-retained").read_bytes() == b"retained-owned-state"
+    assert (destination / "foreign.txt").read_bytes() == b"foreign-destination"
+
+
+def test_failed_intake_retains_quarantine_ref_after_post_rename_failure(
+    service: BlueFireService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination_id = "retained-unverified"
+    destination = service.store.root / "source-intakes" / destination_id
+    token = "b" * 16
+    quarantine_name = f".retained-{destination_id}-{token}"
+    quarantine = destination.parent / quarantine_name
+    real_quarantine = service_module._quarantine_directory_no_replace
+
+    def fail_with_retained_state(_source: Path, retained_destination: Path, _request: Any) -> None:
+        (retained_destination / ".bfi-retained").write_bytes(b"retained-owned-state")
+        raise SourceIntakeError("injected pre-publication refusal")
+
+    def quarantine_then_report_failure(*args: Any, **kwargs: Any) -> tuple[Path, bool]:
+        retained, released = real_quarantine(*args, **kwargs)
+        assert retained == quarantine
+        assert released
+        raise SourceIntakeError("simulated descriptor close failure")
+
+    monkeypatch.setattr(service_module, "perform_source_intake", fail_with_retained_state)
+    monkeypatch.setattr(service_module, "token_hex", lambda _size: token)
+    monkeypatch.setattr(
+        service_module,
+        "_quarantine_directory_no_replace",
+        quarantine_then_report_failure,
+    )
+
+    with pytest.raises(APIError) as raised:
+        service.intake_reviewed_t1082(_surface_request(destination_id))
+
+    assert raised.value.details[-1] == (
+        f"Retained state may remain at source-intakes/{quarantine_name}; quarantine "
+        "durability could not be fully verified and no retained path was deleted."
+    )
+    assert not destination.exists()
+    assert (quarantine / ".bfi-retained").read_bytes() == b"retained-owned-state"
 
 
 def test_failed_post_publication_validation_releases_artifact_for_retry(

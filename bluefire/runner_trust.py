@@ -1584,13 +1584,20 @@ class _PinnedDirectory:
             os.close(self._parent_descriptor)
             self._parent_descriptor = None
 
-    def names(self) -> tuple[str, ...]:
+    def names(self, *, maximum: int | None = None) -> tuple[str, ...]:
+        if maximum is not None and (isinstance(maximum, bool) or maximum < 0):
+            raise RunnerTrustError("Enrollment directory entry bound is invalid.")
         try:
-            if os.name == "nt":
-                return tuple(entry.name for entry in self.path.iterdir())
-            if self._descriptor is None:
+            if os.name != "nt" and self._descriptor is None:
                 raise RunnerTrustError("Enrollment pinned storage is unavailable.")
-            return tuple(os.listdir(self._descriptor))
+            iterator = os.scandir(self.path if os.name == "nt" else self._descriptor)
+            names: list[str] = []
+            with iterator:
+                for entry in iterator:
+                    if maximum is not None and len(names) >= maximum:
+                        raise RunnerTrustError("Enrollment directory entry bound was exceeded.")
+                    names.append(entry.name)
+            return tuple(names)
         except RunnerTrustError:
             raise
         except OSError:
@@ -1883,7 +1890,7 @@ class _PinnedDirectory:
             _sync_descriptor(self._descriptor)
 
     def remove(self) -> None:
-        if self.names():
+        if self.names(maximum=1):
             raise RunnerTrustError("Enrollment contains unexpected files and was not removed.")
         if os.name == "nt":
             if self._handle is None or not self.delete:

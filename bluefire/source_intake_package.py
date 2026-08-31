@@ -7,7 +7,9 @@ Windows-only, fixed-FFI ``endpoint.discovery.windows-version.v1`` operation.
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Any, Mapping, cast
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -17,6 +19,7 @@ from .action_packages import (
     ACTION_PROGRAM_SCHEMA,
     build_signed_action_package,
 )
+from .source_intake_contracts import SourceIntakeError
 from .util import content_hash
 
 SOURCE_ID = "research.mitre-attack-enterprise.v1"
@@ -59,6 +62,7 @@ PACKAGE_VERSION = "19.2.0"
 BEHAVIOR_ID = "research.attack.system-information-discovery.v1"
 ACTION_ID = "research.attack.system-information-discovery-action.v1"
 REVIEWED_OPCODE = "endpoint.discovery.windows-version.v1"
+_REVIEWED_T1082_RECEIPT_SCHEMA = "bluefire.reviewed-source-intake-operation-receipt.v1"
 
 _EXPECTED_OUTPUT: Mapping[str, Any] = {
     "created": "2017-05-31T21:31:04.307Z",
@@ -221,6 +225,160 @@ def validate_gate09_intake_envelope(value: Any) -> Mapping[str, Any]:
     ):
         raise SourceIntakePackageError("source field disposition is incomplete")
     return envelope
+
+
+def _build_reviewed_t1082_operation_receipt(
+    *,
+    destination_id: str,
+    operator_id: str,
+    runner_profile_id: str,
+    envelope: Mapping[str, Any],
+    artifact_ref: str,
+    artifact_size_bytes: int,
+    package_activation: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Build one immutable proof of the exact completed product operation."""
+
+    package = package_activation.get("package")
+    catalog_delta = package_activation.get("catalog_delta")
+    history = envelope.get("record", {}).get("transformation_history")
+    if (
+        not isinstance(package, Mapping)
+        or not isinstance(catalog_delta, Mapping)
+        or not isinstance(history, list)
+        or len(history) != 1
+        or not isinstance(history[0], Mapping)
+    ):
+        raise SourceIntakeError("reviewed source operation receipt inputs are incomplete")
+    completed_at = (
+        datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    )
+    receipt = {
+        "schema_version": _REVIEWED_T1082_RECEIPT_SCHEMA,
+        "destination_id": destination_id,
+        "operator_id": operator_id,
+        "runner_profile_id": runner_profile_id,
+        "intake": {
+            "intake_id": INTAKE_ID,
+            "record_sha256": envelope.get("record_sha256"),
+            "output_sha256": history[0].get("output_sha256"),
+        },
+        "artifact": {
+            "state_ref": artifact_ref,
+            "sha256": content_hash(envelope),
+            "size_bytes": artifact_size_bytes,
+        },
+        "package": {
+            "package_id": package.get("package_id"),
+            "version": package.get("version"),
+            "package_digest": package.get("package_digest"),
+            "content_digest": package.get("content_digest"),
+        },
+        "activation": {
+            "operation": package_activation.get("operation"),
+            "catalog_generation": catalog_delta.get("generation_after"),
+            "catalog_digest": catalog_delta.get("catalog_digest_after"),
+        },
+        "completed_at": completed_at,
+    }
+    return _validate_reviewed_t1082_operation_receipt(
+        receipt,
+        destination_id=destination_id,
+        operator_id=operator_id,
+        runner_profile_id=runner_profile_id,
+        envelope=envelope,
+        artifact_ref=artifact_ref,
+        artifact_size_bytes=artifact_size_bytes,
+        package_activation=package_activation,
+    )
+
+
+def _validate_reviewed_t1082_operation_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    destination_id: str,
+    operator_id: str,
+    runner_profile_id: str,
+    envelope: Mapping[str, Any],
+    artifact_ref: str,
+    artifact_size_bytes: int,
+    package_activation: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Bind receipt bytes to the exact envelope, package, and resulting catalog."""
+
+    validated_envelope = validate_gate09_intake_envelope(envelope)
+    package = package_activation.get("package")
+    catalog_delta = package_activation.get("catalog_delta")
+    history = validated_envelope["record"]["transformation_history"]
+    completed_at = receipt.get("completed_at")
+    try:
+        parsed_completed_at = datetime.fromisoformat(
+            cast(str, completed_at).removesuffix("Z") + "+00:00"
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SourceIntakeError(
+            "reviewed source operation receipt completion time is invalid"
+        ) from exc
+    if (
+        not isinstance(completed_at, str)
+        or not completed_at.endswith("Z")
+        or parsed_completed_at.tzinfo is None
+        or parsed_completed_at.utcoffset() != timedelta(0)
+        or not isinstance(package, Mapping)
+        or not isinstance(catalog_delta, Mapping)
+    ):
+        raise SourceIntakeError("reviewed source operation receipt authority is invalid")
+    expected = {
+        "schema_version": _REVIEWED_T1082_RECEIPT_SCHEMA,
+        "destination_id": destination_id,
+        "operator_id": operator_id,
+        "runner_profile_id": runner_profile_id,
+        "intake": {
+            "intake_id": INTAKE_ID,
+            "record_sha256": validated_envelope["record_sha256"],
+            "output_sha256": history[0]["output_sha256"],
+        },
+        "artifact": {
+            "state_ref": artifact_ref,
+            "sha256": content_hash(validated_envelope),
+            "size_bytes": artifact_size_bytes,
+        },
+        "package": {
+            "package_id": PACKAGE_ID,
+            "version": PACKAGE_VERSION,
+            "package_digest": package.get("package_digest"),
+            "content_digest": package.get("content_digest"),
+        },
+        "activation": {
+            "operation": package_activation.get("operation"),
+            "catalog_generation": catalog_delta.get("generation_after"),
+            "catalog_digest": catalog_delta.get("catalog_digest_after"),
+        },
+        "completed_at": completed_at,
+    }
+    if (
+        dict(receipt) != expected
+        or package.get("package_id") != PACKAGE_ID
+        or package.get("version") != PACKAGE_VERSION
+        or package.get("status") != "active"
+        or package_activation.get("operation")
+        not in {"installed_and_activated", "resumed_activation", "already_active_revalidated"}
+        or not isinstance(catalog_delta.get("generation_after"), int)
+        or isinstance(catalog_delta.get("generation_after"), bool)
+        or not isinstance(catalog_delta.get("catalog_digest_after"), str)
+        or any(
+            not isinstance(value, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None
+            for value in (
+                package.get("package_digest"),
+                package.get("content_digest"),
+                catalog_delta.get("catalog_digest_after"),
+            )
+        )
+    ):
+        raise SourceIntakeError(
+            "reviewed source operation receipt is not bound to the completed operation"
+        )
+    return expected
 
 
 def _definition_provenance(record_sha256: str, *, action: bool) -> dict[str, Any]:

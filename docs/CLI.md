@@ -408,9 +408,12 @@ trusted signature without retaining private material.
 Each success atomically writes a canonical per-destination operation receipt and returns its
 path-free `operation_receipt` descriptor. The record binds the intake and artifact hashes, local
 operator and runner profile, signed package digests, activation outcome, resulting catalog
-generation/digest, and UTC completion time. A caught interrupted publication releases the
-destination; after a hard stop, the same destination securely resumes only if its existing state is
-the exact canonical artifact expected by the reviewed intake.
+generation/digest, and UTC completion time. A caught failure releases the requested destination. If
+failed state cannot be removed without a pathname race, the exact namespace is moved to a hidden,
+no-replace quarantine under `source-intakes/`; the command reports that relative state reference and
+retains every entry. A collision or rebound is reported without overwriting or deleting the foreign
+state. After a hard stop, the same destination securely resumes only if its existing state is the
+exact canonical artifact expected by the reviewed intake.
 
 If runner activation fails after package installation, rerun the same command and destination after
 restoring readiness; the released destination is recreated and the exact installed package is

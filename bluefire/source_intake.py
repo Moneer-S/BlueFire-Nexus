@@ -7,12 +7,15 @@ and transformation finish before one content-addressed envelope is published.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
+import platform
 import re
 import secrets
 import stat
+import sys
 import unicodedata
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -33,8 +36,14 @@ from .source_intake_contracts import (
     _identifier,
 )
 from .util import canonical_json_bytes, content_hash
+from .windows_owner_acl import (
+    _windows_mark_delete_descriptor,
+    _windows_open_descriptor,
+    _windows_rename_descriptor,
+)
 
 MAX_OUTPUT_BYTES = 512 * 1024
+_TEMPORARY_OUTPUT_PREFIX = ".bfi-"
 MAX_JSON_DEPTH = 12
 MAX_JSON_NODES = 2048
 MAX_CONTAINER_ITEMS = 512
@@ -347,7 +356,12 @@ def _read_verified_source(root: Path, source: IntakeSource) -> bytes:
         raise _error("reviewed source could not be read safely") from exc
     finally:
         if descriptor is not None:
-            os.close(descriptor)
+            active_failure = sys.exc_info()[1]
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                if active_failure is None:
+                    raise _error("reviewed source descriptor could not be closed safely") from exc
     for path, identity in chain:
         try:
             current = path.lstat()
@@ -542,24 +556,219 @@ def _apply_transformer(
     )
 
 
-def _unlink_owned(path: Path, identity: tuple[int, int, int] | None) -> None:
-    if identity is None:
+def _posix_rename_no_replace(
+    root_descriptor: int,
+    source_name: str,
+    target_name: str,
+) -> None:
+    """Atomically publish one child through a pinned POSIX directory."""
+
+    if any(
+        not name or name in {".", ".."} or "/" in name or "\x00" in name
+        for name in (source_name, target_name)
+    ):
+        raise OSError(errno.EINVAL, "invalid no-replace publication name")
+    if sys.platform.startswith("linux"):
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        source = ctypes.c_char_p(os.fsencode(source_name))
+        target = ctypes.c_char_p(os.fsencode(target_name))
+        try:
+            renameat2 = libc.renameat2
+        except AttributeError:
+            numbers = {
+                "x86_64": 316,
+                "amd64": 316,
+                "aarch64": 276,
+                "arm64": 276,
+            }
+            number = numbers.get(platform.machine().casefold())
+            if number is None:
+                raise OSError(errno.ENOTSUP, "renameat2 is unavailable") from None
+            syscall = libc.syscall
+            syscall.restype = ctypes.c_long
+            result = syscall(
+                ctypes.c_long(number),
+                ctypes.c_int(root_descriptor),
+                source,
+                ctypes.c_int(root_descriptor),
+                target,
+                ctypes.c_uint(1),  # RENAME_NOREPLACE
+            )
+        else:
+            renameat2.argtypes = (
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            )
+            renameat2.restype = ctypes.c_int
+            result = renameat2(
+                root_descriptor,
+                source,
+                root_descriptor,
+                target,
+                1,  # RENAME_NOREPLACE
+            )
+        if result != 0:
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), target_name)
         return
+    if sys.platform == "darwin":
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        try:
+            renameatx_np = libc.renameatx_np
+        except AttributeError as exc:
+            raise OSError(errno.ENOTSUP, "renameatx_np is unavailable") from exc
+        renameatx_np.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        renameatx_np.restype = ctypes.c_int
+        if (
+            renameatx_np(
+                root_descriptor,
+                os.fsencode(source_name),
+                root_descriptor,
+                os.fsencode(target_name),
+                0x00000004,  # RENAME_EXCL
+            )
+            != 0
+        ):
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), target_name)
+        return
+    raise OSError(errno.ENOTSUP, "atomic no-replace publication is unavailable")
+
+
+def _quarantine_directory_no_replace(
+    directory: Path,
+    quarantine_name: str,
+    *,
+    directory_identity: tuple[int, int, int],
+    parent_identity: tuple[int, int, int],
+) -> tuple[Path, bool]:
+    """Move one exact retained directory aside without replacing another path."""
+
+    if (
+        not directory.is_absolute()
+        or not directory.name
+        or Path(quarantine_name).name != quarantine_name
+        or not quarantine_name
+        or quarantine_name in {".", "..", directory.name}
+        or "\x00" in quarantine_name
+    ):
+        raise _error("retained source-intake quarantine name is invalid")
+    parent = directory.parent
+    quarantine = parent / quarantine_name
+    parent_descriptor: int | None = None
+    directory_descriptor: int | None = None
+    close_failure: OSError | None = None
     try:
-        current = path.lstat()
-        if not _is_link_or_reparse(current) and _path_identity(current) == identity:
-            path.unlink()
-    except OSError:
-        pass
+        if os.name == "nt":
+            parent_descriptor = _windows_open_descriptor(parent, directory=True)
+            directory_descriptor = _windows_open_descriptor(
+                directory,
+                directory=True,
+                delete=True,
+            )
+        else:
+            flags = os.O_RDONLY
+            flags |= (
+                getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            parent_descriptor = os.open(parent, flags)
+            directory_descriptor = os.open(
+                directory.name,
+                flags,
+                dir_fd=parent_descriptor,
+            )
+        opened_parent = os.fstat(parent_descriptor)
+        opened_directory = os.fstat(directory_descriptor)
+        current_parent = parent.lstat()
+        current_directory = directory.lstat()
+        if (
+            _is_link_or_reparse(opened_parent)
+            or not stat.S_ISDIR(opened_parent.st_mode)
+            or _path_identity(opened_parent) != parent_identity
+            or _is_link_or_reparse(opened_directory)
+            or not stat.S_ISDIR(opened_directory.st_mode)
+            or _path_identity(opened_directory) != directory_identity
+            or _is_link_or_reparse(current_parent)
+            or _path_identity(current_parent) != parent_identity
+            or _is_link_or_reparse(current_directory)
+            or _path_identity(current_directory) != directory_identity
+        ):
+            raise _error("retained source-intake destination changed before quarantine")
+        if os.name == "nt":
+            _windows_rename_descriptor(directory_descriptor, parent_descriptor, quarantine_name)
+        else:
+            _posix_rename_no_replace(parent_descriptor, directory.name, quarantine_name)
+        pinned_after = os.fstat(directory_descriptor)
+        quarantined = quarantine.lstat()
+        parent_after = parent.lstat()
+        if (
+            _path_identity(pinned_after) != directory_identity
+            or _is_link_or_reparse(quarantined)
+            or not stat.S_ISDIR(quarantined.st_mode)
+            or _path_identity(quarantined) != directory_identity
+            or _is_link_or_reparse(parent_after)
+            or _path_identity(parent_after) != parent_identity
+        ):
+            raise _error("retained source-intake quarantine identity is unverified")
+        try:
+            directory.lstat()
+        except FileNotFoundError:
+            released = True
+        else:
+            released = False
+        if os.name != "nt":
+            os.fsync(parent_descriptor)
+        return quarantine, released
+    except FileExistsError:
+        raise
+    except SourceIntakeError:
+        raise
+    except OSError as exc:
+        raise _error("retained source-intake destination could not be quarantined safely") from exc
+    finally:
+        active_failure = sys.exc_info()[1]
+        if directory_descriptor is not None:
+            try:
+                os.close(directory_descriptor)
+            except OSError as exc:
+                close_failure = exc
+        if parent_descriptor is not None:
+            try:
+                os.close(parent_descriptor)
+            except OSError as exc:
+                if close_failure is None:
+                    close_failure = exc
+        if close_failure is not None and active_failure is None:
+            raise _error(
+                "retained source-intake quarantine descriptor cleanup could not be guaranteed"
+            ) from close_failure
 
 
 def _publish_new_file(root: Path, name: str, payload: bytes) -> Path:
     if not payload or len(payload) > MAX_OUTPUT_BYTES:
         raise _error("source intake envelope exceeds its output byte limit")
     target = root / name
-    temporary = root / f".{name}.{secrets.token_hex(16)}.tmp"
+    temporary = root / f"{_TEMPORARY_OUTPUT_PREFIX}{secrets.token_hex(16)}"
     try:
         root_before = root.lstat()
+    except OSError as exc:
+        raise _error("source intake destination is unavailable") from exc
+    try:
         target.lstat()
     except FileNotFoundError:
         pass
@@ -570,12 +779,40 @@ def _publish_new_file(root: Path, name: str, payload: bytes) -> Path:
     if _is_link_or_reparse(root_before) or not stat.S_ISDIR(root_before.st_mode):
         raise _error("source intake destination root is unsafe")
     descriptor: int | None = None
+    root_descriptor: int | None = None
     temporary_identity: tuple[int, int, int] | None = None
     published_identity: tuple[int, int, int] | None = None
+    publication_verified = False
+    exact_cleanup_failure: OSError | None = None
+    descriptor_close_failure: OSError | None = None
     try:
-        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
-        flags |= getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(temporary, flags, 0o600)
+        if os.name == "nt":
+            root_descriptor = _windows_open_descriptor(root, directory=True)
+            descriptor = _windows_open_descriptor(
+                temporary,
+                directory=False,
+                write=True,
+                delete=True,
+                create=True,
+            )
+        else:
+            root_flags = os.O_RDONLY
+            root_flags |= (
+                getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            root_descriptor = os.open(root, root_flags)
+            flags = os.O_RDWR | os.O_CREAT | os.O_EXCL
+            flags |= (
+                getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(temporary.name, flags, 0o600, dir_fd=root_descriptor)
+        opened_root = os.fstat(root_descriptor)
+        if _path_identity(opened_root) != _path_identity(root_before):
+            raise _error("source intake destination root changed during publication")
         opened = os.fstat(descriptor)
         temporary_identity = _path_identity(opened)
         if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
@@ -606,56 +843,78 @@ def _publish_new_file(root: Path, name: str, payload: bytes) -> Path:
             root_before
         ):
             raise _error("source intake destination root changed during publication")
-        os.link(temporary, target, follow_symlinks=False)
-        published_identity = temporary_identity
+        if os.name == "nt":
+            if root_descriptor is None:
+                raise _error("source intake destination root is unavailable")
+            _windows_rename_descriptor(descriptor, root_descriptor, name)
+        else:
+            if root_descriptor is None:
+                raise _error("source intake destination root is unavailable")
+            _posix_rename_no_replace(root_descriptor, temporary.name, name)
+        temporary_identity = None
         published = target.lstat()
-        if _is_link_or_reparse(published) or _path_identity(published) != temporary_identity:
+        if _is_link_or_reparse(published) or _path_identity(published) != _path_identity(current):
             raise _error("source intake published output has an unexpected identity")
         published_identity = _path_identity(published)
-        os.close(descriptor)
-        descriptor = None
-        temporary.unlink()
-        temporary_identity = None
-        verification = os.open(
-            target, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-        )
         try:
-            final = os.fstat(verification)
-            final_payload = bytearray()
-            while len(final_payload) <= len(payload):
-                block = os.read(verification, min(64 * 1024, len(payload) + 1 - len(final_payload)))
-                if not block:
-                    break
-                final_payload.extend(block)
-        finally:
-            os.close(verification)
+            temporary.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise _error("source intake temporary output changed during publication")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        final_payload = bytearray()
+        while len(final_payload) <= len(payload):
+            block = os.read(descriptor, min(64 * 1024, len(payload) + 1 - len(final_payload)))
+            if not block:
+                break
+            final_payload.extend(block)
+        final = os.fstat(descriptor)
+        final_path = target.lstat()
+        final_root = root.lstat()
         if (
             _path_identity(final) != published_identity
+            or _is_link_or_reparse(final_path)
+            or _path_identity(final_path) != published_identity
+            or _is_link_or_reparse(final_root)
+            or _path_identity(final_root) != _path_identity(root_before)
             or final.st_nlink != 1
             or bytes(final_payload) != payload
         ):
             raise _error("source intake published output failed final verification")
+        if os.name != "nt":
+            os.fsync(root_descriptor)
+        publication_verified = True
     except SourceIntakeError:
-        _unlink_owned(target, published_identity)
         raise
     except OSError as exc:
-        _unlink_owned(target, published_identity)
         raise _error("source intake output could not be atomically published") from exc
     finally:
+        active_failure = sys.exc_info()[1]
         if descriptor is not None:
-            os.close(descriptor)
-        _unlink_owned(temporary, temporary_identity)
-    try:
-        directory_descriptor = os.open(root, os.O_RDONLY)
-    except OSError:
-        directory_descriptor = None
-    if directory_descriptor is not None:
-        try:
-            os.fsync(directory_descriptor)
-        except OSError:
-            pass
-        finally:
-            os.close(directory_descriptor)
+            if os.name == "nt" and not publication_verified:
+                try:
+                    _windows_mark_delete_descriptor(descriptor)
+                except OSError as exc:
+                    exact_cleanup_failure = exc
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                descriptor_close_failure = exc
+        if root_descriptor is not None:
+            try:
+                os.close(root_descriptor)
+            except OSError as exc:
+                if descriptor_close_failure is None:
+                    descriptor_close_failure = exc
+        if exact_cleanup_failure is not None:
+            raise _error(
+                "source intake exact cleanup could not be guaranteed; owned artifacts were retained"
+            ) from exact_cleanup_failure
+        if descriptor_close_failure is not None and active_failure is None:
+            raise _error(
+                "source intake descriptor cleanup could not be guaranteed; owned artifacts were retained"
+            ) from descriptor_close_failure
     return target
 
 

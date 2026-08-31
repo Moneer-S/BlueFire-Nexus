@@ -140,8 +140,16 @@ def test_official_style_attack_metadata_is_projected_deterministically(tmp_path:
     first = perform_source_intake(source, first_destination, request)
     second = perform_source_intake(source, second_destination, request)
 
+    target_name = "intake.mitre-system-information.v1.json"
+    padding = max(1, 228 - len(os.fspath(tmp_path)) - len(target_name) - 2)
+    long_destination = tmp_path / ("d" * padding)
+    long_destination.mkdir()
+    assert 220 <= len(os.fspath(long_destination / target_name)) < 248
+    long_path_result = perform_source_intake(source, long_destination, request)
+
     assert first.path.name == "intake.mitre-system-information.v1.json"
     assert first.path.read_bytes() == second.path.read_bytes()
+    assert long_path_result.path.read_bytes() == first.path.read_bytes()
     assert first.path.read_bytes() == canonical_json_bytes(first.envelope)
     assert first.record_sha256 == content_hash(first.envelope["record"])
     output = first.envelope["record"]["output"]
@@ -495,7 +503,9 @@ def test_destination_symlink_is_refused(tmp_path: Path) -> None:
     _assert_empty(real_destination)
 
 
-def test_stale_output_is_preserved_and_not_replaced(tmp_path: Path) -> None:
+def test_stale_output_is_preserved_and_not_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "source"
     destination = tmp_path / "destination"
     source.mkdir()
@@ -510,6 +520,82 @@ def test_stale_output_is_preserved_and_not_replaced(tmp_path: Path) -> None:
     assert stale.read_bytes() == b"operator-owned"
     assert list(destination.iterdir()) == [stale]
 
+    temporary_destination = tmp_path / "temporary-destination"
+    temporary_destination.mkdir()
+    monkeypatch.setattr(source_intake.secrets, "token_hex", lambda _size: "f" * 12)
+    stale_temporary = temporary_destination / (source_intake._TEMPORARY_OUTPUT_PREFIX + "f" * 12)
+    stale_temporary.write_bytes(b"operator-owned-temporary")
+    with pytest.raises(SourceIntakeError, match="atomically published"):
+        perform_source_intake(source, temporary_destination, _request(payload))
+    assert stale_temporary.read_bytes() == b"operator-owned-temporary"
+    assert list(temporary_destination.iterdir()) == [stale_temporary]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle-relative publication regression")
+def test_windows_publication_preserves_a_rebound_temporary_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    payload = _write_source(source, _technique())
+    token = "a" * 12
+    temporary = destination / (source_intake._TEMPORARY_OUTPUT_PREFIX + token)
+    target = destination / "intake.mitre-system-information.v1.json"
+    real_rename = source_intake._windows_rename_descriptor
+
+    monkeypatch.setattr(source_intake.secrets, "token_hex", lambda _size: token)
+
+    def rename_then_rebind(descriptor: int, root_descriptor: int, target_name: str) -> None:
+        real_rename(descriptor, root_descriptor, target_name)
+        temporary.write_bytes(b"operator-owned-temporary")
+
+    monkeypatch.setattr(source_intake, "_windows_rename_descriptor", rename_then_rebind)
+
+    with pytest.raises(SourceIntakeError, match="temporary output changed"):
+        perform_source_intake(source, destination, _request(payload))
+
+    assert temporary.read_bytes() == b"operator-owned-temporary"
+    assert not target.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle cleanup regression")
+def test_windows_failed_handle_cleanup_retains_every_named_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.mkdir()
+    destination.mkdir()
+    payload = _write_source(source, _technique())
+    token = "b" * 12
+    temporary = destination / (source_intake._TEMPORARY_OUTPUT_PREFIX + token)
+    target = destination / "intake.mitre-system-information.v1.json"
+    real_rename = source_intake._windows_rename_descriptor
+
+    monkeypatch.setattr(source_intake.secrets, "token_hex", lambda _size: token)
+
+    def rename_then_rebind(descriptor: int, root_descriptor: int, target_name: str) -> None:
+        real_rename(descriptor, root_descriptor, target_name)
+        temporary.write_bytes(b"operator-owned-temporary")
+
+    def refuse_handle_cleanup(_descriptor: int) -> None:
+        raise OSError("simulated handle cleanup refusal")
+
+    def refuse_path_cleanup(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("failed handle cleanup must never fall back to pathname deletion")
+
+    monkeypatch.setattr(source_intake, "_windows_rename_descriptor", rename_then_rebind)
+    monkeypatch.setattr(source_intake, "_windows_mark_delete_descriptor", refuse_handle_cleanup)
+    monkeypatch.setattr(Path, "unlink", refuse_path_cleanup)
+
+    with pytest.raises(SourceIntakeError, match="exact cleanup could not be guaranteed"):
+        perform_source_intake(source, destination, _request(payload))
+
+    assert temporary.read_bytes() == b"operator-owned-temporary"
+    assert target.is_file()
+
 
 def test_publication_failure_removes_only_its_temporary_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -520,16 +606,82 @@ def test_publication_failure_removes_only_its_temporary_file(
     destination.mkdir()
     payload = _write_source(source, _technique())
 
-    def refuse_link(*_args: Any, **_kwargs: Any) -> None:
+    def refuse_publication(*_args: Any, **_kwargs: Any) -> None:
         raise PermissionError("simulated publication refusal")
 
-    monkeypatch.setattr(source_intake.os, "link", refuse_link)
+    if os.name == "nt":
+        monkeypatch.setattr(source_intake, "_windows_rename_descriptor", refuse_publication)
+    else:
+        monkeypatch.setattr(source_intake, "_posix_rename_no_replace", refuse_publication)
     with pytest.raises(SourceIntakeError, match="atomically published"):
         perform_source_intake(source, destination, _request(payload))
-    _assert_empty(destination)
+    if os.name == "nt":
+        _assert_empty(destination)
+    else:
+        retained = list(destination.iterdir())
+        assert len(retained) == 1
+        assert retained[0].name.startswith(source_intake._TEMPORARY_OUTPUT_PREFIX)
 
 
-def test_post_link_identity_failure_removes_the_exact_published_file(
+def test_missing_destination_during_publication_is_a_typed_failure(tmp_path: Path) -> None:
+    destination = tmp_path / "missing"
+
+    with pytest.raises(SourceIntakeError, match="destination is unavailable"):
+        source_intake._publish_new_file(destination, "output.json", b"{}")
+
+
+def test_descriptor_close_failure_preserves_error_and_closes_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    real_close = source_intake.os.close
+    closed: list[int] = []
+
+    def refuse_publication(*_args: Any, **_kwargs: Any) -> None:
+        raise PermissionError("simulated publication refusal")
+
+    def close_then_report(descriptor: int) -> None:
+        real_close(descriptor)
+        closed.append(descriptor)
+        if len(closed) == 1:
+            raise OSError("simulated descriptor close failure")
+
+    if os.name == "nt":
+        monkeypatch.setattr(source_intake, "_windows_rename_descriptor", refuse_publication)
+    else:
+        monkeypatch.setattr(source_intake, "_posix_rename_no_replace", refuse_publication)
+    monkeypatch.setattr(source_intake.os, "close", close_then_report)
+
+    with pytest.raises(SourceIntakeError, match="atomically published"):
+        source_intake._publish_new_file(destination, "output.json", b"{}")
+
+    assert len(closed) == 2
+    assert closed[0] != closed[1]
+
+
+def test_source_close_failure_does_not_mask_verification_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    payload = _write_source(source, _technique())
+    request = _request(payload)
+    request["source"]["size_bytes"] += 1
+    parsed = source_intake.SourceIntakeRequest.from_mapping(request)
+    real_close = source_intake.os.close
+
+    def close_then_report(descriptor: int) -> None:
+        real_close(descriptor)
+        raise OSError("simulated descriptor close failure")
+
+    monkeypatch.setattr(source_intake.os, "close", close_then_report)
+
+    with pytest.raises(SourceIntakeError, match="identity or size"):
+        source_intake._read_verified_source(source, parsed.source)
+
+
+def test_post_publication_identity_failure_uses_only_exact_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "source"
@@ -553,8 +705,11 @@ def test_post_link_identity_failure_removes_the_exact_published_file(
     with pytest.raises(SourceIntakeError, match="atomically published"):
         perform_source_intake(source, destination, _request(payload))
 
-    assert target_calls >= 3
-    _assert_empty(destination)
+    assert target_calls == 2
+    if os.name == "nt":
+        _assert_empty(destination)
+    else:
+        assert list(destination.iterdir()) == [target]
 
 
 def test_custom_transformers_cannot_emit_materialization_fields(tmp_path: Path) -> None:

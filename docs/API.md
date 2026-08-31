@@ -166,10 +166,14 @@ Every successful destination also receives its own canonical
 only a relative state reference, media type, SHA-256, byte count, and the exact receipt record. That
 record binds the destination/operator/profile, intake record and artifact digests, package identity
 and digests, activation operation, resulting catalog generation/digest, and UTC completion time.
-Receipt publication is exclusive and atomic. A caught failed publication releases the new
-destination; a hard interruption resumes only an exact artifact-only destination under the durable
-catalog lease. Revalidating an already-active package still produces a distinct receipt for the new
-destination without fabricating another activation event.
+Receipt publication is exclusive and atomic. A caught failure releases the requested new
+destination. When failed state cannot be removed without a pathname race, BlueFire instead moves
+the exact destination namespace to a hidden, no-replace quarantine beneath `source-intakes/` and
+returns its relative state reference in the error details. Every child entry is retained; a collided
+quarantine or rebound destination is preserved and reported rather than overwritten or deleted. A
+hard interruption resumes only an exact artifact-only destination under the durable catalog lease.
+Revalidating an already-active package still produces a distinct receipt for the new destination
+without fabricating another activation event.
 
 ### Validate
 

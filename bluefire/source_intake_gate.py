@@ -65,9 +65,9 @@ _CONTRACT_TESTS = (
 )
 
 # Updated only from the sorted JUnit inventory emitted by _run_pytest_suite.
-_EXPECTED_CONTRACT_TEST_COUNT = 141
+_EXPECTED_CONTRACT_TEST_COUNT = 151
 _EXPECTED_CONTRACT_TESTS_SHA256 = (
-    "sha256:a1267ee2ce93ab4dd9e958eff25020f1c7a04fc0e642107465312f258fe5906a"
+    "sha256:9852d5de60b2b2c3669016a076b3bf0b9a8c1fb2867e4bff82e67dc76f981db4"
 )
 
 _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str]] = {

@@ -19,6 +19,7 @@ from http import HTTPStatus
 from importlib.resources import as_file, files
 from ipaddress import ip_address
 from pathlib import Path, PurePosixPath
+from secrets import token_hex
 from typing import Any, Callable, Mapping, Sequence, cast
 
 import yaml
@@ -128,7 +129,15 @@ from .runner_contracts import RunnerContractError
 from .runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError
 from .runner_management_service import RunnerManagementServiceMixin
 from .runner_trust import RunnerTrustError, _PinnedDirectory
-from .source_intake import SourceIntakeError, perform_source_intake
+from .source_intake import (
+    SourceIntakeError,
+    _quarantine_directory_no_replace,
+    perform_source_intake,
+)
+from .source_intake_package import (
+    _build_reviewed_t1082_operation_receipt,
+    _validate_reviewed_t1082_operation_receipt,
+)
 from .util import canonical_json_bytes, content_hash, file_hash
 
 RunnerFactory = Callable[[RunnerProfile], tuple[RunnerTransport, Path]]
@@ -182,8 +191,9 @@ _REVIEWED_T1082_STAGE_FILE = "mitre-attack-t1082-v19-2-action-package.json"
 _REVIEWED_T1082_STAGE_SCHEMA = "bluefire.reviewed-source-intake-package-stage.v1"
 _MAX_REVIEWED_T1082_STAGE_BYTES = 1_048_576
 _REVIEWED_T1082_RECEIPT_FILE = "intake.mitre-t1082.v1.operation-receipt.json"
-_REVIEWED_T1082_RECEIPT_SCHEMA = "bluefire.reviewed-source-intake-operation-receipt.v1"
 _MAX_REVIEWED_T1082_RECEIPT_BYTES = 32 * 1024
+_SOURCE_INTAKE_QUARANTINE_PREFIX = ".retained-"
+_SOURCE_INTAKE_QUARANTINE_ATTEMPTS = 8
 
 
 def _default_ai_provider_factory(config: AIConfig, provider_id: str) -> AIProvider:
@@ -1278,7 +1288,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                 "record": receipt_record,
             }
         except (OSError, SourceIntakeError, source_intake_package.SourceIntakePackageError) as exc:
-            _release_failed_source_intake_destination(
+            release = _release_failed_source_intake_destination(
                 destination,
                 destination_identity=destination_identity,
                 intake_root_identity=intake_root_identity,
@@ -1286,18 +1296,22 @@ class BlueFireService(RunnerManagementServiceMixin):
                 published_artifact=published_artifact,
                 published_receipt=published_receipt,
             )
+            details = (
+                [str(exc)]
+                if isinstance(
+                    exc,
+                    (SourceIntakeError, source_intake_package.SourceIntakePackageError),
+                )
+                else []
+            )
+            release_detail = _source_intake_release_detail(release)
+            if release_detail is not None:
+                details.append(release_detail)
             raise APIError(
                 HTTPStatus.UNPROCESSABLE_ENTITY,
                 "source_intake_rejected",
                 "The reviewed T1082 source intake was rejected.",
-                (
-                    [str(exc)]
-                    if isinstance(
-                        exc,
-                        (SourceIntakeError, source_intake_package.SourceIntakePackageError),
-                    )
-                    else None
-                ),
+                details or None,
             ) from exc
         except Exception:
             _release_failed_source_intake_destination(
@@ -7431,160 +7445,6 @@ def _read_owned_canonical_document(
     return document, payload, identity
 
 
-def _build_reviewed_t1082_operation_receipt(
-    *,
-    destination_id: str,
-    operator_id: str,
-    runner_profile_id: str,
-    envelope: Mapping[str, Any],
-    artifact_ref: str,
-    artifact_size_bytes: int,
-    package_activation: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    """Build one immutable proof of the exact completed product operation."""
-
-    package = package_activation.get("package")
-    catalog_delta = package_activation.get("catalog_delta")
-    history = envelope.get("record", {}).get("transformation_history")
-    if (
-        not isinstance(package, Mapping)
-        or not isinstance(catalog_delta, Mapping)
-        or not isinstance(history, list)
-        or len(history) != 1
-        or not isinstance(history[0], Mapping)
-    ):
-        raise SourceIntakeError("reviewed source operation receipt inputs are incomplete")
-    completed_at = (
-        datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
-    )
-    receipt = {
-        "schema_version": _REVIEWED_T1082_RECEIPT_SCHEMA,
-        "destination_id": destination_id,
-        "operator_id": operator_id,
-        "runner_profile_id": runner_profile_id,
-        "intake": {
-            "intake_id": source_intake_package.INTAKE_ID,
-            "record_sha256": envelope.get("record_sha256"),
-            "output_sha256": history[0].get("output_sha256"),
-        },
-        "artifact": {
-            "state_ref": artifact_ref,
-            "sha256": content_hash(envelope),
-            "size_bytes": artifact_size_bytes,
-        },
-        "package": {
-            "package_id": package.get("package_id"),
-            "version": package.get("version"),
-            "package_digest": package.get("package_digest"),
-            "content_digest": package.get("content_digest"),
-        },
-        "activation": {
-            "operation": package_activation.get("operation"),
-            "catalog_generation": catalog_delta.get("generation_after"),
-            "catalog_digest": catalog_delta.get("catalog_digest_after"),
-        },
-        "completed_at": completed_at,
-    }
-    return _validate_reviewed_t1082_operation_receipt(
-        receipt,
-        destination_id=destination_id,
-        operator_id=operator_id,
-        runner_profile_id=runner_profile_id,
-        envelope=envelope,
-        artifact_ref=artifact_ref,
-        artifact_size_bytes=artifact_size_bytes,
-        package_activation=package_activation,
-    )
-
-
-def _validate_reviewed_t1082_operation_receipt(
-    receipt: Mapping[str, Any],
-    *,
-    destination_id: str,
-    operator_id: str,
-    runner_profile_id: str,
-    envelope: Mapping[str, Any],
-    artifact_ref: str,
-    artifact_size_bytes: int,
-    package_activation: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    """Bind receipt bytes to the exact envelope, package, and resulting catalog."""
-
-    validated_envelope = source_intake_package.validate_gate09_intake_envelope(envelope)
-    package = package_activation.get("package")
-    catalog_delta = package_activation.get("catalog_delta")
-    history = validated_envelope["record"]["transformation_history"]
-    completed_at = receipt.get("completed_at")
-    try:
-        parsed_completed_at = datetime.fromisoformat(
-            cast(str, completed_at).removesuffix("Z") + "+00:00"
-        )
-    except (AttributeError, TypeError, ValueError) as exc:
-        raise SourceIntakeError(
-            "reviewed source operation receipt completion time is invalid"
-        ) from exc
-    if (
-        not isinstance(completed_at, str)
-        or not completed_at.endswith("Z")
-        or parsed_completed_at.tzinfo is None
-        or parsed_completed_at.utcoffset() != timedelta(0)
-        or not isinstance(package, Mapping)
-        or not isinstance(catalog_delta, Mapping)
-    ):
-        raise SourceIntakeError("reviewed source operation receipt authority is invalid")
-    expected = {
-        "schema_version": _REVIEWED_T1082_RECEIPT_SCHEMA,
-        "destination_id": destination_id,
-        "operator_id": operator_id,
-        "runner_profile_id": runner_profile_id,
-        "intake": {
-            "intake_id": source_intake_package.INTAKE_ID,
-            "record_sha256": validated_envelope["record_sha256"],
-            "output_sha256": history[0]["output_sha256"],
-        },
-        "artifact": {
-            "state_ref": artifact_ref,
-            "sha256": content_hash(validated_envelope),
-            "size_bytes": artifact_size_bytes,
-        },
-        "package": {
-            "package_id": source_intake_package.PACKAGE_ID,
-            "version": source_intake_package.PACKAGE_VERSION,
-            "package_digest": package.get("package_digest"),
-            "content_digest": package.get("content_digest"),
-        },
-        "activation": {
-            "operation": package_activation.get("operation"),
-            "catalog_generation": catalog_delta.get("generation_after"),
-            "catalog_digest": catalog_delta.get("catalog_digest_after"),
-        },
-        "completed_at": completed_at,
-    }
-    if (
-        dict(receipt) != expected
-        or package.get("package_id") != source_intake_package.PACKAGE_ID
-        or package.get("version") != source_intake_package.PACKAGE_VERSION
-        or package.get("status") != "active"
-        or package_activation.get("operation")
-        not in {"installed_and_activated", "resumed_activation", "already_active_revalidated"}
-        or not isinstance(catalog_delta.get("generation_after"), int)
-        or isinstance(catalog_delta.get("generation_after"), bool)
-        or not isinstance(catalog_delta.get("catalog_digest_after"), str)
-        or any(
-            not isinstance(value, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None
-            for value in (
-                package.get("package_digest"),
-                package.get("content_digest"),
-                catalog_delta.get("catalog_digest_after"),
-            )
-        )
-    ):
-        raise SourceIntakeError(
-            "reviewed source operation receipt is not bound to the completed operation"
-        )
-    return expected
-
-
 def _publish_reviewed_t1082_operation_receipt(
     destination: Path,
     *,
@@ -7632,8 +7492,25 @@ def _release_failed_source_intake_destination(
     destination_created: bool,
     published_artifact: tuple[Path, tuple[int, int, int], bytes] | None,
     published_receipt: tuple[Path, tuple[int, int, int], bytes] | None,
-) -> None:
-    """Remove only exact unchanged output and state allocated by this call."""
+) -> tuple[str, str | None]:
+    """Release new state by exact quarantine, or preserve an interrupted namespace."""
+
+    if destination_created:
+        try:
+            with _PinnedDirectory(destination, private=False, delete=True) as allocated:
+                if allocated.identity != destination_identity[:2] or allocated.names(maximum=1):
+                    raise RunnerTrustError(
+                        "failed source-intake destination is not the exact empty namespace"
+                    )
+                allocated.remove()
+            return "released", None
+        except (OSError, RunnerTrustError):
+            pass
+        return _quarantine_failed_source_intake_destination(
+            destination,
+            destination_identity=destination_identity,
+            intake_root_identity=intake_root_identity,
+        )
 
     try:
         intake_root = destination.parent
@@ -7649,23 +7526,122 @@ def _release_failed_source_intake_destination(
             or _filesystem_identity(destination_metadata) != destination_identity
             or resolved_destination.parent != resolved_intake_root
         ):
-            return
+            return "retained", None
         if published_receipt is not None and not _remove_exact_source_intake_file(
             destination,
             published_receipt,
             expected_name=_REVIEWED_T1082_RECEIPT_FILE,
         ):
-            return
+            return "retained", f"source-intakes/{destination.name}"
         if published_artifact is not None and not _remove_exact_source_intake_file(
             destination,
             published_artifact,
             expected_name=f"{source_intake_package.INTAKE_ID}.json",
         ):
-            return
-        if destination_created:
-            destination.rmdir()
+            return "retained", f"source-intakes/{destination.name}"
     except OSError:
-        return
+        return "retained", f"source-intakes/{destination.name}"
+    return "existing_preserved", None
+
+
+def _quarantine_failed_source_intake_destination(
+    destination: Path,
+    *,
+    destination_identity: tuple[int, int, int],
+    intake_root_identity: tuple[int, int, int],
+) -> tuple[str, str | None]:
+    """Move one exact failed namespace aside while preserving every child entry."""
+
+    original_ref = f"source-intakes/{destination.name}"
+    for _attempt in range(_SOURCE_INTAKE_QUARANTINE_ATTEMPTS):
+        quarantine_name = f"{_SOURCE_INTAKE_QUARANTINE_PREFIX}{destination.name}-{token_hex(8)}"
+        quarantine = destination.parent / quarantine_name
+        quarantine_ref = f"source-intakes/{quarantine_name}"
+        try:
+            retained, released = _quarantine_directory_no_replace(
+                destination,
+                quarantine_name,
+                directory_identity=destination_identity,
+                parent_identity=intake_root_identity,
+            )
+        except FileExistsError:
+            continue
+        except (OSError, SourceIntakeError):
+            try:
+                retained_metadata = quarantine.lstat()
+            except OSError:
+                retained_metadata = None
+            if (
+                retained_metadata is not None
+                and not _unsafe_directory_metadata(retained_metadata)
+                and _filesystem_identity(retained_metadata) == destination_identity
+            ):
+                return "quarantined_unverified", quarantine_ref
+            try:
+                current = destination.lstat()
+            except OSError:
+                return "retained", None
+            if (
+                not _unsafe_directory_metadata(current)
+                and _filesystem_identity(current) == destination_identity
+            ):
+                return "retained", original_ref
+            return "retained", None
+        if retained != quarantine:
+            return "retained", None
+        return ("quarantined" if released else "quarantined_rebound"), quarantine_ref
+    try:
+        current = destination.lstat()
+    except OSError:
+        return "retained", None
+    if (
+        not _unsafe_directory_metadata(current)
+        and _filesystem_identity(current) == destination_identity
+    ):
+        return "retained", original_ref
+    return "retained", None
+
+
+def _source_intake_release_detail(release: tuple[str, str | None]) -> str | None:
+    state, state_ref = release
+    if state in {"released", "existing_preserved"}:
+        return None
+    if state_ref is not None:
+        logical_ref = PurePosixPath(state_ref)
+        if (
+            logical_ref.is_absolute()
+            or len(logical_ref.parts) != 2
+            or logical_ref.parts[0] != "source-intakes"
+            or logical_ref.parts[1] in {"", ".", ".."}
+            or "\\" in state_ref
+            or ":" in logical_ref.parts[1]
+            or any(ord(character) < 32 or ord(character) == 127 for character in state_ref)
+        ):
+            state_ref = None
+    if state == "quarantined" and state_ref is not None:
+        return (
+            f"Fail-closed retained state was quarantined at {state_ref}; "
+            "the requested destination was released for retry."
+        )
+    if state == "quarantined_rebound" and state_ref is not None:
+        return (
+            f"Exact retained state was quarantined at {state_ref}, but the requested "
+            "destination was rebound to unowned state and was not modified."
+        )
+    if state == "quarantined_unverified" and state_ref is not None:
+        return (
+            f"Retained state may remain at {state_ref}; quarantine durability could not be "
+            "fully verified and no retained path was deleted."
+        )
+    if state_ref is not None:
+        return (
+            f"Retained state remains at {state_ref}; the requested destination could not be "
+            "released safely and no retained path was deleted."
+        )
+    return (
+        "Retained source-intake state could not be located or released safely; no unverified "
+        "path was deleted."
+    )
 
 
 def _remove_exact_source_intake_file(
