@@ -338,7 +338,9 @@ def _run_frontend_suite(repository: Path, evidence_dir: Path) -> Mapping[str, An
         ],
     }
     try:
-        with tempfile.TemporaryDirectory(prefix=".gate08-frontend-", dir=evidence_dir) as raw:
+        with tempfile.TemporaryDirectory(
+            prefix=".gate08-frontend-", dir=_runtime_temp_parent()
+        ) as raw:
             temporary = Path(raw)
             environment = _frontend_environment(temporary)
             typecheck = _run_node_command(

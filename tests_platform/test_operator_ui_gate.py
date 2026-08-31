@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -255,13 +256,72 @@ def test_builder_exposes_resizable_panels_and_three_semantic_layers() -> None:
     assert "Evidence <em>artifacts + telemetry</em>" in source
 
 
-def test_gate08_frontend_environment_scrubs_secrets_and_isolates_home(tmp_path: Path) -> None:
+def test_gate08_frontend_environment_scrubs_secrets_and_isolates_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     environment = operator_ui_gate._frontend_environment(tmp_path)
 
     assert environment["HOME"] == str(tmp_path / "home")
     assert environment["USERPROFILE"] == str(tmp_path / "home")
     assert environment["VITE_DEMO_MODE"] == "false"
     assert all("TOKEN" not in key.upper() and "SECRET" not in key.upper() for key in environment)
+
+    repository = tmp_path / "repository"
+    frontend = repository / "frontend"
+    scripts = (
+        frontend / "node_modules" / "typescript" / "bin" / "tsc",
+        frontend / "node_modules" / "eslint" / "bin" / "eslint.js",
+        frontend / "node_modules" / "vitest" / "vitest.mjs",
+    )
+    for script in scripts:
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("tool", encoding="utf-8")
+    test_file = frontend / "src" / "example.test.ts"
+    test_file.parent.mkdir()
+    test_file.write_text("test", encoding="utf-8")
+    node = tmp_path / "node.exe"
+    node.write_text("node", encoding="utf-8")
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    observed: list[Path] = []
+    monkeypatch.setattr(operator_ui_gate.shutil, "which", lambda _name: str(node))
+    monkeypatch.setattr(operator_ui_gate, "_runtime_temp_parent", lambda: runtime_root)
+
+    def run_node(_node: Path, script: Path, _arguments: Any, **kwargs: Any) -> Any:
+        observed.append(Path(kwargs["environment"]["TEMP"]))
+        stdout = b""
+        if script.name == "vitest.mjs":
+            stdout = json.dumps(
+                {
+                    "testResults": [
+                        {
+                            "name": str(test_file.resolve()),
+                            "assertionResults": [
+                                {
+                                    "status": "passed",
+                                    "title": "works",
+                                    "ancestorTitles": ["Example"],
+                                }
+                            ],
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr=b"")
+
+    monkeypatch.setattr(operator_ui_gate, "_run_node_command", run_node)
+
+    report = operator_ui_gate._run_frontend_suite(repository, evidence)
+
+    assert report["passed"] is True
+    assert report["tests"] == 1
+    assert len(set(observed)) == 1
+    scratch = observed[0]
+    assert scratch.parent == runtime_root
+    assert not scratch.exists()
 
 
 def test_vitest_inventory_is_canonical_and_rejects_escaped_paths(tmp_path: Path) -> None:
