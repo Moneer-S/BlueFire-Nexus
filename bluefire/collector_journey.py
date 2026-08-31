@@ -17,7 +17,6 @@ import secrets
 import stat
 import subprocess
 import sys
-import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Mapping
@@ -48,8 +47,11 @@ from .defense_frontier import (
     PROVIDER_ID,
     _assert_secrets_absent,
     _close_runtime_and_remove,
+    _create_pinned_runner_journal,
+    _create_pinned_runtime,
+    _extend_cleanup_failures,
+    _raise_cleanup_failures,
     _remove_runner_journal,
-    _runtime_temp_parent,
     _scenario_with_bound_port,
 )
 from .evidence import EvidenceProvenance, EvidenceRecord
@@ -58,6 +60,7 @@ from .receiver_auth import derive_receiver_task_key
 from .runner_bootstrap import RunnerBootstrapError, bootstrap_runner, current_platform
 from .runner_client import SubprocessRustRunner
 from .runner_lifecycle import ManagedRunnerLifecycle
+from .runner_private_files import _PinnedPrivateDirectory
 from .service import BlueFireService
 
 JOURNEY_REPORT = "gate05-collector-journey.json"
@@ -461,7 +464,11 @@ def produce_collector_evidence(
     child: subprocess.Popen[bytes] | None = None
     service: BlueFireService | None = None
     runtime: Path | None = None
+    runtime_guard: _PinnedPrivateDirectory | None = None
+    journal_guard: _PinnedPrivateDirectory | None = None
+    journal_cleanup_attempted = False
     runtime_cleanup_attempted = False
+    primary_failure: BaseException | None = None
 
     def close_runtime_service() -> None:
         nonlocal service
@@ -490,7 +497,9 @@ def produce_collector_evidence(
             network_enabled=True,
         )
 
-        runtime = Path(tempfile.mkdtemp(prefix=".g5-", dir=_runtime_temp_parent()))
+        journal_guard = _create_pinned_runner_journal(run_root)
+        runtime, runtime_guard = _create_pinned_runtime(".g5-")
+        runtime_stage_failure: BaseException | None = None
         try:
             try:
                 bootstrapped = bootstrap_runner(
@@ -513,6 +522,7 @@ def produce_collector_evidence(
                 timeout_seconds=35.0,
                 output_limit_bytes=4 * 1024 * 1024,
                 receiver_task_key_factory=task_key,
+                durable_result_guard=journal_guard,
             )
 
             def collector_registry_factory(sandbox: Path) -> CollectorRegistry:
@@ -527,7 +537,7 @@ def produce_collector_evidence(
             service = BlueFireService(
                 project_root=root,
                 runs_dir=run_root,
-                product_db_path=runtime / "product.sqlite3",
+                product_db_path=runtime / "product" / "product.sqlite3",
                 runner_factory=lambda _profile: (runner, bootstrapped.sandbox_path),
                 runner_lifecycle=ManagedRunnerLifecycle(runtime / "managed-lifecycle"),
                 collector_registry_factory=collector_registry_factory,
@@ -717,13 +727,24 @@ def produce_collector_evidence(
                 "passed": True,
                 "checks": dict(corruption),
             }
+        except BaseException as exc:
+            runtime_stage_failure = exc
         finally:
+            runtime_failures: list[BaseException] = []
+            if runtime_stage_failure is not None:
+                _extend_cleanup_failures(runtime_failures, runtime_stage_failure)
             try:
-                _close_runtime_and_remove(runtime, close_runtime_service)
+                _close_runtime_and_remove(runtime, runtime_guard, close_runtime_service)
+            except BaseException as exc:
+                _extend_cleanup_failures(runtime_failures, exc)
             finally:
                 runtime_cleanup_attempted = True
+            _raise_cleanup_failures(runtime_failures)
 
-        _remove_runner_journal(run_root)
+        try:
+            _remove_runner_journal(run_root, journal_guard)
+        finally:
+            journal_cleanup_attempted = True
         for name, report in zip(
             REPORT_PATHS,
             (journey_report, platform_report, comparison, corruption_report),
@@ -737,16 +758,52 @@ def produce_collector_evidence(
             "reports": list(REPORT_PATHS),
             "run_count": 2,
         }
+    except BaseException as exc:
+        primary_failure = exc
     finally:
+        final_failures: list[BaseException] = []
+        if primary_failure is not None:
+            _extend_cleanup_failures(final_failures, primary_failure)
         if runtime is not None and not runtime_cleanup_attempted:
-            _close_runtime_and_remove(runtime, close_runtime_service)
-        receiver.stop()
-        if receiver_thread is not None and receiver_thread.is_alive():
-            receiver_thread.join(timeout=5.0)
-        receiver.close()
-        _stop_child(child)
+            try:
+                if runtime_guard is None:
+                    close_runtime_service()
+                else:
+                    _close_runtime_and_remove(
+                        runtime,
+                        runtime_guard,
+                        close_runtime_service,
+                    )
+            except BaseException as exc:
+                _extend_cleanup_failures(final_failures, exc)
+        if journal_guard is not None and not journal_cleanup_attempted:
+            try:
+                _remove_runner_journal(run_root, journal_guard)
+            except BaseException as exc:
+                _extend_cleanup_failures(final_failures, exc)
+        try:
+            receiver.stop()
+        except BaseException as exc:
+            _extend_cleanup_failures(final_failures, exc)
+        try:
+            if receiver_thread is not None and receiver_thread.is_alive():
+                receiver_thread.join(timeout=5.0)
+            if receiver_thread is not None and receiver_thread.is_alive():
+                raise CollectorJourneyError("GATE-05 receiver did not stop")
+        except BaseException as exc:
+            _extend_cleanup_failures(final_failures, exc)
+        try:
+            receiver.close()
+        except BaseException as exc:
+            _extend_cleanup_failures(final_failures, exc)
+        try:
+            _stop_child(child)
+        except BaseException as exc:
+            _extend_cleanup_failures(final_failures, exc)
         task_keys.clear()
         receiver_key = b""
+        _raise_cleanup_failures(final_failures)
+    raise AssertionError("collector journey completed without a result")
 
 
 __all__ = [

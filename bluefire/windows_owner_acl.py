@@ -6,6 +6,7 @@ import ctypes
 import os
 import re
 from ctypes import wintypes
+from pathlib import Path
 
 _SE_FILE_OBJECT = 1
 _OWNER_SECURITY_INFORMATION = 0x0000_0001
@@ -21,6 +22,171 @@ _SID = re.compile(r"^S-1-(?:\d+-){1,14}\d+$")
 _TOKEN_QUERY = 0x0008
 _TOKEN_USER = 1
 _TOKEN_OWNER = 4
+_WINDOWS_GENERIC_READ = 0x80000000
+_WINDOWS_GENERIC_WRITE = 0x40000000
+_WINDOWS_DELETE = 0x00010000
+_WINDOWS_WRITE_DAC = 0x00040000
+_WINDOWS_FILE_SHARE_READ = 0x00000001
+_WINDOWS_FILE_SHARE_WRITE = 0x00000002
+_WINDOWS_FILE_SHARE_DELETE = 0x00000004
+_WINDOWS_OPEN_EXISTING = 3
+_WINDOWS_CREATE_NEW = 1
+_WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_WINDOWS_FILE_DISPOSITION_INFO = 4
+_WINDOWS_LEGACY_PRIVATE_ROOT_LIMIT = 240
+
+
+def _windows_extended_path(path: Path) -> Path:
+    """Return an absolute Win32 extended-length path."""
+
+    raw_path = os.path.abspath(os.fspath(path))
+    if raw_path.startswith("\\\\?\\"):
+        return Path(raw_path)
+    if raw_path.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + raw_path[2:])
+    return Path("\\\\?\\" + raw_path)
+
+
+def _windows_open_descriptor(
+    path: Path,
+    *,
+    directory: bool,
+    write: bool = False,
+    write_dac: bool = False,
+    delete: bool = False,
+    share_delete: bool = False,
+    create: bool = False,
+) -> int:
+    """Open one exact Windows filesystem object with explicit sharing."""
+
+    import msvcrt
+
+    api_path = os.fspath(_windows_extended_path(path))
+    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    access = _WINDOWS_GENERIC_READ
+    if write:
+        access |= _WINDOWS_GENERIC_WRITE
+    if write_dac:
+        access |= _WINDOWS_WRITE_DAC
+    if delete:
+        access |= _WINDOWS_DELETE
+    flags = _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
+    if directory:
+        flags |= _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS
+    share = (
+        _WINDOWS_FILE_SHARE_READ
+        | (_WINDOWS_FILE_SHARE_WRITE if directory or share_delete else 0)
+        | (_WINDOWS_FILE_SHARE_DELETE if share_delete else 0)
+    )
+    handle = create_file(
+        api_path,
+        access,
+        share,
+        None,
+        _WINDOWS_CREATE_NEW if create else _WINDOWS_OPEN_EXISTING,
+        flags,
+        None,
+    )
+    invalid = wintypes.HANDLE(-1).value
+    if handle == invalid:
+        error = ctypes.get_last_error()
+        if create and error in {80, 183}:
+            raise FileExistsError(error, "CreateFileW target exists", str(path))
+        if not create and error in {2, 3}:
+            raise FileNotFoundError(error, "CreateFileW target is absent", str(path))
+        raise OSError(error, "CreateFileW failed", str(path))
+    try:
+        return msvcrt.open_osfhandle(
+            int(handle),
+            (os.O_RDWR if write else os.O_RDONLY) | getattr(os, "O_BINARY", 0),
+        )
+    except BaseException:
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
+        raise
+
+
+def _windows_mark_delete_descriptor(descriptor: int) -> None:
+    """Mark the exact object represented by a descriptor for deletion."""
+
+    import msvcrt
+
+    class _Disposition(ctypes.Structure):
+        _fields_ = [("DeleteFile", wintypes.BOOL)]
+
+    set_information = ctypes.WinDLL("kernel32", use_last_error=True).SetFileInformationByHandle
+    set_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    )
+    set_information.restype = wintypes.BOOL
+    disposition = _Disposition(True)
+    if not set_information(
+        wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),
+        _WINDOWS_FILE_DISPOSITION_INFO,
+        ctypes.byref(disposition),
+        ctypes.sizeof(disposition),
+    ):
+        raise OSError(ctypes.get_last_error(), "handle deletion failed")
+
+
+def _windows_rename_descriptor(descriptor: int, root_descriptor: int, target_name: str) -> None:
+    """Rename an exact open object relative to an exact open directory."""
+
+    import msvcrt
+
+    if not target_name or Path(target_name).name != target_name:
+        raise OSError("invalid rename target")
+
+    class _IoStatusBlock(ctypes.Structure):
+        _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
+
+    class _FileRename(ctypes.Structure):
+        _fields_ = [
+            ("ReplaceIfExists", ctypes.c_ubyte),
+            ("RootDirectory", wintypes.HANDLE),
+            ("FileNameLength", wintypes.DWORD),
+            ("FileName", ctypes.c_wchar * len(target_name)),
+        ]
+
+    rename = _FileRename()
+    rename.ReplaceIfExists = 0
+    rename.RootDirectory = wintypes.HANDLE(msvcrt.get_osfhandle(root_descriptor))
+    rename.FileNameLength = len(target_name.encode("utf-16-le"))
+    rename.FileName = target_name
+    rename_file = ctypes.WinDLL("ntdll", use_last_error=True).NtSetInformationFile
+    rename_file.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(_IoStatusBlock),
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        ctypes.c_int,
+    )
+    rename_file.restype = ctypes.c_long
+    status = _IoStatusBlock()
+    result = rename_file(
+        wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),
+        ctypes.byref(status),
+        ctypes.byref(rename),
+        ctypes.sizeof(rename),
+        10,  # FileRenameInformation
+    )
+    if result != 0:
+        if ctypes.c_ulong(result).value == 0xC0000035:  # STATUS_OBJECT_NAME_COLLISION
+            raise FileExistsError("handle rename target exists")
+        raise OSError(int(result), "handle rename failed")
 
 
 class WindowsOwnerAclError(RuntimeError):

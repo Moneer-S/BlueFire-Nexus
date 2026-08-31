@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import stat
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +16,8 @@ import bluefire.defense_frontier as frontier_module
 import bluefire.defense_frontier_gate as gate_module
 import bluefire.defense_frontier_validation as validation_module
 import bluefire.product_gates as product_gates
+import bluefire.runner_private_files as private_files_module
+from bluefire.collectors import CollectionRequest, FilesystemCollector
 from bluefire.defense_frontier import (
     PROVIDER_ID,
     REAL_PROVIDER_ID,
@@ -20,10 +26,179 @@ from bluefire.defense_frontier import (
     DefenseFrontierError,
 )
 from bluefire.defense_frontier_validation import DefenseFrontierValidationError, load_report
+from bluefire.orchestrator import Orchestrator
 from bluefire.runner_bootstrap import RunnerBootstrapError
+from bluefire.runner_transport_errors import RunnerTransportError
 from bluefire.util import content_hash, file_hash
 
 REPOSITORY = Path(__file__).resolve().parents[1]
+
+
+def test_private_directory_close_attempts_both_descriptors_and_clears_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pinned = private_files_module._PinnedPrivateDirectory(tmp_path / "unused")
+    first_descriptor = os.open(os.devnull, os.O_RDONLY)
+    parent_descriptor = os.open(os.devnull, os.O_RDONLY)
+    pinned._descriptor = first_descriptor
+    pinned._parent_descriptor = parent_descriptor
+    pinned._identity = (1, 2)
+    pinned._mount_identity = 3
+    first_failure = OSError("first descriptor close failed")
+    real_close = os.close
+    close_calls: list[int] = []
+
+    def fail_first_close(descriptor: int) -> None:
+        close_calls.append(descriptor)
+        if descriptor == first_descriptor:
+            raise first_failure
+        real_close(descriptor)
+
+    monkeypatch.setattr(private_files_module.os, "close", fail_first_close)
+    try:
+        with pytest.raises(OSError) as caught:
+            pinned.close()
+        assert caught.value is first_failure
+        assert close_calls == [first_descriptor, parent_descriptor]
+        assert pinned._descriptor is None
+        assert pinned._parent_descriptor is None
+        assert pinned._identity is None
+        assert pinned._mount_identity is None
+        pinned.close()
+        assert close_calls == [first_descriptor, parent_descriptor]
+    finally:
+        real_close(first_descriptor)
+
+
+def test_private_directory_close_aggregates_both_descriptor_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pinned = private_files_module._PinnedPrivateDirectory(tmp_path / "unused")
+    first_descriptor = os.open(os.devnull, os.O_RDONLY)
+    parent_descriptor = os.open(os.devnull, os.O_RDONLY)
+    pinned._descriptor = first_descriptor
+    pinned._parent_descriptor = parent_descriptor
+    pinned._identity = (1, 2)
+    pinned._mount_identity = 3
+    first_failure = OSError("first descriptor close failed")
+    parent_failure = OSError("parent descriptor close failed")
+    failures = {
+        first_descriptor: first_failure,
+        parent_descriptor: parent_failure,
+    }
+    real_close = os.close
+    close_calls: list[int] = []
+    closed: set[int] = set()
+
+    def fail_every_close(descriptor: int) -> None:
+        close_calls.append(descriptor)
+        real_close(descriptor)
+        closed.add(descriptor)
+        raise failures[descriptor]
+
+    monkeypatch.setattr(private_files_module.os, "close", fail_every_close)
+    try:
+        with pytest.raises(private_files_module._PrivateFileCleanupError) as caught:
+            pinned.close()
+        assert caught.value.failures == (first_failure, parent_failure)
+        assert close_calls == [first_descriptor, parent_descriptor]
+        assert pinned._descriptor is None
+        assert pinned._parent_descriptor is None
+        assert pinned._identity is None
+        assert pinned._mount_identity is None
+        pinned.close()
+        assert close_calls == [first_descriptor, parent_descriptor]
+    finally:
+        for descriptor in (first_descriptor, parent_descriptor):
+            if descriptor not in closed:
+                real_close(descriptor)
+
+
+def test_private_directory_enter_retains_validation_and_close_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pinned = private_files_module._PinnedPrivateDirectory(tmp_path / "private")
+    descriptor = os.open(os.devnull, os.O_RDONLY)
+    pinned._descriptor = descriptor
+    validation_failure = OSError("private directory validation failed")
+    close_failure = OSError("private directory close failed")
+    real_close = os.close
+    closed = False
+
+    def fail_open(*_args: object, **_kwargs: object) -> int:
+        raise validation_failure
+
+    def fail_close(open_descriptor: int) -> None:
+        nonlocal closed
+        real_close(open_descriptor)
+        closed = True
+        raise close_failure
+
+    if os.name == "nt":
+        monkeypatch.setattr(private_files_module, "_windows_open_descriptor", fail_open)
+    else:
+        monkeypatch.setattr(private_files_module.os, "open", fail_open)
+    monkeypatch.setattr(private_files_module.os, "close", fail_close)
+    try:
+        with pytest.raises(private_files_module._PrivateFileCleanupError) as caught:
+            pinned.__enter__()
+        assert caught.value.failures == (validation_failure, close_failure)
+        assert pinned._descriptor is None
+        assert pinned._parent_descriptor is None
+        assert pinned._identity is None
+        assert pinned._mount_identity is None
+    finally:
+        if not closed:
+            real_close(descriptor)
+
+
+def test_private_directory_exit_retains_body_and_close_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pinned = private_files_module._PinnedPrivateDirectory(tmp_path / "unused")
+    body_failure = ValueError("body failed")
+    close_failure = OSError("close failed")
+
+    def fail_close() -> None:
+        raise close_failure
+
+    monkeypatch.setattr(pinned, "close", fail_close)
+
+    with pytest.raises(private_files_module._PrivateFileCleanupError) as caught:
+        pinned.__exit__(ValueError, body_failure, None)
+
+    assert caught.value.failures == (body_failure, close_failure)
+
+
+def test_guarded_binary_file_close_aggregates_handle_and_directory_failures() -> None:
+    handle_failure = OSError("file handle close failed")
+    directory_failure = OSError("directory handle close failed")
+    close_calls: list[str] = []
+
+    def fail_handle_close() -> None:
+        close_calls.append("handle")
+        raise handle_failure
+
+    def fail_directory_close() -> None:
+        close_calls.append("directory")
+        raise directory_failure
+
+    guarded = private_files_module._GuardedBinaryFile(
+        SimpleNamespace(close=fail_handle_close),  # type: ignore[arg-type]
+        SimpleNamespace(close=fail_directory_close),  # type: ignore[arg-type]
+        "private.json",
+        1024,
+    )
+
+    with pytest.raises(private_files_module._PrivateFileCleanupError) as caught:
+        guarded.close()
+
+    assert caught.value.failures == (handle_failure, directory_failure)
+    assert close_calls == ["handle", "directory"]
 
 
 def test_token_known_folder_access_includes_query_and_impersonate() -> None:
@@ -82,9 +257,12 @@ def test_external_native_runtime_is_removed_when_bootstrap_fails(
     assert list(runtime_parent.iterdir()) == []
 
 
-def test_runtime_removal_still_happens_when_service_shutdown_fails(tmp_path: Path) -> None:
+def test_runtime_removal_recovers_when_service_shutdown_failure_is_transient(
+    tmp_path: Path,
+) -> None:
     runtime = tmp_path / "runtime"
     runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
     (runtime / "private-state").write_bytes(b"sensitive")
     shutdown_failure = RuntimeError("shutdown failed")
     close_calls = 0
@@ -95,25 +273,25 @@ def test_runtime_removal_still_happens_when_service_shutdown_fails(tmp_path: Pat
         if close_calls == 1:
             raise shutdown_failure
 
-    with pytest.raises(RuntimeError) as caught:
-        frontier_module._close_runtime_and_remove(runtime, fail_shutdown)
+    frontier_module._close_runtime_and_remove(runtime, runtime_guard, fail_shutdown)
 
-    assert caught.value is shutdown_failure
     assert close_calls == 2
     assert not runtime.exists()
 
 
-def test_runtime_cleanup_preserves_shutdown_and_removal_failures(
+def test_runtime_cleanup_recovers_transient_shutdown_and_removal_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = tmp_path / "runtime"
     runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    (runtime / "private-state").write_bytes(b"sensitive")
     shutdown_failure = RuntimeError("shutdown failed")
     removal_failure = OSError("removal failed")
     close_calls = 0
     removal_calls = 0
-    real_rmtree = frontier_module.shutil.rmtree
+    real_unlink = private_files_module._PinnedPrivateDirectory.unlink
 
     def fail_shutdown() -> None:
         nonlocal close_calls
@@ -121,22 +299,49 @@ def test_runtime_cleanup_preserves_shutdown_and_removal_failures(
         if close_calls == 1:
             raise shutdown_failure
 
-    def fail_removal(target: Path) -> None:
+    def fail_removal(
+        pinned: private_files_module._PinnedPrivateDirectory,
+        name: str,
+        **kwargs: Any,
+    ) -> None:
         nonlocal removal_calls
-        removal_calls += 1
-        if removal_calls == 1:
-            raise removal_failure
-        real_rmtree(target)
+        if pinned.path == runtime and name == "private-state":
+            removal_calls += 1
+            if removal_calls == 1:
+                raise removal_failure
+        real_unlink(pinned, name, **kwargs)
 
-    monkeypatch.setattr(frontier_module.shutil, "rmtree", fail_removal)
+    monkeypatch.setattr(private_files_module._PinnedPrivateDirectory, "unlink", fail_removal)
+    monkeypatch.setattr(frontier_module.time, "sleep", lambda _seconds: None)
 
-    with pytest.raises(frontier_module._RuntimeCleanupError) as caught:
-        frontier_module._close_runtime_and_remove(runtime, fail_shutdown)
+    frontier_module._close_runtime_and_remove(runtime, runtime_guard, fail_shutdown)
 
-    assert caught.value.failures == (shutdown_failure, removal_failure)
-    assert caught.value.__cause__ is shutdown_failure
     assert close_calls == 2
     assert removal_calls == 2
+    assert not runtime.exists()
+
+
+def test_runtime_cleanup_preserves_a_persistent_shutdown_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    shutdown_failure = RuntimeError("shutdown failed")
+    close_calls = 0
+
+    def fail_shutdown() -> None:
+        nonlocal close_calls
+        close_calls += 1
+        raise shutdown_failure
+
+    monkeypatch.setattr(frontier_module.time, "sleep", lambda _seconds: None)
+    with pytest.raises(RuntimeError) as caught:
+        frontier_module._close_runtime_and_remove(runtime, runtime_guard, fail_shutdown)
+
+    assert caught.value is shutdown_failure
+    assert close_calls == frontier_module._CLEANUP_ATTEMPTS
     assert not runtime.exists()
 
 
@@ -146,10 +351,650 @@ def test_runtime_cleanup_rejects_a_noop_removal(
 ) -> None:
     runtime = tmp_path / "runtime"
     runtime.mkdir()
-    monkeypatch.setattr(frontier_module.shutil, "rmtree", lambda _runtime: None)
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    real_remove = private_files_module._PinnedPrivateDirectory.remove
 
-    with pytest.raises(DefenseFrontierError, match="runtime was not removed"):
-        frontier_module._close_runtime_and_remove(runtime, lambda: None)
+    def noop_runtime_remove(pinned: private_files_module._PinnedPrivateDirectory) -> None:
+        if pinned.path != runtime:
+            real_remove(pinned)
+
+    monkeypatch.setattr(
+        private_files_module._PinnedPrivateDirectory,
+        "remove",
+        noop_runtime_remove,
+    )
+    monkeypatch.setattr(frontier_module.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(DefenseFrontierError, match="runtime path was rebound"):
+        frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+
+
+def test_runtime_cleanup_refuses_rebound_directory_but_still_closes_service(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    displaced = tmp_path / "displaced-runtime"
+    close_calls = 0
+
+    def close_service() -> None:
+        nonlocal close_calls
+        close_calls += 1
+
+    if os.name == "nt":
+        with pytest.raises(OSError):
+            runtime.rename(displaced)
+        frontier_module._close_runtime_and_remove(runtime, runtime_guard, close_service)
+        assert not runtime.exists()
+        assert not displaced.exists()
+    else:
+        runtime.rename(displaced)
+        runtime.mkdir()
+        sentinel = runtime / "replacement-sentinel.txt"
+        sentinel.write_bytes(b"preserve replacement")
+        with pytest.raises(DefenseFrontierError, match="identity changed"):
+            frontier_module._close_runtime_and_remove(
+                runtime,
+                runtime_guard,
+                close_service,
+            )
+        assert sentinel.read_bytes() == b"preserve replacement"
+        assert displaced.is_dir()
+
+    assert close_calls == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="the Windows root lease blocks rename-away")
+def test_runtime_cleanup_does_not_treat_rename_away_as_disposal(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    displaced = tmp_path / "displaced-runtime"
+    runtime.rename(displaced)
+
+    with pytest.raises(DefenseFrontierError, match="identity changed"):
+        frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+
+    assert not runtime.exists()
+    assert displaced.is_dir()
+
+
+def test_runtime_cleanup_refuses_a_child_replacement_before_it_is_pinned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    child = runtime / "managed"
+    child.mkdir()
+    (child / "owned-state").write_bytes(b"owned")
+    displaced = tmp_path / "displaced-managed"
+    race: list[str] = []
+    real_enter = private_files_module._PinnedPrivateDirectory.__enter__
+
+    def racing_enter(
+        pinned: private_files_module._PinnedPrivateDirectory,
+    ) -> private_files_module._PinnedPrivateDirectory:
+        if pinned.path == child and not race:
+            child.rename(displaced)
+            child.mkdir()
+            (child / "foreign-sentinel").write_bytes(b"preserve replacement")
+            race.append("replaced")
+        return real_enter(pinned)
+
+    monkeypatch.setattr(
+        private_files_module._PinnedPrivateDirectory,
+        "__enter__",
+        racing_enter,
+    )
+    monkeypatch.setattr(frontier_module.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(DefenseFrontierError, match="before it could be pinned"):
+        frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+
+    assert race == ["replaced"]
+    assert (child / "foreign-sentinel").read_bytes() == b"preserve replacement"
+    assert (displaced / "owned-state").read_bytes() == b"owned"
+
+
+def test_runtime_cleanup_preserves_child_enter_and_close_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    child_path = runtime / "child"
+    child_path.mkdir(parents=True)
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    enter_failure = OSError("child enter failed")
+    close_failure = OSError("child close failed")
+    real_enter = private_files_module._PinnedPrivateDirectory.__enter__
+    real_close = private_files_module._PinnedPrivateDirectory.close
+
+    def fail_child_enter(
+        pinned: private_files_module._PinnedPrivateDirectory,
+    ) -> private_files_module._PinnedPrivateDirectory:
+        if pinned.path == child_path:
+            raise enter_failure
+        return real_enter(pinned)
+
+    def fail_child_close(pinned: private_files_module._PinnedPrivateDirectory) -> None:
+        if pinned.path == child_path:
+            raise close_failure
+        real_close(pinned)
+
+    monkeypatch.setattr(
+        private_files_module._PinnedPrivateDirectory,
+        "__enter__",
+        fail_child_enter,
+    )
+    monkeypatch.setattr(
+        private_files_module._PinnedPrivateDirectory,
+        "close",
+        fail_child_close,
+    )
+
+    with pytest.raises(frontier_module._RuntimeCleanupError) as caught:
+        frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+
+    assert caught.value.failures == (enter_failure, close_failure)
+    assert child_path.is_dir()
+
+
+def test_runtime_cleanup_removes_a_nested_pinned_tree(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    nested = runtime / "managed" / "transport" / "task"
+    nested.mkdir(parents=True)
+    (nested / "private-state.json").write_bytes(b"{}\n")
+
+    frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+
+    assert not runtime.exists()
+
+
+def test_runtime_cleanup_fails_closed_after_bounded_persistent_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    private_state = runtime / "private-state"
+    private_state.write_bytes(b"sensitive")
+    attempts = 0
+    real_unlink = private_files_module._PinnedPrivateDirectory.unlink
+
+    def locked_unlink(
+        pinned: private_files_module._PinnedPrivateDirectory,
+        name: str,
+        **kwargs: Any,
+    ) -> None:
+        nonlocal attempts
+        if pinned.path == runtime and name == private_state.name:
+            attempts += 1
+            raise PermissionError("persistent scanner lock")
+        real_unlink(pinned, name, **kwargs)
+
+    monkeypatch.setattr(private_files_module._PinnedPrivateDirectory, "unlink", locked_unlink)
+    monkeypatch.setattr(frontier_module.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(DefenseFrontierError, match="could not be removed exactly"):
+        frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+
+    assert attempts == frontier_module._CLEANUP_ATTEMPTS
+    assert private_state.read_bytes() == b"sensitive"
+
+
+def test_runtime_cleanup_refuses_hardlinked_foreign_file(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    outside = tmp_path / "outside-sentinel"
+    outside.write_bytes(b"must survive")
+    os.link(outside, runtime / "linked-sentinel")
+
+    with pytest.raises(DefenseFrontierError, match="unsafe file"):
+        frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+
+    assert outside.read_bytes() == b"must survive"
+    assert (runtime / "linked-sentinel").read_bytes() == b"must survive"
+
+
+def test_runtime_cleanup_bounds_its_final_emptiness_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    maxima: list[int | None] = []
+    real_names = private_files_module._PinnedPrivateDirectory.names
+
+    def recording_names(
+        pinned: private_files_module._PinnedPrivateDirectory,
+        *,
+        maximum: int | None = None,
+    ) -> tuple[str, ...]:
+        if pinned is runtime_guard:
+            maxima.append(maximum)
+        return real_names(pinned, maximum=maximum)
+
+    monkeypatch.setattr(private_files_module._PinnedPrivateDirectory, "names", recording_names)
+    frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+
+    assert maxima[-1] == 1
+
+
+def test_runtime_cleanup_rejects_same_device_foreign_mount_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    entry = runtime / "mounted-file"
+    entry.write_bytes(b"preserve")
+    real_metadata = runtime_guard.entry_metadata_with_mount_identity
+
+    def foreign_mount(name: str) -> tuple[os.stat_result, int | None]:
+        details, mount_identity = real_metadata(name)
+        return details, 1 if mount_identity != 1 else 2
+
+    monkeypatch.setattr(runtime_guard, "entry_metadata_with_mount_identity", foreign_mount)
+
+    with pytest.raises(DefenseFrontierError, match="unsafe entry"):
+        frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+
+    assert entry.read_bytes() == b"preserve"
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux mount-ID contract")
+def test_runtime_cleanup_refuses_a_real_same_device_bind_mount(tmp_path: Path) -> None:
+    if shutil.which("mount") is None or shutil.which("umount") is None:
+        pytest.skip("mount utilities are unavailable")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    source = tmp_path / "source"
+    source.mkdir()
+    sentinel = source / "foreign-sentinel"
+    sentinel.write_bytes(b"preserve")
+    mountpoint = runtime / "mounted"
+    mountpoint.mkdir()
+    mounted = subprocess.run(  # noqa: S603 - fixed local mount command
+        ["mount", "--bind", str(source), str(mountpoint)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if mounted.returncode != 0:
+        frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+        pytest.skip("the test environment cannot create a disposable bind mount")
+    try:
+        details, mount_identity = runtime_guard.entry_metadata_with_mount_identity(mountpoint.name)
+        assert details.st_dev == runtime_guard.directory_identity()[0]
+        assert mount_identity != runtime_guard.directory_mount_identity()
+        with pytest.raises(DefenseFrontierError, match="unsafe entry"):
+            frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+        assert sentinel.read_bytes() == b"preserve"
+    finally:
+        subprocess.run(  # noqa: S603 - fixed local unmount command
+            ["umount", str(mountpoint)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        runtime_guard.close()
+
+
+def test_runtime_create_and_pin_refuses_a_racing_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(frontier_module, "_runtime_temp_parent", lambda: tmp_path)
+    real_enter = private_files_module._PinnedPrivateDirectory.__enter__
+    raced_paths: list[tuple[Path, Path]] = []
+
+    def racing_enter(
+        pinned: private_files_module._PinnedPrivateDirectory,
+    ) -> private_files_module._PinnedPrivateDirectory:
+        if pinned.delete and pinned.path.name.startswith(".race-") and not raced_paths:
+            displaced = tmp_path / "displaced-runtime"
+            pinned.path.rename(displaced)
+            pinned.path.mkdir()
+            (pinned.path / "foreign-sentinel").write_bytes(b"preserve")
+            raced_paths.append((pinned.path, displaced))
+        return real_enter(pinned)
+
+    monkeypatch.setattr(private_files_module._PinnedPrivateDirectory, "__enter__", racing_enter)
+    monkeypatch.setattr(frontier_module.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(DefenseFrontierError, match="could not be pinned"):
+        frontier_module._create_pinned_runtime(".race-")
+
+    runtime, displaced = raced_paths[0]
+    assert (runtime / "foreign-sentinel").read_bytes() == b"preserve"
+    assert displaced.is_dir()
+
+
+def test_runtime_cleanup_aggregates_removal_and_guard_close_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    removal_failure = OSError("remove failed")
+    close_failure = OSError("close failed")
+    real_close = runtime_guard.close
+
+    def fail_remove(_guard: private_files_module._PinnedPrivateDirectory) -> None:
+        raise removal_failure
+
+    def fail_close() -> None:
+        real_close()
+        raise close_failure
+
+    monkeypatch.setattr(frontier_module, "_remove_pinned_tree", fail_remove)
+    monkeypatch.setattr(runtime_guard, "close", fail_close)
+
+    with pytest.raises(frontier_module._RuntimeCleanupError) as caught:
+        frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+
+    assert caught.value.failures == (removal_failure, close_failure)
+
+
+def test_runtime_cleanup_flattens_private_file_close_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    runtime_guard = frontier_module._pin_runtime_directory(runtime)
+    removal_failure = OSError("remove failed")
+    descriptor_failure = OSError("directory descriptor close failed")
+    parent_failure = OSError("parent descriptor close failed")
+    real_close = runtime_guard.close
+
+    def fail_remove(_guard: private_files_module._PinnedPrivateDirectory) -> None:
+        raise removal_failure
+
+    def fail_close() -> None:
+        real_close()
+        raise private_files_module._PrivateFileCleanupError((descriptor_failure, parent_failure))
+
+    monkeypatch.setattr(frontier_module, "_remove_pinned_tree", fail_remove)
+    monkeypatch.setattr(runtime_guard, "close", fail_close)
+
+    with pytest.raises(frontier_module._RuntimeCleanupError) as caught:
+        frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
+
+    assert caught.value.failures == (
+        removal_failure,
+        descriptor_failure,
+        parent_failure,
+    )
+
+
+def test_cleanup_retry_does_not_wrap_private_file_cleanup_failures() -> None:
+    descriptor_failure = OSError("directory descriptor close failed")
+    parent_failure = OSError("parent descriptor close failed")
+    cleanup_failure = private_files_module._PrivateFileCleanupError(
+        (descriptor_failure, parent_failure)
+    )
+    attempts = 0
+
+    def fail_cleanup() -> None:
+        nonlocal attempts
+        attempts += 1
+        raise cleanup_failure
+
+    with pytest.raises(private_files_module._PrivateFileCleanupError) as caught:
+        frontier_module._retry_cleanup(fail_cleanup, "cleanup failed")
+
+    assert caught.value is cleanup_failure
+    assert attempts == 1
+
+
+def test_runner_journal_cleanup_retries_and_refuses_unexpected_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    journal_guard = frontier_module._create_pinned_runner_journal(runs)
+    journal = journal_guard.path
+    result = journal / ("execute-" + "a" * 64 + ".json")
+    result.write_bytes(b"{}\n")
+    journal_guard.authorize_cleanup_entry(result.name, maximum=1024)
+    real_unlink = private_files_module._PinnedPrivateDirectory.unlink
+    attempts = 0
+
+    def intermittently_locked(
+        pinned: private_files_module._PinnedPrivateDirectory,
+        name: str,
+        **kwargs: Any,
+    ) -> None:
+        nonlocal attempts
+        if pinned.path == journal and name == result.name:
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("simulated transient scanner lock")
+        real_unlink(pinned, name, **kwargs)
+
+    monkeypatch.setattr(
+        private_files_module._PinnedPrivateDirectory,
+        "unlink",
+        intermittently_locked,
+    )
+    monkeypatch.setattr(frontier_module.time, "sleep", lambda _seconds: None)
+    frontier_module._remove_runner_journal(runs, journal_guard)
+    assert attempts == 3
+    assert not journal.exists()
+
+    unexpected_guard = frontier_module._create_pinned_runner_journal(runs)
+    unexpected_journal = unexpected_guard.path
+    unexpected = unexpected_journal / "operator-owned.txt"
+    unexpected.write_bytes(b"preserve")
+    with pytest.raises(DefenseFrontierError, match="unexpected entry"):
+        frontier_module._remove_runner_journal(runs, unexpected_guard)
+    assert unexpected.read_bytes() == b"preserve"
+
+
+def test_runner_journal_creation_is_descriptor_relative_or_rebind_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runs = tmp_path / "runs"
+    displaced = tmp_path / "displaced-runs"
+    runs.mkdir()
+    real_mkdir = private_files_module.os.mkdir
+    race: list[str] = []
+
+    def race_before_relative_mkdir(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        if Path(os.fsdecode(path)).name == ".bluefire-runner-results" and not race:
+            try:
+                runs.rename(displaced)
+            except OSError:
+                race.append("blocked")
+            else:
+                race.append("replaced")
+                real_mkdir(runs, 0o700)
+        if dir_fd is None:
+            real_mkdir(path, mode)
+        else:
+            real_mkdir(path, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(private_files_module.os, "mkdir", race_before_relative_mkdir)
+
+    if os.name == "nt":
+        guard = frontier_module._create_pinned_runner_journal(runs)
+        assert race == ["blocked"]
+        frontier_module._remove_runner_journal(runs, guard)
+        assert not displaced.exists()
+    else:
+        with pytest.raises((DefenseFrontierError, RunnerTransportError)):
+            frontier_module._create_pinned_runner_journal(runs)
+        assert race == ["replaced"]
+        assert list(runs.iterdir()) == []
+        assert (displaced / ".bluefire-runner-results").is_dir()
+
+
+def test_runner_journal_root_rename_race_is_blocked_or_preserved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    journal_guard = frontier_module._create_pinned_runner_journal(runs)
+    journal = journal_guard.path
+    result = journal / ("execute-" + "b" * 64 + ".json")
+    result.write_bytes(b"{}\n")
+    journal_guard.authorize_cleanup_entry(result.name, maximum=1024)
+    displaced = runs / "displaced-journal"
+    race: list[str] = []
+    real_names = private_files_module._PinnedPrivateDirectory.names
+
+    def racing_names(
+        pinned: private_files_module._PinnedPrivateDirectory,
+        *,
+        maximum: int | None = None,
+    ) -> tuple[str, ...]:
+        if pinned.path == journal and not race:
+            try:
+                journal.rename(displaced)
+            except OSError:
+                race.append("blocked")
+            else:
+                race.append("replaced")
+                journal.mkdir()
+                (journal / "foreign-sentinel").write_bytes(b"preserve replacement")
+        return real_names(pinned, maximum=maximum)
+
+    monkeypatch.setattr(private_files_module._PinnedPrivateDirectory, "names", racing_names)
+    monkeypatch.setattr(frontier_module.time, "sleep", lambda _seconds: None)
+
+    if os.name == "nt":
+        frontier_module._remove_runner_journal(runs, journal_guard)
+        assert race == ["blocked"]
+        assert not journal.exists()
+        assert not displaced.exists()
+    else:
+        with pytest.raises(DefenseFrontierError, match="enumerated safely"):
+            frontier_module._remove_runner_journal(runs, journal_guard)
+        assert race == ["replaced"]
+        assert (journal / "foreign-sentinel").read_bytes() == b"preserve replacement"
+        assert (displaced / result.name).read_bytes() == b"{}\n"
+
+
+def test_runner_journal_preserves_unregistered_valid_result_name(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    journal_guard = frontier_module._create_pinned_runner_journal(runs)
+    unowned = journal_guard.path / ("execute-" + "d" * 64 + ".json")
+    unowned.write_bytes(b"operator-owned-result")
+
+    with pytest.raises(DefenseFrontierError, match="unowned"):
+        frontier_module._remove_runner_journal(runs, journal_guard)
+
+    assert unowned.read_bytes() == b"operator-owned-result"
+
+
+def test_runner_journal_file_rebind_before_final_unlink_is_blocked_or_preserved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    journal_guard = frontier_module._create_pinned_runner_journal(runs)
+    journal = journal_guard.path
+    result = journal / ("execute-" + "c" * 64 + ".json")
+    result.write_bytes(b"owned-result")
+    journal_guard.authorize_cleanup_entry(result.name, maximum=1024)
+    victim = tmp_path / "foreign-victim.json"
+    victim.write_bytes(b"foreign-must-survive")
+    replacement = tmp_path / "foreign-replacement.json"
+    os.link(victim, replacement)
+    victim_identity = victim.stat().st_dev, victim.stat().st_ino
+    race: list[str] = []
+    monkeypatch.setattr(frontier_module.time, "sleep", lambda _seconds: None)
+
+    if os.name == "nt":
+        real_mark_delete = private_files_module._windows_mark_delete_descriptor
+
+        def racing_mark_delete(descriptor: int) -> None:
+            details = os.fstat(descriptor)
+            if stat.S_ISREG(details.st_mode) and not race:
+                try:
+                    os.replace(replacement, result)
+                except OSError:
+                    race.append("blocked")
+                else:  # pragma: no cover - a broken Windows file pin reaches this branch
+                    race.append("replaced")
+            real_mark_delete(descriptor)
+
+        monkeypatch.setattr(
+            private_files_module,
+            "_windows_mark_delete_descriptor",
+            racing_mark_delete,
+        )
+        frontier_module._remove_runner_journal(runs, journal_guard)
+        assert race == ["blocked"]
+        assert not journal.exists()
+        assert replacement.exists()
+    else:
+        real_fchmod = os.fchmod
+
+        def racing_fchmod(descriptor: int, mode: int) -> None:
+            details = os.fstat(descriptor)
+            if stat.S_ISREG(details.st_mode) and not race:
+                os.replace(replacement, result)
+                race.append("replaced")
+            real_fchmod(descriptor, mode)
+
+        monkeypatch.setattr(private_files_module.os, "fchmod", racing_fchmod)
+        with pytest.raises(DefenseFrontierError, match="could not be removed exactly"):
+            frontier_module._remove_runner_journal(runs, journal_guard)
+        assert race == ["replaced"]
+        assert result.read_bytes() == b"foreign-must-survive"
+
+    assert victim.read_bytes() == b"foreign-must-survive"
+    assert (victim.stat().st_dev, victim.stat().st_ino) == victim_identity
+
+
+def test_builtin_detections_match_filesystem_collector_observations(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    staged_path = sandbox / "staged" / "bundle.jsonl"
+    export_path = sandbox / "exports" / "ephemeral" / "bundle.bin"
+    staged_path.parent.mkdir(parents=True)
+    export_path.parent.mkdir(parents=True)
+    staged_path.write_bytes(b"staged\n")
+    export_path.write_bytes(b"export\n")
+    collected = FilesystemCollector(sandbox).collect(
+        CollectionRequest(
+            run_id="run-detection-contract",
+            step_id="observe",
+            behavior_id="collection.independent-observation.v1",
+            action_id="collector.filesystem.observe.v1",
+            runner_profile_id="sandbox-execute.v1",
+            target_scope_ref="runner-profile:sandbox-execute.v1",
+            settings={"paths": ["staged/bundle.jsonl", "exports/ephemeral/bundle.bin"]},
+        )
+    )
+    by_path = {str(record.content["path"]): record for record in collected.records}
+
+    staging_candidate, export_candidate = Orchestrator._build_detections(collected.records)
+    assert staging_candidate.observed_evidence_ids == (by_path["staged/bundle.jsonl"].evidence_id,)
+    assert export_candidate.observed_evidence_ids == (
+        by_path["exports/ephemeral/bundle.bin"].evidence_id,
+    )
 
 
 def _structural_report() -> dict[str, Any]:

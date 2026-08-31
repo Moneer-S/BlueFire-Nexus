@@ -14,22 +14,37 @@ import json
 import os
 import re
 import secrets
-import shutil
 import stat
-import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, cast
 
+from . import native_journey_runtime as _native_journey_runtime
 from .ai import OpenAIResponsesProvider, build_ai_provider
 from .comparison import compare_runs
 from .config import AIProviderKind, load_config
 from .contracts import load_scenario
+from .native_journey_runtime import (
+    DefenseFrontierError,
+    _create_pinned_runner_journal,
+    _extend_cleanup_failures,
+    _raise_cleanup_failures,
+    _remove_pinned_tree,
+    _remove_runner_journal,
+    _require,
+)
+from .native_journey_runtime import (
+    _close_runtime_and_remove as _close_runtime_and_remove_impl,
+)
+from .native_journey_runtime import (
+    _create_pinned_runtime as _create_pinned_runtime_impl,
+)
 from .receiver import LoopbackArtifactReceiver, ReceiverConfig
 from .receiver_auth import derive_receiver_task_key
 from .runner_bootstrap import RunnerBootstrapError, bootstrap_runner, current_platform
 from .runner_client import SubprocessRustRunner
 from .runner_lifecycle import ManagedRunnerLifecycle
+from .runner_private_files import _PinnedPrivateDirectory
 from .runtime_paths import (
     _TOKEN_KNOWN_FOLDER_ACCESS as _RUNTIME_TOKEN_KNOWN_FOLDER_ACCESS,
 )
@@ -73,68 +88,37 @@ _RUN_ID = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
 _MAX_REPORT_BYTES = 8 * 1024 * 1024
 _MAX_SCAN_BYTES = 128 * 1024 * 1024
 
-
-class DefenseFrontierError(ValueError):
-    """Raised when the native frontier cannot be proven without overclaiming."""
-
-
-class _RuntimeCleanupError(DefenseFrontierError):
-    """Retains every failure from bounded native-runtime cleanup attempts."""
-
-    def __init__(self, failures: Sequence[BaseException]) -> None:
-        self.failures = tuple(failures)
-        super().__init__("the GATE-04 native runtime cleanup had multiple failures")
-
-
-def _require(condition: bool, message: str) -> None:
-    if not condition:
-        raise DefenseFrontierError(message)
+# Preserve the historical module seam used by other native journeys and their
+# fault-injection tests while the implementation lives in one cohesive module.
+_CLEANUP_ATTEMPTS = _native_journey_runtime._CLEANUP_ATTEMPTS
+_CLEANUP_RETRY_SECONDS = _native_journey_runtime._CLEANUP_RETRY_SECONDS
+_REPARSE_POINT = _native_journey_runtime._REPARSE_POINT
+_MAX_RUNTIME_CLEANUP_DEPTH = _native_journey_runtime._MAX_RUNTIME_CLEANUP_DEPTH
+_MAX_RUNTIME_CLEANUP_ENTRIES = _native_journey_runtime._MAX_RUNTIME_CLEANUP_ENTRIES
+_MAX_JOURNAL_ENTRIES = _native_journey_runtime._MAX_JOURNAL_ENTRIES
+_RuntimeCleanupError = _native_journey_runtime._RuntimeCleanupError
+_pin_owned_directory = _native_journey_runtime._pin_owned_directory
+_pin_runtime_directory = _native_journey_runtime._pin_runtime_directory
+_retry_cleanup = _native_journey_runtime._retry_cleanup
+_safe_directory_details = _native_journey_runtime._safe_directory_details
+time = _native_journey_runtime.time
 
 
-def _close_runtime_and_remove(runtime: Path, close_service: Callable[[], None]) -> None:
-    """Boundedly retry close/removal, verify absence, and retain every failure."""
+def _create_pinned_runtime(prefix: str) -> tuple[Path, _PinnedPrivateDirectory]:
+    return _create_pinned_runtime_impl(prefix, _runtime_temp_parent)
 
-    failures: list[BaseException] = []
-    service_closed = False
-    runtime_absent = False
-    for _attempt in range(2):
-        if not service_closed:
-            try:
-                close_service()
-                service_closed = True
-            except BaseException as exc:
-                failures.append(exc)
-        try:
-            runtime.lstat()
-        except FileNotFoundError:
-            runtime_absent = True
-        except BaseException as exc:
-            failures.append(exc)
-            runtime_absent = False
-        else:
-            runtime_absent = False
-        if not runtime_absent:
-            try:
-                shutil.rmtree(runtime)
-            except BaseException as exc:
-                failures.append(exc)
-            try:
-                runtime.lstat()
-            except FileNotFoundError:
-                runtime_absent = True
-            except BaseException as exc:
-                failures.append(exc)
-                runtime_absent = False
-            else:
-                runtime_absent = False
-        if service_closed and runtime_absent:
-            break
-    if not runtime_absent:
-        failures.append(DefenseFrontierError("the GATE-04 native runtime was not removed"))
-    if len(failures) == 1:
-        raise failures[0]
-    if failures:
-        raise _RuntimeCleanupError(failures) from failures[0]
+
+def _close_runtime_and_remove(
+    runtime: Path,
+    runtime_guard: _PinnedPrivateDirectory,
+    close_service: Callable[[], None],
+) -> None:
+    _close_runtime_and_remove_impl(
+        runtime,
+        runtime_guard,
+        close_service,
+        remove_tree=_remove_pinned_tree,
+    )
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -492,6 +476,15 @@ def _validate_runs(
         and len(set(credentialed_task_ids)) == 2,
         "receiver effects are not bound to the two canonical transport tasks",
     )
+    export_detection_matches = {
+        "canonical": _detection_observed_matches(canonical, "sandbox.export.local.v1"),
+        "frontier": _detection_observed_matches(frontier, "sandbox.export.local.v1"),
+        "replay": _detection_observed_matches(replay, "sandbox.export.local.v1"),
+    }
+    _require(
+        export_detection_matches == {"canonical": 0, "frontier": 1, "replay": 0},
+        "frontier observed detection outcomes did not differ",
+    )
     return {
         "canonical_transport_executed": True,
         "frontier_control_blocked": True,
@@ -502,30 +495,8 @@ def _validate_runs(
         "independent_observation": True,
         "cleanup_verified": True,
         "controlled_replay": True,
-        "export_detection_matches": {
-            "canonical": _detection_observed_matches(canonical, "sandbox.export.local.v1"),
-            "frontier": _detection_observed_matches(frontier, "sandbox.export.local.v1"),
-            "replay": _detection_observed_matches(replay, "sandbox.export.local.v1"),
-        },
+        "export_detection_matches": export_detection_matches,
     }
-
-
-def _remove_runner_journal(runs_dir: Path) -> None:
-    journal = runs_dir / ".bluefire-runner-results"
-    if not journal.exists():
-        return
-    _require(journal.is_dir() and not journal.is_symlink(), "runner result journal is unsafe")
-    for path in list(journal.iterdir()):
-        _require(
-            path.parent == journal
-            and path.is_file()
-            and not path.is_symlink()
-            and _TASK_RESULT.fullmatch(path.name) is not None
-            and path.stat().st_size <= 8 * 1024 * 1024,
-            "runner result journal contains an unexpected entry",
-        )
-        path.unlink()
-    journal.rmdir()
 
 
 def _structural_report(repository: Path) -> Mapping[str, Any]:
@@ -653,6 +624,7 @@ def produce_defense_frontier_evidence(repository: Path, evidence_dir: Path) -> M
         except BaseException as exc:  # pragma: no cover - converted to a bounded gate failure
             receiver_failure.append(exc)
 
+    receiver_thread: threading.Thread | None = None
     try:
         receiver_thread = threading.Thread(
             target=serve_receiver,
@@ -660,16 +632,28 @@ def produce_defense_frontier_evidence(repository: Path, evidence_dir: Path) -> M
             daemon=True,
         )
         receiver_thread.start()
-    except BaseException:
-        receiver.close()
-        if "receiver_thread" in locals() and receiver_thread.ident is not None:
-            receiver_thread.join(timeout=5.0)
+    except BaseException as exc:
+        startup_failures: list[BaseException] = [exc]
+        try:
+            receiver.close()
+        except BaseException as close_exc:
+            _extend_cleanup_failures(startup_failures, close_exc)
+        try:
+            if receiver_thread is not None and receiver_thread.ident is not None:
+                receiver_thread.join(timeout=5.0)
+        except BaseException as join_exc:
+            _extend_cleanup_failures(startup_failures, join_exc)
         task_keys.clear()
         receiver_key = b""
-        raise
+        _raise_cleanup_failures(startup_failures)
+        raise AssertionError("unreachable") from exc
     service: BlueFireService | None = None
     runtime: Path | None = None
+    runtime_guard: _PinnedPrivateDirectory | None = None
+    journal_guard: _PinnedPrivateDirectory | None = None
+    journal_cleanup_attempted = False
     runtime_cleanup_attempted = False
+    primary_failure: BaseException | None = None
 
     def close_runtime_service() -> None:
         nonlocal service
@@ -679,7 +663,9 @@ def produce_defense_frontier_evidence(repository: Path, evidence_dir: Path) -> M
             service = None
 
     try:
-        runtime = Path(tempfile.mkdtemp(prefix=".g4-", dir=_runtime_temp_parent()))
+        journal_guard = _create_pinned_runner_journal(runs_dir)
+        runtime, runtime_guard = _create_pinned_runtime(".g4-")
+        runtime_stage_failure: BaseException | None = None
         try:
             try:
                 bootstrapped = bootstrap_runner(
@@ -702,11 +688,12 @@ def produce_defense_frontier_evidence(repository: Path, evidence_dir: Path) -> M
                 timeout_seconds=35.0,
                 output_limit_bytes=4 * 1024 * 1024,
                 receiver_task_key_factory=task_key,
+                durable_result_guard=journal_guard,
             )
             service = BlueFireService(
                 project_root=root,
                 runs_dir=runs_dir,
-                product_db_path=runtime / "product.sqlite3",
+                product_db_path=runtime / "product" / "product.sqlite3",
                 runner_factory=lambda _profile: (runner, bootstrapped.sandbox_path),
                 runner_lifecycle=ManagedRunnerLifecycle(runtime / "managed-lifecycle"),
             )
@@ -858,12 +845,23 @@ def produce_defense_frontier_evidence(repository: Path, evidence_dir: Path) -> M
                     service.store.validate_bundle(str(run["run_id"])).get("valid") is True,
                     "a frontier run bundle failed integrity validation",
                 )
+        except BaseException as exc:
+            runtime_stage_failure = exc
         finally:
+            runtime_failures: list[BaseException] = []
+            if runtime_stage_failure is not None:
+                _extend_cleanup_failures(runtime_failures, runtime_stage_failure)
             try:
-                _close_runtime_and_remove(runtime, close_runtime_service)
+                _close_runtime_and_remove(runtime, runtime_guard, close_runtime_service)
+            except BaseException as exc:
+                _extend_cleanup_failures(runtime_failures, exc)
             finally:
                 runtime_cleanup_attempted = True
-        _remove_runner_journal(runs_dir)
+            _raise_cleanup_failures(runtime_failures)
+        try:
+            _remove_runner_journal(runs_dir, journal_guard)
+        finally:
+            journal_cleanup_attempted = True
         for name, report in zip(
             REPORT_PATHS,
             (journey, defense, comparison, structural),
@@ -877,22 +875,46 @@ def produce_defense_frontier_evidence(repository: Path, evidence_dir: Path) -> M
             "reports": list(REPORT_PATHS),
             "run_count": 3,
         }
+    except BaseException as exc:
+        primary_failure = exc
     finally:
-        try:
-            if runtime is not None and not runtime_cleanup_attempted:
-                _close_runtime_and_remove(runtime, close_runtime_service)
-        finally:
+        final_failures: list[BaseException] = []
+        if primary_failure is not None:
+            _extend_cleanup_failures(final_failures, primary_failure)
+        if runtime is not None and not runtime_cleanup_attempted:
             try:
-                receiver.close()
-                if receiver_thread.is_alive():
-                    receiver_thread.join(timeout=5.0)
-                if receiver_thread.is_alive():
-                    raise DefenseFrontierError("the GATE-04 receiver did not stop")
-            finally:
-                # Bytes are immutable; dropping every reference is the only
-                # portable process-local cleanup. No representation is persisted.
-                task_keys.clear()
-                receiver_key = b""
+                if runtime_guard is None:
+                    close_runtime_service()
+                else:
+                    _close_runtime_and_remove(
+                        runtime,
+                        runtime_guard,
+                        close_runtime_service,
+                    )
+            except BaseException as exc:
+                _extend_cleanup_failures(final_failures, exc)
+        if journal_guard is not None and not journal_cleanup_attempted:
+            try:
+                _remove_runner_journal(runs_dir, journal_guard)
+            except BaseException as exc:
+                _extend_cleanup_failures(final_failures, exc)
+        try:
+            receiver.close()
+        except BaseException as exc:
+            _extend_cleanup_failures(final_failures, exc)
+        try:
+            if receiver_thread is not None and receiver_thread.is_alive():
+                receiver_thread.join(timeout=5.0)
+            if receiver_thread is not None and receiver_thread.is_alive():
+                raise DefenseFrontierError("the GATE-04 receiver did not stop")
+        except BaseException as exc:
+            _extend_cleanup_failures(final_failures, exc)
+        # Bytes are immutable; dropping every reference is the only portable
+        # process-local cleanup. No representation is persisted.
+        task_keys.clear()
+        receiver_key = b""
+        _raise_cleanup_failures(final_failures)
+    raise AssertionError("defense-frontier journey completed without a result")
 
 
 __all__ = [

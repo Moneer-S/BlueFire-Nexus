@@ -10,7 +10,6 @@ import re
 import shutil
 import stat
 import subprocess
-import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Mapping, Sequence, cast
@@ -23,12 +22,16 @@ from .api import (
 from .config import RunnerProfile
 from .defense_frontier import (
     _close_runtime_and_remove,
+    _create_pinned_runner_journal,
+    _create_pinned_runtime,
+    _extend_cleanup_failures,
+    _raise_cleanup_failures,
     _remove_runner_journal,
-    _runtime_temp_parent,
 )
 from .runner_bootstrap import RunnerBootstrapError, bootstrap_runner, current_platform
 from .runner_client import SubprocessRustRunner
 from .runner_lifecycle import ManagedRunnerLifecycle
+from .runner_private_files import _PinnedPrivateDirectory
 from .service import BlueFireService
 from .source_intake import SourceIntakeError, perform_source_intake
 from .source_intake_package import (
@@ -604,7 +607,11 @@ def produce_source_intake_gate_evidence(
 
     service: BlueFireService | None = None
     runtime: Path | None = None
+    runtime_guard: _PinnedPrivateDirectory | None = None
+    journal_guard: _PinnedPrivateDirectory | None = None
+    journal_cleanup_attempted = False
     cleanup_attempted = False
+    primary_failure: BaseException | None = None
 
     def close_service() -> None:
         nonlocal service
@@ -613,7 +620,8 @@ def produce_source_intake_gate_evidence(
             service = None
 
     try:
-        runtime = Path(tempfile.mkdtemp(prefix=".g9-", dir=_runtime_temp_parent()))
+        journal_guard = _create_pinned_runner_journal(run_root)
+        runtime, runtime_guard = _create_pinned_runtime(".g9-")
         safety = _safety_evidence(data_root, source_document, runtime)
         _require(safety["passed"] is True, "the source-intake refusal matrix is incomplete")
         try:
@@ -635,6 +643,7 @@ def produce_source_intake_gate_evidence(
             runtime / "transport",
             timeout_seconds=35.0,
             output_limit_bytes=4 * 1024 * 1024,
+            durable_result_guard=journal_guard,
         )
         service = BlueFireService(
             project_root=root,
@@ -909,11 +918,14 @@ def produce_source_intake_gate_evidence(
             "research_source": source,
         }
         try:
-            _close_runtime_and_remove(runtime, close_service)
+            _close_runtime_and_remove(runtime, runtime_guard, close_service)
         finally:
             cleanup_attempted = True
 
-        _remove_runner_journal(run_root)
+        try:
+            _remove_runner_journal(run_root, journal_guard)
+        finally:
+            journal_cleanup_attempted = True
         database = _database_artifact(run_root)
         execution["product_store"] = database
         for path, report in (
@@ -930,9 +942,27 @@ def produce_source_intake_gate_evidence(
             "run_count": 1,
             "blocking_check": None,
         }
+    except BaseException as exc:
+        primary_failure = exc
     finally:
+        final_failures: list[BaseException] = []
+        if primary_failure is not None:
+            _extend_cleanup_failures(final_failures, primary_failure)
         if runtime is not None and not cleanup_attempted:
-            _close_runtime_and_remove(runtime, close_service)
+            try:
+                if runtime_guard is None:
+                    close_service()
+                else:
+                    _close_runtime_and_remove(runtime, runtime_guard, close_service)
+            except BaseException as exc:
+                _extend_cleanup_failures(final_failures, exc)
+        if journal_guard is not None and not journal_cleanup_attempted:
+            try:
+                _remove_runner_journal(run_root, journal_guard)
+            except BaseException as exc:
+                _extend_cleanup_failures(final_failures, exc)
+        _raise_cleanup_failures(final_failures)
+    raise AssertionError("source-intake journey completed without a result")
 
 
 __all__ = [

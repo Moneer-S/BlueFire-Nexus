@@ -33,6 +33,7 @@ if __package__ in {None, ""}:
         _PinnedPrivateDirectory,
         runner_watchdog_control_root,
     )
+    from bluefire.runner_private_files import _PrivateFileCleanupError
     from bluefire.runner_trust import _is_link_or_reparse
     from bluefire.util import canonical_json_bytes, file_hash
 else:
@@ -46,10 +47,11 @@ else:
         _PinnedPrivateDirectory,
         runner_watchdog_control_root,
     )
+    from .runner_private_files import _PrivateFileCleanupError
     from .runner_trust import _is_link_or_reparse
     from .util import canonical_json_bytes, file_hash
 
-_CONFIG_SCHEMA = "bluefire.runner-watchdog-config.v2"
+_CONFIG_SCHEMA = "bluefire.runner-watchdog-config.v4"
 _READY_SCHEMA = "bluefire.runner-watchdog-ready.v1"
 _STATUS_SCHEMA = "bluefire.runner-watchdog-status.v2"
 _CONFIG_LIMIT_BYTES = 8 * 1024 * 1024
@@ -73,6 +75,8 @@ _CONFIG_KEYS = frozenset(
         "timeout_seconds",
         "output_limit_bytes",
         "durable_result_path",
+        "durable_result_parent_identity",
+        "durable_result_parent_mount_identity",
         "manifest",
         "profile",
         "cancellation_lease_token",
@@ -91,6 +95,7 @@ class _WatchdogConfig:
     timeout_seconds: float
     output_limit_bytes: int
     durable_result_path: Path
+    durable_result_parent: _PinnedPrivateDirectory
     manifest: Mapping[str, Any]
     profile: Mapping[str, Any]
     cancellation_lease_token: str | None
@@ -131,6 +136,47 @@ class _CancellationHandshake:
     acknowledgement: _CapturedControlFile | None = None
 
 
+class _WatchdogLeaseCleanupError(RunnerTransportError):
+    """Retain the load/close failures from all watchdog directory leases."""
+
+    def __init__(self, failures: Sequence[BaseException]) -> None:
+        self.failures = tuple(failures)
+        super().__init__("runner watchdog lease cleanup had multiple failures")
+
+
+def _extend_lease_failures(
+    failures: list[BaseException],
+    failure: BaseException,
+) -> None:
+    if isinstance(failure, (_PrivateFileCleanupError, _WatchdogLeaseCleanupError)):
+        for nested in failure.failures:
+            _extend_lease_failures(failures, nested)
+    else:
+        failures.append(failure)
+
+
+def _close_watchdog_pins(
+    pins: Sequence[_PinnedPrivateDirectory],
+    *,
+    primary_failure: BaseException | None = None,
+) -> None:
+    """Attempt every close and aggregate cleanup failures with the primary one."""
+
+    cleanup_failures: list[BaseException] = []
+    for pinned in pins:
+        try:
+            pinned.close()
+        except BaseException as exc:
+            _extend_lease_failures(cleanup_failures, exc)
+    if not cleanup_failures:
+        return
+    failures: list[BaseException] = []
+    if primary_failure is not None:
+        _extend_lease_failures(failures, primary_failure)
+    failures.extend(cleanup_failures)
+    raise _WatchdogLeaseCleanupError(failures) from failures[0]
+
+
 def _load_config(path_argument: str) -> _WatchdogConfig:
     path = Path(path_argument)
     try:
@@ -158,6 +204,8 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
     manifest = value.get("manifest")
     profile = value.get("profile")
     cancellation_lease_token = value.get("cancellation_lease_token")
+    durable_result_parent_identity = value.get("durable_result_parent_identity")
+    durable_result_parent_mount_identity = value.get("durable_result_parent_mount_identity")
     if (
         not isinstance(task_id, str)
         or not isinstance(binary_digest, str)
@@ -175,6 +223,22 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
         or not 4096 <= output_limit_bytes <= 64 * 1024 * 1024
         or not isinstance(manifest, dict)
         or not isinstance(profile, dict)
+        or not isinstance(durable_result_parent_identity, list)
+        or len(durable_result_parent_identity) != 2
+        or any(type(item) is not int for item in durable_result_parent_identity)
+        or int(durable_result_parent_identity[0]) < 0
+        or int(durable_result_parent_identity[1]) <= 0
+        or (
+            sys.platform.startswith("linux")
+            and (
+                type(durable_result_parent_mount_identity) is not int
+                or int(durable_result_parent_mount_identity) <= 0
+            )
+        )
+        or (
+            not sys.platform.startswith("linux")
+            and durable_result_parent_mount_identity is not None
+        )
         or (
             manifest.get("action_id") == _CANCELLATION_ACTION_ID
             and (
@@ -240,9 +304,30 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
     )
     try:
         control.__enter__()
-    except (OSError, RunnerTransportError):
-        control.close()
+    except (OSError, RunnerTransportError) as exc:
+        _close_watchdog_pins((control,), primary_failure=exc)
         raise RunnerTransportError("runner watchdog state is unavailable") from None
+
+    durable_result_parent = _PinnedPrivateDirectory(
+        destination.parent,
+        expected_identity=(
+            int(durable_result_parent_identity[0]),
+            int(durable_result_parent_identity[1]),
+        ),
+        expected_mount_identity=(
+            int(durable_result_parent_mount_identity)
+            if durable_result_parent_mount_identity is not None
+            else None
+        ),
+    )
+    try:
+        durable_result_parent.__enter__()
+    except (OSError, RunnerTransportError) as exc:
+        _close_watchdog_pins(
+            (control, durable_result_parent),
+            primary_failure=exc,
+        )
+        raise RunnerTransportError("runner durable result lease is unavailable") from None
 
     return _WatchdogConfig(
         task_id=task_id,
@@ -254,6 +339,7 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
         timeout_seconds=float(timeout_seconds),
         output_limit_bytes=output_limit_bytes,
         durable_result_path=destination,
+        durable_result_parent=durable_result_parent,
         manifest=manifest,
         profile=profile,
         cancellation_lease_token=cancellation_lease_token,
@@ -274,6 +360,12 @@ def _write_private_json(
         config.control.create(name, payload, maximum=_STATUS_LIMIT_BYTES)
     except (OSError, RunnerTransportError):
         raise RunnerTransportError("runner watchdog state is unavailable") from None
+
+
+def _close_config(config: _WatchdogConfig) -> None:
+    """Release both watchdog pins without abandoning the second close."""
+
+    _close_watchdog_pins((config.control, config.durable_result_parent))
 
 
 def _signal_exists(config: _WatchdogConfig, name: str, expected: bytes) -> bool:
@@ -613,6 +705,7 @@ def _run(
             config.work_root,
             timeout_seconds=config.timeout_seconds,
             output_limit_bytes=config.output_limit_bytes,
+            durable_result_guard=config.durable_result_parent,
             _kill_child_on_job_close=True,
         )
         if runner.parent_death_script_digest != config.parent_death_script_digest:
@@ -673,7 +766,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         receiver_environment = _consume_receiver_task_environment(expected_task_id=config.task_id)
     except RunnerTransportError:
-        config.control.close()
+        try:
+            _close_config(config)
+        except RunnerTransportError:
+            pass
         return 65
 
     try:
@@ -688,12 +784,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except RunnerTransportError:
         _cleanup_private_inputs(config)
-        config.control.close()
+        try:
+            _close_config(config)
+        except RunnerTransportError:
+            pass
         return 66
 
     state = "failed"
     error_code: str | None = "watchdog_failure"
     cancellation_facts: Mapping[str, bool] | None = None
+    execution_failed = False
     try:
         state, error_code, cancellation_facts = _run(
             config,
@@ -717,10 +817,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         _cleanup_private_inputs(config)
         _write_private_json(config, "status.json", status)
     except (OSError, RunnerTransportError):
-        return 67
+        execution_failed = True
     finally:
-        _cleanup_private_inputs(config)
-        config.control.close()
+        try:
+            _cleanup_private_inputs(config)
+        except (OSError, RunnerTransportError):
+            execution_failed = True
+        try:
+            _close_config(config)
+        except RunnerTransportError:
+            execution_failed = True
+
+    if execution_failed:
+        return 67
 
     if state == "succeeded":
         return 0

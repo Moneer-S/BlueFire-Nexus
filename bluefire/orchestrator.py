@@ -3919,7 +3919,11 @@ class Orchestrator:
             title="Runner-owned sandbox staging file",
             target_language="internal",
             logsource={"category": "sandbox_observation", "product": "bluefire"},
-            selection={"artifact_type": "file_observation", "path|startswith": "staged/"},
+            selection={
+                "artifact_type": "collector_observation",
+                "observation_kind": "filesystem",
+                "path|startswith": "staged/",
+            },
             provenance={"source": "canonical sandbox evidence model", "license": "MIT"},
             known_misses=("Does not inspect host or external telemetry.",),
         )
@@ -3930,7 +3934,8 @@ class Orchestrator:
             [
                 {
                     "fixture_id": "fixture-staging-positive.v1",
-                    "artifact_type": "file_observation",
+                    "artifact_type": "collector_observation",
+                    "observation_kind": "filesystem",
                     "path": "staged/bundle.jsonl",
                 }
             ],
@@ -3941,7 +3946,8 @@ class Orchestrator:
             [
                 {
                     "fixture_id": "fixture-benign-source.v1",
-                    "artifact_type": "file_observation",
+                    "artifact_type": "collector_observation",
+                    "observation_kind": "filesystem",
                     "path": "fixtures/input.jsonl",
                 }
             ],
@@ -3953,7 +3959,8 @@ class Orchestrator:
             target_language="internal",
             logsource={"category": "sandbox_observation", "product": "bluefire"},
             selection={
-                "artifact_type": "file_observation",
+                "artifact_type": "collector_observation",
+                "observation_kind": "filesystem",
                 "path|startswith": "exports/ephemeral/",
             },
             provenance={"source": "canonical sandbox evidence model", "license": "MIT"},
@@ -3965,7 +3972,8 @@ class Orchestrator:
             [
                 {
                     "fixture_id": "fixture-local-export-positive.v1",
-                    "artifact_type": "file_observation",
+                    "artifact_type": "collector_observation",
+                    "observation_kind": "filesystem",
                     "path": "exports/ephemeral/bundle.bin",
                 }
             ],
@@ -3976,7 +3984,8 @@ class Orchestrator:
             [
                 {
                     "fixture_id": "fixture-benign-staging.v1",
-                    "artifact_type": "file_observation",
+                    "artifact_type": "collector_observation",
+                    "observation_kind": "filesystem",
                     "path": "staged/bundle.jsonl",
                 }
             ],

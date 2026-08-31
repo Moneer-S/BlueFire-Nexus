@@ -17,6 +17,7 @@ from typing import Any, Mapping, cast
 import pytest
 
 import bluefire.runner_client as runner_client_module
+import bluefire.runner_private_files as private_files_module
 import bluefire.runner_trust as runner_trust_module
 import bluefire.runner_watchdog as runner_watchdog_module
 from bluefire.runner_client import (
@@ -227,6 +228,7 @@ def _runner(
     tmp_path: Path,
     *,
     timeout_seconds: float = 5.0,
+    durable_result_guard: private_files_module._PinnedPrivateDirectory | None = None,
 ) -> SubprocessRustRunner:
     work_root = tmp_path / "runner-work"
     work_root.mkdir()
@@ -236,6 +238,7 @@ def _runner(
         work_root,
         timeout_seconds=timeout_seconds,
         output_limit_bytes=64 * 1024,
+        durable_result_guard=durable_result_guard,
     )
 
 
@@ -1229,6 +1232,12 @@ def test_parent_loss_allows_watchdog_to_publish_recoverable_result(tmp_path: Pat
         parent.kill()
         parent.wait(timeout=5)
 
+        if os.name == "nt":
+            rebound_parent = durable.parent.with_name("rebound-durable")
+            with pytest.raises(OSError):
+                durable.parent.rename(rebound_parent)
+            assert durable.parent.is_dir()
+
         pending = runner_pending_result_path(durable, "task-parent-loss-01")
         status_path = runner_watchdog_status_path(durable, "task-parent-loss-01")
         control_root = runner_watchdog_control_root(durable, "task-parent-loss-01")
@@ -1428,6 +1437,89 @@ def test_existing_pending_result_is_preserved_for_restart_reconciliation(tmp_pat
         )
 
     assert pending.read_bytes() == recovery_bytes
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory lease regression")
+def test_execute_task_retains_parent_guard_before_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SetupInterrupted(BaseException):
+        pass
+
+    runner = _runner(tmp_path)
+    durable = (tmp_path / "durable" / "result.json").resolve()
+    rebound_parent = tmp_path / "rebound-durable"
+    interruption = SetupInterrupted()
+
+    def inspect_earliest_setup(
+        _task_id: str,
+        *,
+        action_id: object,
+    ) -> Mapping[str, str] | None:
+        del action_id
+        with pytest.raises(OSError):
+            durable.parent.rename(rebound_parent)
+        raise interruption
+
+    monkeypatch.setattr(runner, "_receiver_environment", inspect_earliest_setup)
+
+    with pytest.raises(SetupInterrupted) as raised:
+        runner.execute_task(
+            _manifest(),
+            {},
+            task_id="task-earliest-parent-lease-01",
+            cancel_event=threading.Event(),
+            durable_result_path=durable,
+        )
+
+    assert raised.value is interruption
+    durable.parent.rename(rebound_parent)
+    assert rebound_parent.is_dir()
+
+
+def test_execute_task_preserves_primary_and_parent_guard_close_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    durable = (tmp_path / "durable" / "result.json").resolve()
+    primary = RunnerPendingResultExists("primary setup failure")
+    close_failure = OSError("parent guard close failed")
+    real_close = private_files_module._PinnedPrivateDirectory.close
+    close_failed = False
+
+    def fail_prepare(_root: Path) -> None:
+        raise primary
+
+    def fail_parent_close(
+        pinned: private_files_module._PinnedPrivateDirectory,
+    ) -> None:
+        nonlocal close_failed
+        if pinned.path == durable.parent and not close_failed:
+            close_failed = True
+            real_close(pinned)
+            raise close_failure
+        real_close(pinned)
+
+    monkeypatch.setattr(runner, "_prepare_watchdog_control", fail_prepare)
+    monkeypatch.setattr(
+        private_files_module._PinnedPrivateDirectory,
+        "close",
+        fail_parent_close,
+    )
+
+    with pytest.raises(private_files_module._PrivateFileCleanupError) as raised:
+        runner.execute_task(
+            _manifest(),
+            {},
+            task_id="task-parent-close-failure-01",
+            cancel_event=threading.Event(),
+            durable_result_path=durable,
+        )
+
+    assert close_failed is True
+    assert raised.value.failures == (primary, close_failure)
 
 
 def test_atomic_promotion_refuses_racing_final_and_preserves_both_results(
@@ -1664,6 +1756,47 @@ def test_exact_identity_mismatch_never_publishes_result(
     assert not durable.exists()
     assert not runner_pending_result_path(durable, task_id).exists()
     assert not runner_watchdog_control_root(durable, task_id).exists()
+
+
+def test_execute_task_authorizes_only_the_verified_durable_result(
+    tmp_path: Path,
+) -> None:
+    durable = (tmp_path / "durable" / "authorized.json").resolve()
+    durable.parent.mkdir()
+    with private_files_module._PinnedPrivateDirectory(durable.parent) as guard:
+        runner = _runner(tmp_path, durable_result_guard=guard)
+        result = runner.execute_task(
+            _manifest(),
+            {},
+            task_id="task-authorized-result-01",
+            cancel_event=threading.Event(),
+            durable_result_path=durable,
+        )
+        details = durable.stat(follow_symlinks=False)
+
+        assert result["status"] == "succeeded"
+        assert guard.authorized_cleanup_entries() == {
+            durable.name: (details.st_dev, details.st_ino)
+        }
+
+
+def test_execute_task_does_not_authorize_an_invalid_result(
+    tmp_path: Path,
+) -> None:
+    durable = (tmp_path / "durable" / "invalid.json").resolve()
+    durable.parent.mkdir()
+    with private_files_module._PinnedPrivateDirectory(durable.parent) as guard:
+        runner = _runner(tmp_path, durable_result_guard=guard)
+        with pytest.raises(RunnerTransportError):
+            runner.execute_task(
+                _full_manifest(result_override={"action_id": "sandbox.fixture.transform.v1"}),
+                _full_profile(),
+                task_id="task-invalid-authorization-01",
+                cancel_event=threading.Event(),
+                durable_result_path=durable,
+            )
+
+        assert guard.authorized_cleanup_entries() == {}
 
 
 def test_caller_interruption_requests_watchdog_cancel_before_unwinding(

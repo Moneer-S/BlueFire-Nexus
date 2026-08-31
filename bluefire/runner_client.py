@@ -41,6 +41,9 @@ from .runner_private_files import (
     _PinnedPrivateDirectory as _PinnedPrivateDirectory,
 )
 from .runner_private_files import (
+    _PrivateFileCleanupError as _PrivateFileCleanupError,
+)
+from .runner_private_files import (
     _read_descriptor_bounded as _read_descriptor_bounded,
 )
 from .runner_private_files import (
@@ -698,6 +701,7 @@ class SubprocessRustRunner:
         timeout_seconds: float = 35.0,
         output_limit_bytes: int = 2 * 1024 * 1024,
         receiver_task_key_factory: Callable[[str], bytes] | None = None,
+        durable_result_guard: _PinnedPrivateDirectory | None = None,
         _kill_child_on_job_close: bool = False,
     ) -> None:
         binary = Path(runner_binary).expanduser()
@@ -714,6 +718,7 @@ class SubprocessRustRunner:
         self.timeout_seconds = timeout_seconds
         self.output_limit_bytes = output_limit_bytes
         self._receiver_task_key_factory = receiver_task_key_factory
+        self._durable_result_guard = durable_result_guard
         self._kill_child_on_job_close = bool(_kill_child_on_job_close)
         try:
             from .runner_trust import _is_link_or_reparse
@@ -752,6 +757,22 @@ class SubprocessRustRunner:
             or (receiver_task_key_factory is not None and not callable(receiver_task_key_factory))
         ):
             raise RunnerTransportError("runner transport bounds are invalid")
+
+    def _result_parent_guard(self, parent: Path) -> _PinnedPrivateDirectory:
+        live = self._durable_result_guard
+        if live is None:
+            return _PinnedPrivateDirectory(parent)
+        if live.path != parent or live.delete or live.share_delete:
+            raise RunnerTransportError(
+                "runner durable result guard cannot provide an exclusive watchdog handoff"
+            )
+        identity = live.directory_identity()
+        mount_identity = live.directory_mount_identity()
+        return _PinnedPrivateDirectory(
+            parent,
+            expected_identity=identity,
+            expected_mount_identity=mount_identity,
+        )
 
     def inventory(self) -> Mapping[str, Any]:
         output = self._invoke([str(self.runner_binary), "inventory", "--json"])
@@ -803,19 +824,29 @@ class SubprocessRustRunner:
                 "Runner task did not start because cancellation was requested."
             )
 
-        destination, pending = self._durable_paths(durable_result_path, task_id)
-        receiver_environment = self._receiver_environment(
+        destination, pending, handoff_guard = self._durable_paths(
+            durable_result_path,
             task_id,
-            action_id=manifest.get("action_id"),
+            retain_parent_guard=True,
         )
-        control_root = runner_watchdog_control_root(destination, task_id)
-        config_path = control_root / "config.json"
-        start_path = control_root / "start"
+        if handoff_guard is None:
+            raise AssertionError("durable result parent guard was not retained")
         watchdog: subprocess.Popen[bytes] | None = None
         spawned_watchdogs: list[subprocess.Popen[bytes]] = []
-        cancellation_control = self._prepare_cancellation_control(manifest, profile, task_id)
+        cancellation_control: _CancellationControlLease | None = None
         cancellation_error: RunnerTaskCancelled | None = None
+        control_root: Path | None = None
         try:
+            receiver_environment = self._receiver_environment(
+                task_id,
+                action_id=manifest.get("action_id"),
+            )
+            control_root = runner_watchdog_control_root(destination, task_id)
+            config_path = control_root / "config.json"
+            start_path = control_root / "start"
+            cancellation_control = self._prepare_cancellation_control(manifest, profile, task_id)
+            result_parent_identity = handoff_guard.directory_identity()
+            result_parent_mount_identity = handoff_guard.directory_mount_identity()
             self._prepare_watchdog_control(control_root)
             try:
                 current_binary_digest = file_hash(self.runner_binary)
@@ -824,7 +855,7 @@ class SubprocessRustRunner:
             if current_binary_digest != self.runner_binary_digest:
                 raise RunnerTransportError("Runner identity changed after construction.")
             config = {
-                "schema_version": "bluefire.runner-watchdog-config.v2",
+                "schema_version": "bluefire.runner-watchdog-config.v4",
                 "task_id": task_id,
                 "runner_binary": str(self.runner_binary),
                 "runner_binary_digest": self.runner_binary_digest,
@@ -834,6 +865,8 @@ class SubprocessRustRunner:
                 "timeout_seconds": self.timeout_seconds,
                 "output_limit_bytes": self.output_limit_bytes,
                 "durable_result_path": str(destination),
+                "durable_result_parent_identity": list(result_parent_identity),
+                "durable_result_parent_mount_identity": result_parent_mount_identity,
                 "manifest": dict(manifest),
                 "profile": dict(profile),
                 "cancellation_lease_token": (
@@ -860,7 +893,7 @@ class SubprocessRustRunner:
             # `_spawn_watchdog` returns only after Windows job assignment. The
             # watchdog refuses to launch Rust until this exclusive gate exists.
             self._write_private_control_file(start_path, b"start\n", maximum=32)
-            return self._await_watchdog(
+            result = self._await_watchdog(
                 watchdog,
                 manifest=manifest,
                 profile=profile,
@@ -869,6 +902,18 @@ class SubprocessRustRunner:
                 pending=pending,
                 cancel_event=cancel_event,
             )
+            if self._durable_result_guard is not None:
+                try:
+                    self._durable_result_guard.authorize_cleanup_entry(
+                        destination.name,
+                        maximum=self.output_limit_bytes,
+                    )
+                except (OSError, RunnerTransportError):
+                    raise RunnerDurableResultExists(
+                        "Runner durable result exists but its cleanup identity requires "
+                        "reconciliation."
+                    ) from None
+            return result
         except RunnerTaskCancelled as exc:
             cancellation_error = exc
             raise
@@ -908,25 +953,28 @@ class SubprocessRustRunner:
                     ) from None
             raise
         finally:
-            containment_released = watchdog is None
-            if watchdog is not None and self._process_exited_without_reap(watchdog):
-                containment_released = (
-                    self._finish_windows_job(watchdog.pid)
-                    if os.name == "nt"
-                    else self._finish_posix_process_group(watchdog)
-                )
-            cancellation_cleanup = cancellation_control is None
-            if cancellation_control is not None:
-                if containment_released:
-                    cancellation_cleanup = cancellation_control.cleanup()
-                else:
-                    cancellation_control.close()
-            if cancellation_error is not None:
-                cancellation_error.control_cleanup_verified = bool(
-                    cancellation_error.control_cleanup_verified and cancellation_cleanup
-                )
-            if containment_released:
-                self._cleanup_watchdog_control(control_root)
+            try:
+                containment_released = watchdog is None
+                if watchdog is not None and self._process_exited_without_reap(watchdog):
+                    containment_released = (
+                        self._finish_windows_job(watchdog.pid)
+                        if os.name == "nt"
+                        else self._finish_posix_process_group(watchdog)
+                    )
+                cancellation_cleanup = cancellation_control is None
+                if cancellation_control is not None:
+                    if containment_released:
+                        cancellation_cleanup = cancellation_control.cleanup()
+                    else:
+                        cancellation_control.close()
+                if cancellation_error is not None:
+                    cancellation_error.control_cleanup_verified = bool(
+                        cancellation_error.control_cleanup_verified and cancellation_cleanup
+                    )
+                if containment_released and control_root is not None:
+                    self._cleanup_watchdog_control(control_root)
+            finally:
+                handoff_guard.__exit__(*sys.exc_info())
 
     def _execute_task_locally(
         self,
@@ -950,7 +998,12 @@ class SubprocessRustRunner:
             raise RunnerTaskCancelled(
                 "Runner task did not start because cancellation was requested."
             )
-        destination, pending = self._durable_paths(durable_result_path, task_id)
+        destination, pending, retained_guard = self._durable_paths(
+            durable_result_path,
+            task_id,
+        )
+        if retained_guard is not None:
+            raise AssertionError("unexpected retained durable result parent guard")
         pending_identities: list[tuple[int, int]] = []
         try:
             with tempfile.TemporaryDirectory(prefix="request-", dir=self.work_root) as directory:
@@ -1400,15 +1453,14 @@ class SubprocessRustRunner:
 
     def _read_private_result(self, path: Path) -> bytes:
         try:
-            with _PinnedPrivateDirectory(path.parent) as pinned:
+            with self._result_parent_guard(path.parent) as pinned:
                 return pinned.read(path.name, maximum=self.output_limit_bytes)
         except (OSError, RunnerTransportError):
             raise RunnerTransportError("runner durable result is unavailable") from None
 
-    @staticmethod
-    def _private_name_exists(path: Path) -> bool:
+    def _private_name_exists(self, path: Path) -> bool:
         try:
-            with _PinnedPrivateDirectory(path.parent) as pinned:
+            with self._result_parent_guard(path.parent) as pinned:
                 return pinned.has_name(path.name)
         except (OSError, RunnerTransportError):
             raise RunnerTransportError("runner durable result is unavailable") from None
@@ -2612,7 +2664,9 @@ class SubprocessRustRunner:
         self,
         durable_result_path: str | Path,
         task_id: str,
-    ) -> tuple[Path, Path]:
+        *,
+        retain_parent_guard: bool = False,
+    ) -> tuple[Path, Path, _PinnedPrivateDirectory | None]:
         from .runner_trust import _is_link_or_reparse
 
         destination = Path(durable_result_path).expanduser()
@@ -2634,10 +2688,11 @@ class SubprocessRustRunner:
                 raise OSError("durable result parent is not a directory")
             destination = parent / destination.name
             pending = runner_pending_result_path(destination, task_id)
-            with _PinnedPrivateDirectory(
-                parent,
-                expected_identity=(metadata.st_dev, metadata.st_ino),
-            ) as pinned:
+            pinned = self._result_parent_guard(parent)
+            try:
+                pinned.__enter__()
+                if pinned.directory_identity() != (metadata.st_dev, metadata.st_ino):
+                    raise OSError("durable result parent identity changed")
                 if pinned.has_name(destination.name):
                     raise RunnerDurableResultExists(
                         "Runner durable result already exists and requires reconciliation."
@@ -2646,17 +2701,23 @@ class SubprocessRustRunner:
                     raise RunnerPendingResultExists(
                         "Runner pending result requires recovery before the task can start."
                     )
+            except BaseException as exc:
+                pinned.__exit__(type(exc), exc, exc.__traceback__)
+                raise
+            if not retain_parent_guard:
+                pinned.__exit__(None, None, None)
         except RunnerDurableResultExists:
             raise
         except RunnerPendingResultExists:
             raise
+        except _PrivateFileCleanupError:
+            raise
         except (OSError, RunnerTransportError):
             raise RunnerTransportError("runner durable result destination is unavailable") from None
-        return destination, pending
+        return destination, pending, pinned if retain_parent_guard else None
 
-    @staticmethod
-    def _open_pending_result(path: Path) -> BinaryIO:
-        pinned = _PinnedPrivateDirectory(path.parent)
+    def _open_pending_result(self, path: Path) -> BinaryIO:
+        pinned = self._result_parent_guard(path.parent)
         try:
             pinned.__enter__()
             return cast(
@@ -2672,8 +2733,8 @@ class SubprocessRustRunner:
             pinned.close()
             raise RunnerTransportError("runner pending result is unavailable") from None
 
-    @staticmethod
     def _promote_pending_result(
+        self,
         pending: Path,
         destination: Path,
         *,
@@ -2685,7 +2746,7 @@ class SubprocessRustRunner:
         try:
             if pending.parent != destination.parent:
                 raise OSError("durable result directories differ")
-            with _PinnedPrivateDirectory(destination.parent) as pinned:
+            with self._result_parent_guard(destination.parent) as pinned:
                 checked, checked_identity = pinned.read_with_identity(
                     pending.name,
                     maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
@@ -2716,8 +2777,8 @@ class SubprocessRustRunner:
                 ) from None
             raise RunnerTransportError("runner durable result could not be committed") from None
 
-    @staticmethod
     def _remove_pending_result(
+        self,
         path: Path,
         *,
         expected_identity: tuple[int, int] | None,
@@ -2725,7 +2786,7 @@ class SubprocessRustRunner:
         if expected_identity is None:
             return
         try:
-            with _PinnedPrivateDirectory(path.parent) as pinned:
+            with self._result_parent_guard(path.parent) as pinned:
                 pinned.unlink(
                     path.name,
                     maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,

@@ -5,24 +5,105 @@ from __future__ import annotations
 import os
 import secrets
 import stat
+import sys
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Sequence
 
 from .runner_transport_errors import RunnerTransportError
+from .windows_owner_acl import (
+    _WINDOWS_CREATE_NEW as _WINDOWS_CREATE_NEW,
+)
+from .windows_owner_acl import (
+    _WINDOWS_DELETE as _WINDOWS_DELETE,
+)
+from .windows_owner_acl import (
+    _WINDOWS_FILE_DISPOSITION_INFO as _WINDOWS_FILE_DISPOSITION_INFO,
+)
+from .windows_owner_acl import (
+    _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS as _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS,
+)
+from .windows_owner_acl import (
+    _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT as _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT,
+)
+from .windows_owner_acl import (
+    _WINDOWS_FILE_SHARE_DELETE as _WINDOWS_FILE_SHARE_DELETE,
+)
+from .windows_owner_acl import (
+    _WINDOWS_FILE_SHARE_READ as _WINDOWS_FILE_SHARE_READ,
+)
+from .windows_owner_acl import (
+    _WINDOWS_FILE_SHARE_WRITE as _WINDOWS_FILE_SHARE_WRITE,
+)
+from .windows_owner_acl import (
+    _WINDOWS_GENERIC_READ as _WINDOWS_GENERIC_READ,
+)
+from .windows_owner_acl import (
+    _WINDOWS_GENERIC_WRITE as _WINDOWS_GENERIC_WRITE,
+)
+from .windows_owner_acl import (
+    _WINDOWS_LEGACY_PRIVATE_ROOT_LIMIT as _WINDOWS_LEGACY_PRIVATE_ROOT_LIMIT,
+)
+from .windows_owner_acl import (
+    _WINDOWS_OPEN_EXISTING as _WINDOWS_OPEN_EXISTING,
+)
+from .windows_owner_acl import (
+    _WINDOWS_WRITE_DAC as _WINDOWS_WRITE_DAC,
+)
+from .windows_owner_acl import (
+    _windows_extended_path as _windows_extended_path,
+)
+from .windows_owner_acl import (
+    _windows_mark_delete_descriptor as _windows_mark_delete_descriptor,
+)
+from .windows_owner_acl import (
+    _windows_open_descriptor as _windows_open_descriptor,
+)
+from .windows_owner_acl import (
+    _windows_rename_descriptor as _windows_rename_descriptor,
+)
 
-_WINDOWS_GENERIC_READ = 0x80000000
-_WINDOWS_GENERIC_WRITE = 0x40000000
-_WINDOWS_DELETE = 0x00010000
-_WINDOWS_WRITE_DAC = 0x00040000
-_WINDOWS_FILE_SHARE_READ = 0x00000001
-_WINDOWS_FILE_SHARE_WRITE = 0x00000002
-_WINDOWS_FILE_SHARE_DELETE = 0x00000004
-_WINDOWS_OPEN_EXISTING = 3
-_WINDOWS_CREATE_NEW = 1
-_WINDOWS_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
-_WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
-_WINDOWS_FILE_DISPOSITION_INFO = 4
-_WINDOWS_LEGACY_PRIVATE_ROOT_LIMIT = 240
+_LINUX_AT_EMPTY_PATH = 0x1000
+_LINUX_STATX_MNT_ID = 0x1000
+
+
+def _descriptor_mount_identity(descriptor: int) -> int | None:
+    """Return Linux's mount ID for an already-open descriptor."""
+
+    if not sys.platform.startswith("linux"):
+        return None
+    import ctypes
+    import errno
+
+    buffer = (ctypes.c_ubyte * 256)()
+    try:
+        statx = ctypes.CDLL(None, use_errno=True).statx
+    except AttributeError:
+        raise OSError(errno.ENOSYS, "descriptor mount identity is unavailable") from None
+    statx.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_uint,
+        ctypes.c_void_p,
+    )
+    statx.restype = ctypes.c_int
+    if (
+        statx(
+            descriptor,
+            b"",
+            _LINUX_AT_EMPTY_PATH,
+            _LINUX_STATX_MNT_ID,
+            ctypes.byref(buffer),
+        )
+        != 0
+    ):
+        error = ctypes.get_errno()
+        raise OSError(error, "descriptor mount identity is unavailable")
+    mask = int.from_bytes(bytes(buffer[0:4]), "little")
+    mount_id = int.from_bytes(bytes(buffer[144:152]), "little")
+    if not mask & _LINUX_STATX_MNT_ID or mount_id <= 0:
+        raise OSError(errno.ENOSYS, "descriptor mount identity is unavailable")
+    return mount_id
 
 
 def _read_descriptor_bounded(descriptor: int, maximum: int) -> bytes:
@@ -40,156 +121,30 @@ def _read_descriptor_bounded(descriptor: int, maximum: int) -> bytes:
     return bytes(payload)
 
 
-def _windows_extended_path(path: Path) -> Path:
-    raw_path = os.path.abspath(os.fspath(path))
-    if raw_path.startswith("\\\\?\\"):
-        return Path(raw_path)
-    if raw_path.startswith("\\\\"):
-        return Path("\\\\?\\UNC\\" + raw_path[2:])
-    return Path("\\\\?\\" + raw_path)
+class _PrivateFileCleanupError(RunnerTransportError):
+    """Retain every failure when a private handle cannot close cleanly."""
+
+    def __init__(self, failures: Sequence[BaseException]) -> None:
+        self.failures = tuple(failures)
+        super().__init__("private file operation and cleanup had multiple failures")
 
 
-def _windows_open_descriptor(
-    path: Path,
-    *,
-    directory: bool,
-    write: bool = False,
-    write_dac: bool = False,
-    delete: bool = False,
-    share_delete: bool = False,
-    create: bool = False,
-) -> int:
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    api_path = os.fspath(_windows_extended_path(path))
-
-    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
-    create_file.argtypes = (
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    )
-    create_file.restype = wintypes.HANDLE
-    access = _WINDOWS_GENERIC_READ
-    if write:
-        access |= _WINDOWS_GENERIC_WRITE
-    if write_dac:
-        access |= _WINDOWS_WRITE_DAC
-    if delete:
-        access |= _WINDOWS_DELETE
-    flags = _WINDOWS_FILE_FLAG_OPEN_REPARSE_POINT
-    if directory:
-        flags |= _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS
-    share = (
-        _WINDOWS_FILE_SHARE_READ
-        | (_WINDOWS_FILE_SHARE_WRITE if directory or share_delete else 0)
-        | (_WINDOWS_FILE_SHARE_DELETE if share_delete else 0)
-    )
-    handle = create_file(
-        api_path,
-        access,
-        share,
-        None,
-        _WINDOWS_CREATE_NEW if create else _WINDOWS_OPEN_EXISTING,
-        flags,
-        None,
-    )
-    invalid = wintypes.HANDLE(-1).value
-    if handle == invalid:
-        error = ctypes.get_last_error()
-        if create and error in {80, 183}:
-            raise FileExistsError(error, "CreateFileW target exists", str(path))
-        if not create and error in {2, 3}:
-            raise FileNotFoundError(error, "CreateFileW target is absent", str(path))
-        raise OSError(error, "CreateFileW failed", str(path))
-    try:
-        return msvcrt.open_osfhandle(
-            int(handle),
-            (os.O_RDWR if write else os.O_RDONLY) | getattr(os, "O_BINARY", 0),
-        )
-    except BaseException:
-        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(handle)
-        raise
+def _extend_private_file_failures(
+    failures: list[BaseException],
+    failure: BaseException,
+) -> None:
+    if isinstance(failure, _PrivateFileCleanupError):
+        for nested in failure.failures:
+            _extend_private_file_failures(failures, nested)
+    else:
+        failures.append(failure)
 
 
-def _windows_mark_delete_descriptor(descriptor: int) -> None:
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    class _Disposition(ctypes.Structure):
-        _fields_ = [("DeleteFile", wintypes.BOOL)]
-
-    set_information = ctypes.WinDLL("kernel32", use_last_error=True).SetFileInformationByHandle
-    set_information.argtypes = (
-        wintypes.HANDLE,
-        ctypes.c_int,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-    )
-    set_information.restype = wintypes.BOOL
-    disposition = _Disposition(True)
-    if not set_information(
-        wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),
-        _WINDOWS_FILE_DISPOSITION_INFO,
-        ctypes.byref(disposition),
-        ctypes.sizeof(disposition),
-    ):
-        raise OSError(ctypes.get_last_error(), "handle deletion failed")
-
-
-def _windows_rename_descriptor(descriptor: int, root_descriptor: int, target_name: str) -> None:
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    if not target_name or Path(target_name).name != target_name:
-        raise OSError("invalid rename target")
-
-    class _IoStatusBlock(ctypes.Structure):
-        _fields_ = [("Status", ctypes.c_void_p), ("Information", ctypes.c_size_t)]
-
-    class _FileRename(ctypes.Structure):
-        _fields_ = [
-            ("ReplaceIfExists", ctypes.c_ubyte),
-            ("RootDirectory", wintypes.HANDLE),
-            ("FileNameLength", wintypes.DWORD),
-            ("FileName", ctypes.c_wchar * len(target_name)),
-        ]
-
-    rename = _FileRename()
-    rename.ReplaceIfExists = 0
-    rename.RootDirectory = wintypes.HANDLE(msvcrt.get_osfhandle(root_descriptor))
-    rename.FileNameLength = len(target_name.encode("utf-16-le"))
-    rename.FileName = target_name
-    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
-    rename_file = ntdll.NtSetInformationFile
-    rename_file.argtypes = (
-        wintypes.HANDLE,
-        ctypes.POINTER(_IoStatusBlock),
-        ctypes.c_void_p,
-        wintypes.ULONG,
-        ctypes.c_int,
-    )
-    rename_file.restype = ctypes.c_long
-    status = _IoStatusBlock()
-    result = rename_file(
-        wintypes.HANDLE(msvcrt.get_osfhandle(descriptor)),
-        ctypes.byref(status),
-        ctypes.byref(rename),
-        ctypes.sizeof(rename),
-        10,  # FileRenameInformation
-    )
-    if result != 0:
-        if ctypes.c_ulong(result).value == 0xC0000035:  # STATUS_OBJECT_NAME_COLLISION
-            raise FileExistsError("handle rename target exists")
-        raise OSError(int(result), "handle rename failed")
+def _raise_private_file_failures(failures: Sequence[BaseException]) -> None:
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise _PrivateFileCleanupError(failures) from failures[0]
 
 
 class _PinnedPrivateDirectory:
@@ -202,14 +157,20 @@ class _PinnedPrivateDirectory:
         delete: bool = False,
         share_delete: bool = False,
         expected_identity: tuple[int, int] | None = None,
+        expected_mount_identity: int | None = None,
+        parent: _PinnedPrivateDirectory | None = None,
     ) -> None:
         self.path = path
         self.delete = delete
         self.share_delete = share_delete
         self.expected_identity = expected_identity
+        self.expected_mount_identity = expected_mount_identity
+        self._pinned_parent = parent
         self._descriptor: int | None = None
         self._parent_descriptor: int | None = None
         self._identity: tuple[int, int] | None = None
+        self._mount_identity: int | None = None
+        self._authorized_cleanup_entries: dict[str, tuple[int, int]] = {}
 
     def __enter__(self) -> _PinnedPrivateDirectory:
         from .runner_trust import (
@@ -218,9 +179,15 @@ class _PinnedPrivateDirectory:
             _owner_private_handle,
         )
 
-        if not self.path.is_absolute() or self.path.name in {"", ".", ".."}:
+        if (
+            not self.path.is_absolute()
+            or self.path.name in {"", ".", ".."}
+            or (self._pinned_parent is not None and self.path.parent != self._pinned_parent.path)
+        ):
             raise RunnerTransportError("private directory identity is invalid")
         try:
+            if self._pinned_parent is not None:
+                self._pinned_parent._validate_directory()
             if os.name == "nt":
                 self._descriptor = _windows_open_descriptor(
                     self.path,
@@ -236,21 +203,34 @@ class _PinnedPrivateDirectory:
                     | getattr(os, "O_CLOEXEC", 0)
                     | getattr(os, "O_NOFOLLOW", 0)
                 )
-                self._parent_descriptor = os.open(self.path.parent, flags)
+                self._parent_descriptor = (
+                    os.dup(self._pinned_parent._require_descriptor())
+                    if self._pinned_parent is not None
+                    else os.open(self.path.parent, flags)
+                )
                 self._descriptor = os.open(self.path.name, flags, dir_fd=self._parent_descriptor)
             details = os.fstat(self._require_descriptor())
+            mount_identity = _descriptor_mount_identity(self._require_descriptor())
+            linked = (
+                _is_link_or_reparse(_windows_extended_path(self.path))
+                if os.name == "nt"
+                else stat.S_ISLNK(details.st_mode)
+            )
             if (
                 not stat.S_ISDIR(details.st_mode)
-                or _is_link_or_reparse(
-                    _windows_extended_path(self.path) if os.name == "nt" else self.path
-                )
+                or linked
                 or (
                     self.expected_identity is not None
                     and (details.st_dev, details.st_ino) != self.expected_identity
                 )
+                or (
+                    self.expected_mount_identity is not None
+                    and mount_identity != self.expected_mount_identity
+                )
             ):
                 raise OSError("unsafe private directory")
             self._identity = details.st_dev, details.st_ino
+            self._mount_identity = mount_identity
             if os.name == "nt":
                 _owner_private_handle(self._require_descriptor(), directory=True)
             else:
@@ -258,16 +238,40 @@ class _PinnedPrivateDirectory:
                     self._require_descriptor(), 0o700
                 )
             self._validate_directory()
+            if self._pinned_parent is not None:
+                self._pinned_parent._validate_directory()
             return self
-        except FileNotFoundError:
-            self.close()
+        except FileNotFoundError as exc:
+            self._close_after_failure(exc)
             raise
-        except (OSError, RunnerTrustError):
-            self.close()
+        except (OSError, RunnerTrustError) as exc:
+            self._close_after_failure(exc)
             raise RunnerTransportError("private directory is unavailable or unsafe") from None
 
-    def __exit__(self, *_args: object) -> None:
-        self.close()
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        _traceback: object,
+    ) -> None:
+        try:
+            self.close()
+        except BaseException as close_exc:
+            if exc is None:
+                raise
+            failures: list[BaseException] = []
+            _extend_private_file_failures(failures, exc)
+            _extend_private_file_failures(failures, close_exc)
+            _raise_private_file_failures(failures)
+
+    def _close_after_failure(self, failure: BaseException) -> None:
+        try:
+            self.close()
+        except BaseException as close_exc:
+            failures: list[BaseException] = []
+            _extend_private_file_failures(failures, failure)
+            _extend_private_file_failures(failures, close_exc)
+            _raise_private_file_failures(failures)
 
     def _require_descriptor(self) -> int:
         if self._descriptor is None:
@@ -280,14 +284,42 @@ class _PinnedPrivateDirectory:
         descriptor = self._require_descriptor()
         details = os.fstat(descriptor)
         validation_path = _windows_extended_path(self.path) if os.name == "nt" else self.path
-        current = validation_path.stat(follow_symlinks=False)
+        if os.name == "nt":
+            current = validation_path.stat(follow_symlinks=False)
+            linked = _is_link_or_reparse(validation_path)
+            current_mount_identity = None
+        else:
+            if self._parent_descriptor is None:
+                raise OSError("private parent directory is unavailable")
+            if sys.platform.startswith("linux"):
+                current_descriptor = os.open(
+                    self.path.name,
+                    getattr(os, "O_PATH", os.O_RDONLY)
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=self._parent_descriptor,
+                )
+                try:
+                    current = os.fstat(current_descriptor)
+                    current_mount_identity = _descriptor_mount_identity(current_descriptor)
+                finally:
+                    os.close(current_descriptor)
+            else:
+                current = os.stat(
+                    self.path.name,
+                    dir_fd=self._parent_descriptor,
+                    follow_symlinks=False,
+                )
+                current_mount_identity = None
+            linked = stat.S_ISLNK(current.st_mode)
         if (
             self._identity is None
-            or _is_link_or_reparse(validation_path)
+            or linked
             or not stat.S_ISDIR(details.st_mode)
             or not stat.S_ISDIR(current.st_mode)
             or (details.st_dev, details.st_ino) != self._identity
             or (current.st_dev, current.st_ino) != self._identity
+            or current_mount_identity != self._mount_identity
         ):
             raise OSError("private directory identity changed")
 
@@ -297,13 +329,31 @@ class _PinnedPrivateDirectory:
             raise OSError("private directory identity is unavailable")
         return self._identity
 
+    def directory_mount_identity(self) -> int | None:
+        self._validate_directory()
+        return self._mount_identity
+
+    def parent_mount_identity(self) -> int | None:
+        self._validate_directory()
+        if self._parent_descriptor is None:
+            return None
+        return _descriptor_mount_identity(self._parent_descriptor)
+
     def close(self) -> None:
-        if self._descriptor is not None:
-            os.close(self._descriptor)
-            self._descriptor = None
-        if self._parent_descriptor is not None:
-            os.close(self._parent_descriptor)
-            self._parent_descriptor = None
+        descriptors = (self._descriptor, self._parent_descriptor)
+        self._descriptor = None
+        self._parent_descriptor = None
+        self._identity = None
+        self._mount_identity = None
+        failures: list[BaseException] = []
+        for descriptor in descriptors:
+            if descriptor is None:
+                continue
+            try:
+                os.close(descriptor)
+            except BaseException as exc:
+                _extend_private_file_failures(failures, exc)
+        _raise_private_file_failures(failures)
 
     @staticmethod
     def _name(name: str) -> str:
@@ -345,6 +395,77 @@ class _PinnedPrivateDirectory:
         self._validate_directory()
         return True
 
+    def create_directory(self, name: str) -> tuple[tuple[int, int], int | None]:
+        """Create one private child directory relative to this exact parent."""
+
+        name = self._name(name)
+        self._validate_directory()
+        if os.name == "nt":
+            (self.path / name).mkdir(mode=0o700, parents=False, exist_ok=False)
+        else:
+            os.mkdir(name, mode=0o700, dir_fd=self._require_descriptor())
+        details, mount_identity = self.entry_metadata_with_mount_identity(name)
+        if not stat.S_ISDIR(details.st_mode) or stat.S_ISLNK(details.st_mode):
+            raise OSError("created private directory identity is invalid")
+        return (int(details.st_dev), int(details.st_ino)), mount_identity
+
+    def authorize_cleanup_entry(self, name: str, *, maximum: int) -> tuple[int, int]:
+        """Remember one exact, verified child identity for later owned cleanup."""
+
+        name = self._name(name)
+        identity = self.file_identity(name, maximum=maximum, apply_permissions=False)
+        existing = self._authorized_cleanup_entries.get(name)
+        if existing is not None and existing != identity:
+            raise OSError("authorized cleanup entry identity changed")
+        self._authorized_cleanup_entries[name] = identity
+        return identity
+
+    def authorized_cleanup_entries(self) -> dict[str, tuple[int, int]]:
+        """Return the exact child identities authorized by completed operations."""
+
+        self._validate_directory()
+        return dict(self._authorized_cleanup_entries)
+
+    def entry_metadata(self, name: str) -> os.stat_result:
+        """Return no-follow metadata for one child of this pinned directory."""
+
+        details, _mount_identity = self.entry_metadata_with_mount_identity(name)
+        return details
+
+    def entry_metadata_with_mount_identity(
+        self,
+        name: str,
+    ) -> tuple[os.stat_result, int | None]:
+        """Bind child metadata to its Linux mount identity when available."""
+
+        name = self._name(name)
+        self._validate_directory()
+        if os.name == "nt":
+            details = _windows_extended_path(self.path / name).stat(follow_symlinks=False)
+            mount_identity = None
+        elif sys.platform.startswith("linux"):
+            descriptor = os.open(
+                name,
+                getattr(os, "O_PATH", os.O_RDONLY)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=self._require_descriptor(),
+            )
+            try:
+                details = os.fstat(descriptor)
+                mount_identity = _descriptor_mount_identity(descriptor)
+            finally:
+                os.close(descriptor)
+        else:
+            details = os.stat(
+                name,
+                dir_fd=self._require_descriptor(),
+                follow_symlinks=False,
+            )
+            mount_identity = None
+        self._validate_directory()
+        return details, mount_identity
+
     def _open_existing(
         self,
         name: str,
@@ -364,7 +485,10 @@ class _PinnedPrivateDirectory:
             )
         return os.open(
             name,
-            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
             dir_fd=self._require_descriptor(),
         )
 
@@ -399,11 +523,13 @@ class _PinnedPrivateDirectory:
         maximum: int,
         apply_permissions: bool = True,
         expected_identity: tuple[int, int] | None = None,
+        expected_mount_identity: int | None = None,
     ) -> os.stat_result:
         from .runner_trust import _is_link_or_reparse, _owner_private_handle
 
         name = self._name(name)
         details = os.fstat(descriptor)
+        descriptor_mount_identity = _descriptor_mount_identity(descriptor)
         if (
             not stat.S_ISREG(details.st_mode)
             or details.st_nlink != 1
@@ -413,6 +539,10 @@ class _PinnedPrivateDirectory:
                 expected_identity is not None
                 and (details.st_dev, details.st_ino) != expected_identity
             )
+            or (
+                expected_mount_identity is not None
+                and descriptor_mount_identity != expected_mount_identity
+            )
         ):
             raise OSError("unsafe private file")
         if apply_permissions:
@@ -420,23 +550,41 @@ class _PinnedPrivateDirectory:
                 _owner_private_handle(descriptor, directory=False)
             else:
                 getattr(os, "fchmod")(descriptor, 0o600)  # noqa: B009 - absent on Windows
-        validation_path = (
-            _windows_extended_path(self.path / name) if os.name == "nt" else self.path / name
-        )
-        current = (
-            validation_path.stat(follow_symlinks=False)
-            if os.name == "nt"
-            else os.stat(name, dir_fd=self._require_descriptor(), follow_symlinks=False)
-        )
+        validation_path = _windows_extended_path(self.path / name) if os.name == "nt" else None
+        if os.name == "nt":
+            if validation_path is None:  # pragma: no cover - narrowed by os.name
+                raise OSError("private file path is unavailable")
+            current = validation_path.stat(follow_symlinks=False)
+            linked = _is_link_or_reparse(validation_path)
+            current_mount_identity = None
+        else:
+            if sys.platform.startswith("linux"):
+                current_descriptor = os.open(
+                    name,
+                    getattr(os, "O_PATH", os.O_RDONLY)
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=self._require_descriptor(),
+                )
+                try:
+                    current = os.fstat(current_descriptor)
+                    current_mount_identity = _descriptor_mount_identity(current_descriptor)
+                finally:
+                    os.close(current_descriptor)
+            else:
+                current = os.stat(name, dir_fd=self._require_descriptor(), follow_symlinks=False)
+                current_mount_identity = None
+            linked = stat.S_ISLNK(current.st_mode)
         final = os.fstat(descriptor)
         if (
-            _is_link_or_reparse(validation_path)
+            linked
             or not stat.S_ISREG(current.st_mode)
             or current.st_nlink != 1
             or final.st_nlink != 1
             or (current.st_dev, current.st_ino) != (details.st_dev, details.st_ino)
             or (final.st_dev, final.st_ino) != (details.st_dev, details.st_ino)
             or final.st_size > maximum
+            or current_mount_identity != descriptor_mount_identity
         ):
             raise OSError("private file identity changed")
         return final
@@ -585,6 +733,7 @@ class _PinnedPrivateDirectory:
         maximum: int,
         expected: bytes | None = None,
         expected_identity: tuple[int, int] | None = None,
+        expected_mount_identity: int | None = None,
     ) -> None:
         descriptor = self._open_existing(name, delete=True)
         try:
@@ -593,6 +742,7 @@ class _PinnedPrivateDirectory:
                 descriptor,
                 maximum=maximum,
                 expected_identity=expected_identity,
+                expected_mount_identity=expected_mount_identity,
             )
             if expected is not None and _read_descriptor_bounded(descriptor, maximum) != expected:
                 raise OSError("private file content changed")
@@ -687,7 +837,7 @@ class _PinnedPrivateDirectory:
             os.fsync(self._require_descriptor())
 
     def remove(self) -> None:
-        if self.names():
+        if self.names(maximum=1):
             raise OSError("private directory is not empty")
         descriptor = self._require_descriptor()
         if os.name == "nt":
@@ -754,15 +904,22 @@ class _GuardedBinaryFile:
         return details.st_dev, details.st_ino
 
     def close(self) -> None:
+        failures: list[BaseException] = []
         try:
             self._handle.close()
-        finally:
+        except BaseException as exc:
+            _extend_private_file_failures(failures, exc)
+        try:
             self._directory.close()
+        except BaseException as exc:
+            _extend_private_file_failures(failures, exc)
+        _raise_private_file_failures(failures)
 
 
 __all__ = [
     "_GuardedBinaryFile",
     "_PinnedPrivateDirectory",
+    "_PrivateFileCleanupError",
     "_WINDOWS_CREATE_NEW",
     "_WINDOWS_DELETE",
     "_WINDOWS_FILE_DISPOSITION_INFO",

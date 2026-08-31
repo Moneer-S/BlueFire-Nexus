@@ -7,7 +7,6 @@ import json
 import os
 import secrets
 import stat
-import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Callable, Mapping, cast
@@ -19,8 +18,11 @@ from .defense_frontier import (
     PROVIDER_ID,
     _assert_secrets_absent,
     _close_runtime_and_remove,
+    _create_pinned_runner_journal,
+    _create_pinned_runtime,
+    _extend_cleanup_failures,
+    _raise_cleanup_failures,
     _remove_runner_journal,
-    _runtime_temp_parent,
     _scenario_with_bound_port,
 )
 from .receiver import LoopbackArtifactReceiver, ReceiverConfig
@@ -29,6 +31,7 @@ from .replay_checkpoint import checkpoint_for_step, validate_checkpoint
 from .runner_bootstrap import RunnerBootstrapError, bootstrap_runner, current_platform
 from .runner_client import SubprocessRustRunner
 from .runner_lifecycle import ManagedRunnerLifecycle
+from .runner_private_files import _PinnedPrivateDirectory
 from .service import BlueFireService
 from .util import canonical_json_bytes, content_hash, file_hash
 
@@ -422,15 +425,14 @@ def produce_replay_gate_evidence(repository: Path, evidence_dir: Path) -> Mappin
         except BaseException as exc:  # pragma: no cover - converted to a bounded gate failure
             receiver_failure.append(exc)
 
-    receiver_thread = threading.Thread(
-        target=serve_receiver,
-        name="bluefire-gate06-loopback-receiver",
-        daemon=True,
-    )
-    receiver_thread.start()
+    receiver_thread: threading.Thread | None = None
     service: BlueFireService | None = None
     runtime: Path | None = None
+    runtime_guard: _PinnedPrivateDirectory | None = None
+    journal_guard: _PinnedPrivateDirectory | None = None
+    journal_cleanup_attempted = False
     runtime_cleanup_attempted = False
+    primary_failure: BaseException | None = None
 
     def close_service() -> None:
         nonlocal service
@@ -439,7 +441,15 @@ def produce_replay_gate_evidence(repository: Path, evidence_dir: Path) -> Mappin
             service = None
 
     try:
-        runtime = Path(tempfile.mkdtemp(prefix=".g6-", dir=_runtime_temp_parent()))
+        receiver_thread = threading.Thread(
+            target=serve_receiver,
+            name="bluefire-gate06-loopback-receiver",
+            daemon=True,
+        )
+        receiver_thread.start()
+        journal_guard = _create_pinned_runner_journal(run_root)
+        runtime, runtime_guard = _create_pinned_runtime(".g6-")
+        runtime_stage_failure: BaseException | None = None
         try:
             try:
                 bootstrapped = bootstrap_runner(
@@ -462,12 +472,13 @@ def produce_replay_gate_evidence(repository: Path, evidence_dir: Path) -> Mappin
                 timeout_seconds=35.0,
                 output_limit_bytes=4 * 1024 * 1024,
                 receiver_task_key_factory=task_key,
+                durable_result_guard=journal_guard,
             )
             runner = _CountingRunner(native_runner)
             service = BlueFireService(
                 project_root=root,
                 runs_dir=run_root,
-                product_db_path=runtime / "product.sqlite3",
+                product_db_path=runtime / "product" / "product.sqlite3",
                 runner_factory=lambda _profile: (runner, bootstrapped.sandbox_path),
                 runner_lifecycle=ManagedRunnerLifecycle(runtime / "managed-lifecycle"),
             )
@@ -649,13 +660,24 @@ def produce_replay_gate_evidence(repository: Path, evidence_dir: Path) -> Mappin
                     "comparison_dimensions": True,
                 },
             }
+        except BaseException as exc:
+            runtime_stage_failure = exc
         finally:
+            runtime_failures: list[BaseException] = []
+            if runtime_stage_failure is not None:
+                _extend_cleanup_failures(runtime_failures, runtime_stage_failure)
             try:
-                _close_runtime_and_remove(runtime, close_service)
+                _close_runtime_and_remove(runtime, runtime_guard, close_service)
+            except BaseException as exc:
+                _extend_cleanup_failures(runtime_failures, exc)
             finally:
                 runtime_cleanup_attempted = True
+            _raise_cleanup_failures(runtime_failures)
 
-        _remove_runner_journal(run_root)
+        try:
+            _remove_runner_journal(run_root, journal_guard)
+        finally:
+            journal_cleanup_attempted = True
         for name, report in zip(REPORT_PATHS, (journey, corruption, comparison), strict=True):
             _write_json(destination / name, report)
         _assert_secrets_absent(destination, [receiver_key, *task_keys])
@@ -665,15 +687,44 @@ def produce_replay_gate_evidence(repository: Path, evidence_dir: Path) -> Mappin
             "reports": list(REPORT_PATHS),
             "run_count": 4,
         }
+    except BaseException as exc:
+        primary_failure = exc
     finally:
+        final_failures: list[BaseException] = []
+        if primary_failure is not None:
+            _extend_cleanup_failures(final_failures, primary_failure)
         if runtime is not None and not runtime_cleanup_attempted:
-            _close_runtime_and_remove(runtime, close_service)
-        receiver.stop()
-        if receiver_thread.is_alive():
-            receiver_thread.join(timeout=5.0)
-        receiver.close()
+            try:
+                if runtime_guard is None:
+                    close_service()
+                else:
+                    _close_runtime_and_remove(runtime, runtime_guard, close_service)
+            except BaseException as exc:
+                _extend_cleanup_failures(final_failures, exc)
+        if journal_guard is not None and not journal_cleanup_attempted:
+            try:
+                _remove_runner_journal(run_root, journal_guard)
+            except BaseException as exc:
+                _extend_cleanup_failures(final_failures, exc)
+        try:
+            receiver.stop()
+        except BaseException as exc:
+            _extend_cleanup_failures(final_failures, exc)
+        try:
+            if receiver_thread is not None and receiver_thread.is_alive():
+                receiver_thread.join(timeout=5.0)
+            if receiver_thread is not None and receiver_thread.is_alive():
+                raise ReplayJourneyError("GATE-06 receiver did not stop")
+        except BaseException as exc:
+            _extend_cleanup_failures(final_failures, exc)
+        try:
+            receiver.close()
+        except BaseException as exc:
+            _extend_cleanup_failures(final_failures, exc)
         task_keys.clear()
         receiver_key = b""
+        _raise_cleanup_failures(final_failures)
+    raise AssertionError("replay journey completed without a result")
 
 
 __all__ = [
