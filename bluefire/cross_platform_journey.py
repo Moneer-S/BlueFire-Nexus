@@ -79,7 +79,7 @@ REPORT_PATHS = (
 )
 
 WINDOWS_SCHEMA = "bluefire.cross-platform-windows-execute.v1"
-LINUX_SCHEMA = "bluefire.cross-platform-linux-execute.v1"
+LINUX_SCHEMA = "bluefire.cross-platform-linux-execute.v2"
 CANCELLATION_SCHEMA = "bluefire.cross-platform-process-cancellation.v2"
 RECEIVER_SCHEMA = "bluefire.cross-platform-network-receiver.v1"
 RECOVERY_SCHEMA = "bluefire.cross-platform-transport-recovery.v1"

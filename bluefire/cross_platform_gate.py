@@ -103,6 +103,10 @@ _CONTRACT_TESTS = (
     ),
     (
         "tests_platform/test_runner_cancellation.py::"
+        "test_parent_loss_allows_watchdog_to_publish_recoverable_result"
+    ),
+    (
+        "tests_platform/test_runner_cancellation.py::"
         "test_watchdog_readiness_failure_retains_and_stops_spawned_process"
     ),
     (
@@ -244,6 +248,7 @@ _EXPECTED_SUITE_TESTS = (
     "tests_platform.test_runner_cancellation::test_linux_process_identity_accepts_zero_scoped_namespace_process",
     "tests_platform.test_runner_cancellation::test_linux_process_identity_rejects_negative_scope",
     "tests_platform.test_runner_cancellation::test_outer_cancellation_cleanup_refuses_missing_lease",
+    "tests_platform.test_runner_cancellation::test_parent_loss_allows_watchdog_to_publish_recoverable_result",
     "tests_platform.test_runner_cancellation::test_preexisting_or_mismatched_witness_state_never_claims_cooperative_cancel",
     "tests_platform.test_runner_cancellation::test_private_posix_session_members_are_not_filtered_by_process_group",
     "tests_platform.test_runner_cancellation::test_watchdog_readiness_failure_retains_and_stops_spawned_process",

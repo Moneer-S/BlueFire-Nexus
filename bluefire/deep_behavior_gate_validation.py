@@ -345,7 +345,8 @@ def _validate_linux(
 ) -> tuple[Mapping[str, str], Mapping[str, Any]]:
     expected_keys = set(
         "schema_version passed proof_kind platform environment_type availability boundary runner "
-        "execution receiver run_bundle scenario_variant".split()
+        "execution receiver run_bundle scenario_variant source_intake_publication "
+        "watchdog_containment".split()
     )
     _mapping(value, expected_keys, "Linux deep-behavior report")
     _require(value.get("scenario_variant") == expected_variant, "Linux scenario variant is invalid")
@@ -915,7 +916,7 @@ def validate_deep_behavior_verification(
     value = _read_report(evidence_dir.resolve(strict=True), VERIFICATION_REPORT)
     row = _mapping(
         value,
-        set("schema_version passed helper suite checks run_ids reports " "proof_kinds".split()),
+        set("schema_version passed helper suite checks run_ids reports proof_kinds".split()),
         "GATE-03 verification report",
     )
     helper = _mapping(

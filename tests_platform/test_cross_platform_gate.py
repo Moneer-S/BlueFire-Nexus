@@ -14,7 +14,9 @@ import pytest
 import bluefire.cross_platform_cancellation_validation as cancellation_validation_module
 import bluefire.cross_platform_gate as gate_module
 import bluefire.cross_platform_gate_validation as validation_module
+import bluefire.cross_platform_source_intake_probe as source_intake_validation
 import bluefire.product_gates as product_gates
+import tools.run_cross_platform_source_intake_posix_probe as source_intake_posix_probe
 from bluefire.approvals import execution_intent_id
 from bluefire.cross_platform_artifact_validation import (
     CrossPlatformArtifactValidationError,
@@ -31,6 +33,10 @@ from bluefire.cross_platform_gate_validation import (
     validate_linux_typed_unavailable_report,
 )
 from bluefire.cross_platform_linux import (
+    SOURCE_INTAKE_POSIX_PROBE_COUNT,
+    SOURCE_INTAKE_POSIX_PROBE_IDS,
+    SOURCE_INTAKE_POSIX_PROBE_IDS_SHA256,
+    SOURCE_INTAKE_POSIX_PROBE_SCHEMA,
     LinuxDependenciesUnavailableError,
     LinuxJourneyError,
     _stage_wheelhouse,
@@ -101,6 +107,40 @@ def test_gate11_locked_contract_matches_authoritative_workflow() -> None:
     assert set(details[1] for details in gate_module._EXPECTED_ASSERTIONS.values()) == CHECK_NAMES
     assert gate_module._EXPECTED_SUITE_TESTS == tuple(sorted(gate_module._EXPECTED_SUITE_TESTS))
     assert product_gates._WORKFLOWS["GATE-11"] is product_gates._gate_11_workflow
+    probe_report = {
+        "schema_version": SOURCE_INTAKE_POSIX_PROBE_SCHEMA,
+        "platform": "linux",
+        "passed": True,
+        "probe_count": SOURCE_INTAKE_POSIX_PROBE_COUNT,
+        "passed_probe_ids": list(SOURCE_INTAKE_POSIX_PROBE_IDS),
+        "passed_probe_ids_sha256": SOURCE_INTAKE_POSIX_PROBE_IDS_SHA256,
+    }
+    assert SOURCE_INTAKE_POSIX_PROBE_COUNT == 3
+    assert content_hash(list(SOURCE_INTAKE_POSIX_PROBE_IDS)) == (
+        SOURCE_INTAKE_POSIX_PROBE_IDS_SHA256
+    )
+    assert source_intake_posix_probe.SOURCE_INTAKE_POSIX_PROBE_IDS == (
+        SOURCE_INTAKE_POSIX_PROBE_IDS
+    )
+    assert source_intake_posix_probe.SOURCE_INTAKE_POSIX_PROBE_COUNT == (
+        SOURCE_INTAKE_POSIX_PROBE_COUNT
+    )
+    assert source_intake_posix_probe.SOURCE_INTAKE_POSIX_PROBE_SCHEMA == (
+        SOURCE_INTAKE_POSIX_PROBE_SCHEMA
+    )
+    assert (
+        source_intake_posix_probe.SOURCE_INTAKE_POSIX_PROBE_IDS_SHA256
+        == SOURCE_INTAKE_POSIX_PROBE_IDS_SHA256
+    )
+    assert (
+        source_intake_validation.validate_probe(probe_report, CrossPlatformGateValidationError)
+        == probe_report
+    )
+    with pytest.raises(CrossPlatformGateValidationError, match="probe inventory"):
+        source_intake_validation.validate_probe(
+            {**probe_report, "passed_probe_ids": probe_report["passed_probe_ids"][:-1]},
+            CrossPlatformGateValidationError,
+        )
 
 
 def test_gate11_execute_approval_identity_is_pre_run_intent_bound() -> None:
@@ -481,7 +521,7 @@ def test_gate11_fails_with_the_exact_typed_linux_reason(
     "payload",
     [
         b'{"schema_version":NaN}\n',
-        b'{"schema_version":"bluefire.cross-platform-linux-execute.v1"}',
+        b'{"schema_version":"bluefire.cross-platform-linux-execute.v2"}',
     ],
     ids=("nonfinite", "noncanonical"),
 )
@@ -624,7 +664,9 @@ def test_cancellation_validator_reprobes_exact_process_identities(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="the packaged cancellation witness is Windows-only")
-def test_fresh_cancellation_validator_executes_exact_wheel_member(tmp_path: Path) -> None:
+def test_fresh_cancellation_validator_executes_exact_wheel_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repository = Path(__file__).resolve().parents[1]
     binary = (repository / "bluefire" / "native" / "bluefire-runner.exe").read_bytes()
     binary_digest = "sha256:" + hashlib.sha256(binary).hexdigest()
@@ -647,6 +689,19 @@ def test_fresh_cancellation_validator_executes_exact_wheel_member(tmp_path: Path
         parent_pid=2_000_000_001,
         descendant_pid=2_000_000_002,
     )
+    trusted_temp = cancellation_validation_module.runtime_temp_parent()
+    observed_temp_parents: list[Path] = []
+    poisoned_temp = tmp_path / ("ambient-" + "x" * 80) / ("y" * 80)
+    monkeypatch.setenv("TEMP", os.fspath(poisoned_temp))
+    monkeypatch.setenv("TMP", os.fspath(poisoned_temp))
+
+    def trusted_runtime_temp_parent() -> Path:
+        observed_temp_parents.append(trusted_temp)
+        return trusted_temp
+
+    monkeypatch.setattr(
+        cancellation_validation_module, "runtime_temp_parent", trusted_runtime_temp_parent
+    )
 
     proof = cancellation_validation_module.run_fresh_cancellation_validation(
         repository,
@@ -660,6 +715,8 @@ def test_fresh_cancellation_validator_executes_exact_wheel_member(tmp_path: Path
         expected_runner_digest=binary_digest,
         expected_report=target_report,
     )
+    assert observed_temp_parents == [trusted_temp]
+    assert not poisoned_temp.exists()
     unrelated_report = _cancellation_report(
         binary_digest,
         request_character="c",

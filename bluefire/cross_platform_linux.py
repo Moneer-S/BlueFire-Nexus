@@ -35,14 +35,22 @@ from .cross_platform_process_proof import (
     validate_posix_watchdog_containment_proof,
 )
 from .cross_platform_readiness import WSL_DISTRIBUTION_ID, _trusted_wsl_executable
+from .cross_platform_source_intake_probe import (
+    SOURCE_INTAKE_POSIX_PROBE_COUNT,
+    SOURCE_INTAKE_POSIX_PROBE_IDS,
+    SOURCE_INTAKE_POSIX_PROBE_IDS_SHA256,
+    SOURCE_INTAKE_POSIX_PROBE_SCHEMA,
+    validate_probe,
+)
 from .run_store import RunStore
 
-LINUX_SCHEMA = "bluefire.cross-platform-linux-execute.v1"
+LINUX_SCHEMA = "bluefire.cross-platform-linux-execute.v2"
 LINUX_ENVIRONMENT = "disposable-wsl2-distribution"
-LINUX_WORKER_SCHEMA = "bluefire.cross-platform-linux-worker.v3"
+LINUX_WORKER_SCHEMA = "bluefire.cross-platform-linux-worker.v4"
 LINUX_WORKER = "tools/run_cross_platform_linux_worker.py"
 LINUX_CLEANUP = "tools/run_cross_platform_linux_cleanup.py"
 LINUX_VERIFIER = "tools/run_cross_platform_linux_verify_cleanup.py"
+LINUX_SOURCE_INTAKE_PROBE = "tools/run_cross_platform_source_intake_posix_probe.py"
 LINUX_WHEELHOUSE_ENV = "BLUEFIRE_GATE11_LINUX_WHEELHOUSE"
 LINUX_WHEELHOUSE_LOCK = "bluefire/data/gate11_linux_wheelhouse.json"
 
@@ -99,6 +107,7 @@ def linux_unavailable_report(wsl: Mapping[str, Any]) -> Mapping[str, Any]:
             "execution_distribution_created": False,
         },
         "runner": None,
+        "source_intake_publication": None,
         "watchdog_containment": None,
         "execution": None,
         "receiver": None,
@@ -146,6 +155,7 @@ def linux_dependencies_unavailable_report(wsl: Mapping[str, Any]) -> Mapping[str
         },
         "dependencies": dependencies,
         "runner": None,
+        "source_intake_publication": None,
         "watchdog_containment": None,
         "execution": None,
         "receiver": None,
@@ -737,6 +747,15 @@ def run_linux_journey(
     )
     staging.mkdir()
     _stage_product(repository, staging, artifact)
+    probe_payload, (probe_size, probe_digest) = _safe_regular_payload(
+        repository / LINUX_SOURCE_INTAKE_PROBE, 64 * 1024
+    )
+    staged_probe = staging / "product" / "bluefire" / "_gate11_source_intake_probe.py"
+    _write_staged_file(staged_probe, probe_payload)
+    _require(
+        _safe_regular(staged_probe, 64 * 1024) == (probe_size, probe_digest),
+        "the staged source-intake POSIX probe changed",
+    )
     wheelhouse = _stage_wheelhouse(repository, staging)
     _write_staged_file(staging / "runner", artifact.binary)
     _require(
@@ -787,13 +806,14 @@ def run_linux_journey(
     cleanup_error: BaseException | None = None
     try:
         request = {
-            "schema_version": "bluefire.cross-platform-linux-request.v2",
+            "schema_version": "bluefire.cross-platform-linux-request.v3",
             "source_distribution_id": WSL_DISTRIBUTION_ID,
             "execution_distribution_id": distribution.distribution_name,
             "workspace_name": workspace_name,
             "scenario_variant": scenario_variant,
             "acceptance_binding": acceptance_binding,
             "release_artifact": {key: value for key, value in runner.items() if key != "source"},
+            "source_intake_probe": {"sha256": probe_digest, "size": probe_size},
             "wheelhouse": wheelhouse,
         }
         (staging / "request.json").write_text(
@@ -858,6 +878,7 @@ def run_linux_journey(
             "passed",
             "run_id",
             "runner",
+            "source_intake_publication",
             "watchdog_containment",
             "receiver",
             "scenario_variant",
@@ -872,6 +893,9 @@ def run_linux_journey(
         == {key: value for key, value in runner.items() if key != "source"}
         and summary.get("workspace_removed") is True,
         "the Linux product worker summary is invalid",
+    )
+    source_intake_publication = validate_probe(
+        summary.get("source_intake_publication"), LinuxJourneyError
     )
     try:
         watchdog_containment = dict(
@@ -923,6 +947,7 @@ def run_linux_journey(
             "cleanup_verification": verification,
         },
         "runner": runner,
+        "source_intake_publication": source_intake_publication,
         "watchdog_containment": watchdog_containment,
         "execution": execution,
         "receiver": summary["receiver"],
@@ -935,7 +960,12 @@ __all__ = [
     "LINUX_ENVIRONMENT",
     "LINUX_SCHEMA",
     "LINUX_WORKER_SCHEMA",
+    "LINUX_SOURCE_INTAKE_PROBE",
     "LinuxJourneyError",
+    "SOURCE_INTAKE_POSIX_PROBE_COUNT",
+    "SOURCE_INTAKE_POSIX_PROBE_IDS",
+    "SOURCE_INTAKE_POSIX_PROBE_IDS_SHA256",
+    "SOURCE_INTAKE_POSIX_PROBE_SCHEMA",
     "linux_unavailable_report",
     "run_linux_journey",
     "validate_linux_release_artifact",

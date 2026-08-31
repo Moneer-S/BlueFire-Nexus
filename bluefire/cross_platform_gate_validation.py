@@ -30,6 +30,7 @@ from .cross_platform_process_proof import (
 )
 from .cross_platform_readiness import WSL_DISTRIBUTION_ID, probe_wsl2
 from .cross_platform_run_validation import validate_persisted_run
+from .cross_platform_source_intake_probe import validate_probe
 from .product_acceptance_run_bundle import validated_run_bundle
 from .util import canonical_json_bytes, content_hash
 
@@ -104,7 +105,7 @@ LINUX_DEPENDENCIES_UNAVAILABLE_REASON = (
 
 _SCHEMAS = {
     WINDOWS_REPORT: "bluefire.cross-platform-windows-execute.v1",
-    LINUX_REPORT: "bluefire.cross-platform-linux-execute.v1",
+    LINUX_REPORT: "bluefire.cross-platform-linux-execute.v2",
     CANCELLATION_REPORT: "bluefire.cross-platform-process-cancellation.v2",
     RECEIVER_REPORT: "bluefire.cross-platform-network-receiver.v1",
     RECOVERY_REPORT: "bluefire.cross-platform-transport-recovery.v1",
@@ -463,6 +464,7 @@ def _linux(
             "availability",
             "boundary",
             "runner",
+            "source_intake_publication",
             "watchdog_containment",
             "execution",
             "receiver",
@@ -496,6 +498,7 @@ def _linux(
                     value.get(key) is not None
                     for key in (
                         "runner",
+                        "source_intake_publication",
                         "watchdog_containment",
                         "execution",
                         "receiver",
@@ -521,6 +524,7 @@ def _linux(
                 value.get(key) is not None
                 for key in (
                     "runner",
+                    "source_intake_publication",
                     "watchdog_containment",
                     "execution",
                     "receiver",
@@ -535,6 +539,8 @@ def _linux(
         raise CrossPlatformGateValidationError("Linux Execute did not reach dynamic readiness")
     _linux_boundary(value.get("boundary"), fresh_wsl=fresh_wsl, ready=True, repository=repository)
     _runner(value.get("runner"), runner, "linux")
+    probe_error = CrossPlatformGateValidationError
+    validate_probe(value.get("source_intake_publication"), probe_error)
     try:
         validate_posix_watchdog_containment_proof(value.get("watchdog_containment"))
     except ProcessProofError as exc:

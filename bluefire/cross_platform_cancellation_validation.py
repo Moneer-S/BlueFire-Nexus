@@ -25,6 +25,7 @@ from .cross_platform_recovery_report_validation import (
 )
 from .registry import load_builtin_registry
 from .runner_client import _PinnedPrivateDirectory
+from .runtime_paths import runtime_temp_parent
 from .util import content_hash
 
 _MAX_WHEEL_BYTES = 256 * 1024 * 1024
@@ -118,7 +119,9 @@ def run_fresh_cancellation_validation(
         config = load_config(repository / "config" / "bluefire.example.yaml")
         registry = load_builtin_registry()
         service = SimpleNamespace(config=config, registry=registry)
-        with tempfile.TemporaryDirectory(prefix="bluefire-gate11-cancellation-validation-") as raw:
+        with tempfile.TemporaryDirectory(
+            prefix=".bf-g11-cancel-", dir=runtime_temp_parent()
+        ) as raw:
             root = Path(raw)
             resource = root / "resource"
             resource.mkdir()

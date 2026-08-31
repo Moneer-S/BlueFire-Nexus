@@ -41,6 +41,7 @@ PACK_SOURCE_FILES = (
     "scenarios/linux_container_validation.yaml",
     "tools/run_aws_identity_lab_smoke.py",
     "tools/run_cross_platform_linux_worker.py",
+    "tools/run_cross_platform_source_intake_posix_probe.py",
     "tools/run_deep_behavior_gate_journey.py",
 )
 

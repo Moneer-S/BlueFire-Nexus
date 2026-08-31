@@ -59,9 +59,9 @@ _CONTRACT_TESTS = (
         "test_receiver_task_key_crosses_watchdog_only_through_fixed_scrubbed_environment"
     ),
 )
-_EXPECTED_SUITE_TEST_COUNT = 85
+_EXPECTED_SUITE_TEST_COUNT = 97
 _EXPECTED_SUITE_TESTS_SHA256 = (
-    "sha256:96da2114e0de5230e36a3e812794e7245f35479b7a4b0a91b2dae6221b722e9a"
+    "sha256:93b3bf53d78313e4ea2a5b1a728b00b9dea5bb9c4bcc1ffee1f1f71d2693a37d"
 )
 
 _ASSERTION_CHECKS = {

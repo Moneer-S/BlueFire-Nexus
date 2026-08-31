@@ -21,10 +21,10 @@ import zipfile
 from email.parser import BytesParser
 from email.policy import default as email_policy
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, cast
 
-REQUEST_SCHEMA = "bluefire.cross-platform-linux-request.v2"
-SUMMARY_SCHEMA = "bluefire.cross-platform-linux-worker.v3"
+REQUEST_SCHEMA = "bluefire.cross-platform-linux-request.v3"
+SUMMARY_SCHEMA = "bluefire.cross-platform-linux-worker.v4"
 SOURCE_DISTRO = "BlueFire-Gate11-Base-v1"
 _EXECUTION_DISTRO = re.compile(r"^BlueFire-Gate11-Run-[0-9a-f]{16}$")
 SCENARIO = "linux_container_validation.yaml"
@@ -43,6 +43,7 @@ _ACCEPTANCE_ENV = {
     "repository_tree": "BLUEFIRE_ACCEPTANCE_REPOSITORY_TREE",
     "release": "BLUEFIRE_ACCEPTANCE_RELEASE",
 }
+_SOURCE_INTAKE_PROBE_FILE = "_gate11_source_intake_probe.py"
 
 
 class WorkerError(ValueError):
@@ -82,16 +83,11 @@ def _load_request(root: Path) -> Mapping[str, Any]:
     _require(
         isinstance(value, Mapping)
         and set(value)
-        == {
-            "schema_version",
-            "source_distribution_id",
-            "execution_distribution_id",
-            "workspace_name",
-            "scenario_variant",
-            "acceptance_binding",
-            "release_artifact",
-            "wheelhouse",
-        }
+        == set(
+            "schema_version source_distribution_id execution_distribution_id workspace_name "
+            "scenario_variant acceptance_binding release_artifact source_intake_probe "
+            "wheelhouse".split()
+        )
         and value.get("schema_version") == REQUEST_SCHEMA
         and value.get("source_distribution_id") == SOURCE_DISTRO
         and isinstance(value.get("execution_distribution_id"), str)
@@ -103,6 +99,7 @@ def _load_request(root: Path) -> Mapping[str, Any]:
     _require(value.get("scenario_variant") in SCENARIO_VARIANTS, "invalid scenario variant")
     acceptance = value.get("acceptance_binding")
     artifact = value.get("release_artifact")
+    source_intake_probe = value.get("source_intake_probe")
     wheelhouse = value.get("wheelhouse")
     _require(
         isinstance(acceptance, Mapping)
@@ -139,6 +136,12 @@ def _load_request(root: Path) -> Mapping[str, Any]:
         and _SHA256.fullmatch(str(artifact["manifest_sha256"])) is not None
         and type(artifact.get("manifest_size")) is int
         and 1 <= int(artifact["manifest_size"]) <= 64 * 1024
+        and isinstance(source_intake_probe, Mapping)
+        and set(source_intake_probe) == {"sha256", "size"}
+        and isinstance(source_intake_probe.get("sha256"), str)
+        and _SHA256.fullmatch(str(source_intake_probe["sha256"])) is not None
+        and type(source_intake_probe.get("size")) is int
+        and 1 <= int(source_intake_probe["size"]) <= 64 * 1024
         and isinstance(wheelhouse, Mapping)
         and set(wheelhouse) == {"manifest_sha256", "manifest_size", "wheel_count"}
         and isinstance(wheelhouse.get("manifest_sha256"), str)
@@ -148,7 +151,7 @@ def _load_request(root: Path) -> Mapping[str, Any]:
         and wheelhouse.get("wheel_count") == 5,
         "invalid request authorities",
     )
-    return value
+    return cast(Mapping[str, Any], value)
 
 
 def _file_payload(path: Path, maximum: int) -> tuple[bytes, tuple[int, str]]:
@@ -160,7 +163,7 @@ def _file_payload(path: Path, maximum: int) -> tuple[bytes, tuple[int, str]]:
         and 1 <= details.st_size <= maximum,
         "unsafe staged file",
     )
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)  # type: ignore[attr-defined]
     try:
         opened = os.fstat(descriptor)
         _require(
@@ -280,7 +283,8 @@ def _write_site_member(site: Path, name: str, payload: bytes) -> None:
         details = current.lstat()
         _require(stat.S_ISDIR(details.st_mode) and not stat.S_ISLNK(details.st_mode), "unsafe site")
         current = current.parent
-    descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW  # type: ignore[attr-defined]
+    descriptor = os.open(target, flags, 0o600)
     try:
         offset = 0
         while offset < len(payload):
@@ -352,11 +356,11 @@ def _install_locked_wheel(path: Path, row: Mapping[str, Any], site: Path) -> Non
     except UnicodeError as exc:
         raise WorkerError("wheel compatibility metadata is invalid") from exc
     tags = [line.removeprefix("Tag: ") for line in wheel_lines if line.startswith("Tag: ")]
-    allowed = re.compile(
+    ok = re.compile(
         r"^(?:py3-none-any|cp312-cp312-manylinux(?:2014|_2_(?:17|28))_x86_64|"
         r"cp(?:311|38)-abi3-manylinux(?:2014|_2_17)_x86_64)$"
     )
-    _require(tags and all(allowed.fullmatch(tag) for tag in tags), "wheel tag is incompatible")
+    _require(bool(tags) and all(ok.fullmatch(tag) for tag in tags), "wheel tag is incompatible")
     for name, payload in payloads.items():
         _write_site_member(site, name, payload)
 
@@ -366,7 +370,7 @@ def _prepare_task_site(staging: Path, workspace: Path, request: Mapping[str, Any
         sys.implementation.name == "cpython"
         and sys.version_info[:2] == (3, 12)
         and sys.platform == "linux"
-        and os.uname().machine == "x86_64"
+        and os.uname().machine == "x86_64"  # type: ignore[attr-defined]
     ):
         raise DependencyError(
             {
@@ -376,7 +380,7 @@ def _prepare_task_site(staging: Path, workspace: Path, request: Mapping[str, Any
                     "major": sys.version_info.major,
                     "minor": sys.version_info.minor,
                     "platform": sys.platform,
-                    "architecture": os.uname().machine,
+                    "architecture": os.uname().machine,  # type: ignore[attr-defined]
                 },
             }
         )
@@ -587,11 +591,11 @@ def _publish_control_file(staging: Path, payload: bytes) -> None:
 
 def _publish_supervisor(staging: Path, workspace_name: str) -> None:
     process_id = os.getpid()
-    process_group_id = os.getpgrp()
+    process_group_id = os.getpgrp()  # type: ignore[attr-defined]
     raw_stat = (Path("/proc") / "self" / "stat").read_text(encoding="ascii")
     close = raw_stat.rfind(")")
     fields = raw_stat[close + 2 :].split() if close >= 0 else []
-    session_id = os.getsid(0)
+    session_id = os.getsid(0)  # type: ignore[attr-defined]
     _require(
         process_id == process_group_id == session_id and len(fields) >= 20,
         "worker is not an isolated process-group supervisor",
@@ -672,7 +676,7 @@ def _retained_receiver_key_factory(
 
 def _scan_secrets(root: Path, secrets: Sequence[bytes]) -> None:
     _require(
-        secrets and all(type(secret) is bytes and len(secret) == 32 for secret in secrets),
+        bool(secrets) and all(type(secret) is bytes and len(secret) == 32 for secret in secrets),
         "receiver secret inventory is invalid",
     )
     needles = tuple(
@@ -689,7 +693,7 @@ def _scan_secrets(root: Path, secrets: Sequence[bytes]) -> None:
 
 
 def _network_binding(result: Mapping[str, Any]) -> Mapping[str, Any]:
-    steps = result.get("steps")
+    steps = cast(list[Any], result.get("steps"))
     _require(isinstance(steps, list), "missing Execute steps")
     step = next(
         (
@@ -713,6 +717,8 @@ def _network_binding(result: Mapping[str, Any]) -> Mapping[str, Any]:
         and isinstance(details.get("bytes_sent"), int),
         "network step lacks a bound runner receipt",
     )
+    step = cast(Mapping[str, Any], step)
+    details = cast(Mapping[str, Any], details)
     return {
         "run_id": result["run_id"],
         "step_id": step["step_id"],
@@ -777,6 +783,15 @@ def _run_product(
     from bluefire.runner_client import SubprocessRustRunner
     from bluefire.service import BlueFireService
 
+    source_intake_probe = request["source_intake_probe"]
+    _require(
+        _file_identity(product_root / "bluefire" / _SOURCE_INTAKE_PROBE_FILE, 64 * 1024)
+        == (source_intake_probe["size"], source_intake_probe["sha256"]),
+        "source-intake POSIX probe identity changed",
+    )
+    from bluefire._gate11_source_intake_probe import run_probes
+
+    source_intake_publication = run_probes(workspace)
     watchdog_containment = posix_watchdog_crash_containment(workspace / "watchdog-containment")
     sandbox = workspace / "sandbox"
     sandbox.mkdir(mode=0o700)
@@ -786,7 +801,7 @@ def _run_product(
     )
     context = multiprocessing.get_context("fork")
     messages = context.Queue(maxsize=2)
-    receiver = context.Process(target=_receiver_child, args=(receiver_key, messages))
+    receiver = context.Process(target=_receiver_child, args=(receiver_key, messages))  # type: ignore[attr-defined]  # fmt: skip
     receiver.start()
     try:
         try:
@@ -896,7 +911,7 @@ def _run_product(
         remaining = [path for path in sandbox.rglob("*") if path.is_file()]
         _require(not remaining, "Linux sandbox retained receipt-owned files")
         run_path = workspace / "runs" / str(run_id)
-        _require(derived_receiver_keys, "Execute did not derive a receiver task key")
+        _require(bool(derived_receiver_keys), "Execute did not derive a receiver task key")
         _scan_secrets(run_path, (receiver_key, *derived_receiver_keys))
         output_runs = staging / "runs"
         output_runs.mkdir(exist_ok=False)
@@ -908,6 +923,7 @@ def _run_product(
             "scenario_variant": request["scenario_variant"],
             "workspace_name": request["workspace_name"],
             "runner": dict(artifact),
+            "source_intake_publication": source_intake_publication,
             "watchdog_containment": watchdog_containment,
             "receiver": {
                 "process_id": ready["process_id"],
@@ -944,10 +960,7 @@ def run() -> Mapping[str, Any]:
     _publish_supervisor(staging, str(request["workspace_name"]))
     workspace.mkdir(mode=0o700)
     details = workspace.stat()
-    _require(
-        details.st_uid == os.getuid() and stat.S_IMODE(details.st_mode) == 0o700,
-        "Linux workspace ownership is unsafe",
-    )
+    _require(details.st_uid == os.getuid() and stat.S_IMODE(details.st_mode) == 0o700, "Linux workspace ownership is unsafe")  # type: ignore[attr-defined]  # fmt: skip
     result: Mapping[str, Any] | None = None
     try:
         product_root = _prepare_task_site(staging, workspace, request)

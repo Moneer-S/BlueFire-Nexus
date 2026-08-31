@@ -393,7 +393,7 @@ def test_runtime_secret_scan_must_bind_all_referenced_bundle_files(
 
 def _linux_report(variant: str) -> dict[str, Any]:
     return {
-        "schema_version": "bluefire.cross-platform-linux-execute.v1",
+        "schema_version": "bluefire.cross-platform-linux-execute.v2",
         "passed": True,
         "proof_kind": "dynamic",
         "platform": "linux",
@@ -401,10 +401,12 @@ def _linux_report(variant: str) -> dict[str, Any]:
         "availability": {"state": "ready", "code": None},
         "boundary": {},
         "runner": {},
+        "source_intake_publication": {},
         "execution": {},
         "receiver": {},
         "run_bundle": _bundle(_run_id(1)),
         "scenario_variant": variant,
+        "watchdog_containment": {},
     }
 
 
@@ -426,6 +428,7 @@ def test_linux_report_strips_variant_then_revalidates_registered_plan(
 
     def fake_linux(core: Mapping[str, Any], *_args: Any, **_kwargs: Any):
         assert "scenario_variant" not in core
+        assert core["watchdog_containment"] == {}
         return report["run_bundle"], execution, {}
 
     def fake_bundle(_path: Path, summary: Mapping[str, Any], **kwargs: Any):
@@ -452,7 +455,14 @@ def test_typed_linux_unavailability_requires_only_primary_report(
 ) -> None:
     report = _linux_report("primary")
     report.update(
-        {"passed": False, "runner": None, "execution": None, "receiver": None, "run_bundle": None}
+        {
+            "passed": False,
+            "runner": None,
+            "execution": None,
+            "receiver": None,
+            "run_bundle": None,
+            "watchdog_containment": None,
+        }
     )
     _write_json(tmp_path / validation.LINUX_PRIMARY_REPORT, report)
     monkeypatch.setattr(validation, "linux_wheelhouse_unavailable", lambda _root: False)
