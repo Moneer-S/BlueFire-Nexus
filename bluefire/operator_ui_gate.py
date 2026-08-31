@@ -84,7 +84,7 @@ _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str]] = {
     "GATE-08-SAFETY-COLLECTORS-DETECTIONS": (
         "dynamic",
         "safety_collectors_detections",
-        (BROWSER_REPORT, JOURNEY_REPORT, PRODUCT_DB_ARTIFACT, VERIFICATION_REPORT),
+        (BROWSER_REPORT, JOURNEY_REPORT, VERIFICATION_REPORT),
         "GATE-08.safety.collector-detection-controls.v1",
     ),
     "GATE-08-AI-REPLAY-DIFF": (
@@ -102,13 +102,13 @@ _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str]] = {
     "GATE-08-MODE-AUTONOMY-PROVIDERS": (
         "dynamic",
         "mode_autonomy_providers",
-        (BROWSER_REPORT, PRODUCT_DB_ARTIFACT, FRONTEND_REPORT, VERIFICATION_REPORT),
+        (BROWSER_REPORT, FRONTEND_REPORT, VERIFICATION_REPORT),
         "GATE-08.configuration.mode-autonomy-provider.v1",
     ),
     "GATE-08-RUNNER-PACK-MANAGEMENT": (
         "dynamic",
         "runner_pack_management",
-        (BROWSER_REPORT, PRODUCT_DB_ARTIFACT, FRONTEND_REPORT, VERIFICATION_REPORT),
+        (BROWSER_REPORT, FRONTEND_REPORT, VERIFICATION_REPORT),
         "GATE-08.management.runner-profile-signed-pack.v1",
     ),
     "GATE-08-LIVE-WORKFLOW": (
@@ -120,7 +120,7 @@ _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str]] = {
     "GATE-08-PROVENANCE-SETTINGS": (
         "dynamic",
         "provenance_settings",
-        (BROWSER_REPORT, PRODUCT_DB_ARTIFACT, FRONTEND_REPORT, VERIFICATION_REPORT),
+        (BROWSER_REPORT, FRONTEND_REPORT, VERIFICATION_REPORT),
         "GATE-08.settings.strict-backend-effective.v1",
     ),
     "GATE-08-NO-RAW-SHELL-APPROVAL": (

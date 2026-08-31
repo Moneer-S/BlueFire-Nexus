@@ -730,6 +730,7 @@ def test_detection_gate_emits_one_exact_proof_per_assertion(
         len(proof["assertion_ids"]) == 1
         and proof["run_ids"] == ["run-proof-gate07"]
         and proof["run_bundles"] == list(bundles)
+        and detection_journey.PRODUCT_DB_ARTIFACT not in proof["evidence_artifacts"]
         for proof in outcome.proofs
     )
 

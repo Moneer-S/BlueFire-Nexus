@@ -435,6 +435,7 @@ def test_gate09_emits_one_exact_proof_per_assertion(
         and proof["run_ids"] == [bundles[0]["run_id"]]
         and proof["run_bundles"] == list(bundles)
         and proof["environment_limitations"] == []
+        and PRODUCT_DB_ARTIFACT not in proof["evidence_artifacts"]
         for proof in outcome.proofs
     )
     assert (evidence / source_intake_gate.VERIFICATION_REPORT).is_file()

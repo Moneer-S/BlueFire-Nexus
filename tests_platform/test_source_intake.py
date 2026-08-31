@@ -446,6 +446,7 @@ def test_bundle_refuses_zero_or_multiple_objects(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "unsafe_path",
     ["../T1016.json", "/absolute/T1016.json", "attack-patterns\\T1016.json", "C:T1016.json"],
+    ids=("parent-traversal", "posix-absolute", "windows-separated", "drive-relative"),
 )
 def test_source_path_traversal_and_alternate_syntax_are_rejected(
     tmp_path: Path, unsafe_path: str

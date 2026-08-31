@@ -37,7 +37,6 @@ from .source_intake_journey import (
     INTAKE_ARTIFACT,
     INTAKE_REPORT,
     PRIMARY_INTAKE_OPERATION_RECEIPT_ARTIFACT,
-    PRODUCT_DB_ARTIFACT,
     REPORT_PATHS,
     SAFETY_REPORT,
     _is_link_or_reparse,
@@ -67,7 +66,7 @@ _CONTRACT_TESTS = (
 # Updated only from the sorted JUnit inventory emitted by _run_pytest_suite.
 _EXPECTED_CONTRACT_TEST_COUNT = 151
 _EXPECTED_CONTRACT_TESTS_SHA256 = (
-    "sha256:9852d5de60b2b2c3669016a076b3bf0b9a8c1fb2867e4bff82e67dc76f981db4"
+    "sha256:3ac1bcf85f2f2f233c36da427f6d3f86672fb3277e78d77da3eeba78cea12907"
 )
 
 _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str]] = {
@@ -84,7 +83,6 @@ _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str]] = {
             INTAKE_REPORT,
             INTAKE_ARTIFACT,
             PRIMARY_INTAKE_OPERATION_RECEIPT_ARTIFACT,
-            PRODUCT_DB_ARTIFACT,
             VERIFICATION_REPORT,
         ),
         "GATE-09.intake.pinned-t1082-projection.v1",
@@ -92,7 +90,7 @@ _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str]] = {
     "GATE-09-EXECUTABLE-ADAPTER": (
         "dynamic",
         "executable_adapter",
-        (EXECUTION_REPORT, PRODUCT_DB_ARTIFACT, VERIFICATION_REPORT),
+        (EXECUTION_REPORT, VERIFICATION_REPORT),
         "GATE-09.execution.independent-compiled-action.v1",
     ),
     "GATE-09-SOURCE-LICENSE-REVIEW": (
@@ -114,7 +112,6 @@ _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str]] = {
             BROWSER_REPORT,
             BROWSER_INTAKE_ARTIFACT,
             BROWSER_INTAKE_OPERATION_RECEIPT_ARTIFACT,
-            PRODUCT_DB_ARTIFACT,
             VERIFICATION_REPORT,
         ),
         "GATE-09.ui.production-source-provenance.v1",

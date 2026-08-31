@@ -3,9 +3,11 @@ import hashlib
 import json
 import os
 import signal
+import struct
 import subprocess
 import sys
 import time
+import zlib
 from pathlib import Path
 
 import pytest
@@ -47,6 +49,27 @@ _ASSERTION_COUNTS = {
     "GATE-11": 8,
     "GATE-12": 12,
 }
+
+
+def _metadata_free_png(
+    *,
+    extra_chunk: tuple[bytes, bytes] | None = None,
+    idat_chunks: tuple[bytes, ...] | None = None,
+    interlace: int = 0,
+) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, interlace)
+    chunks = [chunk(b"IHDR", header)]
+    if extra_chunk is not None:
+        chunks.append(chunk(*extra_chunk))
+    image_data = idat_chunks or (zlib.compress(b"\x00\x00\x00\x00\x00"),)
+    chunks.extend(chunk(b"IDAT", item) for item in image_data)
+    chunks.append(chunk(b"IEND", b""))
+    return b"\x89PNG\r\n\x1a\n" + b"".join(chunks)
 
 
 _HELPER = r"""
@@ -1257,6 +1280,72 @@ def test_public_evidence_rejects_private_paths_links_and_unstable_identity(
         assert acceptance._relative_artifact(run_dir, artifact, "declared-proof")["path"] == (
             "gate-01/proof.json"
         )
+
+    artifact.write_text(
+        json.dumps(
+            {
+                "record": {
+                    "transformation_history": [
+                        {
+                            "source_field_disposition": {
+                                "discarded": ["/objects/0/description"],
+                                "projected_or_validated": [
+                                    "/id",
+                                    "/objects",
+                                    "/objects/0/name",
+                                ],
+                            }
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert acceptance._relative_artifact(run_dir, artifact, "declared-proof")["path"] == (
+        "gate-01/proof.json"
+    )
+    for document in (
+        {"pointer": "/objects/0/name"},
+        {"source_field_disposition": {"discarded": ["/etc/bluefire/private.conf"]}},
+        {"source_field_disposition": {"discarded": ["/objects/../etc/private.conf"]}},
+    ):
+        artifact.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(ValueError, match="discloses a local absolute path"):
+            acceptance._relative_artifact(run_dir, artifact, "declared-proof")
+
+    screenshot = gate_dir / "screenshot.png"
+    screenshot.write_bytes(_metadata_free_png())
+    assert acceptance._relative_artifact(run_dir, screenshot, "declared-proof")["path"] == (
+        "gate-01/screenshot.png"
+    )
+    compressed_scanline = zlib.compress(b"\x00\x00\x00\x00\x00")
+    screenshot.write_bytes(
+        _metadata_free_png(
+            idat_chunks=(compressed_scanline[:2], compressed_scanline[2:]),
+        )
+    )
+    assert acceptance._relative_artifact(run_dir, screenshot, "declared-proof")["path"] == (
+        "gate-01/screenshot.png"
+    )
+    private_idat = b"C:/Users/private/operator"
+    invalid_crc = bytearray(_metadata_free_png())
+    invalid_crc[-1] ^= 1
+    invalid_pngs = (
+        _metadata_free_png(extra_chunk=(b"tEXt", b"path=C:/Users/private/operator")),
+        _metadata_free_png(idat_chunks=(private_idat,)),
+        _metadata_free_png(idat_chunks=(compressed_scanline + private_idat,)),
+        _metadata_free_png(idat_chunks=(zlib.compress(b"\x05\x00\x00\x00\x00"),)),
+        _metadata_free_png(idat_chunks=(zlib.compress(b"\x00\x00\x00\x00"),)),
+        _metadata_free_png(interlace=1),
+        bytes(invalid_crc),
+        _metadata_free_png()[:-1] + b"X",
+        _metadata_free_png() + b"trailing",
+    )
+    for invalid_png in invalid_pngs:
+        screenshot.write_bytes(invalid_png)
+        with pytest.raises(ValueError, match="canonical metadata-free PNG"):
+            acceptance._relative_artifact(run_dir, screenshot, "declared-proof")
 
     for masked_path in (
         "C://Users/private-user/artifact.json",

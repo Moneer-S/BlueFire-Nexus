@@ -7,6 +7,8 @@ import json
 import os
 import re
 import stat
+import struct
+import zlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -37,7 +39,13 @@ _BINARY_PRIVATE_PATH = re.compile(
 _BINARY_FILE_URL = re.compile(rb"(?<![A-Za-z0-9+.-])file:(?://+|\\\\)", re.IGNORECASE)
 _TEXT_SCAN_LIMIT_BYTES = 64 * 1024 * 1024
 _PUBLIC_ROUTE_KEYS = frozenset({"/ui/app.js", "/ui/styles.css"})
+_SOURCE_POINTER_FIELDS = frozenset({"discarded", "projected_or_validated"})
+_SOURCE_DOCUMENT_POINTER = re.compile(
+    r"/(?:id|spec_version|type|objects(?:/(?:[A-Za-z0-9_-]|~[01])+)*)\Z"
+)
 _MAX_JSON_SCAN_NODES = 1_000_000
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MAX_PNG_IMAGE_BYTES = _TEXT_SCAN_LIMIT_BYTES
 
 
 def _wide_binary_patterns() -> tuple[re.Pattern[bytes], ...]:
@@ -98,22 +106,35 @@ def _reject_json_constant(_value: str) -> None:
     raise ValueError("non-standard JSON constant")
 
 
+def _is_reviewed_source_pointer(value: str, field_path: tuple[str, ...]) -> bool:
+    return (
+        len(field_path) >= 2
+        and field_path[-2] == "source_field_disposition"
+        and field_path[-1] in _SOURCE_POINTER_FIELDS
+        and _SOURCE_DOCUMENT_POINTER.fullmatch(value) is not None
+    )
+
+
 def _json_value_contains_private_path(value: Any) -> bool:
-    pending = [value]
+    pending: list[tuple[Any, tuple[str, ...]]] = [(value, ())]
     scanned = 0
     while pending:
         scanned += 1
         if scanned > _MAX_JSON_SCAN_NODES:
             return True
-        item = pending.pop()
+        item, field_path = pending.pop()
         if isinstance(item, _JSONObjectPairs):
             for key, child in item:
                 if key not in _PUBLIC_ROUTE_KEYS and public_text_contains_private_path(key):
                     return True
-                pending.append(child)
+                pending.append((child, (*field_path, key)))
         elif isinstance(item, list):
-            pending.extend(item)
-        elif isinstance(item, str) and public_text_contains_private_path(item):
+            pending.extend((child, field_path) for child in item)
+        elif (
+            isinstance(item, str)
+            and not _is_reviewed_source_pointer(item, field_path)
+            and public_text_contains_private_path(item)
+        ):
             return True
     return False
 
@@ -202,6 +223,92 @@ def _wide_text_private_path(payload: bytes) -> tuple[bool, bool]:
 
 def _wide_binary_contains_private_path(payload: bytes) -> bool:
     return any(pattern.search(payload) is not None for pattern in _WIDE_BINARY_PRIVATE_PATHS)
+
+
+def _validate_png_image_data(payload: bytes, *, row_bytes: int, height: int) -> None:
+    expected_size = height * (row_bytes + 1)
+    if expected_size > _MAX_PNG_IMAGE_BYTES:
+        raise ValueError("PNG evidence is not a canonical metadata-free PNG")
+    decompressor = zlib.decompressobj()
+    try:
+        decoded = decompressor.decompress(payload, expected_size + 1)
+    except zlib.error as exc:
+        raise ValueError("PNG evidence is not a canonical metadata-free PNG") from exc
+    if (
+        len(decoded) != expected_size
+        or not decompressor.eof
+        or decompressor.unconsumed_tail
+        or decompressor.unused_data
+    ):
+        raise ValueError("PNG evidence is not a canonical metadata-free PNG")
+    stride = row_bytes + 1
+    if any(decoded[offset] > 4 for offset in range(0, expected_size, stride)):
+        raise ValueError("PNG evidence is not a canonical metadata-free PNG")
+
+
+def _validate_metadata_free_png(payload: bytes) -> None:
+    """Accept only a complete PNG containing IHDR, consecutive IDAT, and IEND."""
+
+    if not payload.startswith(_PNG_SIGNATURE):
+        raise ValueError("PNG evidence is not a canonical metadata-free PNG")
+    offset = len(_PNG_SIGNATURE)
+    seen_idat = False
+    first = True
+    idat_payload = bytearray()
+    row_bytes = 0
+    height = 0
+    while offset < len(payload):
+        if len(payload) - offset < 12:
+            raise ValueError("PNG evidence is not a canonical metadata-free PNG")
+        length = struct.unpack(">I", payload[offset : offset + 4])[0]
+        kind = payload[offset + 4 : offset + 8]
+        data_start = offset + 8
+        data_end = data_start + length
+        chunk_end = data_end + 4
+        if chunk_end > len(payload):
+            raise ValueError("PNG evidence is not a canonical metadata-free PNG")
+        expected_crc = struct.unpack(">I", payload[data_end:chunk_end])[0]
+        if zlib.crc32(kind + payload[data_start:data_end]) & 0xFFFFFFFF != expected_crc:
+            raise ValueError("PNG evidence is not a canonical metadata-free PNG")
+
+        if first:
+            if kind != b"IHDR" or length != 13:
+                raise ValueError("PNG evidence is not a canonical metadata-free PNG")
+            width, height, depth, color, compression, filtering, interlace = struct.unpack(
+                ">IIBBBBB", payload[data_start:data_end]
+            )
+            valid_depths = {
+                0: frozenset({1, 2, 4, 8, 16}),
+                2: frozenset({8, 16}),
+                4: frozenset({8, 16}),
+                6: frozenset({8, 16}),
+            }
+            if (
+                width == 0
+                or height == 0
+                or depth not in valid_depths.get(color, frozenset())
+                or compression != 0
+                or filtering != 0
+                or interlace != 0
+            ):
+                raise ValueError("PNG evidence is not a canonical metadata-free PNG")
+            channels = {0: 1, 2: 3, 4: 2, 6: 4}[color]
+            row_bytes = (width * channels * depth + 7) // 8
+            first = False
+        elif kind == b"IDAT":
+            if len(idat_payload) + length > _TEXT_SCAN_LIMIT_BYTES:
+                raise ValueError("PNG evidence is not a canonical metadata-free PNG")
+            idat_payload.extend(payload[data_start:data_end])
+            seen_idat = True
+        elif kind == b"IEND":
+            if length != 0 or not seen_idat or chunk_end != len(payload):
+                raise ValueError("PNG evidence is not a canonical metadata-free PNG")
+            _validate_png_image_data(bytes(idat_payload), row_bytes=row_bytes, height=height)
+            return
+        else:
+            raise ValueError("PNG evidence is not a canonical metadata-free PNG")
+        offset = chunk_end
+    raise ValueError("PNG evidence is not a canonical metadata-free PNG")
 
 
 def _is_link_or_reparse(details: Any) -> bool:
@@ -318,7 +425,11 @@ def inspect_regular_file(root: Path, raw: str, *, label: str) -> AcceptanceArtif
     text_private_path = False
     text_scanned = False
     binary_fallback_required = True
-    if b"\0" not in payload:
+    if path.suffix.casefold() == ".png":
+        _validate_metadata_free_png(bytes(payload))
+        text_scanned = True
+        binary_fallback_required = False
+    elif b"\0" not in payload:
         try:
             text = payload.decode("utf-8")
         except UnicodeError:

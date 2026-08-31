@@ -378,6 +378,7 @@ def test_gate08_emits_one_exact_proof_per_assertion(
         proof["run_bundles"] == list(bundles)
         and proof["run_ids"] == [bundle["run_id"] for bundle in bundles]
         and proof["environment_limitations"] == []
+        and operator_ui_gate.PRODUCT_DB_ARTIFACT not in proof["evidence_artifacts"]
         for proof in outcome.proofs
     )
     assert (evidence / operator_ui_gate.VERIFICATION_REPORT).is_file()

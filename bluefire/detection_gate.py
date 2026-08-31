@@ -105,7 +105,7 @@ _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str]] = {
     "GATE-07-MANAGEMENT-PARITY": (
         "dynamic",
         "management_parity",
-        (MANAGEMENT_REPORT, BROWSER_REPORT, PRODUCT_DB_ARTIFACT, VERIFICATION_REPORT),
+        (MANAGEMENT_REPORT, BROWSER_REPORT, VERIFICATION_REPORT),
         "GATE-07.management.production-ui-api-cli.v1",
     ),
     "GATE-07-THREE-EXECUTED-CANDIDATES": (
