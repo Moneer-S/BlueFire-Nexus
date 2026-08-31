@@ -1226,11 +1226,130 @@ def test_public_evidence_rejects_private_paths_links_and_unstable_identity(
         r"\\private-server\private-share\artifact.json",
         "/mnt/c/" + "Users/private-user/artifact.json",
         "/opt/private-host/case/artifact.json",
+        "/etc/bluefire/private.conf",
+        "/usr/local/bluefire/private.bin",
+        "/srv/bluefire/run.db",
+        "/var/lib/bluefire/state.db",
     )
     for private_path in private_paths:
         artifact.write_text(json.dumps({"path": private_path}), encoding="utf-8")
         with pytest.raises(ValueError, match="discloses a local absolute path"):
             acceptance._relative_artifact(run_dir, artifact, "declared-proof")
+
+    for embedded_path in (
+        "prefix:/etc/bluefire/private.conf",
+        "prefix,/usr/local/bluefire/private.bin",
+        "prefix>/srv/bluefire/run.db",
+        "prefix;/var/lib/bluefire/state.db",
+    ):
+        artifact.write_text(json.dumps({"value": embedded_path}), encoding="utf-8")
+        with pytest.raises(ValueError, match="discloses a local absolute path"):
+            acceptance._relative_artifact(run_dir, artifact, "declared-proof")
+
+    for public_reference in (
+        "https://example.test/etc/bluefire/public-doc",
+        "https://example.test/source?ref=main",
+        "http://[::1]/health",
+        "aws-profile://bluefire-disposable-lab",
+        "{repository}/gate_helper.py",
+    ):
+        artifact.write_text(json.dumps({"reference": public_reference}), encoding="utf-8")
+        assert acceptance._relative_artifact(run_dir, artifact, "declared-proof")["path"] == (
+            "gate-01/proof.json"
+        )
+
+    for masked_path in (
+        "C://Users/private-user/artifact.json",
+        "see (https://example.test),/etc/bluefire/private.conf",
+        r"https://example.test,C:\Users\private-user\artifact.json",
+        "sqlite:///etc/bluefire/private.db",
+        "x-https://example.test/etc/bluefire/private.conf",
+        "file+https://example.test/etc/bluefire/private.conf",
+        "https://example.test/view?path=/etc/bluefire/private.conf",
+        "aws-profile://bluefire-disposable-lab/etc/private.conf",
+        "aws-profile://bluefire-disposable-lab/C:/Users/private-user/artifact.json",
+    ):
+        artifact.write_text(json.dumps({"value": masked_path}), encoding="utf-8")
+        with pytest.raises(ValueError, match="discloses a local absolute path"):
+            acceptance._relative_artifact(run_dir, artifact, "declared-proof")
+
+    artifact.write_bytes(b'\xef\xbb\xbf{"path":"\\u002fetc\\u002fbluefire\\u002fprivate.conf"}')
+    with pytest.raises(ValueError, match="discloses a local absolute path"):
+        acceptance._relative_artifact(run_dir, artifact, "declared-proof")
+
+    artifact.write_text(
+        "[" * 1100 + '"\\u002fetc\\u002fbluefire\\u002fprivate.conf"' + "]" * 1100,
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="discloses a local absolute path"):
+        acceptance._relative_artifact(run_dir, artifact, "declared-proof")
+
+    artifact.write_text(
+        '{"path":"\\u0043\\u003a\\u005cUsers\\u005cprivate-user\\u005cartifact.json",'
+        '"number":' + "9" * 5000 + "}",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="discloses a local absolute path"):
+        acceptance._relative_artifact(run_dir, artifact, "declared-proof")
+
+    for binary_payload in (
+        b"header\0/etc/bluefire/private.conf",
+        b"\xff/usr/local/bluefire/private.bin",
+        b"header\0/srv/bluefire/run.db",
+        b"\xff/var/lib/bluefire/state.db",
+        "/etc/bluefire/private.conf".encode("utf-16"),
+        r"C:\Users\private-user\artifact.json".encode("utf-16-le"),
+        "/etc/bluefire/private.conf".encode("utf-32-le"),
+        "/usr/local/bluefire/private.bin".encode("utf-32-be"),
+        "prefix\0/etc/bluefire/private.conf".encode("utf-16"),
+        "prefix\0/var/lib/bluefire/state.db".encode("utf-32"),
+        r"C:\用户用户用户用户用户\文件.txt".encode("utf-16-le"),
+        b"X" + "/etc/bluefire/private.conf".encode("utf-16-le"),
+        b"X" + "/usr/local/bluefire/private.bin".encode("utf-16-le") + b"Y",
+        b"X" + "/srv/bluefire/run.db".encode("utf-16"),
+        b"\x00\xd8" + "/var/lib/bluefire/state.db".encode("utf-16-le"),
+        b"XYZ" + "/etc/bluefire/private.conf".encode("utf-32-le"),
+        b"X" + r"\\private-server\private-share\artifact.json".encode("utf-16-le"),
+    ):
+        artifact.write_bytes(binary_payload)
+        with pytest.raises(ValueError, match="discloses a local absolute path"):
+            acceptance._relative_artifact(run_dir, artifact, "declared-proof")
+
+    artifact.write_bytes(json.dumps({"path": r"folder\file"}).encode("utf-16-le"))
+    assert acceptance._relative_artifact(run_dir, artifact, "declared-proof")["path"] == (
+        "gate-01/proof.json"
+    )
+
+    artifact.write_bytes("\u3a43\\".encode("utf-16"))
+    assert acceptance._relative_artifact(run_dir, artifact, "declared-proof")["path"] == (
+        "gate-01/proof.json"
+    )
+
+    artifact.write_text(
+        json.dumps({"routes": {"/ui/app.js": "javascript", "/ui/styles.css": "stylesheet"}}),
+        encoding="utf-8",
+    )
+    route_artifact = acceptance._relative_artifact(run_dir, artifact, "declared-proof")
+    assert route_artifact["path"] == "gate-01/proof.json"
+
+    rejected_route_documents = (
+        {"route": "/ui/app.js"},
+        {"routes": {"javascript": "/ui/styles.css"}},
+        {"routes": {"/ui/other.js": "javascript"}},
+        {"routes": {"/etc/bluefire/private.conf": "configuration"}},
+    )
+    for document in rejected_route_documents:
+        artifact.write_text(json.dumps(document), encoding="utf-8")
+        with pytest.raises(ValueError, match="discloses a local absolute path"):
+            acceptance._relative_artifact(run_dir, artifact, "declared-proof")
+
+    artifact.write_text(
+        '{"routes":{"/ui/app.js":"/etc/bluefire/private.conf",'
+        '"/ui/app.js":"javascript","/ui/styles.css":"stylesheet"}}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="discloses a local absolute path"):
+        acceptance._relative_artifact(run_dir, artifact, "declared-proof")
 
     outside = tmp_path / "outside-private-evidence.json"
     outside.write_text("{}", encoding="utf-8")
