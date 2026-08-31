@@ -1511,6 +1511,7 @@ def test_gate_04_is_registered_in_product_gate_dispatcher() -> None:
         r"validation failed at \\bluefire-server\Private Share\result.json",
         "validation failed at /home/example-user/private runs/result.json",
     ],
+    ids=("windows-drive", "windows-unc", "posix-home"),
 )
 def test_bounded_issue_fully_redacts_absolute_private_paths(issue: str) -> None:
     assert gate_module._bounded_issue(issue) == "validation failure [private-path-redacted]"
