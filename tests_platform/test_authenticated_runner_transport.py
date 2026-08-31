@@ -19,6 +19,7 @@ import bluefire.runner_transport as wire
 from bluefire.orchestrator import Orchestrator
 from bluefire.runner_client import (
     InventoryBoundRunner,
+    RunnerReadinessError,
     RunnerTaskCancelled,
     RunnerTaskTimedOut,
     RunnerTransportError,
@@ -2190,6 +2191,7 @@ def test_transport_identity_binds_authenticated_peer_and_detects_binary_change(
     enrollment_root: Path,
     secret_provider: InMemorySecretProvider,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner_binary = tmp_path / "bluefire-runner.exe"
     runner_binary.write_bytes(b"runner-v1")
@@ -2203,12 +2205,32 @@ def test_transport_identity_binds_authenticated_peer_and_detects_binary_change(
     ) as server:
         client = _client(enrollment_root, server, secret_provider)
         identity = client.transport_identity()
+        readiness_identity = runner_transport_identity(client, client.inventory())
         assert identity["schema_version"] == "bluefire.runner-transport-identity.v1"
         assert identity["authenticated_peer_fingerprint"] == identity["client_fingerprint"]
         assert identity["runner_binary_digest"] == (
             "sha256:" + hashlib.sha256(b"runner-v1").hexdigest()
         )
+        assert readiness_identity == {
+            "transport": "bluefire.runner_transport.AuthenticatedRunnerClient",
+            "runner_id": "bluefire-rust-runner.v1",
+            "runner_version": "0.1.0",
+            "platform": "windows",
+            "runner_binary_digest": identity["runner_binary_digest"],
+        }
         assert "server_instance_id" not in identity
+        for mutation in (
+            {"runner_id": "different-runner.v1"},
+            {"inventory_digest": "sha256:" + "0" * 64},
+        ):
+            with monkeypatch.context() as scoped:
+                scoped.setattr(
+                    client,
+                    "transport_identity",
+                    lambda mutation=mutation: {**identity, **mutation},
+                )
+                with pytest.raises(RunnerReadinessError, match="could not be verified"):
+                    runner_transport_identity(client, client.inventory())
 
         runner_binary.write_bytes(b"runner-v2")
         with pytest.raises(RunnerRemoteError) as error:

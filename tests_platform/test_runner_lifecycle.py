@@ -30,6 +30,7 @@ from bluefire.runner_bootstrap import (
     current_platform,
     wheel_platform_tag,
 )
+from bluefire.runner_client import runner_transport_identity
 from bluefire.runner_host import (
     LOOPBACK_HOST,
     PROCESS_RECORD_SCHEMA_VERSION,
@@ -294,7 +295,12 @@ def test_real_process_boundary_requires_mtls_health_and_graceful_shutdown(
     client, sandbox = lifecycle.client_for_profile(PROFILE_ID)
     server_execution_envelope = max(lifecycle.runner_timeout_seconds + 5.0, 10.0)
     assert client.socket_timeout_seconds == server_execution_envelope + 5.0
-    assert client.inventory()["runner_id"] == RUNNER_ID
+    inventory = client.inventory()
+    assert inventory["runner_id"] == RUNNER_ID
+    assert (
+        runner_transport_identity(client, inventory)["runner_binary_digest"]
+        == ready["runner"]["binary_digest"]
+    )
     assert sandbox.is_dir()
     with pytest.raises(RunnerLifecycleError, match="stopped before enrollment revocation"):
         lifecycle.revoke()

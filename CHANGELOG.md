@@ -57,6 +57,8 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   time/size/count bounds and preserve unavailable evidence as `unknown`.
 - Linux process containment now accepts valid zero-scoped PID-namespace
   observers without weakening the positive, identity-bound runner lease.
+- Authenticated Execute readiness now carries the server-verified native runner
+  digest through approval, recovery, and cross-platform evidence validation.
 
 ### Removed
 

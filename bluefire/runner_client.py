@@ -396,6 +396,29 @@ def runner_transport_identity(
             identity["runner_binary_digest"] = file_hash(binary)
         except OSError as exc:
             raise RunnerReadinessError("Runner identity could not be verified.") from exc
+    else:
+        identity_probe = getattr(runner, "transport_identity", None)
+        if callable(identity_probe):
+            try:
+                transport_identity = identity_probe()
+            except (OSError, RunnerTransportError, TypeError, ValueError) as exc:
+                raise RunnerReadinessError("Runner identity could not be verified.") from exc
+            if (
+                not isinstance(transport_identity, Mapping)
+                or transport_identity.get("schema_version")
+                != "bluefire.runner-transport-identity.v1"
+                or transport_identity.get("runner_id") != canonical["runner_id"]
+                or transport_identity.get("inventory_digest") != content_hash(canonical)
+            ):
+                raise RunnerReadinessError("Runner identity could not be verified.")
+            binary_digest = transport_identity.get("runner_binary_digest")
+            if binary_digest is not None:
+                if (
+                    not isinstance(binary_digest, str)
+                    or _SHA256_DIGEST.fullmatch(binary_digest) is None
+                ):
+                    raise RunnerReadinessError("Runner identity could not be verified.")
+                identity["runner_binary_digest"] = binary_digest
     return identity
 
 

@@ -128,6 +128,10 @@ _CONTRACT_TESTS = (
         "test_restart_reconciles_confirmed_watchdog_terminal_status"
     ),
     (
+        "tests_platform/test_authenticated_runner_transport.py::"
+        "test_transport_identity_binds_authenticated_peer_and_detects_binary_change"
+    ),
+    (
         "tests_platform/test_runner_lifecycle.py::"
         "test_real_process_boundary_requires_mtls_health_and_graceful_shutdown"
     ),
@@ -148,6 +152,7 @@ _EXPECTED_SUITE_TESTS = (
     "tests_platform.test_authenticated_runner_transport::test_current_watchdog_cancellation_requires_exact_proof_fields[non_boolean]",
     "tests_platform.test_authenticated_runner_transport::test_restart_reconciles_confirmed_watchdog_terminal_status[cancelled-cancelled-cancelled-task_cancelled]",
     "tests_platform.test_authenticated_runner_transport::test_restart_reconciles_confirmed_watchdog_terminal_status[failed-timed_out-timed_out-task_timed_out]",
+    "tests_platform.test_authenticated_runner_transport::test_transport_identity_binds_authenticated_peer_and_detects_binary_change",
     "tests_platform.test_cross_platform_committed_linux_artifact::test_linux_artifact_rejects_wrong_acceptance_tree",
     "tests_platform.test_cross_platform_committed_linux_artifact::test_linux_artifact_uses_exact_commit_blobs_not_live_worktree",
     "tests_platform.test_cross_platform_committed_linux_artifact::test_linux_product_stage_replaces_live_runner_with_commit_blobs",
