@@ -65,6 +65,22 @@ _CONTRACT_TESTS = (
     ),
     (
         "tests_platform/test_runner_cancellation.py::"
+        "test_linux_process_identity_accepts_zero_scoped_namespace_process"
+    ),
+    (
+        "tests_platform/test_runner_cancellation.py::"
+        "test_linux_process_identity_rejects_negative_scope"
+    ),
+    (
+        "tests_platform/test_runner_cancellation.py::"
+        "test_linux_private_session_scan_ignores_zero_scoped_namespace_process"
+    ),
+    (
+        "tests_platform/test_runner_cancellation.py::"
+        "test_linux_private_registration_rejects_zero_scoped_target"
+    ),
+    (
+        "tests_platform/test_runner_cancellation.py::"
         "test_linux_private_leader_is_reaped_only_after_wnowait_and_empty_session"
     ),
     (
@@ -196,7 +212,11 @@ _EXPECTED_SUITE_TESTS = (
     "tests_platform.test_runner_cancellation::test_execute_task_cancellation_confirms_descendant_process_is_stopped",
     "tests_platform.test_runner_cancellation::test_linux_identity_change_is_never_signalled",
     "tests_platform.test_runner_cancellation::test_linux_private_leader_is_reaped_only_after_wnowait_and_empty_session",
+    "tests_platform.test_runner_cancellation::test_linux_private_registration_rejects_zero_scoped_target",
     "tests_platform.test_runner_cancellation::test_linux_private_session_cleanup_includes_alternate_process_groups",
+    "tests_platform.test_runner_cancellation::test_linux_private_session_scan_ignores_zero_scoped_namespace_process",
+    "tests_platform.test_runner_cancellation::test_linux_process_identity_accepts_zero_scoped_namespace_process",
+    "tests_platform.test_runner_cancellation::test_linux_process_identity_rejects_negative_scope",
     "tests_platform.test_runner_cancellation::test_outer_cancellation_cleanup_refuses_missing_lease",
     "tests_platform.test_runner_cancellation::test_preexisting_or_mismatched_witness_state_never_claims_cooperative_cancel",
     "tests_platform.test_runner_cancellation::test_private_posix_session_members_are_not_filtered_by_process_group",

@@ -1714,7 +1714,13 @@ class SubprocessRustRunner:
             )
         except (IndexError, ValueError):
             raise RunnerTransportError("Linux process identity is invalid") from None
-        if not 0 < len(payload) <= 4096 or not all(value > 0 for value in identity):
+        if (
+            not 0 < len(payload) <= 4096
+            or identity[0] <= 0
+            or identity[1] <= 0
+            or identity[2] < 0
+            or identity[3] < 0
+        ):
             raise RunnerTransportError("Linux process identity is invalid")
         return identity
 

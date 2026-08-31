@@ -610,6 +610,110 @@ def test_linux_identity_change_is_never_signalled(
     assert signals == []
 
 
+def test_linux_process_identity_accepts_zero_scoped_namespace_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_id = 2
+    start_time_ticks = 7001
+    stat_payload = (
+        f"{process_id} (init) S 0 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 " f"{start_time_ticks} 0\n"
+    ).encode("ascii")
+
+    def read_bytes(path: Path) -> bytes:
+        assert path == Path("/proc") / str(process_id) / "stat"
+        return stat_payload
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    assert SubprocessRustRunner._linux_process_identity(process_id) == (
+        process_id,
+        start_time_ticks,
+        0,
+        0,
+    )
+
+
+def test_linux_process_identity_rejects_negative_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_id = 2
+    scope = [0, 0]
+
+    def read_bytes(path: Path) -> bytes:
+        assert path == Path("/proc") / str(process_id) / "stat"
+        process_group, session_id = scope
+        return (
+            f"{process_id} (init) S 0 {process_group} {session_id} 0 -1 "
+            "0 0 0 0 0 0 0 0 0 20 0 1 0 7001 0\n"
+        ).encode("ascii")
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+
+    for invalid_scope in ((-1, 0), (0, -1)):
+        scope[:] = invalid_scope
+        with pytest.raises(RunnerTransportError, match="identity is invalid"):
+            SubprocessRustRunner._linux_process_identity(process_id)
+
+
+def test_linux_private_session_scan_ignores_zero_scoped_namespace_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    leader = (701, 7001, 701, 701)
+    identities = {2: (2, 2001, 0, 0), leader[0]: leader}
+
+    class Entries:
+        def __enter__(self) -> object:
+            return iter(SimpleNamespace(name=str(process_id)) for process_id in identities)
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(runner_client_module.os, "scandir", lambda _path: Entries())
+    monkeypatch.setattr(
+        runner,
+        "_linux_process_identity",
+        lambda process_id: identities[process_id],
+    )
+
+    assert runner._linux_private_session_identities((*leader, 91)) == [leader]
+
+
+def test_linux_private_registration_rejects_zero_scoped_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    process_id = 2
+    descriptor = os.open(os.devnull, os.O_RDONLY)
+    stopped: list[str] = []
+
+    class Process:
+        pid = process_id
+
+        def kill(self) -> None:
+            stopped.append("kill")
+
+        def wait(self, *, timeout: float) -> int:
+            stopped.append(f"wait:{timeout}")
+            return 0
+
+    monkeypatch.setattr(
+        runner,
+        "_linux_process_identity",
+        lambda _process_id: (process_id, 7001, 0, 0),
+    )
+    monkeypatch.setattr(runner_client_module, "_PIDFD_OPEN", lambda _pid, _flags: descriptor)
+
+    with pytest.raises(RunnerTransportError, match="containment is unavailable"):
+        runner._register_linux_private_process(Process())  # type: ignore[arg-type]
+
+    assert stopped == ["kill", "wait:5.0"]
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+
+
 def test_linux_private_leader_is_reaped_only_after_wnowait_and_empty_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

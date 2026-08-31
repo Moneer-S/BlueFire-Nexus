@@ -86,6 +86,7 @@ def test_gate11_locked_contract_matches_authoritative_workflow() -> None:
         assertion_id for assertion_id, _kind, _report in ASSERTION_REPORTS
     )
     assert set(details[1] for details in gate_module._EXPECTED_ASSERTIONS.values()) == CHECK_NAMES
+    assert gate_module._EXPECTED_SUITE_TESTS == tuple(sorted(gate_module._EXPECTED_SUITE_TESTS))
     assert product_gates._WORKFLOWS["GATE-11"] is product_gates._gate_11_workflow
 
 

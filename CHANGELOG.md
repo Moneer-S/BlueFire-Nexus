@@ -55,6 +55,8 @@ and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   compatible profile and request-bound approval.
 - Evidence graphs reject cross-run parents; observers and collectors enforce
   time/size/count bounds and preserve unavailable evidence as `unknown`.
+- Linux process containment now accepts valid zero-scoped PID-namespace
+  observers without weakening the positive, identity-bound runner lease.
 
 ### Removed
 
