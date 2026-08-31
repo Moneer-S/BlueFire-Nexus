@@ -598,13 +598,16 @@ def run_gate_12(
     journey = (
         read_json(destination / JOURNEY_REPORT, "GATE-12 release journey") if not issues else {}
     )
-    suites = run_full_release_suites(
-        repository,
-        destination,
-        upstream=upstream,
-        journey=journey,
-    )
-    _write_json(destination / SUITE_REPORT, suites)
+    try:
+        suites = run_full_release_suites(
+            repository,
+            destination,
+            upstream=upstream,
+            journey=journey,
+        )
+        _write_json(destination / SUITE_REPORT, suites)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return _failure((exc,))
     if not validate_suite_report(suites):
         issues.append("the complete Python, Rust, frontend, security, or E2E suite failed")
     opsec = _opsec_report(repository, destination, suites)

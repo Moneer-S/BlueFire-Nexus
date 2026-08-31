@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .product_acceptance_process import _playwright_browsers_path
+from .release_readiness_runtime import decode_tracked, initialize_scan_repository, temp_parent
 from .release_readiness_validation import SBOM_REPORT, SUITE_SCHEMA
 
 _MAX_OUTPUT_BYTES = 16 * 1024 * 1024
@@ -746,6 +747,7 @@ def _security_suites(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     gitleaks = shutil.which("gitleaks", path=environment.get("PATH"))
+    code = None
     if gitleaks:
         code, _stdout, _stderr = _run(
             [gitleaks, "git", "--redact", "--no-banner", "."],
@@ -753,8 +755,6 @@ def _security_suites(
             environment=environment,
             timeout_seconds=600,
         )
-    else:
-        code = None
     rows.append(
         _row(
             "security.gitleaks",
@@ -771,12 +771,12 @@ def _security_suites(
         check=False,
         timeout=30,
     )
-    tracked = (
-        [item.decode("utf-8", "strict") for item in tracked_process.stdout.split(b"\0") if item]
-        if tracked_process.returncode == 0
-        else []
-    )
-    if tracked:
+    tracked = decode_tracked(tracked_process.stdout) if tracked_process.returncode == 0 else []
+    archived = _archive_source(repository, temporary / "archive", environment)
+    archive_root = temporary / "archive" / "source"
+    archive_ready = archived and initialize_scan_repository(archive_root, environment)
+    code = None
+    if tracked and archive_ready:
         code, _stdout, _stderr = _run(
             [
                 sys.executable,
@@ -784,14 +784,13 @@ def _security_suites(
                 "detect_secrets.pre_commit_hook",
                 "--baseline",
                 ".secrets.baseline",
+                "--no-verify",
                 *tracked,
             ],
-            cwd=repository,
+            cwd=archive_root,
             environment=environment,
             timeout_seconds=600,
         )
-    else:
-        code = None
     rows.append(
         _row(
             "security.detect-secrets",
@@ -801,10 +800,11 @@ def _security_suites(
                 "detect_secrets.pre_commit_hook",
                 "--baseline",
                 ".secrets.baseline",
+                "--no-verify",
                 "{tracked-files}",
             ],
             code,
-            details={"tracked_files": len(tracked)},
+            details={"committed_archive": archive_ready, "tracked_files": len(tracked)},
         )
     )
     for suite_id, arguments, timeout in (
@@ -971,7 +971,7 @@ def run_full_release_suites(
     """Run every local release suite without writing generated output to source."""
 
     before = _tracked_snapshot(repository)
-    with tempfile.TemporaryDirectory(prefix=".gate12-suites-", dir=evidence_dir) as raw:
+    with tempfile.TemporaryDirectory(prefix=".gate12-suites-", dir=temp_parent()) as raw:
         temporary = Path(raw)
         environment = _base_environment(temporary)
         rows = _python_suites(repository, temporary / "python", environment)
@@ -995,6 +995,3 @@ def run_full_release_suites(
         },
         "source_writes": changed,
     }
-
-
-__all__ = ["run_full_release_suites"]

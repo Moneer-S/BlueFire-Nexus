@@ -887,6 +887,17 @@ def test_gate12_refuses_stale_evidence_and_contract_drift(
     assert outcome.status == "failed"
     assert "assertion set mismatch" in str(outcome.failure_reason)
 
+    _patch_passing_gate(monkeypatch, tmp_path)
+
+    def cleanup_failure(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise PermissionError(r"C:\private\gate12-suite-cleanup")
+
+    monkeypatch.setattr(gate_module, "run_full_release_suites", cleanup_failure)
+    outcome = gate_module.run_gate_12(_gate(), tmp_path, repository_root=tmp_path)
+    assert outcome.status == "failed"
+    assert "private-path-redacted" in str(outcome.failure_reason)
+    assert r"C:\private" not in str(outcome.failure_reason)
+
 
 def test_gate12_fails_closed_when_the_focused_suite_is_not_exact(
     tmp_path: Path,
