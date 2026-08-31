@@ -11,6 +11,7 @@ import pytest
 import bluefire.release_readiness_gate as gate_module
 import bluefire.release_readiness_runtime as runtime_module
 import bluefire.release_readiness_suites as suites_module
+from bluefire.product_acceptance_artifacts import inspect_regular_file
 
 
 def _cyclonedx(components: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -41,6 +42,57 @@ def _cyclonedx(components: list[dict[str, Any]] | None = None) -> dict[str, Any]
         "components": entries,
         "dependencies": [{"ref": reference} for reference in references],
     }
+
+
+def test_suite_rows_project_private_test_ids_without_losing_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    passed = [
+        "suite::safe",
+        "suite::remote[https://example.test/source]",
+        "suite::api[/api/v1/runs]",
+        "suite::windows[C:/absolute/outside.txt]",
+        "suite::unc[" + r"\\private-server\private-share\artifact.json]",
+        "suite::query[https://example.test/view?path=/etc/private]",
+    ]
+    skipped = ["suite::posix[/tmp/private]"]
+    failed = ["suite::file[file:///C:/" + "Users/private/outside.txt]"]
+    row = suites_module._row(
+        "python.pytest",
+        ["{python}", "-m", "pytest"],
+        0,
+        passed_ids=passed,
+        skipped_ids=skipped,
+        details={"failed_test_ids": failed},
+    )
+
+    assert row["test_count"] == len(passed) + len(skipped)
+    assert "suite::safe" in row["passed_test_ids"]
+    assert "suite::remote[https://example.test/source]" in row["passed_test_ids"]
+    assert len(row["passed_test_ids"]) == len(passed)
+    assert len(row["skipped_test_ids"]) == len(skipped)
+    assert len(row["details"]["failed_test_ids"]) == len(failed)
+    assert row == suites_module._row(
+        "python.pytest",
+        ["{python}", "-m", "pytest"],
+        0,
+        passed_ids=passed,
+        skipped_ids=skipped,
+        details={"failed_test_ids": failed},
+    )
+    report = tmp_path / "suite.json"
+    report.write_text(json.dumps(row), encoding="utf-8")
+    assert not inspect_regular_file(
+        tmp_path, report.name, label="suite report"
+    ).contains_private_path
+    monkeypatch.setattr(
+        suites_module.hashlib,
+        "sha256",
+        lambda _value: SimpleNamespace(hexdigest=lambda: "0" * 64),
+    )
+    with pytest.raises(ValueError, match="projection collided"):
+        suites_module._public_test_ids(["suite::same[/tmp/a]", "suite::same[/tmp/b]"])
 
 
 def test_detect_secrets_scans_a_committed_archive(

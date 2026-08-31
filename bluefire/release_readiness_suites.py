@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from . import release_readiness_runtime as runtime_support
+from .product_acceptance_artifacts import public_text_contains_private_path
 from .product_acceptance_process import _playwright_browsers_path
 from .release_readiness_validation import SBOM_REPORT, SUITE_SCHEMA
 
@@ -98,8 +99,12 @@ def _row(
     details: Mapping[str, Any] | None = None,
     passed: bool | None = None,
 ) -> dict[str, Any]:
-    passed_tests = sorted(set(passed_ids))
-    skipped_tests = sorted(set(skipped_ids))
+    passed_tests = _public_test_ids(passed_ids)
+    skipped_tests = _public_test_ids(skipped_ids)
+    reported_details = dict(details or {})
+    failed_ids = reported_details.get("failed_test_ids")
+    if isinstance(failed_ids, list) and all(isinstance(item, str) for item in failed_ids):
+        reported_details["failed_test_ids"] = _public_test_ids(failed_ids)
     return {
         "suite_id": suite_id,
         "command": list(command),
@@ -108,8 +113,25 @@ def _row(
         "test_count": len(passed_tests) + len(skipped_tests),
         "passed_test_ids": passed_tests,
         "skipped_test_ids": skipped_tests,
-        "details": dict(details or {}),
+        "details": reported_details,
     }
+
+
+def _public_test_ids(values: Sequence[str]) -> list[str]:
+    source = set(values)
+    projected: list[str] = []
+    for value in source:
+        if public_text_contains_private_path(value):
+            prefix = value.partition("[")[0]
+            if public_text_contains_private_path(prefix):
+                prefix = "test"
+            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+            value = f"{prefix}[evidence-id-sha256:{digest}]"
+        projected.append(value)
+    projected.sort()
+    if len(set(projected)) != len(source):
+        raise ValueError("public test identity projection collided")
+    return projected
 
 
 def _archive_source(repository: Path, destination: Path, environment: Mapping[str, str]) -> bool:
