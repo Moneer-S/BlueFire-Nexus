@@ -54,6 +54,58 @@ _RUN_ID = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
 Require = Callable[[bool, str], None]
 
 
+def _bound_linux_run_id(
+    source: Path,
+    summary: Mapping[str, Any],
+    require: Require,
+) -> str:
+    """Normalize worker and persisted-report run references to one bundle identity."""
+
+    has_worker_reference = "run_id" in summary
+    has_bundle_reference = "run_bundle" in summary
+    worker_run_id = summary.get("run_id")
+    bundle = summary.get("run_bundle")
+    bundle_run_id = bundle.get("run_id") if isinstance(bundle, Mapping) else None
+    require(
+        has_worker_reference or has_bundle_reference,
+        "invalid Linux run id",
+    )
+    if has_worker_reference:
+        require(
+            isinstance(worker_run_id, str) and _RUN_ID.fullmatch(worker_run_id) is not None,
+            "invalid Linux run id",
+        )
+    if has_bundle_reference:
+        require(
+            isinstance(bundle, Mapping)
+            and isinstance(bundle_run_id, str)
+            and _RUN_ID.fullmatch(bundle_run_id) is not None,
+            "invalid Linux run id",
+        )
+        require(
+            dict(cast(Mapping[str, Any], bundle))
+            == {
+                "run_id": bundle_run_id,
+                "path": f"runs/{bundle_run_id}",
+            },
+            "Linux run bundle reference is not canonical",
+        )
+    run_id = worker_run_id if has_worker_reference else bundle_run_id
+    require(
+        isinstance(run_id, str) and _RUN_ID.fullmatch(run_id) is not None and source.name == run_id,
+        "Linux run id is not bound to its bundle source",
+    )
+    if has_worker_reference and has_bundle_reference:
+        require(worker_run_id == bundle_run_id, "Linux run references do not match")
+    if "execution" in summary:
+        execution = summary.get("execution")
+        require(
+            isinstance(execution, Mapping) and execution.get("run_id") == run_id,
+            "Linux run references do not match",
+        )
+    return cast(str, run_id)
+
+
 def validate_linux_bundle(
     source: Path,
     summary: Mapping[str, Any],
@@ -69,15 +121,18 @@ def validate_linux_bundle(
     except ProcessProofError:
         require(False, "Linux watchdog containment proof is invalid")
         return {}
-    run_id = summary.get("run_id")
-    require(
-        isinstance(run_id, str) and _RUN_ID.fullmatch(run_id) is not None,
-        "invalid Linux run id",
-    )
-    run_id = cast(str, run_id)
+    run_id = _bound_linux_run_id(source, summary, require)
     store = RunStore(source.parent)
-    require(store.validate_bundle(run_id).get("valid") is True, "Linux run bundle is invalid")
+    integrity = store.validate_bundle(run_id)
+    manifest = integrity.get("manifest")
+    require(
+        integrity.get("valid") is True
+        and isinstance(manifest, Mapping)
+        and manifest.get("run_id") == run_id,
+        "Linux run bundle identity is invalid",
+    )
     result = store.read_json(run_id, "result.json")
+    require(result.get("run_id") == run_id, "Linux run result identity is invalid")
     plan = store.read_json(run_id, "plan.json")
     profile = store.read_json(run_id, "profile.json")
     policy = store.read_json(run_id, "policy.json")

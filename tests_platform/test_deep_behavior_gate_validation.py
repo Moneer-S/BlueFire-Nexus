@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 import pytest
 
+import bluefire.cross_platform_linux_bundle_validation as linux_bundle_validation
 import bluefire.deep_behavior_gate_validation as validation
 from bluefire.cloud_identity_pack import (
     PACK_ID,
@@ -26,7 +27,7 @@ from bluefire.deep_behavior_gate_validation import DeepBehaviorGateValidationErr
 from bluefire.product_acceptance import load_release_contract
 from bluefire.run_store import RunStore
 from bluefire.runner_bootstrap import load_runner_manifest
-from bluefire.util import content_hash
+from bluefire.util import content_hash, file_hash
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 ACCOUNT_ID = "123456789012"
@@ -71,6 +72,164 @@ def _bundle(run_id: str) -> dict[str, str]:
 
 def _run_id(index: int) -> str:
     return f"run-20260830T12000{index}Z-{index:016x}"
+
+
+def _assert_requirement(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+def test_linux_bundle_run_id_accepts_worker_and_persisted_shapes(tmp_path: Path) -> None:
+    run_id = _run_id(1)
+    summaries = (
+        {"run_id": run_id},
+        {"run_bundle": _bundle(run_id), "execution": {"run_id": run_id}},
+    )
+
+    for summary in summaries:
+        assert (
+            linux_bundle_validation._bound_linux_run_id(
+                tmp_path / run_id,
+                summary,
+                _assert_requirement,
+            )
+            == run_id
+        )
+
+
+def test_linux_bundle_run_id_rejects_cross_reference_mismatches(tmp_path: Path) -> None:
+    run_id = _run_id(1)
+    other_run_id = _run_id(2)
+    cases = (
+        (tmp_path / other_run_id, {"run_id": run_id}),
+        (
+            tmp_path / run_id,
+            {"run_id": run_id, "run_bundle": _bundle(other_run_id)},
+        ),
+        (
+            tmp_path / run_id,
+            {
+                "run_bundle": _bundle(run_id),
+                "execution": {"run_id": other_run_id},
+            },
+        ),
+    )
+
+    for source, summary in cases:
+        with pytest.raises(AssertionError, match="Linux run"):
+            linux_bundle_validation._bound_linux_run_id(
+                source,
+                summary,
+                _assert_requirement,
+            )
+
+
+def test_linux_bundle_run_id_rejects_malformed_references(tmp_path: Path) -> None:
+    run_id = _run_id(1)
+    summaries: tuple[Mapping[str, Any], ...] = (
+        {},
+        {"run_id": "run-invalid"},
+        {"run_bundle": None},
+        {"run_bundle": {"run_id": 1}},
+        {"run_id": run_id, "execution": None},
+    )
+
+    for summary in summaries:
+        with pytest.raises(AssertionError, match="Linux run|invalid Linux"):
+            linux_bundle_validation._bound_linux_run_id(
+                tmp_path / run_id,
+                summary,
+                _assert_requirement,
+            )
+
+
+def test_linux_bundle_run_id_rejects_noncanonical_bundle_paths(tmp_path: Path) -> None:
+    run_id = _run_id(1)
+    references = (
+        {"run_id": run_id, "path": f"./runs/{run_id}"},
+        {"run_id": run_id, "path": f"runs/{run_id}/"},
+        {"run_id": run_id, "path": f"runs/{run_id}", "extra": True},
+    )
+
+    for reference in references:
+        with pytest.raises(AssertionError, match="not canonical"):
+            linux_bundle_validation._bound_linux_run_id(
+                tmp_path / run_id,
+                {"run_bundle": reference},
+                _assert_requirement,
+            )
+
+
+def _finalized_identity_bundle(tmp_path: Path) -> tuple[RunStore, str]:
+    store = RunStore(tmp_path / "runs")
+    handle = store.create_run(
+        scenario={"schema_version": "test.v1"},
+        plan={"schema_version": "test.v1", "steps": []},
+        policy={"schema_version": "test.v1"},
+        profile={"schema_version": "test.v1"},
+    )
+    store.finalize(
+        handle.run_id,
+        result={"schema_version": "test.v1", "status": "completed"},
+        evidence=(),
+        detections=(),
+    )
+    return store, handle.run_id
+
+
+def test_linux_bundle_rejects_renamed_directory_with_stale_manifest_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, original_run_id = _finalized_identity_bundle(tmp_path)
+    renamed_run_id = _run_id(8)
+    renamed = store.root / renamed_run_id
+    (store.root / original_run_id).rename(renamed)
+    monkeypatch.setattr(
+        linux_bundle_validation,
+        "validate_posix_watchdog_containment_proof",
+        lambda _proof: {},
+    )
+
+    with pytest.raises(AssertionError, match="bundle identity"):
+        linux_bundle_validation.validate_linux_bundle(
+            renamed,
+            {"run_id": renamed_run_id, "watchdog_containment": {}},
+            scenario_variant="primary",
+            require=_assert_requirement,
+        )
+
+
+def test_linux_bundle_rejects_rehashed_result_with_wrong_run_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, run_id = _finalized_identity_bundle(tmp_path)
+    result = dict(store.read_json(run_id, "result.json"))
+    result["run_id"] = _run_id(9)
+    result_path = store.write_json(run_id, "result.json", result)
+    manifest = dict(store.read_json(run_id, "manifest.json"))
+    files = {name: dict(details) for name, details in manifest["files"].items()}
+    files["result.json"] = {
+        "hash": file_hash(result_path),
+        "size_bytes": result_path.stat().st_size,
+    }
+    manifest.update({"files": files, "bundle_hash": content_hash(files)})
+    store.write_json(run_id, "manifest.json", manifest)
+    assert store.validate_bundle(run_id)["valid"] is True
+    monkeypatch.setattr(
+        linux_bundle_validation,
+        "validate_posix_watchdog_containment_proof",
+        lambda _proof: {},
+    )
+
+    with pytest.raises(AssertionError, match="result identity"):
+        linux_bundle_validation.validate_linux_bundle(
+            store.root / run_id,
+            {"run_id": run_id, "watchdog_containment": {}},
+            scenario_variant="primary",
+            require=_assert_requirement,
+        )
 
 
 def test_contract_exports_match_all_gate03_assertions() -> None:

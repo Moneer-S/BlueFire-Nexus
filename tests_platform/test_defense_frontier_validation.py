@@ -1364,7 +1364,16 @@ def _run_bundles() -> tuple[dict[str, str], ...]:
 def _patch_gate_dependencies(
     monkeypatch: pytest.MonkeyPatch,
     validator: Any,
-) -> None:
+) -> list[tuple[str, ...]]:
+    suite_calls: list[tuple[str, ...]] = []
+
+    def passing_suite(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        suite_calls.append(tuple(kwargs["tests"]))
+        return {
+            "passed": True,
+            "tests": gate_module._EXPECTED_CONTRACT_TEST_COUNT,
+        }
+
     monkeypatch.setattr(
         gate_module,
         "_run_helper",
@@ -1378,7 +1387,7 @@ def _patch_gate_dependencies(
     monkeypatch.setattr(
         gate_module,
         "_run_pytest_suite",
-        lambda *_args, **_kwargs: {"passed": True},
+        passing_suite,
     )
     monkeypatch.setattr(gate_module, "validate_persisted_frontier", validator)
     monkeypatch.setattr(gate_module, "_acceptance_binding", lambda: {})
@@ -1387,6 +1396,7 @@ def _patch_gate_dependencies(
         "validated_run_bundle",
         lambda _destination, _parent, bundle, **_kwargs: (dict(bundle), Path("manifest")),
     )
+    return suite_calls
 
 
 def _assert_no_passed_verification_report(evidence_dir: Path) -> None:
@@ -1413,7 +1423,7 @@ def test_gate_never_leaves_a_passed_report_when_final_validation_fails(
             return _passed_checks(), bundles
         raise DefenseFrontierValidationError("late semantic validation failed")
 
-    _patch_gate_dependencies(monkeypatch, validate)
+    suite_calls = _patch_gate_dependencies(monkeypatch, validate)
 
     outcome = gate_module.run_gate_04(
         _locked_gate(),
@@ -1422,6 +1432,7 @@ def test_gate_never_leaves_a_passed_report_when_final_validation_fails(
     )
 
     assert calls == 2
+    assert suite_calls == [gate_module._CONTRACT_TEST_SELECTION]
     assert outcome.status == "failed"
     assert outcome.proofs == ()
     assert "late semantic validation failed" in str(outcome.failure_reason)
@@ -1444,7 +1455,7 @@ def test_gate_success_publishes_exact_proofs_and_passed_verification(
         calls += 1
         return _passed_checks(), bundles
 
-    _patch_gate_dependencies(monkeypatch, validate)
+    suite_calls = _patch_gate_dependencies(monkeypatch, validate)
 
     outcome = gate_module.run_gate_04(
         _locked_gate(),
@@ -1453,6 +1464,7 @@ def test_gate_success_publishes_exact_proofs_and_passed_verification(
     )
 
     assert calls == 2
+    assert suite_calls == [gate_module._CONTRACT_TEST_SELECTION]
     assert outcome.status == "passed"
     assert outcome.failure_reason is None
     assert len(outcome.proofs) == 12
@@ -1467,6 +1479,25 @@ def test_gate_success_publishes_exact_proofs_and_passed_verification(
     assert verification["passed"] is True
     assert verification["checks"] == _passed_checks()
     assert verification["run_ids"] == [bundle["run_id"] for bundle in bundles]
+
+    count_drift_dir = tmp_path / "count-drift"
+    count_drift_dir.mkdir()
+    monkeypatch.setattr(
+        gate_module,
+        "_run_pytest_suite",
+        lambda *_args, **_kwargs: {
+            "passed": True,
+            "tests": gate_module._EXPECTED_CONTRACT_TEST_COUNT - 1,
+        },
+    )
+    count_drift = gate_module.run_gate_04(
+        _locked_gate(),
+        count_drift_dir,
+        repository_root=repository,
+    )
+    assert count_drift.status == "failed"
+    assert count_drift.proofs == ()
+    assert "focused regression suite failed or skipped" in str(count_drift.failure_reason)
 
 
 def test_gate_04_is_registered_in_product_gate_dispatcher() -> None:

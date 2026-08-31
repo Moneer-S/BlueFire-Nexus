@@ -47,6 +47,21 @@ _CONTRACT_TESTS = (
     "tests_platform/test_defense_frontier_validation.py",
     "tests_platform/test_comparison.py",
 )
+_WINDOWS_INAPPLICABLE_CONTRACT_TESTS = (
+    (
+        "tests_platform/test_defense_frontier_validation.py::"
+        "test_runtime_cleanup_does_not_treat_rename_away_as_disposal"
+    ),
+    (
+        "tests_platform/test_defense_frontier_validation.py::"
+        "test_runtime_cleanup_refuses_a_real_same_device_bind_mount"
+    ),
+)
+_CONTRACT_TEST_SELECTION = (
+    *_CONTRACT_TESTS,
+    *(f"--deselect={test_id}" for test_id in _WINDOWS_INAPPLICABLE_CONTRACT_TESTS),
+)
+_EXPECTED_CONTRACT_TEST_COUNT = 60
 _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str, bool]] = {
     "GATE-04-CANONICAL-BLOCK": (
         "dynamic",
@@ -458,7 +473,7 @@ def run_gate_04(
         repository,
         _runtime_temp_parent(),
         suite_id="defense-frontier-contracts",
-        tests=_CONTRACT_TESTS,
+        tests=_CONTRACT_TEST_SELECTION,
         timeout_seconds=240,
     )
     issues: list[object] = []
@@ -466,7 +481,7 @@ def run_gate_04(
     bundles: tuple[Mapping[str, str], ...] = ()
     if helper.get("passed") is not True:
         issues.append("defense frontier helper failed or returned an invalid protocol")
-    if suite.get("passed") is not True:
+    if suite.get("passed") is not True or suite.get("tests") != _EXPECTED_CONTRACT_TEST_COUNT:
         issues.append("defense frontier focused regression suite failed or skipped")
     try:
         checks, bundles = validate_persisted_frontier(repository, destination)

@@ -14,6 +14,7 @@ import bluefire.product_gates as product_gates
 import bluefire.provider_gate as provider_gate
 import tools.run_provider_gate_journey as provider_gate_helper
 from bluefire.product_acceptance import load_release_contract
+from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS
 from tools import provider_gate_source_audit
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -424,7 +425,7 @@ def _journey_report() -> dict[str, Any]:
                 "receipt_protocol": "bluefire.runner-receipt-wal.v2",
                 "platform": "windows",
                 "provider_runtime_count": 1,
-                "core_action_count": 19,
+                "core_action_count": len(BUILTIN_RUNNER_ACTION_IDS),
             },
             "provider_runtime": {
                 **runtime_contract,
@@ -594,6 +595,11 @@ def _install_passing_fakes(
 def test_gate_02_emits_exact_unique_proofs_and_bundle_attachments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    drifted_inventory = _journey_report()
+    drifted_inventory["packaged_runner"]["inventory_contract"]["core_action_count"] -= 1
+    with pytest.raises(ValueError, match="runner inventory contract is invalid"):
+        provider_gate._validate_journey(drifted_inventory)
+
     evidence_dir = tmp_path / "gate-02"
     evidence_dir.mkdir()
     calls = _install_passing_fakes(monkeypatch)
