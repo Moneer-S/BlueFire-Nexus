@@ -445,6 +445,103 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
     assert not leaked.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX Darwin hard-link launch boundary")
+def test_macos_verified_launch_cannot_be_redirected_before_receiver_key_exposure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    executable = (tmp_path / "verified-echo").resolve()
+    parked = (tmp_path / "verified-echo.parked").resolve()
+    leaked = Path(str(executable) + ".leaked")
+    shutil.copy2("/bin/echo", executable)
+    executable.chmod(0o700)
+    expected_digest = runner_client_module.file_hash(executable)
+    receiver_environment = {
+        "BLUEFIRE_RECEIVER_TASK_ID": "task-macos-launch-01",
+        "BLUEFIRE_RECEIVER_TASK_KEY": "a" * 64,
+    }
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+
+    with runner_client_module._pinned_launch_file(executable, expected_digest) as launch:
+        assert launch[1] == ()
+        launch_path = Path(launch[0])
+        assert launch_path.stat().st_ino == executable.stat().st_ino
+        launch_nonce = launch_path.name.removeprefix(".bluefire-verified-launch-")
+        assert len(launch_nonce) == 64
+        assert set(launch_nonce) <= set("0123456789abcdef")
+        executable.rename(parked)
+        executable.write_text(
+            '#!/bin/sh\nprintf "%s" "$BLUEFIRE_RECEIVER_TASK_KEY" > "$0.leaked"\n',
+            encoding="utf-8",
+        )
+        executable.chmod(0o700)
+        process = runner._spawn(
+            [launch[0], "trusted"],
+            stdout=subprocess.PIPE,
+            receiver_environment=receiver_environment,
+            inherited_descriptors=launch[1],
+        )
+
+    stdout, _stderr = process.communicate(timeout=5)
+    assert process.returncode == 0
+    assert runner._finish_posix_process_group(process) is True
+    assert stdout == b"trusted\n"
+    assert not leaked.exists()
+    assert not list(tmp_path.glob(".bluefire-verified-launch-*"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX Darwin hard-link launch boundary")
+def test_macos_verified_launch_rejects_a_group_writable_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o770)
+    executable = (shared / "verified-echo").resolve()
+    shutil.copy2("/bin/echo", executable)
+    executable.chmod(0o700)
+    expected_digest = runner_client_module.file_hash(executable)
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+
+    with pytest.raises(RunnerTransportError, match="verified launch input is unavailable"):
+        with runner_client_module._pinned_launch_file(executable, expected_digest):
+            pytest.fail("an untrusted parent reached the launch boundary")
+
+    assert not list(shared.glob(".bluefire-verified-launch-*"))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX Darwin hard-link launch boundary")
+def test_macos_verified_launch_cleans_a_link_after_post_link_stat_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = (tmp_path / "verified-echo").resolve()
+    shutil.copy2("/bin/echo", executable)
+    executable.chmod(0o700)
+    expected_digest = runner_client_module.file_hash(executable)
+    real_stat = os.stat
+    failed = False
+
+    def fail_first_link_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
+        nonlocal failed
+        if not failed and isinstance(path, str) and path.startswith(".bluefire-verified-launch-"):
+            failed = True
+            raise OSError("post-link stat failure")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(runner_client_module.os, "stat", fail_first_link_stat)
+
+    with pytest.raises(RunnerTransportError, match="verified launch input is unavailable"):
+        with runner_client_module._pinned_launch_file(executable, expected_digest):
+            pytest.fail("a failed link verification reached the launch boundary")
+
+    assert failed is True
+    assert not list(tmp_path.glob(".bluefire-verified-launch-*"))
+
+
 def test_watchdog_readiness_failure_retains_and_stops_spawned_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

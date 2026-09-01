@@ -111,6 +111,148 @@ _CANCELLATION_STAGING_NAMES = frozenset(
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
+def _validate_macos_launch_parent(path: Path, descriptor: int) -> int:
+    """Require a pathname that untrusted local users cannot redirect."""
+
+    get_effective_user_id = getattr(os, "geteuid", None)
+    if not path.is_absolute() or not callable(get_effective_user_id):
+        raise OSError("launch input parent ownership is unavailable")
+    effective_user_id = int(get_effective_user_id())
+    opened = os.fstat(descriptor)
+    child = opened
+    current_path = path
+    direct_parent = True
+    while True:
+        current = current_path.stat(follow_symlinks=False)
+        if not stat.S_ISDIR(current.st_mode):
+            raise OSError("launch input ancestor is not a directory")
+        mode = stat.S_IMODE(current.st_mode)
+        if direct_parent:
+            required = stat.S_IWUSR | stat.S_IXUSR
+            if (
+                not os.path.samestat(opened, current)
+                or current.st_uid != effective_user_id
+                or mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or mode & required != required
+            ):
+                raise OSError("launch input parent is not owner-controlled")
+            direct_parent = False
+        elif mode & (stat.S_IWGRP | stat.S_IWOTH):
+            # A sticky ancestor protects an entry owned by this process's uid.
+            if not mode & stat.S_ISVTX or child.st_uid != effective_user_id:
+                raise OSError("launch input ancestor permits replacement")
+        parent = current_path.parent
+        if parent == current_path:
+            break
+        child = current
+        current_path = parent
+    return effective_user_id
+
+
+@contextmanager
+def _macos_pinned_launch_path(
+    path: Path,
+    descriptor: int,
+    expected: os.stat_result,
+    expected_digest: str,
+) -> Iterator[str]:
+    """Give Darwin execve a stable pathname for one verified open vnode."""
+
+    parent_descriptor = -1
+    linked_descriptor = -1
+    linked_identity: tuple[int, int] | None = None
+    link_name = f".bluefire-verified-launch-{secrets.token_hex(32)}"
+    try:
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        parent_descriptor = os.open(path.parent, directory_flags)
+        effective_user_id = _validate_macos_launch_parent(path.parent, parent_descriptor)
+        os.link(
+            path.name,
+            link_name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        linked_identity = (expected.st_dev, expected.st_ino)
+        linked = os.stat(link_name, dir_fd=parent_descriptor, follow_symlinks=False)
+        current = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(linked.st_mode)
+            or not os.path.samestat(linked, current)
+            or not os.path.samestat(current, expected)
+            or current.st_uid != effective_user_id
+            or stat.S_IMODE(current.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
+            or linked.st_nlink != 2
+            or current.st_nlink != 2
+            or linked.st_size != expected.st_size
+            or linked.st_mtime_ns != expected.st_mtime_ns
+        ):
+            raise OSError("verified launch hard link identity changed")
+        linked_descriptor = os.open(
+            link_name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
+        )
+        opened = os.fstat(linked_descriptor)
+        linked_payload = _read_descriptor_bounded(
+            linked_descriptor,
+            _RUNNER_BINARY_LIMIT_BYTES,
+        )
+        current_payload = _read_descriptor_bounded(
+            descriptor,
+            _RUNNER_BINARY_LIMIT_BYTES,
+        )
+        if (
+            (opened.st_dev, opened.st_ino) != linked_identity
+            or opened.st_nlink != 2
+            or linked_payload != current_payload
+            or "sha256:" + sha256(linked_payload).hexdigest() != expected_digest
+        ):
+            raise OSError("verified launch hard link content changed")
+        _validate_macos_launch_parent(path.parent, parent_descriptor)
+        launch_path = path.parent / link_name
+        visible = launch_path.stat(follow_symlinks=False)
+        current = os.fstat(descriptor)
+        if (
+            not os.path.samestat(visible, opened)
+            or not os.path.samestat(current, opened)
+            or current.st_nlink != 2
+            or current.st_uid != effective_user_id
+            or stat.S_IMODE(current.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
+            or current.st_size != expected.st_size
+            or current.st_mtime_ns != expected.st_mtime_ns
+        ):
+            raise OSError("verified launch pathname changed")
+        yield str(launch_path)
+    finally:
+        if linked_descriptor >= 0:
+            try:
+                os.close(linked_descriptor)
+            except OSError:
+                pass
+        if parent_descriptor >= 0 and linked_identity is not None:
+            try:
+                current_link = os.stat(
+                    link_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (current_link.st_dev, current_link.st_ino) == linked_identity:
+                    os.unlink(link_name, dir_fd=parent_descriptor)
+            except OSError:
+                pass
+        if parent_descriptor >= 0:
+            try:
+                os.close(parent_descriptor)
+            except OSError:
+                pass
+
+
 def _validated_receiver_task_environment(
     value: Mapping[str, str] | None,
     *,
@@ -173,6 +315,14 @@ def _pinned_launch_file(
             raise OSError("launch input digest changed")
         if os.name == "nt":
             yield str(path), ()
+        elif sys.platform == "darwin":
+            with _macos_pinned_launch_path(
+                path,
+                descriptor,
+                details,
+                expected_digest,
+            ) as launch_path:
+                yield launch_path, ()
         else:
             descriptor_path = next(
                 (
