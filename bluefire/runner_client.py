@@ -29,6 +29,7 @@ from .execution_contracts import (
 from .execution_contracts import (
     reject_forbidden_execution_keys as _reject_forbidden_execution_keys,
 )
+from .runner_bootstrap import _is_link_or_reparse as _is_link_or_reparse
 from .runner_inventory import RunnerInventoryAuthorityError
 from .runner_inventory import canonical_runner_inventory as _canonical_runner_inventory
 from .runner_private_files import (
@@ -721,8 +722,6 @@ class SubprocessRustRunner:
         self._durable_result_guard = durable_result_guard
         self._kill_child_on_job_close = bool(_kill_child_on_job_close)
         try:
-            from .runner_trust import _is_link_or_reparse
-
             script = Path(__file__).resolve(strict=True).with_name("runner_watchdog.py")
             details = script.lstat()
             if (
@@ -2667,8 +2666,6 @@ class SubprocessRustRunner:
         *,
         retain_parent_guard: bool = False,
     ) -> tuple[Path, Path, _PinnedPrivateDirectory | None]:
-        from .runner_trust import _is_link_or_reparse
-
         destination = Path(durable_result_path).expanduser()
         if not destination.is_absolute() or destination.name in {"", ".", ".."}:
             raise RunnerTransportError("runner durable result destination is invalid")

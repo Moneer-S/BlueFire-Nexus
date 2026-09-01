@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import stat
+import subprocess  # nosec B404
+import sys
 from pathlib import Path
 from typing import Any, BinaryIO, Mapping, Sequence
 
@@ -61,6 +63,34 @@ def _fake_native(platform_name: str, *, architecture: str = ARCHITECTURE) -> byt
         machine = {"x86_64": 0x01000007, "aarch64": 0x0100000C}[architecture]
         payload[4:8] = machine.to_bytes(4, "little")
     return bytes(payload)
+
+
+def test_runner_transport_constructor_needs_only_the_standard_library(tmp_path: Path) -> None:
+    source_root = Path(__file__).resolve().parents[1]
+    completed = subprocess.run(  # nosec B603
+        [
+            sys.executable,
+            "-S",
+            "-B",
+            "-c",
+            (
+                "import sys; from pathlib import Path; "
+                "from bluefire.runner_client import SubprocessRustRunner; "
+                "runner = SubprocessRustRunner(Path(sys.executable).resolve(), "
+                "Path(sys.argv[1]).resolve()); "
+                "assert 'bluefire.runner_trust' not in sys.modules; "
+                "assert runner.runner_binary.is_file()"
+            ),
+            str(tmp_path / "runner-work"),
+        ],
+        cwd=source_root,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def _manifest(payload: bytes | None = None) -> RunnerPackageManifest:
