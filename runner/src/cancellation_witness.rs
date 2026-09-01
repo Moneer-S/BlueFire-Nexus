@@ -38,7 +38,7 @@ const ACK_STAGING_NAME: &str = ".cancel.ack.bluefire-staging";
 const READY_SCHEMA_VERSION: &str = "bluefire.process-tree-cancellation-ready.v1";
 #[cfg(any(windows, test))]
 const REQUEST_PREFIX: &[u8] = b"cancel:";
-#[cfg(any(windows, test))]
+#[cfg(windows)]
 const ACK_PREFIX: &[u8] = b"ack:";
 const NONCE_HEX_BYTES: usize = 64;
 #[cfg(any(windows, test))]

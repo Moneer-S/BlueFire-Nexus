@@ -464,6 +464,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "launched by linux_child_spawn_dies_with_its_runner_parent"]
+    #[expect(
+        clippy::zombie_processes,
+        reason = "the helper must exit without waiting so PR_SET_PDEATHSIG can be observed; the supervising test proves the child is reaped"
+    )]
     fn linux_parent_death_supervisor() {
         let Ok(path) = std::env::var(PARENT_DEATH_TEST_PATH) else {
             return;
