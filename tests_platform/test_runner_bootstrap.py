@@ -27,7 +27,7 @@ from bluefire.runner_bootstrap import (
     parse_runner_manifest,
     validate_runner_inventory,
 )
-from bluefire.runner_client import canonical_runner_inventory
+from bluefire.runner_client import RunnerTransportError, canonical_runner_inventory
 from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_VERSIONS
 from tools.stage_native_runner import stage_native_runner
 
@@ -45,6 +45,21 @@ def _fake_pe(*, architecture: str = ARCHITECTURE) -> bytes:
     payload[0x3C:0x40] = (128).to_bytes(4, "little")
     payload[128:132] = b"PE\0\0"
     payload[132:134] = machine.to_bytes(2, "little")
+    return bytes(payload)
+
+
+def _fake_native(platform_name: str, *, architecture: str = ARCHITECTURE) -> bytes:
+    if platform_name == "windows":
+        return _fake_pe(architecture=architecture)
+    payload = bytearray(256)
+    if platform_name == "linux":
+        payload[:6] = b"\x7fELF\x02\x01"
+        machine = {"x86_64": 62, "aarch64": 183}[architecture]
+        payload[18:20] = machine.to_bytes(2, "little")
+    else:
+        payload[:4] = b"\xcf\xfa\xed\xfe"
+        machine = {"x86_64": 0x01000007, "aarch64": 0x0100000C}[architecture]
+        payload[4:8] = machine.to_bytes(4, "little")
     return bytes(payload)
 
 
@@ -384,6 +399,96 @@ def test_staging_helper_writes_only_verified_platform_specific_assets(tmp_path: 
         manifest.to_dict()
     )
     assert not list(output.glob("*.tmp"))
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "filename", "wheel_tag"),
+    [
+        ("windows", "bluefire-runner.exe", "win_amd64"),
+        ("linux", "bluefire-runner", "linux_x86_64"),
+        ("macos", "bluefire-runner", "macosx_11_0_x86_64"),
+    ],
+)
+def test_staging_binds_platform_architecture_version_inventory_and_hash(
+    tmp_path: Path,
+    platform_name: str,
+    filename: str,
+    wheel_tag: str,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    runner = source_root / filename
+    payload = _fake_native(platform_name)
+    runner.write_bytes(payload)
+    output = tmp_path / "stage"
+
+    manifest = stage_native_runner(
+        runner.resolve(),
+        output,
+        platform_name=platform_name,
+        architecture=ARCHITECTURE,
+        product_version=PRODUCT_VERSION,
+        inventory=_inventory(platform=platform_name),
+    )
+
+    assert manifest.platform == platform_name
+    assert manifest.architecture == ARCHITECTURE
+    assert manifest.product_version == PRODUCT_VERSION
+    assert manifest.runner_version == PRODUCT_VERSION
+    assert manifest.wheel_platform_tag == wheel_tag
+    assert manifest.size == len(payload)
+    assert manifest.sha256 == hashlib.sha256(payload).hexdigest()
+    assert (output / filename).read_bytes() == payload
+    assert json.loads((output / MANIFEST_FILENAME).read_bytes()) == manifest.to_dict()
+
+
+def test_inventory_probe_surfaces_a_safe_transport_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingRunner:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def inventory(self) -> Mapping[str, Any]:
+            raise RunnerTransportError("Linux private process containment is unavailable")
+
+    monkeypatch.setattr(stage_native_runner_module, "SubprocessRustRunner", FailingRunner)
+
+    with pytest.raises(
+        RunnerBootstrapError,
+        match=(
+            "^The native runner inventory probe failed: "
+            "Linux private process containment is unavailable$"
+        ),
+    ):
+        stage_native_runner_module._probe_inventory(tmp_path / "bluefire-runner")
+
+
+def test_inventory_probe_redacts_an_unsafe_transport_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_detail = r"failed at C:\Users\private-user\runner.exe"
+
+    class FailingRunner:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def inventory(self) -> Mapping[str, Any]:
+            raise RunnerTransportError(private_detail)
+
+    monkeypatch.setattr(stage_native_runner_module, "SubprocessRustRunner", FailingRunner)
+
+    with pytest.raises(RunnerBootstrapError) as caught:
+        stage_native_runner_module._probe_inventory(tmp_path / "bluefire-runner")
+
+    assert str(caught.value) == (
+        "The native runner inventory probe failed: "
+        "runner transport failed without a safe diagnostic"
+    )
+    assert private_detail not in str(caught.value)
+    assert caught.value.__cause__ is None
 
 
 def test_staging_preserves_package_tree_and_replaces_only_generated_pair(tmp_path: Path) -> None:

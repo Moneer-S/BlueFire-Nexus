@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,25 @@ _PLATFORMS = {
     ("macos", "x86_64"): ("bluefire-runner", "macosx_11_0_x86_64"),
     ("macos", "aarch64"): ("bluefire-runner", "macosx_11_0_arm64"),
 }
+
+
+def _build_host() -> tuple[str, str]:
+    """Return the only native target an implicit wheel build may package."""
+
+    platform_name = {
+        "win32": "windows",
+        "linux": "linux",
+        "darwin": "macos",
+    }.get(sys.platform)
+    architecture = {
+        "amd64": "x86_64",
+        "x86_64": "x86_64",
+        "arm64": "aarch64",
+        "aarch64": "aarch64",
+    }.get(platform.machine().strip().casefold().replace("-", "_"))
+    if platform_name is None or architecture is None:
+        raise RuntimeError("native runner build host is unsupported")
+    return platform_name, architecture
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -80,7 +101,11 @@ def _native_architecture(path: Path, platform_name: str) -> str:
         raise RuntimeError("native runner executable architecture is unsupported") from exc
 
 
-def _verified_platform_tag(product_version: str) -> str:
+def _verified_platform_tag(
+    product_version: str,
+    *,
+    explicit_platform_tag: str | None = None,
+) -> str:
     try:
         payload = _MANIFEST.read_bytes()
         if not payload or len(payload) > 64 * 1024:
@@ -107,6 +132,14 @@ def _verified_platform_tag(product_version: str) -> str:
         )
         platform_key = (artifact["platform"], artifact["architecture"])
         filename, platform_tag = _PLATFORMS[platform_key]
+        if explicit_platform_tag is None:
+            if platform_key != _build_host():
+                raise RuntimeError(
+                    "native runner manifest does not match the build host; "
+                    "stage the host artifact or supply an explicit --plat-name target"
+                )
+        elif explicit_platform_tag != platform_tag:
+            raise RuntimeError("native runner manifest does not match the explicit wheel target")
         size = artifact["size"]
         digest = artifact["sha256"]
         expected_contract = {
@@ -156,8 +189,12 @@ class PlatformNativeWheel(bdist_wheel):
     """Mark the verified runner-bearing wheel as platform specific."""
 
     def finalize_options(self) -> None:
+        explicit_platform_tag = self.plat_name
         super().finalize_options()
-        self.plat_name = _verified_platform_tag(str(self.distribution.metadata.version))
+        self.plat_name = _verified_platform_tag(
+            str(self.distribution.metadata.version),
+            explicit_platform_tag=explicit_platform_tag,
+        )
         self.root_is_pure = False
 
     def get_tag(self) -> tuple[str, str, str]:

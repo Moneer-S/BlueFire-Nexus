@@ -12,6 +12,7 @@ import errno
 import json
 import os
 import platform
+import re
 import secrets
 import shutil
 import stat
@@ -32,13 +33,37 @@ from bluefire.runner_bootstrap import (
     build_runner_manifest,
     validate_runner_inventory,
 )
-from bluefire.runner_client import SubprocessRustRunner
+from bluefire.runner_client import RunnerTransportError, SubprocessRustRunner
 from bluefire.util import canonical_json_bytes
 
 _REPLACED_NAMES = frozenset({"bluefire-runner", "bluefire-runner.exe", MANIFEST_FILENAME})
 _MAX_PRESERVED_ENTRIES = 4_096
 _MAX_PRESERVED_BYTES = 256 * 1024 * 1024
 _MAX_PRESERVED_DEPTH = 16
+_SAFE_TRANSPORT_DIAGNOSTICS = frozenset(
+    {
+        "Linux exit identity is invalid",
+        "Linux private process containment is unavailable",
+        "Linux process was reaped before containment",
+        "Linux unreaped process observation is unavailable",
+        "Packaged runner watchdog is unavailable.",
+        "Runner identity could not be verified.",
+        "Runner process exit status is unavailable",
+        "Runner process tree could not be stopped safely",
+        "Runner process tree state could not be released",
+        "Rust runner could not be started",
+        "Rust runner exceeded the transport output limit",
+        "Rust runner transport timed out",
+        "Windows process containment is unavailable",
+        "Windows process control is unavailable",
+        "runner binary must be an existing absolute file",
+        "runner inventory is not valid UTF-8 JSON",
+        "runner inventory must be a JSON object",
+        "runner transport bounds are invalid",
+        "verified launch input is unavailable",
+    }
+)
+_SAFE_UNEXPECTED_STATUS = re.compile(r"^Rust runner exited with unexpected status -?[0-9]+$")
 
 
 @dataclass(frozen=True)
@@ -614,8 +639,18 @@ def _probe_inventory(binary: Path) -> Mapping[str, Any]:
                 timeout_seconds=10.0,
                 output_limit_bytes=2 * 1024 * 1024,
             ).inventory()
-    except Exception as exc:
-        raise RunnerBootstrapError("The native runner inventory could not be verified.") from exc
+    except RunnerTransportError as exc:
+        detail = str(exc)
+        if (
+            detail not in _SAFE_TRANSPORT_DIAGNOSTICS
+            and _SAFE_UNEXPECTED_STATUS.fullmatch(detail) is None
+        ):
+            detail = "runner transport failed without a safe diagnostic"
+        raise RunnerBootstrapError(f"The native runner inventory probe failed: {detail}") from None
+    except Exception:
+        raise RunnerBootstrapError(
+            "The native runner inventory probe failed without a safe diagnostic."
+        ) from None
 
 
 def _load_inventory(path: Path) -> Mapping[str, Any]:

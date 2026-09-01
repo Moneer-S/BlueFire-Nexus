@@ -66,6 +66,11 @@ the corresponding installed Rust target and linker; target support in the helper
 that a produced binary ran on that operating system. Use `tools/stage_native_runner.py` to create
 an atomic manifest/binary resource tree only after independently obtaining the compiled inventory.
 
+An implicit wheel build accepts only a staged manifest whose platform and architecture match the
+build host. Intentional cross-target packaging must forward an exact wheel target, for example
+`python -m build --wheel --config-setting=--build-option=--plat-name=win_amd64`, and that target
+must match the staged manifest. The explicit tag is a packaging control, not dynamic host proof.
+
 ## Cross-platform release validation
 
 GATE-11 separates dynamic and structural claims:
