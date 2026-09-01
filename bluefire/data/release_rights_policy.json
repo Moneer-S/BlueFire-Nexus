@@ -23,7 +23,7 @@
   "project_license": {
     "spdx_id": "MIT",
     "primary_file": "LICENSE",
-    "sha256": "a92989adc73937002d25d9360548f0da0d0ad92d29acdab92c12bf4b0307674a",
+    "sha256": "d0dab4d811fa55c3e661944ef6e44e06a4a080d6cb7ebb087fd0c666c747da2d",
     "license_files": [
       "LICENSE",
       "THIRD_PARTY_NOTICES.md"
