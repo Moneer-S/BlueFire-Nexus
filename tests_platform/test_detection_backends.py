@@ -65,6 +65,18 @@ def test_legacy_validator_import_is_compatible() -> None:
     assert LegacyExternalDetectionValidator is ExternalDetectionValidator
 
 
+def test_sqlite_runtime_capabilities_degrade_safely_on_python_310() -> None:
+    class Python310Connection:
+        pass
+
+    connection = Python310Connection()
+    detection_backends._configure_limits(connection)  # type: ignore[arg-type]
+    detection_backends._disable_load_extension(connection)  # type: ignore[arg-type]
+
+    assert detection_backends._sqlite_constant("SQLITE_LIMIT_NOT_EXPOSED", 23) == 23
+    assert [category for category, _limit in detection_backends._SQLITE_LIMITS] == list(range(10))
+
+
 def test_authored_sqlite_query_executes_full_bounded_lifecycle() -> None:
     validator = ExternalDetectionValidator()
     parsed = validator.parse_sqlite(

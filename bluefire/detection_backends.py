@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from importlib import metadata
 from time import monotonic
-from typing import Any, Iterable, Mapping, Protocol, Sequence, cast
+from typing import Any, Iterable, Mapping, Sequence
 
 from .detection_backend_health import PYSIGMA_PIN as _PYSIGMA_PIN
 from .detection_backend_health import (
@@ -64,12 +64,21 @@ _EXECUTION_LIMITS = {
 }
 
 
-def _sqlite_constant(name: str) -> int:
-    return cast(int, getattr(sqlite3, name))
+def _sqlite_constant(name: str, fallback: int) -> int:
+    """Resolve stable SQLite limit categories across supported CPython builds.
+
+    Python 3.10 does not expose ``SQLITE_LIMIT_*`` or ``Connection.setlimit``.
+    The numeric categories are part of SQLite's stable C API; retaining them
+    lets newer runtimes apply the native limits while older runtimes continue
+    to use the same parser, authorizer, progress, fixture, and result bounds.
+    """
+
+    value = getattr(sqlite3, name, fallback)
+    return value if isinstance(value, int) else fallback
 
 
-_SQLITE_LIMITS = ((_sqlite_constant("SQLITE_LIMIT_LENGTH"), _MAX_RESULT_BYTES), (_sqlite_constant("SQLITE_LIMIT_SQL_LENGTH"), _MAX_QUERY_BYTES),
-    (_sqlite_constant("SQLITE_LIMIT_COLUMN"), _MAX_RESULT_FIELDS), (_sqlite_constant("SQLITE_LIMIT_EXPR_DEPTH"), 32), (_sqlite_constant("SQLITE_LIMIT_COMPOUND_SELECT"), 1), (_sqlite_constant("SQLITE_LIMIT_VDBE_OP"), _MAX_VM_STEPS), (_sqlite_constant("SQLITE_LIMIT_FUNCTION_ARG"), 16), (_sqlite_constant("SQLITE_LIMIT_ATTACHED"), 0), (_sqlite_constant("SQLITE_LIMIT_LIKE_PATTERN_LENGTH"), 4096), (_sqlite_constant("SQLITE_LIMIT_VARIABLE_NUMBER"), 0))
+_SQLITE_LIMITS = ((_sqlite_constant("SQLITE_LIMIT_LENGTH", 0), _MAX_RESULT_BYTES), (_sqlite_constant("SQLITE_LIMIT_SQL_LENGTH", 1), _MAX_QUERY_BYTES),
+    (_sqlite_constant("SQLITE_LIMIT_COLUMN", 2), _MAX_RESULT_FIELDS), (_sqlite_constant("SQLITE_LIMIT_EXPR_DEPTH", 3), 32), (_sqlite_constant("SQLITE_LIMIT_COMPOUND_SELECT", 4), 1), (_sqlite_constant("SQLITE_LIMIT_VDBE_OP", 5), _MAX_VM_STEPS), (_sqlite_constant("SQLITE_LIMIT_FUNCTION_ARG", 6), 16), (_sqlite_constant("SQLITE_LIMIT_ATTACHED", 7), 0), (_sqlite_constant("SQLITE_LIMIT_LIKE_PATTERN_LENGTH", 8), 4096), (_sqlite_constant("SQLITE_LIMIT_VARIABLE_NUMBER", 9), 0))
 SQLITE_LOG_FIELDS = tuple("""fixture_id timestamp EventID Channel Provider_Name Computer User Image OriginalFileName CommandLine
     ParentImage ParentCommandLine CurrentDirectory IntegrityLevel Hashes ProcessId ParentProcessId TargetFilename CreationUtcTime
     SourceIp SourcePort DestinationIp DestinationPort Protocol QueryName QueryStatus EventType TargetObject Details SubjectUserName
@@ -409,14 +418,18 @@ def _prepare_fixtures(
     return fixture_ids, inserts, sorted(mapped_fields), sorted(unsupported_fields)
 
 
-class _LimitConnection(Protocol):
-    def setlimit(self, category: int, limit: int) -> int: ...
-
-
 def _configure_limits(connection: sqlite3.Connection) -> None:
-    limited_connection = cast(_LimitConnection, connection)
+    setlimit = getattr(connection, "setlimit", None)
+    if not callable(setlimit):
+        return
     for category, limit in _SQLITE_LIMITS:
-        limited_connection.setlimit(category, limit)
+        setlimit(category, limit)
+
+
+def _disable_load_extension(connection: sqlite3.Connection) -> None:
+    disable = getattr(connection, "enable_load_extension", None)
+    if callable(disable):
+        disable(False)
 
 
 def _sqlite_authorizer(
@@ -465,7 +478,7 @@ def execute_sqlite_query(
         return int(monotonic() > deadline)
 
     try:
-        connection.enable_load_extension(False)
+        _disable_load_extension(connection)
         connection.execute(_CREATE_LOGS_SQL)
         connection.executemany(_INSERT_LOG_SQL, inserts)
         connection.execute("PRAGMA trusted_schema = OFF")
