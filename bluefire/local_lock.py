@@ -1,9 +1,10 @@
 """Pinned, inode-bound locking for the local SQLite product database.
 
-The database inode, rather than a sibling pathname, is the cooperative lock
-authority.  That distinction matters on POSIX, where a database can be moved
-while open: every pathname for the same inode still contends on the same OS
-lock and the process-local reentrancy state is keyed by that inode identity.
+The database identity, rather than a sibling pathname, is the cooperative lock
+authority.  On POSIX the OS lock lives in an owner-private runtime registry and
+is named from the database device/inode pair.  That preserves contention after
+a database move without colliding with SQLite's own advisory locks on macOS.
+Windows uses a byte beyond SQLite's maximum database size on the pinned file.
 """
 
 from __future__ import annotations
@@ -41,6 +42,8 @@ DatabaseIdentity = tuple[int, int]
 # Windows VFS lock range and does not extend the file.
 _WINDOWS_DATABASE_LOCK_BYTE = 1 << 48
 _MAX_DATABASE_BYTES = (1 << 63) - 1
+_POSIX_LOCK_DIRECTORY_PREFIX = ".bluefire-database-locks-"
+_POSIX_LOCK_PARENT = Path("/tmp")
 
 
 @dataclass
@@ -277,6 +280,114 @@ def _open_database_descriptor(
         return descriptor, identity, registration
 
 
+def _canonical_posix_lock_parent() -> Path:
+    """Pin the environment-independent system temporary directory."""
+
+    getuid = getattr(os, "getuid", None)
+    if not callable(getuid):
+        raise LocalLockError("Local database lock identity is unavailable.")
+    try:
+        parent = _POSIX_LOCK_PARENT.resolve(strict=True)
+        if not parent.is_absolute() or _is_link_or_reparse(parent):
+            raise LocalLockError("Local database lock registry is unavailable or unsafe.")
+        with _PinnedDirectory(parent, private=False) as directory:
+            details = parent.lstat()
+            identity = int(details.st_dev), int(details.st_ino)
+            mode = stat.S_IMODE(details.st_mode)
+            if (
+                not stat.S_ISDIR(details.st_mode)
+                or not _has_stable_identity(identity)
+                or identity != directory.identity
+                or details.st_uid not in {0, getuid()}
+                or (mode & (stat.S_IWGRP | stat.S_IWOTH) and not mode & stat.S_ISVTX)
+            ):
+                raise LocalLockError("Local database lock registry is unavailable or unsafe.")
+        return parent
+    except LocalLockError:
+        raise
+    except (MemoryError, OSError, RunnerTrustError):
+        raise LocalLockError("Local database lock registry is unavailable or unsafe.") from None
+
+
+def _posix_identity_lock_path(identity: DatabaseIdentity) -> Path:
+    getuid = getattr(os, "getuid", None)
+    if not callable(getuid):
+        raise LocalLockError("Local database lock identity is unavailable.")
+    try:
+        parent = _canonical_posix_lock_parent()
+        root = parent / f"{_POSIX_LOCK_DIRECTORY_PREFIX}{getuid()}"
+        try:
+            root.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        with _PinnedDirectory(root, private=True) as directory:
+            details = root.lstat()
+            root_identity = int(details.st_dev), int(details.st_ino)
+            if (
+                _is_link_or_reparse(root)
+                or not stat.S_ISDIR(details.st_mode)
+                or not _has_stable_identity(root_identity)
+                or root_identity != directory.identity
+                or details.st_uid != getuid()
+                or stat.S_IMODE(details.st_mode) != 0o700
+            ):
+                raise LocalLockError("Local database lock registry is unavailable or unsafe.")
+        return root / f"{identity[0]:x}-{identity[1]:x}.lock"
+    except LocalLockError:
+        raise
+    except (MemoryError, OSError, RunnerTrustError):
+        raise LocalLockError("Local database lock registry is unavailable or unsafe.") from None
+
+
+def _open_posix_identity_lock_descriptor(identity: DatabaseIdentity) -> int:
+    path = _posix_identity_lock_path(identity)
+    descriptor: int | None = None
+    created_identity: DatabaseIdentity | None = None
+    try:
+        with _PinnedDirectory(path.parent, private=True) as directory:
+            try:
+                created_identity = directory.create(path.name, b"")
+            except RunnerTrustError:
+                # Existing and concurrently created identity locks are normal.
+                # The pinned open independently validates the exact entry.
+                pass
+        descriptor, _lock_identity = _open_posix_database_descriptor(
+            path,
+            expected=created_identity,
+        )
+        details = os.fstat(descriptor)
+        getuid = getattr(os, "getuid", None)
+        if (
+            details.st_size != 0
+            or stat.S_IMODE(details.st_mode) != 0o600
+            or (callable(getuid) and details.st_uid != getuid())
+        ):
+            raise LocalLockError("Local database identity lock is unavailable or unsafe.")
+        return descriptor
+    except LocalLockError:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+    except (MemoryError, OSError, RunnerTrustError):
+        if descriptor is not None:
+            os.close(descriptor)
+        raise LocalLockError("Local database identity lock is unavailable or unsafe.") from None
+
+
+def _open_registered_posix_identity_lock_descriptor(
+    identity: DatabaseIdentity,
+) -> tuple[int, _DatabaseDescriptorRegistration]:
+    with _DATABASE_FORK_GUARD:
+        descriptor = _open_posix_identity_lock_descriptor(identity)
+        registration = _DatabaseDescriptorRegistration(owner_pid=os.getpid())
+        try:
+            _DATABASE_DESCRIPTORS[descriptor] = registration
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor, registration
+
+
 def _close_database_descriptor(
     descriptor: int,
     registration: _DatabaseDescriptorRegistration,
@@ -310,20 +421,29 @@ def prepare_owner_private_database_file(
     canonical = _canonical_database_path(path)
     created_identity: DatabaseIdentity | None = None
     try:
-        with _PinnedDirectory(canonical.parent, private=False) as directory:
-            if canonical.name not in set(directory.names()):
-                try:
-                    created_identity = directory.create(canonical.name, b"")
-                except RunnerTrustError:
-                    # A concurrent creator may have won the exclusive create.
+        for attempt in range(40):
+            try:
+                with _PinnedDirectory(canonical.parent, private=False) as directory:
                     if canonical.name not in set(directory.names()):
-                        raise
-        descriptor, identity, registration = _open_database_descriptor(
-            canonical,
-            expected=created_identity,
-        )
-        _close_database_descriptor(descriptor, registration)
-        return canonical, identity
+                        try:
+                            created_identity = directory.create(canonical.name, b"")
+                        except RunnerTrustError:
+                            # A concurrent creator may have won the exclusive create.
+                            if canonical.name not in set(directory.names()):
+                                raise
+                descriptor, identity, registration = _open_database_descriptor(
+                    canonical,
+                    expected=created_identity,
+                )
+                _close_database_descriptor(descriptor, registration)
+                return canonical, identity
+            except LocalLockError:
+                if attempt == 39:
+                    raise
+                # Windows may briefly deny the pinned open while the winning
+                # exclusive creator closes its no-delete-share handle.
+                time.sleep(0.025)
+        raise LocalLockError("Local database could not be pinned safely.")
     except LocalLockError:
         raise
     except (MemoryError, OSError, RunnerTrustError):
@@ -398,7 +518,16 @@ def _validate_locked_database(
         if _windows_information_identity(information) != expected:
             raise LocalLockError("Pinned local database identity changed.")
     else:
-        _validate_posix_database_descriptor(descriptor, expected=expected)
+        lock_details = os.fstat(descriptor)
+        getuid = getattr(os, "getuid", None)
+        if (
+            not stat.S_ISREG(lock_details.st_mode)
+            or lock_details.st_nlink != 1
+            or lock_details.st_size != 0
+            or stat.S_IMODE(lock_details.st_mode) != 0o600
+            or (callable(getuid) and lock_details.st_uid != getuid())
+        ):
+            raise LocalLockError("Pinned local database lock changed.")
 
     verification, identity, registration = _open_database_descriptor(path, expected=expected)
     _close_database_descriptor(verification, registration)
@@ -412,15 +541,17 @@ def owner_private_database_lock(
     *,
     expected: DatabaseIdentity,
 ) -> Iterator[None]:
-    """Hold the exact database inode lock across a catalog transition/effect."""
+    """Hold the exact database identity lock across a catalog transition/effect."""
 
     canonical = _canonical_database_path(path)
+    database_descriptor: int | None = None
+    database_registration: _DatabaseDescriptorRegistration | None = None
     descriptor: int | None = None
     registration: _DatabaseDescriptorRegistration | None = None
     locked = False
     try:
         try:
-            descriptor, identity, registration = _open_database_descriptor(
+            database_descriptor, identity, database_registration = _open_database_descriptor(
                 canonical,
                 expected=expected,
             )
@@ -437,13 +568,13 @@ def owner_private_database_lock(
                     if state.owner_pid != process_id or state.descriptor is None or state.depth < 1:
                         raise LocalLockError("Local database lock ownership is inconsistent.")
                     _validate_locked_database(canonical, state.descriptor, expected)
-                    _close_database_descriptor(descriptor, registration)
+                    _close_database_descriptor(database_descriptor, database_registration)
                 except LocalLockError:
                     raise
                 except (MemoryError, OSError, RunnerTrustError):
                     raise LocalLockError("Local database lock is unavailable or unsafe.") from None
-                descriptor = None
-                registration = None
+                database_descriptor = None
+                database_registration = None
                 state.depth += 1
                 try:
                     yield
@@ -458,6 +589,19 @@ def owner_private_database_lock(
                     or state.descriptor is not None
                 ):
                     raise LocalLockError("Local database lock ownership is inconsistent.")
+
+                if os.name == "nt":
+                    descriptor = database_descriptor
+                    registration = database_registration
+                    database_descriptor = None
+                    database_registration = None
+                else:
+                    _close_database_descriptor(database_descriptor, database_registration)
+                    database_descriptor = None
+                    database_registration = None
+                    descriptor, registration = _open_registered_posix_identity_lock_descriptor(
+                        identity
+                    )
 
                 _lock_database_descriptor(descriptor)
                 locked = True
@@ -478,6 +622,8 @@ def owner_private_database_lock(
                 state.owner_thread = None
                 state.descriptor = None
     finally:
+        if database_descriptor is not None and database_registration is not None:
+            _close_database_descriptor(database_descriptor, database_registration)
         if descriptor is not None and registration is not None:
             _close_database_descriptor(descriptor, registration, unlock=locked)
 

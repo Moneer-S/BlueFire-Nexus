@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -167,6 +168,36 @@ def test_store_migrates_and_persists_secret_safe_settings(tmp_path: Path) -> Non
             "ai.provider",
             {"api_key": "plaintext-secret"},  # pragma: allowlist secret
         )
+
+
+def test_concurrent_first_open_serializes_one_idempotent_migration(tmp_path: Path) -> None:
+    path = tmp_path / "concurrent-first-open.sqlite3"
+    participant_count = 8
+    barrier = threading.Barrier(participant_count)
+    stores: list[ProductStore] = []
+    errors: list[BaseException] = []
+
+    def construct() -> None:
+        barrier.wait()
+        try:
+            stores.append(ProductStore(path))
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=construct, daemon=True) for _ in range(participant_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert len(stores) == participant_count
+    assert all(store.schema_version == 7 for store in stores)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT version FROM schema_migrations ORDER BY version"
+        ).fetchall() == [(7,)]
 
 
 def test_scenario_versions_are_content_addressed_and_retrievable(tmp_path: Path) -> None:

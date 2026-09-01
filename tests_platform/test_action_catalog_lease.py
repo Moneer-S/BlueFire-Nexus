@@ -76,6 +76,71 @@ def test_catalog_lease_does_not_relabel_an_effect_body_os_error(tmp_path: Path) 
             raise FileNotFoundError("effect-owned missing file")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX uses a separate identity lock")
+def test_catalog_lease_does_not_compete_with_sqlite_advisory_locks(tmp_path: Path) -> None:
+    fcntl: Any = __import__("fcntl")
+    store = ProductStore(tmp_path / "sqlite-compatible-lease.sqlite3")
+
+    with store.action_package_catalog_lease():
+        descriptor = os.open(store.path, os.O_RDWR)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+        store.set_setting("lease.sqlite-compatible", {"verified": True})
+
+    assert store.get_setting("lease.sqlite-compatible") == {"verified": True}
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX uses a canonical identity-lock root")
+def test_catalog_lease_rendezvous_ignores_temp_environment_aliases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "environment-independent-lease.sqlite3"
+    store = ProductStore(database)
+    parent_temp = tmp_path / "parent-temp"
+    child_temp = tmp_path / "child-temp"
+    parent_temp.mkdir()
+    child_temp.mkdir()
+    for name in ("TMPDIR", "TMP", "TEMP"):
+        monkeypatch.setenv(name, os.fspath(parent_temp))
+
+    child_environment = dict(os.environ)
+    child_environment.update({name: os.fspath(child_temp) for name in ("TMPDIR", "TMP", "TEMP")})
+    child_code = """
+import sys
+from bluefire.product_store import ProductStore
+print("attempt", flush=True)
+with ProductStore(sys.argv[1]).action_package_catalog_lease():
+    print("completed", flush=True)
+"""
+    process: subprocess.Popen[str] | None = None
+    try:
+        with store.action_package_catalog_lease():
+            process = subprocess.Popen(  # nosec B603 - fixed interpreter and test script
+                [sys.executable, "-c", child_code, str(database)],
+                cwd=Path(__file__).resolve().parents[1],
+                env=child_environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            assert process.stdout is not None
+            assert process.stdout.readline().strip() == "attempt"
+            time.sleep(0.25)
+            assert process.poll() is None
+
+        stdout, stderr = process.communicate(timeout=10)
+        assert process.returncode == 0, stderr
+        assert stdout.strip() == "completed"
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
 class _BlockingRunner:
     def __init__(self, started: threading.Event, release: threading.Event) -> None:
         self.started = started
@@ -448,11 +513,9 @@ def test_forked_lifecycle_writer_waits_for_parent_inode_lease(tmp_path: Path) ->
     not callable(getattr(os, "register_at_fork", None)) or not callable(getattr(os, "fork", None)),
     reason="requires direct POSIX fork callbacks",
 )
-def test_direct_fork_stale_context_cannot_close_reused_child_descriptor(
+def test_direct_fork_stale_context_cannot_close_child_lock_descriptor(
     tmp_path: Path,
 ) -> None:
-    fcntl: Any = __import__("fcntl")
-
     parent_store = ProductStore(tmp_path / "parent.sqlite3")
     child_store = ProductStore(tmp_path / "child.sqlite3")
     receiver, sender = os.pipe()
@@ -460,7 +523,6 @@ def test_direct_fork_stale_context_cannot_close_reused_child_descriptor(
     outer.__enter__()
     inherited_descriptors = set(local_lock_module._DATABASE_DESCRIPTORS)
     assert len(inherited_descriptors) == 1
-    inherited_descriptor = next(iter(inherited_descriptors))
 
     fork: Any = os.__dict__["fork"]
     child_pid = fork()
@@ -470,20 +532,49 @@ def test_direct_fork_stale_context_cannot_close_reused_child_descriptor(
         try:
             inner.__enter__()
             child_descriptors = set(local_lock_module._DATABASE_DESCRIPTORS)
-            assert child_descriptors == {inherited_descriptor}
+            assert len(child_descriptors) == 1
+            child_descriptor = next(iter(child_descriptors))
 
             # Unwind the context copied from the parent only after the child has
-            # reused its descriptor number for a different database lease.
+            # allocated a descriptor for a different database lease. The OS is
+            # not required to reuse the parent's numeric descriptor value.
             outer.__exit__(None, None, None)
             assert child_descriptors == set(local_lock_module._DATABASE_DESCRIPTORS)
-            os.fstat(inherited_descriptor)
+            os.fstat(child_descriptor)
 
-            probe = os.open(child_store.path, os.O_RDWR)
-            try:
-                with pytest.raises(BlockingIOError):
-                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            finally:
-                os.close(probe)
+            database_details = child_store.path.stat()
+            identity_lock = local_lock_module._posix_identity_lock_path(
+                (int(database_details.st_dev), int(database_details.st_ino))
+            )
+            probe_code = """
+import fcntl
+import os
+import sys
+
+descriptor = os.open(sys.argv[1], os.O_RDWR)
+blocked = False
+try:
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        blocked = True
+    else:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+finally:
+    os.close(descriptor)
+raise SystemExit(0 if blocked else 3)
+"""
+            probe = subprocess.run(  # nosec B603 - fixed interpreter and test script
+                [sys.executable, "-c", probe_code, os.fspath(identity_lock)],
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            assert (
+                probe.returncode == 0
+            ), f"identity lock probe unexpectedly acquired the lock: {probe.stdout}{probe.stderr}"
         except BaseException as exc:
             os.write(sender, f"error:{type(exc).__name__}:{exc}".encode("utf-8"))
             os._exit(1)
