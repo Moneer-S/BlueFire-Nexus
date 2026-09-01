@@ -189,13 +189,16 @@ class PlatformNativeWheel(bdist_wheel):
     """Mark the verified runner-bearing wheel as platform specific."""
 
     def finalize_options(self) -> None:
-        explicit_platform_tag = self.plat_name
+        self._bluefire_explicit_platform_tag = self.plat_name
         super().finalize_options()
+        self.root_is_pure = False
+
+    def run(self) -> None:
         self.plat_name = _verified_platform_tag(
             str(self.distribution.metadata.version),
-            explicit_platform_tag=explicit_platform_tag,
+            explicit_platform_tag=self._bluefire_explicit_platform_tag,
         )
-        self.root_is_pure = False
+        super().run()
 
     def get_tag(self) -> tuple[str, str, str]:
         """The Rust executable is platform-specific but Python-ABI independent."""

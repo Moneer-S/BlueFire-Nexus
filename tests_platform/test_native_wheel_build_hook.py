@@ -154,7 +154,7 @@ def test_cross_build_requires_the_exact_explicit_wheel_target(
         )
 
 
-def test_wheel_command_forwards_only_an_explicit_pre_finalize_target(
+def test_wheel_command_defers_target_verification_until_artifact_build(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     namespace = _load_build_hook()
@@ -167,11 +167,17 @@ def test_wheel_command_forwards_only_an_explicit_pre_finalize_target(
 
     monkeypatch.setitem(command_type.finalize_options.__globals__, "_verified_platform_tag", verify)
     monkeypatch.setattr(namespace["bdist_wheel"], "finalize_options", lambda _self: None)
+    monkeypatch.setattr(namespace["bdist_wheel"], "run", lambda _self: None)
     command = command_type(Distribution({"name": "bluefire-nexus", "version": PRODUCT_VERSION}))
     command.plat_name = "win_amd64"
 
     command.finalize_options()
 
-    assert observed == [(PRODUCT_VERSION, "win_amd64")]
+    assert observed == []
     assert command.plat_name == "win_amd64"
     assert command.root_is_pure is False
+
+    command.run()
+
+    assert observed == [(PRODUCT_VERSION, "win_amd64")]
+    assert command.plat_name == "win_amd64"
