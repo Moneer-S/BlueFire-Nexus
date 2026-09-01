@@ -43,7 +43,8 @@ DatabaseIdentity = tuple[int, int]
 _WINDOWS_DATABASE_LOCK_BYTE = 1 << 48
 _MAX_DATABASE_BYTES = (1 << 63) - 1
 _POSIX_LOCK_DIRECTORY_PREFIX = ".bluefire-database-locks-"
-_POSIX_LOCK_PARENT = Path("/tmp")
+# The canonical root is pinned and validated before any lock entry is opened.
+_POSIX_LOCK_PARENT = Path("/tmp")  # nosec B108
 
 
 @dataclass
