@@ -18,7 +18,7 @@ from bluefire.planner import ExecutionPlan, PlanStep
 from bluefire.run_store import RunStore
 from bluefire.runner_adapter import AdaptedAction, RunnerActionAdapter
 from bluefire.runner_client import canonical_runner_inventory
-from bluefire.runner_contracts import build_runner_profile, current_platform
+from bluefire.runner_contracts import build_runner_profile
 from bluefire.util import content_hash
 from tests_platform.test_action_provider_packages import (
     ACTION_ID,
@@ -262,7 +262,7 @@ def test_provider_profile_contains_the_exact_private_artifact(tmp_path: Path) ->
     runner_profile = build_runner_profile(
         profile,
         sandbox_root=sandbox_root,
-        platform=current_platform(),
+        platform="windows",
         filesystem_scope=(),
         action_bindings=orchestrator._runner_profile_action_bindings(profile),
         provider_bindings=bindings,
@@ -307,7 +307,7 @@ def test_provider_execution_preserves_logical_action_and_seals_provider_manifest
     runner_profile = build_runner_profile(
         profile,
         sandbox_root=sandbox_root,
-        platform=current_platform(),
+        platform="windows",
         filesystem_scope=(),
         action_bindings=orchestrator._runner_profile_action_bindings(profile),
         provider_bindings=bindings,
