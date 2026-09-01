@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::env;
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
@@ -3391,7 +3391,10 @@ fn exchange_loopback_request(
     })?;
     remaining_deadline(started, budget)
         .map_err(|error| ActionFailure::timed_out("loopback_timeout", error))?;
-    let _ = stream.shutdown(Shutdown::Write);
+    // The requests are self-framed by their fixed headers and Content-Length.
+    // Do not half-close the socket to delimit them: Darwin can report the peer's
+    // subsequent close as a reset after this half-close, discarding an otherwise
+    // complete authenticated response.
     read_socket_bounded(&mut stream, response_limit, started, budget)
         .map_err(|_| ActionFailure::failed("loopback_read_failed", "loopback response failed"))
 }

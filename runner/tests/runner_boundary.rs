@@ -1584,9 +1584,47 @@ fn request_body(request: &[u8]) -> &[u8] {
 }
 
 fn read_http_request(socket: &mut std::net::TcpStream) -> Vec<u8> {
+    const MAX_TEST_REQUEST_BYTES: usize = 1024 * 1024;
+
     let mut request = Vec::new();
-    socket.read_to_end(&mut request).unwrap();
-    request
+    let mut expected_bytes = None;
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let count = socket.read(&mut buffer).unwrap();
+        assert_ne!(count, 0, "request ended before its declared framing");
+        request.extend_from_slice(&buffer[..count]);
+        assert!(
+            request.len() <= MAX_TEST_REQUEST_BYTES,
+            "test request exceeded its fixed bound"
+        );
+
+        if expected_bytes.is_none() {
+            if let Some(separator) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                let header = std::str::from_utf8(&request[..separator]).unwrap();
+                let mut content_lengths = header.split("\r\n").skip(1).filter_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().unwrap())
+                });
+                let content_length = content_lengths.next().unwrap_or(0);
+                assert!(
+                    content_lengths.next().is_none(),
+                    "test request contained duplicate Content-Length headers"
+                );
+                expected_bytes = Some(separator + 4 + content_length);
+            }
+        }
+
+        if let Some(expected_bytes) = expected_bytes {
+            assert!(
+                request.len() <= expected_bytes,
+                "test request exceeded its declared Content-Length"
+            );
+            if request.len() == expected_bytes {
+                return request;
+            }
+        }
+    }
 }
 
 fn authenticated_http_response(
