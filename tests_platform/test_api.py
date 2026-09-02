@@ -273,6 +273,10 @@ class StubService:
         self.calls.append(("submit_run", request))
         return {"job": {"job_id": JOB_ID, "state": "queued"}}
 
+    def active_jobs(self):
+        self.calls.append(("active_jobs",))
+        return {"schema_version": "bluefire.active-job-list.v1", "jobs": []}
+
     def job(self, job_id: str):
         self.calls.append(("job", job_id))
         return {"job_id": job_id, "state": "running"}
@@ -573,6 +577,15 @@ def test_static_assets_are_public_but_local_api_requires_a_browser_session() -> 
         assert status == 401
         assert json_body(payload)["error"]["code"] == "browser_session_required"
 
+        status, _, payload = request(
+            server,
+            "GET",
+            "/api/v1/jobs",
+            authenticated=False,
+        )
+        assert status == 401
+        assert json_body(payload)["error"]["code"] == "browser_session_required"
+
         status, headers, payload = request(
             server,
             "POST",
@@ -854,6 +867,7 @@ def test_get_routes_dispatch_to_the_injected_service() -> None:
             ("/api/v1/resources/collectors", "resources"),
             (f"/api/v1/resources/collectors/{RESOURCE_ID}", "resource"),
             ("/api/v1/runs", "list"),
+            ("/api/v1/jobs", "active_jobs"),
             (f"/api/v1/jobs/{JOB_ID}", "job"),
             (f"/api/v1/runs/{RUN_ID}", "detail"),
             (f"/api/v1/runs/{RUN_ID}/events?after_sequence=12&limit=25", "events"),
@@ -869,6 +883,15 @@ def test_get_routes_dispatch_to_the_injected_service() -> None:
         assert ("scenario_version", SCENARIO_ID, 7) in service.calls
         assert ("resources", "collector") in service.calls
         assert ("resource", "collector", RESOURCE_ID) in service.calls
+
+
+def test_active_job_inventory_rejects_query_authority() -> None:
+    with running_server() as (server, service):
+        status, _, payload = request(server, "GET", "/api/v1/jobs?history=true")
+
+    assert status == 400
+    assert json_body(payload)["error"]["code"] == "invalid_management_query"
+    assert not service.calls
 
 
 @pytest.mark.parametrize(
@@ -1839,6 +1862,16 @@ def test_known_routes_report_the_allowed_method() -> None:
             server,
             "POST",
             "/api/v1/catalog",
+            body={},
+        )
+        assert status == 405
+        assert headers["Allow"] == "GET"
+        assert json_body(payload)["error"]["code"] == "method_not_allowed"
+
+        status, headers, payload = request(
+            server,
+            "POST",
+            "/api/v1/jobs",
             body={},
         )
         assert status == 405

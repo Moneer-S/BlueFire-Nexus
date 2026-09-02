@@ -92,12 +92,14 @@ from .contracts import (
 )
 from .detection_lab import DetectionLabService
 from .job_runtime import (
+    TERMINAL_JOB_STATES,
     JobCancelled,
     JobContext,
     JobNotManaged,
     JobQueueFull,
     JobResult,
     JobRuntimeError,
+    JobState,
     JobStateError,
     RunJobController,
 )
@@ -2740,6 +2742,52 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "The job's approval review envelope is unavailable.",
                 ) from exc
         return {**job, "approval_request": public_approval_record(approval)}
+
+    def active_jobs(self) -> Mapping[str, Any]:
+        """Return the bounded controller-owned nonterminal job inventory."""
+
+        jobs: list[Mapping[str, Any]] = []
+        for job_id in self.job_controller.active_job_ids:
+            try:
+                job = self.job_controller.snapshot(job_id)
+            except (JobRuntimeError, ProductStoreError) as exc:
+                raise APIError(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "active_job_inventory_unavailable",
+                    "The active job inventory is unavailable.",
+                ) from exc
+            created_at = job.get("created_at")
+            raw_state = job.get("state")
+            try:
+                state = JobState(raw_state) if isinstance(raw_state, str) else None
+                created = (
+                    datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    if isinstance(created_at, str)
+                    else None
+                )
+            except ValueError:
+                state = None
+                created = None
+            if (
+                job.get("schema_version") != "bluefire.job.v1"
+                or job.get("job_id") != job_id
+                or job.get("kind") != "scenario.run"
+                or state is None
+                or created is None
+                or created.tzinfo is None
+            ):
+                raise APIError(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "active_job_inventory_invalid",
+                    "The active job inventory is invalid.",
+                )
+            if state not in TERMINAL_JOB_STATES:
+                jobs.append(job)
+        jobs.sort(key=lambda job: (str(job.get("created_at", "")), str(job["job_id"])))
+        return {
+            "schema_version": "bluefire.active-job-list.v1",
+            "jobs": jobs,
+        }
 
     def retry_job(self, job_id: str) -> Mapping[str, Any]:
         """Submit a fresh job for one safely settled interrupted scenario run.

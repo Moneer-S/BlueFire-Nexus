@@ -665,6 +665,11 @@ export interface RunJob {
   approval_request?: Record<string, unknown> | null;
 }
 
+export interface ActiveJobList {
+  schema_version: "bluefire.active-job-list.v1" | string;
+  jobs: RunJob[];
+}
+
 export interface RunJobSubmission {
   schema_version: "bluefire.run-job-submission.v1" | string;
   job: RunJob;

@@ -1,4 +1,4 @@
-import type { AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
+import type { ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
 
 const API_ROOT = "/api/v1";
@@ -459,6 +459,17 @@ export const api = {
       return structuredClone(job);
     }
     return request(`/jobs/${encodeURIComponent(jobId)}`);
+  },
+  async activeJobs(): Promise<ActiveJobList> {
+    if (DEMO_MODE) return { schema_version: "bluefire.active-job-list.v1", jobs: [] };
+    return request("/jobs");
+  },
+  async preflightStoredJobRequest(job: RunJob): Promise<PreflightReport> {
+    if (DEMO_MODE) throw new ApiError("Demo jobs do not have restorable Execute approval envelopes.", "demo_execute_refused", undefined, 409);
+    if (job.kind !== "scenario.run" || job.state !== "awaiting_approval" || !job.request || Array.isArray(job.request)) {
+      throw new ApiError("The durable job does not have a restorable approval review.", "job_preflight_unavailable", undefined, 409);
+    }
+    return request("/runs/preflight", { method: "POST", body: JSON.stringify(job.request) });
   },
   async runEvents(runId: string, afterSequence = 0, limit = 250): Promise<RunEventPage> {
     if (DEMO_MODE) {

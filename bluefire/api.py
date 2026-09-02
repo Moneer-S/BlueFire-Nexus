@@ -293,6 +293,9 @@ class PlatformService(Protocol):
     def submit_run(self, request: JsonObject) -> JsonResult:
         """Create a durable background run job."""
 
+    def active_jobs(self) -> JsonResult:
+        """Return the bounded controller-owned nonterminal job inventory."""
+
     def job(self, job_id: str) -> JsonResult:
         """Return one durable job snapshot."""
 
@@ -653,6 +656,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/runs":
             self._dispatch(lambda: self.platform_server.service.list())
             return
+        if path == f"{API_PREFIX}/jobs":
+            if self._management_query_free():
+                self._dispatch(lambda: self.platform_server.service.active_jobs())
+            return
         proposal_request = self._proposal_review_request(path)
         if proposal_request is not None:
             proposal_job_id, proposal_record_id, action = proposal_request
@@ -976,6 +983,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 lambda: self.platform_server.service.submit_run(body),
                 success_status=HTTPStatus.ACCEPTED,
             )
+            return
+        if path == f"{API_PREFIX}/jobs":
+            if self._management_query_free():
+                self._method_not_allowed("GET")
             return
         proposal_request = self._proposal_review_request(path)
         if proposal_request is not None:

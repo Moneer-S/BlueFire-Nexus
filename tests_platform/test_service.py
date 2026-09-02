@@ -724,6 +724,98 @@ def test_simulate_submission_runs_as_a_durable_background_job(tmp_path: Path) ->
     service.close()
 
 
+def test_active_jobs_uses_only_bounded_controller_inventory(tmp_path: Path) -> None:
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+    service.job_controller.shutdown()
+
+    snapshots = {
+        "job-11111111111111111111111111111111": {
+            "schema_version": "bluefire.job.v1",
+            "job_id": "job-11111111111111111111111111111111",
+            "kind": "scenario.run",
+            "state": "running",
+            "created_at": "2030-01-02T00:00:00Z",
+        },
+        "job-22222222222222222222222222222222": {
+            "schema_version": "bluefire.job.v1",
+            "job_id": "job-22222222222222222222222222222222",
+            "kind": "scenario.run",
+            "state": "awaiting_approval",
+            "created_at": "2030-01-01T00:00:00Z",
+        },
+        "job-33333333333333333333333333333333": {
+            "schema_version": "bluefire.job.v1",
+            "job_id": "job-33333333333333333333333333333333",
+            "kind": "scenario.run",
+            "state": "completed",
+            "created_at": "2029-01-01T00:00:00Z",
+        },
+    }
+
+    class StubController:
+        active_job_ids = tuple(reversed(tuple(snapshots)))
+
+        def snapshot(self, job_id: str) -> Mapping[str, Any]:
+            return snapshots[job_id]
+
+        def shutdown(self) -> None:
+            return None
+
+    service.job_controller = StubController()  # type: ignore[assignment]
+    result = service.active_jobs()
+
+    assert result["schema_version"] == "bluefire.active-job-list.v1"
+    assert [job["job_id"] for job in result["jobs"]] == [
+        "job-22222222222222222222222222222222",
+        "job-11111111111111111111111111111111",
+    ]
+    assert service.product_store.list_jobs() == []
+    service.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", "bluefire.job.v0"),
+        ("kind", "unmanaged.job"),
+        ("state", "mystery"),
+        ("created_at", None),
+    ],
+)
+def test_active_jobs_rejects_invalid_controller_snapshot(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+    service.job_controller.shutdown()
+    job_id = "job-11111111111111111111111111111111"
+    snapshot: dict[str, Any] = {
+        "schema_version": "bluefire.job.v1",
+        "job_id": job_id,
+        "kind": "scenario.run",
+        "state": "running",
+        "created_at": "2030-01-01T00:00:00Z",
+    }
+    snapshot[field] = value
+
+    class StubController:
+        active_job_ids = (job_id,)
+
+        def snapshot(self, _job_id: str) -> Mapping[str, Any]:
+            return snapshot
+
+        def shutdown(self) -> None:
+            return None
+
+    service.job_controller = StubController()  # type: ignore[assignment]
+
+    with pytest.raises(APIError) as refused:
+        service.active_jobs()
+
+    assert refused.value.status == 500
+    assert refused.value.code == "active_job_inventory_invalid"
+    service.close()
+
+
 def test_interrupted_simulate_retry_clones_request_and_records_lineage(tmp_path: Path) -> None:
     service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
     request = {

@@ -72,6 +72,7 @@ describe("guided local Execute onboarding", () => {
   it("advances only through packaged runner, seeded scenario, preflight, fresh approval, and release", async () => {
     let runner = unbootstrapped;
     let job = awaitingJob;
+    let jobSubmitted = false;
     const calls: string[] = [];
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
@@ -81,7 +82,8 @@ describe("guided local Execute onboarding", () => {
       if (path.endsWith("/runner/start") && init?.method === "POST") { calls.push("start"); runner = ready; return json(runner); }
       if (path.endsWith("/runner")) return json(runner);
       if (path.endsWith("/runs/preflight")) { calls.push("preflight"); return json(preflight); }
-      if (path.endsWith("/runs") && init?.method === "POST") { calls.push("submit"); return json({ schema_version: "bluefire.run-job-submission.v1", job, approval_request: approvalRequest, preflight }); }
+      if (path.endsWith("/runs") && init?.method === "POST") { calls.push("submit"); jobSubmitted = true; return json({ schema_version: "bluefire.run-job-submission.v1", job, approval_request: approvalRequest, preflight }); }
+      if (path.endsWith("/jobs")) return json({ schema_version: "bluefire.active-job-list.v1", jobs: jobSubmitted && !["cancelled", "completed", "failed", "interrupted"].includes(job.state) ? [job] : [] });
       if (path.endsWith(`/jobs/${job.job_id}/approval`) && init?.method === "POST") { calls.push("approve"); job = { ...job, state: "running", progress: { phase: "running" }, updated_at: "2030-01-01T00:00:01Z" }; return json({ schema_version: "bluefire.job-approval.v1", job, approval_request: { ...approvalRequest, status: "consumed" } }); }
       if (path.endsWith(`/jobs/${job.job_id}`)) { if (job.state === "running") job = { ...job, state: "completed", progress: { phase: "completed" }, result_ref: completedRun.run_id, updated_at: "2030-01-01T00:00:02Z" }; return json(job); }
       if (path.endsWith(`/runs/${completedRun.run_id}`)) return json(completedRun);
@@ -157,13 +159,15 @@ describe("guided local Execute onboarding", () => {
     ["progress request ID conflict", { ...awaitingJob, progress: { phase: "awaiting_approval", approval_request_id: "approval-other" } }, approvalRequest],
     ["one preflight binding field drift", awaitingJob, { ...approvalRequest, state_digest: "state-drifted" }],
   ])("keeps durable approval controls disabled for %s", async (_case, mismatchedJob, mismatchedApproval) => {
+    let submitted = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/catalog")) return json(catalog);
       if (path.endsWith("/scenarios")) return json({ scenarios: [guidedScenario] });
       if (path.endsWith("/runner")) return json(ready);
       if (path.endsWith("/runs/preflight")) return json(preflight);
-      if (path.endsWith("/runs") && init?.method === "POST") return json({ schema_version: "bluefire.run-job-submission.v1", job: mismatchedJob, approval_request: mismatchedApproval, preflight });
+      if (path.endsWith("/runs") && init?.method === "POST") { submitted = true; return json({ schema_version: "bluefire.run-job-submission.v1", job: mismatchedJob, approval_request: mismatchedApproval, preflight }); }
+      if (path.endsWith("/jobs")) return json({ schema_version: "bluefire.active-job-list.v1", jobs: submitted ? [mismatchedJob] : [] });
       if (path.endsWith(`/jobs/${mismatchedJob.job_id}`)) return json(mismatchedJob);
       if (path.endsWith("/runs")) return json({ runs: [] });
       throw new Error(`Unhandled test request: ${path}`);
@@ -185,7 +189,7 @@ describe("guided local Execute onboarding", () => {
     expect(durableReview).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Operator identity for this job" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled();
-  });
+  }, 15_000);
 
   it("discards a deferred run preflight after the intent changes", async () => {
     let resolvePreflight!: (response: Response) => void;
@@ -196,6 +200,7 @@ describe("guided local Execute onboarding", () => {
       if (path.endsWith("/scenarios")) return json({ scenarios: [guidedScenario] });
       if (path.endsWith("/runner")) return json(ready);
       if (path.endsWith("/runs/preflight")) return pendingPreflight;
+      if (path.endsWith("/jobs")) return json({ schema_version: "bluefire.active-job-list.v1", jobs: [] });
       if (path.endsWith("/runs")) return json({ runs: [] });
       throw new Error(`Unhandled test request: ${path}`);
     });

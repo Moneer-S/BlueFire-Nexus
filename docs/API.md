@@ -59,6 +59,7 @@ Do not expose this API through a reverse proxy, tunnel, port forward, or contain
 | POST | `/api/v1/scenarios/validate` | Validated graph and issues |
 | POST | `/api/v1/runs/preflight` | Plan, policy/readiness, scope, approval, cleanup, AI metadata |
 | POST | `/api/v1/runs` | Submit a durable run job (`202`) |
+| GET | `/api/v1/jobs` | Bounded controller-owned non-terminal job inventory for UI restoration |
 | GET | `/api/v1/jobs/{job_id}` | Durable job state and progress |
 | POST | `/api/v1/jobs/{job_id}/approval` | Approve one exact Execute intent (`202`) |
 | POST | `/api/v1/jobs/{job_id}/retry` | Create a replacement for one safely settled interrupted job (`202`) |
@@ -262,7 +263,7 @@ Before approving Execute, display the returned canonical preflight, approval bin
 
 to `POST /api/v1/jobs/{job_id}/approval`. The service recomputes preflight, verifies every stored binding field, approves and consumes the one-time record, and only then releases the worker. An expired, changed, reused, or non-waiting intent is refused. Approval responses never expose the nonce.
 
-Poll `GET /api/v1/jobs/{job_id}` for state and progress. The response also includes the current nonce-free `approval_request` when one is bound to the job, so a reloaded client can redisplay the exact pending digests before enabling approval. A fresh AI-proposal Execute approval in job progress takes precedence over the already-claimed original request approval. Progress includes `phase` and bounded orchestration checkpoint fields; after the run finishes it includes `run_id`, `run_status`, and `completed_steps`, while `result_ref` is the run ID. Use that ID with run detail or the event-page endpoint. There is no SSE or WebSocket stream.
+Use query-free `GET /api/v1/jobs` to restore only the bounded non-terminal jobs currently owned by the in-process controller; it is not job history. Poll `GET /api/v1/jobs/{job_id}` for state and progress. The response also includes the current nonce-free `approval_request` when one is bound to the job, so a reloaded client can redisplay the exact pending digests before enabling approval. A fresh AI-proposal Execute approval in job progress takes precedence over the already-claimed original request approval. Progress includes `phase` and bounded orchestration checkpoint fields; after the run finishes it includes `run_id`, `run_status`, and `completed_steps`, while `result_ref` is the run ID. Use that ID with run detail or the event-page endpoint. There is no SSE or WebSocket stream.
 
 Pause, resume, cancel, and retry requests use `{}` bodies. Pause is acknowledged at an orchestration checkpoint, and a running cancellation may first report `cancelling`. Retry is replacement, never continuation: only a safely settled interrupted `scenario.run` job is eligible. A replacement Execute job is preflighted again, receives a new approval request, and cannot inherit or reuse the source capability.
 
