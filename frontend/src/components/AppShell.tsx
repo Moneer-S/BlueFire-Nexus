@@ -57,7 +57,9 @@ export function AppShell() {
   }, [location.pathname]);
   const current = groups.flatMap((group) => group.items).find((item) => item.to === location.pathname)?.label ?? "BlueFire Nexus";
 
-  return <Tooltip.Provider delayDuration={350}>
+  return <>
+    <a className="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to content</a>
+    <Tooltip.Provider delayDuration={350}>
     <div className={`app-shell ${collapsed ? "nav-collapsed" : ""}`}>
       <header className="mobile-header">
         <button aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Menu /></button>
@@ -85,5 +87,6 @@ export function AppShell() {
         <main id="main-content" tabIndex={-1}><Outlet /></main>
       </div>
     </div>
-  </Tooltip.Provider>;
+    </Tooltip.Provider>
+  </>;
 }

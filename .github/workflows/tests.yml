@@ -120,7 +120,7 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             architecture: x86_64
-            runner-path: runner/target/release/bluefire-runner
+            runner-path: runner/target/x86_64-unknown-linux-musl/release/bluefire-runner
             wheel-platform-tag: linux_x86_64
             venv-python: bin/python
           - os: windows-latest
@@ -153,7 +153,16 @@ jobs:
       - name: Verify pinned Rust toolchain
         run: rustup show
 
-      - name: Build release runner
+      - name: Install static Linux runner target
+        if: matrix.platform == 'linux'
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: Build static Linux release runner
+        if: matrix.platform == 'linux'
+        run: python tools/build_native_runner.py --target x86_64-unknown-linux-musl
+
+      - name: Build native release runner
+        if: matrix.platform != 'linux'
         run: python tools/build_native_runner.py
 
       - name: Stage verified native runner resources

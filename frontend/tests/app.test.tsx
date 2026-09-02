@@ -233,6 +233,27 @@ describe("product application", () => {
     expect(screen.getByDisplayValue("Gate 08 local draft")).toBeVisible();
   });
 
+  it("rejects malformed imported scenario members without persisting them", async () => {
+    const user = userEvent.setup();
+    renderApp("/scenarios");
+    expect(await screen.findByRole("heading", { name: "Reusable security experiments" })).toBeVisible();
+    const input = screen.getByLabelText("Import scenario JSON file");
+    const firstStep = structuredClone(demoScenario.steps[0]!);
+
+    await user.upload(input, new File([JSON.stringify({ ...demoScenario, steps: [{ ...firstStep, inputs: null }] })], "null-inputs.json", { type: "application/json" }));
+    expect(await screen.findByText(/steps\[0\]\.inputs must be an object/)).toBeVisible();
+
+    await user.upload(input, new File([JSON.stringify({ ...demoScenario, edges: [null] })], "null-edge.json", { type: "application/json" }));
+    expect(await screen.findByText(/edges\[0\] must be an object/)).toBeVisible();
+
+    await user.upload(input, new File([JSON.stringify({ ...demoScenario, steps: [{ ...firstStep, parameters: { record_count: { toString: null, valueOf: null } } }] })], "object-parameter.json", { type: "application/json" }));
+    expect(await screen.findByText(/parameters\.record_count must be a string, finite number, boolean, or string array/)).toBeVisible();
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}").title).toBe(demoScenario.title));
+    await user.click(screen.getByRole("link", { name: /^Scenario Builder$/ }));
+    expect(await screen.findByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
+    expect(screen.getByDisplayValue(demoScenario.title)).toBeVisible();
+  });
+
   it("replaces the stale demo fallback with a registered production scenario", async () => {
     const canonicalScenario = {
       ...structuredClone(demoScenario),

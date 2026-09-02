@@ -17,6 +17,16 @@ test("primary navigation is keyboard-accessible and the overview has no serious 
   expect(consoleErrors).toEqual([]);
 });
 
+test("skip navigation preserves the active HashRouter workspace", async ({ page }) => {
+  await page.goto("./#/builder");
+  await expect(page.getByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("link", { name: "Skip to content" })).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#main-content")).toBeFocused();
+  expect(new URL(page.url()).hash).toBe("#/builder");
+});
+
 test("all major workspaces are reachable", async ({ page }) => {
   const routes = [
     ["Scenarios", "Reusable security experiments"],

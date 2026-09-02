@@ -41,15 +41,31 @@ export function readBrowserUiPreferences(): UiPreferenceDocument | undefined {
   }
 }
 
+function writeBrowserStorage(key: string, value: string) {
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Browser preferences and drafts are best-effort when storage is unavailable.
+  }
+}
+
 export function writeBrowserUiPreferences(document: UiPreferenceDocument) {
-  window.localStorage.setItem(settingsKey, JSON.stringify(buildUiPreferenceDocument(document.theme, document.effect_mode, document.autonomy)));
+  writeBrowserStorage(settingsKey, JSON.stringify(buildUiPreferenceDocument(document.theme, document.effect_mode, document.autonomy)));
+}
+
+export function writeBrowserTheme(theme: UiTheme) {
+  writeBrowserStorage("bluefire.theme", theme);
 }
 
 export function readBrowserTheme(): UiTheme {
   const preferences = readBrowserUiPreferences();
   if (preferences) return preferences.theme;
-  const theme = window.localStorage.getItem("bluefire.theme");
-  return theme === "dark" || theme === "light" || theme === "system" ? theme : "dark";
+  try {
+    const theme = window.localStorage.getItem("bluefire.theme");
+    return theme === "dark" || theme === "light" || theme === "system" ? theme : "dark";
+  } catch {
+    return "dark";
+  }
 }
 
 const defaultRunConfig: RunConfiguration = {
@@ -128,7 +144,7 @@ export function ProductProvider({ children }: PropsWithChildren) {
     const nextIntent = { ...normalized, approved: false, approvedBy: "" };
     return JSON.stringify(currentIntent) === JSON.stringify(nextIntent) ? normalized : nextIntent;
   });
-  useEffect(() => { window.localStorage.setItem(scenarioKey, JSON.stringify(scenario)); }, [scenario]);
+  useEffect(() => { writeBrowserStorage(scenarioKey, JSON.stringify(scenario)); }, [scenario]);
   useEffect(() => { writeBrowserUiPreferences(buildUiPreferenceDocument(readBrowserTheme(), runConfig.mode, runConfig.autonomy)); }, [runConfig.autonomy, runConfig.mode]);
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };

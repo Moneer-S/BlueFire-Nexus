@@ -9,6 +9,7 @@ import {
   readBrowserTheme,
   readBrowserUiPreferences,
   useProduct,
+  writeBrowserTheme,
   writeBrowserUiPreferences,
   type UiTheme,
 } from "../state/ProductContext";
@@ -46,7 +47,7 @@ export function SettingsPage() {
   }, [runConfig, setRunConfig, settingsQuery.data]);
 
   useEffect(() => {
-    window.localStorage.setItem("bluefire.theme", theme);
+    writeBrowserTheme(theme);
     writeBrowserUiPreferences(buildUiPreferenceDocument(theme, runConfig.mode, runConfig.autonomy));
     const resolved = theme === "system" ? (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark") : theme;
     document.documentElement.dataset.theme = resolved;

@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it } from "vitest";
-import { buildUiPreferenceDocument, parseUiPreferenceDocument, ProductProvider, UI_PREFERENCE_SCHEMA_VERSION, useProduct } from "../src/state/ProductContext";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { buildUiPreferenceDocument, parseUiPreferenceDocument, ProductProvider, readBrowserTheme, UI_PREFERENCE_SCHEMA_VERSION, useProduct } from "../src/state/ProductContext";
 
 const settingsKey = "bluefire.local.run-config.v1";
 
@@ -76,6 +76,19 @@ describe("ephemeral Execute approval", () => {
 });
 
 describe("strict UI preference schema", () => {
+  it("falls back safely when browser storage access is denied", () => {
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new DOMException("denied", "SecurityError"); });
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("denied", "SecurityError"); });
+    try {
+      expect(readBrowserTheme()).toBe("dark");
+      expect(() => render(<ProductProvider><Harness /></ProductProvider>)).not.toThrow();
+      expect(screen.getByLabelText("mode-state")).toHaveTextContent("simulate");
+    } finally {
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
+  });
+
   it("round-trips exactly theme, effect mode, and autonomy", () => {
     expect(buildUiPreferenceDocument("dark", "simulate", "auto")).toEqual({ schema_version: UI_PREFERENCE_SCHEMA_VERSION, theme: "dark", effect_mode: "simulate", autonomy: "auto" });
     expect(parseUiPreferenceDocument({ schema_version: UI_PREFERENCE_SCHEMA_VERSION, theme: "light", effect_mode: "execute", autonomy: "off" })).toEqual({ schema_version: UI_PREFERENCE_SCHEMA_VERSION, theme: "light", effect_mode: "execute", autonomy: "off" });
