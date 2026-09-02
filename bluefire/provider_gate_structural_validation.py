@@ -82,9 +82,12 @@ _SOURCE_AUDIT_PATHS = (
     "runner/src/runner.rs",
     "bluefire/runner_client.py",
     "bluefire/runner_bootstrap.py",
+    "bluefire/runner_darwin_containment.py",
     "bluefire/runner_lifecycle.py",
+    "bluefire/runner_parent_death.py",
     "bluefire/runner_trust.py",
     "bluefire/runner_watchdog.py",
+    "runner/src/cancellation_witness.rs",
     "runner/src/process.rs",
 )
 _PROCESS_CHECKS = {
@@ -110,10 +113,22 @@ _PYTHON_BOUNDARIES = {
         "process_calls": [],
         "unexpected_findings": [],
     },
+    "runner_darwin_containment.py": {
+        "passed": True,
+        "shell_imports": 1,
+        "process_calls": ["subprocess.Popen"],
+        "unexpected_findings": [],
+    },
     "runner_lifecycle.py": {
         "passed": True,
         "shell_imports": 1,
         "process_calls": ["subprocess.Popen"],
+        "unexpected_findings": [],
+    },
+    "runner_parent_death.py": {
+        "passed": True,
+        "shell_imports": 0,
+        "process_calls": ["os.execve", "os.execve", "os.fork"],
         "unexpected_findings": [],
     },
     "runner_trust.py": {
@@ -280,7 +295,7 @@ def _validate_structural(report: Mapping[str, Any]) -> Mapping[str, Any]:
                     "BlueFire Nexus"
                 ),
                 "reference": (
-                    "urn:bluefire:fixture:provider-upgrade:" f"{reference_suffix}:{artifact_digest}"
+                    f"urn:bluefire:fixture:provider-upgrade:{reference_suffix}:{artifact_digest}"
                 ),
                 "revision": artifact_digest,
             }

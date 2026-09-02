@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, replace
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -33,7 +34,11 @@ if __package__ in {None, ""}:
         _PinnedPrivateDirectory,
         runner_watchdog_control_root,
     )
-    from bluefire.runner_private_files import _PrivateFileCleanupError
+    from bluefire.runner_darwin_containment import _validate_macos_launch_parent
+    from bluefire.runner_private_files import (
+        _PrivateFileCleanupError,
+        _read_descriptor_bounded,
+    )
     from bluefire.runner_trust import _is_link_or_reparse
     from bluefire.util import canonical_json_bytes, file_hash
 else:
@@ -47,18 +52,22 @@ else:
         _PinnedPrivateDirectory,
         runner_watchdog_control_root,
     )
-    from .runner_private_files import _PrivateFileCleanupError
+    from .runner_darwin_containment import _validate_macos_launch_parent
+    from .runner_private_files import _PrivateFileCleanupError, _read_descriptor_bounded
     from .runner_trust import _is_link_or_reparse
     from .util import canonical_json_bytes, file_hash
 
-_CONFIG_SCHEMA = "bluefire.runner-watchdog-config.v4"
+_CONFIG_SCHEMA = "bluefire.runner-watchdog-config.v5"
 _READY_SCHEMA = "bluefire.runner-watchdog-ready.v1"
 _STATUS_SCHEMA = "bluefire.runner-watchdog-status.v2"
 _CONFIG_LIMIT_BYTES = 8 * 1024 * 1024
-_STATUS_LIMIT_BYTES = 4096
-_START_TIMEOUT_SECONDS = 10.0
-_POLL_SECONDS = 0.025
+_WATCHDOG_SOURCE_LIMIT_BYTES, _STATUS_LIMIT_BYTES = 2 * 1024 * 1024, 4096
+_START_TIMEOUT_SECONDS, _POLL_SECONDS = 10.0, 0.025
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DARWIN_LAUNCH_NAME = re.compile(r"^\.bluefire-verified-launch-[0-9a-f]{64}$")
+_WATCHDOG_STAT_FIELDS = tuple(
+    "st_dev st_ino st_mode st_nlink st_uid st_gid st_size st_mtime_ns st_ctime_ns".split()
+)
 _CANCELLATION_ACTION_ID = "sandbox.execution.process-tree-cancellation-witness.v1"
 _CANCELLATION_CONTROL_PARENT = ".bluefire-cancellation-witness-v1"
 _CANCELLATION_READY_SCHEMA = "bluefire.process-tree-cancellation-ready.v1"
@@ -71,6 +80,8 @@ _CONFIG_KEYS = frozenset(
         "runner_binary_digest",
         "parent_death_script_digest",
         "watchdog_script_digest",
+        "watchdog_interpreter",
+        "watchdog_interpreter_digest",
         "work_root",
         "timeout_seconds",
         "output_limit_bytes",
@@ -91,6 +102,8 @@ class _WatchdogConfig:
     runner_binary_digest: str
     parent_death_script_digest: str
     watchdog_script_digest: str
+    watchdog_interpreter: Path
+    watchdog_interpreter_digest: str
     work_root: Path
     timeout_seconds: float
     output_limit_bytes: int
@@ -127,6 +140,7 @@ class _WatchdogConfig:
 class _CapturedControlFile:
     payload: bytes
     identity: tuple[int, int]
+    snapshot: tuple[int, int, int]
 
 
 @dataclass(frozen=True)
@@ -177,6 +191,103 @@ def _close_watchdog_pins(
     raise _WatchdogLeaseCleanupError(failures) from failures[0]
 
 
+def _watchdog_source_snapshot(details: os.stat_result) -> tuple[int, ...]:
+    return tuple(int(getattr(details, field)) for field in _WATCHDOG_STAT_FIELDS)
+
+
+def _verified_watchdog_script(expected_digest: str) -> tuple[Path, os.stat_result]:
+    """Normalize one Darwin launch hard link to its verified canonical sibling."""
+
+    launch_path = Path(__file__).resolve(strict=True)
+    if sys.platform != "darwin" or launch_path.name == "runner_watchdog.py":
+        details = launch_path.lstat()
+        if (
+            launch_path.name != "runner_watchdog.py"
+            or not stat.S_ISREG(details.st_mode)
+            or details.st_nlink != 1
+            or _is_link_or_reparse(launch_path)
+            or file_hash(launch_path) != expected_digest
+        ):
+            raise OSError("unsafe packaged watchdog script")
+        return launch_path, details
+
+    if _DARWIN_LAUNCH_NAME.fullmatch(launch_path.name) is None:
+        raise OSError("invalid Darwin watchdog launch path")
+    canonical_name = "runner_watchdog.py"
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    parent_descriptor = -1
+    launch_descriptor = -1
+    canonical_descriptor = -1
+    try:
+        parent_descriptor = os.open(launch_path.parent, directory_flags)
+        effective_user_id = _validate_macos_launch_parent(launch_path.parent, parent_descriptor)
+        launch_descriptor = os.open(
+            launch_path.name,
+            file_flags,
+            dir_fd=parent_descriptor,
+        )
+        canonical_descriptor = os.open(
+            canonical_name,
+            file_flags,
+            dir_fd=parent_descriptor,
+        )
+        launch_details = os.fstat(launch_descriptor)
+        canonical_details = os.fstat(canonical_descriptor)
+        visible_launch = os.stat(
+            launch_path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        visible_canonical = os.stat(
+            canonical_name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        payload = _read_descriptor_bounded(
+            canonical_descriptor,
+            _WATCHDOG_SOURCE_LIMIT_BYTES,
+        )
+        current_launch = os.fstat(launch_descriptor)
+        current_canonical = os.fstat(canonical_descriptor)
+        if (
+            not stat.S_ISREG(launch_details.st_mode)
+            or not stat.S_ISREG(canonical_details.st_mode)
+            or not os.path.samestat(launch_details, canonical_details)
+            or not os.path.samestat(launch_details, visible_launch)
+            or not os.path.samestat(canonical_details, visible_canonical)
+            or launch_details.st_nlink != 2
+            or canonical_details.st_nlink != 2
+            or launch_details.st_uid != effective_user_id
+            or canonical_details.st_uid != effective_user_id
+            or stat.S_IMODE(launch_details.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
+            or _watchdog_source_snapshot(current_launch)
+            != _watchdog_source_snapshot(launch_details)
+            or _watchdog_source_snapshot(current_canonical)
+            != _watchdog_source_snapshot(canonical_details)
+            or "sha256:" + sha256(payload).hexdigest() != expected_digest
+        ):
+            raise OSError("Darwin watchdog launch identity changed")
+        _validate_macos_launch_parent(launch_path.parent, parent_descriptor)
+        return launch_path.with_name(canonical_name), canonical_details
+    finally:
+        for descriptor in (
+            canonical_descriptor,
+            launch_descriptor,
+            parent_descriptor,
+        ):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
 def _load_config(path_argument: str) -> _WatchdogConfig:
     path = Path(path_argument)
     try:
@@ -199,6 +310,7 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
     binary_digest = value.get("runner_binary_digest")
     parent_death_digest = value.get("parent_death_script_digest")
     watchdog_digest = value.get("watchdog_script_digest")
+    watchdog_interpreter_digest = value.get("watchdog_interpreter_digest")
     timeout_seconds = value.get("timeout_seconds")
     output_limit_bytes = value.get("output_limit_bytes")
     manifest = value.get("manifest")
@@ -214,6 +326,8 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
         or _DIGEST.fullmatch(parent_death_digest) is None
         or not isinstance(watchdog_digest, str)
         or _DIGEST.fullmatch(watchdog_digest) is None
+        or not isinstance(watchdog_interpreter_digest, str)
+        or _DIGEST.fullmatch(watchdog_interpreter_digest) is None
         or isinstance(timeout_seconds, bool)
         or not isinstance(timeout_seconds, int | float)
         or not math.isfinite(float(timeout_seconds))
@@ -254,23 +368,29 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
         raise RunnerTransportError("runner watchdog configuration is invalid")
 
     try:
-        watchdog_script = Path(__file__).resolve(strict=True)
-        watchdog_details = watchdog_script.lstat()
+        watchdog_script, watchdog_details = _verified_watchdog_script(watchdog_digest)
         parent_death_script = watchdog_script.with_name("runner_parent_death.py")
         parent_death_details = parent_death_script.lstat()
         binary_raw = value.get("runner_binary")
+        watchdog_interpreter_raw = value.get("watchdog_interpreter")
         work_raw = value.get("work_root")
         destination_raw = value.get("durable_result_path")
-        if not all(isinstance(item, str) for item in (binary_raw, work_raw, destination_raw)):
+        if not all(
+            isinstance(item, str)
+            for item in (
+                binary_raw,
+                watchdog_interpreter_raw,
+                work_raw,
+                destination_raw,
+            )
+        ):
             raise OSError("invalid watchdog paths")
         runner_binary = Path(str(binary_raw))
+        watchdog_interpreter = Path(str(watchdog_interpreter_raw))
         work_root = Path(str(work_raw))
         destination = Path(str(destination_raw))
         if (
             not stat.S_ISREG(watchdog_details.st_mode)
-            or watchdog_details.st_nlink != 1
-            or _is_link_or_reparse(watchdog_script)
-            or file_hash(watchdog_script) != watchdog_digest
             or watchdog_script.name != "runner_watchdog.py"
             or not stat.S_ISREG(parent_death_details.st_mode)
             or parent_death_details.st_nlink != 1
@@ -278,18 +398,23 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
             or file_hash(parent_death_script) != parent_death_digest
             or parent_death_script.name != "runner_parent_death.py"
             or not runner_binary.is_absolute()
+            or not watchdog_interpreter.is_absolute()
             or not work_root.is_absolute()
             or not destination.is_absolute()
         ):
             raise OSError("watchdog paths must be absolute")
         runner_binary = runner_binary.resolve(strict=True)
+        watchdog_interpreter = watchdog_interpreter.resolve(strict=True)
         work_root = work_root.resolve(strict=True)
         destination = destination.resolve(strict=False)
         if (
             not runner_binary.is_file()
+            or not watchdog_interpreter.is_file()
             or not work_root.is_dir()
             or _is_link_or_reparse(runner_binary)
+            or _is_link_or_reparse(watchdog_interpreter)
             or _is_link_or_reparse(work_root)
+            or file_hash(watchdog_interpreter) != watchdog_interpreter_digest
         ):
             raise OSError("unsafe watchdog paths")
         expected_root = runner_watchdog_control_root(destination, task_id)
@@ -335,6 +460,8 @@ def _load_config(path_argument: str) -> _WatchdogConfig:
         runner_binary_digest=binary_digest,
         parent_death_script_digest=parent_death_digest,
         watchdog_script_digest=watchdog_digest,
+        watchdog_interpreter=watchdog_interpreter,
+        watchdog_interpreter_digest=watchdog_interpreter_digest,
         work_root=work_root,
         timeout_seconds=float(timeout_seconds),
         output_limit_bytes=output_limit_bytes,
@@ -420,7 +547,7 @@ def _cooperative_cancellation(
                 expected_lease = f"lease:{config.cancellation_lease_token}\n".encode("ascii")
                 if control.read(".lease", maximum=72, apply_permissions=False) != expected_lease:
                     return
-                ready_payload, ready_identity = control.read_with_identity(
+                ready_payload, ready_identity, ready_snapshot = control.read_with_snapshot_identity(
                     "ready.json", maximum=1024, apply_permissions=False
                 )
                 ready = _decode_cancellation_ready(config, ready_payload)
@@ -431,28 +558,40 @@ def _cooperative_cancellation(
                     return
                 captured.append(
                     _CancellationHandshake(
-                        ready=_CapturedControlFile(ready_payload, ready_identity)
+                        ready=_CapturedControlFile(
+                            ready_payload,
+                            ready_identity,
+                            ready_snapshot,
+                        )
                     )
                 )
                 nonce = secrets.token_hex(32)
                 request = f"cancel:{nonce}\n".encode("ascii")
                 expected_ack = f"ack:{nonce}\n".encode("ascii")
                 control.create("cancel.request", request, maximum=72)
-                request_payload, request_identity = control.read_with_identity(
-                    "cancel.request", maximum=72, apply_permissions=False
+                request_payload, request_identity, request_snapshot = (
+                    control.read_with_snapshot_identity(
+                        "cancel.request", maximum=72, apply_permissions=False
+                    )
                 )
                 if request_payload != request:
                     return
                 captured[0] = replace(
                     captured[0],
-                    request=_CapturedControlFile(request_payload, request_identity),
+                    request=_CapturedControlFile(
+                        request_payload,
+                        request_identity,
+                        request_snapshot,
+                    ),
                 )
                 requested.set()
                 deadline = time.monotonic() + _CANCELLATION_ACK_TIMEOUT_SECONDS
                 while time.monotonic() < deadline:
                     if control.has_name("cancel.ack"):
-                        ack_payload, ack_identity = control.read_with_identity(
-                            "cancel.ack", maximum=69, apply_permissions=False
+                        ack_payload, ack_identity, ack_snapshot = (
+                            control.read_with_snapshot_identity(
+                                "cancel.ack", maximum=69, apply_permissions=False
+                            )
                         )
                         if ack_payload == expected_ack:
                             captured[0] = replace(
@@ -460,6 +599,7 @@ def _cooperative_cancellation(
                                 acknowledgement=_CapturedControlFile(
                                     ack_payload,
                                     ack_identity,
+                                    ack_snapshot,
                                 ),
                             )
                             acknowledged.set()
@@ -598,18 +738,27 @@ def _cleanup_cooperative_cancellation(
                 _decode_cancellation_ready(config, handshake.ready.payload)
                 for name, record in sorted(records.items()):
                     maximum = 72 if name == "cancel.request" else 1024
-                    observed, observed_identity = control.read_with_identity(
-                        name,
-                        maximum=maximum,
-                        expected_identity=record.identity,
+                    observed, observed_identity, observed_snapshot = (
+                        control.read_with_snapshot_identity(
+                            name,
+                            maximum=maximum,
+                            expected_identity=record.identity,
+                            apply_permissions=False,
+                        )
                     )
-                    if observed != record.payload or observed_identity != record.identity:
+                    if (
+                        observed != record.payload
+                        or observed_identity != record.identity
+                        or observed_snapshot != record.snapshot
+                    ):
                         return False
                     control.unlink(
                         name,
                         maximum=maximum,
                         expected=record.payload,
                         expected_identity=record.identity,
+                        expected_snapshot=record.snapshot,
+                        apply_permissions=False,
                     )
                 return set(control.names(maximum=2)) == {".lease"}
     except (OSError, RunnerTransportError, ValueError):
@@ -707,8 +856,14 @@ def _run(
             output_limit_bytes=config.output_limit_bytes,
             durable_result_guard=config.durable_result_parent,
             _kill_child_on_job_close=True,
+            _watchdog_interpreter=config.watchdog_interpreter,
         )
-        if runner.parent_death_script_digest != config.parent_death_script_digest:
+        if (
+            runner.runner_binary_digest != config.runner_binary_digest
+            or runner._watchdog_interpreter_digest != config.watchdog_interpreter_digest
+            or runner.parent_death_script_digest != config.parent_death_script_digest
+            or runner.watchdog_script_digest != config.watchdog_script_digest
+        ):
             return "failed", "runner_identity_changed", None
         runner._execute_task_locally(
             config.manifest,

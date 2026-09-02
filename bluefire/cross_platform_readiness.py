@@ -36,6 +36,26 @@ Require = Callable[[bool, str], None]
 ChildEnvironment = Callable[[Path, Path], dict[str, str]]
 
 
+def _macos_process_adapter_is_in_process(process_text: str) -> bool:
+    start = process_text.find('#[cfg(target_os = "macos")]\nmod macos_process_api')
+    end = process_text.find('#[cfg(target_os = "windows")]\nmod windows_process_api', start)
+    if start < 0 or end <= start:
+        return False
+    adapter = process_text[start:end]
+    return all(
+        token in adapter
+        for token in (
+            "proc_listallpids",
+            "proc_pidinfo",
+            "MAX_PROCESS_COUNT",
+            "limits.max_stdout_bytes",
+            "max_entries",
+        )
+    ) and all(
+        token not in adapter for token in ("Command::new(", ".spawn(", "/bin/ps", "/usr/bin/ps")
+    )
+
+
 def _http_runner_status(service: BlueFireService, require: Require) -> Mapping[str, Any]:
     capability = generate_browser_bootstrap_capability()
     server = create_server(
@@ -373,9 +393,7 @@ def macos_report(repository: Path, service: BlueFireService, require: Require) -
         "package_metadata": "macos"
         in service.registry.get_action("sandbox.execution.native-canary.v1").platforms,
         "rust_target_cfg": "Macos" in contract_text and 'target_os = "macos"' in contract_text,
-        "fixed_process_adapter": (
-            'target_os = "macos"' in process_text and '"/bin/ps", "/usr/bin/ps"' in process_text
-        ),
+        "fixed_process_adapter": _macos_process_adapter_is_in_process(process_text),
         "x86_64_wheel_tag": wheel_platform_tag("macos", "x86_64"),
         "aarch64_wheel_tag": wheel_platform_tag("macos", "aarch64"),
     }

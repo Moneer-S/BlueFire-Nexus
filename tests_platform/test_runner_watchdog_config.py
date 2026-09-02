@@ -34,12 +34,14 @@ def _write_config(
         parent_identity = pinned.directory_identity()
         parent_mount_identity = pinned.directory_mount_identity()
     value: dict[str, Any] = {
-        "schema_version": "bluefire.runner-watchdog-config.v4",
+        "schema_version": "bluefire.runner-watchdog-config.v5",
         "task_id": task_id,
         "runner_binary": str(runner_binary),
         "runner_binary_digest": file_hash(runner_binary),
         "parent_death_script_digest": file_hash(parent_death_script),
         "watchdog_script_digest": file_hash(watchdog_script),
+        "watchdog_interpreter": str(runner_binary),
+        "watchdog_interpreter_digest": file_hash(runner_binary),
         "work_root": str(work_root),
         "timeout_seconds": 5.0,
         "output_limit_bytes": 4096,
@@ -57,7 +59,7 @@ def _write_config(
     return path
 
 
-def test_watchdog_config_v4_retains_exact_parent_lease(tmp_path: Path) -> None:
+def test_watchdog_config_v5_retains_exact_parent_lease(tmp_path: Path) -> None:
     config = watchdog_module._load_config(str(_write_config(tmp_path)))
     try:
         assert config.durable_result_parent.directory_identity() == (
@@ -126,12 +128,25 @@ def test_watchdog_config_rejects_tampered_parent_lease_identity(
     [
         lambda value: value.pop("durable_result_parent_identity"),
         lambda value: value.pop("durable_result_parent_mount_identity"),
+        lambda value: value.pop("watchdog_interpreter"),
+        lambda value: value.pop("watchdog_interpreter_digest"),
+        lambda value: value.__setitem__(
+            "watchdog_interpreter_digest",
+            "sha256:" + "0" * 64,
+        ),
         lambda value: value.__setitem__(
             "schema_version",
-            "bluefire.runner-watchdog-config.v3",
+            "bluefire.runner-watchdog-config.v4",
         ),
     ],
-    ids=["missing-identity", "missing-mount-identity", "legacy-schema"],
+    ids=[
+        "missing-identity",
+        "missing-mount-identity",
+        "missing-watchdog-interpreter",
+        "missing-watchdog-interpreter-digest",
+        "changed-watchdog-interpreter",
+        "legacy-schema",
+    ],
 )
 def test_watchdog_config_refuses_unbound_or_legacy_lease_claims(
     tmp_path: Path,
@@ -141,6 +156,52 @@ def test_watchdog_config_refuses_unbound_or_legacy_lease_claims(
 
     with pytest.raises(RunnerTransportError, match="configuration is invalid"):
         watchdog_module._load_config(str(path))
+
+
+@pytest.mark.parametrize(
+    "changed_field",
+    [
+        "runner_binary_digest",
+        "_watchdog_interpreter_digest",
+        "parent_death_script_digest",
+        "watchdog_script_digest",
+    ],
+)
+def test_watchdog_run_rejects_identity_change_across_constructor_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changed_field: str,
+) -> None:
+    config = watchdog_module._load_config(str(_write_config(tmp_path)))
+    executed = False
+
+    class ChangedRunner:
+        runner_binary_digest = config.runner_binary_digest
+        _watchdog_interpreter_digest = config.watchdog_interpreter_digest
+        parent_death_script_digest = config.parent_death_script_digest
+        watchdog_script_digest = config.watchdog_script_digest
+
+        def _execute_task_locally(self, *_args: Any, **_kwargs: Any) -> None:
+            nonlocal executed
+            executed = True
+
+    setattr(ChangedRunner, changed_field, "sha256:" + "0" * 64)
+    monkeypatch.setattr(
+        watchdog_module,
+        "SubprocessRustRunner",
+        lambda *_args, **_kwargs: ChangedRunner(),
+    )
+    monkeypatch.setattr(watchdog_module, "_wait_for_start", lambda _config: "started")
+    monkeypatch.setattr(watchdog_module, "_signal_exists", lambda *_args, **_kwargs: False)
+    try:
+        assert watchdog_module._run(config, receiver_environment={}) == (
+            "failed",
+            "runner_identity_changed",
+            None,
+        )
+        assert executed is False
+    finally:
+        watchdog_module._close_config(config)
 
 
 def test_watchdog_config_aggregates_all_failed_lease_cleanup(

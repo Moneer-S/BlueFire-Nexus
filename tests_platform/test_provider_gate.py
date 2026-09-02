@@ -16,6 +16,12 @@ import tools.run_provider_gate_journey as provider_gate_helper
 from bluefire.product_acceptance import load_release_contract
 from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS
 from tools import provider_gate_source_audit
+from tools.provider_gate_fixture_evidence import (
+    _fixture_set,
+)
+from tools.provider_gate_fixture_evidence import (
+    _structural_report as _live_structural_report,
+)
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 RAW_PROOF_FIELDS = {
@@ -90,9 +96,12 @@ def _structural_report() -> dict[str, Any]:
         "runner/src/runner.rs",
         "bluefire/runner_client.py",
         "bluefire/runner_bootstrap.py",
+        "bluefire/runner_darwin_containment.py",
         "bluefire/runner_lifecycle.py",
+        "bluefire/runner_parent_death.py",
         "bluefire/runner_trust.py",
         "bluefire/runner_watchdog.py",
+        "runner/src/cancellation_witness.rs",
         "runner/src/process.rs",
     )
     return {
@@ -253,11 +262,23 @@ def _structural_report() -> dict[str, Any]:
                             "shell_imports": 0,
                             "process_calls": [],
                         },
+                        "runner_darwin_containment.py": {
+                            "passed": True,
+                            "unexpected_findings": [],
+                            "shell_imports": 1,
+                            "process_calls": ["subprocess.Popen"],
+                        },
                         "runner_lifecycle.py": {
                             "passed": True,
                             "unexpected_findings": [],
                             "shell_imports": 1,
                             "process_calls": ["subprocess.Popen"],
+                        },
+                        "runner_parent_death.py": {
+                            "passed": True,
+                            "unexpected_findings": [],
+                            "shell_imports": 0,
+                            "process_calls": ["os.execve", "os.execve", "os.fork"],
                         },
                         "runner_trust.py": {
                             "passed": True,
@@ -270,6 +291,15 @@ def _structural_report() -> dict[str, Any]:
             },
         },
     }
+
+
+def test_live_source_audit_round_trips_locked_structural_validator() -> None:
+    index, trusts, packages = _fixture_set(REPOSITORY)
+    report = _live_structural_report(REPOSITORY, index, trusts, packages)
+
+    checks = provider_gate._validate_structural(report)
+
+    assert checks["no_model_shell"]["process_boundary"]["passed"] is True
 
 
 def _execution(version: str, run_id: str) -> dict[str, Any]:
@@ -734,9 +764,9 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
         if drift == "core-independence":
             structural["checks"]["core_independence"]["provider_program_only"] = False
         elif drift == "typed-parameter-schema":
-            structural["checks"]["safe_contract"]["versions"][0]["typed_parameters"][0][
-                "name"
-            ] = "command"
+            structural["checks"]["safe_contract"]["versions"][0]["typed_parameters"][0]["name"] = (
+                "command"
+            )
         elif drift == "safe-version-fields":
             structural["checks"]["safe_contract"]["versions"][0]["unexpected"] = True
         elif drift == "source-audit-inventory":
@@ -843,6 +873,21 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     mutated_lifecycle.write_text(lifecycle_without_shell_false, encoding="utf-8")
     assert not provider_gate_helper._runner_lifecycle_popen_contract(mutated_lifecycle)
 
+    darwin_launcher = REPOSITORY / "bluefire" / "runner_darwin_containment.py"
+    assert provider_gate_source_audit._runner_darwin_popen_contract(darwin_launcher)
+    mutated_darwin = mutation_root / "runner_darwin_containment.py"
+    darwin_source = darwin_launcher.read_text(encoding="utf-8")
+    mutated_darwin.write_text(
+        darwin_source.replace("shell=False,", "shell=True,", 1),
+        encoding="utf-8",
+    )
+    assert not provider_gate_source_audit._runner_darwin_popen_contract(mutated_darwin)
+
+    parent_death = REPOSITORY / "bluefire" / "runner_parent_death.py"
+    assert provider_gate_source_audit._runner_parent_death_process_contract(
+        parent_death, REPOSITORY
+    )
+
     process_source = (REPOSITORY / "runner" / "src" / "process.rs").read_bytes()
     assert len(process_source) == provider_gate_source_audit._REVIEWED_PROCESS_SOURCE_SIZE
     assert (
@@ -850,6 +895,30 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
         == provider_gate_source_audit._REVIEWED_PROCESS_SOURCE_SHA256
     )
     assert provider_gate_source_audit._native_process_inventory_is_fixed(process_source)
+    cancellation_source = (REPOSITORY / "runner" / "src" / "cancellation_witness.rs").read_bytes()
+    assert len(cancellation_source) == provider_gate_source_audit._REVIEWED_CANCELLATION_SOURCE_SIZE
+    assert (
+        provider_gate_source_audit._sha256_bytes(cancellation_source)
+        == provider_gate_source_audit._REVIEWED_CANCELLATION_SOURCE_SHA256
+    )
+    assert provider_gate_source_audit._native_command_source_inventory_is_fixed(REPOSITORY)
+
+    command_inventory = mutation_root / "command-inventory"
+    nested_source = command_inventory / "runner" / "src" / "nested"
+    nested_source.mkdir(parents=True)
+    (command_inventory / "runner" / "src" / "process.rs").write_bytes(process_source)
+    (command_inventory / "runner" / "src" / "cancellation_witness.rs").write_bytes(
+        cancellation_source
+    )
+    assert provider_gate_source_audit._native_command_source_inventory_is_fixed(command_inventory)
+    (nested_source / "hidden.rs").write_text(
+        "use std :: process :: Command as Hidden;\n"
+        'fn hidden() { let _ = Hidden :: new("/bin/sh"); }\n',
+        encoding="utf-8",
+    )
+    assert not provider_gate_source_audit._native_command_source_inventory_is_fixed(
+        command_inventory
+    )
     process_text = process_source.decode("utf-8")
     process_launcher = "    let mut command = Command::new(&spec.executable);"
     widened_process_source = process_text.replace(

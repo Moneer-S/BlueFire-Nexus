@@ -66,6 +66,21 @@ _LINUX_AT_EMPTY_PATH = 0x1000
 _LINUX_STATX_MNT_ID = 0x1000
 
 
+def _is_link_or_reparse(path: Path) -> bool:
+    """Fail closed for links and Windows reparse points."""
+
+    try:
+        if path.is_symlink():
+            return True
+        if os.name == "nt" and path.exists():
+            attributes = getattr(path.lstat(), "st_file_attributes", 0)
+            reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            return bool(attributes & reparse)
+        return False
+    except OSError:
+        return True
+
+
 def _descriptor_mount_identity(descriptor: int) -> int | None:
     """Return Linux's mount ID for an already-open descriptor."""
 
@@ -605,6 +620,24 @@ class _PinnedPrivateDirectory:
         expected_identity: tuple[int, int] | None = None,
         apply_permissions: bool = True,
     ) -> tuple[bytes, tuple[int, int]]:
+        payload, identity, _snapshot = self.read_with_snapshot_identity(
+            name,
+            maximum=maximum,
+            expected_identity=expected_identity,
+            apply_permissions=apply_permissions,
+        )
+        return payload, identity
+
+    def read_with_snapshot_identity(
+        self,
+        name: str,
+        *,
+        maximum: int,
+        expected_identity: tuple[int, int] | None = None,
+        apply_permissions: bool = True,
+    ) -> tuple[bytes, tuple[int, int], tuple[int, int, int]]:
+        """Read one file with an ABA-resistant metadata snapshot."""
+
         descriptor = self._open_existing(name, write_dac=apply_permissions)
         try:
             before = self._validate_file(
@@ -624,7 +657,11 @@ class _PinnedPrivateDirectory:
             )
             if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                 raise OSError("private file changed while read")
-            return payload, (before.st_dev, before.st_ino)
+            return (
+                payload,
+                (after.st_dev, after.st_ino),
+                (after.st_ctime_ns, after.st_mtime_ns, after.st_size),
+            )
         finally:
             os.close(descriptor)
 
@@ -635,7 +672,7 @@ class _PinnedPrivateDirectory:
         maximum: int,
         apply_permissions: bool = True,
     ) -> tuple[int, int]:
-        descriptor = self._open_existing(name)
+        descriptor = self._open_existing(name, write_dac=apply_permissions)
         try:
             details = self._validate_file(
                 name,
@@ -647,7 +684,14 @@ class _PinnedPrivateDirectory:
         finally:
             os.close(descriptor)
 
-    def create(self, name: str, payload: bytes, *, maximum: int) -> None:
+    def create(
+        self,
+        name: str,
+        payload: bytes,
+        *,
+        maximum: int,
+        executable: bool = False,
+    ) -> None:
         if not 0 <= len(payload) <= maximum:
             raise OSError("private payload exceeds its size limit")
         name = self._name(name)
@@ -666,6 +710,8 @@ class _PinnedPrivateDirectory:
                 if count <= 0:
                     raise OSError("short private file write")
                 written += count
+            if executable and os.name != "nt":
+                getattr(os, "fchmod")(descriptor, 0o700)  # noqa: B009 - absent on Windows
             os.fsync(descriptor)
             details = self._validate_file(
                 temporary,
@@ -673,6 +719,8 @@ class _PinnedPrivateDirectory:
                 maximum=maximum,
                 apply_permissions=False,
             )
+            if executable and os.name != "nt" and stat.S_IMODE(details.st_mode) != 0o700:
+                raise OSError("private executable mode is invalid")
             temporary_identity = details.st_dev, details.st_ino
             written_ok = True
         finally:
@@ -734,25 +782,33 @@ class _PinnedPrivateDirectory:
         expected: bytes | None = None,
         expected_identity: tuple[int, int] | None = None,
         expected_mount_identity: int | None = None,
+        expected_snapshot: tuple[int, int, int] | None = None,
+        apply_permissions: bool = True,
     ) -> None:
-        descriptor = self._open_existing(name, delete=True)
+        descriptor = self._open_existing(name, delete=True, write_dac=apply_permissions)
         try:
             opened = self._validate_file(
                 name,
                 descriptor,
                 maximum=maximum,
+                apply_permissions=apply_permissions,
                 expected_identity=expected_identity,
                 expected_mount_identity=expected_mount_identity,
             )
             if expected is not None and _read_descriptor_bounded(descriptor, maximum) != expected:
                 raise OSError("private file content changed")
-            self._validate_file(
+            final = self._validate_file(
                 name,
                 descriptor,
                 maximum=maximum,
                 apply_permissions=False,
                 expected_identity=(opened.st_dev, opened.st_ino),
             )
+            if (
+                expected_snapshot is not None
+                and (final.st_ctime_ns, final.st_mtime_ns, final.st_size) != expected_snapshot
+            ):
+                raise OSError("private file metadata changed")
             if os.name == "nt":
                 _windows_mark_delete_descriptor(descriptor)
             else:

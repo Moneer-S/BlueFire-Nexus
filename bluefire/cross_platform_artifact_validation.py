@@ -20,6 +20,7 @@ from .cross_platform_committed_linux_artifact import (
     CommittedLinuxArtifactError,
     load_committed_linux_artifact,
 )
+from .cross_platform_readiness import _macos_process_adapter_is_in_process
 from .cross_platform_recovery_report_validation import validate_recovery_witness_binding
 from .registry import load_builtin_registry
 from .runner_bootstrap import (
@@ -968,8 +969,7 @@ def validate_macos_structural_contract(repository: Path, value: Any) -> None:
         and wheel_platform_tag("macos", "aarch64") == contract["aarch64_wheel_tag"]
         and "Macos" in contract_text
         and 'target_os = "macos"' in contract_text
-        and 'target_os = "macos"' in process_text
-        and '"/bin/ps", "/usr/bin/ps"' in process_text
+        and _macos_process_adapter_is_in_process(process_text)
         and '("macos", "x86_64")' in setup_text
         and '("macos", "aarch64")' in setup_text
         and any("macos" in profile.platforms for profile in config.runner_profiles)

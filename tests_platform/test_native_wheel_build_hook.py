@@ -168,6 +168,11 @@ def test_wheel_command_defers_target_verification_until_artifact_build(
     monkeypatch.setitem(command_type.finalize_options.__globals__, "_verified_platform_tag", verify)
     monkeypatch.setattr(namespace["bdist_wheel"], "finalize_options", lambda _self: None)
     monkeypatch.setattr(namespace["bdist_wheel"], "run", lambda _self: None)
+    monkeypatch.setattr(
+        namespace["bdist_wheel"],
+        "get_tag",
+        lambda _self: ("py3", "none", "metadata-only"),
+    )
     command = command_type(Distribution({"name": "bluefire-nexus", "version": PRODUCT_VERSION}))
     command.plat_name = "win_amd64"
 
@@ -176,8 +181,52 @@ def test_wheel_command_defers_target_verification_until_artifact_build(
     assert observed == []
     assert command.plat_name == "win_amd64"
     assert command.root_is_pure is False
+    assert command.get_tag() == ("py3", "none", "metadata-only")
+    assert observed == []
 
     command.run()
 
     assert observed == [(PRODUCT_VERSION, "win_amd64")]
     assert command.plat_name == "win_amd64"
+
+
+def test_verified_macos_x86_64_target_overrides_a_universal2_host_tag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = _load_build_hook()
+    native, expected_tag = _stage_manifest(tmp_path, platform_name="macos")
+    _bind_native_root(namespace, native)
+    monkeypatch.setattr(namespace["sys"], "platform", "darwin")
+    monkeypatch.setattr(namespace["platform"], "machine", lambda: "x86_64")
+    emitted: list[tuple[str, str, str]] = []
+
+    def finalize(command: Any) -> None:
+        command.plat_name_supplied = bool(command.plat_name)
+        command.plat_name = command.plat_name or "macosx_10_9_universal2"
+
+    def get_tag(command: Any) -> tuple[str, str, str]:
+        platform_tag = command.plat_name if command.plat_name_supplied else "macosx_10_9_universal2"
+        return "cp311", "cp311", platform_tag
+
+    monkeypatch.setattr(namespace["bdist_wheel"], "finalize_options", finalize)
+    monkeypatch.setattr(namespace["bdist_wheel"], "get_tag", get_tag)
+    monkeypatch.setattr(
+        namespace["bdist_wheel"],
+        "run",
+        lambda command: emitted.append(command.get_tag()),
+    )
+    command_type = namespace["PlatformNativeWheel"]
+    command = command_type(Distribution({"name": "bluefire-nexus", "version": PRODUCT_VERSION}))
+    command.plat_name = None
+
+    command.finalize_options()
+
+    assert command.plat_name_supplied is False
+    assert command.get_tag() == ("py3", "none", "macosx_10_9_universal2")
+
+    command.run()
+
+    assert command.plat_name == expected_tag
+    assert command.plat_name_supplied is True
+    assert emitted == [("py3", "none", expected_tag)]

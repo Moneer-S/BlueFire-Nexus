@@ -1,16 +1,16 @@
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use std::collections::BTreeMap;
 #[cfg(any(test, target_os = "linux", target_os = "macos"))]
 use std::io::{self, Read};
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use std::path::Path;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use std::process::{Command, Stdio};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 use std::thread;
 use std::time::{Duration, Instant};
 #[cfg(target_os = "linux")]
@@ -18,7 +18,7 @@ use std::{ffi::CString, os::unix::ffi::OsStrExt, os::unix::fs::MetadataExt};
 
 use crate::contract::{BoundedOutput, ExecutionLimits};
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FixedProcessSpec {
     executable: PathBuf,
@@ -36,7 +36,7 @@ pub(crate) struct ProcessOutcome {
     pub output_format: &'static str,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 fn first_reviewed_program(candidates: &[&str]) -> Result<PathBuf, String> {
     for candidate in candidates {
         let path = Path::new(candidate);
@@ -164,17 +164,7 @@ fn arm_linux_parent_death(command: &mut Command) {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn process_discovery_spec() -> Result<FixedProcessSpec, String> {
-    Ok(FixedProcessSpec {
-        executable: first_reviewed_program(&["/bin/ps", "/usr/bin/ps"])?,
-        args: vec!["-axo", "pid=,ppid=,comm="],
-        environment: BTreeMap::from([("LC_ALL", "C".to_string()), ("LANG", "C".to_string())]),
-        output_format: "pid ppid command",
-    })
-}
-
-#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+#[cfg(any(test, target_os = "linux"))]
 fn read_bounded<R: Read>(mut reader: R, limit: usize) -> io::Result<BoundedOutput> {
     let mut retained = Vec::with_capacity(limit.min(16 * 1024));
     let mut total = 0_u64;
@@ -195,7 +185,7 @@ fn read_bounded<R: Read>(mut reader: R, limit: usize) -> io::Result<BoundedOutpu
     })
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 pub(crate) fn run_process_discovery(
     limits: &ExecutionLimits,
     _max_entries: usize,
@@ -266,6 +256,185 @@ pub(crate) fn run_process_discovery(
         stderr,
         output_format: spec.output_format,
     })
+}
+
+#[cfg(target_os = "macos")]
+mod macos_process_api {
+    use super::*;
+    use std::ffi::c_void;
+    use std::mem;
+    use std::os::raw::{c_char, c_int};
+
+    const PROC_PIDT_SHORTBSDINFO: c_int = 13;
+    const MAXCOMLEN: usize = 16;
+    const MAX_PROCESS_COUNT: usize = 131_072;
+
+    #[allow(dead_code)]
+    #[repr(C)]
+    struct ProcessBsdShortInfo {
+        pid: u32,
+        parent_pid: u32,
+        process_group: u32,
+        status: u32,
+        command: [c_char; MAXCOMLEN],
+        flags: u32,
+        uid: u32,
+        gid: u32,
+        real_uid: u32,
+        real_gid: u32,
+        saved_uid: u32,
+        saved_gid: u32,
+        reserved: u32,
+    }
+
+    #[link(name = "proc")]
+    unsafe extern "C" {
+        fn proc_listallpids(buffer: *mut c_void, buffer_size: c_int) -> c_int;
+        fn proc_pidinfo(
+            pid: c_int,
+            flavor: c_int,
+            arg: u64,
+            buffer: *mut c_void,
+            buffer_size: c_int,
+        ) -> c_int;
+    }
+
+    fn list_process_ids() -> Result<Vec<c_int>, String> {
+        // SAFETY: A null buffer with zero size is the documented sizing query.
+        let required = unsafe { proc_listallpids(std::ptr::null_mut(), 0) };
+        if required <= 0 || required as usize > MAX_PROCESS_COUNT {
+            return Err("cannot size the macOS process inventory".to_string());
+        }
+        let mut capacity = (required as usize)
+            .saturating_mul(2)
+            .clamp(1024, MAX_PROCESS_COUNT);
+        for _attempt in 0..3 {
+            let mut values = vec![0_i32; capacity];
+            let byte_count = capacity
+                .checked_mul(mem::size_of::<c_int>())
+                .and_then(|value| c_int::try_from(value).ok())
+                .ok_or_else(|| "macOS process inventory is too large".to_string())?;
+            // SAFETY: `values` owns `byte_count` writable bytes for the call.
+            let count =
+                unsafe { proc_listallpids(values.as_mut_ptr().cast::<c_void>(), byte_count) };
+            if count <= 0 || count as usize > capacity {
+                return Err("cannot read the macOS process inventory".to_string());
+            }
+            if (count as usize) < capacity {
+                values.truncate(count as usize);
+                values.retain(|process_id| *process_id > 0);
+                values.sort_unstable();
+                values.dedup();
+                return Ok(values);
+            }
+            if capacity >= MAX_PROCESS_COUNT {
+                break;
+            }
+            capacity = capacity.saturating_mul(2).min(MAX_PROCESS_COUNT);
+        }
+        Err("macOS process inventory changed beyond its bound".to_string())
+    }
+
+    fn process_info(process_id: c_int) -> Option<ProcessBsdShortInfo> {
+        // SAFETY: This C process-info record is a plain integer/byte structure.
+        let mut information: ProcessBsdShortInfo = unsafe { mem::zeroed() };
+        let size = c_int::try_from(mem::size_of::<ProcessBsdShortInfo>()).ok()?;
+        // SAFETY: `information` is writable for exactly `size` bytes.
+        let returned = unsafe {
+            proc_pidinfo(
+                process_id,
+                PROC_PIDT_SHORTBSDINFO,
+                0,
+                (&mut information as *mut ProcessBsdShortInfo).cast::<c_void>(),
+                size,
+            )
+        };
+        (returned == size && information.pid == process_id as u32).then_some(information)
+    }
+
+    fn command_name(information: &ProcessBsdShortInfo) -> String {
+        let length = information
+            .command
+            .iter()
+            .position(|character| *character == 0)
+            .unwrap_or(MAXCOMLEN);
+        let bytes = information.command[..length]
+            .iter()
+            .map(|character| *character as u8)
+            .collect::<Vec<_>>();
+        let value = String::from_utf8_lossy(&bytes)
+            .replace(['\r', '\n', '\t'], "_")
+            .trim()
+            .to_string();
+        if value.is_empty() {
+            "?".to_string()
+        } else {
+            value
+        }
+    }
+
+    fn empty_output() -> BoundedOutput {
+        BoundedOutput {
+            text: String::new(),
+            total_bytes: 0,
+            truncated: false,
+        }
+    }
+
+    pub(super) fn discover(
+        limits: &ExecutionLimits,
+        max_entries: usize,
+    ) -> Result<ProcessOutcome, String> {
+        let process_ids = list_process_ids()?;
+        let started = Instant::now();
+        let deadline = Duration::from_millis(limits.timeout_ms);
+        let mut retained = Vec::with_capacity(limits.max_stdout_bytes.min(16 * 1024));
+        let mut total = 0_u64;
+        let mut record_count = 0_usize;
+        let mut timed_out = false;
+        for process_id in process_ids {
+            if started.elapsed() >= deadline {
+                timed_out = true;
+                break;
+            }
+            let Some(information) = process_info(process_id) else {
+                continue;
+            };
+            let line = format!(
+                "{} {} {}\n",
+                information.pid,
+                information.parent_pid,
+                command_name(&information)
+            );
+            total = total.saturating_add(line.len() as u64);
+            let remaining = limits.max_stdout_bytes.saturating_sub(retained.len());
+            retained.extend_from_slice(&line.as_bytes()[..line.len().min(remaining)]);
+            record_count += 1;
+            if record_count > max_entries {
+                break;
+            }
+        }
+        let retained_length = retained.len() as u64;
+        Ok(ProcessOutcome {
+            exit_code: Some(0),
+            timed_out,
+            stdout: BoundedOutput {
+                text: String::from_utf8_lossy(&retained).into_owned(),
+                total_bytes: total,
+                truncated: total > retained_length || record_count > max_entries,
+            },
+            stderr: empty_output(),
+            output_format: "pid ppid command",
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn run_process_discovery(
+    limits: &ExecutionLimits,
+    max_entries: usize,
+) -> Result<ProcessOutcome, String> {
+    macos_process_api::discover(limits, max_entries)
 }
 
 #[cfg(target_os = "windows")]
@@ -421,7 +590,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     const PARENT_DEATH_TEST_PATH: &str = "BLUEFIRE_PARENT_DEATH_TEST_PID_PATH";
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     #[test]
     fn process_discovery_spec_is_fixed_and_absolute() {
         let spec = process_discovery_spec().unwrap();
@@ -432,6 +601,29 @@ mod tests {
             .iter()
             .any(|arg| matches!(*arg, "sh" | "cmd" | "-c" | "/C")));
         assert!(!spec.environment.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_process_discovery_is_in_process_and_reports_self() {
+        let limits = ExecutionLimits {
+            timeout_ms: 5_000,
+            max_stdout_bytes: 8 * 1024 * 1024,
+            max_stderr_bytes: 8 * 1024,
+            max_artifact_bytes: 8 * 1024,
+            max_files: 128,
+        };
+        let output = run_process_discovery(&limits, 131_072).unwrap();
+        let own_prefix = format!("{} ", std::process::id());
+        assert_eq!(output.exit_code, Some(0));
+        assert!(!output.timed_out);
+        assert!(output
+            .stdout
+            .text
+            .lines()
+            .any(|line| line.starts_with(&own_prefix)));
+        assert!(output.stderr.text.is_empty());
+        assert_eq!(output.output_format, "pid ppid command");
     }
 
     #[cfg(target_os = "linux")]
