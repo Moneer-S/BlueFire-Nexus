@@ -34,13 +34,13 @@ _REVIEWED_RUNNER_CLIENT_LAUNCH_SECTIONS = {
     "_DarwinLaunchResources": "sha256:4570ecc6ce3fc43024dcdfe12085e05ce9952cda7099fff9d313cdb81dcb0881",
     "_clone_darwin_launch_link": "sha256:8d329eb489bb3ce28e5b6d73ae24c2a4a30013263e687be360f23f356708f300",
     "_duplicate_darwin_descriptor": "sha256:d4d53bd37f3721dec052f5a74e7e1eec78806aac24737bd5f3efef9e62edac14",
-    "_execute_darwin_launch_request": "sha256:eea27e653fb8b39b56e4c2bf1311e287d2d4afac4326badb82403978479d0752",
+    "_execute_darwin_launch_request": "sha256:a85ea1b730c2a6d478b3fc82b61ce5e867a8baf0c52f4ea23d42410775f8740d",
     "_prepare_darwin_launch_resources": "sha256:5277cfbecd9579a79aa4bb481a243fd759175135872f1ae064a26db8831fcef0",
-    "_retire_darwin_launch_resources": "sha256:06120e677062a1b3a31df2a3bdbd63e3a27ff08a5e13a4d544679d36aba84414",
-    "_run_darwin_launch_worker": "sha256:378da675e749a543d9e34cf92fbd74131db04161ed5140a045e1436d4454be87",
+    "_retire_darwin_launch_resources": "sha256:5cf913f0d0a01d6d257c0827dd7b61ca30758f33f4b3e34b1693f9e80a253079",
+    "_run_darwin_launch_worker": "sha256:a969f6e5c14c2bc0b150be268321faf33dd00da035548706cb9eded992ac01aa",
 }
 _REVIEWED_RUNNER_CLIENT_SOURCE_SHA256 = (
-    "sha256:e80be39379fe8a35fd167887ed538c3a63a86a66a5c68533219e8cfd071d628e"
+    "sha256:8a0ab632cceb8438f3bcda5943a44de5b8c1557d26dafaab39628fa7e32c3b5d"
 )
 _REVIEWED_DARWIN_CONTAINMENT_SECTIONS = {
     "_validate_macos_launch_parent": "sha256:244beadfd89a4f2e6731109cd100042ba2a1ef8ea40e81bbd98f55211e7ebfb6",
@@ -52,7 +52,7 @@ _REVIEWED_PARENT_DEATH_SOURCE_SHA256 = (
     "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df"
 )
 _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
-    "bluefire/runner_client.py": "sha256:e80be39379fe8a35fd167887ed538c3a63a86a66a5c68533219e8cfd071d628e",
+    "bluefire/runner_client.py": "sha256:8a0ab632cceb8438f3bcda5943a44de5b8c1557d26dafaab39628fa7e32c3b5d",
     "bluefire/runner_bootstrap.py": "sha256:2d2ffffec138fdf76587649170b91cc04d2e5fedb6d1768d85b725c7ba809cdf",
     "bluefire/runner_darwin_containment.py": "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c",
     "bluefire/runner_lifecycle.py": "sha256:fd5222e1e4c6814b1bdd0a69111b4ad4cc23b2f84bb76f85c34d0df60aa6275a",
@@ -940,7 +940,13 @@ def _runner_client_popen_contract(path: Path) -> bool:
             and executor_owner.name == "_run_darwin_launch_worker"
             and len(executor_call.args) == 1
             and _expression_matches(executor_call.args[0], "request")
-            and not executor_call.keywords
+            and _keyword_expressions_match(
+                executor_call,
+                (
+                    ("cleanup_condition", "condition"),
+                    ("cleanup_queue", "cleanups"),
+                ),
+            )
         )
 
     constructor_calls = {

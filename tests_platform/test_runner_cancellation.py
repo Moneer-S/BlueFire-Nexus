@@ -1257,6 +1257,169 @@ def test_darwin_launch_prepares_before_publication_and_retires_interrupted_hando
     assert not runner_client_module._DARWIN_LAUNCH_REQUESTS
 
 
+def test_darwin_launch_worker_captures_queue_domain_before_thread_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    condition = threading.Condition()
+    requests = type(runner_client_module._DARWIN_LAUNCH_REQUESTS)()
+    cleanups = type(runner_client_module._DARWIN_LAUNCH_CLEANUPS)()
+    replacement_condition = threading.Condition()
+    replacement_requests = type(requests)()
+    replacement_cleanups = type(cleanups)()
+    captured: dict[str, Any] = {}
+
+    class CapturingThread:
+        def __init__(self, **options: Any) -> None:
+            captured.update(options)
+
+        def start(self) -> None:
+            # Model a rebind after Thread construction but before its target is
+            # scheduled. The worker arguments must retain one coherent domain.
+            runner_client_module._DARWIN_LAUNCH_CONDITION = replacement_condition
+            runner_client_module._DARWIN_LAUNCH_REQUESTS = replacement_requests
+            runner_client_module._DARWIN_LAUNCH_CLEANUPS = replacement_cleanups
+
+    monkeypatch.setattr(
+        runner_client_module,
+        "threading",
+        _isolated_module(threading, Thread=CapturingThread),
+    )
+    monkeypatch.setattr(runner_client_module, "_DARWIN_LAUNCH_THREAD", None)
+    monkeypatch.setattr(runner_client_module, "_DARWIN_LAUNCH_CONDITION", condition)
+    monkeypatch.setattr(runner_client_module, "_DARWIN_LAUNCH_REQUESTS", requests)
+    monkeypatch.setattr(runner_client_module, "_DARWIN_LAUNCH_CLEANUPS", cleanups)
+
+    runner_client_module._start_darwin_launch_worker()
+
+    assert captured["target"] is runner_client_module._run_darwin_launch_worker
+    worker_args = captured["args"]
+    assert worker_args[0] is condition
+    assert worker_args[1] is requests
+    assert worker_args[2] is cleanups
+    assert runner_client_module._DARWIN_LAUNCH_CONDITION is replacement_condition
+    assert runner_client_module._DARWIN_LAUNCH_REQUESTS is replacement_requests
+    assert runner_client_module._DARWIN_LAUNCH_CLEANUPS is replacement_cleanups
+
+
+def test_darwin_failed_link_retirement_stays_on_captured_worker_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class RetryResources:
+        argv: list[str] = []
+        options: dict[str, Any] = {}
+
+        def close_descriptors(self) -> None:
+            events.append("descriptors-closed")
+
+        def close_links(self) -> bool:
+            events.append("links-retained")
+            return False
+
+        def scrub_for_cleanup_retry(self) -> None:
+            events.append("resources-scrubbed")
+
+        def abandon_link_retries(self) -> None:
+            events.append("retries-abandoned")
+
+    class ForbiddenCondition:
+        def __enter__(self) -> None:
+            raise AssertionError("global launch condition was used")
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    resources = RetryResources()
+    request = runner_client_module._DarwinLaunchRequest(
+        owner=SimpleNamespace(),
+        token=object(),
+        process_sink=[],
+        resources=cast(Any, resources),
+    )
+    request.abandoned.set()
+    cleanup_condition = threading.Condition()
+    cleanup_queue = type(runner_client_module._DARWIN_LAUNCH_CLEANUPS)()
+    global_cleanup_queue = type(cleanup_queue)()
+    monkeypatch.setattr(
+        runner_client_module,
+        "_DARWIN_LAUNCH_CONDITION",
+        ForbiddenCondition(),
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_DARWIN_LAUNCH_CLEANUPS",
+        global_cleanup_queue,
+    )
+
+    runner_client_module._execute_darwin_launch_request(
+        request,
+        cleanup_condition=cleanup_condition,
+        cleanup_queue=cleanup_queue,
+    )
+
+    assert request.done.is_set()
+    assert isinstance(request.error, RunnerTransportError)
+    assert list(cleanup_queue) == [resources]
+    assert not global_cleanup_queue
+    assert events == ["descriptors-closed", "links-retained", "resources-scrubbed"]
+
+
+def test_darwin_launch_worker_abandons_retry_when_cleanup_queue_refills() -> None:
+    events: list[str] = []
+    requests = type(runner_client_module._DARWIN_LAUNCH_REQUESTS)()
+    cleanups = type(runner_client_module._DARWIN_LAUNCH_CLEANUPS)()
+    fillers = [
+        cast(Any, object()) for _index in range(runner_client_module._DARWIN_INDETERMINATE_LIMIT)
+    ]
+
+    class StopWorker(Exception):
+        pass
+
+    class BoundedCondition:
+        entries = 0
+        waits = 0
+
+        def __enter__(self) -> BoundedCondition:
+            self.entries += 1
+            if self.entries == 3:
+                raise StopWorker
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def wait(self, *, timeout: float) -> None:
+            del timeout
+            self.waits += 1
+
+    class SaturatingCleanup:
+        def close_links(self) -> bool:
+            events.append("links-retained")
+            assert not cleanups
+            cleanups.extend(fillers)
+            return False
+
+        def abandon_link_retries(self) -> None:
+            events.append("retries-abandoned")
+
+    condition = BoundedCondition()
+    cleanup = SaturatingCleanup()
+    cleanups.append(cast(Any, cleanup))
+
+    with pytest.raises(StopWorker):
+        runner_client_module._run_darwin_launch_worker(
+            cast(Any, condition),
+            requests,
+            cleanups,
+        )
+
+    assert len(cleanups) == runner_client_module._DARWIN_INDETERMINATE_LIMIT
+    assert all(item is not cleanup for item in cleanups)
+    assert condition.waits == 0
+    assert events == ["links-retained", "retries-abandoned"]
+
+
 @pytest.mark.parametrize("registration_wins", (False, True))
 def test_darwin_launch_accepted_request_finishes_worker_owned_after_abandon(
     tmp_path: Path,
@@ -1272,6 +1435,7 @@ def test_darwin_launch_accepted_request_finishes_worker_owned_after_abandon(
     )
     retired: list[Any] = []
     requests = type(runner_client_module._DARWIN_LAUNCH_REQUESTS)()
+    cleanups = type(runner_client_module._DARWIN_LAUNCH_CLEANUPS)()
     condition = threading.Condition()
     accepted = threading.Event()
     construction_started = threading.Event()
@@ -1336,6 +1500,7 @@ def test_darwin_launch_accepted_request_finishes_worker_owned_after_abandon(
     monkeypatch.setattr(runner_client_module, "_DARWIN_INDETERMINATE_PROCESSES", indeterminate)
     monkeypatch.setattr(runner_client_module, "_DARWIN_PENDING_PROCESS_SLOTS", pending)
     monkeypatch.setattr(runner_client_module, "_DARWIN_LAUNCH_REQUESTS", requests)
+    monkeypatch.setattr(runner_client_module, "_DARWIN_LAUNCH_CLEANUPS", cleanups)
     monkeypatch.setattr(runner_client_module, "_DARWIN_LAUNCH_CONDITION", condition)
     monkeypatch.setattr(runner_client_module, "_WATCHDOG_START_GRACE_SECONDS", 0.05)
     monkeypatch.setattr(runner_client_module, "_PROCESS_POLL_SECONDS", 0.002)

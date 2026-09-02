@@ -641,40 +641,55 @@ def _start_darwin_indeterminate_reconciler() -> None:
         _DARWIN_RECONCILER_WAKE.set()
 
 
-def _run_darwin_launch_worker() -> None:
+def _run_darwin_launch_worker(
+    condition: threading.Condition,
+    requests: deque[_DarwinLaunchRequest],
+    cleanups: deque[_DarwinLaunchResources],
+) -> None:
     requests_since_cleanup = 0
     while True:
         request: _DarwinLaunchRequest | None = None
         cleanup: _DarwinLaunchResources | None = None
-        with _DARWIN_LAUNCH_CONDITION:
-            while not _DARWIN_LAUNCH_REQUESTS and not _DARWIN_LAUNCH_CLEANUPS:
-                _DARWIN_LAUNCH_CONDITION.wait(timeout=_DARWIN_RECONCILE_INTERVAL_SECONDS)
+        with condition:
+            while not requests and not cleanups:
+                condition.wait(timeout=_DARWIN_RECONCILE_INTERVAL_SECONDS)
             cleanup_turn = bool(
-                _DARWIN_LAUNCH_CLEANUPS
-                and (
-                    not _DARWIN_LAUNCH_REQUESTS
-                    or requests_since_cleanup >= _DARWIN_WAITID_EINTR_RETRIES
-                )
+                cleanups
+                and (not requests or requests_since_cleanup >= _DARWIN_WAITID_EINTR_RETRIES)
             )
             if not cleanup_turn:
-                request = _DARWIN_LAUNCH_REQUESTS.popleft()
+                request = requests.popleft()
                 request.accepted.set()
                 requests_since_cleanup += 1
             else:
-                cleanup = _DARWIN_LAUNCH_CLEANUPS.popleft()
+                cleanup = cleanups.popleft()
                 requests_since_cleanup = 0
         if cleanup is not None:
             if not cleanup.close_links():
-                with _DARWIN_LAUNCH_CONDITION:
-                    _DARWIN_LAUNCH_CLEANUPS.append(cleanup)
-                    _DARWIN_LAUNCH_CONDITION.wait(timeout=_DARWIN_RECONCILE_INTERVAL_SECONDS)
+                requeued = False
+                with condition:
+                    if len(cleanups) < _DARWIN_INDETERMINATE_LIMIT:
+                        cleanups.append(cleanup)
+                        requeued = True
+                        condition.wait(timeout=_DARWIN_RECONCILE_INTERVAL_SECONDS)
+                if not requeued:
+                    cleanup.abandon_link_retries()
             continue
         if request is None:
             continue
-        _execute_darwin_launch_request(request)
+        _execute_darwin_launch_request(
+            request,
+            cleanup_condition=condition,
+            cleanup_queue=cleanups,
+        )
 
 
-def _execute_darwin_launch_request(request: _DarwinLaunchRequest) -> None:
+def _execute_darwin_launch_request(
+    request: _DarwinLaunchRequest,
+    *,
+    cleanup_condition: threading.Condition | None = None,
+    cleanup_queue: deque[_DarwinLaunchResources] | None = None,
+) -> None:
     """Execute one accepted request using only its worker-owned resources."""
 
     resources = request.resources
@@ -706,25 +721,41 @@ def _execute_darwin_launch_request(request: _DarwinLaunchRequest) -> None:
                 request.owner._quarantine_interrupted_darwin_launch(process)  # noqa: SLF001
             except BaseException:
                 pass
-        _retire_darwin_launch_resources(resources)
+        if cleanup_condition is None and cleanup_queue is None:
+            _retire_darwin_launch_resources(resources)
+        else:
+            _retire_darwin_launch_resources(
+                resources,
+                condition=cleanup_condition,
+                cleanups=cleanup_queue,
+            )
         request.done.set()
 
 
-def _retire_darwin_launch_resources(resources: _DarwinLaunchResources) -> None:
+def _retire_darwin_launch_resources(
+    resources: _DarwinLaunchResources,
+    *,
+    condition: threading.Condition | None = None,
+    cleanups: deque[_DarwinLaunchResources] | None = None,
+) -> None:
     """Close owned launch inputs and retain bounded private-link cleanup."""
 
+    if (condition is None) != (cleanups is None):
+        raise AssertionError("Darwin launch cleanup domain is incomplete")
+    cleanup_condition = condition if condition is not None else _DARWIN_LAUNCH_CONDITION
+    cleanup_queue = cleanups if cleanups is not None else _DARWIN_LAUNCH_CLEANUPS
     resources.close_descriptors()
     # argv[0] has crossed exec, the launch failed closed, or an unaccepted
     # request was cancelled. Keep retry ownership if transient cleanup cannot
     # remove its private launch pin.
     if not resources.close_links():
         resources.scrub_for_cleanup_retry()
-        with _DARWIN_LAUNCH_CONDITION:
-            if len(_DARWIN_LAUNCH_CLEANUPS) < _DARWIN_INDETERMINATE_LIMIT:
-                _DARWIN_LAUNCH_CLEANUPS.append(resources)
+        with cleanup_condition:
+            if len(cleanup_queue) < _DARWIN_INDETERMINATE_LIMIT:
+                cleanup_queue.append(resources)
             else:
                 resources.abandon_link_retries()
-            _DARWIN_LAUNCH_CONDITION.notify()
+            cleanup_condition.notify()
 
 
 def _start_darwin_launch_worker() -> None:
@@ -734,6 +765,11 @@ def _start_darwin_launch_worker() -> None:
             return
         worker = threading.Thread(
             target=_run_darwin_launch_worker,
+            args=(
+                _DARWIN_LAUNCH_CONDITION,
+                _DARWIN_LAUNCH_REQUESTS,
+                _DARWIN_LAUNCH_CLEANUPS,
+            ),
             name="bluefire-darwin-launch",
             daemon=True,
         )

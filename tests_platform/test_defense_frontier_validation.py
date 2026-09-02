@@ -843,7 +843,7 @@ def test_runner_journal_creation_is_descriptor_relative_or_rebind_blocked(
             frontier_module._create_pinned_runner_journal(runs)
         assert race == ["replaced"]
         assert list(runs.iterdir()) == []
-        assert (displaced / ".bluefire-runner-results").is_dir()
+        assert list(displaced.iterdir()) == []
 
 
 def test_runner_journal_root_rename_race_is_blocked_or_preserved(
