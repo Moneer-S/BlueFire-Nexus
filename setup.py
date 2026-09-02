@@ -198,6 +198,7 @@ class PlatformNativeWheel(bdist_wheel):
             str(self.distribution.metadata.version),
             explicit_platform_tag=self._bluefire_explicit_platform_tag,
         )
+        self.plat_name_supplied = True
         super().run()
 
     def get_tag(self) -> tuple[str, str, str]:
