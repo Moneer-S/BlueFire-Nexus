@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import ctypes
 import errno
 import multiprocessing
@@ -147,6 +148,73 @@ def test_posix_managed_root_policy_matches_runner_bootstrap(
         environ=environ,
         platform_name=platform_name,
     ) == managed_product_root(environ=environ, platform_name=bootstrap_platform)
+
+
+def test_runner_watchdog_import_does_not_require_posix_crypto_binding() -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    base_executable = getattr(sys, "_base_executable", None)
+    assert isinstance(base_executable, str) and base_executable
+    script = """
+import builtins
+import sys
+
+original_import = builtins.__import__
+blocked = []
+
+def guarded_import(name, *args, **kwargs):
+    if name == "nacl" or name.startswith("nacl."):
+        blocked.append(name)
+        raise ModuleNotFoundError("optional crypto binding is unavailable")
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = guarded_import
+sys.path.insert(0, sys.argv[1])
+import bluefire.runner_watchdog
+assert blocked == []
+assert not any(name == "nacl" or name.startswith("nacl.") for name in sys.modules)
+print("watchdog-import-ok")
+"""
+
+    completed = subprocess.run(
+        [base_executable, "-I", "-c", script, os.fspath(repository_root)],
+        cwd=repository_root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "watchdog-import-ok"
+
+
+def test_posix_provider_missing_crypto_binding_fails_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+
+    def blocked_import(name, *args, **kwargs):
+        if name == "nacl" or name.startswith("nacl."):
+            raise ModuleNotFoundError("injected missing crypto binding")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_import)
+    monkeypatch.setattr(secret_store, "_POSIX_CRYPTO_API", None)
+    provider = object.__new__(PosixOwnerPrivateSecretProvider)
+
+    with pytest.raises(SecretStoreError) as protect_error:
+        provider.protect("runner.hmac-key", b"material")
+    assert str(protect_error.value) == "Secret protection failed."
+    assert "nacl" not in str(protect_error.value).casefold()
+
+    payload = b"\0" * (
+        secret_store._POSIX_PAYLOAD_HEADER.size + secret_store._POSIX_XCHACHA_TAG_BYTES
+    )
+    opaque = secret_store._encode_envelope(secret_store._PROVIDER_POSIX_OWNER_PRIVATE, payload)
+    with pytest.raises(SecretStoreError) as unprotect_error:
+        provider.unprotect("runner.hmac-key", opaque)
+    assert str(unprotect_error.value) == "Protected secret is invalid or cannot be opened."
+    assert "nacl" not in str(unprotect_error.value).casefold()
 
 
 def test_darwin_mount_policy_rejects_ownership_disabled_flag() -> None:

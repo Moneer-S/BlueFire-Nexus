@@ -23,16 +23,7 @@ import threading
 import time
 from ctypes import wintypes
 from pathlib import Path
-from typing import Any, Mapping, Protocol, runtime_checkable
-
-from nacl.bindings import (
-    crypto_aead_xchacha20poly1305_ietf_ABYTES,
-    crypto_aead_xchacha20poly1305_ietf_decrypt,
-    crypto_aead_xchacha20poly1305_ietf_encrypt,
-    crypto_aead_xchacha20poly1305_ietf_KEYBYTES,
-    crypto_aead_xchacha20poly1305_ietf_NPUBBYTES,
-)
-from nacl.exceptions import CryptoError
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 _ENVELOPE_MAGIC = b"BFSX"
 _ENVELOPE_VERSION = 1
@@ -55,17 +46,97 @@ _LOAD_LIBRARY_SEARCH_SYSTEM32 = 0x00000800
 _POSIX_KEY_MAGIC = b"BFSK"
 _POSIX_KEY_VERSION = 1
 _POSIX_KEY_ID_BYTES = 16
-_POSIX_KEY_RECORD = struct.Struct(
-    f">4sB{_POSIX_KEY_ID_BYTES}s{crypto_aead_xchacha20poly1305_ietf_KEYBYTES}s"
-)
-_POSIX_PAYLOAD_HEADER = struct.Struct(
-    f">{_POSIX_KEY_ID_BYTES}s{crypto_aead_xchacha20poly1305_ietf_NPUBBYTES}s"
-)
+_POSIX_XCHACHA_KEY_BYTES = 32
+_POSIX_XCHACHA_NONCE_BYTES = 24
+_POSIX_XCHACHA_TAG_BYTES = 16
+_POSIX_KEY_RECORD = struct.Struct(f">4sB{_POSIX_KEY_ID_BYTES}s{_POSIX_XCHACHA_KEY_BYTES}s")
+_POSIX_PAYLOAD_HEADER = struct.Struct(f">{_POSIX_KEY_ID_BYTES}s{_POSIX_XCHACHA_NONCE_BYTES}s")
 _POSIX_KEY_FILENAME = "secret-store-master-key.v1"
 _POSIX_MAX_DIRECTORY_ENTRIES = 256
 _POSIX_TEMP_TOKEN_CHARACTERS = 32
 _POSIX_LOCK_TIMEOUT_SECONDS = 5.0
 _POSIX_LOCK_POLL_SECONDS = 0.02
+
+
+class _PosixCryptoApi:
+    """Lazily bound XChaCha20-Poly1305 operations for the POSIX provider."""
+
+    _encrypt: Callable[[bytes, bytes | None, bytes, bytes], bytes]
+    _decrypt: Callable[[bytes, bytes | None, bytes, bytes], bytes]
+    _crypto_error: type[Exception]
+
+    def __init__(self) -> None:
+        try:
+            from nacl import bindings
+            from nacl.exceptions import CryptoError
+
+            if (
+                bindings.crypto_aead_xchacha20poly1305_ietf_KEYBYTES != _POSIX_XCHACHA_KEY_BYTES
+                or bindings.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES
+                != _POSIX_XCHACHA_NONCE_BYTES
+                or bindings.crypto_aead_xchacha20poly1305_ietf_ABYTES != _POSIX_XCHACHA_TAG_BYTES
+            ):
+                raise OSError("unsupported POSIX secret crypto binding")
+            encrypt = bindings.crypto_aead_xchacha20poly1305_ietf_encrypt
+            decrypt = bindings.crypto_aead_xchacha20poly1305_ietf_decrypt
+            if (
+                not callable(encrypt)
+                or not callable(decrypt)
+                or not isinstance(CryptoError, type)
+                or not issubclass(CryptoError, Exception)
+            ):
+                raise OSError("invalid POSIX secret crypto binding")
+        except (ImportError, AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            raise OSError("POSIX secret crypto binding is unavailable") from None
+
+        self._encrypt = encrypt
+        self._decrypt = decrypt
+        self._crypto_error = CryptoError
+
+    def encrypt(
+        self,
+        plaintext: bytes,
+        associated_data: bytes,
+        nonce: bytes,
+        key: bytes,
+    ) -> bytes:
+        try:
+            result = self._encrypt(plaintext, associated_data, nonce, key)
+        except self._crypto_error:
+            raise OSError("POSIX secret encryption failed") from None
+        except (MemoryError, OSError, TypeError, ValueError):
+            raise OSError("POSIX secret encryption failed") from None
+        if (
+            not isinstance(result, bytes)
+            or len(result) != len(plaintext) + _POSIX_XCHACHA_TAG_BYTES
+        ):
+            raise OSError("POSIX secret encryption failed")
+        return result
+
+    def decrypt(
+        self,
+        ciphertext: bytes,
+        associated_data: bytes,
+        nonce: bytes,
+        key: bytes,
+    ) -> bytes:
+        try:
+            result = self._decrypt(ciphertext, associated_data, nonce, key)
+        except self._crypto_error:
+            raise OSError("POSIX secret decryption failed") from None
+        except (MemoryError, OSError, TypeError, ValueError):
+            raise OSError("POSIX secret decryption failed") from None
+        if (
+            not isinstance(result, bytes)
+            or len(ciphertext) < _POSIX_XCHACHA_TAG_BYTES
+            or len(result) != len(ciphertext) - _POSIX_XCHACHA_TAG_BYTES
+        ):
+            raise OSError("POSIX secret decryption failed")
+        return result
+
+
+_POSIX_CRYPTO_API: _PosixCryptoApi | None = None
+_POSIX_CRYPTO_API_LOCK = threading.Lock()
 
 _DARWIN_ACL_TYPE_EXTENDED = 0x00000100
 _DARWIN_ACL_FIRST_ENTRY = 0
@@ -346,11 +417,12 @@ class PosixOwnerPrivateSecretProvider:
         purpose_digest = _purpose_digest(purpose)
         secret = _validated_plaintext(plaintext)
         try:
+            crypto = _posix_crypto_api()
             with self._lock:
                 key_id, key = self._load_or_create_key()
-            nonce = secrets.token_bytes(crypto_aead_xchacha20poly1305_ietf_NPUBBYTES)
+            nonce = secrets.token_bytes(_POSIX_XCHACHA_NONCE_BYTES)
             associated_data = _posix_associated_data(key_id, purpose_digest)
-            ciphertext = crypto_aead_xchacha20poly1305_ietf_encrypt(
+            ciphertext = crypto.encrypt(
                 secret,
                 associated_data,
                 nonce,
@@ -362,7 +434,7 @@ class PosixOwnerPrivateSecretProvider:
             )
         except SecretStoreError:
             raise
-        except (CryptoError, MemoryError, OSError, TypeError, ValueError):
+        except (MemoryError, OSError, TypeError, ValueError):
             raise SecretStoreError("Secret protection failed.") from None
 
     def unprotect(self, purpose: str, opaque: bytes) -> bytes:
@@ -372,15 +444,16 @@ class PosixOwnerPrivateSecretProvider:
                 opaque,
                 expected_provider=_PROVIDER_POSIX_OWNER_PRIVATE,
             )
-            minimum = _POSIX_PAYLOAD_HEADER.size + crypto_aead_xchacha20poly1305_ietf_ABYTES
+            minimum = _POSIX_PAYLOAD_HEADER.size + _POSIX_XCHACHA_TAG_BYTES
             if len(payload) < minimum:
                 raise SecretStoreError("Protected secret is invalid or cannot be opened.")
             key_id, nonce = _POSIX_PAYLOAD_HEADER.unpack_from(payload)
+            crypto = _posix_crypto_api()
             with self._lock:
                 stored_key_id, key = self._load_key()
             if not hmac.compare_digest(key_id, stored_key_id):
                 raise SecretStoreError("Protected secret is invalid or cannot be opened.")
-            plaintext = crypto_aead_xchacha20poly1305_ietf_decrypt(
+            plaintext = crypto.decrypt(
                 payload[_POSIX_PAYLOAD_HEADER.size :],
                 _posix_associated_data(key_id, purpose_digest),
                 nonce,
@@ -391,7 +464,7 @@ class PosixOwnerPrivateSecretProvider:
             return plaintext
         except SecretStoreError:
             raise
-        except (CryptoError, MemoryError, OSError, TypeError, ValueError):
+        except (MemoryError, OSError, TypeError, ValueError):
             raise SecretStoreError("Protected secret is invalid or cannot be opened.") from None
 
     def _load_or_create_key(self) -> tuple[bytes, bytes]:
@@ -646,7 +719,7 @@ class PosixOwnerPrivateSecretProvider:
 
     def _create_key(self, root_descriptor: int) -> tuple[bytes, bytes]:
         key_id = secrets.token_bytes(_POSIX_KEY_ID_BYTES)
-        key = secrets.token_bytes(crypto_aead_xchacha20poly1305_ietf_KEYBYTES)
+        key = secrets.token_bytes(_POSIX_XCHACHA_KEY_BYTES)
         payload = _POSIX_KEY_RECORD.pack(_POSIX_KEY_MAGIC, _POSIX_KEY_VERSION, key_id, key)
         temporary_name = f".{self._key_path.name}.{secrets.token_hex(16)}.tmp"
         temporary_exists = False
@@ -791,6 +864,20 @@ def _posix_managed_product_root(
             return Path(base).expanduser() / "bluefire-nexus"
         return Path.home() / ".local" / "state" / "bluefire-nexus"
     raise OSError("unsupported POSIX secret key platform")
+
+
+def _posix_crypto_api() -> _PosixCryptoApi:
+    global _POSIX_CRYPTO_API
+
+    api = _POSIX_CRYPTO_API
+    if api is not None:
+        return api
+    with _POSIX_CRYPTO_API_LOCK:
+        api = _POSIX_CRYPTO_API
+        if api is None:
+            api = _PosixCryptoApi()
+            _POSIX_CRYPTO_API = api
+        return api
 
 
 def _posix_associated_data(key_id: bytes, purpose_digest: bytes) -> bytes:
