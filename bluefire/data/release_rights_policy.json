@@ -237,7 +237,7 @@
     }
   },
   "rust": {
-    "lockfile_sha256": "e2471c0304d7ab718d42c52c8389de3ce823264024897e74c263a32c17fb29e5",
+    "lockfile_sha256": "335d895468dc5daa6c83d3bd1f131f9115f9d68624b8794687c14042ba04e7d5",
     "release_graph": [
       "autocfg@1.5.1",
       "bitflags@2.13.1",

@@ -1,7 +1,7 @@
 {
   "integrity": {
     "algorithm": "sha256",
-    "content_digest": "sha256:9190513f23220cc2d78e7e44edddb06364d4422ddf83d2e7890e1b80d79b8938"
+    "content_digest": "sha256:493da2709d10801f6ad57007c614d974a8bd9da463bc655077ad713431fcef65"
   },
   "manifest": {
     "action_ids": [
@@ -14,8 +14,8 @@
       "native.execution"
     ],
     "compatibility": {
-      "maximum_bluefire_version_exclusive": "1.0.0",
-      "minimum_bluefire_version": "0.1.0"
+      "maximum_bluefire_version_exclusive": "4.0.0",
+      "minimum_bluefire_version": "3.0.0"
     },
     "license": {
       "notice": "Copyright 2026 BlueFire fixture authors; MIT licensed.",
@@ -195,6 +195,6 @@
   "signature": {
     "algorithm": "ed25519",
     "key_id": "fixture-release-2026",
-    "value": "bRYdvlV6_jhnWivZCYHowphX1XyJTc80aaRpFFujmZHNA6rzMn4qhlr4OawvTmae6LIfx6dnexyvnuX-o-3rCQ"
+    "value": "fJ9guhM2oZ014UW5xgzfDVvTmoae4FeGsty0Zqiul8oueBadnKUhWZUw4NXfjExz1ME1fpQcK2Bf8fFgAYPfAQ"
   }
 }

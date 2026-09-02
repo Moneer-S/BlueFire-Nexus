@@ -12,6 +12,7 @@ from .provider_gate_structural_validation import (
     _validate_structural,
 )
 from .util import content_hash
+from .version import __version__
 
 JOURNEY_SCHEMA = "bluefire.provider-journey-evidence.v1"
 VERIFICATION_SCHEMA = "bluefire.provider-verification-evidence.v1"
@@ -233,7 +234,7 @@ def _validate_packaged_runner(value: Any) -> Mapping[str, Any]:
         "schema_version": "bluefire.runner-inventory.v1",
         "runner": "bluefire-rust-runner",
         "runner_id": "bluefire-rust-runner.v1",
-        "runner_version": "0.1.0",
+        "runner_version": __version__,
         "action_sdk_version": "bluefire.runner-action-sdk.v1",
         "receipt_protocol": "bluefire.runner-receipt-wal.v2",
         "platform": "windows",
@@ -251,7 +252,7 @@ def _validate_packaged_runner(value: Any) -> Mapping[str, Any]:
         or not isinstance(value.get("binary_size"), int)
         or not 0 < int(value["binary_size"]) <= 134_217_728
         or value.get("runner_id") != "bluefire-rust-runner.v1"
-        or value.get("runner_version") != "0.1.0"
+        or value.get("runner_version") != __version__
         or value.get("platform") != "windows"
         or value.get("architecture") != "x86_64"
         or value.get("logical_action_absent_from_core_inventory") is not True

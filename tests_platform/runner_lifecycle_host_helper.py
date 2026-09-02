@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from bluefire import __version__
 from bluefire.runner_host import serve_managed_runner
 from bluefire.runner_inventory import (
     BUILTIN_RUNNER_ACTION_VERSIONS,
@@ -51,7 +52,7 @@ class ProcessFixtureRunner:
         return {
             "schema_version": "bluefire.runner-inventory.v1",
             "runner_id": "bluefire-rust-runner.v1",
-            "runner_version": "0.1.0",
+            "runner_version": __version__,
             "action_sdk_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
             "receipt_protocol": "bluefire.runner-receipt-wal.v2",
             "platform": self.platform_name,

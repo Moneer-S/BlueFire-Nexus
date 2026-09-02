@@ -6,7 +6,7 @@
 graph, authorization, execution, observation, and lineage needed to examine what changed without
 turning a model proposal or runner report into stronger evidence than it is.
 
-> BlueFire Nexus is a pre-1.0 technical preview for systems, accounts, networks, and labs you own
+> BlueFire Nexus is a local-first security experiment workbench for systems, accounts, networks, and labs you own
 > or are explicitly authorized to test. It is not a production endpoint-management, cloud-
 > administration, identity, or enterprise-network agent. Read the [current limitations](#current-limitations)
 > before using Execute.
@@ -211,7 +211,7 @@ does not satisfy a release gate.
 
 ## Current limitations
 
-- BlueFire is local-first and pre-1.0. Its browser API has same-user loopback session protection,
+- BlueFire is local-first. Its browser API has same-user loopback session protection,
   not remote or multi-user authentication.
 - The managed runner is a per-user process, not an operating-system service. Linux acceptance proves
   the commit-bound artifact in a disposable WSL2 environment, not a general Linux installer;

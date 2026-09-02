@@ -13,6 +13,7 @@ from typing import Any, BinaryIO, Mapping, Sequence
 import pytest
 
 import tools.stage_native_runner as stage_native_runner_module
+from bluefire import __version__
 from bluefire.runner_bootstrap import (
     ACTION_SDK_VERSION,
     INVENTORY_SCHEMA_VERSION,
@@ -33,7 +34,7 @@ from bluefire.runner_client import RunnerTransportError, canonical_runner_invent
 from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_VERSIONS
 from tools.stage_native_runner import stage_native_runner
 
-PRODUCT_VERSION = "0.1.0"
+PRODUCT_VERSION = __version__
 PLATFORM = "windows"
 ARCHITECTURE = "x86_64"
 FILENAME = "bluefire-runner.exe"

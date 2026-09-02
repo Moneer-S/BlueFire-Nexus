@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from bluefire import source_intake_run_validation
+from bluefire import __version__, source_intake_run_validation
 from bluefire.action_packages import verify_action_package
 from bluefire.source_intake import perform_source_intake
 from bluefire.source_intake_package import (
@@ -62,7 +62,7 @@ def test_pinned_assets_transform_and_build_one_verified_package(tmp_path: Path) 
     verified = verify_action_package(
         package,
         trusted_signers={(PUBLISHER_ID, KEY_ID): key.public_key()},
-        bluefire_version="0.1.0",
+        bluefire_version=__version__,
         platform="windows",
     )
 

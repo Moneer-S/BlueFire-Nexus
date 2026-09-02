@@ -7,7 +7,7 @@ from tools.verify_packaged_runner import _disposable_workspace_proof, _native_ru
 
 
 def test_packaged_wheel_refuses_foreign_native_runner_sibling() -> None:
-    root = "bluefire_nexus-0.1.0.data/purelib/bluefire/native"
+    root = "bluefire_nexus-3.0.0.data/purelib/bluefire/native"
     with pytest.raises(RuntimeError, match="exactly one target-native runner"):
         _native_runner_members(
             [f"{root}/bluefire-runner.exe", f"{root}/bluefire-runner"],

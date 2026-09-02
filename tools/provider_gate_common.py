@@ -25,8 +25,8 @@ SUCCESS_VERSIONS = ("1.0.0", "2.0.0")
 LIMIT_VERSION = "3.0.0"
 ALL_VERSIONS = (*SUCCESS_VERSIONS, LIMIT_VERSION)
 EXPECTED_COMPATIBILITY = {
-    "minimum_bluefire_version": "0.1.0",
-    "maximum_bluefire_version_exclusive": "1.0.0",
+    "minimum_bluefire_version": "3.0.0",
+    "maximum_bluefire_version_exclusive": "4.0.0",
 }
 EXPECTED_LICENSE = {
     "spdx_id": "MIT",

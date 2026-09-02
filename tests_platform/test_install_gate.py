@@ -35,7 +35,7 @@ _JOB_ID = "job-0123456789abcdef0123456789abcdef"
 def _inspection() -> dict[str, Any]:
     return {
         "schema_version": "bluefire.package-inspection.v1",
-        "wheel": "bluefire_nexus-0.1.0-py3-none-win_amd64.whl",
+        "wheel": "bluefire_nexus-3.0.0-py3-none-win_amd64.whl",
         "wheel_sha256": "a" * 64,
         "tag": "py3-none-win_amd64",
         "platform": "windows",
@@ -77,7 +77,7 @@ def _wheel_dependency_metadata() -> dict[str, Any]:
         "schema_version": "bluefire.gate01-wheel-dependency-metadata.v1",
         "verified": True,
         "project_name": "bluefire-nexus",
-        "project_version": "0.1.0",
+        "project_version": "3.0.0",
         "requires_python": ">=3.10",
         "wheel_sha256": _DIGEST,
         "declared_runtime_dependencies": deepcopy(requirements),
@@ -89,7 +89,7 @@ def _runtime() -> dict[str, Any]:
     return {
         "schema_version": "bluefire.gate01-installed-package.v1",
         "verified": True,
-        "package_version": "0.1.0",
+        "package_version": "3.0.0",
         "fresh_environment": {
             "isolated_mode": True,
             "virtual_environment": True,
@@ -486,7 +486,7 @@ def test_gate_contract_registration_and_guided_workflow_are_locked(tmp_path: Pat
             project_document,
             install_gate._project_section(project_document),
         )
-        == "0.1.0"
+        == "3.0.0"
     )
     structural = install_gate._structural_report(REPOSITORY)
     validation.validate_structural(structural)
@@ -499,7 +499,7 @@ def test_gate_contract_registration_and_guided_workflow_are_locked(tmp_path: Pat
     assert mismatch.failure_reason == "locked GATE-01 assertion set mismatch"
 
 
-def _write_metadata_wheel(path: Path, requirements: list[str], *, version: str = "0.1.0") -> None:
+def _write_metadata_wheel(path: Path, requirements: list[str], *, version: str = "3.0.0") -> None:
     metadata = [
         "Metadata-Version: 2.4",
         "Name: bluefire-nexus",
@@ -510,7 +510,7 @@ def _write_metadata_wheel(path: Path, requirements: list[str], *, version: str =
     ]
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(
-            "bluefire_nexus-0.1.0.dist-info/METADATA",
+            "bluefire_nexus-3.0.0.dist-info/METADATA",
             "\n".join(metadata).encode("utf-8"),
         )
 
@@ -521,20 +521,20 @@ def test_wheel_requires_dist_is_read_from_the_built_artifact(tmp_path: Path) -> 
     (source / "pyproject.toml").write_text(
         """[project]
 name = "bluefire-nexus"
-version = "0.1.0"
+version = "3.0.0"
 requires-python = ">=3.10"
 dependencies = ["PyYAML>=6.0.1,<7", "cryptography>=50,<51", "PyNaCl>=1.5,<2"]
 """,
         encoding="utf-8",
     )
-    wheel = tmp_path / "bluefire_nexus-0.1.0-py3-none-win_amd64.whl"
+    wheel = tmp_path / "bluefire_nexus-3.0.0-py3-none-win_amd64.whl"
     requirements = ["PyYAML<7,>=6.0.1", "cryptography<51,>=50", "PyNaCl<2,>=1.5"]
     _write_metadata_wheel(wheel, requirements + ['pytest>=8; extra == "dev"'])
 
     report = install_gate._wheel_dependency_metadata_report(source, wheel)
 
     validation.validate_wheel_dependency_metadata(report)
-    assert report["project_version"] == "0.1.0"
+    assert report["project_version"] == "3.0.0"
     assert report["declared_runtime_dependencies"] == report["wheel_requires_dist"]
 
     _write_metadata_wheel(wheel, requirements[:-1])

@@ -1,6 +1,6 @@
 # Pre-release baseline
 
-This historical baseline maps the pre-1.0 local product surface. It does not satisfy a release gate or establish release readiness. The locked `bluefire acceptance run --release` contract is the machine-verifiable release authority.
+This historical baseline maps the earlier local product surface. It does not satisfy a release gate or establish release readiness. The locked `bluefire acceptance run --release` contract is the machine-verifiable release authority.
 
 ## Product boundary
 

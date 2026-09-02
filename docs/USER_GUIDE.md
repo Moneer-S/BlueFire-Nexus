@@ -269,7 +269,7 @@ Do not treat an interrupted Execute job as resumable authority. Startup first re
 
 ## Current boundaries
 
-BlueFire is local-first and pre-1.0. Keep these limits visible when interpreting a successful workflow:
+BlueFire is local-first. Keep these limits visible when interpreting a successful workflow:
 
 - the browser API and artifact receiver bind loopback; the artifact receiver uses active managed enrollment and per-task HMAC, while neither surface is remote transport;
 - the runner action pack is bounded and has no general shell or arbitrary program execution;

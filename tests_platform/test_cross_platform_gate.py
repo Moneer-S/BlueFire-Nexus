@@ -723,7 +723,7 @@ def test_fresh_cancellation_validator_executes_exact_wheel_member(
     repository = Path(__file__).resolve().parents[1]
     binary = (repository / "bluefire" / "native" / "bluefire-runner.exe").read_bytes()
     binary_digest = "sha256:" + hashlib.sha256(binary).hexdigest()
-    binary_member = "bluefire_nexus-0.1.0.data/purelib/bluefire/native/bluefire-runner.exe"
+    binary_member = "bluefire_nexus-3.0.0.data/purelib/bluefire/native/bluefire-runner.exe"
     package = tmp_path / "evidence" / "package"
     package.mkdir(parents=True)
     wheel = package / "fresh-validator.whl"

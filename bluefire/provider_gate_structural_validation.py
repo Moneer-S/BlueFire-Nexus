@@ -9,8 +9,8 @@ STRUCTURAL_SCHEMA = "bluefire.provider-structural-evidence.v1"
 _PROVIDER_ACTION_ID = "fixture.provider-upgrade.action.v1"
 _VERSIONS = ("1.0.0", "2.0.0", "3.0.0")
 _COMPATIBILITY = {
-    "minimum_bluefire_version": "0.1.0",
-    "maximum_bluefire_version_exclusive": "1.0.0",
+    "minimum_bluefire_version": "3.0.0",
+    "maximum_bluefire_version_exclusive": "4.0.0",
 }
 _LICENSE = {
     "spdx_id": "MIT",

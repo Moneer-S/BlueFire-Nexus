@@ -219,7 +219,7 @@ The loader has no entry-point discovery and no import hook. An inventory entry a
 
 ## Packaging boundary
 
-The Python distribution discovers only bluefire packages. It includes catalog YAML, canonical configuration, eight scenario defaults, research registry, and built UI assets as package data. Checkout config/scenario copies are parity-tested against `bluefire/data`; BlueFireService prefers checkout scenarios when present and otherwise uses package resources. Optional detection parsers remain separately installable. Package metadata reads the platform version from `bluefire.__version__`; Python, frontend, and Rust currently use the 0.1.0 baseline.
+The Python distribution discovers only bluefire packages. It includes catalog YAML, canonical configuration, eight scenario defaults, research registry, and built UI assets as package data. Checkout config/scenario copies are parity-tested against `bluefire/data`; BlueFireService prefers checkout scenarios when present and otherwise uses package resources. Optional detection parsers remain separately installable. Package metadata reads the platform version from `bluefire.__version__`; Python, frontend, and Rust use the 3.0.0 release version.
 
 The wheel does not include repository tests. Compatible platform-specific wheels include one manifest-bound native runner artifact; explicit bootstrap verifies and installs it into an owner-private per-user root before creating local enrollment. Source builds remain supported for development, and Execute availability remains explicit because status/readiness never bootstraps or starts the runner.
 

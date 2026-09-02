@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 import bluefire.cli as cli
 import tools.run_provider_gate_journey as provider_gate_helper
+from bluefire import __version__
 from bluefire.action_packages import verify_action_package
 from bluefire.api import APIError
 from bluefire.cli import _execute, _parser
@@ -73,7 +74,7 @@ def _verified_fixture(version: str) -> Any:
     return verify_action_package(
         canonical_json_bytes(_fixture_envelope(version)),
         trusted_signers={(trust["publisher_id"], trust["key_id"]): _public_key(version)},
-        bluefire_version="0.1.0",
+        bluefire_version=__version__,
         platform="windows",
     )
 

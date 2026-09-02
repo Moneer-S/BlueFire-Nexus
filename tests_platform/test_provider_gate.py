@@ -67,8 +67,8 @@ def _structural_report() -> dict[str, Any]:
     }
     contract_digest = "sha256:" + "3" * 64
     compatibility = {
-        "minimum_bluefire_version": "0.1.0",
-        "maximum_bluefire_version_exclusive": "1.0.0",
+        "minimum_bluefire_version": "3.0.0",
+        "maximum_bluefire_version_exclusive": "4.0.0",
     }
     required_sources = (
         "bluefire/action_packages.py",
@@ -412,7 +412,7 @@ def _journey_report() -> dict[str, Any]:
             "binary_sha256": "sha256:" + "b" * 64,
             "binary_size": 1,
             "runner_id": "bluefire-rust-runner.v1",
-            "runner_version": "0.1.0",
+            "runner_version": "3.0.0",
             "platform": "windows",
             "architecture": "x86_64",
             "inventory_digest": inventory_digest,
@@ -420,7 +420,7 @@ def _journey_report() -> dict[str, Any]:
                 "schema_version": "bluefire.runner-inventory.v1",
                 "runner": "bluefire-rust-runner",
                 "runner_id": "bluefire-rust-runner.v1",
-                "runner_version": "0.1.0",
+                "runner_version": "3.0.0",
                 "action_sdk_version": "bluefire.runner-action-sdk.v1",
                 "receipt_protocol": "bluefire.runner-receipt-wal.v2",
                 "platform": "windows",

@@ -473,8 +473,8 @@ def _smoke_signed_package_alias(runner: Any, work_root: Path) -> Mapping[str, An
         "package_id": package_id,
         "version": "1.0.0",
         "compatibility": {
-            "minimum_bluefire_version": "0.1.0",
-            "maximum_bluefire_version_exclusive": "1.0.0",
+            "minimum_bluefire_version": "3.0.0",
+            "maximum_bluefire_version_exclusive": "4.0.0",
         },
         "license": {
             "spdx_id": "MIT",

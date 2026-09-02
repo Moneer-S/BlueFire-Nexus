@@ -415,8 +415,8 @@ def gate09_package_components(intake_envelope: Any) -> tuple[dict[str, Any], dic
         "package_id": PACKAGE_ID,
         "version": PACKAGE_VERSION,
         "compatibility": {
-            "minimum_bluefire_version": "0.1.0",
-            "maximum_bluefire_version_exclusive": "1.0.0",
+            "minimum_bluefire_version": "3.0.0",
+            "maximum_bluefire_version_exclusive": "4.0.0",
         },
         "license": {
             "spdx_id": LICENSE_ID,

@@ -6,18 +6,18 @@
     {
       "artifact_sha256": "sha256:d972456b6b3aa0b55cd8596216b149bcb566abb810568617a0cb2973301959cd",
       "artifact_size": 725,
-      "content_digest": "sha256:9190513f23220cc2d78e7e44edddb06364d4422ddf83d2e7890e1b80d79b8938",
+      "content_digest": "sha256:493da2709d10801f6ad57007c614d974a8bd9da463bc655077ad713431fcef65",
       "file": "provider-1.0.0.signed.json",
-      "package_digest": "sha256:e14e8703c7179001070f89d208c4edf8d2eebf1c0fede38385bf923947334ab1",
+      "package_digest": "sha256:4a613223acec8c23fe797bfb8d5152c6af0663807d5e52aa107fd24366511442",
       "publisher_trust_file": "publisher-trust.yaml",
       "version": "1.0.0"
     },
     {
       "artifact_sha256": "sha256:0e3ad2ee3bdea1efb669df3bf9fca479b325b2acb01ac818e0e83d96ef11dd99",
       "artifact_size": 725,
-      "content_digest": "sha256:9f76a23899fc0b47aa32bda5b0040325fe015628a5713f80c28ccbdf0c802b08",
+      "content_digest": "sha256:93f2edbe60ebdb4b76c1b790d112557ab9cde3dc235ce030ab2cdcfc7297bdbc",
       "file": "provider-2.0.0.signed.json",
-      "package_digest": "sha256:2706194fcf0d7dea61bd6768e597fa2cc2835143580492abca308f71f5300c6f",
+      "package_digest": "sha256:be2bf69098aa096952e0e2130d01a4d7ae7cf4ef5f928b72b587ddfd66830b85",
       "publisher_trust_file": "publisher-trust.yaml",
       "version": "2.0.0"
     },
@@ -25,12 +25,12 @@
       "artifact_sha256": "sha256:0e3ad2ee3bdea1efb669df3bf9fca479b325b2acb01ac818e0e83d96ef11dd99",
       "artifact_size": 725,
       "canonical_output_bytes": 177,
-      "content_digest": "sha256:1bfc6991385f7375ed2d6b13cf51d22a444fbe260eedb479da24a45d56e8f564",
+      "content_digest": "sha256:b7cd5afada7beaa502ef9f67c068f56dd5cc4e1ec52299059bfa757935751fff",
       "expected_run_status": "incomplete",
       "expected_step_error_code": "provider_runtime_failed",
       "file": "provider-3.0.0-output-limit.signed.json",
       "limit_condition": "canonical_output_exceeds_signed_max_output_bytes",
-      "package_digest": "sha256:8d7db427da25e91424cce5282dbee697568f117ea8889953345d1345e5e01dc4",
+      "package_digest": "sha256:a00c2f5810f8e75b4e56f4a1bcddbbe7099d85dcb7596e52f80159b1f7882914",
       "publisher_trust_file": "publisher-limit-trust.yaml",
       "signed_max_output_bytes": 176,
       "version": "3.0.0"
