@@ -55,11 +55,11 @@ that the package was imported, or that BlueFire executed a generated query. The 
 is LGPL-3.0-only. Redistributors remain responsible for preserving its license materials and any
 corresponding-source rights required by that license.
 
-## Runtime and build components added for executable providers
+## Runtime and build components for executable providers and POSIX secret protection
 
 | Component | Use | License and notice |
 |---|---|---|
-| PyNaCl `>=1.5,<2` | Maintained Ed25519 public-key validation for signed action packages | Apache-2.0. PyNaCl wheels may include libsodium, which is ISC licensed; the bundled notice identifies Frank Denis as copyright holder. |
+| PyNaCl `>=1.5,<2` | Maintained Ed25519 public-key validation for signed action packages and XChaCha20-Poly1305 protection for owner-private POSIX runner-enrollment secrets | Apache-2.0. PyNaCl wheels may include libsodium, which is ISC licensed; the bundled notice identifies Frank Denis as copyright holder. |
 | wasmi `=1.1.0` | No-WASI WebAssembly interpreter compiled into the native runner | Dual licensed MIT or Apache-2.0. BlueFire enables only `std` and `extra-checks`; it does not enable WASI. |
 | wat `=1.239.0` | Development-only compilation of provider test fixtures | Apache-2.0 with LLVM exception, Apache-2.0, or MIT. It is not a production runner dependency. |
 
