@@ -473,27 +473,31 @@ def test_staging_binds_platform_architecture_version_inventory_and_hash(
     assert json.loads((output / MANIFEST_FILENAME).read_bytes()) == manifest.to_dict()
 
 
+@pytest.mark.parametrize(
+    "diagnostic",
+    (
+        "Darwin watchdog runtime could not be staged",
+        "Linux private process containment is unavailable",
+    ),
+)
 def test_inventory_probe_surfaces_a_safe_transport_diagnostic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    diagnostic: str,
 ) -> None:
     class FailingRunner:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
         def inventory(self) -> Mapping[str, Any]:
-            raise RunnerTransportError("Linux private process containment is unavailable")
+            raise RunnerTransportError(diagnostic)
 
     monkeypatch.setattr(stage_native_runner_module, "SubprocessRustRunner", FailingRunner)
 
-    with pytest.raises(
-        RunnerBootstrapError,
-        match=(
-            "^The native runner inventory probe failed: "
-            "Linux private process containment is unavailable$"
-        ),
-    ):
+    with pytest.raises(RunnerBootstrapError) as caught:
         stage_native_runner_module._probe_inventory(tmp_path / "bluefire-runner")
+
+    assert str(caught.value) == f"The native runner inventory probe failed: {diagnostic}"
 
 
 def test_inventory_probe_redacts_an_unsafe_transport_diagnostic(

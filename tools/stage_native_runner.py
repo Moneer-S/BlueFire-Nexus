@@ -42,6 +42,7 @@ _MAX_PRESERVED_BYTES = 256 * 1024 * 1024
 _MAX_PRESERVED_DEPTH = 16
 _SAFE_TRANSPORT_DIAGNOSTICS = frozenset(
     {
+        "Darwin watchdog runtime could not be staged",
         "Linux exit identity is invalid",
         "Linux private process containment is unavailable",
         "Linux process was reaped before containment",
