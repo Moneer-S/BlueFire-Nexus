@@ -24,7 +24,7 @@ from .provider_runner_contracts import (
     canonical_provider_binding,
     canonical_provider_bindings,
 )
-from .util import content_hash, json_clone
+from .util import content_hash, json_clone, parse_iso8601_datetime
 
 
 class RunnerContractError(ValueError):
@@ -126,7 +126,7 @@ def _normalize_rust_datetime(value: str, *, context: str) -> str:
     if _RFC3339_MICROSECONDS.fullmatch(value) is None:
         raise RunnerContractError(f"{context} must be an RFC 3339 timestamp")
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = parse_iso8601_datetime(value)
     except ValueError as exc:
         raise RunnerContractError(f"{context} must be an RFC 3339 timestamp") from exc
     return _format_rust_datetime(parsed, context=context)

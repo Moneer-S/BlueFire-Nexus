@@ -22,7 +22,7 @@ from .evidence import EvidenceError, EvidenceGraph, EvidenceProvenance, Evidence
 from .planner import PlanStep
 from .run_store import RunStore, RunStoreError
 from .runner_adapter import RunnerActionAdapter, RunnerAdapterError
-from .util import canonical_json_bytes, content_hash
+from .util import canonical_json_bytes, content_hash, parse_iso8601_datetime
 
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _RECEIPT = re.compile(r"^[0-9a-f]{64}$")
@@ -262,7 +262,7 @@ def _strings(value: Any, label: str) -> tuple[str, ...]:
 def _utc(value: Any, label: str) -> datetime:
     _require(isinstance(value, str) and value.endswith("Z"), f"{label} is not UTC")
     try:
-        parsed = datetime.fromisoformat(str(value)[:-1] + "+00:00")
+        parsed = parse_iso8601_datetime(str(value))
     except ValueError as exc:
         raise CrossPlatformRunValidationError(f"{label} is not UTC") from exc
     _require(parsed.tzinfo == timezone.utc, f"{label} is not UTC")

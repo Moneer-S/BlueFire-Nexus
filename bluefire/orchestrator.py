@@ -87,7 +87,7 @@ from .runner_inventory import (
     validate_builtin_action_inventory,
 )
 from .simulation import SimulationError, SimulationRegistry
-from .util import content_hash
+from .util import content_hash, parse_iso8601_datetime
 
 _RECEIPT_FIELDS = frozenset(
     {
@@ -3828,7 +3828,7 @@ class Orchestrator:
                         ):
                             raise RunnerTransportError("runner receipt commit record is invalid")
                     try:
-                        parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                        parsed = parse_iso8601_datetime(created_at)
                     except ValueError as exc:
                         raise RunnerTransportError("runner receipt timestamp is invalid") from exc
                     if parsed.tzinfo is None:

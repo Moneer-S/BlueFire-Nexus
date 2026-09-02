@@ -15,11 +15,11 @@ import os
 import re
 import stat
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path
 from typing import Any, Mapping, Protocol, cast
 
-from .util import canonical_json_bytes, content_hash
+from .util import canonical_json_bytes, content_hash, parse_iso8601_datetime
 
 WITNESS_SCHEMA = "bluefire.cross-platform-recovery-live-witness.v1"
 _PROFILE_ID = "sandbox-endpoint-deep-lab.v1"
@@ -81,7 +81,7 @@ def _timestamp(value: Any) -> bool:
     if not isinstance(value, str) or not value.endswith("Z"):
         return False
     try:
-        return datetime.fromisoformat(value[:-1] + "+00:00").tzinfo == timezone.utc
+        return parse_iso8601_datetime(value).tzinfo == timezone.utc
     except ValueError:
         return False
 

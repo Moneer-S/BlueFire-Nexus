@@ -30,7 +30,7 @@ from .runner_host import _owner_private_open_regular, read_process_record
 from .runner_lifecycle import ManagedRunnerLifecycle
 from .runner_trust import RunnerTrustError, _is_link_or_reparse, load_local_enrollment
 from .service import BlueFireService
-from .util import canonical_json_bytes, content_hash
+from .util import canonical_json_bytes, content_hash, parse_iso8601_datetime
 
 RECOVERY_SCHEMA = "bluefire.cross-platform-transport-recovery.v1"
 _PROFILE_ID = "sandbox-endpoint-deep-lab.v1"
@@ -124,7 +124,7 @@ def _valid_timestamp(value: Any) -> bool:
     if not isinstance(value, str) or not value.endswith("Z"):
         return False
     try:
-        return datetime.fromisoformat(value[:-1] + "+00:00").tzinfo is not None
+        return parse_iso8601_datetime(value).tzinfo is not None
     except ValueError:
         return False
 

@@ -458,7 +458,7 @@ def test_gate11_runner_evidence_uses_sealed_profile_digest() -> None:
         "runner_id": "bluefire-rust-runner.v1",
         "runner_profile_id": "sandbox-execute.v1",
         "platform": "linux",
-        "recorded_at": "2026-08-31T00:00:00Z",
+        "recorded_at": "2026-08-31T00:00:00.123456789Z",
         "references": [],
         "details": {
             "status": "success",

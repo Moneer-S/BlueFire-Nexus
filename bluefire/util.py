@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+_RFC3339_TIMESTAMP = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})T"
+    r"(?P<time>\d{2}:\d{2}:\d{2})"
+    r"(?:\.(?P<fraction>\d{1,9}))?"
+    r"(?P<offset>Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$"
+)
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -18,6 +27,20 @@ def canonical_json_bytes(value: Any) -> bytes:
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
+
+
+def parse_iso8601_datetime(value: str) -> datetime:
+    """Parse the bounded RFC 3339 timestamp form emitted across the Rust boundary."""
+
+    match = _RFC3339_TIMESTAMP.fullmatch(value)
+    if match is None:
+        raise ValueError("timestamp is not bounded RFC 3339")
+    fraction = match.group("fraction")
+    normalized_fraction = "" if fraction is None else "." + (fraction + "000000")[:6]
+    offset = "+00:00" if match.group("offset") == "Z" else match.group("offset")
+    return datetime.fromisoformat(
+        match.group("date") + "T" + match.group("time") + normalized_fraction + offset
+    )
 
 
 def content_hash(value: Any) -> str:

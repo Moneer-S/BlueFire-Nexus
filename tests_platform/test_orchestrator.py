@@ -71,6 +71,7 @@ def _write_bound_receipt(
     request_hash: str | None = None,
     action_id: str | None = None,
     committed: bool = True,
+    created_at: str = "2026-08-24T00:00:00Z",
 ) -> str:
     sandbox_root = Path(str(profile["sandbox_root"]))
     receipt_root = sandbox_root / ".bluefire" / "receipts"
@@ -93,7 +94,6 @@ def _write_bound_receipt(
         owned_path = f"exports/{retention_label}/bundle.bin"
     else:
         owned_path = "fixtures/recovery.jsonl"
-    created_at = "2026-08-24T00:00:00Z"
     identity = {
         "schema_version": "bluefire.receipt/v1",
         "request_hash": request_hash or manifest["request_hash"],
@@ -456,6 +456,30 @@ def test_receipt_discovery_requires_full_identity_and_optional_commit(tmp_path: 
     receipt_path.write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(RunnerTransportError, match="content digest"):
         Orchestrator._discover_runner_receipts(sandbox, **discovery)
+
+
+def test_receipt_discovery_accepts_rust_nanosecond_timestamp(tmp_path: Path) -> None:
+    sandbox = tmp_path / "receipt-nanosecond-sandbox"
+    sandbox.mkdir()
+    manifest = {
+        "request_hash": "sha256:" + "2" * 64,
+        "action_id": "sandbox.fixture.create.v1",
+        "params": {"path": "fixtures/input.jsonl"},
+    }
+    profile = {"sandbox_root": str(sandbox), "profile_id": "sandbox-execute.v1"}
+    receipt_id = _write_bound_receipt(
+        manifest,
+        profile,
+        created_at="2026-09-02T19:49:03.527817100Z",
+    )
+
+    assert Orchestrator._discover_runner_receipts(
+        sandbox,
+        expected_profile_id=profile["profile_id"],
+        expected_request_hash=manifest["request_hash"],
+        expected_action_id=manifest["action_id"],
+        require_commit=True,
+    ) == (receipt_id,)
 
 
 class FailAfterFirstEffectStore(RunStore):

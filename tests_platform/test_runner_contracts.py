@@ -536,6 +536,26 @@ def test_manifest_timestamps_match_rust_chrono_hash_normalization(tmp_path: Path
 
 
 @pytest.mark.parametrize(
+    ("fraction", "normalized"),
+    (("1", "100"), ("12", "120"), ("1234", "123400"), ("12345", "123450")),
+)
+def test_manifest_timestamp_fraction_normalization_is_cross_version(
+    fraction: str,
+    normalized: str,
+) -> None:
+    manifest = seal_manifest(
+        {
+            "schema_version": "bluefire.runner-manifest.v1",
+            "requested_at": f"2026-08-23T12:00:00.{fraction}Z",
+            "expires_at": "2026-08-23T12:05:00Z",
+            "approval": None,
+        }
+    )
+
+    assert manifest["requested_at"] == f"2026-08-23T12:00:00.{normalized}Z"
+
+
+@pytest.mark.parametrize(
     "field",
     [
         "binary",

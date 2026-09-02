@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
 from typing import Any, Mapping
 
 from .evidence import EvidenceError, EvidenceRecord
 from .source_intake_package import ACTION_ID, BEHAVIOR_ID
-from .util import content_hash
+from .util import content_hash, parse_iso8601_datetime
 
 _TASK_ID = re.compile(r"^execute-[0-9a-f]{64}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -158,7 +157,7 @@ def validate_native_system_step(
     evidence_id = inner.get("evidence_id")
     details = _mapping(inner.get("details"), "runner evidence details are absent")
     try:
-        recorded_at = datetime.fromisoformat(str(inner.get("recorded_at")).replace("Z", "+00:00"))
+        recorded_at = parse_iso8601_datetime(str(inner.get("recorded_at")))
     except ValueError as exc:
         raise ValueError("runner evidence timestamp is invalid") from exc
     if (

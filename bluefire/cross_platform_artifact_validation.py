@@ -11,7 +11,7 @@ import os
 import re
 import stat
 import zipfile
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Mapping, Sequence
 
@@ -30,7 +30,7 @@ from .runner_bootstrap import (
     wheel_platform_tag,
 )
 from .runner_inventory import BUILTIN_RUNNER_ACTION_VERSIONS
-from .util import canonical_json_bytes, content_hash
+from .util import canonical_json_bytes, content_hash, parse_iso8601_datetime
 
 _WHEEL = re.compile(
     r"^bluefire_nexus-(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.]+)?)-"
@@ -66,7 +66,7 @@ def _timestamp(value: Any) -> bool:
     if not isinstance(value, str) or not value.endswith("Z"):
         return False
     try:
-        return datetime.fromisoformat(value[:-1] + "+00:00").tzinfo == timezone.utc
+        return parse_iso8601_datetime(value).tzinfo == timezone.utc
     except ValueError:
         return False
 
