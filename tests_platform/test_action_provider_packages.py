@@ -118,7 +118,7 @@ def _manifest() -> dict[str, Any]:
         "version": "1.2.3",
         "compatibility": {
             "minimum_bluefire_version": "0.1.0",
-            "maximum_bluefire_version_exclusive": "1.0.0",
+            "maximum_bluefire_version_exclusive": "4.0.0",
         },
         "license": {
             "spdx_id": "MIT",
