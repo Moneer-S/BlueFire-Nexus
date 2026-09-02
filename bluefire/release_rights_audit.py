@@ -89,6 +89,23 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _reviewed_text_sha256(path: Path) -> str:
+    """Hash reviewed UTF-8 text with Git's LF/CRLF normalization removed."""
+
+    try:
+        payload = path.read_bytes()
+    except OSError as exc:
+        raise RightsAuditError(f"reviewed file is missing: {path.name}") from exc
+    normalized = payload.replace(b"\r\n", b"\n")
+    if b"\r" in normalized or b"\x00" in normalized:
+        raise RightsAuditError(f"reviewed file is not canonical text: {path.name}")
+    try:
+        normalized.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RightsAuditError(f"reviewed file is not UTF-8: {path.name}") from exc
+    return hashlib.sha256(normalized).hexdigest()
+
+
 def _string_list(value: Any, context: str) -> list[str]:
     _require(isinstance(value, list), f"{context} must be a list")
     _require(all(isinstance(item, str) and item for item in value), f"{context} is invalid")
@@ -340,7 +357,8 @@ def _verify_frontend(repository: Path, policy: Mapping[str, Any]) -> tuple[int, 
     frontend = _mapping(policy.get("frontend"), "frontend policy")
     lock_path = repository / "frontend/pnpm-lock.yaml"
     _require(
-        _sha256(lock_path) == frontend.get("lockfile_sha256"), "pnpm lock changed after review"
+        _reviewed_text_sha256(lock_path) == frontend.get("lockfile_sha256"),
+        "pnpm lock changed after review",
     )
     try:
         lock = yaml.safe_load(lock_path.read_text(encoding="utf-8"))
@@ -439,7 +457,10 @@ def _cargo_release_graph(
 def _verify_rust(repository: Path, policy: Mapping[str, Any]) -> tuple[int, int, set[str]]:
     rust = _mapping(policy.get("rust"), "Rust policy")
     lock_path = repository / "runner/Cargo.lock"
-    _require(_sha256(lock_path) == rust.get("lockfile_sha256"), "Cargo.lock changed after review")
+    _require(
+        _reviewed_text_sha256(lock_path) == rust.get("lockfile_sha256"),
+        "Cargo.lock changed after review",
+    )
     lock_document = lock_path.read_text(encoding="utf-8")
     packages = _cargo_packages(lock_document)
     locked = {_package_id(*key) for key, value in packages.items() if value["external"]}
@@ -496,7 +517,10 @@ def _verify_assets(repository: Path, policy: Mapping[str, Any]) -> int:
     integrity = _mapping(assets.get("third_party_integrity"), "third-party asset integrity")
     for relative, digest in integrity.items():
         _require(re.fullmatch(r"[0-9a-f]{64}", str(digest)) is not None, "bad asset digest policy")
-        _require(_sha256(repository / relative) == digest, f"third-party asset changed: {relative}")
+        _require(
+            _reviewed_text_sha256(repository / relative) == digest,
+            f"third-party asset changed: {relative}",
+        )
     return len(reviewed)
 
 

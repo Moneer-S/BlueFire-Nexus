@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -37,6 +38,29 @@ def test_release_rights_audit_covers_the_release_tree() -> None:
         "unresolved_items": [],
     }
     assert report.project_source_files > 250
+
+
+def test_reviewed_text_hash_is_stable_across_git_line_endings(tmp_path: Path) -> None:
+    lockfile = tmp_path / "reviewed.lock"
+    lockfile.write_bytes(b"first\nsecond\n")
+    expected = hashlib.sha256(b"first\nsecond\n").hexdigest()
+
+    assert release_rights_audit._reviewed_text_sha256(lockfile) == expected
+
+    lockfile.write_bytes(b"first\r\nsecond\r\n")
+    assert release_rights_audit._reviewed_text_sha256(lockfile) == expected
+
+
+@pytest.mark.parametrize("payload", [b"mixed\rline\n", b"binary\x00lock", b"bad-utf8-\xff"])
+def test_reviewed_text_hash_rejects_noncanonical_text(
+    tmp_path: Path,
+    payload: bytes,
+) -> None:
+    lockfile = tmp_path / "reviewed.lock"
+    lockfile.write_bytes(payload)
+
+    with pytest.raises(RightsAuditError, match="reviewed file"):
+        release_rights_audit._reviewed_text_sha256(lockfile)
 
 
 def test_release_rights_audit_fails_closed_on_unresolved_item(

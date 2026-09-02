@@ -123,7 +123,7 @@
     ]
   },
   "frontend": {
-    "lockfile_sha256": "590efec13f75602eda3880020b9d17a691960c8eed4ad946a1b9343d68d2a77b",
+    "lockfile_sha256": "6003d191eaa9eb6cf29948a36065c870acfd42299d01df3e4afb51f6e78fc54e",
     "locked_package_count": 391,
     "direct_requirements": {
       "@radix-ui/react-dialog": "^1.1.15",
@@ -237,7 +237,7 @@
     }
   },
   "rust": {
-    "lockfile_sha256": "d5517421cb9a85c310c657f4442484c456b996e3fc6297fc5f98abf8caac0e5c",
+    "lockfile_sha256": "e2471c0304d7ab718d42c52c8389de3ce823264024897e74c263a32c17fb29e5",
     "release_graph": [
       "autocfg@1.5.1",
       "bitflags@2.13.1",
