@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import os
 import queue
@@ -47,6 +48,25 @@ from tests_platform.test_action_package_lifecycle import (
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_ENV = "BLUEFIRE_E2E_RUNNER"
 E2E_ENROLLMENT_KEY = bytes(range(32))
+
+
+def _scenario_with_bound_loopback_port(
+    scenario_document: dict[str, Any], *, port: int
+) -> dict[str, Any]:
+    assert isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65_535
+    rebound_scenario = copy.deepcopy(scenario_document)
+    steps = rebound_scenario.get("steps")
+    assert isinstance(steps, list)
+    loopback_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("behavior_id") == "sandbox.network.loopback.v1"
+    ]
+    assert len(loopback_steps) == 1
+    parameters = loopback_steps[0].get("parameters")
+    assert isinstance(parameters, dict)
+    parameters["port"] = port
+    return rebound_scenario
 
 
 def _read_process_line(stream: Any, *, timeout_seconds: float) -> str:
@@ -234,6 +254,37 @@ def test_signed_package_alias_executes_through_real_native_runner(tmp_path: Path
     assert not [path for path in sandbox.rglob("*") if path.is_file()]
 
 
+def test_bound_loopback_port_rewrite_clones_and_changes_only_the_port() -> None:
+    scenario_document = load_scenario(
+        ROOT / "scenarios" / "linux_container_validation.yaml"
+    ).to_dict()
+    with LoopbackArtifactReceiver(
+        ReceiverConfig(authentication_key=E2E_ENROLLMENT_KEY, port=0)
+    ) as receiver:
+        bound_port = receiver.port
+        assert 1 <= bound_port <= 65_535
+        expected = copy.deepcopy(scenario_document)
+        expected_loopback_step = next(
+            step
+            for step in expected["steps"]
+            if step["behavior_id"] == "sandbox.network.loopback.v1"
+        )
+        expected_loopback_step["parameters"]["port"] = bound_port
+        rebound_scenario = _scenario_with_bound_loopback_port(
+            scenario_document,
+            port=bound_port,
+        )
+
+    assert rebound_scenario == expected
+    assert rebound_scenario is not scenario_document
+    original_loopback_step = next(
+        step
+        for step in scenario_document["steps"]
+        if step["behavior_id"] == "sandbox.network.loopback.v1"
+    )
+    assert original_loopback_step["parameters"]["port"] == 4_317
+
+
 @pytest.mark.skipif(
     not os.environ.get(RUNNER_ENV),
     reason=f"set {RUNNER_ENV} to a freshly built runner binary",
@@ -344,17 +395,23 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
     generic_receiver_required = any(
         step.behavior_id == "sandbox.network.loopback.v1" for step in scenario.steps
     )
+    scenario_document = scenario.to_dict()
     receiver = (
         LoopbackArtifactReceiver(
             ReceiverConfig(
                 authentication_key=E2E_ENROLLMENT_KEY,
-                port=4317,
+                port=0,
                 max_requests=1,
             )
         )
         if generic_receiver_required
         else None
     )
+    if receiver is not None:
+        scenario_document = _scenario_with_bound_loopback_port(
+            scenario_document,
+            port=receiver.port,
+        )
     receiver_result: dict[str, Any] = {}
     receiver_thread = (
         threading.Thread(
@@ -370,7 +427,7 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
     try:
         result = service.run(
             {
-                "scenario": scenario.to_dict(),
+                "scenario": scenario_document,
                 "mode": "execute",
                 "runner_profile_id": (
                     "sandbox-endpoint-deep-lab.v1"

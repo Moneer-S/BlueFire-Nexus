@@ -122,18 +122,66 @@ def _exchange(
 def _read_response(connection: socket.socket) -> tuple[int, dict[str, str], dict[str, Any]]:
     response = bytearray()
     while True:
-        chunk = connection.recv(64 * 1024)
+        try:
+            chunk = connection.recv(64 * 1024)
+        except ConnectionResetError:
+            # BSD sockets may reset after delivering the complete response when
+            # the server closes with unread request bytes. Parsing below still
+            # requires a complete HTTP response and body.
+            if not response:
+                raise
+            break
         if not chunk:
             break
         response.extend(chunk)
     head, body = bytes(response).split(b"\r\n\r\n", 1)
     lines = head.split(b"\r\n")
     status = int(lines[0].split(b" ")[1])
+    content_lengths = [
+        value.strip()
+        for name, value in (line.split(b":", 1) for line in lines[1:])
+        if name.lower() == b"content-length"
+    ]
+    if (
+        len(content_lengths) != 1
+        or not content_lengths[0].isdigit()
+        or int(content_lengths[0]) > receiver_module.MAX_CONFIGURED_BODY_BYTES
+        or int(content_lengths[0]) != len(body)
+    ):
+        raise ValueError("receiver response content length is invalid")
     headers = {
         name.decode("ascii").casefold(): value.decode("ascii").strip()
         for name, value in (line.split(b":", 1) for line in lines[1:])
     }
     return status, headers, json.loads(body)
+
+
+class _ResettingConnection:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+
+    def recv(self, maximum: int) -> bytes:
+        if self._payload:
+            chunk = self._payload[:maximum]
+            self._payload = self._payload[maximum:]
+            return chunk
+        raise ConnectionResetError("peer reset")
+
+
+def test_response_parser_accepts_only_complete_body_before_peer_reset() -> None:
+    payload = receiver_module._json_response(
+        408,
+        {"accepted": False, "error": "request_timeout"},
+    )
+
+    status, _headers, body = _read_response(_ResettingConnection(payload))  # type: ignore[arg-type]
+
+    assert status == 408
+    assert body == {"accepted": False, "error": "request_timeout"}
+
+    truncated = payload[:-1]
+    with pytest.raises(ValueError, match="content length"):
+        _read_response(_ResettingConnection(truncated))  # type: ignore[arg-type]
 
 
 def _serve_in_thread(

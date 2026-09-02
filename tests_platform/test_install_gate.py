@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
@@ -741,6 +742,67 @@ def test_committed_source_archive_uses_fixed_git_outside_ambient_path(
     assert environment["GIT_TERMINAL_PROMPT"] == "0"
     assert (source / "pyproject.toml").is_file()
     assert (source / "setup.py").is_file()
+
+
+@pytest.mark.parametrize("kind", ["outside", "symlink", "special"])
+def test_committed_source_archive_rejects_unsafe_members(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    archive_path = tmp_path / "unsafe.tar"
+    with tarfile.open(archive_path, "w:") as archive:
+        name = "../outside" if kind == "outside" else "unsafe"
+        member = tarfile.TarInfo(name)
+        if kind == "symlink":
+            member.type = tarfile.SYMTYPE
+            member.linkname = "target"
+        elif kind == "special":
+            member.type = tarfile.CHRTYPE
+        else:
+            member.size = 1
+        archive.addfile(member, io.BytesIO(b"x") if member.isfile() else None)
+
+    source = tmp_path / "source"
+    source.mkdir()
+    with tarfile.open(archive_path, "r:") as archive:
+        with pytest.raises(
+            ValueError, match=r"^committed source archive contains an unsafe member$"
+        ):
+            install_gate._extract_validated_archive(archive, source)
+
+    assert list(source.iterdir()) == []
+    assert not (tmp_path / "outside").exists()
+
+
+@pytest.mark.parametrize(
+    "names",
+    (
+        ("safe.txt", "node", "node/child"),
+        ("pkg/one", "Pkg/two"),
+        ("caf\N{LATIN SMALL LETTER E WITH ACUTE}/one", "cafe\N{COMBINING ACUTE ACCENT}/two"),
+    ),
+)
+def test_committed_source_archive_rejects_portable_namespace_collisions_before_writes(
+    tmp_path: Path,
+    names: tuple[str, ...],
+) -> None:
+    archive_path = tmp_path / "colliding.tar"
+    with tarfile.open(archive_path, "w:") as archive:
+        for name in names:
+            member = tarfile.TarInfo(name)
+            member.size = 1
+            archive.addfile(member, io.BytesIO(b"x"))
+
+    source = tmp_path / "source"
+    source.mkdir()
+    with tarfile.open(archive_path, "r:") as archive:
+        with pytest.raises(
+            ValueError,
+            match=r"^committed source archive contains an unsafe member$",
+        ):
+            install_gate._extract_validated_archive(archive, source)
+
+    assert list(source.iterdir()) == []
 
 
 def test_ephemeral_cleanup_retries_and_refuses_paths_outside_destination(

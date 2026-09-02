@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
@@ -18,8 +18,14 @@ pub const PROVIDER_EXECUTION_BINDING_SCHEMA_VERSION: &str =
 pub const ACTION_PROGRAM_SCHEMA_VERSION: &str = "bluefire.action-program.v1";
 pub const ACTION_PROGRAM_ADAPTER: &str = "bluefire.builtin-runner-adapter.v1";
 
+fn normalize_wire_datetime(value: DateTime<Utc>) -> DateTime<Utc> {
+    value
+        .with_nanosecond((value.nanosecond() / 1_000) * 1_000)
+        .expect("microsecond normalization preserves valid nanoseconds")
+}
+
 pub fn utc_now() -> DateTime<Utc> {
-    DateTime::<Utc>::from(SystemTime::now())
+    normalize_wire_datetime(DateTime::<Utc>::from(SystemTime::now()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -580,6 +586,21 @@ pub fn json_object(entries: impl IntoIterator<Item = (String, Value)>) -> Value 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utc_now_uses_microsecond_wire_precision() {
+        let nanosecond_datetime =
+            DateTime::<Utc>::from_timestamp(1_700_000_000, 123_456_789).unwrap();
+
+        let normalized = normalize_wire_datetime(nanosecond_datetime);
+
+        assert_eq!(normalized.timestamp_subsec_nanos(), 123_456_000);
+        assert_eq!(
+            serde_json::to_string(&normalized).unwrap(),
+            r#""2023-11-14T22:13:20.123456Z""#
+        );
+        assert_eq!(utc_now().timestamp_subsec_nanos() % 1_000, 0);
+    }
 
     #[test]
     fn canonical_json_sorts_object_keys_recursively() {
