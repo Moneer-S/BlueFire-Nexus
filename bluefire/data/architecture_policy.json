@@ -35,10 +35,10 @@
       },
       {
         "path": "bluefire/install_gate.py",
-        "max_lines": 1030,
-        "reason": "Single release-verifier contract exceeds the approximate new-file budget by twenty-four reviewed lines; journey execution and validation are already separated.",
-        "reviewed_by": "BlueFire completion lead (Codex), 2026-08-29",
-        "expires_after": "2027-03-31 or BlueFire Nexus v0.2.0, whichever comes first"
+        "max_lines": 1060,
+        "reason": "Single release-verifier trust boundary whose reviewed growth implements Python-version-portable extraction of the exact committed Git archive with traversal, link, case/Unicode-collision, type, size, and durability checks; journey execution and package-metadata validation remain separate.",
+        "reviewed_by": "BlueFire completion lead (Codex), 2026-09-02",
+        "expires_after": "2027-03-31 or BlueFire Nexus v3.1.0, whichever comes first"
       },
       {
         "path": "bluefire/orchestrator.py",
@@ -56,10 +56,17 @@
       },
       {
         "path": "bluefire/runner_client.py",
-        "max_lines": 3000,
-        "reason": "Legacy typed runner-protocol client remains one compatibility boundary; execution-key validation and transport implementation are separated from it.",
-        "reviewed_by": "BlueFire completion lead (Codex), 2026-08-29",
-        "expires_after": "2027-03-31 or BlueFire Nexus v0.2.0, whichever comes first"
+        "max_lines": 4515,
+        "reason": "Security-critical typed runner client remains one cross-platform launch/receipt compatibility boundary; reviewed growth implements descriptor-pinned Darwin no-fork launch reservation, exact child ownership, cancellation, and bounded indeterminate reconciliation, while trust, transport security, persistent lifecycle, and containment helpers remain separate.",
+        "reviewed_by": "BlueFire completion lead (Codex), 2026-09-02",
+        "expires_after": "2027-03-31 or BlueFire Nexus v3.1.0, whichever comes first"
+      },
+      {
+        "path": "bluefire/runner_darwin_containment.py",
+        "max_lines": 1214,
+        "reason": "Single-purpose Darwin containment adapter keeps descriptor-pinned runtime staging, no-fork sandbox launch, process/session identity, bounded release, and crash recovery in one reviewed invariant boundary; client protocol and generic lifecycle remain separate.",
+        "reviewed_by": "BlueFire completion lead (Codex), 2026-09-02",
+        "expires_after": "2027-03-31 or BlueFire Nexus v3.1.0, whichever comes first"
       },
       {
         "path": "bluefire/runner_lifecycle.py",
@@ -109,6 +116,13 @@
         "reason": "Pinned-path filesystem safety and cleanup remain cohesive after durable receipt-commit schema and identity validation were extracted from the module.",
         "reviewed_by": "BlueFire completion lead (Codex), 2026-08-29",
         "expires_after": "2027-03-31 or BlueFire Nexus v0.2.0, whichever comes first"
+      },
+      {
+        "path": "tools/provider_gate_source_audit.py",
+        "max_lines": 1606,
+        "reason": "Single machine-verifier for the trusted execution/process boundary; reviewed growth binds exact Python/Rust source inventory and AST launch contracts, including Darwin ownership and native command allowlists, while dynamic journeys and report validation remain separate.",
+        "reviewed_by": "BlueFire completion lead (Codex), 2026-09-02",
+        "expires_after": "2027-03-31 or BlueFire Nexus v3.1.0, whichever comes first"
       },
       {
         "path": "tools/run_install_gate_journey.py",
