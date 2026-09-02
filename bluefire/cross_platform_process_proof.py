@@ -13,7 +13,6 @@ import subprocess  # nosec B404 - one fixed /bin/sleep probe command
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol, cast
@@ -29,6 +28,7 @@ from .cross_platform_recovery_witness import (
 from .runner_client import (
     RunnerTaskCancelled,
     SubprocessRustRunner,
+    TaskAwareRunnerTransport,
     _pinned_launch_file,
     _PinnedPrivateDirectory,
     runner_pending_result_path,
@@ -57,6 +57,7 @@ _WAIT_NO_HANG = getattr(os, "WNOHANG", 1)
 _PAUSE = getattr(signal, "pause", None)
 _SIGKILL = getattr(signal, "SIGKILL", 9)
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
+_CANCELLATION_READY_TIMEOUT_SECONDS = 10.0
 
 
 class ProcessProofError(ValueError):
@@ -708,6 +709,113 @@ def posix_watchdog_crash_containment(work_root: Path) -> Mapping[str, Any]:
             _set_child_subreaper(previous_subreaper)
 
 
+class _CancellationReadinessEvent(threading.Event):
+    """Turn the runner's existing caller-thread cancellation poll into readiness proof."""
+
+    def __init__(self, control_root: Path, *, task_id: str, request_hash: str) -> None:
+        super().__init__()
+        self._control_root = control_root
+        self._task_id = task_id
+        self._request_hash = request_hash
+        self._deadline = time.monotonic() + _CANCELLATION_READY_TIMEOUT_SECONDS
+        self.observation: tuple[Mapping[str, Any], Mapping[str, Any], bool] | None = None
+        self.failure: BaseException | None = None
+        self.timed_out = False
+
+    def is_set(self) -> bool:
+        if super().is_set():
+            return True
+        if time.monotonic() >= self._deadline:
+            self.timed_out = True
+            self.set()
+            return True
+        if not self._control_root.is_dir() or not (self._control_root / "ready.json").is_file():
+            return False
+        try:
+            ready = _ready_record(
+                self._control_root,
+                task_id=self._task_id,
+                request_hash=self._request_hash,
+            )
+            try:
+                parent = dict(capture_process_identity(int(ready["parent_process_id"])))
+                descendant = dict(capture_process_identity(int(ready["descendant_process_id"])))
+            except RecoveryWitnessError as exc:
+                raise ProcessProofError("the cancellation process identity is unavailable") from exc
+            simultaneously_live = (
+                parent != descendant
+                and process_identity_running(parent)
+                and process_identity_running(descendant)
+            )
+            self.observation = (parent, descendant, simultaneously_live)
+        except BaseException as exc:
+            self.failure = exc
+        self.set()
+        return True
+
+
+def _execute_cancellation_task(
+    runner: TaskAwareRunnerTransport,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    *,
+    task_id: str,
+    request_hash: str,
+    control_root: Path,
+    durable_result_path: Path,
+    require: Callable[[bool, str], object],
+) -> tuple[RunnerTaskCancelled, Mapping[str, Any], Mapping[str, Any]]:
+    """Run and observe cancellation entirely on the launcher's caller thread."""
+
+    cancel = _CancellationReadinessEvent(
+        control_root,
+        task_id=task_id,
+        request_hash=request_hash,
+    )
+    cancellation_error: RunnerTaskCancelled | None = None
+    execution_failure: BaseException | None = None
+    try:
+        runner.execute_task(
+            manifest,
+            profile,
+            task_id=task_id,
+            cancel_event=cancel,
+            durable_result_path=durable_result_path,
+        )
+    except RunnerTaskCancelled as exc:
+        cancellation_error = exc
+    except BaseException as exc:
+        execution_failure = exc
+    finally:
+        cancel.set()
+
+    if execution_failure is not None:
+        raise execution_failure
+    if cancel.failure is not None:
+        raise cancel.failure
+    if cancel.timed_out:
+        require(False, "the packaged Rust cancellation witness never started")
+    require(
+        cancel.observation is not None,
+        "the packaged Rust cancellation witness never started",
+    )
+    if cancel.observation is None:
+        raise ProcessProofError("the packaged Rust cancellation witness never started")
+    parent_identity, descendant_identity, simultaneously_live = cancel.observation
+    require(
+        simultaneously_live,
+        "the cancellation parent and descendant were not simultaneously live",
+    )
+    if not simultaneously_live:
+        raise ProcessProofError(
+            "the cancellation parent and descendant were not simultaneously live"
+        )
+    require(cancellation_error is not None, "the runner did not return typed cancellation")
+    if cancellation_error is None:
+        raise ProcessProofError("the runner did not return typed cancellation")
+    return cancellation_error, parent_identity, descendant_identity
+
+
 def process_tree_cancellation(
     runtime: Path,
     resource_root: Path,
@@ -768,46 +876,16 @@ def process_tree_cancellation(
         timeout_seconds=20.0,
         output_limit_bytes=64 * 1024,
     )
-    cancel = threading.Event()
-    cancellation_error: RunnerTaskCancelled | None = None
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(
-            runner.execute_task,
-            manifest,
-            profile_doc,
-            task_id=task_id,
-            cancel_event=cancel,
-            durable_result_path=durable,
-        )
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline:
-            if control_root.is_dir() and (control_root / "ready.json").is_file():
-                break
-            if future.done():
-                future.result()
-            time.sleep(0.025)
-        check(control_root.is_dir(), "the packaged Rust cancellation witness never started")
-        ready = _ready_record(control_root, task_id=task_id, request_hash=request_hash)
-        try:
-            parent_identity = dict(capture_process_identity(int(ready["parent_process_id"])))
-            descendant_identity = dict(
-                capture_process_identity(int(ready["descendant_process_id"]))
-            )
-        except RecoveryWitnessError as exc:
-            raise ProcessProofError("the cancellation process identity is unavailable") from exc
-        check(
-            parent_identity != descendant_identity
-            and process_identity_running(parent_identity)
-            and process_identity_running(descendant_identity),
-            "the cancellation parent and descendant were not simultaneously live",
-        )
-        cancel.set()
-        try:
-            future.result(timeout=15)
-        except RunnerTaskCancelled as exc:
-            cancellation_error = exc
-    check(cancellation_error is not None, "the runner did not return typed cancellation")
-    assert cancellation_error is not None
+    cancellation_error, parent_identity, descendant_identity = _execute_cancellation_task(
+        runner,
+        manifest,
+        profile_doc,
+        task_id=task_id,
+        request_hash=request_hash,
+        control_root=control_root,
+        durable_result_path=durable,
+        require=check,
+    )
     survivor_probes: list[Mapping[str, Any]] = []
     for delay_ms in (0, 100, 250):
         if delay_ms:
