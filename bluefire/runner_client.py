@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import json
 import math
 import os
@@ -18,6 +20,7 @@ import tempfile
 import threading
 import time
 import weakref
+from collections import deque
 from contextlib import AbstractContextManager, contextmanager
 from hashlib import sha256
 from pathlib import Path
@@ -35,8 +38,18 @@ from .runner_darwin_containment import (
     stage_watchdog_interpreter,
 )
 from .runner_darwin_containment import (
+    _private_process_group_members as _darwin_private_process_group_members,
+)
+from .runner_darwin_containment import (
+    _private_session_members_for_leader as _darwin_private_session_members,
+)
+from .runner_darwin_containment import (
+    _validate_macos_launch_parent as _validate_darwin_launch_parent,
+)
+from .runner_darwin_containment import (
     release_process as release_darwin_process,
 )
+from .runner_darwin_containment import spawn_no_fork_exec as spawn_darwin_no_fork_exec
 from .runner_darwin_containment import (
     spawn_parent_death as spawn_darwin_parent_death,
 )
@@ -87,11 +100,22 @@ _PROCESS_TERM_GRACE_SECONDS = 2.0
 _PROCESS_KILL_GRACE_SECONDS = 5.0
 _WATCHDOG_START_GRACE_SECONDS = 10.0
 _WATCHDOG_EXIT_GRACE_SECONDS = 12.0
+_MAX_EXECUTION_TIMEOUT_SECONDS = 86_400.0
 _WATCHDOG_CONFIG_LIMIT_BYTES = 8 * 1024 * 1024
 _RUNNER_BINARY_LIMIT_BYTES = 256 * 1024 * 1024
 _WATCHDOG_CONTROL_NAMES = frozenset({"config.json", "start", "cancel", "ready.json", "status.json"})
 _WATCHDOG_STATUS_SCHEMA = "bluefire.runner-watchdog-status.v2"
 _LEGACY_WATCHDOG_STATUS_SCHEMA = "bluefire.runner-watchdog-status.v1"
+_WATCHDOG_DESCRIPTOR_BOOTSTRAP = (
+    "import pathlib,sys;"
+    "source=sys.argv.pop(1);"
+    "canonical=sys.argv.pop(1);"
+    "sys.argv[0]=canonical;"
+    "payload=pathlib.Path(source).read_bytes();"
+    "namespace={'__name__':'__main__','__file__':canonical,'__package__':None,"
+    "'__cached__':None};"
+    "exec(compile(payload,canonical,'exec'),namespace)"
+)
 _KILL_PROCESS_GROUP = getattr(os, "killpg", None)
 _GET_PROCESS_GROUP = getattr(os, "getpgrp", None)
 _GET_PROCESS_GROUP_ID = getattr(os, "getpgid", None)
@@ -104,6 +128,12 @@ _WAIT_EXITED = getattr(os, "WEXITED", 0)
 _WAIT_NO_HANG = getattr(os, "WNOHANG", 0)
 _WAIT_NO_REAP = getattr(os, "WNOWAIT", 0)
 _FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
+_DARWIN_P_PID = 1
+_DARWIN_WAITID_OPTIONS = 0x0000_0001 | 0x0000_0004 | 0x0000_0020
+_DARWIN_EMPTY_INVENTORY_CONFIRMATIONS = 2
+_DARWIN_INDETERMINATE_LIMIT = 32
+_DARWIN_RECONCILE_INTERVAL_SECONDS = 1.0
+_DARWIN_WAITID_EINTR_RETRIES = 8
 _RECEIVER_TASK_ID_ENV = "BLUEFIRE_RECEIVER_TASK_ID"
 _RECEIVER_TASK_KEY_ENV = "BLUEFIRE_RECEIVER_TASK_KEY"
 _RECEIVER_TASK_ENV_NAMES = frozenset({_RECEIVER_TASK_ID_ENV, _RECEIVER_TASK_KEY_ENV})
@@ -120,6 +150,614 @@ _CANCELLATION_STAGING_NAMES = frozenset(
     {".ready.json.bluefire-staging", ".cancel.ack.bluefire-staging"}
 )
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+class _DarwinSigInfo(ctypes.Structure):
+    """Public Darwin ``siginfo_t`` prefix and reserved tail from ``sys/signal.h``."""
+
+    _fields_ = [
+        ("si_signo", ctypes.c_int),
+        ("si_errno", ctypes.c_int),
+        ("si_code", ctypes.c_int),
+        ("si_pid", ctypes.c_int32),
+        ("si_uid", ctypes.c_uint32),
+        ("si_status", ctypes.c_int),
+        ("si_addr", ctypes.c_void_p),
+        ("si_value", ctypes.c_void_p),
+        ("si_band", ctypes.c_long),
+        ("reserved", ctypes.c_ulong * 7),
+    ]
+
+
+class _DarwinWatchdogProof:
+    """Parent-owned one-shot channel for an exact watchdog no-fork proof."""
+
+    def __init__(self) -> None:
+        # XNU's AF_UNIX implementation supports datagram socket pairs, but not
+        # SOCK_SEQPACKET.  One datagram gives the proof an atomic record while
+        # MSG_PEEK lets verification remain non-destructive until it is exact.
+        family = getattr(socket, "AF_UNIX", socket.AF_INET)
+        socket_type = socket.SOCK_DGRAM if hasattr(socket, "AF_UNIX") else socket.SOCK_STREAM
+        self.reader, self.writer = socket.socketpair(
+            family,
+            socket_type,
+        )
+        self.reader.setblocking(False)
+        self.read_descriptor = self.reader.fileno()
+        self.write_descriptor = self.writer.fileno()
+        self.nonce = secrets.token_hex(32)
+        self.closed = False
+        self.verified: bool | None = None
+        self.lock = threading.Lock()
+
+    def close_writer(self) -> None:
+        self.write_descriptor = -1
+        try:
+            self.writer.close()
+        except OSError:
+            pass
+
+    def close_reader(self) -> None:
+        self.read_descriptor = -1
+        self.closed = True
+        try:
+            self.reader.close()
+        except OSError:
+            pass
+
+    def verify(self, process_id: int) -> bool:
+        with self.lock:
+            self.close_writer()
+            if self.verified is not None:
+                return self.verified
+            if self.closed:
+                return False
+            try:
+                payload = self.reader.recv(193, socket.MSG_PEEK)
+            except BlockingIOError:
+                return False
+            except OSError:
+                self.verified = False
+                self.close_reader()
+                return False
+            expected = f"no-fork-v1:{self.nonce}:{process_id}\n".encode("ascii")
+            self.verified = payload == expected
+            self.close_reader()
+            return self.verified
+
+
+class _DarwinLaunchRequest:
+    def __init__(
+        self,
+        *,
+        owner: Any,
+        token: object,
+        process_sink: list[subprocess.Popen[bytes]],
+        resources: _DarwinLaunchResources,
+    ) -> None:
+        self.owner = owner
+        self.token = token
+        self.process_sink = process_sink
+        self.resources = resources
+        self.done = threading.Event()
+        self.accepted = threading.Event()
+        self.abandoned = threading.Event()
+        self.lock = threading.Lock()
+        self.process: subprocess.Popen[bytes] | None = None
+        self.error: BaseException | None = None
+
+
+class _DarwinLaunchResources:
+    """Worker-owned copies of every resource borrowed by Darwin Popen."""
+
+    def __init__(
+        self,
+        *,
+        argv: list[str],
+        options: dict[str, Any],
+        descriptors: list[int],
+        links: list[tuple[int, str, tuple[int, int]]],
+    ) -> None:
+        self.argv = argv
+        self.options = options
+        self.descriptors = descriptors
+        self.links = links
+        self.lock = threading.Lock()
+
+    def close_descriptors(self) -> None:
+        descriptors = self.descriptors
+        self.descriptors = []
+        for descriptor in descriptors:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+    def close_links(self) -> bool:
+        retained: list[tuple[int, str, tuple[int, int]]] = []
+        with self.lock:
+            links = self.links
+            self.links = retained
+        for parent_descriptor, name, identity in links:
+            complete = False
+            try:
+                current = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (current.st_dev, current.st_ino) == identity:
+                    os.unlink(name, dir_fd=parent_descriptor)
+                complete = True
+            except FileNotFoundError:
+                complete = True
+            except BaseException:
+                complete = False
+            if not complete:
+                retained.append((parent_descriptor, name, identity))
+                continue
+            try:
+                os.close(parent_descriptor)
+            except OSError:
+                pass
+        return not retained
+
+    def close(self) -> None:
+        self.close_descriptors()
+        self.close_links()
+
+    def abandon_link_retries(self) -> None:
+        links = self.links
+        self.links = []
+        for parent_descriptor, _name, _identity in links:
+            try:
+                os.close(parent_descriptor)
+            except OSError:
+                pass
+
+    def scrub_for_cleanup_retry(self) -> None:
+        self.argv.clear()
+        self.options.clear()
+        self.close_descriptors()
+
+
+def _clone_darwin_launch_link(
+    argument: str,
+    ownership_sink: list[tuple[int, str, tuple[int, int]]],
+) -> str:
+    """Create one worker-owned hard link to an already verified Darwin input."""
+
+    source = Path(argument)
+    parent_descriptor = -1
+    source_descriptor = -1
+    clone_name = f".bluefire-verified-launch-{secrets.token_hex(32)}"
+    clone_identity: tuple[int, int] | None = None
+    ownership_record: tuple[int, str, tuple[int, int]] | None = None
+    try:
+        if not source.is_absolute() or not source.name.startswith(".bluefire-verified-launch-"):
+            raise OSError("Darwin launch path is not transferable")
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        parent_descriptor = os.open(source.parent, directory_flags)
+        effective_user = _validate_darwin_launch_parent(source.parent, parent_descriptor)
+        source_descriptor = os.open(
+            source.name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_descriptor,
+        )
+        opened = os.fstat(source_descriptor)
+        visible = os.stat(
+            source.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not os.path.samestat(opened, visible)
+            or opened.st_nlink != 2
+            or opened.st_uid != effective_user
+            or stat.S_IMODE(opened.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise OSError("Darwin launch path identity is not transferable")
+        clone_identity = (opened.st_dev, opened.st_ino)
+        os.link(
+            source.name,
+            clone_name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        ownership_record = (parent_descriptor, clone_name, clone_identity)
+        ownership_sink.append(ownership_record)
+        clone = os.stat(
+            clone_name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        current = os.fstat(source_descriptor)
+        if not os.path.samestat(clone, current) or clone.st_nlink != 3 or current.st_nlink != 3:
+            raise OSError("Darwin launch path transfer changed identity")
+        transferred = str(source.parent / clone_name)
+        parent_descriptor = -1
+        return transferred
+    finally:
+        ownership_transferred = ownership_record is not None and any(
+            candidate is ownership_record for candidate in ownership_sink
+        )
+        try:
+            if source_descriptor >= 0:
+                os.close(source_descriptor)
+        finally:
+            if parent_descriptor >= 0 and not ownership_transferred:
+                try:
+                    if clone_identity is not None:
+                        try:
+                            current = os.stat(
+                                clone_name,
+                                dir_fd=parent_descriptor,
+                                follow_symlinks=False,
+                            )
+                            if (current.st_dev, current.st_ino) == clone_identity:
+                                os.unlink(clone_name, dir_fd=parent_descriptor)
+                        except OSError:
+                            pass
+                finally:
+                    os.close(parent_descriptor)
+
+
+def _prepare_darwin_launch_resources(
+    argv: list[str],
+    options: Mapping[str, Any],
+    sink: list[_DarwinLaunchResources],
+) -> _DarwinLaunchResources:
+    """Duplicate borrowed descriptors and pin executable paths for the worker."""
+
+    prepared_argv = list(argv)
+    prepared_options = dict(options)
+    descriptors: list[int] = []
+    links: list[tuple[int, str, tuple[int, int]]] = []
+    resources = _DarwinLaunchResources(
+        argv=prepared_argv,
+        options=prepared_options,
+        descriptors=descriptors,
+        links=links,
+    )
+    sink.append(resources)
+    try:
+        single_descriptor_indexes = tuple(
+            prepared_options.pop("_bluefire_descriptor_argument_indexes", ())
+        )
+        list_descriptor_indexes = tuple(
+            prepared_options.pop("_bluefire_descriptor_list_argument_indexes", ())
+        )
+        descriptor_map: dict[int, int] = {}
+        inherited = tuple(int(value) for value in prepared_options.get("pass_fds", ()))
+        for descriptor in inherited:
+            duplicate = _duplicate_darwin_descriptor(descriptor)
+            descriptors.append(duplicate)
+            descriptor_map[descriptor] = duplicate
+        if inherited:
+            prepared_options["pass_fds"] = tuple(
+                descriptor_map[descriptor] for descriptor in inherited
+            )
+        for name in ("stdin", "stdout", "stderr"):
+            value = prepared_options.get(name)
+            stream_descriptor: int | None = None
+            if isinstance(value, int):
+                if value >= 0:
+                    stream_descriptor = value
+            elif value is not None:
+                stream_descriptor = int(value.fileno())
+            if stream_descriptor is not None:
+                duplicate = _duplicate_darwin_descriptor(stream_descriptor)
+                descriptors.append(duplicate)
+                prepared_options[name] = duplicate
+        for raw_index in single_descriptor_indexes:
+            index = int(raw_index)
+            original = int(prepared_argv[index])
+            if original not in descriptor_map:
+                raise OSError("Darwin launch descriptor argument is not inherited")
+            prepared_argv[index] = str(descriptor_map[original])
+        for raw_index in list_descriptor_indexes:
+            index = int(raw_index)
+            original_values = tuple(
+                int(value) for value in prepared_argv[index].split(",") if value
+            )
+            if any(value not in descriptor_map for value in original_values):
+                raise OSError("Darwin launch descriptor list is not inherited")
+            prepared_argv[index] = ",".join(str(descriptor_map[value]) for value in original_values)
+        for index, argument in enumerate(prepared_argv):
+            for prefix in ("/dev/fd/", "/proc/self/fd/"):
+                if not argument.startswith(prefix):
+                    continue
+                original = int(argument.removeprefix(prefix))
+                if original in descriptor_map:
+                    prepared_argv[index] = prefix + str(descriptor_map[original])
+                break
+        for index, argument in enumerate(prepared_argv):
+            if index != 0:
+                continue
+            candidate = Path(argument)
+            if candidate.is_absolute() and candidate.name.startswith(".bluefire-verified-launch-"):
+                prepared_argv[index] = _clone_darwin_launch_link(argument, links)
+        return resources
+    except BaseException:
+        resources.close()
+        raise
+
+
+def _duplicate_darwin_descriptor(descriptor: int) -> int:
+    """Duplicate a launch descriptor without ever returning stdio numbers."""
+
+    low_descriptors: list[int] = []
+    try:
+        while True:
+            duplicate = os.dup(descriptor)
+            if duplicate > 2:
+                return duplicate
+            low_descriptors.append(duplicate)
+    finally:
+        for duplicate in low_descriptors:
+            try:
+                os.close(duplicate)
+            except OSError:
+                pass
+
+
+_DARWIN_LIBC_WAIT_ID: Any = None
+_DARWIN_INDETERMINATE_LOCK = threading.RLock()
+_DARWIN_ACTIVE_PROCESSES: dict[subprocess.Popen[bytes], Any] = {}
+_DARWIN_INDETERMINATE_PROCESSES: dict[subprocess.Popen[bytes], tuple[Any, bool, bool, bool]] = {}
+_DARWIN_PENDING_PROCESS_SLOTS: set[object] = set()
+_DARWIN_RECONCILER_THREAD: threading.Thread | None = None
+_DARWIN_RECONCILER_WAKE = threading.Event()
+_DARWIN_LAUNCH_REQUESTS: deque[_DarwinLaunchRequest] = deque()
+_DARWIN_LAUNCH_CLEANUPS: deque[_DarwinLaunchResources] = deque()
+_DARWIN_LAUNCH_CONDITION = threading.Condition()
+_DARWIN_LAUNCH_THREAD: threading.Thread | None = None
+if sys.platform == "darwin" and not callable(_WAIT_ID):
+    try:
+        _DARWIN_LIBC_WAIT_ID = ctypes.CDLL(None, use_errno=True).waitid
+        _DARWIN_LIBC_WAIT_ID.argtypes = [
+            ctypes.c_int,
+            ctypes.c_uint32,
+            ctypes.POINTER(_DarwinSigInfo),
+            ctypes.c_int,
+        ]
+        _DARWIN_LIBC_WAIT_ID.restype = ctypes.c_int
+    except (AttributeError, OSError):
+        _DARWIN_LIBC_WAIT_ID = None
+
+
+def _darwin_child_exited_without_reap(process_id: int) -> bool:
+    """Observe one Darwin child with ``waitid(WNOWAIT)`` on every supported Python."""
+
+    if process_id <= 1:
+        raise OSError("invalid Darwin child identity")
+    for _attempt in range(_DARWIN_WAITID_EINTR_RETRIES):
+        observed_process = 0
+        if callable(_WAIT_ID):
+            try:
+                observed = _WAIT_ID(
+                    _DARWIN_P_PID,
+                    process_id,
+                    _DARWIN_WAITID_OPTIONS,
+                )
+            except OSError as exc:
+                if exc.errno == errno.EINTR:
+                    continue
+                raise
+            if observed is not None:
+                observed_process = int(getattr(observed, "si_pid", 0))
+        elif callable(_DARWIN_LIBC_WAIT_ID):
+            information = _DarwinSigInfo()
+            ctypes.set_errno(0)
+            if (
+                int(
+                    _DARWIN_LIBC_WAIT_ID(
+                        _DARWIN_P_PID,
+                        process_id,
+                        ctypes.byref(information),
+                        _DARWIN_WAITID_OPTIONS,
+                    )
+                )
+                != 0
+            ):
+                error_number = ctypes.get_errno()
+                if error_number == errno.EINTR:
+                    continue
+                raise OSError(error_number, os.strerror(error_number))
+            observed_process = int(information.si_pid)
+        else:
+            raise OSError("Darwin waitid is unavailable")
+        if observed_process == 0:
+            return False
+        if observed_process != process_id:
+            raise OSError("Darwin waitid returned an unexpected child")
+        return True
+    raise OSError(errno.EINTR, os.strerror(errno.EINTR))
+
+
+def _darwin_child_status_ownership_available() -> bool:
+    """Require non-reaping observation and the default child-status owner."""
+
+    child_signal = getattr(signal, "SIGCHLD", None)
+    if not (callable(_WAIT_ID) or callable(_DARWIN_LIBC_WAIT_ID)) or not isinstance(
+        child_signal, int
+    ):
+        return False
+    try:
+        return signal.getsignal(child_signal) == signal.SIG_DFL
+    except (OSError, ValueError):
+        return False
+
+
+def _run_darwin_indeterminate_reconciler() -> None:
+    """Retry only Darwin cleanups whose direct-child identity remains pinned."""
+
+    candidate_index = 0
+    while True:
+        # Periodic scanning is the liveness backstop if an asynchronous
+        # exception lands after a candidate is published but before wakeup.
+        _DARWIN_RECONCILER_WAKE.wait(timeout=_DARWIN_RECONCILE_INTERVAL_SECONDS)
+        with _DARWIN_INDETERMINATE_LOCK:
+            candidates = [
+                (process, owner, terminate, observe_only)
+                for process, (owner, terminate, identity_lost, observe_only) in (
+                    _DARWIN_INDETERMINATE_PROCESSES.items()
+                )
+                if not identity_lost
+            ]
+            if not candidates:
+                _DARWIN_RECONCILER_WAKE.clear()
+                continue
+        process, owner, terminate, observe_only = candidates[candidate_index % len(candidates)]
+        candidate_index += 1
+        try:
+            owner._reconcile_indeterminate_darwin_process(  # noqa: SLF001
+                process,
+                terminate=terminate,
+                observe_only=observe_only,
+            )
+        except BaseException:
+            # Retention is the safe state. A later bounded pass retries it.
+            pass
+        time.sleep(_DARWIN_RECONCILE_INTERVAL_SECONDS)
+
+
+def _start_darwin_indeterminate_reconciler() -> None:
+    global _DARWIN_RECONCILER_THREAD
+    with _DARWIN_INDETERMINATE_LOCK:
+        if _DARWIN_RECONCILER_THREAD is not None and _DARWIN_RECONCILER_THREAD.is_alive():
+            _DARWIN_RECONCILER_WAKE.set()
+            return
+        reconciler = threading.Thread(
+            target=_run_darwin_indeterminate_reconciler,
+            name="bluefire-darwin-reconciler",
+            daemon=True,
+        )
+        _DARWIN_RECONCILER_THREAD = reconciler
+        try:
+            reconciler.start()
+        except RuntimeError:
+            if _DARWIN_RECONCILER_THREAD is reconciler:
+                _DARWIN_RECONCILER_THREAD = None
+            raise RunnerTransportError("Darwin reconciliation worker is unavailable") from None
+        _DARWIN_RECONCILER_WAKE.set()
+
+
+def _run_darwin_launch_worker() -> None:
+    requests_since_cleanup = 0
+    while True:
+        request: _DarwinLaunchRequest | None = None
+        cleanup: _DarwinLaunchResources | None = None
+        with _DARWIN_LAUNCH_CONDITION:
+            while not _DARWIN_LAUNCH_REQUESTS and not _DARWIN_LAUNCH_CLEANUPS:
+                _DARWIN_LAUNCH_CONDITION.wait(timeout=_DARWIN_RECONCILE_INTERVAL_SECONDS)
+            cleanup_turn = bool(
+                _DARWIN_LAUNCH_CLEANUPS
+                and (
+                    not _DARWIN_LAUNCH_REQUESTS
+                    or requests_since_cleanup >= _DARWIN_WAITID_EINTR_RETRIES
+                )
+            )
+            if not cleanup_turn:
+                request = _DARWIN_LAUNCH_REQUESTS.popleft()
+                request.accepted.set()
+                requests_since_cleanup += 1
+            else:
+                cleanup = _DARWIN_LAUNCH_CLEANUPS.popleft()
+                requests_since_cleanup = 0
+        if cleanup is not None:
+            if not cleanup.close_links():
+                with _DARWIN_LAUNCH_CONDITION:
+                    _DARWIN_LAUNCH_CLEANUPS.append(cleanup)
+                    _DARWIN_LAUNCH_CONDITION.wait(timeout=_DARWIN_RECONCILE_INTERVAL_SECONDS)
+            continue
+        if request is None:
+            continue
+        _execute_darwin_launch_request(request)
+
+
+def _execute_darwin_launch_request(request: _DarwinLaunchRequest) -> None:
+    """Execute one accepted request using only its worker-owned resources."""
+
+    resources = request.resources
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        with request.lock:
+            if request.abandoned.is_set():
+                raise RunnerTransportError("Darwin process launch was abandoned")
+        process = request.owner._construct_registered_darwin_popen(  # noqa: SLF001
+            request.token,
+            request.process_sink,
+            resources.argv,
+            **resources.options,
+        )
+        with request.lock:
+            request.process = process
+    except BaseException as exc:
+        with request.lock:
+            if request.process_sink:
+                request.process = request.process_sink[-1]
+            process = request.process
+            request.error = exc
+    finally:
+        with request.lock:
+            process = request.process
+            abandoned = request.abandoned.is_set()
+        if abandoned and process is not None:
+            try:
+                request.owner._quarantine_interrupted_darwin_launch(process)  # noqa: SLF001
+            except BaseException:
+                pass
+        _retire_darwin_launch_resources(resources)
+        request.done.set()
+
+
+def _retire_darwin_launch_resources(resources: _DarwinLaunchResources) -> None:
+    """Close owned launch inputs and retain bounded private-link cleanup."""
+
+    resources.close_descriptors()
+    # argv[0] has crossed exec, the launch failed closed, or an unaccepted
+    # request was cancelled. Keep retry ownership if transient cleanup cannot
+    # remove its private launch pin.
+    if not resources.close_links():
+        resources.scrub_for_cleanup_retry()
+        with _DARWIN_LAUNCH_CONDITION:
+            if len(_DARWIN_LAUNCH_CLEANUPS) < _DARWIN_INDETERMINATE_LIMIT:
+                _DARWIN_LAUNCH_CLEANUPS.append(resources)
+            else:
+                resources.abandon_link_retries()
+            _DARWIN_LAUNCH_CONDITION.notify()
+
+
+def _start_darwin_launch_worker() -> None:
+    global _DARWIN_LAUNCH_THREAD
+    with _DARWIN_INDETERMINATE_LOCK:
+        if _DARWIN_LAUNCH_THREAD is not None and _DARWIN_LAUNCH_THREAD.is_alive():
+            return
+        worker = threading.Thread(
+            target=_run_darwin_launch_worker,
+            name="bluefire-darwin-launch",
+            daemon=True,
+        )
+        _DARWIN_LAUNCH_THREAD = worker
+        try:
+            worker.start()
+        except RuntimeError:
+            if _DARWIN_LAUNCH_THREAD is worker:
+                _DARWIN_LAUNCH_THREAD = None
+            raise RunnerTransportError("Darwin launch worker is unavailable") from None
+
+
+def _darwin_launch_worker_is_alive() -> bool:
+    with _DARWIN_INDETERMINATE_LOCK:
+        return _DARWIN_LAUNCH_THREAD is not None and _DARWIN_LAUNCH_THREAD.is_alive()
 
 
 def _validated_receiver_task_environment(
@@ -161,9 +799,11 @@ def _consume_receiver_task_environment(*, expected_task_id: str) -> dict[str, st
 
 
 @contextmanager
-def _pinned_launch_file(
+def _pinned_launch_file_impl(
     path: Path,
     expected_digest: str,
+    *,
+    darwin_descriptor_backed: bool = False,
 ) -> Iterator[tuple[str, tuple[int, ...]]]:
     """Bind a launch path to the exact file descriptor that was verified."""
 
@@ -177,13 +817,28 @@ def _pinned_launch_file(
                 os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
             )
         details = os.fstat(descriptor)
-        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1:
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_nlink < 1
+            or (sys.platform != "darwin" and details.st_nlink != 1)
+        ):
             raise OSError("launch input is not a single-link regular file")
         payload = _read_descriptor_bounded(descriptor, _RUNNER_BINARY_LIMIT_BYTES)
         if "sha256:" + sha256(payload).hexdigest() != expected_digest:
             raise OSError("launch input digest changed")
         if os.name == "nt":
             yield str(path), ()
+        elif sys.platform == "darwin" and darwin_descriptor_backed:
+            descriptor_path = f"/dev/fd/{descriptor}"
+            descriptor_details = os.stat(descriptor_path)
+            if (descriptor_details.st_dev, descriptor_details.st_ino) != (
+                details.st_dev,
+                details.st_ino,
+            ):
+                raise OSError("descriptor-backed Darwin input identity changed")
+            if os.lseek(descriptor, 0, os.SEEK_SET) != 0:
+                raise OSError("descriptor-backed Darwin input offset is invalid")
+            yield descriptor_path, (descriptor,)
         elif sys.platform == "darwin":
             with macos_pinned_launch_path(
                 path,
@@ -218,6 +873,23 @@ def _pinned_launch_file(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+@contextmanager
+def _pinned_launch_file(
+    path: Path,
+    expected_digest: str,
+    *,
+    darwin_descriptor_backed: bool = False,
+) -> Iterator[tuple[str, tuple[int, ...]]]:
+    """Bind one launch to its verified file while platform pinning is active."""
+
+    with _pinned_launch_file_impl(
+        path,
+        expected_digest,
+        darwin_descriptor_backed=darwin_descriptor_backed,
+    ) as launch:
+        yield launch
 
 
 class _CancellationControlLease:
@@ -783,19 +1455,262 @@ class SubprocessRustRunner:
             raise RunnerTransportError("Packaged runner watchdog is unavailable.") from None
         self._windows_jobs: dict[int, int] = {}
         self._windows_jobs_lock = threading.Lock()
+        self._released_windows_processes: weakref.WeakSet[subprocess.Popen[bytes]] = (
+            weakref.WeakSet()
+        )
         self._linux_process_containments: weakref.WeakKeyDictionary[
             subprocess.Popen[bytes], tuple[int, int, int, int, int]
         ] = weakref.WeakKeyDictionary()
         self._released_linux_processes: weakref.WeakSet[subprocess.Popen[bytes]] = weakref.WeakSet()
+        self._released_darwin_processes: weakref.WeakSet[subprocess.Popen[bytes]] = (
+            weakref.WeakSet()
+        )
+        self._darwin_release_verified: weakref.WeakSet[subprocess.Popen[bytes]] = weakref.WeakSet()
+        self._darwin_reap_indeterminate: weakref.WeakSet[subprocess.Popen[bytes]] = (
+            weakref.WeakSet()
+        )
+        self._darwin_identity_lost: weakref.WeakSet[subprocess.Popen[bytes]] = weakref.WeakSet()
+        self._darwin_no_fork_proven: weakref.WeakSet[subprocess.Popen[bytes]] = weakref.WeakSet()
+        self._darwin_watchdog_proofs: weakref.WeakKeyDictionary[
+            subprocess.Popen[bytes], _DarwinWatchdogProof
+        ] = weakref.WeakKeyDictionary()
         self._darwin_process_containments: weakref.WeakKeyDictionary[
             subprocess.Popen[bytes], DarwinProcessContainment
         ] = weakref.WeakKeyDictionary()
+        if sys.platform == "darwin":
+            if not _darwin_child_status_ownership_available():
+                raise RunnerTransportError("Darwin unreaped process observation is unavailable")
+            _start_darwin_indeterminate_reconciler()
+            _start_darwin_launch_worker()
         if (
-            timeout_seconds <= 0
+            not 0 < timeout_seconds <= _MAX_EXECUTION_TIMEOUT_SECONDS
+            or not math.isfinite(timeout_seconds)
             or not 4096 <= output_limit_bytes <= _WATCHDOG_CONFIG_LIMIT_BYTES
             or (receiver_task_key_factory is not None and not callable(receiver_task_key_factory))
         ):
             raise RunnerTransportError("runner transport bounds are invalid")
+
+    def _reserve_darwin_process_slot(self, token: object) -> bool:
+        with _DARWIN_INDETERMINATE_LOCK:
+            if (
+                len(set(_DARWIN_ACTIVE_PROCESSES) | set(_DARWIN_INDETERMINATE_PROCESSES))
+                + len(_DARWIN_PENDING_PROCESS_SLOTS)
+                >= _DARWIN_INDETERMINATE_LIMIT
+            ):
+                return False
+            _DARWIN_PENDING_PROCESS_SLOTS.add(token)
+        return True
+
+    def _register_darwin_process_slot(
+        self,
+        token: object,
+        process: subprocess.Popen[bytes],
+    ) -> None:
+        with _DARWIN_INDETERMINATE_LOCK:
+            active_owner = _DARWIN_ACTIVE_PROCESSES.get(process)
+            if active_owner is self:
+                _DARWIN_PENDING_PROCESS_SLOTS.discard(token)
+                return
+            if token not in _DARWIN_PENDING_PROCESS_SLOTS or active_owner is not None:
+                raise AssertionError("Darwin process reservation is invalid")
+            # Insert the strong process pin before discarding the reservation.
+            # If an asynchronous exception lands between these operations, the
+            # idempotent retry above completes the same transition safely.
+            _DARWIN_ACTIVE_PROCESSES[process] = self
+            try:
+                _DARWIN_PENDING_PROCESS_SLOTS.discard(token)
+            except BaseException:
+                set.discard(_DARWIN_PENDING_PROCESS_SLOTS, token)
+                raise
+
+    @staticmethod
+    def _cancel_darwin_process_slot(token: object) -> None:
+        with _DARWIN_INDETERMINATE_LOCK:
+            try:
+                _DARWIN_PENDING_PROCESS_SLOTS.discard(token)
+            except BaseException:
+                set.discard(_DARWIN_PENDING_PROCESS_SLOTS, token)
+                raise
+
+    def _drop_active_darwin_process(self, process: subprocess.Popen[bytes]) -> None:
+        with _DARWIN_INDETERMINATE_LOCK:
+            if _DARWIN_ACTIVE_PROCESSES.get(process) is self:
+                _DARWIN_ACTIVE_PROCESSES.pop(process, None)
+
+    def _drop_owned_darwin_process(self, process: subprocess.Popen[bytes]) -> None:
+        """Release ownership while keeping any interrupted transition discoverable."""
+
+        with _DARWIN_INDETERMINATE_LOCK:
+            if _DARWIN_ACTIVE_PROCESSES.get(process) is self:
+                _DARWIN_ACTIVE_PROCESSES.pop(process, None)
+            state = _DARWIN_INDETERMINATE_PROCESSES.get(process)
+            if state is not None and state[0] is self:
+                _DARWIN_INDETERMINATE_PROCESSES.pop(process, None)
+
+    def _darwin_process_is_indeterminate(self, process: subprocess.Popen[bytes]) -> bool:
+        with _DARWIN_INDETERMINATE_LOCK:
+            state = _DARWIN_INDETERMINATE_PROCESSES.get(process)
+            return state is not None and state[0] is self
+
+    def _refresh_darwin_no_fork_proof(
+        self,
+        process: subprocess.Popen[bytes],
+    ) -> bool:
+        if process in self._darwin_no_fork_proven:
+            return True
+        proof = self._darwin_watchdog_proofs.get(process)
+        if proof is None or not proof.verify(process.pid):
+            return False
+        self._darwin_no_fork_proven.add(process)
+        self._darwin_watchdog_proofs.pop(process, None)
+        return True
+
+    def _construct_registered_darwin_popen(
+        self,
+        token: object,
+        process_sink: list[subprocess.Popen[bytes]],
+        argv: list[str],
+        **options: Any,
+    ) -> subprocess.Popen[bytes]:
+        """Construct Popen under a provisional strong pin before child creation."""
+
+        process: subprocess.Popen[bytes] = cast(
+            Any,
+            subprocess.Popen.__new__(subprocess.Popen),
+        )
+        initialized = False
+        try:
+            self._register_darwin_process_slot(token, process)
+            subprocess.Popen.__init__(process, argv, **options)
+            initialized = True
+            process_sink.append(process)
+            return process
+        except BaseException:
+            process_id = getattr(process, "pid", None)
+            child_created = bool(getattr(process, "_child_created", False))
+            terminal_status = getattr(process, "returncode", None)
+            if terminal_status is None and (
+                initialized or (child_created and isinstance(process_id, int) and process_id > 1)
+            ):
+                if not process_sink or process_sink[-1] is not process:
+                    try:
+                        process_sink.append(process)
+                    except Exception:
+                        pass
+                self._quarantine_interrupted_darwin_launch(process)
+            else:
+                self._drop_active_darwin_process(process)
+            raise
+
+    def _spawn_registered_darwin_popen(
+        self,
+        token: object,
+        process_sink: list[subprocess.Popen[bytes]],
+        argv: list[str],
+        **options: Any,
+    ) -> subprocess.Popen[bytes]:
+        """Launch on the prestarted worker and complete ownership before return."""
+
+        _start_darwin_launch_worker()
+        resource_sink: list[_DarwinLaunchResources] = []
+        resources: _DarwinLaunchResources | None = None
+        request: _DarwinLaunchRequest | None = None
+        worker_owned = False
+        try:
+            # Clone every borrowed fd and launch link before publication. Once
+            # queued, the worker touches only these owned copies, so caller
+            # unwind may safely close the originals at any later boundary.
+            resources = _prepare_darwin_launch_resources(argv, options, resource_sink)
+            request = _DarwinLaunchRequest(
+                owner=self,
+                token=token,
+                process_sink=process_sink,
+                resources=resources,
+            )
+            with _DARWIN_LAUNCH_CONDITION:
+                _DARWIN_LAUNCH_REQUESTS.append(request)
+                _DARWIN_LAUNCH_CONDITION.notify()
+            launch_deadline = time.monotonic() + _WATCHDOG_START_GRACE_SECONDS
+            while not request.done.wait(_PROCESS_POLL_SECONDS):
+                if not _darwin_launch_worker_is_alive():
+                    raise RunnerTransportError("Darwin launch worker stopped unexpectedly")
+                if time.monotonic() >= launch_deadline:
+                    raise RunnerTransportError("Darwin process launch exceeded its deadline")
+            with request.lock:
+                error = request.error
+                process = request.process
+            if error is not None:
+                raise error
+            if process is None:
+                raise AssertionError("Darwin launch worker returned without a process")
+            return process
+        except BaseException:
+            if resources is None and resource_sink:
+                resources = resource_sink[-1]
+            # Transfer ownership to the worker without waiting indefinitely.
+            # If it eventually creates a child, its finalizer observes this
+            # marker and moves that child into bounded reconciliation.
+            process = None
+            if request is not None:
+                with request.lock:
+                    request.abandoned.set()
+                    process = request.process
+            self._cancel_darwin_process_slot(token)
+            if request is not None:
+                with _DARWIN_LAUNCH_CONDITION:
+                    if request in _DARWIN_LAUNCH_REQUESTS:
+                        # The worker has not accepted this request, so remove
+                        # it before the outer frame releases its governor token.
+                        _DARWIN_LAUNCH_REQUESTS.remove(request)
+                        worker_owned = False
+                    else:
+                        # The worker publishes acceptance while holding this
+                        # same condition. A request missing from both states
+                        # never crossed the publication boundary.
+                        worker_owned = request.accepted.is_set()
+                if not worker_owned and resources is not None:
+                    _retire_darwin_launch_resources(resources)
+                with request.lock:
+                    process = request.process
+            elif resources is not None:
+                _retire_darwin_launch_resources(resources)
+            if process is not None:
+                self._quarantine_interrupted_darwin_launch(process)
+            raise
+
+    def _quarantine_interrupted_darwin_launch(
+        self,
+        process: subprocess.Popen[bytes],
+    ) -> None:
+        has_containment = process in self._darwin_process_containments
+        try:
+            has_no_fork_proof = self._refresh_darwin_no_fork_proof(process)
+        except BaseException:
+            has_no_fork_proof = False
+        # A child that has not transferred containment or a dynamic no-fork
+        # proof can still be recovered safely, but must never be signalled by
+        # numeric identity.  Its unreaped child PID pins the private session
+        # identifier while observe-only reconciliation proves it empty.
+        observe_only = not has_containment and not has_no_fork_proof
+        self._retain_indeterminate_darwin_process(
+            process,
+            terminate=True,
+            observe_only=observe_only,
+        )
+
+    def _restore_darwin_private_reconciliation(
+        self,
+        process: subprocess.Popen[bytes],
+    ) -> None:
+        restart = False
+        with _DARWIN_INDETERMINATE_LOCK:
+            self._darwin_identity_lost.discard(process)
+            state = _DARWIN_INDETERMINATE_PROCESSES.get(process)
+            if state is not None and state[0] is self:
+                _DARWIN_INDETERMINATE_PROCESSES[process] = (self, True, False, False)
+                restart = True
+        if restart:
+            _start_darwin_indeterminate_reconciler()
 
     def _result_parent_guard(self, parent: Path) -> _PinnedPrivateDirectory:
         live = self._durable_result_guard
@@ -973,18 +1888,24 @@ class SubprocessRustRunner:
                 ):
                     time.sleep(_PROCESS_POLL_SECONDS)
                 if not self._process_exited_without_reap(watchdog):
-                    if os.name != "nt":
+                    if sys.platform == "darwin":
+                        if not self._release_darwin_process_group(watchdog):
+                            raise RunnerPendingResultExists(
+                                "Runner watchdog containment is indeterminate and requires "
+                                "reconciliation."
+                            ) from None
+                    elif os.name != "nt":
                         # The armed Rust child dies if its watchdog does, but an
                         # active watchdog can still commit a recoverable result.
                         # Preserve that authority until reconciliation.
                         raise RunnerPendingResultExists(
                             "Runner watchdog remains active and requires reconciliation."
                         ) from None
-                    if not self._terminate_process_tree(watchdog):
+                    elif not self._terminate_process_tree(watchdog):
                         raise RunnerTransportError(
                             "Runner watchdog process tree could not be stopped safely"
                         ) from None
-                elif os.name == "nt" and not self._finish_windows_job(watchdog.pid):
+                elif os.name == "nt" and not self._finish_windows_job(watchdog):
                     raise RunnerTransportError(
                         "Runner watchdog containment could not be released"
                     ) from None
@@ -998,7 +1919,7 @@ class SubprocessRustRunner:
                 containment_released = watchdog is None
                 if watchdog is not None and self._process_exited_without_reap(watchdog):
                     containment_released = (
-                        self._finish_windows_job(watchdog.pid)
+                        self._finish_windows_job(watchdog)
                         if os.name == "nt"
                         else self._finish_posix_process_group(watchdog)
                     )
@@ -1030,6 +1951,8 @@ class SubprocessRustRunner:
         cooperative_ack_event: threading.Event | None = None,
         runner_process_id_sink: list[int] | None = None,
         cancellation_lease_token: str | None = None,
+        darwin_launch_started: Callable[[], None] | None = None,
+        darwin_launch_sealed: Callable[[], None] | None = None,
     ) -> Mapping[str, Any]:
         """Watchdog-only fixed-runner execution and durable-result commit."""
 
@@ -1071,6 +1994,8 @@ class SubprocessRustRunner:
                     cooperative_ack_event=cooperative_ack_event,
                     runner_process_id_sink=runner_process_id_sink,
                     cancellation_lease_token=cancellation_lease_token,
+                    darwin_launch_started=darwin_launch_started,
+                    darwin_launch_sealed=darwin_launch_sealed,
                 )
             result = self._validate_result(output, manifest, profile)
             self._promote_pending_result(
@@ -1285,36 +2210,80 @@ class SubprocessRustRunner:
             raise RunnerTransportError("Packaged runner watchdog is unavailable") from None
         if current_digest != self.watchdog_script_digest:
             raise RunnerTransportError("Packaged runner watchdog identity changed")
-        with _pinned_launch_file(interpreter, interpreter_digest) as interpreter_launch:
-            with _pinned_launch_file(
-                script,
-                self.watchdog_script_digest,
-            ) as script_launch:
-                process = self._spawn(
-                    [
-                        interpreter_launch[0],
-                        "-I",
-                        "-B",
-                        "-X",
-                        "utf8",
-                        script_launch[0],
-                        str(config_path),
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    receiver_environment=receiver_environment,
-                    inherited_descriptors=interpreter_launch[1] + script_launch[1],
-                )
-                process_sink.append(process)
+        proof = _DarwinWatchdogProof() if sys.platform == "darwin" else None
+        process: subprocess.Popen[bytes] | None = None
+        try:
+            with _pinned_launch_file(interpreter, interpreter_digest) as interpreter_launch:
+                with _pinned_launch_file(
+                    script,
+                    self.watchdog_script_digest,
+                    darwin_descriptor_backed=sys.platform == "darwin",
+                ) as script_launch:
+                    if proof is not None:
+                        inherited_descriptors = (
+                            interpreter_launch[1] + script_launch[1] + (proof.write_descriptor,)
+                        )
+                    else:
+                        inherited_descriptors = interpreter_launch[1] + script_launch[1]
+                    if sys.platform == "darwin" and proof is not None:
+                        watchdog_arguments = [
+                            interpreter_launch[0],
+                            "-I",
+                            "-B",
+                            "-X",
+                            "utf8",
+                            "-c",
+                            _WATCHDOG_DESCRIPTOR_BOOTSTRAP,
+                            script_launch[0],
+                            str(script),
+                            str(config_path),
+                            str(proof.write_descriptor),
+                            proof.nonce,
+                        ]
+                        descriptor_indexes = (10,)
+                    else:
+                        watchdog_arguments = [
+                            interpreter_launch[0],
+                            "-I",
+                            "-B",
+                            "-X",
+                            "utf8",
+                            script_launch[0],
+                            str(config_path),
+                        ]
+                        descriptor_indexes = ()
+                    process = self._spawn(
+                        watchdog_arguments,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        receiver_environment=receiver_environment,
+                        inherited_descriptors=inherited_descriptors,
+                        darwin_allow_fork=sys.platform == "darwin",
+                        darwin_descriptor_argument_indexes=descriptor_indexes,
+                        process_sink=process_sink,
+                    )
+                    if proof is not None:
+                        self._darwin_watchdog_proofs[process] = proof
+                    try:
+                        self._await_watchdog_readiness(process, config_path.parent, task_id)
+                    except BaseException:
+                        if not self._terminate_process_tree(process):
+                            raise RunnerTransportError(
+                                "Runner watchdog process tree could not be stopped safely"
+                            ) from None
+                        raise
+            return process
+        finally:
+            if proof is not None:
                 try:
-                    self._await_watchdog_readiness(process, config_path.parent, task_id)
-                except BaseException:
-                    if not self._terminate_process_tree(process):
-                        raise RunnerTransportError(
-                            "Runner watchdog process tree could not be stopped safely"
-                        ) from None
-                    raise
-        return process
+                    if process is None and process_sink:
+                        process = process_sink[-1]
+                    if process is not None:
+                        self._darwin_watchdog_proofs[process] = proof
+                    else:
+                        proof.close_reader()
+                finally:
+                    proof.close_writer()
 
     def _await_watchdog_readiness(
         self,
@@ -1381,7 +2350,7 @@ class SubprocessRustRunner:
         cancellation_requested = False
         while True:
             if self._process_exited_without_reap(process):
-                if os.name == "nt" and not self._finish_windows_job(process.pid):
+                if os.name == "nt" and not self._finish_windows_job(process):
                     raise RunnerTransportError("Runner watchdog containment could not be released")
                 if os.name != "nt" and not self._finish_posix_process_group(process):
                     raise RunnerTransportError("Runner watchdog containment could not be released")
@@ -1400,15 +2369,21 @@ class SubprocessRustRunner:
                 ):
                     time.sleep(_PROCESS_POLL_SECONDS)
                 if not self._process_exited_without_reap(process):
-                    if os.name != "nt":
+                    if sys.platform == "darwin":
+                        if not self._release_darwin_process_group(process):
+                            raise RunnerPendingResultExists(
+                                "Runner watchdog containment is indeterminate and requires "
+                                "reconciliation."
+                            )
+                    elif os.name != "nt":
                         raise RunnerPendingResultExists(
                             "Runner watchdog remains active and requires reconciliation."
                         )
-                    if not self._terminate_process_tree(process):
+                    elif not self._terminate_process_tree(process):
                         raise RunnerTransportError(
                             "Runner watchdog process tree could not be stopped safely"
                         )
-                if os.name == "nt" and not self._finish_windows_job(process.pid):
+                if os.name == "nt" and not self._finish_windows_job(process):
                     raise RunnerTransportError("Runner watchdog containment could not be released")
                 if os.name != "nt" and not self._finish_posix_process_group(process):
                     raise RunnerTransportError("Runner watchdog containment could not be released")
@@ -1576,15 +2551,12 @@ class SubprocessRustRunner:
         return result
 
     def _invoke(self, argv: list[str]) -> bytes:
-        with _pinned_launch_file(self.runner_binary, self.runner_binary_digest) as launch:
-            process = self._spawn(
-                [launch[0], *argv[1:]],
-                stdout=subprocess.PIPE,
-                inherited_descriptors=launch[1],
-            )
         stdout = bytearray()
         stderr = bytearray()
         overflow = threading.Event()
+        spawned_processes: list[subprocess.Popen[bytes]] = []
+        process: subprocess.Popen[bytes] | None = None
+        started_readers: list[threading.Thread] = []
 
         def drain(stream, destination: bytearray) -> None:
             if stream is None:
@@ -1599,17 +2571,33 @@ class SubprocessRustRunner:
                 if len(chunk) > remaining:
                     overflow.set()
 
-        readers = [
-            threading.Thread(target=drain, args=(process.stdout, stdout), daemon=True),
-            threading.Thread(target=drain, args=(process.stderr, stderr), daemon=True),
-        ]
-        for reader in readers:
-            reader.start()
         try:
-            return_code = self._monitor_process(process, overflow=overflow)
-        finally:
+            with _pinned_launch_file(self.runner_binary, self.runner_binary_digest) as launch:
+                process = self._spawn(
+                    [launch[0], *argv[1:]],
+                    stdout=subprocess.PIPE,
+                    inherited_descriptors=launch[1],
+                    process_sink=spawned_processes,
+                )
+            readers = [
+                threading.Thread(target=drain, args=(process.stdout, stdout), daemon=True),
+                threading.Thread(target=drain, args=(process.stderr, stderr), daemon=True),
+            ]
             for reader in readers:
-                reader.join(timeout=5)
+                reader.start()
+                started_readers.append(reader)
+            return_code = self._monitor_process(process, overflow=overflow)
+        except BaseException:
+            if process is None and spawned_processes:
+                process = spawned_processes[-1]
+            if process is not None and not self._stop_process_tree(process):
+                raise RunnerTransportError(
+                    "Runner process tree could not be stopped safely"
+                ) from None
+            raise
+        finally:
+            for reader in started_readers:
+                reader.join(timeout=_PROCESS_KILL_GRACE_SECONDS)
 
         if overflow.is_set():
             raise RunnerTransportError("Rust runner exceeded the transport output limit")
@@ -1634,6 +2622,8 @@ class SubprocessRustRunner:
         cooperative_ack_event: threading.Event | None,
         runner_process_id_sink: list[int] | None,
         cancellation_lease_token: str | None,
+        darwin_launch_started: Callable[[], None] | None,
+        darwin_launch_sealed: Callable[[], None] | None,
     ) -> tuple[bytes, tuple[int, int]]:
         output = self._open_pending_result(pending_result_path)
         guarded_output = cast(_GuardedBinaryFile, output)
@@ -1641,18 +2631,24 @@ class SubprocessRustRunner:
         stderr = bytearray()
         overflow = threading.Event()
         process: subprocess.Popen[bytes] | None = None
+        spawned_processes: list[subprocess.Popen[bytes]] = []
         try:
             with _pinned_launch_file(
                 self.runner_binary,
                 self.runner_binary_digest,
             ) as launch:
+                if darwin_launch_started is not None:
+                    darwin_launch_started()
                 process = self._spawn(
                     [launch[0], *argv[1:]],
                     stdout=output,
                     receiver_environment=receiver_environment,
                     cancellation_lease_token=cancellation_lease_token,
                     inherited_descriptors=launch[1],
+                    process_sink=spawned_processes,
                 )
+                if darwin_launch_sealed is not None:
+                    darwin_launch_sealed()
             if runner_process_id_sink is not None:
                 if runner_process_id_sink:
                     raise RunnerTransportError("runner process identity sink is not empty")
@@ -1696,11 +2692,12 @@ class SubprocessRustRunner:
             output.seek(0)
             result_output = output.read(self.output_limit_bytes + 1)
         except BaseException as exc:
-            if process is not None and not self._process_exited_without_reap(process):
-                if not self._stop_process_tree(process):
-                    raise RunnerTransportError(
-                        "Runner process tree could not be stopped safely"
-                    ) from None
+            if process is None and spawned_processes:
+                process = spawned_processes[-1]
+            if process is not None and not self._stop_process_tree(process):
+                raise RunnerTransportError(
+                    "Runner process tree could not be stopped safely"
+                ) from None
             if isinstance(exc, RunnerTransportError):
                 raise
             if isinstance(exc, OSError):
@@ -1821,26 +2818,100 @@ class SubprocessRustRunner:
         environment: Mapping[str, str],
         inherited_descriptors: tuple[int, ...],
         options: Mapping[str, Any],
+        darwin_slot: object,
+        process_sink: list[subprocess.Popen[bytes]],
     ) -> subprocess.Popen[bytes]:
-        process, containment = spawn_darwin_parent_death(
-            argv,
-            stdout=stdout,
-            stderr=stderr,
-            environment=environment,
-            inherited_descriptors=inherited_descriptors,
-            options=options,
-            runner_binary=self.runner_binary,
-            runner_binary_digest=self.runner_binary_digest,
-            work_root=self.work_root,
-            watchdog_interpreter=self._watchdog_interpreter,
-            watchdog_interpreter_digest=self._watchdog_interpreter_digest,
-            parent_death_script=self.parent_death_script,
-            parent_death_script_digest=self.parent_death_script_digest,
-            pinned_launch_file=_pinned_launch_file,
-            start_grace_seconds=_WATCHDOG_START_GRACE_SECONDS,
-        )
+        failed_processes: list[tuple[subprocess.Popen[bytes], DarwinProcessContainment]] = []
+
+        def registered_popen(
+            arguments: list[str], **launch_options: Any
+        ) -> subprocess.Popen[bytes]:
+            return self._spawn_registered_darwin_popen(
+                darwin_slot,
+                process_sink,
+                arguments,
+                **launch_options,
+            )
+
+        try:
+            process, containment = spawn_darwin_parent_death(
+                argv,
+                stdout=stdout,
+                stderr=stderr,
+                environment=environment,
+                inherited_descriptors=inherited_descriptors,
+                options=options,
+                runner_binary=self.runner_binary,
+                runner_binary_digest=self.runner_binary_digest,
+                work_root=self.work_root,
+                watchdog_interpreter=self._watchdog_interpreter,
+                watchdog_interpreter_digest=self._watchdog_interpreter_digest,
+                parent_death_script=self.parent_death_script,
+                parent_death_script_digest=self.parent_death_script_digest,
+                pinned_launch_file=_pinned_launch_file,
+                start_grace_seconds=_WATCHDOG_START_GRACE_SECONDS,
+                execution_timeout_seconds=self.timeout_seconds,
+                failure_sink=failed_processes,
+                popen_factory=registered_popen,
+            )
+        except BaseException:
+            if failed_processes:
+                failed_process, failed_containment = failed_processes[-1]
+                self._darwin_process_containments[failed_process] = failed_containment
+                self._restore_darwin_private_reconciliation(failed_process)
+            raise
         self._darwin_process_containments[process] = containment
         return process
+
+    def _spawn_darwin_no_fork_exec(
+        self,
+        argv: list[str],
+        *,
+        stdout: int | BinaryIO | None,
+        stderr: int | BinaryIO | None,
+        environment: Mapping[str, str],
+        inherited_descriptors: tuple[int, ...],
+        options: Mapping[str, Any],
+        darwin_slot: object,
+        process_sink: list[subprocess.Popen[bytes]],
+    ) -> subprocess.Popen[bytes]:
+        proven_processes: list[subprocess.Popen[bytes]] = []
+
+        def registered_popen(
+            arguments: list[str],
+            **launch_options: Any,
+        ) -> subprocess.Popen[bytes]:
+            return self._spawn_registered_darwin_popen(
+                darwin_slot,
+                process_sink,
+                arguments,
+                **launch_options,
+            )
+
+        try:
+            return spawn_darwin_no_fork_exec(
+                argv,
+                stdout=stdout,
+                stderr=stderr,
+                environment=environment,
+                inherited_descriptors=inherited_descriptors,
+                options=options,
+                runner_binary=self.runner_binary,
+                runner_binary_digest=self.runner_binary_digest,
+                work_root=self.work_root,
+                watchdog_interpreter=self._watchdog_interpreter,
+                watchdog_interpreter_digest=self._watchdog_interpreter_digest,
+                parent_death_script=self.parent_death_script,
+                parent_death_script_digest=self.parent_death_script_digest,
+                pinned_launch_file=_pinned_launch_file,
+                start_grace_seconds=_WATCHDOG_START_GRACE_SECONDS,
+                popen_factory=registered_popen,
+                proof_sink=proven_processes,
+                proof_callback=self._darwin_no_fork_proven.add,
+            )
+        finally:
+            for proven in proven_processes:
+                self._darwin_no_fork_proven.add(proven)
 
     @staticmethod
     def _linux_process_identity(process_id: int) -> tuple[int, int, int, int]:
@@ -1894,10 +2965,122 @@ class SubprocessRustRunner:
             if descriptor >= 0:
                 os.close(descriptor)
 
-    def _process_exited_without_reap(self, process: subprocess.Popen[bytes]) -> bool:
+    def _complete_verified_darwin_release(
+        self,
+        process: subprocess.Popen[bytes],
+    ) -> bool:
+        """Finish a reap only after an empty Darwin identity was published."""
+
+        if process not in self._darwin_release_verified:
+            return False
+        with _DARWIN_INDETERMINATE_LOCK:
+            if process in self._darwin_reap_indeterminate:
+                if process.returncode is None:
+                    self._darwin_identity_lost.add(process)
+                    self._retain_indeterminate_darwin_process(
+                        process,
+                        identity_lost=True,
+                    )
+                    return False
+                self._released_darwin_processes.add(process)
+                self._darwin_reap_indeterminate.discard(process)
+                return True
+            if process.returncode is not None:
+                self._released_darwin_processes.add(process)
+                return True
+            # Publish fail-closed state before waitpid can reap. If an
+            # arbitrary BaseException lands before Popen publishes
+            # returncode, no later call may wait on the reusable numeric PID.
+            if (
+                _DARWIN_ACTIVE_PROCESSES.get(process) is self
+                and process not in _DARWIN_INDETERMINATE_PROCESSES
+            ):
+                _DARWIN_INDETERMINATE_PROCESSES[process] = (
+                    self,
+                    False,
+                    False,
+                    False,
+                )
+                _DARWIN_RECONCILER_WAKE.set()
+            self._darwin_reap_indeterminate.add(process)
+            try:
+                process.wait(timeout=_PROCESS_KILL_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                self._darwin_reap_indeterminate.discard(process)
+                return False
+            if process.returncode is None:
+                self._darwin_identity_lost.add(process)
+                self._retain_indeterminate_darwin_process(
+                    process,
+                    identity_lost=True,
+                )
+                return False
+            self._released_darwin_processes.add(process)
+            self._darwin_reap_indeterminate.discard(process)
+            return True
+
+    def _close_darwin_process_containment(
+        self,
+        process: subprocess.Popen[bytes],
+    ) -> bool:
+        containment = self._darwin_process_containments.get(process)
+        if containment is None:
+            return True
+        try:
+            containment.parent_lease.close()
+        except OSError:
+            return False
+        self._darwin_process_containments.pop(process, None)
+        return True
+
+    def _process_exited_without_reap(
+        self,
+        process: subprocess.Popen[bytes],
+        *,
+        _reconciling: bool = False,
+    ) -> bool:
         if process in self._released_linux_processes:
             return process.returncode is not None
+        if process in self._released_darwin_processes:
+            if not self._close_darwin_process_containment(process):
+                return False
+            self._drop_owned_darwin_process(process)
+            return process.returncode is not None
+        if sys.platform == "darwin" and self._complete_verified_darwin_release(process):
+            if not self._close_darwin_process_containment(process):
+                return False
+            self._drop_owned_darwin_process(process)
+            return True
         containment = self._linux_process_containments.get(process)
+        if containment is None and sys.platform == "darwin":
+            darwin_private = process in self._darwin_process_containments
+            if process in self._darwin_identity_lost:
+                return False
+            if self._darwin_process_is_indeterminate(process) and not _reconciling:
+                return False
+            if process.returncode is not None:
+                if darwin_private:
+                    return True
+                self._darwin_identity_lost.add(process)
+                self._retain_indeterminate_darwin_process(process, identity_lost=True)
+                return False
+            try:
+                return _darwin_child_exited_without_reap(process.pid)
+            except OSError as exc:
+                if exc.errno == errno.EINTR:
+                    return False
+                if not darwin_private:
+                    # Once non-reaping child observation fails, a numeric PGID
+                    # may be reusable. Quarantine it permanently without any
+                    # signal attempt; the global slot governor bounds fallout.
+                    self._darwin_identity_lost.add(process)
+                    self._retain_indeterminate_darwin_process(process, identity_lost=True)
+                return False
+            except ChildProcessError:
+                if not darwin_private:
+                    self._darwin_identity_lost.add(process)
+                    self._retain_indeterminate_darwin_process(process, identity_lost=True)
+                return False
         if containment is None:
             return process.poll() is not None
         if (
@@ -1931,7 +3114,15 @@ class SubprocessRustRunner:
         receiver_environment: Mapping[str, str] | None = None,
         cancellation_lease_token: str | None = None,
         inherited_descriptors: tuple[int, ...] = (),
+        darwin_allow_fork: bool = False,
+        darwin_descriptor_argument_indexes: tuple[int, ...] = (),
+        process_sink: list[subprocess.Popen[bytes]],
     ) -> subprocess.Popen[bytes]:
+        if process_sink:
+            raise RunnerTransportError("runner process ownership sink is not empty")
+        if sys.platform == "darwin" and not _darwin_child_status_ownership_available():
+            raise RunnerTransportError("Darwin child status ownership is unavailable")
+        darwin_slot: object | None = object() if sys.platform == "darwin" else None
         environment: dict[str, str] = {"LC_ALL": "C", "LANG": "C"}
         environment.update(_validated_receiver_task_environment(receiver_environment))
         if cancellation_lease_token is not None:
@@ -1941,6 +3132,7 @@ class SubprocessRustRunner:
         options: dict[str, Any] = {}
         windows_job: int | None = None
         windows_suspended = False
+        process: subprocess.Popen[bytes] | None = None
         if os.name == "nt":
             system_directory = self._windows_system_directory()
             windows_root = system_directory.parent
@@ -1982,7 +3174,13 @@ class SubprocessRustRunner:
                     raise RunnerTransportError("Linux private process containment is unavailable")
                 options["start_new_session"] = True
             options["pass_fds"] = inherited_descriptors
+            if sys.platform == "darwin" and darwin_descriptor_argument_indexes:
+                options["_bluefire_descriptor_argument_indexes"] = (
+                    darwin_descriptor_argument_indexes
+                )
         try:
+            if darwin_slot is not None and not self._reserve_darwin_process_slot(darwin_slot):
+                raise RunnerTransportError("Darwin process containment capacity is exhausted")
             # argv[0] is a validated absolute executable path and the grammar is fixed.
             if (
                 self._kill_child_on_job_close
@@ -1998,6 +3196,8 @@ class SubprocessRustRunner:
                     options=options,
                 )
             elif self._kill_child_on_job_close and sys.platform == "darwin":
+                if darwin_slot is None:
+                    raise AssertionError("Darwin process reservation is unavailable")
                 process = self._spawn_darwin_parent_death(
                     argv,
                     stdout=stdout,
@@ -2005,9 +3205,38 @@ class SubprocessRustRunner:
                     environment=environment,
                     inherited_descriptors=inherited_descriptors,
                     options=options,
+                    darwin_slot=darwin_slot,
+                    process_sink=process_sink,
                 )
             elif self._kill_child_on_job_close and os.name != "nt":
                 raise RunnerTransportError("POSIX parent-death containment is unavailable")
+            elif sys.platform == "darwin":
+                if darwin_slot is None:
+                    raise AssertionError("Darwin process reservation is unavailable")
+                if darwin_allow_fork:
+                    process = self._spawn_registered_darwin_popen(
+                        darwin_slot,
+                        process_sink,
+                        argv,
+                        cwd=self.work_root,
+                        env=environment,
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout,
+                        stderr=stderr,
+                        shell=False,
+                        **options,
+                    )
+                else:
+                    process = self._spawn_darwin_no_fork_exec(
+                        argv,
+                        stdout=stdout,
+                        stderr=stderr,
+                        environment=environment,
+                        inherited_descriptors=inherited_descriptors,
+                        options=options,
+                        darwin_slot=darwin_slot,
+                        process_sink=process_sink,
+                    )
             else:
                 process = subprocess.Popen(  # nosec B603
                     argv,
@@ -2019,6 +3248,9 @@ class SubprocessRustRunner:
                     shell=False,
                     **options,
                 )
+            if darwin_slot is not None:
+                self._register_darwin_process_slot(darwin_slot, process)
+                darwin_slot = None
             if (
                 os.name != "nt"
                 and sys.platform.startswith("linux")
@@ -2037,6 +3269,10 @@ class SubprocessRustRunner:
                             "Windows process containment could not stop a suspended child"
                         ) from None
                     raise
+            if not process_sink:
+                process_sink.append(process)
+            elif process_sink[-1] is not process:
+                raise AssertionError("runner process ownership sink is invalid")
             return process
         except (OSError, ValueError):
             if windows_job is not None:
@@ -2046,6 +3282,22 @@ class SubprocessRustRunner:
             if windows_job is not None:
                 self._close_windows_handle(windows_job)
             raise
+        except BaseException:
+            if sys.platform == "darwin" and process is not None:
+                if darwin_slot is not None:
+                    self._register_darwin_process_slot(darwin_slot, process)
+                    darwin_slot = None
+                self._quarantine_interrupted_darwin_launch(process)
+            raise
+        finally:
+            if darwin_slot is not None:
+                if process is None and process_sink:
+                    process = process_sink[-1]
+                if process is None:
+                    self._cancel_darwin_process_slot(darwin_slot)
+                else:
+                    self._register_darwin_process_slot(darwin_slot, process)
+                    self._quarantine_interrupted_darwin_launch(process)
 
     def _monitor_process(
         self,
@@ -2061,13 +3313,16 @@ class SubprocessRustRunner:
         while True:
             if self._process_exited_without_reap(process):
                 released = (
-                    self._finish_windows_job(process.pid)
+                    self._finish_windows_job(process)
                     if os.name == "nt"
                     else self._finish_posix_process_group(process)
                 )
                 if not released and self._kill_child_on_job_close:
-                    self._retain_failed_process_tree(process)
-                    released = True
+                    if sys.platform == "darwin":
+                        self._retain_indeterminate_darwin_process(process, terminate=True)
+                    else:
+                        self._retain_failed_process_tree(process)
+                        released = True
                 if not released:
                     raise RunnerTransportError("Runner process tree state could not be released")
                 if process.returncode is None:
@@ -2114,6 +3369,9 @@ class SubprocessRustRunner:
             return True
         if not self._kill_child_on_job_close:
             return False
+        if sys.platform == "darwin":
+            self._retain_indeterminate_darwin_process(process, terminate=True)
+            return False
         self._retain_failed_process_tree(process)
         return True
 
@@ -2147,12 +3405,19 @@ class SubprocessRustRunner:
         return True
 
     def _terminate_posix_process_tree(self, process: subprocess.Popen[bytes]) -> bool:
-        if self._kill_child_on_job_close:
-            return self._terminate_inherited_posix_process_tree(process)
         if process in self._released_linux_processes:
             return process.returncode is not None
+        if process in self._released_darwin_processes:
+            if not self._close_darwin_process_containment(process):
+                return False
+            self._drop_owned_darwin_process(process)
+            return process.returncode is not None
+        if self._kill_child_on_job_close:
+            return self._terminate_inherited_posix_process_tree(process)
         if process in self._linux_process_containments:
             return self._release_linux_private_process(process, terminate=True)
+        if sys.platform == "darwin":
+            return self._release_darwin_process_group(process)
         if not callable(_KILL_PROCESS_GROUP):
             return False
         process_group = process.pid
@@ -2185,6 +3450,245 @@ class SubprocessRustRunner:
                 return False
             time.sleep(_PROCESS_POLL_SECONDS)
         return process.poll() is not None
+
+    def _drain_darwin_process_group(
+        self,
+        process: subprocess.Popen[bytes],
+        *,
+        _reconciling: bool = False,
+    ) -> bool:
+        """Terminate one private Darwin group while its child leader pins the PGID."""
+
+        if self._complete_verified_darwin_release(process):
+            return True
+        if process in self._darwin_identity_lost:
+            return False
+        if self._darwin_process_is_indeterminate(process) and not _reconciling:
+            return False
+        if not self._refresh_darwin_no_fork_proof(process):
+            return False
+        if process.returncode is not None:
+            self._darwin_identity_lost.add(process)
+            self._retain_indeterminate_darwin_process(process, identity_lost=True)
+            return False
+        process_group = process.pid
+        graceful_deadline = time.monotonic() + _PROCESS_TERM_GRACE_SECONDS
+        final_deadline = graceful_deadline + _PROCESS_KILL_GRACE_SECONDS
+        termination_sent = False
+        force_sent = False
+        empty_inventories = 0
+        while True:
+            try:
+                leader_exited = self._process_exited_without_reap(
+                    process,
+                    _reconciling=_reconciling,
+                )
+            except RunnerTransportError:
+                return False
+            if process in self._darwin_identity_lost:
+                return False
+            members = _darwin_private_process_group_members(process_group, process_group)
+            session_members = _darwin_private_session_members(process_group)
+            if members is None or session_members is None:
+                return False
+            other_members = members - {process_group}
+            other_session_members = session_members - {process_group}
+            if leader_exited and not other_members and not other_session_members:
+                empty_inventories += 1
+                if empty_inventories >= _DARWIN_EMPTY_INVENTORY_CONFIRMATIONS:
+                    self._darwin_release_verified.add(process)
+                    return self._complete_verified_darwin_release(process)
+                time.sleep(_PROCESS_POLL_SECONDS)
+                continue
+            empty_inventories = 0
+
+            now = time.monotonic()
+            if now >= final_deadline:
+                return False
+            if leader_exited and not other_members:
+                time.sleep(_PROCESS_POLL_SECONDS)
+                continue
+            if not callable(_KILL_PROCESS_GROUP):
+                return False
+            signum: int | None = None
+            if not termination_sent:
+                signum = signal.SIGTERM
+                termination_sent = True
+            elif now >= graceful_deadline and not force_sent:
+                signum = _FORCE_KILL_SIGNAL
+                force_sent = True
+            if signum is not None:
+                try:
+                    # The unreaped direct child keeps this same-numbered PGID
+                    # unavailable for reuse until the inventory is empty.
+                    _KILL_PROCESS_GROUP(process_group, signum)
+                except ProcessLookupError:
+                    # A member may have exited after inventory.  Re-inventory
+                    # while the unreaped child still pins the identifier.
+                    pass
+                except OSError:
+                    return False
+            time.sleep(_PROCESS_POLL_SECONDS)
+
+    def _release_darwin_process_group(self, process: subprocess.Popen[bytes]) -> bool:
+        """Drain once or retain the Popen identity as bounded indeterminate state."""
+
+        if process in self._released_darwin_processes:
+            if not self._close_darwin_process_containment(process):
+                return False
+            self._drop_owned_darwin_process(process)
+            return process.returncode is not None
+        if self._darwin_process_is_indeterminate(process):
+            self._retain_indeterminate_darwin_process(process)
+            return False
+        if self._drain_darwin_process_group(process):
+            self._drop_owned_darwin_process(process)
+            return True
+        self._retain_indeterminate_darwin_process(process)
+        return False
+
+    def _retain_indeterminate_darwin_process(
+        self,
+        process: subprocess.Popen[bytes],
+        *,
+        terminate: bool = False,
+        identity_lost: bool = False,
+        observe_only: bool = False,
+    ) -> bool:
+        start_reconciler = False
+        with _DARWIN_INDETERMINATE_LOCK:
+            active_owner = _DARWIN_ACTIVE_PROCESSES.get(process)
+            state = _DARWIN_INDETERMINATE_PROCESSES.get(process)
+            if active_owner is not self or (state is not None and state[0] is not self):
+                return False
+            if state is not None:
+                terminate = bool(terminate or state[1])
+                identity_lost = bool(identity_lost or state[2])
+                observe_only = bool(observe_only or state[3])
+            _DARWIN_INDETERMINATE_PROCESSES[process] = (
+                self,
+                terminate,
+                identity_lost,
+                observe_only,
+            )
+            start_reconciler = not identity_lost
+        if start_reconciler:
+            _start_darwin_indeterminate_reconciler()
+        return True
+
+    def _drop_indeterminate_darwin_process(
+        self,
+        process: subprocess.Popen[bytes],
+    ) -> None:
+        with _DARWIN_INDETERMINATE_LOCK:
+            state = _DARWIN_INDETERMINATE_PROCESSES.get(process)
+            if state is not None and state[0] is self:
+                _DARWIN_INDETERMINATE_PROCESSES.pop(process, None)
+
+    def _reconcile_indeterminate_darwin_process(
+        self,
+        process: subprocess.Popen[bytes],
+        *,
+        terminate: bool,
+        observe_only: bool = False,
+    ) -> bool:
+        with _DARWIN_INDETERMINATE_LOCK:
+            state = _DARWIN_INDETERMINATE_PROCESSES.get(process)
+            if state is None or state[0] is not self or state[2]:
+                return False
+            terminate = bool(terminate or state[1])
+            observe_only = bool(observe_only or state[3])
+        if observe_only:
+            has_containment = process in self._darwin_process_containments
+            try:
+                has_no_fork_proof = self._refresh_darwin_no_fork_proof(process)
+            except BaseException:
+                has_no_fork_proof = False
+            if has_containment or has_no_fork_proof:
+                with _DARWIN_INDETERMINATE_LOCK:
+                    state = _DARWIN_INDETERMINATE_PROCESSES.get(process)
+                    if state is None or state[0] is not self or state[2]:
+                        return False
+                    terminate = bool(terminate or state[1])
+                    _DARWIN_INDETERMINATE_PROCESSES[process] = (
+                        self,
+                        terminate,
+                        False,
+                        False,
+                    )
+                    observe_only = False
+        if self._complete_verified_darwin_release(process):
+            if not self._close_darwin_process_containment(process):
+                return False
+            self._drop_owned_darwin_process(process)
+            return True
+        containment = self._darwin_process_containments.get(process)
+        if observe_only:
+            released = self._reconcile_observe_only_darwin_process(process)
+        elif containment is None:
+            released = self._drain_darwin_process_group(process, _reconciling=True)
+        else:
+            released = release_darwin_process(
+                process,
+                containment,
+                terminate=terminate,
+                child_exited_without_reap=_darwin_child_exited_without_reap,
+                release_verified=self._darwin_release_verified.add,
+            )
+            if released:
+                released = self._complete_verified_darwin_release(process)
+                if released:
+                    released = self._close_darwin_process_containment(process)
+        if released:
+            self._drop_owned_darwin_process(process)
+        return bool(released)
+
+    def _reconcile_observe_only_darwin_process(
+        self,
+        process: subprocess.Popen[bytes],
+    ) -> bool:
+        """Reap a lease-closed helper without ever signaling a numeric identity."""
+
+        if self._complete_verified_darwin_release(process):
+            return True
+
+        session_id = os.getpid() if self._kill_child_on_job_close else process.pid
+        try:
+            if self._kill_child_on_job_close and (
+                not callable(_GET_SESSION_ID) or _GET_SESSION_ID(0) != session_id
+            ):
+                return False
+            exited = _darwin_child_exited_without_reap(process.pid)
+        except OSError as exc:
+            if exc.errno == errno.EINTR:
+                return False
+            self._darwin_identity_lost.add(process)
+            self._retain_indeterminate_darwin_process(
+                process,
+                terminate=True,
+                identity_lost=True,
+                observe_only=True,
+            )
+            return False
+        except ChildProcessError:
+            self._darwin_identity_lost.add(process)
+            self._retain_indeterminate_darwin_process(
+                process,
+                terminate=True,
+                identity_lost=True,
+                observe_only=True,
+            )
+            return False
+        if not exited:
+            return False
+        for confirmation in range(_DARWIN_EMPTY_INVENTORY_CONFIRMATIONS):
+            members = _darwin_private_session_members(session_id)
+            if members is None or members - {session_id, process.pid}:
+                return False
+            if confirmation + 1 < _DARWIN_EMPTY_INVENTORY_CONFIRMATIONS:
+                time.sleep(_PROCESS_POLL_SECONDS)
+        self._darwin_release_verified.add(process)
+        return self._complete_verified_darwin_release(process)
 
     def _linux_private_session_identities(
         self,
@@ -2315,12 +3819,33 @@ class SubprocessRustRunner:
         *,
         terminate: bool,
     ) -> bool:
+        if self._complete_verified_darwin_release(process):
+            if not self._close_darwin_process_containment(process):
+                return False
+            self._drop_owned_darwin_process(process)
+            return True
+        if self._darwin_process_is_indeterminate(process):
+            self._retain_indeterminate_darwin_process(process, terminate=terminate)
+            return False
         containment = self._darwin_process_containments.get(process)
         if containment is None:
             return False
-        if not release_darwin_process(process, containment, terminate=terminate):
+        if not release_darwin_process(
+            process,
+            containment,
+            terminate=terminate,
+            child_exited_without_reap=_darwin_child_exited_without_reap,
+            release_verified=self._darwin_release_verified.add,
+        ):
+            self._retain_indeterminate_darwin_process(process, terminate=terminate)
             return False
-        self._darwin_process_containments.pop(process, None)
+        if not self._complete_verified_darwin_release(process):
+            self._retain_indeterminate_darwin_process(process, terminate=terminate)
+            return False
+        if not self._close_darwin_process_containment(process):
+            self._retain_indeterminate_darwin_process(process, terminate=terminate)
+            return False
+        self._drop_owned_darwin_process(process)
         return True
 
     @staticmethod
@@ -2386,6 +3911,16 @@ class SubprocessRustRunner:
 
         if process in self._darwin_process_containments:
             return self._release_darwin_private_process(process, terminate=True)
+        if sys.platform == "darwin":
+            # An interrupted parent-death handshake has no transferable lease.
+            # Never poll, wait, or signal its numeric helper identity here;
+            # lease closure plus observe-only reconciliation is the safe path.
+            self._retain_indeterminate_darwin_process(
+                process,
+                terminate=True,
+                observe_only=True,
+            )
+            return False
 
         try:
             if not callable(_GET_PROCESS_GROUP) or not callable(_GET_SESSION_ID):
@@ -2422,6 +3957,11 @@ class SubprocessRustRunner:
             time.sleep(_PROCESS_POLL_SECONDS)
 
     def _finish_posix_process_group(self, process: subprocess.Popen[bytes]) -> bool:
+        if process in self._released_darwin_processes:
+            if not self._close_darwin_process_containment(process):
+                return False
+            self._drop_owned_darwin_process(process)
+            return process.returncode is not None
         if process in self._darwin_process_containments:
             return self._release_darwin_private_process(process, terminate=False)
         if self._kill_child_on_job_close:
@@ -2430,11 +3970,23 @@ class SubprocessRustRunner:
             return process.returncode is not None
         if process in self._linux_process_containments:
             return self._release_linux_private_process(process, terminate=False)
+        if sys.platform == "darwin":
+            return self._release_darwin_process_group(process)
         if not self._posix_process_group_exists(process.pid):
-            return process.poll() is not None
+            # A short-lived process can close stdout and leave its process
+            # group just before waitpid publishes the exit to Popen.poll().
+            # Reap that exact child for a bounded interval instead of
+            # misreporting an already-drained group as a containment failure.
+            try:
+                process.wait(timeout=_PROCESS_TERM_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                return False
+            return process.returncode is not None
         return self._terminate_posix_process_tree(process)
 
     def _terminate_windows_process_tree(self, process: subprocess.Popen[bytes]) -> bool:
+        if process in self._released_windows_processes:
+            return self._release_windows_job(process.pid) and process.poll() is not None
         with self._windows_jobs_lock:
             job = self._windows_jobs.get(process.pid)
         if job is None:
@@ -2454,6 +4006,7 @@ class SubprocessRustRunner:
             terminated = False
         if not terminated or not self._wait_for_empty_windows_job(job):
             return False
+        self._released_windows_processes.add(process)
         return self._release_windows_job(process.pid) and process.poll() is not None
 
     def _create_windows_job(self) -> int:
@@ -2664,11 +4217,14 @@ class SubprocessRustRunner:
             job = self._windows_jobs.pop(process_id, None)
         return job is None or self._close_windows_handle(job)
 
-    def _finish_windows_job(self, process_id: int) -> bool:
+    def _finish_windows_job(self, process: subprocess.Popen[bytes]) -> bool:
+        process_id = process.pid
+        if process in self._released_windows_processes:
+            return self._release_windows_job(process_id) and process.poll() is not None
         with self._windows_jobs_lock:
             job = self._windows_jobs.get(process_id)
         if job is None:
-            return True
+            return False
         try:
             import ctypes
             from ctypes import wintypes
@@ -2682,6 +4238,7 @@ class SubprocessRustRunner:
             descendants_stopped = False
         if not descendants_stopped or not self._wait_for_empty_windows_job(job):
             return False
+        self._released_windows_processes.add(process)
         return self._release_windows_job(process_id)
 
     @staticmethod

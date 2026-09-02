@@ -266,7 +266,7 @@ def _structural_report() -> dict[str, Any]:
                             "passed": True,
                             "unexpected_findings": [],
                             "shell_imports": 1,
-                            "process_calls": ["subprocess.Popen"],
+                            "process_calls": [],
                         },
                         "runner_lifecycle.py": {
                             "passed": True,
@@ -278,7 +278,12 @@ def _structural_report() -> dict[str, Any]:
                             "passed": True,
                             "unexpected_findings": [],
                             "shell_imports": 0,
-                            "process_calls": ["os.execve", "os.execve", "os.fork"],
+                            "process_calls": [
+                                "os.execve",
+                                "os.execve",
+                                "os.execve",
+                                "os.fork",
+                            ],
                         },
                         "runner_trust.py": {
                             "passed": True,
@@ -822,6 +827,55 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
         findings = provider_gate_helper._python_shell_findings(path, mutation_root)
         assert expected_kinds.issubset({item["kind"] for item in findings}), filename
 
+    boundary_sources = {
+        relative: (REPOSITORY / relative).read_text(encoding="utf-8")
+        for relative in provider_gate_source_audit._REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES
+    }
+    assert provider_gate_source_audit._reviewed_python_process_boundary_sources(boundary_sources)
+    hidden_watchdog_launcher = dict(boundary_sources)
+    hidden_watchdog_launcher[
+        "bluefire/runner_watchdog.py"
+    ] += "\nos.__dict__[chr(115)+chr(121)+chr(115)+chr(116)+chr(101)+chr(109)](chr(105)+chr(100))\n"
+    assert not provider_gate_source_audit._reviewed_python_process_boundary_sources(
+        hidden_watchdog_launcher
+    )
+    hidden_lifecycle_launcher = dict(boundary_sources)
+    hidden_lifecycle_launcher["bluefire/runner_lifecycle.py"] = hidden_lifecycle_launcher[
+        "bluefire/runner_lifecycle.py"
+    ].replace(
+        "    process = subprocess.Popen(command, shell=False, **options)  # nosec B603\n",
+        "    process = subprocess.Popen(command, shell=False, **options)  # nosec B603\n"
+        "    process = subprocess.__dict__["
+        "chr(80)+chr(111)+chr(112)+chr(101)+chr(110)](command, shell=False)\n",
+        1,
+    )
+    assert hidden_lifecycle_launcher != boundary_sources
+    assert not provider_gate_source_audit._reviewed_python_process_boundary_sources(
+        hidden_lifecycle_launcher
+    )
+    for unreviewed_alias in (
+        "bluefire/runner_private_files.py",
+        "bluefire/runner_private_files.PY",
+        "bluefire/runner_private_files.py.",
+        "bluefire\\runner_private_files.py",
+    ):
+        with monkeypatch.context() as boundary_patch:
+            boundary_patch.setattr(
+                provider_gate_source_audit,
+                "TRUSTED_PROCESS_BOUNDARY_PATHS",
+                (
+                    *provider_gate_source_audit.TRUSTED_PROCESS_BOUNDARY_PATHS,
+                    unreviewed_alias,
+                ),
+            )
+            assert not provider_gate_source_audit._trusted_process_boundary_inventory_is_fixed()
+            assert not provider_gate_source_audit._process_boundary_report(REPOSITORY)["passed"]
+            with pytest.raises(
+                provider_gate_source_audit.ProviderGateError,
+                match="trusted process-boundary inventory is not fully reviewed",
+            ):
+                provider_gate_source_audit._source_audit(REPOSITORY)
+
     runner_client = REPOSITORY / "bluefire" / "runner_client.py"
     runner_lifecycle = REPOSITORY / "bluefire" / "runner_lifecycle.py"
     assert provider_gate_helper._runner_client_popen_contract(runner_client)
@@ -853,12 +907,188 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
 
     dynamic_parent_death_command = client_source.replace(
+        "                    process = subprocess.Popen(  # nosec B603\n"
+        "                        [\n"
+        "                            interpreter_launch[0],\n"
         '                            "-I",\n',
+        "                    process = subprocess.Popen(  # nosec B603\n"
+        "                        [\n"
+        "                            interpreter_launch[0],\n"
         '                            "-c",\n',
         1,
     )
     assert dynamic_parent_death_command != client_source
     mutated_client.write_text(dynamic_parent_death_command, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    factory_binding = "                popen_factory=registered_popen,\n"
+    factory_bypass = "                popen_factory=subprocess.Popen,\n"
+    assert client_source.count(factory_binding) == 2
+    parent_factory_bypass = client_source.replace(factory_binding, factory_bypass, 1)
+    mutated_client.write_text(parent_factory_bypass, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    no_fork_factory_index = client_source.rfind(factory_binding)
+    assert no_fork_factory_index >= 0
+    no_fork_factory_bypass = (
+        client_source[:no_fork_factory_index]
+        + factory_bypass
+        + client_source[no_fork_factory_index + len(factory_binding) :]
+    )
+    mutated_client.write_text(no_fork_factory_bypass, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    raw_resource_construction = client_source.replace(
+        "            resources = _prepare_darwin_launch_resources(argv, options, resource_sink)\n",
+        "            resources = _DarwinLaunchResources("
+        "argv=list(argv), options=dict(options), descriptors=[], links=[])\n",
+        1,
+    )
+    assert raw_resource_construction != client_source
+    mutated_client.write_text(raw_resource_construction, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    resource_overwrite = client_source.replace(
+        "            resources = _prepare_darwin_launch_resources(argv, options, resource_sink)\n",
+        "            resources = _prepare_darwin_launch_resources(argv, options, resource_sink)\n"
+        "            resources = _DarwinLaunchResources("
+        "argv=list(argv), options=dict(options), descriptors=[], links=[])\n",
+        1,
+    )
+    assert resource_overwrite != client_source
+    mutated_client.write_text(resource_overwrite, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    request_resource_overwrite = client_source.replace(
+        "                resources=resources,\n"
+        "            )\n"
+        "            with _DARWIN_LAUNCH_CONDITION:\n",
+        "                resources=resources,\n"
+        "            )\n"
+        "            request.resources = _DarwinLaunchResources("
+        "argv=list(argv), options=dict(options), descriptors=[], links=[])\n"
+        "            with _DARWIN_LAUNCH_CONDITION:\n",
+        1,
+    )
+    assert request_resource_overwrite != client_source
+    mutated_client.write_text(request_resource_overwrite, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    direct_executor = client_source.replace(
+        "                resources=resources,\n"
+        "            )\n"
+        "            with _DARWIN_LAUNCH_CONDITION:\n"
+        "                _DARWIN_LAUNCH_REQUESTS.append(request)\n",
+        "                resources=resources,\n"
+        "            )\n"
+        "            _execute_darwin_launch_request(request)\n"
+        "            with _DARWIN_LAUNCH_CONDITION:\n"
+        "                _DARWIN_LAUNCH_REQUESTS.append(request)\n",
+        1,
+    )
+    assert direct_executor != client_source
+    mutated_client.write_text(direct_executor, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    wrapper_bypass = client_source.replace(
+        "                arguments,\n                **launch_options,\n",
+        "                argv,\n                **launch_options,\n",
+        1,
+    )
+    assert wrapper_bypass != client_source
+    mutated_client.write_text(wrapper_bypass, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    factory_rebind = client_source.replace(
+        "        try:\n            process, containment = spawn_darwin_parent_death(\n",
+        "        try:\n"
+        "            registered_popen = [registered_popen, subprocess.Popen][1]\n"
+        "            process, containment = spawn_darwin_parent_death(\n",
+        1,
+    )
+    assert factory_rebind != client_source
+    mutated_client.write_text(factory_rebind, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    wrapper_argument_mutation = client_source.replace(
+        "            return self._spawn_registered_darwin_popen(\n",
+        "            arguments[:] = argv\n"
+        "            return self._spawn_registered_darwin_popen(\n",
+        1,
+    )
+    assert wrapper_argument_mutation != client_source
+    mutated_client.write_text(wrapper_argument_mutation, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    missing_worker_completion = client_source.replace("        request.done.set()\n", "", 1)
+    assert missing_worker_completion != client_source
+    mutated_client.write_text(missing_worker_completion, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    borrowed_descriptor = client_source.replace(
+        "            duplicate = os.dup(descriptor)\n",
+        "            duplicate = descriptor\n",
+        1,
+    )
+    assert borrowed_descriptor != client_source
+    mutated_client.write_text(borrowed_descriptor, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    borrowed_launch_path = client_source.replace(
+        '    """Create one worker-owned hard link to an already verified Darwin input."""\n',
+        '    """Create one worker-owned hard link to an already verified Darwin input."""\n'
+        "    return argument\n",
+        1,
+    )
+    assert borrowed_launch_path != client_source
+    mutated_client.write_text(borrowed_launch_path, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    module_helper_rebind = (
+        client_source + "\n_retire_darwin_launch_resources = lambda resources: None\n"
+    )
+    mutated_client.write_text(module_helper_rebind, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    method_rebind = (
+        client_source + "\nSubprocessRustRunner._spawn_registered_darwin_popen = "
+        "lambda self, token, process_sink, argv, **options: "
+        "subprocess.__dict__['Popen'](argv, **options)\n"
+    )
+    mutated_client.write_text(method_rebind, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    aliased_method_rebind = (
+        client_source + "\nRunnerAlias = SubprocessRustRunner\n"
+        "RunnerAlias._spawn_registered_darwin_popen = "
+        "lambda self, token, process_sink, argv, **options: "
+        "self._construct_registered_darwin_popen(token, process_sink, argv, **options)\n"
+    )
+    mutated_client.write_text(aliased_method_rebind, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    missing_staticmethod = client_source.replace(
+        "    @staticmethod\n    def _cancel_darwin_process_slot",
+        "    def _cancel_darwin_process_slot",
+        1,
+    )
+    assert missing_staticmethod != client_source
+    mutated_client.write_text(missing_staticmethod, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    computed_method_rebind = (
+        client_source + "\nsetattr(SubprocessRustRunner, "
+        "'_spawn_registered_' + 'darwin_popen', lambda *args, **kwargs: None)\n"
+    )
+    mutated_client.write_text(computed_method_rebind, encoding="utf-8")
+    assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
+
+    subclass_override = (
+        client_source + "\nclass SubprocessRustRunner(SubprocessRustRunner):\n"
+        "    def __getattribute__(self, name):\n"
+        "        return super().__getattribute__(name)\n"
+    )
+    mutated_client.write_text(subclass_override, encoding="utf-8")
     assert not provider_gate_helper._runner_client_popen_contract(mutated_client)
 
     lifecycle_source = runner_lifecycle.read_text(encoding="utf-8")
@@ -883,9 +1113,37 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     )
     assert not provider_gate_source_audit._runner_darwin_popen_contract(mutated_darwin)
 
+    unverified_parent = darwin_source.replace(
+        "def _validate_macos_launch_parent(path: Path, descriptor: int) -> int:\n",
+        "def _validate_macos_launch_parent(path: Path, descriptor: int) -> int:\n"
+        "    return int(os.geteuid())\n",
+        1,
+    )
+    assert unverified_parent != darwin_source
+    mutated_darwin.write_text(unverified_parent, encoding="utf-8")
+    assert not provider_gate_source_audit._runner_darwin_popen_contract(mutated_darwin)
+
+    mutated_timeout = darwin_source.replace(
+        'format(execution_timeout_seconds, ".17g"),',
+        'format(1.0, ".17g"),',
+        1,
+    )
+    assert mutated_timeout != darwin_source
+    mutated_darwin.write_text(mutated_timeout, encoding="utf-8")
+    assert not provider_gate_source_audit._runner_darwin_popen_contract(mutated_darwin)
+
     parent_death = REPOSITORY / "bluefire" / "runner_parent_death.py"
     assert provider_gate_source_audit._runner_parent_death_process_contract(
         parent_death, REPOSITORY
+    )
+    mutated_parent = mutation_root / "runner_parent_death.py"
+    mutated_parent.write_text(
+        parent_death.read_text(encoding="utf-8") + "\ndef _run(arguments):\n    return 0\n",
+        encoding="utf-8",
+    )
+    assert not provider_gate_source_audit._runner_parent_death_process_contract(
+        mutated_parent,
+        mutation_root,
     )
 
     process_source = (REPOSITORY / "runner" / "src" / "process.rs").read_bytes()

@@ -116,7 +116,7 @@ _PYTHON_BOUNDARIES = {
     "runner_darwin_containment.py": {
         "passed": True,
         "shell_imports": 1,
-        "process_calls": ["subprocess.Popen"],
+        "process_calls": [],
         "unexpected_findings": [],
     },
     "runner_lifecycle.py": {
@@ -128,7 +128,7 @@ _PYTHON_BOUNDARIES = {
     "runner_parent_death.py": {
         "passed": True,
         "shell_imports": 0,
-        "process_calls": ["os.execve", "os.execve", "os.fork"],
+        "process_calls": ["os.execve", "os.execve", "os.execve", "os.fork"],
         "unexpected_findings": [],
     },
     "runner_trust.py": {

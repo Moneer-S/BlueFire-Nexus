@@ -34,7 +34,10 @@ if __package__ in {None, ""}:
         _PinnedPrivateDirectory,
         runner_watchdog_control_root,
     )
-    from bluefire.runner_darwin_containment import _validate_macos_launch_parent
+    from bluefire.runner_darwin_containment import (
+        _validate_macos_launch_parent,
+        apply_macos_no_fork_sandbox,
+    )
     from bluefire.runner_private_files import (
         _PrivateFileCleanupError,
         _read_descriptor_bounded,
@@ -52,7 +55,10 @@ else:
         _PinnedPrivateDirectory,
         runner_watchdog_control_root,
     )
-    from .runner_darwin_containment import _validate_macos_launch_parent
+    from .runner_darwin_containment import (
+        _validate_macos_launch_parent,
+        apply_macos_no_fork_sandbox,
+    )
     from .runner_private_files import _PrivateFileCleanupError, _read_descriptor_bounded
     from .runner_trust import _is_link_or_reparse
     from .util import canonical_json_bytes, file_hash
@@ -64,6 +70,7 @@ _CONFIG_LIMIT_BYTES = 8 * 1024 * 1024
 _WATCHDOG_SOURCE_LIMIT_BYTES, _STATUS_LIMIT_BYTES = 2 * 1024 * 1024, 4096
 _START_TIMEOUT_SECONDS, _POLL_SECONDS = 10.0, 0.025
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DARWIN_PROOF_NONCE = re.compile(r"^[0-9a-f]{64}$")
 _DARWIN_LAUNCH_NAME = re.compile(r"^\.bluefire-verified-launch-[0-9a-f]{64}$")
 _WATCHDOG_STAT_FIELDS = tuple(
     "st_dev st_ino st_mode st_nlink st_uid st_gid st_size st_mtime_ns st_ctime_ns".split()
@@ -797,13 +804,36 @@ def _cleanup_private_inputs(config: _WatchdogConfig) -> None:
             continue
 
 
+def _publish_darwin_no_fork_proof(descriptor: int | None, nonce: str | None) -> None:
+    if sys.platform != "darwin":
+        return
+    if (
+        descriptor is None
+        or descriptor <= 2
+        or nonce is None
+        or _DARWIN_PROOF_NONCE.fullmatch(nonce) is None
+        or not apply_macos_no_fork_sandbox()
+    ):
+        raise RunnerTransportError("Darwin watchdog no-fork proof is unavailable")
+    payload = f"no-fork-v1:{nonce}:{os.getpid()}\n".encode("ascii")
+    try:
+        if os.write(descriptor, payload) != len(payload):
+            raise OSError("short Darwin no-fork proof write")
+        os.close(descriptor)
+    except OSError:
+        raise RunnerTransportError("Darwin watchdog no-fork proof failed") from None
+
+
 def _run(
     config: _WatchdogConfig,
     *,
     receiver_environment: Mapping[str, str],
+    darwin_proof_descriptor: int | None = None,
+    darwin_proof_nonce: str | None = None,
 ) -> tuple[str, str | None, Mapping[str, bool] | None]:
     gate = _wait_for_start(config)
     if gate == "cancelled":
+        _publish_darwin_no_fork_proof(darwin_proof_descriptor, darwin_proof_nonce)
         return (
             "cancelled",
             "cancelled",
@@ -815,6 +845,7 @@ def _run(
             },
         )
     if gate != "started":
+        _publish_darwin_no_fork_proof(darwin_proof_descriptor, darwin_proof_nonce)
         return "failed", "start_timeout", None
 
     cancel_event = threading.Event()
@@ -823,6 +854,22 @@ def _run(
     runner_process_ids: list[int] = []
     cancellation_handshakes: list[_CancellationHandshake] = []
     stop_polling = threading.Event()
+    darwin_launch_started = False
+    darwin_proof_published = False
+
+    def mark_darwin_launch_started() -> None:
+        nonlocal darwin_launch_started
+        darwin_launch_started = True
+
+    def publish_darwin_proof() -> None:
+        nonlocal darwin_proof_published
+        if sys.platform != "darwin" or darwin_proof_published:
+            return
+        _publish_darwin_no_fork_proof(
+            darwin_proof_descriptor,
+            darwin_proof_nonce,
+        )
+        darwin_proof_published = True
 
     def observe_cancel() -> None:
         while not stop_polling.is_set():
@@ -876,6 +923,8 @@ def _run(
             cooperative_ack_event=cooperative_ack_event,
             runner_process_id_sink=runner_process_ids,
             cancellation_lease_token=config.cancellation_lease_token,
+            darwin_launch_started=mark_darwin_launch_started,
+            darwin_launch_sealed=publish_darwin_proof,
         )
         return "succeeded", None, None
     except RunnerTaskCancelled as exc:
@@ -908,16 +957,44 @@ def _run(
     finally:
         stop_polling.set()
         observer.join(timeout=1)
+        if sys.platform == "darwin" and not darwin_launch_started:
+            publish_darwin_proof()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if len(arguments) != 1:
+    darwin_proof_descriptor: int | None = None
+    darwin_proof_nonce: str | None = None
+    if sys.platform == "darwin":
+        if len(arguments) != 3:
+            return 64
+        try:
+            darwin_proof_descriptor = int(arguments[1])
+        except ValueError:
+            return 64
+        darwin_proof_nonce = arguments[2]
+        if (
+            darwin_proof_descriptor <= 2
+            or _DARWIN_PROOF_NONCE.fullmatch(darwin_proof_nonce) is None
+        ):
+            return 64
+    elif len(arguments) != 1:
         return 64
+
+    def fail_before_launch(code: int) -> int:
+        try:
+            _publish_darwin_no_fork_proof(
+                darwin_proof_descriptor,
+                darwin_proof_nonce,
+            )
+        except RunnerTransportError:
+            return 67
+        return code
+
     try:
         config = _load_config(arguments[0])
     except RunnerTransportError:
-        return 65
+        return fail_before_launch(65)
     try:
         receiver_environment = _consume_receiver_task_environment(expected_task_id=config.task_id)
     except RunnerTransportError:
@@ -925,7 +1002,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _close_config(config)
         except RunnerTransportError:
             pass
-        return 65
+        return fail_before_launch(65)
 
     try:
         _write_private_json(
@@ -943,7 +1020,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _close_config(config)
         except RunnerTransportError:
             pass
-        return 66
+        return fail_before_launch(66)
 
     state = "failed"
     error_code: str | None = "watchdog_failure"
@@ -953,6 +1030,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         state, error_code, cancellation_facts = _run(
             config,
             receiver_environment=receiver_environment,
+            darwin_proof_descriptor=darwin_proof_descriptor,
+            darwin_proof_nonce=darwin_proof_nonce,
         )
         status: dict[str, Any] = {
             "schema_version": _STATUS_SCHEMA,

@@ -8,6 +8,7 @@ import socket
 import stat
 import subprocess  # nosec B404
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ import pytest
 if os.name == "nt":
     pytest.skip("Darwin parent-death tests require POSIX", allow_module_level=True)
 
+import bluefire.runner_client as runner_client_module
 import bluefire.runner_darwin_containment as darwin_containment
 import bluefire.runner_parent_death as parent_death
 import bluefire.runner_watchdog as runner_watchdog
@@ -64,6 +66,7 @@ helper = subprocess.Popen(
         str(target_descriptor),
         nonce,
         "",
+        "60",
         target_path,
         "-I",
         "-B",
@@ -225,7 +228,9 @@ def _start_target(process: subprocess.Popen[str]) -> dict[str, Any]:
 def _cleanup_driver(process: subprocess.Popen[str], identities: dict[str, Any]) -> None:
     # The unreaped direct child pins its private session/group identifier.
     # Never signal a recorded descendant identifier after it may be reused.
-    if process.returncode is None:
+    try:
+        process.wait(timeout=0.25)
+    except subprocess.TimeoutExpired:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -364,6 +369,312 @@ os._exit(0 if set(record) == {{"fork_errno", "spawn_errno"}} else 75)
         _cleanup_driver(process, identities)
 
 
+def test_darwin_runtime_staging_creates_a_private_content_addressed_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "python-runtime"
+    payload = b"framework executable snapshot"
+    source.write_bytes(payload)
+    source.chmod(0o755)
+    work_root = tmp_path / "runner-work"
+    work_root.mkdir(mode=0o700)
+    monkeypatch.setattr(darwin_containment.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        darwin_containment,
+        "_validate_macos_launch_parent",
+        lambda _path, _descriptor: os.geteuid(),
+    )
+
+    staged, digest = darwin_containment.stage_watchdog_interpreter(source, work_root)
+
+    assert source.read_bytes() == payload
+    assert stat.S_IMODE(source.stat().st_mode) == 0o755
+    assert staged.read_bytes() == payload
+    assert staged.stat().st_nlink == 1
+    assert stat.S_IMODE(staged.stat().st_mode) == 0o700
+    assert file_hash(staged) == digest
+
+
+def test_darwin_runtime_permissions_accept_only_root_owned_group_writable_source() -> None:
+    permission_is_safe = darwin_containment._runtime_source_permissions_are_safe
+
+    assert permission_is_safe(mode=stat.S_IFREG | 0o755, owner=501, group=20, effective_user=501)
+    assert permission_is_safe(mode=stat.S_IFREG | 0o755, owner=0, group=0, effective_user=501)
+    assert permission_is_safe(mode=stat.S_IFREG | 0o775, owner=0, group=0, effective_user=501)
+    assert not permission_is_safe(
+        mode=stat.S_IFREG | 0o755, owner=502, group=20, effective_user=501
+    )
+    assert not permission_is_safe(
+        mode=stat.S_IFREG | 0o775, owner=501, group=20, effective_user=501
+    )
+    assert not permission_is_safe(mode=stat.S_IFREG | 0o775, owner=0, group=20, effective_user=501)
+    assert not permission_is_safe(mode=stat.S_IFREG | 0o777, owner=0, group=0, effective_user=501)
+    assert not permission_is_safe(mode=stat.S_IFREG | 0o4755, owner=0, group=0, effective_user=501)
+    assert not permission_is_safe(mode=stat.S_IFREG | 0o2755, owner=0, group=0, effective_user=501)
+
+
+def test_darwin_runtime_source_rejects_foreign_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "foreign-runtime"
+    source.write_bytes(b"foreign-owned runtime")
+    source.chmod(0o755)
+    actual_fstat = darwin_containment.os.fstat
+    effective_user = 501
+    foreign_user = 502
+
+    def foreign_fstat(descriptor: int) -> os.stat_result:
+        values = list(actual_fstat(descriptor))
+        values[4] = foreign_user
+        return os.stat_result(values)
+
+    monkeypatch.setattr(darwin_containment.os, "geteuid", lambda: effective_user, raising=False)
+    monkeypatch.setattr(darwin_containment.os, "fstat", foreign_fstat)
+
+    with pytest.raises(OSError, match="Darwin runtime source is unsafe"):
+        darwin_containment._read_runtime_source(source)
+
+
+@pytest.mark.parametrize("unsafe_mode", (0o4775, 0o2775, 0o777))
+def test_darwin_runtime_source_rejects_privileged_or_world_writable_mode(
+    tmp_path: Path,
+    unsafe_mode: int,
+) -> None:
+    source = tmp_path / "unsafe-runtime"
+    source.write_bytes(b"unsafe")
+    source.chmod(unsafe_mode)
+    if stat.S_IMODE(source.stat().st_mode) != unsafe_mode:
+        pytest.skip("filesystem does not preserve the requested executable mode")
+
+    with pytest.raises(OSError, match="Darwin runtime source is unsafe"):
+        darwin_containment._read_runtime_source(source)
+
+
+def test_macos_launch_pin_serializes_processes_and_recovers_a_crashed_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = tmp_path / "verified-runner"
+    canonical.write_bytes(b"immutable runner payload")
+    canonical.chmod(0o700)
+    digest = file_hash(canonical)
+    attempted = tmp_path / "attempted"
+    entered = tmp_path / "entered"
+    outcome = tmp_path / "outcome"
+    child_source = """
+import os
+import sys
+from pathlib import Path
+import bluefire.runner_darwin_containment as darwin_containment
+from bluefire.util import file_hash
+
+darwin_containment._validate_macos_launch_parent = lambda _path, _descriptor: os.geteuid()
+
+path = Path(sys.argv[1])
+attempted = Path(sys.argv[2])
+entered = Path(sys.argv[3])
+outcome = Path(sys.argv[4])
+darwin_containment._MACOS_PIN_LOCK_TIMEOUT_SECONDS = float(sys.argv[5])
+descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    expected = os.fstat(descriptor)
+    attempted.write_text("ready", encoding="ascii")
+    try:
+        with darwin_containment.macos_pinned_launch_path(
+            path,
+            descriptor,
+            expected,
+            file_hash(path),
+        ):
+            entered.write_text("entered", encoding="ascii")
+    except OSError as exc:
+        if str(exc) != "Darwin launch lock timed out":
+            raise
+        outcome.write_text("timed-out", encoding="ascii")
+    else:
+        outcome.write_text("entered", encoding="ascii")
+finally:
+    os.close(descriptor)
+"""
+    monkeypatch.setattr(
+        darwin_containment,
+        "_validate_macos_launch_parent",
+        lambda _path, _descriptor: os.geteuid(),
+    )
+    descriptor = os.open(canonical, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    child: subprocess.Popen[str] | None = None
+    try:
+        expected = os.fstat(descriptor)
+        with darwin_containment.macos_pinned_launch_path(
+            canonical,
+            descriptor,
+            expected,
+            digest,
+        ):
+            child = subprocess.Popen(  # nosec B603
+                [
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    child_source,
+                    str(canonical),
+                    str(attempted),
+                    str(entered),
+                    str(outcome),
+                    "0.25",
+                ],
+                cwd=_REPOSITORY_ROOT,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                shell=False,
+            )
+            _wait_for_file(attempted)
+            _wait_for_file(outcome)
+            assert outcome.read_text(encoding="ascii") == "timed-out"
+            assert not entered.exists()
+            completed_stderr = child.communicate(timeout=15)[1]
+            assert child.returncode == 0, completed_stderr
+    finally:
+        os.close(descriptor)
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+
+    post_release_attempted = tmp_path / "post-release-attempted"
+    post_release_entered = tmp_path / "post-release-entered"
+    post_release_outcome = tmp_path / "post-release-outcome"
+    post_release = subprocess.run(  # nosec B603
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            child_source,
+            str(canonical),
+            str(post_release_attempted),
+            str(post_release_entered),
+            str(post_release_outcome),
+            "2.0",
+        ],
+        cwd=_REPOSITORY_ROOT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        shell=False,
+        check=False,
+        timeout=15,
+    )
+    assert post_release.returncode == 0, post_release.stderr
+    assert post_release_attempted.read_text(encoding="ascii") == "ready"
+    assert post_release_entered.read_text(encoding="ascii") == "entered"
+    assert post_release_outcome.read_text(encoding="ascii") == "entered"
+
+    crash_ready = tmp_path / "crash-ready"
+    crash_source = """
+import os
+import sys
+from pathlib import Path
+from bluefire.runner_darwin_containment import macos_pinned_launch_path
+import bluefire.runner_darwin_containment as darwin_containment
+from bluefire.util import file_hash
+
+darwin_containment._validate_macos_launch_parent = lambda _path, _descriptor: os.geteuid()
+
+path = Path(sys.argv[1])
+ready = Path(sys.argv[2])
+descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+expected = os.fstat(descriptor)
+with macos_pinned_launch_path(path, descriptor, expected, file_hash(path)) as launch:
+    ready.write_text(launch, encoding="utf-8")
+    os._exit(0)
+"""
+    crashed = subprocess.run(  # nosec B603
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            crash_source,
+            str(canonical),
+            str(crash_ready),
+        ],
+        cwd=_REPOSITORY_ROOT,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        shell=False,
+        check=False,
+        timeout=15,
+    )
+    assert crashed.returncode == 0, crashed.stderr
+    stale_launch = Path(crash_ready.read_text(encoding="utf-8"))
+    assert stale_launch.is_file()
+    assert canonical.stat().st_nlink == 2
+
+    descriptor = os.open(canonical, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        expected = os.fstat(descriptor)
+        with darwin_containment.macos_pinned_launch_path(
+            canonical,
+            descriptor,
+            expected,
+            digest,
+        ) as recovered_launch:
+            assert Path(recovered_launch).is_file()
+            assert Path(recovered_launch) != stale_launch
+            assert not stale_launch.exists()
+    finally:
+        os.close(descriptor)
+
+    assert canonical.stat().st_nlink == 1
+    assert not list(tmp_path.glob(".bluefire-verified-launch-*"))
+
+
+def test_darwin_launch_link_append_interruption_transfers_cleanup_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical = tmp_path / "runner"
+    canonical.write_bytes(b"runner")
+    canonical.chmod(0o700)
+    launch = tmp_path / (".bluefire-verified-launch-" + "a" * 64)
+    os.link(canonical, launch)
+
+    class InterruptingSink(list[tuple[int, str, tuple[int, int]]]):
+        def append(self, value: tuple[int, str, tuple[int, int]]) -> None:
+            super().append(value)
+            raise KeyboardInterrupt
+
+    sink = InterruptingSink()
+    monkeypatch.setattr(
+        runner_client_module,
+        "_validate_darwin_launch_parent",
+        lambda _path, _descriptor: os.geteuid(),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        runner_client_module._clone_darwin_launch_link(str(launch), sink)
+
+    assert len(sink) == 1
+    parent_descriptor, clone_name, _identity = sink[0]
+    os.fstat(parent_descriptor)
+    assert (tmp_path / clone_name).is_file()
+    resources = runner_client_module._DarwinLaunchResources(
+        argv=[],
+        options={},
+        descriptors=[],
+        links=sink,
+    )
+    assert resources.close_links() is True
+    assert not (tmp_path / clone_name).exists()
+    with pytest.raises(OSError):
+        os.fstat(parent_descriptor)
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin private runtime staging")
 def test_default_darwin_watchdog_runtime_is_staged_away_from_framework_parent(
     tmp_path: Path,
@@ -461,7 +772,7 @@ def test_darwin_handshake_rejects_a_group_identity_mismatch(
         )
 
 
-def test_darwin_inventories_skip_unqueryable_unrelated_processes(
+def test_darwin_inventories_fail_closed_for_unqueryable_processes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     process_ids = {500, 501, 502}
@@ -472,14 +783,458 @@ def test_darwin_inventories_skip_unqueryable_unrelated_processes(
         return 500
 
     monkeypatch.setattr(darwin_containment.os, "getpid", lambda: 500)
+    monkeypatch.setattr(darwin_containment.sys, "platform", "darwin")
     monkeypatch.setattr(darwin_containment, "_darwin_process_ids", lambda: process_ids)
     monkeypatch.setattr(darwin_containment, "_GET_SESSION_ID", session_id)
-    assert darwin_containment._private_session_members(500) == {500, 502}
+    monkeypatch.setattr(
+        darwin_containment,
+        "_GET_PROCESS_GROUP_ID",
+        lambda process_id: process_id,
+    )
+    assert darwin_containment._private_session_members(500) is None
+    assert darwin_containment._private_process_group_members(502, 500) is None
 
     monkeypatch.setattr(parent_death, "_darwin_process_ids", lambda: process_ids)
     monkeypatch.setattr(parent_death, "_GET_SESSION_ID", session_id)
     monkeypatch.setattr(parent_death, "_GET_PROCESS_GROUP_ID", lambda process_id: process_id)
-    assert parent_death._private_process_group_members(502, 500) == {502}
+    assert parent_death._private_process_group_members(502, 500) is None
+
+
+@pytest.mark.parametrize("failure", ("helper-eof", "deadline"))
+def test_stalled_darwin_exec_transition_stops_the_exact_target(
+    failure: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exec_read, exec_write = os.pipe()
+    lease_read, lease_write = os.pipe()
+    parent_control, monitor_control = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    stopped: list[tuple[int, bool]] = []
+    target_process = 612
+    try:
+        if failure == "helper-eof":
+            os.close(lease_write)
+            lease_write = -1
+        else:
+            times = iter((0.0, parent_death._START_TIMEOUT_SECONDS + 1.0))
+            monkeypatch.setattr(parent_death.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(
+            parent_death,
+            "_terminate_direct_child",
+            lambda process_id, *, force=False: (
+                stopped.append((process_id, force)) is None,
+                0,
+            ),
+        )
+
+        assert (
+            parent_death._confirm_darwin_exec_or_stop(
+                target_process,
+                exec_read,
+                lease_read,
+                monitor_control,
+            )
+            is False
+        )
+        assert stopped == [(target_process, True)]
+    finally:
+        for descriptor in (exec_read, exec_write, lease_read, lease_write):
+            if descriptor >= 0:
+                os.close(descriptor)
+        parent_control.close()
+        monitor_control.close()
+
+
+def test_held_open_supervisor_status_pipe_times_out_boundedly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    status_read, status_write = os.pipe()
+    polls: list[tuple[tuple[int, ...], float]] = []
+    times = iter((0.0, 2.0))
+
+    def not_ready(
+        readers: list[int],
+        _writers: list[int],
+        _exceptional: list[int],
+        timeout: float,
+    ) -> tuple[list[int], list[int], list[int]]:
+        polls.append((tuple(readers), timeout))
+        return [], [], []
+
+    try:
+        monkeypatch.setattr(parent_death.time, "monotonic", lambda: next(times))
+        monkeypatch.setattr(parent_death.select, "select", not_ready)
+
+        with pytest.raises(OSError, match="supervisor record timed out"):
+            parent_death._read_line_descriptor(
+                status_read,
+                maximum=32,
+                deadline=1.0,
+            )
+
+        assert polls == [((status_read,), parent_death._POLL_SECONDS)]
+    finally:
+        os.close(status_read)
+        os.close(status_write)
+
+
+def test_parent_death_no_fork_probe_success_cleanup_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Function:
+        def __init__(self, result: int | None = None) -> None:
+            self.result = result
+            self.argtypes: list[object] = []
+            self.restype: object | None = None
+
+        def __call__(self, *_args: object) -> int | None:
+            return self.result
+
+    class Sandbox:
+        sandbox_init = Function(0)
+        sandbox_free_error = Function(None)
+
+    process_id = 613
+    waits: list[tuple[int, int]] = []
+    signals: list[tuple[int, int]] = []
+    times = iter((0.0, 3.0, 3.0, 9.0))
+    monkeypatch.setattr(parent_death.sys, "platform", "darwin")
+    monkeypatch.setattr(parent_death.ctypes, "CDLL", lambda *_args, **_kwargs: Sandbox())
+    monkeypatch.setattr(parent_death, "_FORK_PROCESS", lambda: process_id)
+    monkeypatch.setattr(
+        parent_death.os,
+        "waitpid",
+        lambda candidate, options: (waits.append((candidate, options)) is None and 0, 0),
+    )
+    monkeypatch.setattr(
+        parent_death.os,
+        "kill",
+        lambda candidate, signum: signals.append((candidate, signum)),
+    )
+    monkeypatch.setattr(parent_death.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(parent_death.time, "sleep", lambda _seconds: None)
+
+    assert parent_death._apply_darwin_no_fork_sandbox() is False
+    assert signals == [(process_id, parent_death._SIGKILL)]
+    assert waits == [
+        (process_id, parent_death._WAIT_NO_HANG),
+        (process_id, parent_death._WAIT_NO_HANG),
+    ]
+
+
+def test_watchdog_no_fork_probe_success_cleanup_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Function:
+        def __init__(self, result: int | None = None) -> None:
+            self.result = result
+            self.argtypes: list[object] = []
+            self.restype: object | None = None
+
+        def __call__(self, *_args: object) -> int | None:
+            return self.result
+
+    class Sandbox:
+        sandbox_init = Function(0)
+        sandbox_free_error = Function(None)
+
+    class Runtime:
+        fork = Function(614)
+
+    process_id = 614
+    waits: list[tuple[int, int]] = []
+    signals: list[tuple[int, int]] = []
+    times = iter((0.0, 3.0, 3.0, 9.0))
+    monkeypatch.setattr(darwin_containment.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        darwin_containment.ctypes,
+        "CDLL",
+        lambda *_args, **_kwargs: Sandbox(),
+    )
+    monkeypatch.setattr(
+        darwin_containment.ctypes,
+        "PyDLL",
+        lambda *_args, **_kwargs: Runtime(),
+    )
+    monkeypatch.setattr(
+        darwin_containment.os,
+        "waitpid",
+        lambda candidate, options: (waits.append((candidate, options)) is None and 0, 0),
+    )
+    monkeypatch.setattr(
+        darwin_containment.os,
+        "kill",
+        lambda candidate, signum: signals.append((candidate, signum)),
+    )
+    monkeypatch.setattr(darwin_containment.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(darwin_containment.time, "sleep", lambda _seconds: None)
+
+    assert darwin_containment.apply_macos_no_fork_sandbox() is False
+    assert signals == [(process_id, darwin_containment._FORCE_KILL_SIGNAL)]
+    assert waits == [(process_id, os.WNOHANG), (process_id, os.WNOHANG)]
+
+
+@pytest.mark.parametrize("interrupt_callback", (False, True))
+def test_generic_no_fork_launch_publishes_proof_before_go(
+    tmp_path: Path,
+    interrupt_callback: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner_binary = tmp_path / "runner"
+    runner_binary.write_bytes(b"verified runner")
+    runner_binary.chmod(0o700)
+    launch_path = tmp_path / (".bluefire-verified-launch-" + "e" * 64)
+    os.link(runner_binary, launch_path)
+    interpreter = tmp_path / "interpreter"
+    interpreter.write_bytes(b"interpreter")
+    interpreter.chmod(0o700)
+    helper = tmp_path / "runner_parent_death.py"
+    helper.write_bytes(b"helper")
+    helper.chmod(0o700)
+    events: list[str] = []
+    helper_threads: list[threading.Thread] = []
+
+    class Process:
+        pid = 615
+        returncode: int | None = None
+
+    class Launch:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def __enter__(self) -> tuple[str, tuple[int, ...]]:
+            return str(self.path), ()
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class ProofSink(list[Any]):
+        def append(self, value: Any) -> None:
+            events.append("sink")
+            super().append(value)
+
+    process = Process()
+    proof_sink = ProofSink()
+
+    def popen(arguments: list[str], **_options: Any) -> Any:
+        child_descriptor = int(arguments[8])
+        nonce = arguments[10]
+        child_control = socket.fromfd(
+            child_descriptor,
+            socket.AF_UNIX,
+            socket.SOCK_STREAM,
+        )
+
+        def helper_handshake() -> None:
+            try:
+                child_control.sendall(
+                    f"armed-nofork-v1:{nonce}:{process.pid}:{os.getpid()}\n".encode("ascii")
+                )
+                command = child_control.recv(128)
+                events.append(
+                    "go" if command == f"go-nofork-v1:{nonce}\n".encode("ascii") else "eof"
+                )
+            finally:
+                child_control.close()
+
+        thread = threading.Thread(target=helper_handshake)
+        helper_threads.append(thread)
+        thread.start()
+        return process
+
+    def publish(_process: Any) -> None:
+        events.append("callback")
+        if interrupt_callback:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(darwin_containment.sys, "platform", "darwin")
+    monkeypatch.setattr(darwin_containment, "_GET_PROCESS_GROUP_ID", lambda pid: pid)
+    monkeypatch.setattr(darwin_containment, "_GET_SESSION_ID", lambda pid: pid)
+
+    def call() -> Any:
+        return darwin_containment.spawn_no_fork_exec(
+            [str(launch_path), "inventory", "--json"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            environment={},
+            inherited_descriptors=(),
+            options={"start_new_session": True},
+            runner_binary=runner_binary,
+            runner_binary_digest=file_hash(runner_binary),
+            work_root=tmp_path,
+            watchdog_interpreter=interpreter,
+            watchdog_interpreter_digest=file_hash(interpreter),
+            parent_death_script=helper,
+            parent_death_script_digest=file_hash(helper),
+            pinned_launch_file=lambda path, _digest, **_kwargs: Launch(path),
+            start_grace_seconds=2.0,
+            popen_factory=popen,
+            proof_sink=proof_sink,
+            proof_callback=publish,
+        )
+
+    try:
+        if interrupt_callback:
+            with pytest.raises(KeyboardInterrupt):
+                call()
+        else:
+            assert call() is process
+    finally:
+        for thread in helper_threads:
+            thread.join(timeout=2)
+
+    assert proof_sink == [process]
+    assert events == (
+        ["sink", "callback", "eof"] if interrupt_callback else ["sink", "callback", "go"]
+    )
+
+
+def test_monitor_reap_deadline_retains_the_pinned_identity_for_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_id = 620
+    monitor_id = 621
+    records = iter((b"target-v1:622\n", b"exit-v1:0\n"))
+    waits: list[tuple[int, int]] = []
+    cleanups: list[tuple[int, int, bool]] = []
+    times = iter((0.0, 0.0, 100.0, 100.0, 106.0))
+
+    monkeypatch.setattr(
+        parent_death,
+        "_parse_arguments",
+        lambda _arguments: (parent_id, 71, 72, "f" * 64, (), ["5", "/runner"]),
+    )
+    monkeypatch.setattr(parent_death, "_FORK_PROCESS", lambda: monitor_id)
+    monkeypatch.setattr(parent_death, "_SET_PROCESS_GROUP", lambda *_args: None)
+    monkeypatch.setattr(parent_death, "_GET_PROCESS_GROUP", lambda: parent_id)
+    monkeypatch.setattr(
+        parent_death,
+        "_GET_PROCESS_GROUP_ID",
+        lambda process_id: process_id,
+    )
+    monkeypatch.setattr(parent_death, "_GET_SESSION_ID", lambda _process_id: parent_id)
+    monkeypatch.setattr(parent_death, "_KILL_PROCESS_GROUP", lambda *_args: None)
+    monkeypatch.setattr(parent_death, "_private_darwin_target", lambda *_args: True)
+    monkeypatch.setattr(parent_death, "_apply_darwin_no_fork_sandbox", lambda: True)
+    monkeypatch.setattr(
+        parent_death,
+        "_private_process_group_members",
+        lambda *_args: {monitor_id},
+    )
+    monkeypatch.setattr(
+        parent_death,
+        "_read_line_descriptor",
+        lambda *_args, **_kwargs: next(records),
+    )
+    monkeypatch.setattr(parent_death.os, "getppid", lambda: parent_id)
+    monkeypatch.setattr(parent_death.os, "getpid", lambda: 619)
+    monkeypatch.setattr(parent_death.os, "pipe", lambda: (73, 74))
+    monkeypatch.setattr(parent_death.os, "write", lambda *_args: 1)
+    monkeypatch.setattr(
+        parent_death.os,
+        "waitpid",
+        lambda process_id, options: (waits.append((process_id, options)) is None and 0, 0),
+    )
+    monkeypatch.setattr(parent_death.time, "monotonic", lambda: next(times))
+    monkeypatch.setattr(parent_death.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(parent_death, "_close_descriptor", lambda _descriptor: None)
+
+    def cleanup(
+        process_id: int,
+        session_id: int,
+        *,
+        identity_pinned: bool = False,
+    ) -> bool:
+        cleanups.append((process_id, session_id, identity_pinned))
+        return True
+
+    monkeypatch.setattr(parent_death, "_terminate_pinned_monitor_group", cleanup)
+
+    assert parent_death._run_darwin(["ignored"]) == 74
+    assert waits == [(monitor_id, parent_death._WAIT_NO_HANG)]
+    assert cleanups == [(monitor_id, parent_id, True)]
+
+
+def test_reaped_failed_monitor_identity_is_never_used_for_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_id = 620
+    monitor_id = 621
+    records = iter((b"target-v1:622\n", b"exit-v1:0\n"))
+    monkeypatch.setattr(
+        parent_death,
+        "_parse_arguments",
+        lambda _arguments: (parent_id, 71, 72, "f" * 64, (), ["5", "/runner"]),
+    )
+    monkeypatch.setattr(parent_death, "_FORK_PROCESS", lambda: monitor_id)
+    monkeypatch.setattr(parent_death, "_SET_PROCESS_GROUP", lambda *_args: None)
+    monkeypatch.setattr(parent_death, "_GET_PROCESS_GROUP", lambda: parent_id)
+    monkeypatch.setattr(
+        parent_death,
+        "_GET_PROCESS_GROUP_ID",
+        lambda process_id: process_id,
+    )
+    monkeypatch.setattr(parent_death, "_GET_SESSION_ID", lambda _process_id: parent_id)
+    monkeypatch.setattr(parent_death, "_KILL_PROCESS_GROUP", lambda *_args: None)
+    monkeypatch.setattr(parent_death, "_private_darwin_target", lambda *_args: True)
+    monkeypatch.setattr(parent_death, "_apply_darwin_no_fork_sandbox", lambda: True)
+    monkeypatch.setattr(parent_death, "_private_process_group_members", lambda *_args: {monitor_id})
+    monkeypatch.setattr(
+        parent_death, "_read_line_descriptor", lambda *_args, **_kwargs: next(records)
+    )
+    monkeypatch.setattr(parent_death.os, "getppid", lambda: parent_id)
+    monkeypatch.setattr(parent_death.os, "getpid", lambda: 619)
+    monkeypatch.setattr(parent_death.os, "pipe", lambda: (73, 74))
+    monkeypatch.setattr(parent_death.os, "write", lambda *_args: 1)
+    monkeypatch.setattr(parent_death.os, "waitpid", lambda *_args: (monitor_id, 256))
+    monkeypatch.setattr(parent_death, "_close_descriptor", lambda _descriptor: None)
+    monkeypatch.setattr(
+        parent_death,
+        "_terminate_pinned_monitor_group",
+        lambda *_args, **_kwargs: pytest.fail("a reaped monitor identity was reused"),
+    )
+
+    assert parent_death._run_darwin(["ignored"]) == 74
+
+
+def test_pinned_zombie_monitor_group_drains_members_before_reaping_leader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inventories = iter(({602}, set()))
+    events: list[tuple[str, int]] = []
+
+    def members(process_group: int, session_id: int) -> set[int]:
+        assert (process_group, session_id) == (601, 600)
+        return next(inventories)
+
+    def signal_group(process_group: int, signum: int) -> None:
+        assert signum == signal.SIGKILL
+        events.append(("group", process_group))
+
+    def reap_leader(process_id: int, *, force: bool = False) -> tuple[bool, int]:
+        assert force is True
+        events.append(("leader", process_id))
+        return True, 0
+
+    monkeypatch.setattr(parent_death, "_private_process_group_members", members)
+    monkeypatch.setattr(parent_death, "_KILL_PROCESS_GROUP", signal_group)
+    monkeypatch.setattr(parent_death, "_terminate_direct_child", reap_leader)
+    monkeypatch.setattr(
+        parent_death,
+        "_GET_PROCESS_GROUP_ID",
+        lambda _process: pytest.fail("a pinned Darwin zombie has no queryable PGID"),
+    )
+    monkeypatch.setattr(
+        parent_death,
+        "_GET_SESSION_ID",
+        lambda _process: pytest.fail("a pinned Darwin zombie has no queryable SID"),
+    )
+
+    assert parent_death._terminate_pinned_monitor_group(
+        601,
+        600,
+        identity_pinned=True,
+    )
+    assert events == [("group", 601), ("leader", 601)]
 
 
 @pytest.mark.skipif(
@@ -544,7 +1299,7 @@ def test_darwin_watchdog_lease_is_held_until_groups_are_empty(
         returncode: int | None = 0
 
         def poll(self) -> int:
-            return 0
+            pytest.fail("Darwin private release reaped through poll before proof")
 
         def wait(self, *, timeout: float) -> int:
             assert timeout == 5.0
@@ -562,6 +1317,11 @@ def test_darwin_watchdog_lease_is_held_until_groups_are_empty(
     monkeypatch.setattr(darwin_containment.os, "getpid", lambda: 500)
     monkeypatch.setattr(darwin_containment, "_GET_SESSION_ID", lambda _pid: 500)
     monkeypatch.setattr(darwin_containment, "_private_session_members", lambda _session: {500})
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_child_exited_without_reap",
+        lambda _pid: True,
+    )
 
     try:
         assert parent_lease.fileno() >= 0

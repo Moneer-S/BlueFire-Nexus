@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import shutil
 import signal
+import socket
 import stat
 import subprocess  # nosec B404
 import sys
@@ -17,6 +19,7 @@ from typing import Any, Mapping, cast
 import pytest
 
 import bluefire.runner_client as runner_client_module
+import bluefire.runner_darwin_containment as darwin_containment_module
 import bluefire.runner_private_files as private_files_module
 import bluefire.runner_trust as runner_trust_module
 import bluefire.runner_watchdog as runner_watchdog_module
@@ -261,6 +264,22 @@ def _runner(
     )
 
 
+@pytest.mark.parametrize("timeout_seconds", (float("nan"), float("inf"), 86_400.1))
+def test_runner_rejects_timeouts_outside_the_helper_protocol(
+    tmp_path: Path,
+    timeout_seconds: float,
+) -> None:
+    base = _runner(tmp_path)
+
+    with pytest.raises(RunnerTransportError, match="transport bounds"):
+        SubprocessRustRunner(
+            base.runner_binary,
+            base.work_root,
+            timeout_seconds=timeout_seconds,
+            _watchdog_interpreter=base._watchdog_interpreter,
+        )
+
+
 def _wait_for_file(path: Path, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -496,6 +515,7 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
             stdout=subprocess.PIPE,
             receiver_environment=receiver_environment,
             inherited_descriptors=launch[1],
+            process_sink=[],
         )
 
     assert process.stdout is not None
@@ -504,6 +524,1394 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
     assert process.returncode == 0
     assert stdout == b"trusted\n"
     assert not leaked.exists()
+
+
+def test_finished_posix_group_waits_for_the_exact_child_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    waited: list[float] = []
+
+    class Process:
+        pid = 501
+        returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, *, timeout: float) -> int:
+            waited.append(timeout)
+            self.returncode = 0
+            return 0
+
+    process = Process()
+    monkeypatch.setattr(runner, "_posix_process_group_exists", lambda _group: False)
+
+    assert runner._finish_posix_process_group(process) is True  # type: ignore[arg-type]
+    assert process.returncode == 0
+    assert waited == [runner_client_module._PROCESS_TERM_GRACE_SECONDS]
+
+
+def test_finished_darwin_group_inventories_before_reaping_zombie(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    events: list[str] = []
+
+    class Process:
+        pid = 502
+        returncode: int | None = None
+
+        def poll(self) -> int:
+            pytest.fail("Darwin leader was polled before its group was inventoried")
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == runner_client_module._PROCESS_KILL_GRACE_SECONDS
+            events.append("wait")
+            self.returncode = 0
+            return 0
+
+    process = Process()
+
+    class WaitResult:
+        si_pid = process.pid
+
+    def observe(id_type: int, process_id: int, flags: int) -> WaitResult:
+        assert id_type == 1
+        assert process_id == process.pid
+        assert flags == runner_client_module._DARWIN_WAITID_OPTIONS
+        events.append("observe-without-reap")
+        return WaitResult()
+
+    def members(process_group: int, session_id: int) -> set[int]:
+        assert (process_group, session_id) == (process.pid, process.pid)
+        assert process.returncode is None
+        events.append("inventory")
+        return set()
+
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(runner_client_module, "_WAIT_ID", observe)
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_private_process_group_members",
+        members,
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_private_session_members",
+        lambda session_id: members(session_id, session_id),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_posix_process_group_exists",
+        lambda _group: pytest.fail("an empty Darwin group reached killpg(0)"),
+    )
+    runner._darwin_no_fork_proven.add(process)  # type: ignore[arg-type]
+
+    assert runner._finish_posix_process_group(process) is True  # type: ignore[arg-type]
+    assert events == [
+        "observe-without-reap",
+        "inventory",
+        "inventory",
+        "observe-without-reap",
+        "inventory",
+        "inventory",
+        "wait",
+    ]
+
+
+def test_live_darwin_group_is_terminated_while_leader_pins_identifier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    events: list[str] = []
+
+    class Process:
+        pid = 503
+        returncode: int | None = None
+
+        def wait(self, *, timeout: float) -> int:
+            pytest.fail(f"live Darwin leader was reaped with timeout {timeout}")
+
+    process = Process()
+
+    class WaitResult:
+        si_pid = process.pid
+
+    group_inventories = iter(({process.pid, 504}, set(), set()))
+    # The first session snapshot intentionally misses the still-positive group
+    # snapshot; the drain must honor either positive inventory.
+    session_inventories = iter((set(), set(), set()))
+
+    def observe(id_type: int, process_id: int, flags: int) -> WaitResult:
+        assert (id_type, process_id, flags) == (
+            1,
+            process.pid,
+            runner_client_module._DARWIN_WAITID_OPTIONS,
+        )
+        assert process.returncode is None
+        events.append("observe-without-reap")
+        return WaitResult()
+
+    def members(process_group: int, session_id: int) -> set[int]:
+        assert (process_group, session_id) == (process.pid, process.pid)
+        assert process.returncode is None
+        events.append("inventory")
+        return next(group_inventories)
+
+    def session_members(session_id: int) -> set[int]:
+        assert session_id == process.pid
+        assert process.returncode is None
+        events.append("session-inventory")
+        return next(session_inventories)
+
+    def signal_group(process_group: int, signum: int) -> None:
+        assert process_group == process.pid
+        assert signum == signal.SIGTERM
+        assert process.returncode is None
+        events.append("signal-with-pinned-leader")
+
+    def wait(*, timeout: float) -> int:
+        assert timeout == runner_client_module._PROCESS_KILL_GRACE_SECONDS
+        events.append("reap-leader")
+        process.returncode = 0
+        return 0
+
+    process.wait = wait  # type: ignore[method-assign]
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(runner_client_module, "_WAIT_ID", observe)
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_private_process_group_members",
+        members,
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_private_session_members",
+        session_members,
+    )
+    monkeypatch.setattr(runner_client_module, "_KILL_PROCESS_GROUP", signal_group)
+    monkeypatch.setattr(runner_client_module.time, "sleep", lambda _seconds: None)
+    runner._darwin_no_fork_proven.add(process)  # type: ignore[arg-type]
+
+    assert runner._finish_posix_process_group(process) is True  # type: ignore[arg-type]
+    assert events == [
+        "observe-without-reap",
+        "inventory",
+        "session-inventory",
+        "signal-with-pinned-leader",
+        "observe-without-reap",
+        "inventory",
+        "session-inventory",
+        "observe-without-reap",
+        "inventory",
+        "session-inventory",
+        "reap-leader",
+    ]
+    assert runner._process_exited_without_reap(process) is True  # type: ignore[arg-type]
+
+
+def test_darwin_libc_waitid_fallback_observes_without_reaping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_id = 509
+    calls: list[tuple[int, int, int]] = []
+
+    def waitid(id_type: int, candidate: int, information: object, options: int) -> int:
+        calls.append((id_type, candidate, options))
+        cast(Any, information)._obj.si_pid = candidate
+        return 0
+
+    monkeypatch.setattr(runner_client_module, "_WAIT_ID", None)
+    monkeypatch.setattr(runner_client_module, "_DARWIN_LIBC_WAIT_ID", waitid)
+
+    assert runner_client_module._darwin_child_exited_without_reap(process_id) is True
+    assert calls == [
+        (
+            runner_client_module._DARWIN_P_PID,
+            process_id,
+            runner_client_module._DARWIN_WAITID_OPTIONS,
+        )
+    ]
+
+
+def test_darwin_libc_waitid_retries_interrupted_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process_id = 510
+    attempts = 0
+
+    def waitid(_id_type: int, candidate: int, information: object, _options: int) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            runner_client_module.ctypes.set_errno(errno.EINTR)
+            return -1
+        cast(Any, information)._obj.si_pid = candidate
+        return 0
+
+    monkeypatch.setattr(runner_client_module, "_WAIT_ID", None)
+    monkeypatch.setattr(runner_client_module, "_DARWIN_LIBC_WAIT_ID", waitid)
+
+    assert runner_client_module._darwin_child_exited_without_reap(process_id) is True
+    assert attempts == 2
+
+
+def test_darwin_child_status_ownership_requires_default_sigchld(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runner_client_module, "_WAIT_ID", lambda *_args: None)
+    monkeypatch.setattr(runner_client_module.signal, "SIGCHLD", 17, raising=False)
+    monkeypatch.setattr(
+        runner_client_module.signal,
+        "getsignal",
+        lambda _signum: signal.SIG_DFL,
+    )
+
+    assert runner_client_module._darwin_child_status_ownership_available() is True
+
+    monkeypatch.setattr(
+        runner_client_module.signal,
+        "getsignal",
+        lambda _signum: signal.SIG_IGN,
+    )
+    assert runner_client_module._darwin_child_status_ownership_available() is False
+
+
+def test_darwin_watchdog_proof_accepts_only_the_exact_atomic_record() -> None:
+    proof = runner_client_module._DarwinWatchdogProof()
+    process_id = 509
+    expected = f"no-fork-v1:{proof.nonce}:{process_id}\n".encode("ascii")
+
+    if hasattr(socket, "AF_UNIX"):
+        assert proof.reader.type == socket.SOCK_DGRAM
+    assert proof.writer.send(expected) == len(expected)
+    assert proof.verify(process_id) is True
+    assert proof.verified is True
+
+
+def test_darwin_watchdog_proof_retries_when_no_record_has_arrived() -> None:
+    proof = runner_client_module._DarwinWatchdogProof()
+    process_id = 509
+    child_writer = proof.writer.dup()
+
+    assert proof.verify(process_id) is False
+    assert proof.verified is None
+    payload = f"no-fork-v1:{proof.nonce}:{process_id}\n".encode("ascii")
+    try:
+        assert child_writer.send(payload) == len(payload)
+        assert proof.verify(process_id) is True
+    finally:
+        child_writer.close()
+
+
+@pytest.mark.parametrize("payload_kind", ("truncated", "wrong-pid", "extra"))
+def test_darwin_watchdog_proof_rejects_inexact_records(payload_kind: str) -> None:
+    proof = runner_client_module._DarwinWatchdogProof()
+    process_id = 510
+    expected = f"no-fork-v1:{proof.nonce}:{process_id}\n".encode("ascii")
+    payload = {
+        "truncated": expected[:-1],
+        "wrong-pid": f"no-fork-v1:{proof.nonce}:{process_id + 1}\n".encode("ascii"),
+        "extra": expected + b"x",
+    }[payload_kind]
+
+    assert proof.writer.send(payload) == len(payload)
+    assert proof.verify(process_id) is False
+    assert proof.verified is False
+
+
+def test_darwin_watchdog_proof_survives_interrupted_publication(
+    tmp_path: Path,
+) -> None:
+    runner = _runner(tmp_path)
+
+    class Process:
+        pid = 511
+        returncode: int | None = None
+
+    class InterruptingProofSet(set[object]):
+        interrupted = False
+
+        def add(self, element: object) -> None:
+            if not self.interrupted:
+                self.interrupted = True
+                raise KeyboardInterrupt
+            super().add(element)
+
+    process = Process()
+    proof = runner_client_module._DarwinWatchdogProof()
+    payload = f"no-fork-v1:{proof.nonce}:{process.pid}\n".encode("ascii")
+    assert proof.writer.send(payload) == len(payload)
+    runner._darwin_watchdog_proofs[process] = proof  # type: ignore[index]
+    proven = InterruptingProofSet()
+    runner._darwin_no_fork_proven = cast(Any, proven)
+
+    with pytest.raises(KeyboardInterrupt):
+        runner._refresh_darwin_no_fork_proof(process)  # type: ignore[arg-type]
+    assert proof.verified is True
+    assert process in runner._darwin_watchdog_proofs
+
+    assert runner._refresh_darwin_no_fork_proof(process) is True  # type: ignore[arg-type]
+    assert process in proven
+    assert process not in runner._darwin_watchdog_proofs
+
+
+@pytest.mark.parametrize("gate", ("cancelled", "timed-out"))
+def test_darwin_watchdog_prelaunch_gate_publishes_no_fork_proof(
+    gate: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    published: list[tuple[int | None, str | None]] = []
+    nonce = "a" * 64
+    monkeypatch.setattr(runner_watchdog_module.sys, "platform", "darwin")
+    monkeypatch.setattr(runner_watchdog_module, "_wait_for_start", lambda _config: gate)
+    monkeypatch.setattr(
+        runner_watchdog_module,
+        "_publish_darwin_no_fork_proof",
+        lambda descriptor, proof_nonce: published.append((descriptor, proof_nonce)),
+    )
+
+    result = runner_watchdog_module._run(
+        cast(Any, object()),
+        receiver_environment={},
+        darwin_proof_descriptor=71,
+        darwin_proof_nonce=nonce,
+    )
+
+    assert result[0] == ("cancelled" if gate == "cancelled" else "failed")
+    assert published == [(71, nonce)]
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_status"),
+    (("config", 65), ("receiver", 65), ("readiness", 66)),
+)
+def test_darwin_watchdog_main_prelaunch_failures_publish_no_fork_proof(
+    failure: str,
+    expected_status: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nonce = "b" * 64
+    config = SimpleNamespace(task_id="task-darwin-proof-01")
+    published: list[tuple[int | None, str | None]] = []
+    monkeypatch.setattr(runner_watchdog_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        runner_watchdog_module,
+        "_publish_darwin_no_fork_proof",
+        lambda descriptor, proof_nonce: published.append((descriptor, proof_nonce)),
+    )
+    monkeypatch.setattr(runner_watchdog_module, "_close_config", lambda _config: None)
+    monkeypatch.setattr(
+        runner_watchdog_module,
+        "_cleanup_private_inputs",
+        lambda _config: None,
+    )
+    if failure == "config":
+        monkeypatch.setattr(
+            runner_watchdog_module,
+            "_load_config",
+            lambda _path: (_ for _ in ()).throw(RunnerTransportError("invalid config")),
+        )
+    else:
+        monkeypatch.setattr(runner_watchdog_module, "_load_config", lambda _path: config)
+        if failure == "receiver":
+            monkeypatch.setattr(
+                runner_watchdog_module,
+                "_consume_receiver_task_environment",
+                lambda **_kwargs: (_ for _ in ()).throw(RunnerTransportError("invalid receiver")),
+            )
+        else:
+            monkeypatch.setattr(
+                runner_watchdog_module,
+                "_consume_receiver_task_environment",
+                lambda **_kwargs: {},
+            )
+            monkeypatch.setattr(
+                runner_watchdog_module,
+                "_write_private_json",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    RunnerTransportError("readiness unavailable")
+                ),
+            )
+
+    assert runner_watchdog_module.main(["config.json", "72", nonce]) == expected_status
+    assert published == [(72, nonce)]
+
+
+def test_darwin_watchdog_launch_passes_a_rewritable_proof_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    captured: dict[str, Any] = {}
+
+    class Process:
+        pid = 515
+        returncode: int | None = None
+
+    class Launch:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def __enter__(self) -> tuple[str, tuple[int, ...]]:
+            return str(self.path), ()
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    process = Process()
+
+    def spawn(argv: list[str], **options: Any) -> Any:
+        captured["argv"] = list(argv)
+        captured["options"] = dict(options)
+        options["process_sink"].append(process)
+        return process
+
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        runner_client_module,
+        "_pinned_launch_file",
+        lambda path, _digest, **_kwargs: Launch(path),
+    )
+    monkeypatch.setattr(runner, "_spawn", spawn)
+    monkeypatch.setattr(runner, "_await_watchdog_readiness", lambda *_args: None)
+
+    result = runner._spawn_watchdog(
+        tmp_path / "config.json",
+        receiver_environment={},
+        task_id="task-darwin-proof-02",
+        process_sink=[],
+    )
+    proof = runner._darwin_watchdog_proofs[process]  # type: ignore[index]
+    try:
+        argv = captured["argv"]
+        options = captured["options"]
+        passed_descriptor = int(argv[10])
+        assert result is process
+        assert passed_descriptor > 2
+        assert proof.write_descriptor == -1
+        assert options["inherited_descriptors"] == (passed_descriptor,)
+        assert options["darwin_descriptor_argument_indexes"] == (10,)
+        assert options["darwin_allow_fork"] is True
+    finally:
+        proof.close_reader()
+
+
+def test_darwin_spawn_rechecks_child_status_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_child_status_ownership_available",
+        lambda: False,
+    )
+
+    with pytest.raises(RunnerTransportError, match="child status ownership"):
+        runner._spawn(  # noqa: SLF001
+            [str(runner.runner_binary)],
+            stdout=subprocess.DEVNULL,
+            process_sink=[],
+        )
+
+
+def test_darwin_process_slots_reject_before_exceeding_governor(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    slots: list[object] = []
+    try:
+        for _index in range(runner_client_module._DARWIN_INDETERMINATE_LIMIT):
+            slot = object()
+            assert runner._reserve_darwin_process_slot(slot) is True
+            slots.append(slot)
+        assert runner._reserve_darwin_process_slot(object()) is False
+    finally:
+        for slot in slots:
+            runner._cancel_darwin_process_slot(slot)
+
+
+def test_darwin_launch_descriptor_argument_is_rewritten_with_its_worker_copy() -> None:
+    read_descriptor, write_descriptor = os.pipe()
+    resources: Any = None
+    try:
+        argv = ["runner", *("fixed" for _index in range(9)), str(read_descriptor)]
+        resources = runner_client_module._prepare_darwin_launch_resources(
+            argv,
+            {
+                "pass_fds": (read_descriptor,),
+                "_bluefire_descriptor_argument_indexes": (10,),
+            },
+            [],
+        )
+        copied_descriptor = int(resources.argv[10])
+        assert copied_descriptor > 2
+        assert copied_descriptor != read_descriptor
+        assert resources.options["pass_fds"] == (copied_descriptor,)
+        assert "_bluefire_descriptor_argument_indexes" not in resources.options
+        assert os.fstat(copied_descriptor).st_ino == os.fstat(read_descriptor).st_ino
+    finally:
+        if resources is not None:
+            resources.close()
+        os.close(read_descriptor)
+        os.close(write_descriptor)
+
+
+def test_darwin_launch_prepares_before_publication_and_retires_interrupted_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    prepared = SimpleNamespace(argv=["owned-runner"], options={})
+    events: list[str] = []
+    retired: list[Any] = []
+    cancelled: list[object] = []
+
+    def prepare(argv: list[str], options: Mapping[str, Any], sink: list[Any]) -> Any:
+        assert argv == ["borrowed-runner"]
+        assert options == {"pass_fds": ()}
+        sink.append(prepared)
+        events.append("prepared")
+        return prepared
+
+    class InterruptingCondition:
+        entries = 0
+
+        def __enter__(self) -> InterruptingCondition:
+            self.entries += 1
+            if self.entries == 1:
+                assert events == ["prepared"]
+                raise KeyboardInterrupt
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def notify(self) -> None:
+            return None
+
+    monkeypatch.setattr(runner_client_module, "_start_darwin_launch_worker", lambda: None)
+    monkeypatch.setattr(runner_client_module, "_prepare_darwin_launch_resources", prepare)
+    monkeypatch.setattr(
+        runner_client_module,
+        "_retire_darwin_launch_resources",
+        retired.append,
+    )
+    monkeypatch.setattr(runner, "_cancel_darwin_process_slot", cancelled.append)
+    monkeypatch.setattr(
+        runner_client_module,
+        "_DARWIN_LAUNCH_REQUESTS",
+        type(runner_client_module._DARWIN_LAUNCH_REQUESTS)(),
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_DARWIN_LAUNCH_CONDITION",
+        InterruptingCondition(),
+    )
+    token = object()
+
+    with pytest.raises(KeyboardInterrupt):
+        runner._spawn_registered_darwin_popen(  # noqa: SLF001
+            token,
+            [],
+            ["borrowed-runner"],
+            pass_fds=(),
+        )
+
+    assert retired == [prepared]
+    assert cancelled == [token]
+    assert not runner_client_module._DARWIN_LAUNCH_REQUESTS
+
+
+@pytest.mark.parametrize("registration_wins", (False, True))
+def test_darwin_launch_accepted_request_finishes_worker_owned_after_abandon(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    registration_wins: bool,
+) -> None:
+    runner = _runner(tmp_path)
+    prepared = runner_client_module._DarwinLaunchResources(
+        argv=["owned-runner"],
+        options={},
+        descriptors=[],
+        links=[],
+    )
+    retired: list[Any] = []
+    requests = type(runner_client_module._DARWIN_LAUNCH_REQUESTS)()
+    condition = threading.Condition()
+    accepted = threading.Event()
+    construction_started = threading.Event()
+    release_worker = threading.Event()
+    worker_threads: list[threading.Thread] = []
+    popen_calls: list[list[str]] = []
+
+    class Process:
+        pid = 608
+        returncode: int | None = None
+        _child_created = False
+
+    process = Process()
+
+    class Popen:
+        def __new__(cls) -> object:
+            return process
+
+        def __init__(self, argv: list[str], **_options: Any) -> None:
+            popen_calls.append(argv)
+            self._child_created = True
+            construction_started.set()
+            assert release_worker.wait(2.0)
+
+    def one_request_worker() -> None:
+        with condition:
+            assert condition.wait_for(lambda: bool(requests), timeout=2.0)
+            request = requests.popleft()
+            request.accepted.set()
+        accepted.set()
+        if not registration_wins:
+            assert release_worker.wait(2.0)
+        runner_client_module._execute_darwin_launch_request(request)
+
+    def start_worker() -> None:
+        worker = threading.Thread(target=one_request_worker, daemon=True)
+        worker_threads.append(worker)
+        worker.start()
+
+    def worker_is_alive() -> bool:
+        boundary = construction_started if registration_wins else accepted
+        assert boundary.wait(1.0)
+        return bool(worker_threads and worker_threads[0].is_alive())
+
+    def prepare(_argv: list[str], _options: Mapping[str, Any], sink: list[Any]) -> Any:
+        sink.append(prepared)
+        return prepared
+
+    retire_resources = runner_client_module._retire_darwin_launch_resources
+
+    def retire(resources: Any) -> None:
+        retired.append(resources)
+        retire_resources(resources)
+
+    active: dict[Any, Any] = {}
+    indeterminate: dict[Any, Any] = {}
+    pending: set[object] = set()
+    token = object()
+
+    # Isolate the process governor and launch queue from the session worker.
+    monkeypatch.setattr(runner_client_module, "_DARWIN_ACTIVE_PROCESSES", active)
+    monkeypatch.setattr(runner_client_module, "_DARWIN_INDETERMINATE_PROCESSES", indeterminate)
+    monkeypatch.setattr(runner_client_module, "_DARWIN_PENDING_PROCESS_SLOTS", pending)
+    monkeypatch.setattr(runner_client_module, "_DARWIN_LAUNCH_REQUESTS", requests)
+    monkeypatch.setattr(runner_client_module, "_DARWIN_LAUNCH_CONDITION", condition)
+    monkeypatch.setattr(runner_client_module, "_WATCHDOG_START_GRACE_SECONDS", 0.05)
+    monkeypatch.setattr(runner_client_module, "_PROCESS_POLL_SECONDS", 0.002)
+    monkeypatch.setattr(runner_client_module, "_start_darwin_launch_worker", start_worker)
+    monkeypatch.setattr(runner_client_module, "_prepare_darwin_launch_resources", prepare)
+    monkeypatch.setattr(runner_client_module, "_darwin_launch_worker_is_alive", worker_is_alive)
+    monkeypatch.setattr(runner_client_module, "_retire_darwin_launch_resources", retire)
+    monkeypatch.setattr(runner_client_module.subprocess, "Popen", Popen)
+    monkeypatch.setattr(
+        runner_client_module,
+        "_start_darwin_indeterminate_reconciler",
+        lambda: None,
+    )
+    assert runner._reserve_darwin_process_slot(token) is True  # noqa: SLF001
+
+    with pytest.raises(RunnerTransportError, match="exceeded its deadline"):
+        runner._spawn_registered_darwin_popen(  # noqa: SLF001
+            token,
+            [],
+            ["borrowed-runner"],
+        )
+
+    assert accepted.is_set()
+    assert token not in pending
+    if registration_wins:
+        assert construction_started.is_set()
+        assert set(active) | set(indeterminate) == {process}
+    else:
+        assert popen_calls == []
+        assert not active
+        assert not indeterminate
+
+    release_worker.set()
+    worker_threads[0].join(timeout=2.0)
+    assert not worker_threads[0].is_alive()
+    assert retired == [prepared]
+    if registration_wins:
+        assert popen_calls == [["owned-runner"]]
+        assert set(active) | set(indeterminate) == {process}
+        assert indeterminate[process] == (runner, True, False, True)
+    else:
+        assert popen_calls == []
+        assert not active
+        assert not indeterminate
+
+
+def test_darwin_stale_pin_reservation_is_recoverable_and_token_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = (901, 902)
+    stale_token = object()
+    successor_token = object()
+    monkeypatch.setattr(darwin_containment_module, "_MACOS_PIN_LOCK_TIMEOUT_SECONDS", 0.0)
+    try:
+        with darwin_containment_module._MACOS_PIN_REGISTRY_CONDITION:
+            darwin_containment_module._MACOS_PIN_PENDING[identity] = (
+                darwin_containment_module._MacOSPinReservation(
+                    owner_thread=-1,
+                    token=stale_token,
+                    created_at=0.0,
+                )
+            )
+        assert (
+            darwin_containment_module._reserve_macos_pin_identity(
+                identity,
+                successor_token,
+                allow_same_thread_reuse=False,
+            )
+            is None
+        )
+        pending = darwin_containment_module._MACOS_PIN_PENDING[identity]
+        assert pending.token is successor_token
+
+        darwin_containment_module._release_macos_pin_reservation(identity, stale_token)
+        assert darwin_containment_module._MACOS_PIN_PENDING[identity].token is successor_token
+        darwin_containment_module._release_macos_pin_reservation(identity, successor_token)
+        assert identity not in darwin_containment_module._MACOS_PIN_PENDING
+    finally:
+        with darwin_containment_module._MACOS_PIN_REGISTRY_CONDITION:
+            darwin_containment_module._MACOS_PIN_REGISTRY.pop(identity, None)
+            darwin_containment_module._MACOS_PIN_PENDING.pop(identity, None)
+            darwin_containment_module._MACOS_PIN_REGISTRY_CONDITION.notify_all()
+
+
+def test_darwin_prelaunch_interruption_releases_reservation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+
+    class Process:
+        pid = 509
+        returncode: int | None = None
+
+    class Popen:
+        def __new__(cls) -> object:
+            return process
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self._child_created = True
+
+    class InterruptingSlots(set[object]):
+        interrupted = False
+
+        def discard(self, element: object) -> None:
+            if not self.interrupted and element in self:
+                self.interrupted = True
+                raise KeyboardInterrupt
+            super().discard(element)
+
+    process = Process()
+    slots = InterruptingSlots()
+
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(runner_client_module.os, "name", "posix")
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_child_status_ownership_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(runner_client_module.subprocess, "Popen", Popen)
+    monkeypatch.setattr(runner_client_module, "_DARWIN_PENDING_PROCESS_SLOTS", slots)
+    monkeypatch.setattr(
+        runner_client_module,
+        "_start_darwin_indeterminate_reconciler",
+        lambda: None,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        runner._spawn(  # noqa: SLF001
+            [str(runner.runner_binary)],
+            stdout=subprocess.DEVNULL,
+            darwin_allow_fork=True,
+            process_sink=[],
+        )
+    with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+        assert process not in runner_client_module._DARWIN_ACTIVE_PROCESSES
+        assert process not in runner_client_module._DARWIN_INDETERMINATE_PROCESSES
+        assert not runner_client_module._DARWIN_PENDING_PROCESS_SLOTS
+
+
+def test_darwin_post_registration_interruption_quarantines_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+
+    class Process:
+        pid = 510
+        returncode: int | None = None
+
+    class Popen:
+        def __new__(cls) -> object:
+            return process
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self._child_created = True
+
+    class InterruptingPlatform(str):
+        linux_checks = 0
+
+        def startswith(self, prefix: str, *args: int) -> bool:
+            if prefix == "linux":
+                self.linux_checks += 1
+                if self.linux_checks == 2:
+                    raise KeyboardInterrupt
+            return super().startswith(prefix, *args)
+
+    process = Process()
+    monkeypatch.setattr(runner_client_module.sys, "platform", InterruptingPlatform("darwin"))
+    monkeypatch.setattr(runner_client_module.os, "name", "posix")
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_child_status_ownership_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(runner_client_module.subprocess, "Popen", Popen)
+    monkeypatch.setattr(
+        runner_client_module,
+        "_start_darwin_indeterminate_reconciler",
+        lambda: None,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        runner._spawn(  # noqa: SLF001
+            [str(runner.runner_binary)],
+            stdout=subprocess.DEVNULL,
+            darwin_allow_fork=True,
+            process_sink=[],
+        )
+    try:
+        with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+            assert runner_client_module._DARWIN_ACTIVE_PROCESSES.get(process) is runner
+            assert runner_client_module._DARWIN_INDETERMINATE_PROCESSES.get(process) == (
+                runner,
+                True,
+                False,
+                True,
+            )
+    finally:
+        with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+            runner_client_module._DARWIN_INDETERMINATE_PROCESSES.pop(process, None)
+            runner_client_module._DARWIN_ACTIVE_PROCESSES.pop(process, None)
+
+
+def test_darwin_popen_runtime_error_after_child_creation_is_quarantined(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+
+    class Popen:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.pid = 511
+            self.returncode: int | None = None
+            self._child_created = True
+            raise RuntimeError("signal handler interrupted launch")
+
+    process_sink: list[Any] = []
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(runner_client_module.os, "name", "posix")
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_child_status_ownership_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(runner_client_module.subprocess, "Popen", Popen)
+    monkeypatch.setattr(
+        runner_client_module,
+        "_start_darwin_indeterminate_reconciler",
+        lambda: None,
+    )
+
+    with pytest.raises(RuntimeError, match="interrupted launch"):
+        runner._spawn(  # noqa: SLF001
+            [str(runner.runner_binary)],
+            stdout=subprocess.DEVNULL,
+            darwin_allow_fork=True,
+            process_sink=process_sink,
+        )
+    assert len(process_sink) == 1
+    process = process_sink[0]
+    try:
+        with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+            assert runner_client_module._DARWIN_ACTIVE_PROCESSES.get(process) is runner
+            assert runner_client_module._DARWIN_INDETERMINATE_PROCESSES.get(process) == (
+                runner,
+                True,
+                False,
+                True,
+            )
+    finally:
+        with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+            runner_client_module._DARWIN_INDETERMINATE_PROCESSES.pop(process, None)
+            runner_client_module._DARWIN_ACTIVE_PROCESSES.pop(process, None)
+
+
+def test_invoke_recovers_process_from_pre_return_ownership_sink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    process = cast(Any, SimpleNamespace(pid=512, returncode=None))
+    stopped: list[Any] = []
+
+    def interrupted_spawn(*_args: object, **options: Any) -> None:
+        options["process_sink"].append(process)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner, "_spawn", interrupted_spawn)
+    monkeypatch.setattr(
+        runner,
+        "_stop_process_tree",
+        lambda candidate: stopped.append(candidate) is None,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        runner._invoke([str(runner.runner_binary), "inventory", "--json"])
+    assert stopped == [process]
+
+
+def test_darwin_reconciler_start_failure_clears_retry_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Thread:
+        def is_alive(self) -> bool:
+            return False
+
+        def start(self) -> None:
+            raise RuntimeError("thread unavailable")
+
+    monkeypatch.setattr(runner_client_module.threading, "Thread", lambda **_kwargs: Thread())
+    with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+        monkeypatch.setattr(runner_client_module, "_DARWIN_RECONCILER_THREAD", None)
+
+    with pytest.raises(RunnerTransportError, match="reconciliation worker"):
+        runner_client_module._start_darwin_indeterminate_reconciler()
+
+    assert runner_client_module._DARWIN_RECONCILER_THREAD is None
+
+
+def test_darwin_drain_does_not_reap_with_alternate_group_session_member(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+
+    class Process:
+        pid = 510
+        returncode: int | None = None
+
+        def wait(self, *, timeout: float) -> int:
+            pytest.fail(f"Darwin leader was reaped with an alternate member: {timeout}")
+
+    process = Process()
+    times = iter((0.0, 8.0))
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_child_exited_without_reap",
+        lambda _process_id: True,
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_private_process_group_members",
+        lambda _group, _session: set(),
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_private_session_members",
+        lambda _session: {511},
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_KILL_PROCESS_GROUP",
+        lambda _group, _signal: pytest.fail("alternate group was signalled by stale PGID"),
+    )
+    monkeypatch.setattr(runner_client_module.time, "monotonic", lambda: next(times))
+    runner._darwin_no_fork_proven.add(process)  # type: ignore[arg-type]
+
+    assert runner._drain_darwin_process_group(process) is False  # type: ignore[arg-type]
+    assert process.returncode is None
+
+
+def test_darwin_drain_requires_proof_and_accepts_the_parent_owned_channel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+
+    class Process:
+        pid = 514
+        returncode: int | None = None
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == runner_client_module._PROCESS_KILL_GRACE_SECONDS
+            self.returncode = 0
+            return 0
+
+    unproved = Process()
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        runner,
+        "_process_exited_without_reap",
+        lambda _process, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_private_process_group_members",
+        lambda _group, _session: set(),
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_private_session_members",
+        lambda _session: set(),
+    )
+    monkeypatch.setattr(runner_client_module.time, "sleep", lambda _seconds: None)
+
+    assert runner._drain_darwin_process_group(unproved) is False  # type: ignore[arg-type]
+    assert unproved.returncode is None
+
+    process = Process()
+    proof = runner_client_module._DarwinWatchdogProof()
+    payload = f"no-fork-v1:{proof.nonce}:{process.pid}\n".encode("ascii")
+    assert proof.writer.send(payload) == len(payload)
+    runner._darwin_watchdog_proofs[process] = proof  # type: ignore[index]
+
+    assert runner._drain_darwin_process_group(process) is True  # type: ignore[arg-type]
+    assert process.returncode == 0
+    assert process in runner._darwin_no_fork_proven
+    assert process not in runner._darwin_watchdog_proofs
+
+
+def test_darwin_release_retains_process_across_transient_drain_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    outcomes = iter((False, True))
+    attempts: list[object] = []
+
+    class Process:
+        pid = 511
+        returncode: int | None = None
+
+    process = Process()
+
+    def drain(candidate: object, *, _reconciling: bool = False) -> bool:
+        assert candidate is process
+        attempts.append((candidate, _reconciling))
+        return next(outcomes)
+
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(runner, "_drain_darwin_process_group", drain)
+    monkeypatch.setattr(
+        runner_client_module,
+        "_start_darwin_indeterminate_reconciler",
+        lambda: None,
+    )
+    slot = object()
+    assert runner._reserve_darwin_process_slot(slot) is True
+    runner._register_darwin_process_slot(slot, process)  # type: ignore[arg-type]
+
+    assert runner._finish_posix_process_group(process) is False  # type: ignore[arg-type]
+    with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+        state = runner_client_module._DARWIN_INDETERMINATE_PROCESSES.get(process)
+        assert state is not None and state[0] is runner
+    assert runner._finish_posix_process_group(process) is False  # type: ignore[arg-type]
+    assert (
+        runner._reconcile_indeterminate_darwin_process(  # type: ignore[arg-type]
+            process,
+            terminate=False,
+        )
+        is True
+    )
+    with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+        assert process not in runner_client_module._DARWIN_INDETERMINATE_PROCESSES
+        assert process not in runner_client_module._DARWIN_ACTIVE_PROCESSES
+    assert attempts == [(process, False), (process, True)]
+
+
+def test_darwin_observe_only_reconciliation_never_signals_numeric_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+
+    class Process:
+        pid = 513
+        returncode: int | None = None
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == runner_client_module._PROCESS_KILL_GRACE_SECONDS
+            self.returncode = 0
+            return 0
+
+    process = Process()
+    session_id = process.pid
+    slot = object()
+    assert runner._reserve_darwin_process_slot(slot) is True
+    runner._register_darwin_process_slot(slot, process)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_child_exited_without_reap",
+        lambda _pid: True,
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_private_session_members",
+        lambda _session: {session_id},
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_KILL_PROCESS_GROUP",
+        lambda *_args: pytest.fail("observe-only reconciliation attempted a numeric signal"),
+    )
+    monkeypatch.setattr(runner_client_module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        runner_client_module,
+        "_start_darwin_indeterminate_reconciler",
+        lambda: None,
+    )
+    assert (
+        runner._retain_indeterminate_darwin_process(  # type: ignore[arg-type]
+            process,
+            terminate=True,
+            observe_only=True,
+        )
+        is True
+    )
+
+    assert (
+        runner._reconcile_indeterminate_darwin_process(  # type: ignore[arg-type]
+            process,
+            terminate=True,
+            observe_only=True,
+        )
+        is True
+    )
+    with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+        assert process not in runner_client_module._DARWIN_INDETERMINATE_PROCESSES
+        assert process not in runner_client_module._DARWIN_ACTIVE_PROCESSES
+
+
+def test_unproved_generic_darwin_launch_is_reaped_observe_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+
+    class Process:
+        pid = 516
+        returncode: int | None = None
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == runner_client_module._PROCESS_KILL_GRACE_SECONDS
+            self.returncode = 74
+            return 74
+
+    process = Process()
+    slot = object()
+    assert runner._reserve_darwin_process_slot(slot) is True
+    runner._register_darwin_process_slot(slot, process)  # type: ignore[arg-type]
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        runner_client_module,
+        "_start_darwin_indeterminate_reconciler",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_child_exited_without_reap",
+        lambda _pid: True,
+    )
+    inventories: list[int] = []
+
+    def session_members(session_id: int) -> set[int]:
+        assert session_id == process.pid
+        inventories.append(session_id)
+        return {session_id}
+
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_private_session_members",
+        session_members,
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_KILL_PROCESS_GROUP",
+        lambda *_args: pytest.fail("observe-only recovery signalled a numeric identity"),
+    )
+    monkeypatch.setattr(runner_client_module.time, "sleep", lambda _seconds: None)
+
+    runner._quarantine_interrupted_darwin_launch(process)  # type: ignore[arg-type]
+    with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+        assert runner_client_module._DARWIN_INDETERMINATE_PROCESSES[process] == (
+            runner,
+            True,
+            False,
+            True,
+        )
+
+    assert (
+        runner._reconcile_indeterminate_darwin_process(  # type: ignore[arg-type]
+            process,
+            terminate=True,
+            observe_only=True,
+        )
+        is True
+    )
+    assert process.returncode == 74
+    assert inventories == [process.pid, process.pid]
+    with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+        assert process not in runner_client_module._DARWIN_INDETERMINATE_PROCESSES
+        assert process not in runner_client_module._DARWIN_ACTIVE_PROCESSES
+
+
+def test_observe_only_darwin_quarantine_upgrades_when_proof_arrives(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+
+    class Process:
+        pid = 517
+        returncode: int | None = None
+
+    process = Process()
+    slot = object()
+    assert runner._reserve_darwin_process_slot(slot) is True
+    runner._register_darwin_process_slot(slot, process)  # type: ignore[arg-type]
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        runner_client_module,
+        "_start_darwin_indeterminate_reconciler",
+        lambda: None,
+    )
+    runner._quarantine_interrupted_darwin_launch(process)  # type: ignore[arg-type]
+
+    proof = runner_client_module._DarwinWatchdogProof()
+    payload = f"no-fork-v1:{proof.nonce}:{process.pid}\n".encode("ascii")
+    assert proof.writer.send(payload) == len(payload)
+    runner._darwin_watchdog_proofs[process] = proof  # type: ignore[index]
+    drains: list[tuple[Any, bool]] = []
+
+    def drain(candidate: Any, *, _reconciling: bool = False) -> bool:
+        drains.append((candidate, _reconciling))
+        return True
+
+    monkeypatch.setattr(runner, "_drain_darwin_process_group", drain)
+
+    assert (
+        runner._reconcile_indeterminate_darwin_process(  # type: ignore[arg-type]
+            process,
+            terminate=True,
+        )
+        is True
+    )
+    assert drains == [(process, True)]
+    assert process in runner._darwin_no_fork_proven
+    with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+        assert process not in runner_client_module._DARWIN_INDETERMINATE_PROCESSES
+        assert process not in runner_client_module._DARWIN_ACTIVE_PROCESSES
+
+
+def test_darwin_observation_failure_enters_bounded_retention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+
+    class Process:
+        pid = 512
+        returncode: int | None = None
+
+    process = Process()
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_child_exited_without_reap",
+        lambda _pid: (_ for _ in ()).throw(OSError("waitid unavailable")),
+    )
+    monkeypatch.setattr(runner, "_drain_darwin_process_group", lambda _process: False)
+    slot = object()
+    assert runner._reserve_darwin_process_slot(slot) is True
+    runner._register_darwin_process_slot(slot, process)  # type: ignore[arg-type]
+
+    assert runner._process_exited_without_reap(process) is False  # type: ignore[arg-type]
+    assert runner._finish_posix_process_group(process) is False  # type: ignore[arg-type]
+    try:
+        with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+            state = runner_client_module._DARWIN_INDETERMINATE_PROCESSES.get(process)
+            assert state is not None and state == (runner, False, True, False)
+    finally:
+        with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+            runner_client_module._DARWIN_INDETERMINATE_PROCESSES.pop(process, None)
+            runner_client_module._DARWIN_ACTIVE_PROCESSES.pop(process, None)
+
+
+def test_darwin_drain_signals_a_live_sole_group_leader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    events: list[str] = []
+    exit_states = iter((False, True, True))
+
+    class Process:
+        pid = 512
+        returncode: int | None = None
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == runner_client_module._PROCESS_KILL_GRACE_SECONDS
+            events.append("reap")
+            self.returncode = 0
+            return 0
+
+    process = Process()
+
+    def signal_group(group: int, signum: int) -> None:
+        assert (group, signum) == (process.pid, signal.SIGTERM)
+        assert process.returncode is None
+        events.append("signal")
+
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_child_exited_without_reap",
+        lambda _process_id: next(exit_states),
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_private_process_group_members",
+        lambda _group, _session: {process.pid},
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_private_session_members",
+        lambda _session: {process.pid},
+    )
+    monkeypatch.setattr(runner_client_module, "_KILL_PROCESS_GROUP", signal_group)
+    monkeypatch.setattr(runner_client_module.time, "sleep", lambda _seconds: None)
+    runner._darwin_no_fork_proven.add(process)  # type: ignore[arg-type]
+
+    assert runner._terminate_posix_process_tree(process) is True  # type: ignore[arg-type]
+    assert events == ["signal", "reap"]
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="native Darwin hard-link launch boundary")
@@ -539,6 +1947,7 @@ def test_macos_verified_launch_cannot_be_redirected_before_receiver_key_exposure
             stdout=subprocess.PIPE,
             receiver_environment=receiver_environment,
             inherited_descriptors=launch[1],
+            process_sink=[],
         )
 
     assert process.stdout is not None

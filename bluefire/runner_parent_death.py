@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import fcntl
+import math
 import os
 import re
 import select
@@ -21,6 +22,7 @@ _POLL_SECONDS = 0.025
 _TERM_GRACE_SECONDS = 2.0
 _KILL_GRACE_SECONDS = 5.0
 _START_TIMEOUT_SECONDS = 10.0
+_MAX_EXECUTION_TIMEOUT_SECONDS = 86_400.0
 _KILL_PROCESS_GROUP = getattr(os, "killpg", None)
 _SET_PROCESS_GROUP = getattr(os, "setpgid", None)
 _GET_PROCESS_GROUP = getattr(os, "getpgrp", None)
@@ -31,6 +33,7 @@ _FORK_PROCESS = getattr(os, "fork", None)
 _WAIT_NO_HANG = getattr(os, "WNOHANG", 0)
 _MAX_DARWIN_PROCESSES = 131_072
 _DARWIN_NO_FORK_PROFILE = b"(version 1)\n(allow default)\n(deny process-fork)\n"
+_DARWIN_NO_FORK_EXEC_MODE = "--darwin-no-fork-exec-v1"
 
 
 def _private_target(descriptor: int) -> bool:
@@ -166,9 +169,25 @@ def _close_descriptor(descriptor: int) -> None:
         pass
 
 
-def _read_line_descriptor(descriptor: int, *, maximum: int) -> bytes:
+def _read_line_descriptor(descriptor: int, *, maximum: int, deadline: float) -> bytes:
     payload = bytearray()
     while len(payload) <= maximum:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OSError("supervisor record timed out")
+        try:
+            readable, _, _ = select.select(
+                [descriptor],
+                [],
+                [],
+                min(_POLL_SECONDS, remaining),
+            )
+        except OSError as exc:
+            if exc.errno == errno.EINTR:
+                continue
+            raise
+        if not readable:
+            continue
         chunk = os.read(descriptor, 1)
         if not chunk:
             break
@@ -283,50 +302,53 @@ def _private_process_group_members(process_group: int, session_id: int) -> set[i
         except ProcessLookupError:
             continue
         except PermissionError:
-            continue
+            return None
         except OSError as exc:
             if exc.errno in {errno.EACCES, errno.EPERM}:
-                continue
+                return None
             return None
     return members
 
 
-def _terminate_pinned_monitor_group(monitor_process: int, session_id: int) -> bool:
-    """Drain a group while its direct-child leader remains unreaped and un-reusable."""
+def _terminate_pinned_monitor_group(
+    monitor_process: int,
+    session_id: int,
+    *,
+    identity_pinned: bool = False,
+) -> bool:
+    """Drain a group while its direct-child leader remains unreaped and un-reusable.
+
+    ``identity_pinned`` is set only by the fork owner after it has placed its
+    still-unreaped direct child in the private session and same-numbered
+    process group.  Darwin stops exposing ``getpgid``/``getsid`` for a zombie,
+    but that unreaped child still prevents its PID/PGID from being reused.
+    """
 
     if monitor_process <= 1 or not callable(_KILL_PROCESS_GROUP):
         return False
-    try:
-        if (
-            not callable(_GET_PROCESS_GROUP_ID)
-            or not callable(_GET_SESSION_ID)
-            or _GET_PROCESS_GROUP_ID(monitor_process) != monitor_process
-            or _GET_SESSION_ID(monitor_process) != session_id
-        ):
+    if not identity_pinned:
+        try:
+            if (
+                not callable(_GET_PROCESS_GROUP_ID)
+                or not callable(_GET_SESSION_ID)
+                or _GET_PROCESS_GROUP_ID(monitor_process) != monitor_process
+                or _GET_SESSION_ID(monitor_process) != session_id
+            ):
+                return False
+        except OSError:
             return False
-    except OSError:
-        return False
     deadline = time.monotonic() + _KILL_GRACE_SECONDS
     while True:
         members = _private_process_group_members(monitor_process, session_id)
-        if members is None or monitor_process not in members:
+        if members is None:
             return False
         other_members = members - {monitor_process}
         if not other_members:
-            try:
-                waited, _status = os.waitpid(monitor_process, _WAIT_NO_HANG)
-            except (ChildProcessError, OSError):
-                return False
-            if waited == monitor_process:
-                return True
-            if waited != 0:
-                return False
-            try:
-                _KILL_PROCESS_GROUP(monitor_process, _SIGKILL)
-                waited, _status = os.waitpid(monitor_process, 0)
-            except (ChildProcessError, OSError):
-                return False
-            return waited == monitor_process
+            # Never signal the numeric group after reaping its leader.  Stop
+            # or reap that exact direct child while its PID still pins the
+            # now-empty group identifier.
+            stopped, _status = _terminate_direct_child(monitor_process, force=True)
+            return stopped
         try:
             # The unreaped direct-child group leader pins this PGID, so this
             # group signal cannot race into a reused or unrelated process.
@@ -393,13 +415,105 @@ def _apply_darwin_no_fork_sandbox() -> bool:
             return exc.errno in {errno.EACCES, errno.EPERM}
         if probe == 0:
             os._exit(74)
-        try:
-            os.waitpid(probe, 0)
-        except OSError:
-            return False
+        reaped = False
+        deadline = time.monotonic() + _TERM_GRACE_SECONDS
+        while True:
+            try:
+                waited, _status = os.waitpid(probe, _WAIT_NO_HANG)
+            except ChildProcessError:
+                reaped = True
+                break
+            except OSError:
+                break
+            if waited == probe:
+                reaped = True
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(_POLL_SECONDS)
+        if not reaped:
+            try:
+                os.kill(probe, _SIGKILL)
+            except OSError:
+                pass
+            kill_deadline = time.monotonic() + _KILL_GRACE_SECONDS
+            while True:
+                try:
+                    waited, _status = os.waitpid(probe, _WAIT_NO_HANG)
+                except (ChildProcessError, OSError):
+                    break
+                if waited == probe:
+                    break
+                if time.monotonic() >= kill_deadline:
+                    break
+                time.sleep(_POLL_SECONDS)
         return False
     except (AttributeError, OSError, TypeError, ValueError):
         return False
+
+
+def _run_darwin_no_fork_exec(arguments: list[str]) -> int:
+    if len(arguments) < 6:
+        return 74
+    try:
+        expected_parent = int(arguments[0])
+        control_descriptor = int(arguments[1])
+        target_descriptor = int(arguments[2])
+        nonce = arguments[3]
+        close_descriptors = tuple(int(value) for value in arguments[4].split(",") if value)
+        target_arguments = arguments[5:]
+    except ValueError:
+        return 74
+    if (
+        expected_parent <= 1
+        or control_descriptor <= 2
+        or target_descriptor <= 2
+        or control_descriptor == target_descriptor
+        or _NONCE.fullmatch(nonce) is None
+        or not target_arguments
+        or not callable(_GET_PROCESS_GROUP)
+        or not callable(_GET_SESSION_ID)
+    ):
+        return 74
+    control: socket.socket | None = None
+    try:
+        identity = os.getpid()
+        if (
+            os.getppid() != expected_parent
+            or _GET_PROCESS_GROUP() != identity
+            or _GET_SESSION_ID(0) != identity
+            or not _private_darwin_target(target_arguments[0], target_descriptor)
+            or not _apply_darwin_no_fork_sandbox()
+        ):
+            return 74
+        control = socket.socket(fileno=control_descriptor)
+        control.settimeout(_START_TIMEOUT_SECONDS)
+        control.sendall(f"armed-nofork-v1:{nonce}:{identity}:{expected_parent}\n".encode("ascii"))
+        if _recv_line(control, maximum=96) != f"go-nofork-v1:{nonce}\n".encode("ascii"):
+            return 74
+        if (
+            os.getppid() != expected_parent
+            or _GET_PROCESS_GROUP() != identity
+            or _GET_SESSION_ID(0) != identity
+            or not _private_darwin_target(target_arguments[0], target_descriptor)
+        ):
+            return 74
+        _close_on_exec(
+            tuple(sorted(set(close_descriptors) | {control_descriptor, target_descriptor}))
+        )
+        try:
+            os.execve(target_arguments[0], target_arguments, dict(os.environ))
+        except OSError:
+            control.sendall(b"failed-nofork-v1\n")
+    except (OSError, TypeError, ValueError):
+        return 74
+    finally:
+        if control is not None:
+            try:
+                control.close()
+            except OSError:
+                pass
+    return 74
 
 
 def _darwin_exec_target(
@@ -456,6 +570,69 @@ def _darwin_exec_target(
     os._exit(74)
 
 
+def _await_darwin_exec_status(
+    exec_status_descriptor: int,
+    helper_lease_descriptor: int,
+    control: socket.socket,
+) -> bool:
+    """Wait boundedly for exec-close while retaining both parent leases."""
+
+    deadline = time.monotonic() + _START_TIMEOUT_SECONDS
+    control_descriptor = control.fileno()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            readable, _, _ = select.select(
+                [exec_status_descriptor, helper_lease_descriptor, control_descriptor],
+                [],
+                [],
+                min(_POLL_SECONDS, remaining),
+            )
+        except OSError as exc:
+            if exc.errno == errno.EINTR:
+                continue
+            return False
+        if exec_status_descriptor in readable:
+            try:
+                return os.read(exec_status_descriptor, 64) == b""
+            except OSError:
+                return False
+        if helper_lease_descriptor in readable:
+            try:
+                if os.read(helper_lease_descriptor, 1) != b"":
+                    return False
+            except OSError:
+                return False
+            return False
+        if control_descriptor in readable:
+            try:
+                if control.recv(1) != b"":
+                    return False
+            except OSError:
+                return False
+            return False
+
+
+def _confirm_darwin_exec_or_stop(
+    target_process: int,
+    exec_status_descriptor: int,
+    helper_lease_descriptor: int,
+    control: socket.socket,
+) -> bool:
+    if _await_darwin_exec_status(
+        exec_status_descriptor,
+        helper_lease_descriptor,
+        control,
+    ):
+        return True
+    stopped, _status = _terminate_direct_child(target_process, force=True)
+    if not stopped:
+        raise OSError("Darwin target did not stop after a failed exec transition")
+    return False
+
+
 def _darwin_monitor(
     *,
     expected_parent: int,
@@ -505,7 +682,9 @@ def _darwin_monitor(
         exec_status_write = -1
         _SET_PROCESS_GROUP(target_process, monitor_identity)
         if (
-            os.getppid() != expected_helper
+            not _apply_darwin_no_fork_sandbox()
+            or os.read(helper_lease_descriptor, 1) != b"S"
+            or os.getppid() != expected_helper
             or _GET_PROCESS_GROUP() != os.getpid()
             or _GET_SESSION_ID(0) != expected_parent
             or _GET_PROCESS_GROUP_ID(target_process) != monitor_identity
@@ -524,7 +703,13 @@ def _darwin_monitor(
         os.write(start_write, b"G")
         _close_descriptor(start_write)
         start_write = -1
-        if os.read(exec_status_read, 64) != b"":
+        if not _confirm_darwin_exec_or_stop(
+            target_process,
+            exec_status_read,
+            helper_lease_descriptor,
+            control,
+        ):
+            target_process = -1
             raise OSError("Darwin target execution failed")
         _close_descriptor(exec_status_read)
         exec_status_read = -1
@@ -613,8 +798,16 @@ def _run_darwin(arguments: list[str]) -> int:
         close_descriptors,
         target_arguments,
     ) = parsed
+    try:
+        execution_timeout_seconds = float(target_arguments[0])
+    except (IndexError, ValueError):
+        return 74
+    target_arguments = target_arguments[1:]
     if (
-        os.getppid() != expected_parent
+        not math.isfinite(execution_timeout_seconds)
+        or not 0 < execution_timeout_seconds <= _MAX_EXECUTION_TIMEOUT_SECONDS
+        or not target_arguments
+        or os.getppid() != expected_parent
         or _GET_PROCESS_GROUP() != expected_parent
         or _GET_SESSION_ID(0) != expected_parent
         or not _private_darwin_target(target_arguments[0], target_descriptor)
@@ -622,6 +815,7 @@ def _run_darwin(arguments: list[str]) -> int:
         return 74
     helper_lease_read = helper_lease_write = status_read = status_write = -1
     monitor_process = -1
+    monitor_group_pinned = False
     try:
         helper_lease_read, helper_lease_write = os.pipe()
         status_read, status_write = os.pipe()
@@ -642,6 +836,13 @@ def _run_darwin(arguments: list[str]) -> int:
                 target_arguments=target_arguments,
             )
         _SET_PROCESS_GROUP(monitor_process, monitor_process)
+        if not _apply_darwin_no_fork_sandbox():
+            raise OSError("Darwin helper no-fork containment is unavailable")
+        os.write(helper_lease_write, b"S")
+        # This helper owns the still-unreaped direct child.  Successful
+        # placement pins the same-numbered PGID even if the monitor later
+        # becomes a Darwin zombie that getpgid/getsid no longer expose.
+        monitor_group_pinned = True
         if (
             _GET_PROCESS_GROUP_ID(monitor_process) != monitor_process
             or _GET_SESSION_ID(monitor_process) != expected_parent
@@ -651,11 +852,25 @@ def _run_darwin(arguments: list[str]) -> int:
         _close_descriptor(helper_lease_read)
         _close_descriptor(status_write)
         helper_lease_read = status_write = -1
-        target_record = _read_line_descriptor(status_read, maximum=64)
+        target_record = _read_line_descriptor(
+            status_read,
+            maximum=64,
+            deadline=time.monotonic() + _START_TIMEOUT_SECONDS,
+        )
         match = re.fullmatch(rb"target-v1:([1-9][0-9]{0,9})\n", target_record)
         if match is None:
             raise OSError("Darwin target identity is unavailable")
-        exit_record = _read_line_descriptor(status_read, maximum=32)
+        exit_record = _read_line_descriptor(
+            status_read,
+            maximum=32,
+            deadline=(
+                time.monotonic()
+                + _START_TIMEOUT_SECONDS
+                + execution_timeout_seconds
+                + _TERM_GRACE_SECONDS
+                + _KILL_GRACE_SECONDS
+            ),
+        )
         match = re.fullmatch(rb"exit-v1:([0-9]{1,3})\n", exit_record)
         if match is None:
             raise OSError("Darwin monitor returned an invalid exit record")
@@ -664,9 +879,18 @@ def _run_darwin(arguments: list[str]) -> int:
             raise OSError("Darwin no-fork containment left an unexpected process")
         _close_descriptor(helper_lease_write)
         helper_lease_write = -1
-        waited, monitor_status = os.waitpid(monitor_process, 0)
-        monitor_process = -1
-        if waited <= 1 or monitor_status != 0:
+        reap_deadline = time.monotonic() + _KILL_GRACE_SECONDS
+        waited = 0
+        monitor_status = -1
+        while time.monotonic() < reap_deadline:
+            waited, monitor_status = os.waitpid(monitor_process, _WAIT_NO_HANG)
+            if waited == monitor_process:
+                monitor_process = -1
+                break
+            if waited != 0:
+                raise OSError("Darwin monitor wait returned an unexpected child")
+            time.sleep(_POLL_SECONDS)
+        if monitor_process > 1 or monitor_status != 0:
             raise OSError("Darwin monitor failed")
         exit_code = int(match.group(1))
         if not 0 <= exit_code <= 255:
@@ -676,7 +900,11 @@ def _run_darwin(arguments: list[str]) -> int:
         _close_descriptor(helper_lease_write)
         helper_lease_write = -1
         if monitor_process > 1:
-            if not _terminate_pinned_monitor_group(monitor_process, expected_parent):
+            if not _terminate_pinned_monitor_group(
+                monitor_process,
+                expected_parent,
+                identity_pinned=monitor_group_pinned,
+            ):
                 return 74
         return 74
     finally:
@@ -696,6 +924,8 @@ def _run(arguments: list[str]) -> int:
     if sys.platform.startswith("linux"):
         return _run_linux(arguments)
     if sys.platform == "darwin":
+        if arguments and arguments[0] == _DARWIN_NO_FORK_EXEC_MODE:
+            return _run_darwin_no_fork_exec(arguments[1:])
         return _run_darwin(arguments)
     return 74
 

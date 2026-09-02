@@ -349,12 +349,14 @@ def _posix_probe_supervisor(
             output_limit_bytes=4096,
             _kill_child_on_job_close=True,
         )
+        spawned_processes: list[subprocess.Popen[bytes]] = []
         with _pinned_launch_file(executable, runner.runner_binary_digest) as launch:
             child = runner._spawn(
                 [launch[0], "60"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 inherited_descriptors=launch[1],
+                process_sink=spawned_processes,
             )
         executable_deadline = time.monotonic() + 5.0
         while True:
