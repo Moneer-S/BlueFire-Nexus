@@ -40,9 +40,22 @@ export function AppShell() {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
-  const { scenario, setScenario } = useProduct();
+  const { theme, scenario, setScenario } = useProduct();
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog, retry: 1, staleTime: 60_000 });
   const scenarios = useQuery({ queryKey: ["scenarios"], queryFn: api.scenarios, retry: 1, staleTime: 60_000 });
+  useEffect(() => {
+    if (theme !== "system") {
+      document.documentElement.dataset.theme = theme;
+      return;
+    }
+    const colorScheme = window.matchMedia?.("(prefers-color-scheme: light)");
+    if (!colorScheme) return;
+    const applySystemTheme = (matches: boolean) => { document.documentElement.dataset.theme = matches ? "light" : "dark"; };
+    const handleColorSchemeChange = (event: MediaQueryListEvent) => applySystemTheme(event.matches);
+    applySystemTheme(colorScheme.matches);
+    colorScheme.addEventListener("change", handleColorSchemeChange);
+    return () => colorScheme.removeEventListener("change", handleColorSchemeChange);
+  }, [theme]);
   useEffect(() => {
     if (DEMO_MODE || scenario.id !== demoScenario.id || !catalog.data || !scenarios.data) return;
     const registered = new Set(catalog.data.behaviors.map((behavior) => behavior.id));

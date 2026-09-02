@@ -34,6 +34,8 @@ test("system theme follows live operating-system color-scheme changes", async ({
   await page.getByRole("button", { name: /^System/ }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 
+  await page.getByRole("link", { name: "Scenario Builder" }).click();
+  await expect(page.getByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
   await page.emulateMedia({ colorScheme: "light" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });

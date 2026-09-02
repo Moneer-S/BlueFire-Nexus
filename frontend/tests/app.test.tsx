@@ -538,7 +538,7 @@ describe("product application", () => {
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.run-config.v1") ?? "{}")).toEqual({ schema_version: UI_PREFERENCE_SCHEMA_VERSION, theme: "light", effect_mode: "simulate", autonomy: "assist" }));
   });
 
-  it("follows live operating-system color changes while the system theme is selected", async () => {
+  it("follows live operating-system color changes after leaving settings without browser storage", async () => {
     const user = userEvent.setup();
     let colorSchemeListener: ((event: MediaQueryListEvent) => void) | undefined;
     const addEventListener = vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
@@ -557,6 +557,8 @@ describe("product application", () => {
       removeEventListener,
       dispatchEvent: vi.fn(),
     });
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new DOMException("denied", "SecurityError"); });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("denied", "SecurityError"); });
 
     const view = renderApp("/settings");
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeVisible();
@@ -565,6 +567,8 @@ describe("product application", () => {
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(addEventListener).toHaveBeenCalledWith("change", expect.any(Function));
     expect(colorSchemeListener).toBeDefined();
+    await user.click(screen.getByRole("link", { name: /^Scenario Builder$/ }));
+    expect(await screen.findByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
     act(() => colorSchemeListener!({ matches: true } as MediaQueryListEvent));
     expect(document.documentElement.dataset.theme).toBe("light");
 

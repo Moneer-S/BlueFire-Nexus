@@ -113,6 +113,8 @@ function readLocal<T>(key: string, fallback: T): T {
 }
 
 interface ProductState {
+  theme: UiTheme;
+  setTheme: (theme: UiTheme) => void;
   scenario: Scenario;
   setScenario: (scenario: Scenario, dirty?: boolean) => void;
   dirty: boolean;
@@ -127,6 +129,7 @@ interface ProductState {
 const ProductContext = createContext<ProductState | null>(null);
 
 export function ProductProvider({ children }: PropsWithChildren) {
+  const [theme, setTheme] = useState<UiTheme>(() => readBrowserTheme());
   const [scenario, setScenarioState] = useState<Scenario>(() => readLocal(scenarioKey, structuredClone(demoScenario)));
   const [runConfig, setRunConfigState] = useState<RunConfiguration>(() => {
     const preferences = readBrowserUiPreferences();
@@ -145,13 +148,16 @@ export function ProductProvider({ children }: PropsWithChildren) {
     return JSON.stringify(currentIntent) === JSON.stringify(nextIntent) ? normalized : nextIntent;
   });
   useEffect(() => { writeBrowserStorage(scenarioKey, JSON.stringify(scenario)); }, [scenario]);
-  useEffect(() => { writeBrowserUiPreferences(buildUiPreferenceDocument(readBrowserTheme(), runConfig.mode, runConfig.autonomy)); }, [runConfig.autonomy, runConfig.mode]);
+  useEffect(() => {
+    writeBrowserTheme(theme);
+    writeBrowserUiPreferences(buildUiPreferenceDocument(theme, runConfig.mode, runConfig.autonomy));
+  }, [runConfig.autonomy, runConfig.mode, theme]);
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  const value = { scenario, setScenario, dirty, markSaved: () => setDirty(false), runConfig, setRunConfig, clearApproval, activeRun, setActiveRun };
+  const value = { theme, setTheme, scenario, setScenario, dirty, markSaved: () => setDirty(false), runConfig, setRunConfig, clearApproval, activeRun, setActiveRun };
   return <ProductContext.Provider value={value}>{children}</ProductContext.Provider>;
 }
 
