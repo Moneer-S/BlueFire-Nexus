@@ -106,8 +106,8 @@ _PYTHON_BOUNDARIES = {
     },
     "runner_bootstrap.py": {
         "passed": True,
-        "shell_imports": 1,
-        "process_calls": ["subprocess.run", "subprocess.run"],
+        "shell_imports": 0,
+        "process_calls": [],
         "unexpected_findings": [],
     },
     "runner_lifecycle.py": {
@@ -118,8 +118,8 @@ _PYTHON_BOUNDARIES = {
     },
     "runner_trust.py": {
         "passed": True,
-        "shell_imports": 1,
-        "process_calls": ["subprocess.run", "subprocess.run"],
+        "shell_imports": 0,
+        "process_calls": [],
         "unexpected_findings": [],
     },
 }

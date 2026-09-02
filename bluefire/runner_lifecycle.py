@@ -48,7 +48,7 @@ from .runner_trust import (
     RunnerEnrollment,
     RunnerTrustError,
     _is_link_or_reparse,
-    _owner_private,
+    _owner_private_native_handle,
     create_local_enrollment,
     enrollment_status,
     load_local_enrollment,
@@ -2271,10 +2271,11 @@ def _open_private_lock_file(path: Path) -> tuple[Any, tuple[int, ...]]:
                 path,
                 directory=False,
                 delete_access=False,
+                write_dac=True,
             )
             if pinned[2:] != identity or pinned[0] & 0x00000410 or pinned[1] != 1:
                 raise OSError("operation lock changed")
-            _owner_private(path, directory=False)
+            _owner_private_native_handle(native_handle, directory=False)
             if _windows_handle_details(native_handle) != pinned:
                 raise OSError("operation lock changed")
             handle = _WindowsPinnedLockHandle(handle, native_handle)
@@ -2526,11 +2527,12 @@ def _owner_private_pinned(path: Path, *, directory: bool) -> None:
             path,
             directory=directory,
             delete_access=False,
+            write_dac=True,
         )
         try:
             if details[0] & 0x00000400 or (not directory and details[1] != 1):
                 raise RunnerTrustError("Managed state is unavailable or unsafe.")
-            _owner_private(path, directory=directory)
+            _owner_private_native_handle(handle, directory=directory)
         finally:
             _windows_close_handle(handle)
         return
@@ -2576,12 +2578,11 @@ def _owner_private_open_regular(path: Path, descriptor: int) -> None:
                 path,
                 directory=False,
                 delete_access=False,
+                write_dac=True,
             )
             if pinned[2:] != identity or pinned[0] & 0x00000410 or pinned[1] != 1:
                 raise RunnerTrustError("Managed state changed while it was opened.")
-            # This native handle explicitly denies FILE_SHARE_DELETE, so the
-            # path cannot be renamed while the path-based ACL utility runs.
-            _owner_private(path, directory=False)
+            _owner_private_native_handle(handle, directory=False)
             if _windows_handle_details(handle) != pinned:
                 raise RunnerTrustError("Managed state changed while it was hardened.")
         except OSError:
@@ -2924,15 +2925,17 @@ def _unlink_exact_regular(path: Path) -> None:
 
 def _windows_unlink_exact_regular(path: Path) -> None:
     try:
-        handle, details = _windows_open_pinned_path(path, directory=False)
+        handle, details = _windows_open_pinned_path(
+            path,
+            directory=False,
+            write_dac=True,
+        )
     except FileNotFoundError:
         return
     try:
         if details[0] & 0x00000410 or details[1] != 1:
             raise OSError("unsafe lifecycle state")
-        # The open handle omits FILE_SHARE_DELETE, pinning this exact path while
-        # ACL hardening runs and while deletion is marked on the same handle.
-        _owner_private(path, directory=False)
+        _owner_private_native_handle(handle, directory=False)
         if _windows_handle_details(handle) != details:
             raise OSError("lifecycle state changed")
         _windows_mark_delete(handle)
@@ -2946,6 +2949,7 @@ def _windows_open_pinned_path(
     directory: bool,
     delete_access: bool = True,
     share_delete: bool = False,
+    write_dac: bool = False,
 ) -> tuple[int, tuple[int, ...]]:
     import ctypes
     from ctypes import wintypes
@@ -2966,6 +2970,8 @@ def _windows_open_pinned_path(
     desired_access = 0x00020000 | 0x00000080
     if delete_access:
         desired_access |= 0x00010000
+    if write_dac:
+        desired_access |= 0x00040000
     share_mode = 0x00000001 | 0x00000002
     if share_delete:
         share_mode |= 0x00000004
@@ -3223,10 +3229,14 @@ def _remove_empty_exact_directory(path: Path, *, expected_parent: Path) -> None:
         try:
             if parent_details[0] & 0x00000400:
                 raise OSError("unsafe directory parent")
-            directory_handle, details = _windows_open_pinned_path(path, directory=True)
+            directory_handle, details = _windows_open_pinned_path(
+                path,
+                directory=True,
+                write_dac=True,
+            )
             if details[0] & 0x00000400 or any(path.iterdir()):
                 raise OSError("directory is unsafe or not empty")
-            _owner_private(path, directory=True)
+            _owner_private_native_handle(directory_handle, directory=True)
             _windows_mark_delete(directory_handle)
         finally:
             if directory_handle is not None:
@@ -3275,6 +3285,7 @@ def _windows_remove_result_namespace(root: Path, *, expected_parent: Path) -> No
         namespace_handle, namespace_details = _windows_open_pinned_path(
             root,
             directory=True,
+            write_dac=True,
         )
         if namespace_details[0] & 0x00000400 or root.parent != expected_parent:
             raise OSError("unsafe result namespace")
@@ -3287,7 +3298,7 @@ def _windows_remove_result_namespace(root: Path, *, expected_parent: Path) -> No
             _windows_unlink_exact_regular(entry)
         if any(root.iterdir()):
             raise OSError("result namespace changed")
-        _owner_private(root, directory=True)
+        _owner_private_native_handle(namespace_handle, directory=True)
         _windows_mark_delete(namespace_handle)
     finally:
         if namespace_handle is not None:

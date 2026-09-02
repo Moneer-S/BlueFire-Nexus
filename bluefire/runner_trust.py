@@ -17,15 +17,12 @@ import os
 import re
 import secrets
 import stat
-import subprocess  # nosec B404
 import threading
 import time
 from contextlib import contextmanager
-from csv import reader as csv_reader
 from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence, cast
 
@@ -36,8 +33,6 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from .secret_store import SecretProvider, SecretStoreError, default_secret_provider
 from .util import canonical_json_bytes
-
-# Only fixed, absolute Windows system utilities are invoked for ACL handling.
 
 TRUST_SCHEMA_VERSION = "bluefire.runner-trust.v1"
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
@@ -2396,61 +2391,16 @@ def _owner_private_native_handle(handle: int, *, directory: bool) -> None:
         raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
 
 
-@lru_cache(maxsize=1)
-def _windows_current_sid() -> str:
-    executable = _windows_system_directory() / "whoami.exe"
-    try:
-        result = subprocess.run(  # nosec B603
-            [str(executable), "/user", "/fo", "csv", "/nh"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        rows = list(csv_reader(result.stdout.splitlines()))
-        sid = rows[0][1].strip() if len(rows) == 1 and len(rows[0]) == 2 else ""
-    except (OSError, IndexError, subprocess.SubprocessError):
-        raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
-    if re.fullmatch(r"S-1-(?:\d+-){1,14}\d+", sid) is None:
-        raise RunnerTrustError("Enrollment permissions could not be restricted.")
-    return sid
-
-
 def _windows_owner_private(path: Path, *, directory: bool) -> None:
-    executable = _windows_system_directory() / "icacls.exe"
-    grant = f"*{_windows_current_sid()}:{'(OI)(CI)' if directory else ''}F"
-    commands = (
-        [str(executable), str(path), "/reset", "/Q"],
-        [str(executable), str(path), "/inheritance:r", "/grant:r", grant, "/Q"],
-        [str(executable), str(path), "/verify", "/Q"],
-    )
     try:
-        for command in commands:
-            subprocess.run(  # nosec B603
-                command,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-    except (OSError, subprocess.SubprocessError):
+        from .windows_owner_acl import WindowsOwnerAclError, apply_owner_private_acl_path
+    except ImportError:
         raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
 
-
-@lru_cache(maxsize=1)
-def _windows_system_directory() -> Path:
-    if os.name != "nt":
-        raise RunnerTrustError("Windows enrollment permissions are unavailable.")
-    buffer = ctypes.create_unicode_buffer(32768)
-    length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))  # type: ignore[attr-defined]
-    if not length or length >= len(buffer):
-        raise RunnerTrustError("Enrollment permissions could not be restricted.")
-    path = Path(buffer.value)
-    if not path.is_absolute() or not path.is_dir():
-        raise RunnerTrustError("Enrollment permissions could not be restricted.")
-    return path
+    try:
+        apply_owner_private_acl_path(path, directory=directory)
+    except (OSError, WindowsOwnerAclError):
+        raise RunnerTrustError("Enrollment permissions could not be restricted.") from None
 
 
 def _cleanup_failed_creation(destination: Path) -> None:

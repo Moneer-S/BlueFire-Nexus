@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess  # nosec B404
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from bluefire.windows_owner_acl import (
     WindowsOwnerAclError,
     apply_owner_private_acl,
     apply_owner_private_acl_handle,
+    apply_owner_private_acl_path,
     current_owner_sid,
 )
 
@@ -179,6 +181,70 @@ def test_owner_acl_is_applied_and_verified_on_the_pinned_directory_handle(
         assert os.path.samestat(os.fstat(descriptor), directory.stat())
     finally:
         os.close(descriptor)
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_owner_acl_path_is_pinned_and_never_starts_a_process(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    directory: bool,
+) -> None:
+    path = tmp_path / ("private" if directory else "private.bin")
+    if directory:
+        path.mkdir()
+    else:
+        path.write_bytes(b"owner-bound")
+    before = path.stat(follow_symlinks=False)
+
+    def unavailable(*args: object, **kwargs: object) -> None:
+        raise AssertionError("ACL hardening must not start a subprocess")
+
+    monkeypatch.setattr(subprocess, "run", unavailable)
+    apply_owner_private_acl_path(path, directory=directory)
+
+    after = path.stat(follow_symlinks=False)
+    assert (after.st_dev, after.st_ino, after.st_size) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_size,
+    )
+
+
+def test_owner_acl_path_rejects_a_multiply_linked_regular_file(tmp_path: Path) -> None:
+    path = tmp_path / "owner.bin"
+    alias = tmp_path / "alias.bin"
+    path.write_bytes(b"owner-bound")
+    os.link(path, alias)
+    before = path.stat(follow_symlinks=False)
+
+    with pytest.raises(WindowsOwnerAclError, match="target is unsafe"):
+        apply_owner_private_acl_path(path, directory=False)
+
+    after = path.stat(follow_symlinks=False)
+    assert (after.st_dev, after.st_ino, after.st_nlink, after.st_size) == (
+        before.st_dev,
+        before.st_ino,
+        before.st_nlink,
+        before.st_size,
+    )
+    assert alias.read_bytes() == b"owner-bound"
+
+
+def test_owner_acl_path_allows_only_the_atomic_installation_second_name(tmp_path: Path) -> None:
+    path = tmp_path / "runner.exe"
+    staging = tmp_path / "runner.tmp"
+    unexpected = tmp_path / "unexpected.exe"
+    path.write_bytes(b"verified-runner")
+    os.link(path, staging)
+
+    apply_owner_private_acl_path(path, directory=False, allow_hardlinks=True)
+    os.link(path, unexpected)
+    with pytest.raises(WindowsOwnerAclError, match="target is unsafe"):
+        apply_owner_private_acl_path(path, directory=False, allow_hardlinks=True)
+
+    assert path.read_bytes() == b"verified-runner"
+    assert staging.read_bytes() == b"verified-runner"
+    assert unexpected.read_bytes() == b"verified-runner"
 
 
 def test_owner_bound_read_refuses_an_existing_writer(tmp_path: Path) -> None:

@@ -1549,19 +1549,25 @@ def test_exact_file_deletion_never_unlinks_a_racing_victim(
     race: list[str] = []
 
     if os.name == "nt":
-        original_owner_private = runner_lifecycle_module._owner_private  # noqa: SLF001
+        original_owner_private = (  # noqa: SLF001
+            runner_lifecycle_module._owner_private_native_handle
+        )
 
-        def racing_owner_private(path: Path, *, directory: bool) -> None:
-            if path == target and not race:
+        def racing_owner_private(handle: int, *, directory: bool) -> None:
+            if not directory and not race:
                 try:
                     os.replace(replacement, target)
                 except OSError:
                     race.append("blocked")
                 else:  # pragma: no cover - a broken Windows pin reaches this branch
                     race.append("replaced")
-            original_owner_private(path, directory=directory)
+            original_owner_private(handle, directory=directory)
 
-        monkeypatch.setattr(runner_lifecycle_module, "_owner_private", racing_owner_private)
+        monkeypatch.setattr(
+            runner_lifecycle_module,
+            "_owner_private_native_handle",
+            racing_owner_private,
+        )
         runner_lifecycle_module._unlink_exact_regular(target)  # noqa: SLF001
         assert race == ["blocked"]
         assert not target.exists()
@@ -1603,19 +1609,25 @@ def test_result_namespace_deletion_never_unlinks_a_racing_victim(
     race: list[str] = []
 
     if os.name == "nt":
-        original_owner_private = runner_lifecycle_module._owner_private  # noqa: SLF001
+        original_owner_private = (  # noqa: SLF001
+            runner_lifecycle_module._owner_private_native_handle
+        )
 
-        def racing_owner_private(path: Path, *, directory: bool) -> None:
-            if path == result and not race:
+        def racing_owner_private(handle: int, *, directory: bool) -> None:
+            if not directory and not race:
                 try:
                     os.replace(replacement, result)
                 except OSError:
                     race.append("blocked")
                 else:  # pragma: no cover - a broken Windows pin reaches this branch
                     race.append("replaced")
-            original_owner_private(path, directory=directory)
+            original_owner_private(handle, directory=directory)
 
-        monkeypatch.setattr(runner_lifecycle_module, "_owner_private", racing_owner_private)
+        monkeypatch.setattr(
+            runner_lifecycle_module,
+            "_owner_private_native_handle",
+            racing_owner_private,
+        )
         runner_lifecycle_module._remove_result_namespace(  # noqa: SLF001
             namespace,
             expected_parent=parent,
@@ -1662,19 +1674,23 @@ def test_host_record_cleanup_never_unlinks_a_racing_foreign_record(
     race: list[str] = []
 
     if os.name == "nt":
-        original_owner_private = runner_host_module._owner_private  # noqa: SLF001
+        original_owner_private = runner_host_module._owner_private_native_handle  # noqa: SLF001
 
-        def racing_owner_private(path: Path, *, directory: bool) -> None:
-            if path == record and not race:
+        def racing_owner_private(handle: int, *, directory: bool) -> None:
+            if not directory and not race:
                 try:
                     os.replace(replacement, record)
                 except OSError:
                     race.append("blocked")
                 else:  # pragma: no cover - a broken Windows pin reaches this branch
                     race.append("replaced")
-            original_owner_private(path, directory=directory)
+            original_owner_private(handle, directory=directory)
 
-        monkeypatch.setattr(runner_host_module, "_owner_private", racing_owner_private)
+        monkeypatch.setattr(
+            runner_host_module,
+            "_owner_private_native_handle",
+            racing_owner_private,
+        )
         runner_host_module._remove_owned_process_record(record, launch_id)  # noqa: SLF001
         assert race == ["blocked"]
         assert not record.exists()
@@ -1712,17 +1728,21 @@ def test_process_record_temp_swap_preserves_victim_content_and_acl_target(
     victim_identity = (victim.stat().st_dev, victim.stat().st_ino)
     victim_mode = stat.S_IMODE(victim.stat().st_mode)
     hardened: list[tuple[int, int]] = []
-    original_owner_private = runner_host_module._owner_private  # noqa: SLF001
-
-    def recording_owner_private(path: Path, *, directory: bool) -> None:
-        details = path.stat(follow_symlinks=False)
-        hardened.append((details.st_dev, details.st_ino))
-        original_owner_private(path, directory=directory)
-
-    monkeypatch.setattr(runner_host_module, "_owner_private", recording_owner_private)
     swapped: list[Path] = []
 
     if os.name == "nt":
+        original_owner_private = runner_host_module._owner_private_native_handle  # noqa: SLF001
+
+        def recording_owner_private(handle: int, *, directory: bool) -> None:
+            details = runner_host_module._windows_handle_details(handle)  # noqa: SLF001
+            hardened.append((details[2], (details[3] << 32) | details[4]))
+            original_owner_private(handle, directory=directory)
+
+        monkeypatch.setattr(
+            runner_host_module,
+            "_owner_private_native_handle",
+            recording_owner_private,
+        )
         original_open = runner_host_module._windows_open_pinned_path  # noqa: SLF001
 
         def racing_open(
@@ -1733,6 +1753,7 @@ def test_process_record_temp_swap_preserves_victim_content_and_acl_target(
             share_delete: bool,
             read_data: bool = False,
             share_write: bool = True,
+            write_dac: bool = False,
         ) -> tuple[int, tuple[int, int, int, int, int, int]]:
             if path.name.startswith(".process.json.") and delete_access and not swapped:
                 os.replace(replacement, path)
@@ -1744,6 +1765,7 @@ def test_process_record_temp_swap_preserves_victim_content_and_acl_target(
                 share_delete=share_delete,
                 read_data=read_data,
                 share_write=share_write,
+                write_dac=write_dac,
             )
 
         monkeypatch.setattr(runner_host_module, "_windows_open_pinned_path", racing_open)
@@ -1830,17 +1852,23 @@ def test_lifecycle_state_temp_swap_preserves_victim_content_and_acl_target(
     victim_identity = (victim.stat().st_dev, victim.stat().st_ino)
     victim_mode = stat.S_IMODE(victim.stat().st_mode)
     hardened: list[tuple[int, int]] = []
-    original_owner_private = runner_lifecycle_module._owner_private  # noqa: SLF001
-
-    def recording_owner_private(path: Path, *, directory: bool) -> None:
-        details = path.stat(follow_symlinks=False)
-        hardened.append((details.st_dev, details.st_ino))
-        original_owner_private(path, directory=directory)
-
-    monkeypatch.setattr(runner_lifecycle_module, "_owner_private", recording_owner_private)
     swapped: list[Path] = []
 
     if os.name == "nt":
+        original_owner_private = (  # noqa: SLF001
+            runner_lifecycle_module._owner_private_native_handle
+        )
+
+        def recording_owner_private(handle: int, *, directory: bool) -> None:
+            details = runner_lifecycle_module._windows_handle_details(handle)  # noqa: SLF001
+            hardened.append((details[2], (details[3] << 32) | details[4]))
+            original_owner_private(handle, directory=directory)
+
+        monkeypatch.setattr(
+            runner_lifecycle_module,
+            "_owner_private_native_handle",
+            recording_owner_private,
+        )
         original_open = runner_lifecycle_module._windows_open_pinned_path  # noqa: SLF001
 
         def racing_open(
@@ -1849,6 +1877,7 @@ def test_lifecycle_state_temp_swap_preserves_victim_content_and_acl_target(
             directory: bool,
             delete_access: bool = True,
             share_delete: bool = False,
+            write_dac: bool = False,
         ) -> tuple[int, tuple[int, ...]]:
             if path.name.startswith(".bfstate-") and delete_access and not swapped:
                 os.replace(replacement, path)
@@ -1858,6 +1887,7 @@ def test_lifecycle_state_temp_swap_preserves_victim_content_and_acl_target(
                 directory=directory,
                 delete_access=delete_access,
                 share_delete=share_delete,
+                write_dac=write_dac,
             )
 
         monkeypatch.setattr(runner_lifecycle_module, "_windows_open_pinned_path", racing_open)

@@ -14,11 +14,8 @@ import os
 import platform as host_platform
 import re
 import stat
-import subprocess  # nosec B404
 import tempfile
-from csv import reader as csv_reader
 from dataclasses import dataclass
-from functools import lru_cache
 from importlib.resources import files
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
@@ -31,6 +28,7 @@ from .runner_inventory import (
     validate_builtin_action_inventory,
 )
 from .version import __version__
+from .windows_owner_acl import WindowsOwnerAclError, apply_owner_private_acl_path
 
 MANIFEST_SCHEMA_VERSION = "bluefire.native-runner-package.v1"
 BOOTSTRAP_STATUS_SCHEMA_VERSION = "bluefire.runner-bootstrap-status.v1"
@@ -685,7 +683,7 @@ def _private_directory(raw: str | Path) -> Path:
             raise RunnerBootstrapError("The managed runner directory is unavailable or unsafe.")
         resolved = path.resolve(strict=True)
         if os.name == "nt":
-            _windows_owner_private(resolved, directory=True)
+            apply_owner_private_acl_path(resolved, directory=True)
         else:
             details = resolved.stat()
             getuid = getattr(os, "getuid", None)
@@ -699,7 +697,7 @@ def _private_directory(raw: str | Path) -> Path:
         return resolved
     except RunnerBootstrapError:
         raise
-    except OSError as exc:
+    except (OSError, WindowsOwnerAclError) as exc:
         raise RunnerBootstrapError(
             "The managed runner directory is unavailable or unsafe."
         ) from exc
@@ -742,58 +740,15 @@ def _private_child(root: Path, *segments: str) -> Path:
 def _set_executable_mode(path: Path) -> None:
     try:
         if os.name == "nt":
-            _windows_owner_private(path, directory=False)
+            # Atomic installation temporarily uses a second hard-link name for
+            # this exact verified binary before the staging name is removed.
+            apply_owner_private_acl_path(path, directory=False, allow_hardlinks=True)
         else:
             os.chmod(path, 0o700)
             if stat.S_IMODE(path.stat().st_mode) != 0o700:
                 raise OSError("unsafe executable permissions")
-    except OSError as exc:
+    except (OSError, WindowsOwnerAclError) as exc:
         raise RunnerBootstrapError("The managed runner executable permissions are unsafe.") from exc
-
-
-@lru_cache(maxsize=1)
-def _windows_current_sid() -> str:
-    system_root = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
-    executable = system_root / "System32" / "whoami.exe"
-    try:
-        result = subprocess.run(  # nosec B603
-            [str(executable), "/user", "/fo", "csv", "/nh"],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        rows = list(csv_reader(result.stdout.splitlines()))
-        sid = rows[0][1].strip() if len(rows) == 1 and len(rows[0]) == 2 else ""
-    except (OSError, IndexError, subprocess.SubprocessError) as exc:
-        raise RunnerBootstrapError("Managed runner permissions could not be restricted.") from exc
-    if re.fullmatch(r"S-1-(?:\d+-){1,14}\d+", sid) is None:
-        raise RunnerBootstrapError("Managed runner permissions could not be restricted.")
-    return sid
-
-
-def _windows_owner_private(path: Path, *, directory: bool) -> None:
-    system_root = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
-    executable = system_root / "System32" / "icacls.exe"
-    grant = f"*{_windows_current_sid()}:{'(OI)(CI)' if directory else ''}F"
-    commands = (
-        [str(executable), str(path), "/reset", "/Q"],
-        [str(executable), str(path), "/inheritance:r", "/grant:r", grant, "/Q"],
-        [str(executable), str(path), "/verify", "/Q"],
-    )
-    try:
-        for command in commands:
-            subprocess.run(  # nosec B603
-                command,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RunnerBootstrapError("Managed runner permissions could not be restricted.") from exc
 
 
 def _is_link_or_reparse(path: Path) -> bool:

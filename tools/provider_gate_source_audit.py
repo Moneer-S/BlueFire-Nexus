@@ -682,9 +682,9 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
     texts = {name: path.read_text(encoding="utf-8") for name, path in paths.items()}
     expected_calls = {
         "runner_client.py": ["subprocess.Popen", "subprocess.Popen"],
-        "runner_bootstrap.py": ["subprocess.run", "subprocess.run"],
+        "runner_bootstrap.py": [],
         "runner_lifecycle.py": ["subprocess.Popen"],
-        "runner_trust.py": ["subprocess.run", "subprocess.run"],
+        "runner_trust.py": [],
     }
     python_boundaries: dict[str, Any] = {}
     for name, calls in expected_calls.items():
@@ -700,8 +700,11 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
             for item in findings
             if item.get("kind") not in {"shell_import", "dynamic_execution_call"}
         ]
+        expected_imports = 1 if calls else 0
         python_boundaries[name] = {
-            "passed": import_count == 1 and actual_calls == sorted(calls) and not unexpected,
+            "passed": import_count == expected_imports
+            and actual_calls == sorted(calls)
+            and not unexpected,
             "shell_imports": import_count,
             "process_calls": actual_calls,
             "unexpected_findings": unexpected,
@@ -734,14 +737,14 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
                 '"--profile",',
             )
         ),
-        "bootstrap_fixed_system_tools": "shell" not in bootstrap_text
-        and "whoami.exe" in bootstrap_text
-        and "icacls.exe" in bootstrap_text
-        and 'system_root / "System32"' in bootstrap_text,
-        "trust_fixed_system_tools": "shell" not in trust_text
-        and "whoami.exe" in trust_text
-        and "icacls.exe" in trust_text
-        and "_windows_system_directory()" in trust_text,
+        "bootstrap_fixed_system_tools": not _python_shell_findings(
+            paths["runner_bootstrap.py"], repository
+        )
+        and "apply_owner_private_acl_path" in bootstrap_text
+        and "from .windows_owner_acl import" in bootstrap_text,
+        "trust_fixed_system_tools": not _python_shell_findings(paths["runner_trust.py"], repository)
+        and "apply_owner_private_acl_path" in trust_text
+        and "_owner_private_native_handle" in trust_text,
         "lifecycle_uses_fixed_installed_host": all(
             token in lifecycle_text
             for token in (

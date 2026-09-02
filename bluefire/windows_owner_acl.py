@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import re
+import stat
 from ctypes import wintypes
 from pathlib import Path
 
@@ -55,6 +56,7 @@ def _windows_open_descriptor(
     write: bool = False,
     write_dac: bool = False,
     delete: bool = False,
+    share_write: bool = False,
     share_delete: bool = False,
     create: bool = False,
 ) -> int:
@@ -86,7 +88,7 @@ def _windows_open_descriptor(
         flags |= _WINDOWS_FILE_FLAG_BACKUP_SEMANTICS
     share = (
         _WINDOWS_FILE_SHARE_READ
-        | (_WINDOWS_FILE_SHARE_WRITE if directory or share_delete else 0)
+        | (_WINDOWS_FILE_SHARE_WRITE if directory or share_write or share_delete else 0)
         | (_WINDOWS_FILE_SHARE_DELETE if share_delete else 0)
     )
     handle = create_file(
@@ -698,10 +700,68 @@ def apply_owner_private_acl_handle(handle: int, *, directory: bool) -> None:
     )
 
 
+def apply_owner_private_acl_path(
+    path: Path,
+    *,
+    directory: bool,
+    allow_hardlinks: bool = False,
+) -> None:
+    """Pin, harden, and reverify one exact filesystem object without a subprocess."""
+
+    if (
+        os.name != "nt"
+        or not isinstance(path, Path)
+        or not isinstance(directory, bool)
+        or not isinstance(allow_hardlinks, bool)
+    ):
+        raise WindowsOwnerAclError("Windows owner-private ACL input is invalid")
+    descriptor: int | None = None
+    try:
+        descriptor = _windows_open_descriptor(
+            path,
+            directory=directory,
+            write_dac=True,
+            share_write=True,
+        )
+        initial = os.fstat(descriptor)
+        named_initial = path.stat(follow_symlinks=False)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x00000400)
+        initial_attributes = int(getattr(initial, "st_file_attributes", 0))
+        allowed_link_counts = {1, 2} if allow_hardlinks else {1}
+        if (
+            stat.S_ISDIR(initial.st_mode) is not directory
+            or bool(initial_attributes & reparse_flag)
+            or (not directory and initial.st_nlink not in allowed_link_counts)
+            or not os.path.samestat(initial, named_initial)
+        ):
+            raise WindowsOwnerAclError("Windows private DACL target is unsafe")
+        identity = (initial.st_dev, initial.st_ino)
+        apply_owner_private_acl(descriptor, directory=directory)
+        final = os.fstat(descriptor)
+        named_final = path.stat(follow_symlinks=False)
+        final_attributes = int(getattr(final, "st_file_attributes", 0))
+        if (
+            (final.st_dev, final.st_ino) != identity
+            or stat.S_ISDIR(final.st_mode) is not directory
+            or bool(final_attributes & reparse_flag)
+            or (not directory and final.st_nlink not in allowed_link_counts)
+            or not os.path.samestat(final, named_final)
+        ):
+            raise WindowsOwnerAclError("Windows private DACL target changed")
+    except WindowsOwnerAclError:
+        raise
+    except (OSError, TypeError, ValueError):
+        raise WindowsOwnerAclError("Windows private DACL path operation failed") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 __all__ = [
     "WindowsOwnerAclError",
     "apply_owner_private_acl",
     "apply_owner_private_acl_handle",
+    "apply_owner_private_acl_path",
     "current_owner_sid",
     "current_user_sid",
 ]

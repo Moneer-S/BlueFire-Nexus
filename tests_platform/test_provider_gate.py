@@ -250,8 +250,8 @@ def _structural_report() -> dict[str, Any]:
                         "runner_bootstrap.py": {
                             "passed": True,
                             "unexpected_findings": [],
-                            "shell_imports": 1,
-                            "process_calls": ["subprocess.run", "subprocess.run"],
+                            "shell_imports": 0,
+                            "process_calls": [],
                         },
                         "runner_lifecycle.py": {
                             "passed": True,
@@ -262,8 +262,8 @@ def _structural_report() -> dict[str, Any]:
                         "runner_trust.py": {
                             "passed": True,
                             "unexpected_findings": [],
-                            "shell_imports": 1,
-                            "process_calls": ["subprocess.run", "subprocess.run"],
+                            "shell_imports": 0,
+                            "process_calls": [],
                         },
                     },
                 },

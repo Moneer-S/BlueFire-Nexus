@@ -26,7 +26,7 @@ from .runner_trust import (
     RunnerEnrollment,
     RunnerTrustError,
     _is_link_or_reparse,
-    _owner_private,
+    _owner_private_native_handle,
     load_local_enrollment,
 )
 from .secret_store import SecretProvider
@@ -313,13 +313,11 @@ def _owner_private_open_regular(path: Path, descriptor: int) -> None:
                 directory=False,
                 delete_access=False,
                 share_delete=False,
+                write_dac=True,
             )
             if pinned != expected or pinned[0] & 0x00000410 or pinned[1] != 1:
                 raise RunnerTrustError("Runner host state changed while it was opened.")
-            # The native handle explicitly omits FILE_SHARE_DELETE.  This, not
-            # an undocumented CRT sharing default, pins the pathname while the
-            # path-based ACL utility addresses it.
-            _owner_private(path, directory=False)
+            _owner_private_native_handle(handle, directory=False)
             if _windows_handle_details(handle) != expected:
                 raise RunnerTrustError("Runner host state changed while it was hardened.")
         except OSError:
@@ -346,6 +344,7 @@ def _windows_open_pinned_path(
     share_delete: bool,
     read_data: bool = False,
     share_write: bool = True,
+    write_dac: bool = False,
 ) -> tuple[int, tuple[int, int, int, int, int, int]]:
     import ctypes
     from ctypes import wintypes
@@ -367,6 +366,8 @@ def _windows_open_pinned_path(
         desired_access |= 0x00010000
     if read_data:
         desired_access |= 0x80000000
+    if write_dac:
+        desired_access |= 0x00040000
     share_mode = 0x00000001
     if share_write:
         share_mode |= 0x00000002
@@ -781,7 +782,7 @@ def _windows_remove_owned_process_record(path: Path, launch_id: str) -> None:
     create.restype = wintypes.HANDLE
     pinned = create(
         str(path),
-        0x80000000 | 0x00010000 | 0x00020000 | 0x00000080,
+        0x80000000 | 0x00010000 | 0x00020000 | 0x00040000 | 0x00000080,
         0x00000001,
         None,
         3,
@@ -832,7 +833,7 @@ def _windows_remove_owned_process_record(path: Path, launch_id: str) -> None:
             or value.get("launch_id") != launch_id
         ):
             return
-        _owner_private(path, directory=False)
+        _owner_private_native_handle(int(pinned), directory=False)
         checked = _Information()
         if not get_information(pinned, ctypes.byref(checked)):
             return
