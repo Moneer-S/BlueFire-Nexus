@@ -116,9 +116,12 @@ STRICT_SOURCE_AUDIT_PATHS = (
 TRUSTED_PROCESS_BOUNDARY_PATHS = (
     "bluefire/runner_client.py",
     "bluefire/runner_bootstrap.py",
+    "bluefire/runner_darwin_containment.py",
     "bluefire/runner_lifecycle.py",
+    "bluefire/runner_parent_death.py",
     "bluefire/runner_trust.py",
     "bluefire/runner_watchdog.py",
+    "runner/src/cancellation_witness.rs",
     "runner/src/process.rs",
 )
 SOURCE_AUDIT_PATHS = (*STRICT_SOURCE_AUDIT_PATHS, *TRUSTED_PROCESS_BOUNDARY_PATHS)
@@ -139,6 +142,7 @@ PYTHON_SHELL_CALLS = frozenset(
         "execve",
         "execvp",
         "execvpe",
+        "fork",
         "eval",
         "getoutput",
         "getstatusoutput",

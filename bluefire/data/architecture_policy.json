@@ -261,6 +261,7 @@
         "bluefire.runner_adapter",
         "bluefire.runner_bootstrap",
         "bluefire.runner_client",
+        "bluefire.runner_darwin_containment",
         "bluefire.runner_host",
         "bluefire.runner_lifecycle",
         "bluefire.runner_parent_death",

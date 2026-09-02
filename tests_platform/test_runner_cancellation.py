@@ -49,12 +49,15 @@ profile_path = arguments[arguments.index("--profile") + 1]
 with open(profile_path, "r", encoding="utf-8") as stream:
     profile = json.load(stream)
 behavior = manifest.get("test_behavior", "success")
+child_runtime = (
+    os.path.realpath("/proc/self/exe") if sys.platform.startswith("linux") else sys.executable
+)
 
 if behavior == "sleep":
     time.sleep(60)
 elif behavior == "descendant":
     descendant = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
+        [child_runtime, "-c", "import time; time.sleep(60)"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -66,7 +69,7 @@ elif behavior == "descendant":
     time.sleep(60)
 elif behavior == "orphan_after_exit":
     descendant = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"],
+        [child_runtime, "-c", "import time; time.sleep(60)"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -167,6 +170,8 @@ import sys
 import threading
 from pathlib import Path
 
+sys.path.insert(0, str(Path.cwd()))
+
 from bluefire.runner_client import SubprocessRustRunner
 
 runner = SubprocessRustRunner(
@@ -174,6 +179,9 @@ runner = SubprocessRustRunner(
     Path(sys.argv[2]).resolve(strict=True),
     timeout_seconds=float(sys.argv[5]) if len(sys.argv) > 5 else 10.0,
     output_limit_bytes=64 * 1024,
+    _watchdog_interpreter=(
+        Path(sys.executable).resolve(strict=True) if sys.platform == "darwin" else None
+    ),
 )
 with open(sys.argv[4], "r", encoding="utf-8") as stream:
     manifest = json.load(stream)
@@ -231,14 +239,25 @@ def _runner(
     durable_result_guard: private_files_module._PinnedPrivateDirectory | None = None,
 ) -> SubprocessRustRunner:
     work_root = tmp_path / "runner-work"
-    work_root.mkdir()
+    work_root.mkdir(mode=0o700)
     (work_root / "execute").write_text(_HELPER, encoding="utf-8")
+    runner_binary = Path(sys.executable).resolve(strict=True)
+    watchdog_interpreter: Path | None = None
+    if sys.platform == "darwin":
+        copied_binary = work_root / "python-runner"
+        shutil.copyfile(runner_binary, copied_binary)
+        copied_binary.chmod(0o700)
+        runner_binary = copied_binary
+        watchdog_interpreter = work_root / "python-watchdog"
+        shutil.copyfile(sys.executable, watchdog_interpreter)
+        watchdog_interpreter.chmod(0o700)
     return SubprocessRustRunner(
-        Path(sys.executable).resolve(strict=True),
+        runner_binary,
         work_root,
         timeout_seconds=timeout_seconds,
         output_limit_bytes=64 * 1024,
         durable_result_guard=durable_result_guard,
+        _watchdog_interpreter=watchdog_interpreter,
     )
 
 
@@ -249,6 +268,45 @@ def _wait_for_file(path: Path, timeout: float = 5.0) -> None:
             return
         time.sleep(0.025)
     raise AssertionError("helper did not publish its descendant pid")
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin test-runner ownership boundary")
+def test_macos_runner_fixture_uses_an_owner_controlled_interpreter_copy(
+    tmp_path: Path,
+) -> None:
+    runner = _runner(tmp_path)
+
+    assert runner.runner_binary.parent == runner.work_root
+    assert runner.runner_binary.name == "python-runner"
+    assert runner._watchdog_interpreter.parent == runner.work_root
+    assert runner._watchdog_interpreter.name == "python-watchdog"
+    assert runner._watchdog_interpreter != runner.runner_binary
+    assert runner.runner_binary.stat().st_nlink == 1
+    assert runner._watchdog_interpreter.stat().st_nlink == 1
+    assert stat.S_IMODE(runner.work_root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(runner.runner_binary.stat().st_mode) == 0o700
+    assert stat.S_IMODE(runner._watchdog_interpreter.stat().st_mode) == 0o700
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Darwin watchdog launch hard link")
+def test_macos_verified_watchdog_launch_reaches_readiness_and_executes(
+    tmp_path: Path,
+) -> None:
+    runner = _runner(tmp_path)
+    durable = (tmp_path / "durable" / "macos-watchdog-result.json").resolve()
+
+    result = runner.execute_task(
+        _manifest(),
+        {},
+        task_id="task-macos-watchdog-launch-01",
+        cancel_event=threading.Event(),
+        durable_result_path=durable,
+    )
+
+    assert result["status"] == "succeeded"
+    assert json.loads(durable.read_text(encoding="utf-8")) == result
+    assert runner.watchdog_script.stat().st_nlink == 1
+    assert not list(runner.watchdog_script.parent.glob(".bluefire-verified-launch-*"))
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -324,6 +382,7 @@ def test_receiver_task_key_crosses_watchdog_only_through_fixed_scrubbed_environm
         timeout_seconds=5,
         output_limit_bytes=64 * 1024,
         receiver_task_key_factory=derive,
+        _watchdog_interpreter=base._watchdog_interpreter,
     )
     authenticated_actions = (
         "sandbox.network.loopback.v1",
@@ -395,6 +454,7 @@ def test_receiver_environment_is_consumed_and_invalid_key_factory_fails_closed(
         base.runner_binary,
         base.work_root,
         receiver_task_key_factory=lambda _task_id: b"short",
+        _watchdog_interpreter=base._watchdog_interpreter,
     )
     durable = (tmp_path / "invalid-result.json").resolve()
     with pytest.raises(RunnerTransportError, match="authentication is invalid"):
@@ -416,7 +476,7 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
     executable = (tmp_path / "verified-echo").resolve()
     parked = (tmp_path / "verified-echo.parked").resolve()
     leaked = Path(str(executable) + ".leaked")
-    shutil.copy2("/bin/echo", executable)
+    shutil.copyfile("/bin/echo", executable)
     executable.chmod(0o700)
     expected_digest = runner_client_module.file_hash(executable)
     receiver_environment = {
@@ -438,31 +498,29 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
             inherited_descriptors=launch[1],
         )
 
-    stdout, _stderr = process.communicate(timeout=5)
-    assert process.returncode == 0
+    assert process.stdout is not None
+    stdout = process.stdout.read()
     assert runner._finish_posix_process_group(process) is True
+    assert process.returncode == 0
     assert stdout == b"trusted\n"
     assert not leaked.exists()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX Darwin hard-link launch boundary")
+@pytest.mark.skipif(sys.platform != "darwin", reason="native Darwin hard-link launch boundary")
 def test_macos_verified_launch_cannot_be_redirected_before_receiver_key_exposure(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = _runner(tmp_path)
     executable = (tmp_path / "verified-echo").resolve()
     parked = (tmp_path / "verified-echo.parked").resolve()
     leaked = Path(str(executable) + ".leaked")
-    shutil.copy2("/bin/echo", executable)
+    shutil.copyfile("/bin/echo", executable)
     executable.chmod(0o700)
     expected_digest = runner_client_module.file_hash(executable)
     receiver_environment = {
         "BLUEFIRE_RECEIVER_TASK_ID": "task-macos-launch-01",
         "BLUEFIRE_RECEIVER_TASK_KEY": "a" * 64,
     }
-    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
-
     with runner_client_module._pinned_launch_file(executable, expected_digest) as launch:
         assert launch[1] == ()
         launch_path = Path(launch[0])
@@ -483,9 +541,10 @@ def test_macos_verified_launch_cannot_be_redirected_before_receiver_key_exposure
             inherited_descriptors=launch[1],
         )
 
-    stdout, _stderr = process.communicate(timeout=5)
-    assert process.returncode == 0
+    assert process.stdout is not None
+    stdout = process.stdout.read()
     assert runner._finish_posix_process_group(process) is True
+    assert process.returncode == 0
     assert stdout == b"trusted\n"
     assert not leaked.exists()
     assert not list(tmp_path.glob(".bluefire-verified-launch-*"))
@@ -500,7 +559,7 @@ def test_macos_verified_launch_rejects_a_group_writable_parent(
     shared.mkdir()
     shared.chmod(0o770)
     executable = (shared / "verified-echo").resolve()
-    shutil.copy2("/bin/echo", executable)
+    shutil.copyfile("/bin/echo", executable)
     executable.chmod(0o700)
     expected_digest = runner_client_module.file_hash(executable)
     monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
@@ -512,13 +571,13 @@ def test_macos_verified_launch_rejects_a_group_writable_parent(
     assert not list(shared.glob(".bluefire-verified-launch-*"))
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX Darwin hard-link launch boundary")
+@pytest.mark.skipif(sys.platform != "darwin", reason="native Darwin hard-link launch boundary")
 def test_macos_verified_launch_cleans_a_link_after_post_link_stat_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     executable = (tmp_path / "verified-echo").resolve()
-    shutil.copy2("/bin/echo", executable)
+    shutil.copyfile("/bin/echo", executable)
     executable.chmod(0o700)
     expected_digest = runner_client_module.file_hash(executable)
     real_stat = os.stat
@@ -716,7 +775,7 @@ def test_linux_process_identity_accepts_zero_scoped_namespace_process(
     process_id = 2
     start_time_ticks = 7001
     stat_payload = (
-        f"{process_id} (init) S 0 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 " f"{start_time_ticks} 0\n"
+        f"{process_id} (init) S 0 0 0 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {start_time_ticks} 0\n"
     ).encode("ascii")
 
     def read_bytes(path: Path) -> bytes:
@@ -1017,6 +1076,10 @@ def test_execute_task_rejects_ambiguous_or_nonstandard_json(
     assert not runner_pending_result_path(durable, f"task-{behavior}-01").exists()
 
 
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="Darwin runner execution is fail-closed under the proven no-fork sandbox",
+)
 def test_execute_task_cancellation_confirms_descendant_process_is_stopped(
     tmp_path: Path,
 ) -> None:
@@ -1276,6 +1339,69 @@ def test_cancellation_cleanup_binds_immutable_live_handshake_identities(
     assert target.read_bytes() == original
 
 
+def test_private_file_identity_honors_nonmutating_permission_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "private-identity"
+    root.mkdir()
+    target = root / "record"
+    target.write_bytes(b"record\n")
+    observed: list[bool] = []
+    with private_files_module._PinnedPrivateDirectory(root) as pinned:
+        original = pinned._open_existing
+
+        def observe_open(
+            name: str,
+            *,
+            delete: bool = False,
+            write_dac: bool = True,
+        ) -> int:
+            observed.append(write_dac)
+            return original(name, delete=delete, write_dac=write_dac)
+
+        monkeypatch.setattr(pinned, "_open_existing", observe_open)
+        pinned.file_identity("record", maximum=32, apply_permissions=False)
+
+    assert observed == [False]
+
+
+def test_private_unlink_rejects_changed_metadata_snapshot(tmp_path: Path) -> None:
+    root = tmp_path / "private-unlink"
+    root.mkdir()
+    target = root / "record"
+    target.write_bytes(b"record\n")
+    with private_files_module._PinnedPrivateDirectory(root) as pinned:
+        payload, identity, snapshot = pinned.read_with_snapshot_identity(
+            "record", maximum=32, apply_permissions=False
+        )
+        time.sleep(0.01)
+        target.write_bytes(payload)
+        current = target.stat(follow_symlinks=False)
+        os.utime(target, ns=(current.st_atime_ns, snapshot[1]))
+        changed = target.stat(follow_symlinks=False)
+        assert (changed.st_mtime_ns, changed.st_size) == (snapshot[1], snapshot[2])
+        if changed.st_ctime_ns == snapshot[0]:
+            os.utime(target, ns=(changed.st_atime_ns, snapshot[1] + 2_000_000_000))
+            changed = target.stat(follow_symlinks=False)
+            assert changed.st_mtime_ns != snapshot[1]
+        with pytest.raises(OSError, match="metadata changed"):
+            pinned.unlink(
+                "record",
+                maximum=32,
+                expected=payload,
+                expected_identity=identity,
+                expected_snapshot=snapshot,
+                apply_permissions=False,
+            )
+
+    assert target.read_bytes() == payload
+
+
+@pytest.mark.skipif(
+    sys.platform == "darwin",
+    reason="Darwin runner execution is fail-closed under the proven no-fork sandbox",
+)
 def test_normal_runner_exit_does_not_leave_descendants_running(tmp_path: Path) -> None:
     runner = _runner(tmp_path)
     durable = (tmp_path / "durable" / "task-result.json").resolve()
@@ -1311,9 +1437,9 @@ def test_parent_loss_allows_watchdog_to_publish_recoverable_result(tmp_path: Pat
     driver_path.write_text(_PARENT_DRIVER, encoding="utf-8")
     parent = subprocess.Popen(  # nosec B603
         [
-            sys.executable,
+            str(runner._watchdog_interpreter if sys.platform == "darwin" else runner.runner_binary),
             str(driver_path),
-            sys.executable,
+            str(runner.runner_binary),
             str(runner.work_root),
             str(durable),
             str(manifest_path),
@@ -1686,9 +1812,9 @@ def test_parent_loss_hung_runner_is_killed_by_watchdog_deadline(tmp_path: Path) 
     driver_path.write_text(_PARENT_DRIVER, encoding="utf-8")
     parent = subprocess.Popen(  # nosec B603
         [
-            sys.executable,
+            str(runner._watchdog_interpreter if sys.platform == "darwin" else runner.runner_binary),
             str(driver_path),
-            sys.executable,
+            str(runner.runner_binary),
             str(runner.work_root),
             str(durable),
             str(manifest_path),
@@ -1784,6 +1910,7 @@ def test_windows_inner_rust_is_suspended_until_kill_on_close_job_assignment(
         timeout_seconds=10.0,
         output_limit_bytes=64 * 1024,
         _kill_child_on_job_close=True,
+        _watchdog_interpreter=base._watchdog_interpreter,
     )
     effect_marker = (tmp_path / "inner-gated-effect").resolve()
     assignment_entered = threading.Event()
@@ -1933,8 +2060,8 @@ def test_caller_interruption_requests_watchdog_cancel_before_unwinding(
 
 
 @pytest.mark.skipif(
-    not sys.platform.startswith("linux"),
-    reason="Linux watchdog parent-death containment",
+    os.name == "nt" or sys.platform not in {"darwin", "linux"},
+    reason="POSIX watchdog parent-death containment",
 )
 def test_posix_watchdog_pid_death_cannot_orphan_runner(tmp_path: Path) -> None:
     runner = _runner(tmp_path)
@@ -1953,9 +2080,9 @@ def test_posix_watchdog_pid_death_cannot_orphan_runner(tmp_path: Path) -> None:
     driver_path.write_text(_PARENT_DRIVER, encoding="utf-8")
     parent = subprocess.Popen(  # nosec B603
         [
-            sys.executable,
+            str(runner._watchdog_interpreter if sys.platform == "darwin" else runner.runner_binary),
             str(driver_path),
-            sys.executable,
+            str(runner.runner_binary),
             str(runner.work_root),
             str(durable),
             str(manifest_path),
@@ -1976,7 +2103,12 @@ def test_posix_watchdog_pid_death_cannot_orphan_runner(tmp_path: Path) -> None:
         _wait_for_file(ready_path)
         watchdog_pid = int(json.loads(ready_path.read_text(encoding="utf-8"))["watchdog_pid"])
         assert os.getpgid(watchdog_pid) == watchdog_pid
-        assert os.getpgid(runner_pid) == watchdog_pid
+        runner_group = os.getpgid(runner_pid)
+        if sys.platform == "darwin":
+            assert runner_group > 1
+            assert runner_group != watchdog_pid
+        else:
+            assert runner_group == watchdog_pid
         assert os.getsid(runner_pid) == watchdog_pid
 
         parent.kill()
@@ -2015,9 +2147,9 @@ def test_watchdog_crash_kills_rust_after_request_host_is_gone(tmp_path: Path) ->
     driver_path.write_text(_PARENT_DRIVER, encoding="utf-8")
     parent = subprocess.Popen(  # nosec B603
         [
-            sys.executable,
+            str(runner._watchdog_interpreter if sys.platform == "darwin" else runner.runner_binary),
             str(driver_path),
-            sys.executable,
+            str(runner.runner_binary),
             str(runner.work_root),
             str(durable),
             str(manifest_path),

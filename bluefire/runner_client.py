@@ -29,7 +29,17 @@ from .execution_contracts import (
 from .execution_contracts import (
     reject_forbidden_execution_keys as _reject_forbidden_execution_keys,
 )
-from .runner_bootstrap import _is_link_or_reparse as _is_link_or_reparse
+from .runner_darwin_containment import (
+    DarwinProcessContainment,
+    macos_pinned_launch_path,
+    stage_watchdog_interpreter,
+)
+from .runner_darwin_containment import (
+    release_process as release_darwin_process,
+)
+from .runner_darwin_containment import (
+    spawn_parent_death as spawn_darwin_parent_death,
+)
 from .runner_inventory import RunnerInventoryAuthorityError
 from .runner_inventory import canonical_runner_inventory as _canonical_runner_inventory
 from .runner_private_files import (
@@ -38,6 +48,7 @@ from .runner_private_files import (
 from .runner_private_files import (
     _GuardedBinaryFile as _GuardedBinaryFile,
 )
+from .runner_private_files import _is_link_or_reparse as _is_link_or_reparse
 from .runner_private_files import (
     _PinnedPrivateDirectory as _PinnedPrivateDirectory,
 )
@@ -111,148 +122,6 @@ _CANCELLATION_STAGING_NAMES = frozenset(
 _SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
-def _validate_macos_launch_parent(path: Path, descriptor: int) -> int:
-    """Require a pathname that untrusted local users cannot redirect."""
-
-    get_effective_user_id = getattr(os, "geteuid", None)
-    if not path.is_absolute() or not callable(get_effective_user_id):
-        raise OSError("launch input parent ownership is unavailable")
-    effective_user_id = int(get_effective_user_id())
-    opened = os.fstat(descriptor)
-    child = opened
-    current_path = path
-    direct_parent = True
-    while True:
-        current = current_path.stat(follow_symlinks=False)
-        if not stat.S_ISDIR(current.st_mode):
-            raise OSError("launch input ancestor is not a directory")
-        mode = stat.S_IMODE(current.st_mode)
-        if direct_parent:
-            required = stat.S_IWUSR | stat.S_IXUSR
-            if (
-                not os.path.samestat(opened, current)
-                or current.st_uid != effective_user_id
-                or mode & (stat.S_IWGRP | stat.S_IWOTH)
-                or mode & required != required
-            ):
-                raise OSError("launch input parent is not owner-controlled")
-            direct_parent = False
-        elif mode & (stat.S_IWGRP | stat.S_IWOTH):
-            # A sticky ancestor protects an entry owned by this process's uid.
-            if not mode & stat.S_ISVTX or child.st_uid != effective_user_id:
-                raise OSError("launch input ancestor permits replacement")
-        parent = current_path.parent
-        if parent == current_path:
-            break
-        child = current
-        current_path = parent
-    return effective_user_id
-
-
-@contextmanager
-def _macos_pinned_launch_path(
-    path: Path,
-    descriptor: int,
-    expected: os.stat_result,
-    expected_digest: str,
-) -> Iterator[str]:
-    """Give Darwin execve a stable pathname for one verified open vnode."""
-
-    parent_descriptor = -1
-    linked_descriptor = -1
-    linked_identity: tuple[int, int] | None = None
-    link_name = f".bluefire-verified-launch-{secrets.token_hex(32)}"
-    try:
-        directory_flags = (
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0)
-        )
-        parent_descriptor = os.open(path.parent, directory_flags)
-        effective_user_id = _validate_macos_launch_parent(path.parent, parent_descriptor)
-        os.link(
-            path.name,
-            link_name,
-            src_dir_fd=parent_descriptor,
-            dst_dir_fd=parent_descriptor,
-            follow_symlinks=False,
-        )
-        linked_identity = (expected.st_dev, expected.st_ino)
-        linked = os.stat(link_name, dir_fd=parent_descriptor, follow_symlinks=False)
-        current = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(linked.st_mode)
-            or not os.path.samestat(linked, current)
-            or not os.path.samestat(current, expected)
-            or current.st_uid != effective_user_id
-            or stat.S_IMODE(current.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
-            or linked.st_nlink != 2
-            or current.st_nlink != 2
-            or linked.st_size != expected.st_size
-            or linked.st_mtime_ns != expected.st_mtime_ns
-        ):
-            raise OSError("verified launch hard link identity changed")
-        linked_descriptor = os.open(
-            link_name,
-            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=parent_descriptor,
-        )
-        opened = os.fstat(linked_descriptor)
-        linked_payload = _read_descriptor_bounded(
-            linked_descriptor,
-            _RUNNER_BINARY_LIMIT_BYTES,
-        )
-        current_payload = _read_descriptor_bounded(
-            descriptor,
-            _RUNNER_BINARY_LIMIT_BYTES,
-        )
-        if (
-            (opened.st_dev, opened.st_ino) != linked_identity
-            or opened.st_nlink != 2
-            or linked_payload != current_payload
-            or "sha256:" + sha256(linked_payload).hexdigest() != expected_digest
-        ):
-            raise OSError("verified launch hard link content changed")
-        _validate_macos_launch_parent(path.parent, parent_descriptor)
-        launch_path = path.parent / link_name
-        visible = launch_path.stat(follow_symlinks=False)
-        current = os.fstat(descriptor)
-        if (
-            not os.path.samestat(visible, opened)
-            or not os.path.samestat(current, opened)
-            or current.st_nlink != 2
-            or current.st_uid != effective_user_id
-            or stat.S_IMODE(current.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
-            or current.st_size != expected.st_size
-            or current.st_mtime_ns != expected.st_mtime_ns
-        ):
-            raise OSError("verified launch pathname changed")
-        yield str(launch_path)
-    finally:
-        if linked_descriptor >= 0:
-            try:
-                os.close(linked_descriptor)
-            except OSError:
-                pass
-        if parent_descriptor >= 0 and linked_identity is not None:
-            try:
-                current_link = os.stat(
-                    link_name,
-                    dir_fd=parent_descriptor,
-                    follow_symlinks=False,
-                )
-                if (current_link.st_dev, current_link.st_ino) == linked_identity:
-                    os.unlink(link_name, dir_fd=parent_descriptor)
-            except OSError:
-                pass
-        if parent_descriptor >= 0:
-            try:
-                os.close(parent_descriptor)
-            except OSError:
-                pass
-
-
 def _validated_receiver_task_environment(
     value: Mapping[str, str] | None,
     *,
@@ -316,7 +185,7 @@ def _pinned_launch_file(
         if os.name == "nt":
             yield str(path), ()
         elif sys.platform == "darwin":
-            with _macos_pinned_launch_path(
+            with macos_pinned_launch_path(
                 path,
                 descriptor,
                 details,
@@ -854,6 +723,7 @@ class SubprocessRustRunner:
         receiver_task_key_factory: Callable[[str], bytes] | None = None,
         durable_result_guard: _PinnedPrivateDirectory | None = None,
         _kill_child_on_job_close: bool = False,
+        _watchdog_interpreter: str | Path | None = None,
     ) -> None:
         binary = Path(runner_binary).expanduser()
         if not binary.is_absolute() or not binary.is_file():
@@ -871,6 +741,23 @@ class SubprocessRustRunner:
         self._receiver_task_key_factory = receiver_task_key_factory
         self._durable_result_guard = durable_result_guard
         self._kill_child_on_job_close = bool(_kill_child_on_job_close)
+        runtime = Path(
+            _watchdog_interpreter
+            if _watchdog_interpreter is not None
+            else getattr(sys, "_base_executable", sys.executable)
+        ).expanduser()
+        if not runtime.is_absolute() or not runtime.is_file():
+            raise RunnerTransportError("Runner watchdog runtime is unavailable.")
+        runtime = runtime.resolve(strict=True)
+        try:
+            if sys.platform == "darwin" and _watchdog_interpreter is None:
+                runtime, runtime_digest = stage_watchdog_interpreter(runtime, self.work_root)
+            else:
+                runtime_digest = file_hash(runtime)
+        except OSError:
+            raise RunnerTransportError("Runner watchdog runtime is unavailable.") from None
+        self._watchdog_interpreter = runtime
+        self._watchdog_interpreter_digest = runtime_digest
         try:
             script = Path(__file__).resolve(strict=True).with_name("runner_watchdog.py")
             details = script.lstat()
@@ -900,6 +787,9 @@ class SubprocessRustRunner:
             subprocess.Popen[bytes], tuple[int, int, int, int, int]
         ] = weakref.WeakKeyDictionary()
         self._released_linux_processes: weakref.WeakSet[subprocess.Popen[bytes]] = weakref.WeakSet()
+        self._darwin_process_containments: weakref.WeakKeyDictionary[
+            subprocess.Popen[bytes], DarwinProcessContainment
+        ] = weakref.WeakKeyDictionary()
         if (
             timeout_seconds <= 0
             or not 4096 <= output_limit_bytes <= _WATCHDOG_CONFIG_LIMIT_BYTES
@@ -1004,12 +894,14 @@ class SubprocessRustRunner:
             if current_binary_digest != self.runner_binary_digest:
                 raise RunnerTransportError("Runner identity changed after construction.")
             config = {
-                "schema_version": "bluefire.runner-watchdog-config.v4",
+                "schema_version": "bluefire.runner-watchdog-config.v5",
                 "task_id": task_id,
                 "runner_binary": str(self.runner_binary),
                 "runner_binary_digest": self.runner_binary_digest,
                 "parent_death_script_digest": self.parent_death_script_digest,
                 "watchdog_script_digest": self.watchdog_script_digest,
+                "watchdog_interpreter": str(self._watchdog_interpreter),
+                "watchdog_interpreter_digest": self._watchdog_interpreter_digest,
                 "work_root": str(self.work_root),
                 "timeout_seconds": self.timeout_seconds,
                 "output_limit_bytes": self.output_limit_bytes,
@@ -1380,11 +1272,10 @@ class SubprocessRustRunner:
         process_sink: list[subprocess.Popen[bytes]],
     ) -> subprocess.Popen[bytes]:
         try:
-            runtime = getattr(sys, "_base_executable", sys.executable)
-            interpreter = Path(runtime).resolve(strict=True)
-            if not interpreter.is_file():
-                raise OSError("Python runtime is unavailable")
-            interpreter_digest = file_hash(interpreter)
+            interpreter = self._watchdog_interpreter
+            interpreter_digest = self._watchdog_interpreter_digest
+            if file_hash(interpreter) != interpreter_digest:
+                raise OSError("Python runtime identity changed")
         except OSError:
             raise RunnerTransportError("Runner watchdog runtime is unavailable") from None
         script = self.watchdog_script
@@ -1841,8 +1732,10 @@ class SubprocessRustRunner:
         if target_descriptor not in inherited_descriptors:
             raise RunnerTransportError("Linux parent-death target is not descriptor-bound")
         try:
-            runtime = Path(getattr(sys, "_base_executable", sys.executable)).resolve(strict=True)
-            runtime_digest = file_hash(runtime)
+            runtime = self._watchdog_interpreter
+            runtime_digest = self._watchdog_interpreter_digest
+            if file_hash(runtime) != runtime_digest:
+                raise OSError("parent-death runtime identity changed")
             if file_hash(self.parent_death_script) != self.parent_death_script_digest:
                 raise OSError("parent-death helper identity changed")
             parent_socket, child_socket = socket.socketpair(
@@ -1918,6 +1811,36 @@ class SubprocessRustRunner:
         finally:
             parent_socket.close()
             child_socket.close()
+
+    def _spawn_darwin_parent_death(
+        self,
+        argv: list[str],
+        *,
+        stdout: int | BinaryIO | None,
+        stderr: int | BinaryIO | None,
+        environment: Mapping[str, str],
+        inherited_descriptors: tuple[int, ...],
+        options: Mapping[str, Any],
+    ) -> subprocess.Popen[bytes]:
+        process, containment = spawn_darwin_parent_death(
+            argv,
+            stdout=stdout,
+            stderr=stderr,
+            environment=environment,
+            inherited_descriptors=inherited_descriptors,
+            options=options,
+            runner_binary=self.runner_binary,
+            runner_binary_digest=self.runner_binary_digest,
+            work_root=self.work_root,
+            watchdog_interpreter=self._watchdog_interpreter,
+            watchdog_interpreter_digest=self._watchdog_interpreter_digest,
+            parent_death_script=self.parent_death_script,
+            parent_death_script_digest=self.parent_death_script_digest,
+            pinned_launch_file=_pinned_launch_file,
+            start_grace_seconds=_WATCHDOG_START_GRACE_SECONDS,
+        )
+        self._darwin_process_containments[process] = containment
+        return process
 
     @staticmethod
     def _linux_process_identity(process_id: int) -> tuple[int, int, int, int]:
@@ -2061,7 +1984,11 @@ class SubprocessRustRunner:
             options["pass_fds"] = inherited_descriptors
         try:
             # argv[0] is a validated absolute executable path and the grammar is fixed.
-            if self._kill_child_on_job_close and os.name != "nt":
+            if (
+                self._kill_child_on_job_close
+                and os.name != "nt"
+                and sys.platform.startswith("linux")
+            ):
                 process = self._spawn_linux_parent_death(
                     argv,
                     stdout=stdout,
@@ -2070,6 +1997,17 @@ class SubprocessRustRunner:
                     inherited_descriptors=inherited_descriptors,
                     options=options,
                 )
+            elif self._kill_child_on_job_close and sys.platform == "darwin":
+                process = self._spawn_darwin_parent_death(
+                    argv,
+                    stdout=stdout,
+                    stderr=stderr,
+                    environment=environment,
+                    inherited_descriptors=inherited_descriptors,
+                    options=options,
+                )
+            elif self._kill_child_on_job_close and os.name != "nt":
+                raise RunnerTransportError("POSIX parent-death containment is unavailable")
             else:
                 process = subprocess.Popen(  # nosec B603
                     argv,
@@ -2371,6 +2309,20 @@ class SubprocessRustRunner:
         os.close(containment[4])
         return process.returncode is not None
 
+    def _release_darwin_private_process(
+        self,
+        process: subprocess.Popen[bytes],
+        *,
+        terminate: bool,
+    ) -> bool:
+        containment = self._darwin_process_containments.get(process)
+        if containment is None:
+            return False
+        if not release_darwin_process(process, containment, terminate=terminate):
+            return False
+        self._darwin_process_containments.pop(process, None)
+        return True
+
     @staticmethod
     def _private_posix_session_members(session_id: int) -> set[int] | None:
         """Enumerate one Linux-private watchdog session without trusting names."""
@@ -2432,6 +2384,9 @@ class SubprocessRustRunner:
     ) -> bool:
         """Stop every child in the watchdog's private session without killing it."""
 
+        if process in self._darwin_process_containments:
+            return self._release_darwin_private_process(process, terminate=True)
+
         try:
             if not callable(_GET_PROCESS_GROUP) or not callable(_GET_SESSION_ID):
                 return False
@@ -2467,6 +2422,8 @@ class SubprocessRustRunner:
             time.sleep(_PROCESS_POLL_SECONDS)
 
     def _finish_posix_process_group(self, process: subprocess.Popen[bytes]) -> bool:
+        if process in self._darwin_process_containments:
+            return self._release_darwin_private_process(process, terminate=False)
         if self._kill_child_on_job_close:
             return self._terminate_inherited_posix_process_tree(process)
         if process in self._released_linux_processes:

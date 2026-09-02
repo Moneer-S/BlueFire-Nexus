@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -143,7 +144,7 @@ def _fixed_options_mapping(
     name: str,
     initial_keys: set[str],
     assigned_keys: set[str],
-    forwarded_to: tuple[str, str] | None = None,
+    forwarded_to: tuple[tuple[str, str], ...] = (),
 ) -> bool:
     initializers = [
         node
@@ -205,15 +206,11 @@ def _fixed_options_mapping(
             if isinstance(parent, ast.keyword) and parent.arg is None:
                 expansions += 1
                 continue
-            if (
-                forwarded_to is not None
-                and isinstance(parent, ast.keyword)
-                and parent.arg == forwarded_to[1]
-            ):
+            if isinstance(parent, ast.keyword):
                 owner = parents.get(parent)
                 if (
                     isinstance(owner, ast.Call)
-                    and _ast_qualified_name(owner.func) == forwarded_to[0]
+                    and (_ast_qualified_name(owner.func), parent.arg) in forwarded_to
                 ):
                     forwards += 1
                     continue
@@ -225,10 +222,9 @@ def _fixed_options_mapping(
             and node.func.value.id == name
         ):
             return False
-    expected_forwards = 1 if forwarded_to is not None else 0
     return (
         expansions == 1
-        and forwards == expected_forwards
+        and forwards == len(forwarded_to)
         and observed_assigned_keys == assigned_keys
     )
 
@@ -361,12 +357,21 @@ def _runner_client_popen_contract(path: Path) -> bool:
         if isinstance(node, ast.Call)
         and _ast_qualified_name(node.func) == "self._spawn_linux_parent_death"
     ]
+    darwin_parent_death_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _ast_qualified_name(node.func) == "self._spawn_darwin_parent_death"
+    ]
     if (
         len(parent_death_calls) != 1
         or _enclosing_function(parent_death_calls[0], parents) is not spawn
+        or len(darwin_parent_death_calls) != 1
+        or _enclosing_function(darwin_parent_death_calls[0], parents) is not spawn
     ):
         return False
     parent_death_forward = parent_death_calls[0]
+    darwin_parent_death_forward = darwin_parent_death_calls[0]
     spawn_valid = (
         len(spawn_call.args) == 1
         and _expression_matches(spawn_call.args[0], "argv")
@@ -395,12 +400,27 @@ def _runner_client_popen_contract(path: Path) -> bool:
                 ("options", "options"),
             ),
         )
+        and len(darwin_parent_death_forward.args) == 1
+        and _expression_matches(darwin_parent_death_forward.args[0], "argv")
+        and _keyword_expressions_match(
+            darwin_parent_death_forward,
+            (
+                ("stdout", "stdout"),
+                ("stderr", "stderr"),
+                ("environment", "environment"),
+                ("inherited_descriptors", "inherited_descriptors"),
+                ("options", "options"),
+            ),
+        )
         and _fixed_options_mapping(
             spawn,
             name="options",
             initial_keys=set(),
             assigned_keys={"creationflags", "start_new_session", "pass_fds"},
-            forwarded_to=("self._spawn_linux_parent_death", "options"),
+            forwarded_to=(
+                ("self._spawn_linux_parent_death", "options"),
+                ("self._spawn_darwin_parent_death", "options"),
+            ),
         )
     )
 
@@ -479,6 +499,99 @@ def _runner_lifecycle_popen_contract(path: Path) -> bool:
             initial_keys={"stdin", "stdout", "stderr", "close_fds"},
             assigned_keys={"creationflags", "start_new_session"},
         )
+    )
+
+
+def _runner_darwin_popen_contract(path: Path) -> bool:
+    """Lock the sole Darwin production spawn to the verified helper grammar."""
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.name)
+    module_aliases, symbol_aliases = _python_aliases(tree)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and _resolved_python_name(node.func, module_aliases, symbol_aliases) == "subprocess.Popen"
+    ]
+    if len(calls) != 1:
+        return False
+    call = calls[0]
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    function = _enclosing_function(call, parents)
+    return (
+        function is not None
+        and function.name == "spawn_parent_death"
+        and len(call.args) == 1
+        and _expression_matches(
+            call.args[0],
+            """[
+                interpreter_launch[0],
+                "-I",
+                "-B",
+                "-X",
+                "utf8",
+                helper_launch[0],
+                str(os.getpid()),
+                str(child_socket.fileno()),
+                str(target_descriptor),
+                nonce,
+                ",".join(str(value) for value in helper_descriptors),
+                *argv,
+            ]""",
+        )
+        and _function_parameter_is_unmodified(function, "argv")
+        and _keyword_expressions_match(
+            call,
+            (
+                ("cwd", "work_root"),
+                ("env", "dict(environment)"),
+                ("stdin", "subprocess.DEVNULL"),
+                ("stdout", "stdout"),
+                ("stderr", "stderr"),
+                ("shell", "False"),
+                (None, "launch_options"),
+            ),
+        )
+        and _copied_options_mapping(
+            function,
+            name="launch_options",
+            source_name="options",
+            assigned_keys={"pass_fds"},
+        )
+    )
+
+
+def _runner_parent_death_process_contract(path: Path, repository: Path) -> bool:
+    """Lock Darwin/Linux helper execution to three forks and two execve calls."""
+
+    text = path.read_text(encoding="utf-8")
+    tree = ast.parse(text, filename=path.name)
+    findings = _python_shell_findings(path, repository)
+    calls = [
+        _ast_qualified_name(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)
+    ]
+    fork_aliases = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_FORK_PROCESS" for target in node.targets
+        )
+    ]
+    return (
+        len(fork_aliases) == 1
+        and _expression_matches(fork_aliases[0].value, 'getattr(os, "fork", None)')
+        and calls.count("_FORK_PROCESS") == 3
+        and calls.count("os.execve") == 2
+        and [(item.get("kind"), item.get("call")) for item in findings]
+        == [
+            ("dynamic_execution_lookup", "os.fork"),
+            ("dynamic_execution_call", "os.execve"),
+            ("dynamic_execution_call", "os.execve"),
+        ]
+        and 'ctypes.CDLL("/usr/lib/libsandbox.1.dylib", use_errno=True)' in text
+        and 'ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)' in text
+        and "subprocess" not in text
     )
 
 
@@ -628,10 +741,33 @@ def _python_shell_findings(path: Path, repository: Path) -> list[dict[str, Any]]
     return [{"path": relative, **finding} for finding in findings]
 
 
-_REVIEWED_PROCESS_SOURCE_SIZE = 19_465
+_REVIEWED_PROCESS_SOURCE_SIZE = 25_856
 _REVIEWED_PROCESS_SOURCE_SHA256 = (
-    "sha256:cfa3ee4b53b85151403cc499ed8d0603692a789200642f2ce91d9f6cfa067708"
+    "sha256:4720059fa4289b994d7ba05df36e2de22efff9cc4c0b09fe07509dc972c4694b"
 )
+_REVIEWED_CANCELLATION_SOURCE_SIZE = 31_960
+_REVIEWED_CANCELLATION_SOURCE_SHA256 = (
+    "sha256:4b3aaebb36b496e8ba2af5fe64eeb3b9925af031a8e2ff42741ad80b8ba07854"
+)
+
+
+def _macos_process_inventory_is_in_process(process_text: str) -> bool:
+    start = process_text.find('#[cfg(target_os = "macos")]\nmod macos_process_api')
+    end = process_text.find('#[cfg(target_os = "windows")]\nmod windows_process_api', start)
+    if start < 0 or end <= start:
+        return False
+    macos = process_text[start:end]
+    return (
+        "proc_listallpids" in macos
+        and "proc_pidinfo" in macos
+        and "MAX_PROCESS_COUNT" in macos
+        and "limits.max_stdout_bytes" in macos
+        and "max_entries" in macos
+        and "Command::new(" not in macos
+        and ".spawn(" not in macos
+        and "/bin/ps" not in macos
+        and "/usr/bin/ps" not in macos
+    )
 
 
 def _native_process_inventory_is_fixed(process_source: bytes) -> bool:
@@ -657,14 +793,43 @@ def _native_process_inventory_is_fixed(process_source: bytes) -> bool:
         and process_text.count("use std::process::{Command, Stdio};") == 1
         and process_text.count("struct FixedProcessSpec") == 1
         and process_text.count('first_reviewed_program(&["/usr/bin/ps", "/bin/ps"])') == 1
-        and process_text.count('first_reviewed_program(&["/bin/ps", "/usr/bin/ps"])') == 1
         and process_text.count('args: vec!["-eo", "pid=,ppid=,comm="]') == 1
-        and process_text.count('args: vec!["-axo", "pid=,ppid=,comm="]') == 1
         and process_text.count(".env_clear()") == 2
+        and _macos_process_inventory_is_in_process(process_text)
         and all(
             token not in process_text.casefold()
             for token in ("cmd.exe", "powershell", "/bin/sh", "/bin/bash", "sh -c")
         )
+    )
+
+
+def _native_command_source_inventory_is_fixed(repository: Path) -> bool:
+    source_root = repository / "runner" / "src"
+    command_sources: dict[str, bytes] = {}
+    for path in source_root.rglob("*.rs"):
+        source = path.read_bytes()
+        if re.search(rb"\bCommand\b", source) is not None:
+            command_sources[path.relative_to(source_root).as_posix()] = source
+    if set(command_sources) != {"process.rs", "cancellation_witness.rs"}:
+        return False
+    cancellation_source = command_sources["cancellation_witness.rs"]
+    if (
+        len(cancellation_source) != _REVIEWED_CANCELLATION_SOURCE_SIZE
+        or _sha256_bytes(cancellation_source) != _REVIEWED_CANCELLATION_SOURCE_SHA256
+    ):
+        return False
+    try:
+        cancellation_text = cancellation_source.decode("utf-8")
+    except UnicodeError:
+        return False
+    return (
+        cancellation_text.count("Command::new(") == 1
+        and cancellation_text.count("Command::new(&executable)") == 1
+        and "#[cfg(windows)]\nstruct DescendantGuard" in cancellation_text
+        and "#[cfg(windows)]\nimpl DescendantGuard" in cancellation_text
+        and "the process-tree cancellation witness is available only on Windows"
+        in cancellation_text
+        and _native_process_inventory_is_fixed(command_sources["process.rs"])
     )
 
 
@@ -674,7 +839,9 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         for name in (
             "runner_client.py",
             "runner_bootstrap.py",
+            "runner_darwin_containment.py",
             "runner_lifecycle.py",
+            "runner_parent_death.py",
             "runner_trust.py",
             "runner_watchdog.py",
         )
@@ -683,6 +850,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
     expected_calls = {
         "runner_client.py": ["subprocess.Popen", "subprocess.Popen"],
         "runner_bootstrap.py": [],
+        "runner_darwin_containment.py": ["subprocess.Popen"],
         "runner_lifecycle.py": ["subprocess.Popen"],
         "runner_trust.py": [],
     }
@@ -710,6 +878,18 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
             "unexpected_findings": unexpected,
         }
 
+    parent_death_findings = _python_shell_findings(paths["runner_parent_death.py"], repository)
+    python_boundaries["runner_parent_death.py"] = {
+        "passed": _runner_parent_death_process_contract(
+            paths["runner_parent_death.py"], repository
+        ),
+        "shell_imports": sum(item.get("kind") == "shell_import" for item in parent_death_findings),
+        "process_calls": sorted(
+            str(item["call"]) for item in parent_death_findings if "call" in item
+        ),
+        "unexpected_findings": [],
+    }
+
     client_text = texts["runner_client.py"]
     bootstrap_text = texts["runner_bootstrap.py"]
     lifecycle_text = texts["runner_lifecycle.py"]
@@ -722,6 +902,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
             item["passed"] is True for item in python_boundaries.values()
         ),
         "popen_shell_disabled": _runner_client_popen_contract(paths["runner_client.py"])
+        and _runner_darwin_popen_contract(paths["runner_darwin_containment.py"])
         and _runner_lifecycle_popen_contract(paths["runner_lifecycle.py"]),
         "absolute_digest_bound_runner": all(
             token in client_text
@@ -766,7 +947,8 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         "watchdog_has_no_process_launcher": not _python_shell_findings(
             paths["runner_watchdog.py"], repository
         ),
-        "native_process_inventory_is_fixed": _native_process_inventory_is_fixed(process_source),
+        "native_process_inventory_is_fixed": _native_process_inventory_is_fixed(process_source)
+        and _native_command_source_inventory_is_fixed(repository),
     }
     return {
         "passed": all(checks.values()),
