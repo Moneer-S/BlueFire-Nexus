@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import BinaryIO, Sequence
 
+from . import windows_owner_acl as _windows_owner_acl
 from .runner_transport_errors import RunnerTransportError
 from .windows_owner_acl import (
     _WINDOWS_CREATE_NEW as _WINDOWS_CREATE_NEW,
@@ -79,6 +80,17 @@ def _is_link_or_reparse(path: Path) -> bool:
         return False
     except OSError:
         return True
+
+
+def _owner_private_handle(descriptor: int, *, directory: bool) -> None:
+    """Apply the standard-library-only Windows ACL boundary to one handle."""
+
+    if os.name != "nt":
+        raise OSError("Windows private-object permissions are unavailable")
+    try:
+        _windows_owner_acl.apply_owner_private_acl(descriptor, directory=directory)
+    except (OSError, _windows_owner_acl.WindowsOwnerAclError):
+        raise OSError("Windows private-object permissions are unavailable") from None
 
 
 def _descriptor_mount_identity(descriptor: int) -> int | None:
@@ -188,12 +200,6 @@ class _PinnedPrivateDirectory:
         self._authorized_cleanup_entries: dict[str, tuple[int, int]] = {}
 
     def __enter__(self) -> _PinnedPrivateDirectory:
-        from .runner_trust import (
-            RunnerTrustError,
-            _is_link_or_reparse,
-            _owner_private_handle,
-        )
-
         if (
             not self.path.is_absolute()
             or self.path.name in {"", ".", ".."}
@@ -259,7 +265,7 @@ class _PinnedPrivateDirectory:
         except FileNotFoundError as exc:
             self._close_after_failure(exc)
             raise
-        except (OSError, RunnerTrustError) as exc:
+        except OSError as exc:
             self._close_after_failure(exc)
             raise RunnerTransportError("private directory is unavailable or unsafe") from None
 
@@ -294,8 +300,6 @@ class _PinnedPrivateDirectory:
         return self._descriptor
 
     def _validate_directory(self) -> None:
-        from .runner_trust import _is_link_or_reparse
-
         descriptor = self._require_descriptor()
         details = os.fstat(descriptor)
         validation_path = _windows_extended_path(self.path) if os.name == "nt" else self.path
@@ -540,8 +544,6 @@ class _PinnedPrivateDirectory:
         expected_identity: tuple[int, int] | None = None,
         expected_mount_identity: int | None = None,
     ) -> os.stat_result:
-        from .runner_trust import _is_link_or_reparse, _owner_private_handle
-
         name = self._name(name)
         details = os.fstat(descriptor)
         descriptor_mount_identity = _descriptor_mount_identity(descriptor)

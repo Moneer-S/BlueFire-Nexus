@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import secrets
 import socket
 import sqlite3
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -1415,6 +1417,538 @@ def test_failed_start_terminates_the_exact_host_process_tree(
     assert not _process_is_alive(pid)
     assert not manager.process_record_path.exists()
     assert not manager.ledger_lock_path.exists()
+
+
+def test_failed_darwin_launch_is_retained_across_lifecycle_instances(
+    lifecycle: ManagedRunnerLifecycle,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bootstrap(lifecycle)
+
+    class Process:
+        pid = 700
+        returncode: int | None = None
+
+    launch = runner_lifecycle_module._LaunchProcess(  # noqa: SLF001
+        process=Process(),  # type: ignore[arg-type]
+        containment=700,
+    )
+    launch_id = "7" * 64
+    attempts: list[Any] = []
+    succeeds = False
+
+    def terminate(candidate: Any) -> bool:
+        attempts.append(candidate)
+        return succeeds
+
+    monkeypatch.setattr(runner_lifecycle_module, "_DARWIN_LAUNCH_RETRY", True)
+    monkeypatch.setattr(runner_lifecycle_module, "_terminate_contained_launch", terminate)
+    lifecycle._create_pending_launch_marker(launch_id)  # noqa: SLF001
+
+    with pytest.raises(RunnerLifecycleError, match="containment could not be confirmed"):
+        lifecycle._stop_exact_failed_launch(launch_id, launch)  # noqa: SLF001
+
+    replacement = ManagedRunnerLifecycle(lifecycle.root)
+    assert replacement._pending_launches[launch_id] is launch  # noqa: SLF001
+    assert replacement.status()["state"] == "unavailable"
+    with pytest.raises(RunnerLifecycleError, match="remains contained but unresolved"):
+        with replacement._operation_guard(adopt=False):  # noqa: SLF001
+            pytest.fail("unresolved launch reached an operation body")
+
+    succeeds = True
+    with replacement._operation_guard(adopt=False):  # noqa: SLF001
+        pass
+    assert replacement._pending_launches == {}  # noqa: SLF001
+    assert attempts == [launch, launch, launch]
+
+
+def test_darwin_cleanup_interruption_retains_exact_launch(
+    lifecycle: ManagedRunnerLifecycle,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bootstrap(lifecycle)
+
+    class Process:
+        pid = 709
+        returncode: int | None = None
+
+    launch = runner_lifecycle_module._LaunchProcess(  # noqa: SLF001
+        process=Process(),  # type: ignore[arg-type]
+        containment=709,
+    )
+    launch_id = "8" * 64
+    monkeypatch.setattr(runner_lifecycle_module, "_DARWIN_LAUNCH_RETRY", True)
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_terminate_contained_launch",
+        lambda _launch: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    lifecycle._create_pending_launch_marker(launch_id)  # noqa: SLF001
+
+    with pytest.raises(KeyboardInterrupt):
+        lifecycle._stop_exact_failed_launch(launch_id, launch)  # noqa: SLF001
+
+    replacement = ManagedRunnerLifecycle(lifecycle.root)
+    assert replacement._pending_launches[launch_id] is launch  # noqa: SLF001
+    assert replacement.status()["state"] == "unavailable"
+    monkeypatch.setattr(
+        runner_lifecycle_module, "_terminate_contained_launch", lambda _launch: True
+    )
+    with replacement._operation_guard(adopt=False):  # noqa: SLF001
+        pass
+
+
+def test_durable_pending_launch_marker_blocks_without_local_process(
+    lifecycle: ManagedRunnerLifecycle,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bootstrap(lifecycle)
+    launch_id = "9" * 64
+    monkeypatch.setattr(runner_lifecycle_module, "_DARWIN_LAUNCH_RETRY", True)
+    lifecycle._create_pending_launch_marker(launch_id)  # noqa: SLF001
+
+    isolated = ManagedRunnerLifecycle(lifecycle.root)
+    assert isolated._pending_launches == {}  # noqa: SLF001
+    assert isolated.status()["state"] == "unavailable"
+    with pytest.raises(RunnerLifecycleError, match="remains contained but unresolved"):
+        with isolated._operation_guard(adopt=False):  # noqa: SLF001
+            pytest.fail("durable launch blocker reached an operation body")
+
+    lifecycle._clear_pending_launch_marker(launch_id)  # noqa: SLF001
+
+
+def test_pending_launch_prevents_false_unbootstrapped_status_for_missing_root(
+    tmp_path: Path,
+) -> None:
+    manager = ManagedRunnerLifecycle(tmp_path / "missing-root")
+
+    class Process:
+        pid = 712
+
+    launch_id = "c" * 64
+    manager._pending_launches[launch_id] = runner_lifecycle_module._LaunchProcess(  # noqa: SLF001
+        process=Process(),  # type: ignore[arg-type]
+        containment=712,
+    )
+
+    assert not manager.root.exists()
+    assert manager.status()["state"] == "unavailable"
+    manager._pending_launches.pop(launch_id)  # noqa: SLF001
+
+
+def test_transferred_darwin_launch_retry_only_clears_marker(
+    lifecycle: ManagedRunnerLifecycle,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bootstrap(lifecycle)
+
+    class Process:
+        pid = 710
+
+    launch_id = "a" * 64
+    process = Process()
+    owned = runner_lifecycle_module._OwnedHostProcess(  # noqa: SLF001
+        launcher=process,  # type: ignore[arg-type]
+        process_id=process.pid,
+    )
+    launch = runner_lifecycle_module._LaunchProcess(  # noqa: SLF001
+        process=process,  # type: ignore[arg-type]
+        containment=None,
+        transferred_ownership=owned,
+    )
+    lifecycle._pending_launches[launch_id] = launch  # noqa: SLF001
+    lifecycle._create_pending_launch_marker(launch_id)  # noqa: SLF001
+    monkeypatch.setattr(runner_lifecycle_module, "_DARWIN_LAUNCH_RETRY", True)
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_terminate_contained_launch",
+        lambda _launch: pytest.fail("transferred launch was terminated"),
+    )
+
+    assert lifecycle._retry_pending_launches() is True  # noqa: SLF001
+    assert lifecycle._pending_launches == {}  # noqa: SLF001
+    assert lifecycle._owned_processes[launch_id] is owned  # noqa: SLF001
+    assert not lifecycle.pending_launch_path.exists()
+
+
+def test_confirmed_darwin_cleanup_tolerates_interruption_after_marker_unlink(
+    lifecycle: ManagedRunnerLifecycle,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _bootstrap(lifecycle)
+
+    class Process:
+        pid = 711
+        returncode = -15
+
+    launch_id = "b" * 64
+    launch = runner_lifecycle_module._LaunchProcess(  # noqa: SLF001
+        process=Process(),  # type: ignore[arg-type]
+        containment=711,
+        release_verified=True,
+    )
+    lifecycle._create_pending_launch_marker(launch_id)  # noqa: SLF001
+    monkeypatch.setattr(runner_lifecycle_module, "_DARWIN_LAUNCH_RETRY", True)
+    monkeypatch.setattr(
+        runner_lifecycle_module, "_terminate_contained_launch", lambda _launch: True
+    )
+    exact_unlink = runner_lifecycle_module._unlink_exact_regular  # noqa: SLF001
+    interrupted = False
+
+    def unlink_then_interrupt(path: Path) -> None:
+        nonlocal interrupted
+        exact_unlink(path)
+        if path == lifecycle.pending_launch_path and not interrupted:
+            interrupted = True
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner_lifecycle_module, "_unlink_exact_regular", unlink_then_interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        lifecycle._stop_exact_failed_launch(launch_id, launch)  # noqa: SLF001
+    assert lifecycle._pending_launches[launch_id] is launch  # noqa: SLF001
+    assert not lifecycle.pending_launch_path.exists()
+    assert lifecycle._retry_pending_launches() is True  # noqa: SLF001
+    assert lifecycle._pending_launches == {}  # noqa: SLF001
+
+
+def test_darwin_failed_launch_is_reaped_only_after_two_empty_inventories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, Any]] = []
+
+    class Process:
+        pid = 701
+        returncode: int | None = None
+
+        def wait(self, *, timeout: float) -> int:
+            events.append(("wait", (timeout, launch.release_verified)))
+            self.returncode = -9
+            return self.returncode
+
+    process = Process()
+    launch = runner_lifecycle_module._LaunchProcess(  # noqa: SLF001
+        process=process,  # type: ignore[arg-type]
+        containment=process.pid,
+    )
+    observations = iter((False, False, True, True))
+    clocks = iter((0.0, 0.0, 1.1))
+    monkeypatch.setattr(runner_lifecycle_module, "_GET_PROCESS_GROUP_ID", lambda _pid: process.pid)
+    monkeypatch.setattr(runner_lifecycle_module, "_GET_SESSION_ID", lambda _pid: process.pid)
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_child_exited_without_reap",
+        lambda _pid: next(observations),
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_private_process_group_members",
+        lambda _group, _session: {process.pid},
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_private_session_members",
+        lambda _session: {process.pid},
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_kill_process_group",
+        lambda group, signum: events.append(("signal", (group, signum))),
+    )
+    monkeypatch.setattr(runner_lifecycle_module.time, "monotonic", lambda: next(clocks))
+    monkeypatch.setattr(runner_lifecycle_module.time, "sleep", lambda _seconds: None)
+
+    assert (
+        runner_lifecycle_module._terminate_darwin_contained_launch(launch) is True
+    )  # noqa: SLF001
+    assert events == [
+        ("signal", (process.pid, int(runner_lifecycle_module.signal.SIGTERM))),
+        (
+            "signal",
+            (process.pid, int(getattr(runner_lifecycle_module.signal, "SIGKILL", 9))),
+        ),
+        ("wait", (5.0, True)),
+    ]
+    assert launch.containment is None
+    assert launch.release_verified is True
+
+
+def test_darwin_failed_launch_proves_absence_after_signal_permission_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class Process:
+        pid = 707
+        returncode: int | None = None
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == 5.0
+            assert launch.release_verified is True
+            events.append("wait")
+            self.returncode = -15
+            return self.returncode
+
+    process = Process()
+    launch = runner_lifecycle_module._LaunchProcess(  # noqa: SLF001
+        process=process,  # type: ignore[arg-type]
+        containment=process.pid,
+    )
+    observations = iter((False, True, True))
+    clocks = iter((0.0, 0.0))
+    monkeypatch.setattr(runner_lifecycle_module, "_GET_PROCESS_GROUP_ID", lambda _pid: process.pid)
+    monkeypatch.setattr(runner_lifecycle_module, "_GET_SESSION_ID", lambda _pid: process.pid)
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_child_exited_without_reap",
+        lambda _pid: next(observations),
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_private_process_group_members",
+        lambda _group, _session: {process.pid},
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_private_session_members",
+        lambda _session: {process.pid},
+    )
+
+    def permission_race(_group: int, _signum: int) -> None:
+        events.append("signal")
+        raise PermissionError(errno.EPERM, "leader exited")
+
+    monkeypatch.setattr(runner_lifecycle_module, "_kill_process_group", permission_race)
+    monkeypatch.setattr(runner_lifecycle_module.time, "monotonic", lambda: next(clocks))
+    monkeypatch.setattr(runner_lifecycle_module.time, "sleep", lambda _seconds: None)
+
+    assert (
+        runner_lifecycle_module._terminate_darwin_contained_launch(launch) is True
+    )  # noqa: SLF001
+    assert events == ["signal", "wait"]
+    assert launch.containment is None
+
+
+def test_darwin_failed_launch_reobserves_leader_missing_from_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Process:
+        pid = 708
+        returncode: int | None = None
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == 5.0
+            assert launch.release_verified is True
+            self.returncode = 0
+            return self.returncode
+
+    process = Process()
+    launch = runner_lifecycle_module._LaunchProcess(  # noqa: SLF001
+        process=process,  # type: ignore[arg-type]
+        containment=process.pid,
+    )
+    observations = iter((False, True, True))
+    monkeypatch.setattr(runner_lifecycle_module, "_GET_PROCESS_GROUP_ID", lambda _pid: process.pid)
+    monkeypatch.setattr(runner_lifecycle_module, "_GET_SESSION_ID", lambda _pid: process.pid)
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_child_exited_without_reap",
+        lambda _pid: next(observations),
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_private_process_group_members",
+        lambda _group, _session: set(),
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_private_session_members",
+        lambda _session: set(),
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_kill_process_group",
+        lambda *_args: pytest.fail("exited leader reached a group signal"),
+    )
+    monkeypatch.setattr(runner_lifecycle_module.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(runner_lifecycle_module.time, "sleep", lambda _seconds: None)
+
+    assert (
+        runner_lifecycle_module._terminate_darwin_contained_launch(launch) is True
+    )  # noqa: SLF001
+    assert launch.containment is None
+
+
+def test_darwin_failed_launch_signals_safely_but_refuses_unavailable_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[int, int]] = []
+
+    class Process:
+        pid = 702
+        returncode: int | None = None
+
+        def wait(self, *, timeout: float) -> int:
+            pytest.fail(f"unproved Darwin process was reaped with timeout {timeout}")
+
+    process = Process()
+    launch = runner_lifecycle_module._LaunchProcess(  # noqa: SLF001
+        process=process,  # type: ignore[arg-type]
+        containment=process.pid,
+    )
+    monkeypatch.setattr(runner_lifecycle_module, "_GET_PROCESS_GROUP_ID", lambda _pid: process.pid)
+    monkeypatch.setattr(runner_lifecycle_module, "_GET_SESSION_ID", lambda _pid: process.pid)
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_child_exited_without_reap",
+        lambda _pid: False,
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_private_process_group_members",
+        lambda _group, _session: {process.pid},
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_private_session_members",
+        lambda _session: None,
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_kill_process_group",
+        lambda group, signum: signals.append((group, signum)),
+    )
+    clocks = iter((0.0, 0.0, 1.1, 6.1))
+    monkeypatch.setattr(runner_lifecycle_module.time, "monotonic", lambda: next(clocks))
+    monkeypatch.setattr(runner_lifecycle_module.time, "sleep", lambda _seconds: None)
+
+    assert (
+        runner_lifecycle_module._terminate_darwin_contained_launch(launch) is False
+    )  # noqa: SLF001
+    assert launch.containment == process.pid
+    assert launch.release_verified is False
+    assert signals == [
+        (process.pid, int(runner_lifecycle_module.signal.SIGTERM)),
+        (process.pid, int(getattr(runner_lifecycle_module.signal, "SIGKILL", 9))),
+    ]
+
+
+def test_darwin_failed_launch_never_signals_an_alternate_group_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[int, int]] = []
+
+    class Process:
+        pid = 704
+        returncode: int | None = None
+
+        def wait(self, *, timeout: float) -> int:
+            pytest.fail(f"nonempty Darwin session was reaped with timeout {timeout}")
+
+    process = Process()
+    launch = runner_lifecycle_module._LaunchProcess(  # noqa: SLF001
+        process=process,  # type: ignore[arg-type]
+        containment=process.pid,
+    )
+    observations = iter((False, True, True))
+    clocks = iter((0.0, 0.0, 1.1, 6.1))
+    monkeypatch.setattr(runner_lifecycle_module, "_GET_PROCESS_GROUP_ID", lambda _pid: process.pid)
+    monkeypatch.setattr(runner_lifecycle_module, "_GET_SESSION_ID", lambda _pid: process.pid)
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_child_exited_without_reap",
+        lambda _pid: next(observations),
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_private_process_group_members",
+        lambda _group, _session: {process.pid},
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_private_session_members",
+        lambda _session: {process.pid, 705},
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_kill_process_group",
+        lambda group, signum: signals.append((group, signum)),
+    )
+    monkeypatch.setattr(runner_lifecycle_module.time, "monotonic", lambda: next(clocks))
+    monkeypatch.setattr(runner_lifecycle_module.time, "sleep", lambda _seconds: None)
+
+    assert (
+        runner_lifecycle_module._terminate_darwin_contained_launch(launch) is False
+    )  # noqa: SLF001
+    assert signals == [
+        (process.pid, int(runner_lifecycle_module.signal.SIGTERM)),
+        (process.pid, int(getattr(runner_lifecycle_module.signal, "SIGKILL", 9))),
+    ]
+    assert all(target != 705 for target, _signum in signals)
+    assert launch.containment == process.pid
+    assert launch.release_verified is False
+
+
+def test_darwin_verified_release_retry_never_resignals_a_reusable_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Process:
+        pid = 703
+        returncode: int | None = None
+        attempts = 0
+
+        def wait(self, *, timeout: float) -> int:
+            assert timeout == 5.0
+            self.attempts += 1
+            if self.attempts == 1:
+                raise subprocess.TimeoutExpired("darwin-test", timeout)
+            self.returncode = -15
+            return self.returncode
+
+    process = Process()
+    launch = runner_lifecycle_module._LaunchProcess(  # noqa: SLF001
+        process=process,  # type: ignore[arg-type]
+        containment=process.pid,
+        release_verified=True,
+    )
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_kill_process_group",
+        lambda *_args: pytest.fail("verified release retry signalled a numeric group"),
+    )
+
+    assert (
+        runner_lifecycle_module._terminate_darwin_contained_launch(launch) is False
+    )  # noqa: SLF001
+    assert launch.containment == process.pid
+    assert (
+        runner_lifecycle_module._terminate_darwin_contained_launch(launch) is True
+    )  # noqa: SLF001
+    assert launch.containment is None
+    assert process.attempts == 2
+
+
+def test_darwin_launch_observation_does_not_poll_or_reap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Process:
+        pid = 706
+
+        def poll(self) -> int | None:
+            pytest.fail("Darwin launch observation reaped the child")
+
+    launch = runner_lifecycle_module._LaunchProcess(  # noqa: SLF001
+        process=Process(),  # type: ignore[arg-type]
+        containment=706,
+    )
+    monkeypatch.setattr(runner_lifecycle_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        runner_lifecycle_module,
+        "_darwin_child_exited_without_reap",
+        lambda process_id: process_id == 706,
+    )
+
+    assert runner_lifecycle_module._launch_exited_without_reap(launch) is True  # noqa: SLF001
 
 
 def _process_is_alive(pid: int) -> bool:

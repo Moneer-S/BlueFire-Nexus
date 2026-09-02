@@ -1140,7 +1140,7 @@ def test_descriptor_bootstrap_runs_helper_without_reclosing_its_source_fd(
     if echo is None:
         pytest.skip("echo executable is unavailable")
     runner_binary = tmp_path / "runner"
-    shutil.copy2(Path(echo).resolve(), runner_binary)
+    shutil.copyfile(Path(echo).resolve(), runner_binary)
     runner_binary.chmod(0o700)
     launch_path = tmp_path / (".bluefire-verified-launch-" + "f" * 64)
     os.link(runner_binary, launch_path)

@@ -55,7 +55,7 @@ _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
     "bluefire/runner_client.py": "sha256:3190217af0d1ec4c0da0f320894c840a3d3cab9d9354e4772a9f1bba2306266f",
     "bluefire/runner_bootstrap.py": "sha256:2d2ffffec138fdf76587649170b91cc04d2e5fedb6d1768d85b725c7ba809cdf",
     "bluefire/runner_darwin_containment.py": "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c",
-    "bluefire/runner_lifecycle.py": "sha256:04e2cb1bc3147732a4be3ee54ead7313d350106cd019ccf939f0cfb845deff38",
+    "bluefire/runner_lifecycle.py": "sha256:fd5222e1e4c6814b1bdd0a69111b4ad4cc23b2f84bb76f85c34d0df60aa6275a",
     "bluefire/runner_parent_death.py": "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df",
     "bluefire/runner_trust.py": "sha256:fc8811d61e0684b480ceb0a88a1124d0b8829363d5c10caa3513febfbb697c67",
     "bluefire/runner_watchdog.py": "sha256:9e6d4b9e4c4b3d64e17b0b138fc8a1b7910aed48a7849563f15ed8abe3fca542",

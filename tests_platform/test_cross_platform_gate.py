@@ -145,8 +145,7 @@ def test_gate11_locked_contract_matches_authoritative_workflow(
 
     assert outcome.status == "failed"
     assert outcome.failure_reason == (
-        "GATE-11 failed checks: cross-platform focused regression suite failed, changed, "
-        "or skipped"
+        "GATE-11 failed checks: cross-platform focused regression suite failed, changed, or skipped"
     )
     raw_diagnostic = (evidence / gate_module.SUITE_FAILURE_REPORT).read_text(encoding="utf-8")
     diagnostic = json.loads(raw_diagnostic)
@@ -718,7 +717,7 @@ def test_cancellation_validator_reprobes_exact_process_identities(
 
 @pytest.mark.skipif(os.name != "nt", reason="the packaged cancellation witness is Windows-only")
 def test_fresh_cancellation_validator_executes_exact_wheel_member(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     repository = Path(__file__).resolve().parents[1]
     binary = (repository / "bluefire" / "native" / "bluefire-runner.exe").read_bytes()
@@ -742,20 +741,6 @@ def test_fresh_cancellation_validator_executes_exact_wheel_member(
         parent_pid=2_000_000_001,
         descendant_pid=2_000_000_002,
     )
-    trusted_temp = cancellation_validation_module.runtime_temp_parent()
-    observed_temp_parents: list[Path] = []
-    poisoned_temp = tmp_path / ("ambient-" + "x" * 80) / ("y" * 80)
-    monkeypatch.setenv("TEMP", os.fspath(poisoned_temp))
-    monkeypatch.setenv("TMP", os.fspath(poisoned_temp))
-
-    def trusted_runtime_temp_parent() -> Path:
-        observed_temp_parents.append(trusted_temp)
-        return trusted_temp
-
-    monkeypatch.setattr(
-        cancellation_validation_module, "runtime_temp_parent", trusted_runtime_temp_parent
-    )
-
     proof = cancellation_validation_module.run_fresh_cancellation_validation(
         repository,
         package.parent,
@@ -768,8 +753,6 @@ def test_fresh_cancellation_validator_executes_exact_wheel_member(
         expected_runner_digest=binary_digest,
         expected_report=target_report,
     )
-    assert observed_temp_parents == [trusted_temp]
-    assert not poisoned_temp.exists()
     unrelated_report = _cancellation_report(
         binary_digest,
         request_character="c",

@@ -94,6 +94,34 @@ def test_runner_transport_constructor_needs_only_the_standard_library(tmp_path: 
     assert completed.returncode == 0, completed.stderr
 
 
+def test_private_directory_guard_needs_only_the_standard_library(tmp_path: Path) -> None:
+    source_root = Path(__file__).resolve().parents[1]
+    completed = subprocess.run(  # nosec B603
+        [
+            sys.executable,
+            "-S",
+            "-B",
+            "-c",
+            (
+                "import sys; from pathlib import Path; "
+                "from bluefire.runner_private_files import _PinnedPrivateDirectory; "
+                "root = Path(sys.argv[1]).resolve(); root.mkdir(); "
+                "guard = _PinnedPrivateDirectory(root); "
+                "guard.__enter__(); guard.close(); "
+                "assert 'bluefire.runner_trust' not in sys.modules"
+            ),
+            str(tmp_path / "private-root"),
+        ],
+        cwd=source_root,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def _manifest(payload: bytes | None = None) -> RunnerPackageManifest:
     payload = _fake_pe() if payload is None else payload
     return RunnerPackageManifest(

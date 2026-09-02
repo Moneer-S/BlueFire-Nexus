@@ -30,6 +30,13 @@ from .runner_bootstrap import (
     InventoryProbe,
     bootstrap_runner,
 )
+from .runner_client import _darwin_child_exited_without_reap
+from .runner_darwin_containment import (
+    _private_process_group_members as _darwin_private_process_group_members,
+)
+from .runner_darwin_containment import (
+    _private_session_members_for_leader as _darwin_private_session_members,
+)
 from .runner_host import (
     LOOPBACK_HOST,
     RunnerHostError,
@@ -65,12 +72,15 @@ LIFECYCLE_STATUS_SCHEMA_VERSION = "bluefire.runner-lifecycle-status.v1"
 BOOTSTRAP_RECORD_SCHEMA_VERSION = "bluefire.runner-lifecycle-bootstrap.v1"
 ROOT_MARKER_SCHEMA_VERSION = "bluefire.runner-lifecycle-root.v1"
 REMOVAL_JOURNAL_SCHEMA_VERSION = "bluefire.runner-enrollment-removal.v1"
+PENDING_LAUNCH_SCHEMA_VERSION = "bluefire.runner-pending-launch.v1"
 BOOTSTRAP_RECORD_MAX_BYTES = 64 * 1024
 ROOT_MARKER_MAX_BYTES = 4096
 REMOVAL_JOURNAL_MAX_BYTES = 16 * 1024
+PENDING_LAUNCH_MAX_BYTES = 4096
 CLIENT_ID = "bluefire-control-plane.v1"
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_LAUNCH_ID = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 # AuthenticatedRunnerServer derives durable result names from the first 160 bits
 # of SHA-256(task_id); lifecycle audit and removal must recognize that exact shape.
@@ -92,6 +102,7 @@ _REMOVAL_JOURNAL_FIELDS = frozenset(
         "authentication",
     }
 )
+_PENDING_LAUNCH_FIELDS = frozenset({"schema_version", "runner_id", "root_digest", "launch_id"})
 _ENROLLMENT_MATERIAL_NAMES = frozenset(
     {
         "ca-cert.pem",
@@ -126,8 +137,12 @@ _BOOTSTRAP_FIELDS = frozenset(
     }
 )
 _UNRESOLVED_EXECUTE_STATES = frozenset({"running", "indeterminate", "recovery_required"})
+_GET_PROCESS_GROUP_ID = getattr(os, "getpgid", None)
+_GET_SESSION_ID = getattr(os, "getsid", None)
+_DARWIN_LAUNCH_RETRY = sys.platform == "darwin"
 _LOCAL_OPERATION_LOCKS_GUARD = threading.Lock()
 _LOCAL_OPERATION_LOCKS: dict[str, threading.RLock] = {}
+_LOCAL_PENDING_LAUNCHES: dict[str, dict[str, _LaunchProcess]] = {}
 
 
 class RunnerLifecycleError(RuntimeError):
@@ -185,6 +200,8 @@ class _BootstrapRecord:
 class _LaunchProcess:
     process: subprocess.Popen[bytes]
     containment: Any | None = None
+    release_verified: bool = False
+    transferred_ownership: _OwnedHostProcess | None = None
 
     def __repr__(self) -> str:
         return "_LaunchProcess(contained=True)"
@@ -241,6 +258,7 @@ class ManagedRunnerLifecycle:
         self.runner_timeout_seconds = float(runner_timeout_seconds)
         self._instance_operation_lock = threading.RLock()
         self._owned_processes: dict[str, _OwnedHostProcess] = {}
+        self._pending_launches = _local_pending_launches(root)
 
     @property
     def enrollment_root(self) -> Path:
@@ -294,6 +312,10 @@ class ManagedRunnerLifecycle:
     @property
     def operation_lock_path(self) -> Path:
         return self.root / "lifecycle-operation.lock"
+
+    @property
+    def pending_launch_path(self) -> Path:
+        return self.control_root / "pending-launch.json"
 
     @property
     def removal_journal_path(self) -> Path:
@@ -509,6 +531,14 @@ class ManagedRunnerLifecycle:
     def status(self, *, profile_id: str | None = None) -> Mapping[str, Any]:
         """Return path-free lifecycle state; only authenticated health yields ready."""
 
+        if self._has_pending_launches() or (
+            self.pending_launch_path.exists() or _is_link_or_reparse(self.pending_launch_path)
+        ):
+            return self._status_payload(
+                state="unavailable",
+                enrollment_state="unavailable",
+                process_state="unavailable",
+            )
         if not self.root.exists() and not _is_link_or_reparse(self.root):
             return self._status_payload(
                 state="unbootstrapped",
@@ -682,20 +712,36 @@ class ManagedRunnerLifecycle:
         )
         command = _validated_host_command(self.host_command_factory(spec))
         launch: _LaunchProcess | None = None
+        pending_marker_created = False
         try:
+            if _DARWIN_LAUNCH_RETRY:
+                self._create_pending_launch_marker(launch_id)
+                pending_marker_created = True
             _write_private_bytes(start_gate_path, launch_id.encode("ascii"), replace=False)
             launch = _spawn_contained_host(command)
+            if _DARWIN_LAUNCH_RETRY:
+                self._pending_launches[launch_id] = launch
             _unlink_exact_regular(start_gate_path)
-        except (OSError, RunnerLifecycleError):
+        except BaseException as exc:
             if launch is not None:
-                self._stop_exact_failed_launch(launch)
-            else:
-                _best_effort_unlink(start_gate_path)
-            raise RunnerLifecycleError("Runner host process could not be started.") from None
+                self._stop_exact_failed_launch(launch_id, launch)
+            elif isinstance(exc, (OSError, RunnerLifecycleError)):
+                if pending_marker_created:
+                    self._clear_pending_start_gate(launch_id)
+                    self._clear_pending_launch_marker(launch_id)
+                else:
+                    _best_effort_unlink(start_gate_path)
+            if isinstance(exc, (OSError, RunnerLifecycleError)):
+                raise RunnerLifecycleError("Runner host process could not be started.") from None
+            raise
 
         deadline = time.monotonic() + self.start_timeout_seconds
         while time.monotonic() < deadline:
-            if launch.process.poll() is not None:
+            try:
+                launch_exited = _launch_exited_without_reap(launch)
+            except (ChildProcessError, OSError):
+                break
+            if launch_exited:
                 break
             if self.process_record_path.exists():
                 owned: _OwnedHostProcess | None = None
@@ -725,14 +771,18 @@ class ManagedRunnerLifecycle:
                         _release_launch_containment(launch)
                     except OSError:
                         _close_owned_host_process(owned)
-                        self._stop_exact_failed_launch(launch)
+                        self._stop_exact_failed_launch(launch_id, launch)
                         raise RunnerLifecycleError(
                             "Runner launch containment could not be released."
                         ) from None
+                    launch.transferred_ownership = owned
+                    if _DARWIN_LAUNCH_RETRY:
+                        self._clear_pending_launch_marker(launch_id)
                     self._owned_processes[launch_id] = owned
+                    self._pending_launches.pop(launch_id, None)
                     return self.status(profile_id=selected)
             time.sleep(0.025)
-        self._stop_exact_failed_launch(launch)
+        self._stop_exact_failed_launch(launch_id, launch)
         raise RunnerLifecycleError("Runner host did not reach authenticated readiness.")
 
     def client_for_profile(self, profile_id: str) -> tuple[AuthenticatedRunnerClient, Path]:
@@ -1076,6 +1126,16 @@ class ManagedRunnerLifecycle:
                     self._adopt_or_validate_root()
                 else:
                     self._validate_root_marker()
+                if not self._retry_pending_launches():
+                    raise RunnerLifecycleError(
+                        "A previous runner launch remains contained but unresolved."
+                    )
+                if self.pending_launch_path.exists() or _is_link_or_reparse(
+                    self.pending_launch_path
+                ):
+                    raise RunnerLifecycleError(
+                        "A previous runner launch remains contained but unresolved."
+                    )
                 yield
             finally:
                 _unlock_file(handle)
@@ -1490,6 +1550,8 @@ class ManagedRunnerLifecycle:
                 os.close(descriptor)
 
     def _require_stopped(self, operation: str) -> None:
+        if self._pending_launches:
+            raise RunnerLifecycleError(f"Runner must be stopped before {operation}.")
         if self.process_record_path.exists() or _is_link_or_reparse(self.process_record_path):
             raise RunnerLifecycleError(f"Runner must be stopped before {operation}.")
         if self._ledger_lock_state() != "free":
@@ -1730,9 +1792,128 @@ class ManagedRunnerLifecycle:
         except (OSError, RunnerTrustError):
             raise RunnerLifecycleError("Stale runner process state could not be removed.") from None
 
-    def _stop_exact_failed_launch(self, launch: _LaunchProcess) -> None:
+    def _has_pending_launches(self) -> bool:
+        with _local_operation_lock(self.root):
+            return bool(self._pending_launches)
+
+    def _create_pending_launch_marker(self, launch_id: str) -> None:
+        _write_private_json(
+            self.pending_launch_path,
+            {
+                "schema_version": PENDING_LAUNCH_SCHEMA_VERSION,
+                "runner_id": self.runner_id,
+                "root_digest": _root_digest(self.root),
+                "launch_id": launch_id,
+            },
+            maximum=PENDING_LAUNCH_MAX_BYTES,
+            replace=False,
+        )
+
+    def _pending_launch_marker_id(self) -> str | None:
+        if not self.pending_launch_path.exists() and not _is_link_or_reparse(
+            self.pending_launch_path
+        ):
+            return None
+        value = _read_private_json(
+            self.pending_launch_path,
+            maximum=PENDING_LAUNCH_MAX_BYTES,
+        )
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != _PENDING_LAUNCH_FIELDS
+            or value.get("schema_version") != PENDING_LAUNCH_SCHEMA_VERSION
+            or value.get("runner_id") != self.runner_id
+            or value.get("root_digest") != _root_digest(self.root)
+            or not isinstance(value.get("launch_id"), str)
+            or _LAUNCH_ID.fullmatch(str(value["launch_id"])) is None
+        ):
+            raise RunnerLifecycleError("Pending runner launch state is unavailable or invalid.")
+        return str(value["launch_id"])
+
+    def _clear_pending_launch_marker(
+        self,
+        launch_id: str,
+        *,
+        allow_absent: bool = False,
+    ) -> None:
+        marker_id = self._pending_launch_marker_id()
+        if marker_id is None and allow_absent:
+            return
+        if marker_id != launch_id:
+            raise RunnerLifecycleError("Pending runner launch identity did not match.")
+        try:
+            _unlink_exact_regular(self.pending_launch_path)
+        except (OSError, RunnerTrustError):
+            raise RunnerLifecycleError(
+                "Pending runner launch state could not be removed safely."
+            ) from None
+        if self.pending_launch_path.exists() or _is_link_or_reparse(self.pending_launch_path):
+            raise RunnerLifecycleError("Pending runner launch state could not be removed safely.")
+
+    def _clear_pending_start_gate(self, launch_id: str) -> None:
+        path = self.control_root / f".host-start-{launch_id}.gate"
+        try:
+            _unlink_exact_regular(path)
+        except (OSError, RunnerTrustError):
+            raise RunnerLifecycleError(
+                "Pending runner launch gate could not be removed safely."
+            ) from None
+
+    def _retry_pending_launches(self) -> bool:
+        if not _DARWIN_LAUNCH_RETRY:
+            return not self._pending_launches
+        for launch_id, launch in tuple(self._pending_launches.items()):
+            if launch.transferred_ownership is not None:
+                owned = launch.transferred_ownership
+                existing = self._owned_processes.get(launch_id)
+                if (
+                    owned.launcher is not launch.process
+                    or owned.process_id != launch.process.pid
+                    or (existing is not None and existing is not owned)
+                ):
+                    return False
+                self._clear_pending_launch_marker(launch_id, allow_absent=True)
+                self._owned_processes[launch_id] = owned
+                self._pending_launches.pop(launch_id, None)
+                continue
+            if not _terminate_contained_launch(launch):
+                return False
+            self._clear_pending_start_gate(launch_id)
+            self._clear_pending_launch_marker(launch_id, allow_absent=True)
+            if self._pending_launches.get(launch_id) is launch:
+                self._pending_launches.pop(launch_id)
+            self._owned_processes.pop(launch_id, None)
+        return not self._pending_launches
+
+    def _stop_exact_failed_launch(self, launch_id: str, launch: _LaunchProcess) -> None:
+        if _DARWIN_LAUNCH_RETRY:
+            retained = self._pending_launches.setdefault(launch_id, launch)
+            if retained is not launch:
+                raise RunnerLifecycleError(
+                    "Failed runner launch containment could not be confirmed."
+                )
+            if launch.transferred_ownership is not None:
+                owned = launch.transferred_ownership
+                existing = self._owned_processes.get(launch_id)
+                if (
+                    owned.launcher is not launch.process
+                    or owned.process_id != launch.process.pid
+                    or (existing is not None and existing is not owned)
+                ):
+                    raise RunnerLifecycleError(
+                        "Failed runner launch containment could not be confirmed."
+                    )
+                self._clear_pending_launch_marker(launch_id, allow_absent=True)
+                self._owned_processes[launch_id] = owned
+                self._pending_launches.pop(launch_id, None)
+                return
         if not _terminate_contained_launch(launch):
             raise RunnerLifecycleError("Failed runner launch containment could not be confirmed.")
+        if _DARWIN_LAUNCH_RETRY:
+            self._clear_pending_start_gate(launch_id)
+            self._clear_pending_launch_marker(launch_id, allow_absent=True)
+        self._pending_launches.pop(launch_id, None)
+        self._owned_processes.pop(launch_id, None)
 
     def _reap_owned_processes(self) -> bool:
         results = [
@@ -1860,7 +2041,7 @@ def _retain_owned_host_process(
     if process_id <= 0:
         raise OSError("invalid host process identity")
     if os.name != "nt":
-        if launch.process.pid != process_id or launch.process.poll() is not None:
+        if launch.process.pid != process_id or _launch_exited_without_reap(launch):
             raise OSError("host process identity did not match its launcher")
         return _OwnedHostProcess(launcher=launch.process, process_id=process_id)
     if launch.containment is None:
@@ -1885,6 +2066,12 @@ def _close_owned_host_process(owned: _OwnedHostProcess) -> None:
         owned.process_handle = None
 
 
+def _launch_exited_without_reap(launch: _LaunchProcess) -> bool:
+    if sys.platform == "darwin":
+        return _darwin_child_exited_without_reap(launch.process.pid)
+    return launch.process.poll() is not None
+
+
 def _terminate_contained_launch(launch: _LaunchProcess) -> bool:
     process = launch.process
     if os.name == "nt":
@@ -1900,6 +2087,9 @@ def _terminate_contained_launch(launch: _LaunchProcess) -> bool:
         _windows_close_handle(int(job))
         launch.containment = None
         return succeeded and process.poll() is not None
+
+    if sys.platform == "darwin":
+        return _terminate_darwin_contained_launch(launch)
 
     group = int(launch.containment if launch.containment is not None else process.pid)
     try:
@@ -1929,6 +2119,103 @@ def _terminate_contained_launch(launch: _LaunchProcess) -> bool:
         time.sleep(0.025)
     launch.containment = None
     return not _posix_group_exists(group)
+
+
+def _terminate_darwin_contained_launch(launch: _LaunchProcess) -> bool:
+    """Drain a private Darwin launch while its direct child pins the PGID."""
+
+    process = launch.process
+    if launch.release_verified:
+        try:
+            process.wait(timeout=5.0)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if process.returncode is None:
+            return False
+        launch.containment = None
+        return True
+
+    try:
+        group = int(launch.containment if launch.containment is not None else process.pid)
+        session = process.pid
+        if group <= 1 or session <= 1 or group != session or process.returncode is not None:
+            return False
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+    started = time.monotonic()
+    graceful_deadline = started + 1.0
+    final_deadline = graceful_deadline + 5.0
+    termination_sent = False
+    force_sent = False
+    empty_inventories = 0
+    while True:
+        try:
+            leader_exited = _darwin_child_exited_without_reap(session)
+        except (ChildProcessError, OSError):
+            return False
+        if not leader_exited:
+            try:
+                identity_matches = (
+                    callable(_GET_PROCESS_GROUP_ID)
+                    and callable(_GET_SESSION_ID)
+                    and _GET_PROCESS_GROUP_ID(session) == group
+                    and _GET_SESSION_ID(session) == session
+                )
+            except OSError:
+                identity_matches = False
+            if not identity_matches:
+                try:
+                    leader_exited = _darwin_child_exited_without_reap(session)
+                except (ChildProcessError, OSError):
+                    return False
+                if not leader_exited:
+                    return False
+        group_members = _darwin_private_process_group_members(group, session)
+        session_members = _darwin_private_session_members(session)
+        if group_members is not None and session_members is not None:
+            if not leader_exited and (
+                session not in group_members or session not in session_members
+            ):
+                try:
+                    leader_exited = _darwin_child_exited_without_reap(session)
+                except (ChildProcessError, OSError):
+                    return False
+                if not leader_exited:
+                    return False
+            other_members = (group_members | session_members) - {session}
+            if leader_exited and not other_members:
+                empty_inventories += 1
+                if empty_inventories >= 2:
+                    launch.release_verified = True
+                    return _terminate_darwin_contained_launch(launch)
+                time.sleep(0.025)
+                continue
+        empty_inventories = 0
+
+        now = time.monotonic()
+        if now >= final_deadline:
+            return False
+        signum: int | None = None
+        if not termination_sent:
+            signum = int(signal.SIGTERM)
+            termination_sent = True
+        elif now >= graceful_deadline and not force_sent:
+            signum = int(getattr(signal, "SIGKILL", 9))
+            force_sent = True
+        if signum is not None:
+            try:
+                # The direct child remains unreaped, so this exact PGID cannot
+                # be reused between the inventories and the group signal.
+                _kill_process_group(group, signum)
+            except ProcessLookupError:
+                pass
+            except OSError:
+                # Darwin reports EPERM when the last live member exits between
+                # inventory and killpg.  Absence still requires two empty
+                # inventories; a genuine denial therefore expires fail-closed.
+                pass
+        time.sleep(0.025)
 
 
 def _posix_group_exists(group: int) -> bool:
@@ -2207,6 +2494,12 @@ def _local_operation_lock(root: Path) -> threading.RLock:
             lock = threading.RLock()
             _LOCAL_OPERATION_LOCKS[key] = lock
         return lock
+
+
+def _local_pending_launches(root: Path) -> dict[str, _LaunchProcess]:
+    key = os.path.normcase(os.path.normpath(str(root)))
+    with _LOCAL_OPERATION_LOCKS_GUARD:
+        return _LOCAL_PENDING_LAUNCHES.setdefault(key, {})
 
 
 class _WindowsPinnedLockHandle:

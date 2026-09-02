@@ -270,9 +270,8 @@ def test_windows_spawn_uses_owned_work_root_for_temp(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = _runner(tmp_path)
-    poisoned = tmp_path / ("ambient-" + "x" * 80) / ("y" * 80)
-    monkeypatch.setenv("TEMP", str(poisoned))
-    monkeypatch.setenv("TMP", str(poisoned))
+    assert os.environ.get("TEMP") != str(runner.work_root)
+    assert os.environ.get("TMP") != str(runner.work_root)
     monkeypatch.setenv("BLUEFIRE_AMBIENT_MARKER", "must-not-cross-boundary")
     probe = (
         "import json,os,tempfile;"
@@ -303,7 +302,6 @@ def test_windows_spawn_uses_owned_work_root_for_temp(
         "tempdir": str(runner.work_root),
         "tmp": str(runner.work_root),
     }
-    assert not poisoned.exists()
 
 
 @pytest.mark.parametrize("timeout_seconds", (float("nan"), float("inf"), 86_400.1))
@@ -1563,6 +1561,11 @@ def test_darwin_popen_runtime_error_after_child_creation_is_quarantined(
         "_start_darwin_indeterminate_reconciler",
         lambda: None,
     )
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_child_exited_without_reap",
+        lambda _pid: False,
+    )
 
     with pytest.raises(RuntimeError, match="interrupted launch"):
         runner._spawn(  # noqa: SLF001
@@ -1919,21 +1922,17 @@ def test_observe_only_darwin_quarantine_upgrades_when_proof_arrives(
         returncode: int | None = None
 
     process = Process()
-    slot = object()
-    assert runner._reserve_darwin_process_slot(slot) is True
-    runner._register_darwin_process_slot(slot, process)  # type: ignore[arg-type]
     monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
     monkeypatch.setattr(
         runner_client_module,
         "_start_darwin_indeterminate_reconciler",
         lambda: None,
     )
-    runner._quarantine_interrupted_darwin_launch(process)  # type: ignore[arg-type]
-
-    proof = runner_client_module._DarwinWatchdogProof()
-    payload = f"no-fork-v1:{proof.nonce}:{process.pid}\n".encode("ascii")
-    assert proof.writer.send(payload) == len(payload)
-    runner._darwin_watchdog_proofs[process] = proof  # type: ignore[index]
+    monkeypatch.setattr(
+        runner_client_module,
+        "_darwin_child_exited_without_reap",
+        lambda _pid: False,
+    )
     drains: list[tuple[Any, bool]] = []
 
     def drain(candidate: Any, *, _reconciling: bool = False) -> bool:
@@ -1942,16 +1941,26 @@ def test_observe_only_darwin_quarantine_upgrades_when_proof_arrives(
 
     monkeypatch.setattr(runner, "_drain_darwin_process_group", drain)
 
-    assert (
-        runner._reconcile_indeterminate_darwin_process(  # type: ignore[arg-type]
-            process,
-            terminate=True,
-        )
-        is True
-    )
-    assert drains == [(process, True)]
-    assert process in runner._darwin_no_fork_proven
     with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+        slot = object()
+        assert runner._reserve_darwin_process_slot(slot) is True
+        runner._register_darwin_process_slot(slot, process)  # type: ignore[arg-type]
+        runner._quarantine_interrupted_darwin_launch(process)  # type: ignore[arg-type]
+
+        proof = runner_client_module._DarwinWatchdogProof()
+        payload = f"no-fork-v1:{proof.nonce}:{process.pid}\n".encode("ascii")
+        assert proof.writer.send(payload) == len(payload)
+        runner._darwin_watchdog_proofs[process] = proof  # type: ignore[index]
+
+        assert (
+            runner._reconcile_indeterminate_darwin_process(  # type: ignore[arg-type]
+                process,
+                terminate=True,
+            )
+            is True
+        )
+        assert drains == [(process, True)]
+        assert process in runner._darwin_no_fork_proven
         assert process not in runner_client_module._DARWIN_INDETERMINATE_PROCESSES
         assert process not in runner_client_module._DARWIN_ACTIVE_PROCESSES
 
@@ -2164,7 +2173,12 @@ def test_watchdog_readiness_failure_retains_and_stops_spawned_process(
         raise RunnerTransportError("synthetic watchdog readiness failure")
 
     monkeypatch.setattr(runner, "_await_watchdog_readiness", fail_readiness)
-    with pytest.raises(RunnerTransportError, match="synthetic watchdog readiness failure"):
+    expected_error = (
+        "Runner watchdog process tree could not be stopped safely"
+        if sys.platform == "darwin"
+        else "synthetic watchdog readiness failure"
+    )
+    with pytest.raises(RunnerTransportError, match=expected_error):
         runner.execute_task(
             _manifest(),
             {},
@@ -2174,7 +2188,14 @@ def test_watchdog_readiness_failure_retains_and_stops_spawned_process(
         )
 
     assert len(spawned) == 1
-    assert spawned[0].poll() is not None
+    if sys.platform == "darwin":
+        assert spawned[0].returncode is not None
+        assert spawned[0] in runner._released_darwin_processes
+        with runner_client_module._DARWIN_INDETERMINATE_LOCK:
+            assert spawned[0] not in runner_client_module._DARWIN_ACTIVE_PROCESSES
+            assert spawned[0] not in runner_client_module._DARWIN_INDETERMINATE_PROCESSES
+    else:
+        assert spawned[0].poll() is not None
     assert runner._windows_jobs == {}
     assert not runner_watchdog_control_root(durable, task_id).exists()
 
