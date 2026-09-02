@@ -175,6 +175,7 @@ def _assert_public_response(value: Any) -> None:
 class ProviderUpgradeInventoryRunner:
     def __init__(self) -> None:
         inventory = dict(_ready_inventory(actions=EXECUTE_PROFILE_ACTIONS))
+        inventory["platform"] = "windows"
         runtime_contract = {
             "kind": "wasm",
             "abi_version": "bluefire.provider-abi.v1",

@@ -40,6 +40,7 @@ PRIVATE_PACKAGE_FIELDS = {
 class ProviderInventoryRunner:
     def __init__(self) -> None:
         inventory = dict(_ready_inventory(actions=EXECUTE_PROFILE_ACTIONS))
+        inventory["platform"] = "windows"
         inventory["provider_runtimes"] = copy.deepcopy(_runner_inventory()["provider_runtimes"])
         self.document = inventory
 

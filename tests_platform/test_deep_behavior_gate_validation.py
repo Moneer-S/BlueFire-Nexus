@@ -339,7 +339,11 @@ def _endpoint_fixture(
         evidence=(),
         detections=(),
     )
-    manifest = load_runner_manifest(resource_root=REPOSITORY / "bluefire" / "native")
+    manifest = load_runner_manifest(
+        resource_root=REPOSITORY / "bluefire" / "native",
+        platform_name="windows",
+        architecture="x86_64",
+    )
     bundle = _bundle(handle.run_id)
     report: dict[str, Any] = {
         "schema_version": "bluefire.deep-behavior-endpoint-execute.v1",

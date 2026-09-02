@@ -294,7 +294,9 @@ def test_provider_runtime_contract_drift_is_refused_before_dispatch(tmp_path: Pa
 
 def test_provider_execution_preserves_logical_action_and_seals_provider_manifest(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("bluefire.orchestrator.current_platform", lambda: "windows")
     runner = ProviderRunner(_runner_inventory())
     orchestrator, profile, binding = _provider_context(tmp_path, runner=runner)
     adapter = RecordingProviderAdapter()

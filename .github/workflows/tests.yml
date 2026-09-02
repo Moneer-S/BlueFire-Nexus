@@ -88,12 +88,16 @@ jobs:
       - name: Build bounded Rust runner for Python Execute tests
         run: cargo build --locked --manifest-path runner/Cargo.toml --bin bluefire-runner
 
+      - name: Stage single-link runner for Python Execute tests
+        run: >-
+          python -c "import hashlib, os, shutil; from pathlib import Path; source = Path(os.environ['GITHUB_WORKSPACE']) / 'runner' / 'target' / 'debug' / ('bluefire-runner.exe' if os.name == 'nt' else 'bluefire-runner'); root = Path(os.environ['RUNNER_TEMP']) / 'bluefire-python-e2e-runner'; root.mkdir(mode=0o700); target = root / source.name; shutil.copyfile(source, target); target.chmod(0o700); assert hashlib.sha256(source.read_bytes()).digest() == hashlib.sha256(target.read_bytes()).digest()"
+
       - name: Compile
         run: python -m compileall -q bluefire tests_platform
 
       - name: Test
         env:
-          BLUEFIRE_E2E_RUNNER: ${{ github.workspace }}/runner/target/debug/bluefire-runner${{ runner.os == 'Windows' && '.exe' || '' }}
+          BLUEFIRE_E2E_RUNNER: ${{ runner.temp }}/bluefire-python-e2e-runner/bluefire-runner${{ runner.os == 'Windows' && '.exe' || '' }}
         run: python -m pytest -vv --durations=50
 
       - name: Lint

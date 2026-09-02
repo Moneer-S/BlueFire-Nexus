@@ -245,7 +245,11 @@ def _validate_endpoint(
         "endpoint runner",
     )
     try:
-        manifest = load_runner_manifest(resource_root=repository / "bluefire" / "native")
+        manifest = load_runner_manifest(
+            resource_root=repository / "bluefire" / "native",
+            platform_name="windows",
+            architecture="x86_64",
+        )
         binary = repository / "bluefire" / "native" / manifest.filename
     except (OSError, TypeError, ValueError) as exc:
         raise DeepBehaviorGateValidationError("packaged endpoint runner is invalid") from exc

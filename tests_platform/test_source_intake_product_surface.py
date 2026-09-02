@@ -13,7 +13,6 @@ import bluefire.cli as cli
 import bluefire.service as service_module
 import bluefire.source_intake as source_intake_module
 from bluefire.api import APIError
-from bluefire.runner_contracts import current_platform
 from bluefire.runner_inventory import (
     BUILTIN_RUNNER_ACTION_VERSIONS,
     RUNNER_ACTION_SDK_SCHEMA_VERSION,
@@ -57,7 +56,7 @@ class SurfaceInventoryRunner:
             "runner_version": "test-1.0.0",
             "action_sdk_version": "bluefire.runner-action-sdk.v1",
             "receipt_protocol": "bluefire.runner-receipt-wal.v2",
-            "platform": current_platform(),
+            "platform": "windows",
             "actions": [
                 {
                     "schema_version": RUNNER_ACTION_SDK_SCHEMA_VERSION,
