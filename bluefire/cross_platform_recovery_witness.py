@@ -207,7 +207,7 @@ def _filetime_value(value: Any) -> int:
 def _open_process(process_id: int, *, absent_ok: bool) -> int | None:
     _require(os.name == "nt", "Windows process identity proof is unavailable")
     _require(type(process_id) is int and process_id > 0, "process identity is invalid")
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = cast(Any, ctypes).WinDLL("kernel32", use_last_error=True)
     open_process = kernel32.OpenProcess
     open_process.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
     open_process.restype = ctypes.c_void_p
@@ -218,14 +218,14 @@ def _open_process(process_id: int, *, absent_ok: bool) -> int | None:
     )
     if handle:
         return int(handle)
-    error = ctypes.get_last_error()
+    error = cast(Any, ctypes).get_last_error()
     if absent_ok and error in {87, 1168}:
         return None
     raise RecoveryWitnessError(f"Windows process identity cannot be opened ({error})")
 
 
 def _close_handle(handle: int) -> None:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = cast(Any, ctypes).WinDLL("kernel32", use_last_error=True)
     close_handle = kernel32.CloseHandle
     close_handle.argtypes = [ctypes.c_void_p]
     close_handle.restype = ctypes.c_int
@@ -236,7 +236,7 @@ def _close_handle(handle: int) -> None:
 def _process_creation_time(handle: int) -> int:
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = cast(Any, ctypes).WinDLL("kernel32", use_last_error=True)
     get_times = kernel32.GetProcessTimes
     get_times.argtypes = [
         ctypes.c_void_p,
@@ -264,7 +264,7 @@ def _process_creation_time(handle: int) -> int:
 
 
 def _process_handle_running(handle: int) -> bool:
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = cast(Any, ctypes).WinDLL("kernel32", use_last_error=True)
     wait = kernel32.WaitForSingleObject
     wait.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
     wait.restype = ctypes.c_uint32

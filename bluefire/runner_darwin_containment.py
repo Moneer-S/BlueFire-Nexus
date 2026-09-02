@@ -22,6 +22,15 @@ from typing import Any, BinaryIO, Callable, Iterator, Mapping
 
 from .runner_private_files import _PinnedPrivateDirectory, _read_descriptor_bounded
 from .runner_transport_errors import RunnerTransportError
+from .secret_store import _validate_darwin_descriptor_security
+
+_group_database: Any
+try:
+    import grp as _group_database_module
+except ImportError:  # pragma: no cover - unavailable on Windows
+    _group_database = None
+else:
+    _group_database = _group_database_module
 
 _FILE_LOCK_MODULE: Any
 try:
@@ -48,8 +57,68 @@ _MACOS_PIN_LOCK_TIMEOUT_SECONDS = 10.0
 _MACOS_PIN_CLEANUP_RETRIES = 8
 _MAX_DARWIN_LAUNCH_DIRECTORY_ENTRIES = 4096
 _MAX_EXECUTION_TIMEOUT_SECONDS = 86_400.0
+_DARWIN_SCRIPT_LIMIT_BYTES = 8 * 1024 * 1024
 _MACOS_PIN_REGISTRY_LOCK = threading.RLock()
 _MACOS_PIN_REGISTRY_CONDITION = threading.Condition(_MACOS_PIN_REGISTRY_LOCK)
+_DARWIN_DESCRIPTOR_BOOTSTRAP = f"""
+import hashlib
+import os
+import stat
+import sys
+
+descriptor = -1
+try:
+    descriptor = int(sys.argv.pop(1))
+    canonical = sys.argv.pop(1)
+    expected_digest = sys.argv.pop(1)
+    before = os.fstat(descriptor)
+    if (
+        descriptor <= 2
+        or not os.path.isabs(canonical)
+        or len(expected_digest) != 71
+        or not expected_digest.startswith("sha256:")
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_nlink < 1
+        or before.st_size <= 0
+        or before.st_size > {_DARWIN_SCRIPT_LIMIT_BYTES}
+    ):
+        raise OSError("invalid descriptor-backed script")
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    payload = bytearray()
+    while len(payload) <= {_DARWIN_SCRIPT_LIMIT_BYTES}:
+        block = os.read(
+            descriptor,
+            min(64 * 1024, {_DARWIN_SCRIPT_LIMIT_BYTES} + 1 - len(payload)),
+        )
+        if not block:
+            break
+        payload.extend(block)
+    after = os.fstat(descriptor)
+    if (
+        len(payload) > {_DARWIN_SCRIPT_LIMIT_BYTES}
+        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+        or "sha256:" + hashlib.sha256(payload).hexdigest() != expected_digest
+    ):
+        raise OSError("descriptor-backed script identity changed")
+except (AttributeError, OSError, TypeError, ValueError):
+    raise SystemExit(74) from None
+finally:
+    if descriptor > 2:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+
+sys.argv[0] = canonical
+namespace = {{
+    "__name__": "__main__",
+    "__file__": canonical,
+    "__package__": None,
+    "__cached__": None,
+}}
+exec(compile(bytes(payload), canonical, "exec"), namespace)
+"""
 
 
 @dataclass
@@ -520,6 +589,7 @@ def _read_runtime_source(path: Path) -> tuple[bytes, str]:
             )
         ):
             raise OSError("Darwin runtime source is unsafe")
+        _validate_darwin_descriptor_security(descriptor)
         payload = _read_descriptor_bounded(descriptor, _RUNNER_BINARY_LIMIT_BYTES)
         after = os.fstat(descriptor)
         current = path.stat(follow_symlinks=False)
@@ -543,13 +613,27 @@ def _runtime_source_permissions_are_safe(
     group: int,
     effective_user: int,
 ) -> bool:
-    """Accept only the caller's or root's runtime, with one root-group exception."""
+    """Accept the caller's runtime or a macOS administrator-managed root runtime."""
 
     if owner not in {0, effective_user}:
         return False
     if mode & (stat.S_IWOTH | stat.S_ISUID | stat.S_ISGID):
         return False
-    return not (mode & stat.S_IWGRP) or (owner == 0 and group == 0)
+    if not mode & stat.S_IWGRP:
+        return True
+    return owner == 0 and group in {0, _darwin_admin_group_id()}
+
+
+def _darwin_admin_group_id() -> int | None:
+    """Resolve only Darwin's standard local administrator group."""
+
+    if sys.platform != "darwin" or _group_database is None:
+        return None
+    try:
+        group_id = int(_group_database.getgrnam("admin").gr_gid)
+    except (AttributeError, KeyError, OSError, TypeError, ValueError):
+        return None
+    return group_id if group_id > 0 else None
 
 
 def _recover_staged_runtime_pins(runtime_root: Path) -> None:
@@ -780,17 +864,18 @@ def spawn_no_fork_exec(
                 parent_death_script_digest,
                 darwin_descriptor_backed=True,
             ) as helper_launch:
-                helper_descriptors = interpreter_launch[1] + helper_launch[1]
+                launch_descriptors = interpreter_launch[1] + helper_launch[1]
+                close_descriptors = interpreter_launch[1]
                 pass_fds = tuple(
                     sorted(
-                        set(inherited_descriptors + helper_descriptors)
+                        set(inherited_descriptors + launch_descriptors)
                         | {child_socket.fileno(), target_descriptor}
                     )
                 )
                 launch_options = dict(options)
                 launch_options["pass_fds"] = pass_fds
-                launch_options["_bluefire_descriptor_argument_indexes"] = (8, 9)
-                launch_options["_bluefire_descriptor_list_argument_indexes"] = (11,)
+                launch_options["_bluefire_descriptor_argument_indexes"] = (7, 12, 13)
+                launch_options["_bluefire_descriptor_list_argument_indexes"] = (15,)
                 process = popen_factory(
                     [
                         interpreter_launch[0],
@@ -798,13 +883,17 @@ def spawn_no_fork_exec(
                         "-B",
                         "-X",
                         "utf8",
+                        "-c",
+                        _DARWIN_DESCRIPTOR_BOOTSTRAP,
                         helper_launch[0],
+                        str(parent_death_script),
+                        parent_death_script_digest,
                         _DARWIN_NO_FORK_EXEC_MODE,
                         str(os.getpid()),
                         str(child_socket.fileno()),
                         str(target_descriptor),
                         nonce,
-                        ",".join(str(value) for value in helper_descriptors),
+                        ",".join(str(value) for value in close_descriptors),
                         *argv,
                     ],
                     cwd=work_root,
@@ -1116,10 +1205,11 @@ def spawn_parent_death(
                 parent_death_script_digest,
                 darwin_descriptor_backed=True,
             ) as helper_launch:
-                helper_descriptors = interpreter_launch[1] + helper_launch[1]
+                launch_descriptors = interpreter_launch[1] + helper_launch[1]
+                close_descriptors = interpreter_launch[1]
                 pass_fds = tuple(
                     sorted(
-                        set(inherited_descriptors + helper_descriptors)
+                        set(inherited_descriptors + launch_descriptors)
                         | {child_socket.fileno(), target_descriptor}
                     )
                 )
@@ -1127,8 +1217,8 @@ def spawn_parent_death(
                 launch_options["pass_fds"] = pass_fds
                 # The Darwin launch worker duplicates inherited descriptors;
                 # rewrite the fixed helper grammar to those owned copies.
-                launch_options["_bluefire_descriptor_argument_indexes"] = (7, 8)
-                launch_options["_bluefire_descriptor_list_argument_indexes"] = (10,)
+                launch_options["_bluefire_descriptor_argument_indexes"] = (7, 11, 12)
+                launch_options["_bluefire_descriptor_list_argument_indexes"] = (14,)
                 process = popen_factory(
                     [
                         interpreter_launch[0],
@@ -1136,12 +1226,16 @@ def spawn_parent_death(
                         "-B",
                         "-X",
                         "utf8",
+                        "-c",
+                        _DARWIN_DESCRIPTOR_BOOTSTRAP,
                         helper_launch[0],
+                        str(parent_death_script),
+                        parent_death_script_digest,
                         str(os.getpid()),
                         str(child_socket.fileno()),
                         str(target_descriptor),
                         nonce,
-                        ",".join(str(value) for value in helper_descriptors),
+                        ",".join(str(value) for value in close_descriptors),
                         format(execution_timeout_seconds, ".17g"),
                         *argv,
                     ],

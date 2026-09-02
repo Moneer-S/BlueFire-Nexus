@@ -12,6 +12,7 @@ from __future__ import annotations
 import errno
 import os
 import stat
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -223,6 +224,8 @@ def _open_windows_database_descriptor(
     *,
     expected: DatabaseIdentity | None,
 ) -> tuple[int, DatabaseIdentity]:
+    if sys.platform != "win32":
+        raise LocalLockError("Pinned local database is unavailable or unsafe.")
     handle = -1
     try:
         handle = _windows_open_pinned(
@@ -268,7 +271,7 @@ def _open_database_descriptor(
     # occur after the OS opens a descriptor but before the descriptor becomes
     # visible to the child-reset callback.
     with _DATABASE_FORK_GUARD:
-        if os.name == "nt":
+        if sys.platform == "win32":
             descriptor, identity = _open_windows_database_descriptor(path, expected=expected)
         else:
             descriptor, identity = _open_posix_database_descriptor(path, expected=expected)
@@ -465,7 +468,7 @@ def pinned_regular_file_identity(
 
 
 def _lock_database_descriptor(descriptor: int) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         os.lseek(descriptor, _WINDOWS_DATABASE_LOCK_BYTE, os.SEEK_SET)
@@ -490,7 +493,7 @@ def _lock_database_descriptor(descriptor: int) -> None:
 
 def _unlock_database_descriptor(descriptor: int) -> None:
     try:
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
             os.lseek(descriptor, _WINDOWS_DATABASE_LOCK_BYTE, os.SEEK_SET)
@@ -509,7 +512,7 @@ def _validate_locked_database(
     descriptor: int,
     expected: DatabaseIdentity,
 ) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         information = _validate_windows_regular_information(
@@ -591,7 +594,7 @@ def owner_private_database_lock(
                 ):
                     raise LocalLockError("Local database lock ownership is inconsistent.")
 
-                if os.name == "nt":
+                if sys.platform == "win32":
                     descriptor = database_descriptor
                     registration = database_registration
                     database_descriptor = None

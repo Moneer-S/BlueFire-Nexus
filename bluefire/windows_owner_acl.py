@@ -6,6 +6,7 @@ import ctypes
 import os
 import re
 import stat
+import sys
 from ctypes import wintypes
 from pathlib import Path
 
@@ -62,6 +63,8 @@ def _windows_open_descriptor(
 ) -> int:
     """Open one exact Windows filesystem object with explicit sharing."""
 
+    if sys.platform != "win32":
+        raise WindowsOwnerAclError("Windows private-object descriptor is unavailable")
     import msvcrt
 
     api_path = os.fspath(_windows_extended_path(path))
@@ -121,6 +124,8 @@ def _windows_open_descriptor(
 def _windows_mark_delete_descriptor(descriptor: int) -> None:
     """Mark the exact object represented by a descriptor for deletion."""
 
+    if sys.platform != "win32":
+        raise WindowsOwnerAclError("Windows private-object deletion is unavailable")
     import msvcrt
 
     class _Disposition(ctypes.Structure):
@@ -147,6 +152,8 @@ def _windows_mark_delete_descriptor(descriptor: int) -> None:
 def _windows_rename_descriptor(descriptor: int, root_descriptor: int, target_name: str) -> None:
     """Rename an exact open object relative to an exact open directory."""
 
+    if sys.platform != "win32":
+        raise WindowsOwnerAclError("Windows private-object rename is unavailable")
     import msvcrt
 
     if not target_name or Path(target_name).name != target_name:
@@ -236,7 +243,7 @@ class _TokenOwner(ctypes.Structure):
 def _current_token_sids() -> tuple[str, str]:
     """Return the process token's user and default-owner SIDs."""
 
-    if os.name != "nt":
+    if sys.platform != "win32":
         raise WindowsOwnerAclError("Windows owner identity is unavailable")
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -341,6 +348,8 @@ def current_owner_sid() -> str:
 
 
 def _handle_from_descriptor(descriptor: int) -> int:
+    if sys.platform != "win32":
+        raise WindowsOwnerAclError("Windows private-object handle is unavailable")
     if isinstance(descriptor, bool) or not isinstance(descriptor, int) or descriptor < 0:
         raise WindowsOwnerAclError("Windows private-object descriptor is invalid")
     try:
@@ -354,7 +363,9 @@ def _handle_from_descriptor(descriptor: int) -> int:
     return handle
 
 
-def _configure_apis() -> tuple[ctypes.WinDLL, ctypes.WinDLL]:
+def _configure_apis() -> tuple[ctypes.CDLL, ctypes.CDLL]:
+    if sys.platform != "win32":
+        raise WindowsOwnerAclError("Windows private DACL APIs are unavailable")
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -420,7 +431,7 @@ def _configure_apis() -> tuple[ctypes.WinDLL, ctypes.WinDLL]:
 
 
 def _converted_descriptor(
-    advapi32: ctypes.WinDLL,
+    advapi32: ctypes.CDLL,
     sddl: str,
 ) -> ctypes.c_void_p:
     descriptor = ctypes.c_void_p()
@@ -437,7 +448,7 @@ def _converted_descriptor(
     return descriptor
 
 
-def _converted_sid(advapi32: ctypes.WinDLL, sid: str) -> ctypes.c_void_p:
+def _converted_sid(advapi32: ctypes.CDLL, sid: str) -> ctypes.c_void_p:
     pointer = ctypes.c_void_p()
     if not advapi32.ConvertStringSidToSidW(sid, ctypes.byref(pointer)) or not pointer.value:
         raise WindowsOwnerAclError("Windows owner identity conversion failed")
@@ -445,7 +456,7 @@ def _converted_sid(advapi32: ctypes.WinDLL, sid: str) -> ctypes.c_void_p:
 
 
 def _descriptor_dacl(
-    advapi32: ctypes.WinDLL,
+    advapi32: ctypes.CDLL,
     descriptor: ctypes.c_void_p,
 ) -> ctypes.c_void_p:
     present = wintypes.BOOL()
@@ -466,8 +477,8 @@ def _descriptor_dacl(
 
 
 def _select_current_owner(
-    advapi32: ctypes.WinDLL,
-    kernel32: ctypes.WinDLL,
+    advapi32: ctypes.CDLL,
+    kernel32: ctypes.CDLL,
     *,
     handle: int,
     access_sid: ctypes.c_void_p,
@@ -499,8 +510,8 @@ def _select_current_owner(
 
 
 def _verify_owner_private_acl(
-    advapi32: ctypes.WinDLL,
-    kernel32: ctypes.WinDLL,
+    advapi32: ctypes.CDLL,
+    kernel32: ctypes.CDLL,
     *,
     handle: int,
     observed_owner_sid: ctypes.c_void_p,

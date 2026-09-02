@@ -385,6 +385,11 @@ def test_darwin_runtime_staging_creates_a_private_content_addressed_snapshot(
         "_validate_macos_launch_parent",
         lambda _path, _descriptor: os.geteuid(),
     )
+    monkeypatch.setattr(
+        darwin_containment,
+        "_validate_darwin_descriptor_security",
+        lambda _descriptor: None,
+    )
 
     staged, digest = darwin_containment.stage_watchdog_interpreter(source, work_root)
 
@@ -396,12 +401,16 @@ def test_darwin_runtime_staging_creates_a_private_content_addressed_snapshot(
     assert file_hash(staged) == digest
 
 
-def test_darwin_runtime_permissions_accept_only_root_owned_group_writable_source() -> None:
+def test_darwin_runtime_permissions_accept_only_root_or_admin_group_writable_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     permission_is_safe = darwin_containment._runtime_source_permissions_are_safe
+    monkeypatch.setattr(darwin_containment, "_darwin_admin_group_id", lambda: 80)
 
     assert permission_is_safe(mode=stat.S_IFREG | 0o755, owner=501, group=20, effective_user=501)
     assert permission_is_safe(mode=stat.S_IFREG | 0o755, owner=0, group=0, effective_user=501)
     assert permission_is_safe(mode=stat.S_IFREG | 0o775, owner=0, group=0, effective_user=501)
+    assert permission_is_safe(mode=stat.S_IFREG | 0o775, owner=0, group=80, effective_user=501)
     assert not permission_is_safe(
         mode=stat.S_IFREG | 0o755, owner=502, group=20, effective_user=501
     )
@@ -412,6 +421,40 @@ def test_darwin_runtime_permissions_accept_only_root_owned_group_writable_source
     assert not permission_is_safe(mode=stat.S_IFREG | 0o777, owner=0, group=0, effective_user=501)
     assert not permission_is_safe(mode=stat.S_IFREG | 0o4755, owner=0, group=0, effective_user=501)
     assert not permission_is_safe(mode=stat.S_IFREG | 0o2755, owner=0, group=0, effective_user=501)
+
+
+def test_darwin_runtime_permissions_fail_closed_when_admin_group_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(darwin_containment, "_darwin_admin_group_id", lambda: None)
+
+    assert not darwin_containment._runtime_source_permissions_are_safe(
+        mode=stat.S_IFREG | 0o775,
+        owner=0,
+        group=80,
+        effective_user=501,
+    )
+
+
+def test_darwin_runtime_source_applies_descriptor_filesystem_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "python-runtime"
+    source.write_bytes(b"verified runtime")
+    source.chmod(0o755)
+    checked: list[tuple[int, int]] = []
+
+    def validate(descriptor: int) -> None:
+        details = os.fstat(descriptor)
+        checked.append((details.st_dev, details.st_ino))
+
+    monkeypatch.setattr(darwin_containment, "_validate_darwin_descriptor_security", validate)
+
+    payload, _digest = darwin_containment._read_runtime_source(source)
+
+    assert payload == b"verified runtime"
+    assert checked == [(source.stat().st_dev, source.stat().st_ino)]
 
 
 def test_darwin_runtime_source_rejects_foreign_owner(
@@ -1016,8 +1059,8 @@ def test_generic_no_fork_launch_publishes_proof_before_go(
     proof_sink = ProofSink()
 
     def popen(arguments: list[str], **_options: Any) -> Any:
-        child_descriptor = int(arguments[8])
-        nonce = arguments[10]
+        child_descriptor = int(arguments[12])
+        nonce = arguments[14]
         child_control = socket.fromfd(
             child_descriptor,
             socket.AF_UNIX,
@@ -1086,6 +1129,123 @@ def test_generic_no_fork_launch_publishes_proof_before_go(
     assert events == (
         ["sink", "callback", "eof"] if interrupt_callback else ["sink", "callback", "go"]
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor launch")
+def test_descriptor_bootstrap_runs_helper_without_reclosing_its_source_fd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    echo = shutil.which("echo")
+    if echo is None:
+        pytest.skip("echo executable is unavailable")
+    runner_binary = tmp_path / "runner"
+    shutil.copy2(Path(echo).resolve(), runner_binary)
+    runner_binary.chmod(0o700)
+    launch_path = tmp_path / (".bluefire-verified-launch-" + "f" * 64)
+    os.link(runner_binary, launch_path)
+    helper = tmp_path / "bootstrap_helper.py"
+    helper.write_text(
+        """
+import os
+import sys
+
+mode = sys.argv[1]
+expected_parent = int(sys.argv[2])
+control_descriptor = int(sys.argv[3])
+target_descriptor = int(sys.argv[4])
+nonce = sys.argv[5]
+close_descriptors = tuple(int(value) for value in sys.argv[6].split(',') if value)
+target_arguments = sys.argv[7:]
+if mode != '--darwin-no-fork-exec-v1' or os.getppid() != expected_parent:
+    raise SystemExit(74)
+os.write(
+    control_descriptor,
+    f'armed-nofork-v1:{nonce}:{os.getpid()}:{expected_parent}\\n'.encode('ascii'),
+)
+command = bytearray()
+while not command.endswith(b'\\n'):
+    chunk = os.read(control_descriptor, 1)
+    if not chunk:
+        raise SystemExit(74)
+    command.extend(chunk)
+if bytes(command) != f'go-nofork-v1:{nonce}\\n'.encode('ascii'):
+    raise SystemExit(74)
+for descriptor in sorted(set(close_descriptors) | {control_descriptor, target_descriptor}):
+    os.set_inheritable(descriptor, False)
+os.execve(target_arguments[0], target_arguments, dict(os.environ))
+""".lstrip(),
+        encoding="utf-8",
+    )
+    interpreter = Path(sys.executable).resolve()
+
+    class Launch:
+        def __init__(self, path: Path, *, descriptor_backed: bool) -> None:
+            self.path = path
+            self.descriptor_backed = descriptor_backed
+            self.descriptor = -1
+
+        def __enter__(self) -> tuple[str, tuple[int, ...]]:
+            if not self.descriptor_backed:
+                return str(self.path), ()
+            self.descriptor = os.open(self.path, os.O_RDONLY)
+            return str(self.descriptor), (self.descriptor,)
+
+        def __exit__(self, *_args: object) -> None:
+            if self.descriptor >= 0:
+                os.close(self.descriptor)
+
+    def pinned_launch(
+        path: Path,
+        digest: str,
+        *,
+        darwin_descriptor_backed: bool = False,
+    ) -> Launch:
+        assert file_hash(path) == digest
+        return Launch(path, descriptor_backed=darwin_descriptor_backed)
+
+    def popen(arguments: list[str], **options: Any) -> subprocess.Popen[bytes]:
+        options.pop("_bluefire_descriptor_argument_indexes")
+        options.pop("_bluefire_descriptor_list_argument_indexes")
+        script_descriptor = int(arguments[7])
+        close_descriptors = {int(value) for value in arguments[15].split(",") if value}
+        assert script_descriptor in options["pass_fds"]
+        assert script_descriptor not in close_descriptors
+        return subprocess.Popen(arguments, **options)  # nosec B603
+
+    monkeypatch.setattr(darwin_containment.sys, "platform", "darwin")
+    monkeypatch.setattr(darwin_containment, "_GET_PROCESS_GROUP_ID", os.getpgid)
+    monkeypatch.setattr(darwin_containment, "_GET_SESSION_ID", os.getsid)
+    process: subprocess.Popen[bytes] | None = None
+    try:
+        process = darwin_containment.spawn_no_fork_exec(
+            [str(launch_path), "bootstrap-ok"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            environment=dict(os.environ),
+            inherited_descriptors=(),
+            options={"start_new_session": True},
+            runner_binary=runner_binary,
+            runner_binary_digest=file_hash(runner_binary),
+            work_root=tmp_path,
+            watchdog_interpreter=interpreter,
+            watchdog_interpreter_digest=file_hash(interpreter),
+            parent_death_script=helper,
+            parent_death_script_digest=file_hash(helper),
+            pinned_launch_file=pinned_launch,
+            start_grace_seconds=5.0,
+            popen_factory=popen,
+            proof_sink=[],
+            proof_callback=lambda _process: None,
+        )
+        stdout, stderr = process.communicate(timeout=5)
+        assert process.returncode == 0
+        assert stdout == b"bootstrap-ok\n"
+        assert stderr == b""
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
 
 
 def test_monitor_reap_deadline_retains_the_pinned_identity_for_cleanup(

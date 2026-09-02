@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import stat
+import sys
 import tempfile
 import uuid
 from collections.abc import Mapping, Sequence
@@ -15,7 +16,7 @@ _TOKEN_KNOWN_FOLDER_ACCESS = 0x0008 | 0x0004  # TOKEN_QUERY | TOKEN_IMPERSONATE
 
 
 def _windows_directory() -> Path:
-    if os.name != "nt":
+    if sys.platform != "win32":
         raise OSError("the Windows directory is unavailable")
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.GetWindowsDirectoryW.argtypes = (wintypes.LPWSTR, wintypes.UINT)
@@ -107,7 +108,7 @@ def trusted_git_environment(environ: Mapping[str, str] | None = None) -> dict[st
 def runtime_temp_parent() -> Path:
     """Resolve temp storage from the process token, not environment aliases."""
 
-    if os.name != "nt":
+    if sys.platform != "win32":
         return Path(tempfile.gettempdir()).resolve(strict=True)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)

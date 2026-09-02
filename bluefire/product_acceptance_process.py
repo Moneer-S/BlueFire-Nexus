@@ -473,7 +473,7 @@ def _drain_bounded_stream(
 def _create_windows_kill_job(process: subprocess.Popen[bytes]) -> int:
     """Attach a child to a kill-on-close Job Object before it can do gate work."""
 
-    if os.name != "nt":  # pragma: no cover - platform guard
+    if sys.platform != "win32":  # pragma: no cover - platform guard
         raise OSError("Windows Job Objects are unavailable")
     import ctypes
     from ctypes import wintypes
@@ -549,6 +549,8 @@ def _create_windows_kill_job(process: subprocess.Popen[bytes]) -> int:
 
 
 def _close_windows_job(job_handle: int) -> None:
+    if sys.platform != "win32":
+        raise OSError("Windows Job Objects are unavailable")
     import ctypes
     from ctypes import wintypes
 
@@ -559,6 +561,8 @@ def _close_windows_job(job_handle: int) -> None:
 def _resume_windows_process(process: subprocess.Popen[bytes]) -> None:
     """Resume a process only after its kill-on-close Job Object is attached."""
 
+    if sys.platform != "win32":
+        raise OSError("Windows process resumption is unavailable")
     import ctypes
 
     ntdll = ctypes.WinDLL("ntdll", use_last_error=True)

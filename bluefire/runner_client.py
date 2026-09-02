@@ -33,6 +33,7 @@ from .execution_contracts import (
     reject_forbidden_execution_keys as _reject_forbidden_execution_keys,
 )
 from .runner_darwin_containment import (
+    _DARWIN_DESCRIPTOR_BOOTSTRAP,
     DarwinProcessContainment,
     macos_pinned_launch_path,
     stage_watchdog_interpreter,
@@ -106,16 +107,6 @@ _RUNNER_BINARY_LIMIT_BYTES = 256 * 1024 * 1024
 _WATCHDOG_CONTROL_NAMES = frozenset({"config.json", "start", "cancel", "ready.json", "status.json"})
 _WATCHDOG_STATUS_SCHEMA = "bluefire.runner-watchdog-status.v2"
 _LEGACY_WATCHDOG_STATUS_SCHEMA = "bluefire.runner-watchdog-status.v1"
-_WATCHDOG_DESCRIPTOR_BOOTSTRAP = (
-    "import pathlib,sys;"
-    "source=sys.argv.pop(1);"
-    "canonical=sys.argv.pop(1);"
-    "sys.argv[0]=canonical;"
-    "payload=pathlib.Path(source).read_bytes();"
-    "namespace={'__name__':'__main__','__file__':canonical,'__package__':None,"
-    "'__cached__':None};"
-    "exec(compile(payload,canonical,'exec'),namespace)"
-)
 _KILL_PROCESS_GROUP = getattr(os, "killpg", None)
 _GET_PROCESS_GROUP = getattr(os, "getpgrp", None)
 _GET_PROCESS_GROUP_ID = getattr(os, "getpgid", None)
@@ -816,6 +807,10 @@ def _pinned_launch_file_impl(
                 path,
                 os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
             )
+            if sys.platform == "darwin" and darwin_descriptor_backed and descriptor <= 2:
+                replacement = _duplicate_darwin_descriptor(descriptor)
+                os.close(descriptor)
+                descriptor = replacement
         details = os.fstat(descriptor)
         if (
             not stat.S_ISREG(details.st_mode)
@@ -829,16 +824,9 @@ def _pinned_launch_file_impl(
         if os.name == "nt":
             yield str(path), ()
         elif sys.platform == "darwin" and darwin_descriptor_backed:
-            descriptor_path = f"/dev/fd/{descriptor}"
-            descriptor_details = os.stat(descriptor_path)
-            if (descriptor_details.st_dev, descriptor_details.st_ino) != (
-                details.st_dev,
-                details.st_ino,
-            ):
-                raise OSError("descriptor-backed Darwin input identity changed")
             if os.lseek(descriptor, 0, os.SEEK_SET) != 0:
                 raise OSError("descriptor-backed Darwin input offset is invalid")
-            yield descriptor_path, (descriptor,)
+            yield str(descriptor), (descriptor,)
         elif sys.platform == "darwin":
             with macos_pinned_launch_path(
                 path,
@@ -2225,6 +2213,7 @@ class SubprocessRustRunner:
                         )
                     else:
                         inherited_descriptors = interpreter_launch[1] + script_launch[1]
+                    descriptor_indexes: tuple[int, ...]
                     if sys.platform == "darwin" and proof is not None:
                         watchdog_arguments = [
                             interpreter_launch[0],
@@ -2233,14 +2222,15 @@ class SubprocessRustRunner:
                             "-X",
                             "utf8",
                             "-c",
-                            _WATCHDOG_DESCRIPTOR_BOOTSTRAP,
+                            _DARWIN_DESCRIPTOR_BOOTSTRAP,
                             script_launch[0],
                             str(script),
+                            self.watchdog_script_digest,
                             str(config_path),
                             str(proof.write_descriptor),
                             proof.nonce,
                         ]
-                        descriptor_indexes = (10,)
+                        descriptor_indexes = (7, 11)
                     else:
                         watchdog_arguments = [
                             interpreter_launch[0],
@@ -3136,7 +3126,14 @@ class SubprocessRustRunner:
         if os.name == "nt":
             system_directory = self._windows_system_directory()
             windows_root = system_directory.parent
-            environment.update({"SYSTEMROOT": str(windows_root), "WINDIR": str(windows_root)})
+            environment.update(
+                {
+                    "SYSTEMROOT": str(windows_root),
+                    "WINDIR": str(windows_root),
+                    "TEMP": str(self.work_root),
+                    "TMP": str(self.work_root),
+                }
+            )
             options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0
             )
@@ -3985,6 +3982,8 @@ class SubprocessRustRunner:
         return self._terminate_posix_process_tree(process)
 
     def _terminate_windows_process_tree(self, process: subprocess.Popen[bytes]) -> bool:
+        if sys.platform != "win32":
+            return False
         if process in self._released_windows_processes:
             return self._release_windows_job(process.pid) and process.poll() is not None
         with self._windows_jobs_lock:
@@ -4010,6 +4009,8 @@ class SubprocessRustRunner:
         return self._release_windows_job(process.pid) and process.poll() is not None
 
     def _create_windows_job(self) -> int:
+        if sys.platform != "win32":
+            raise RunnerTransportError("Windows process containment is unavailable")
         job = 0
         try:
             import ctypes
@@ -4041,6 +4042,8 @@ class SubprocessRustRunner:
 
     @staticmethod
     def _set_windows_job_kill_on_close(job: int) -> None:
+        if sys.platform != "win32":
+            raise RunnerTransportError("Windows process containment is unavailable")
         try:
             import ctypes
             from ctypes import wintypes
@@ -4103,6 +4106,8 @@ class SubprocessRustRunner:
     def _resume_windows_process(process: subprocess.Popen[bytes]) -> None:
         """Resume the one primary thread of a CREATE_SUSPENDED child."""
 
+        if sys.platform != "win32":
+            raise RunnerTransportError("Windows suspended process start failed")
         snapshot = 0
         thread_handle = 0
         try:
@@ -4174,6 +4179,8 @@ class SubprocessRustRunner:
     ) -> None:
         process_handle = 0
         try:
+            if sys.platform != "win32":
+                raise OSError("Windows Job Objects are unavailable")
             import ctypes
             from ctypes import wintypes
 
@@ -4218,6 +4225,8 @@ class SubprocessRustRunner:
         return job is None or self._close_windows_handle(job)
 
     def _finish_windows_job(self, process: subprocess.Popen[bytes]) -> bool:
+        if sys.platform != "win32":
+            return False
         process_id = process.pid
         if process in self._released_windows_processes:
             return self._release_windows_job(process_id) and process.poll() is not None
@@ -4243,6 +4252,8 @@ class SubprocessRustRunner:
 
     @staticmethod
     def _wait_for_empty_windows_job(job: int) -> bool:
+        if sys.platform != "win32":
+            return False
         try:
             import ctypes
             from ctypes import wintypes
@@ -4291,6 +4302,8 @@ class SubprocessRustRunner:
 
     @staticmethod
     def _close_windows_handle(handle: int) -> bool:
+        if sys.platform != "win32":
+            return False
         try:
             import ctypes
             from ctypes import wintypes

@@ -21,6 +21,7 @@ import sqlite3
 import ssl
 import stat
 import struct
+import sys
 import threading
 import time
 from contextlib import closing, contextmanager
@@ -1640,7 +1641,7 @@ class AuthenticatedRunnerServer:
                 handle.write(b"\0")
                 handle.flush()
             handle.seek(0)
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
 
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
@@ -1674,7 +1675,7 @@ class AuthenticatedRunnerServer:
             self._ledger_lock = None
             try:
                 handle.seek(0)
-                if os.name == "nt":
+                if sys.platform == "win32":
                     import msvcrt
 
                     msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
@@ -1754,6 +1755,8 @@ class AuthenticatedRunnerServer:
     def _windows_runner_binary_handle(self) -> Iterator[BinaryIO]:
         """Open the bound binary while denying Windows write/delete sharing."""
 
+        if sys.platform != "win32":
+            raise RunnerTransportError("runner binary identity could not be verified")
         if self._runner_binary is None:
             raise RunnerTransportError("runner binary identity could not be verified")
         try:
@@ -1805,7 +1808,7 @@ class AuthenticatedRunnerServer:
         if self._runner_binary is None:
             yield None
             return
-        if os.name == "nt":
+        if sys.platform == "win32":
             with self._windows_runner_binary_handle() as handle:
                 before = self._open_handle_digest(handle)
                 if not hmac.compare_digest(before, str(self._runner_binary_digest)):
@@ -1920,7 +1923,7 @@ class AuthenticatedRunnerServer:
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0)
         )
-        if os.name != "nt":
+        if sys.platform != "win32":
             self._ledger_parent_descriptor = os.open(self.state_path.parent, parent_flags)
             parent = os.fstat(self._ledger_parent_descriptor)
             if not stat.S_ISDIR(parent.st_mode):
@@ -1987,7 +1990,7 @@ class AuthenticatedRunnerServer:
             or not stat.S_ISDIR(parent.st_mode)
         ):
             raise OSError("unsafe recovery ledger identity")
-        if os.name == "nt":
+        if sys.platform == "win32":
             _owner_private(self.state_path, directory=False)
         else:
             getattr(os, "fchmod")(  # noqa: B009 - absent on Windows

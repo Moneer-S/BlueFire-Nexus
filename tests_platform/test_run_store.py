@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -131,6 +132,35 @@ def test_event_stream_is_monotonic_and_bundle_detects_tampering(tmp_path: Path) 
     validation = store.validate_bundle(handle.run_id)
     assert validation["valid"] is False
     assert "result.json" in validation["mismatches"]
+
+
+def test_finalized_bundle_identity_must_match_its_directory(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    handle = _create(store)
+    store.finalize(
+        handle.run_id,
+        result={"schema_version": "bluefire.run.v1", "status": "completed"},
+        evidence=[],
+        detections=[],
+    )
+
+    assert store.validate_bundle(handle.run_id)["valid"] is True
+    assert store.get_run(handle.run_id)["run_id"] == handle.run_id
+
+    copied_run_id = "run-20990101T000000Z-aaaaaaaaaaaaaaaa"
+    shutil.copytree(handle.path, store.root / copied_run_id)
+
+    with pytest.raises(RunStoreError, match="run ID does not match its directory"):
+        store.validate_bundle(copied_run_id)
+    with pytest.raises(RunStoreError, match="run ID does not match its directory"):
+        store.get_run(copied_run_id)
+
+    copied_summary = next(item for item in store.list_runs() if item["run_id"] == copied_run_id)
+    assert copied_summary["status"] == "corrupted"
+    assert copied_summary["integrity"]["error"] == (
+        "bundle manifest run ID does not match its directory"
+    )
+    assert store.validate_bundle(handle.run_id)["valid"] is True
 
 
 def test_finalized_bundle_integrity_gates_detail_and_list_summary(tmp_path: Path) -> None:

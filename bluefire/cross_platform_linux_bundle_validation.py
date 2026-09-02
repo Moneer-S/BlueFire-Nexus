@@ -10,7 +10,7 @@ from .cross_platform_process_proof import (
     ProcessProofError,
     validate_posix_watchdog_containment_proof,
 )
-from .run_store import RunStore
+from .run_store import RunStore, RunStoreError
 
 PRIMARY_SCENARIO_VARIANT = "primary"
 REGISTERED_ALTERNATE_SCENARIO_VARIANT = "registered-alternate"
@@ -123,7 +123,11 @@ def validate_linux_bundle(
         return {}
     run_id = _bound_linux_run_id(source, summary, require)
     store = RunStore(source.parent)
-    integrity = store.validate_bundle(run_id)
+    try:
+        integrity = store.validate_bundle(run_id)
+    except RunStoreError:
+        require(False, "Linux run bundle identity is invalid")
+        return {}
     manifest = integrity.get("manifest")
     require(
         integrity.get("valid") is True

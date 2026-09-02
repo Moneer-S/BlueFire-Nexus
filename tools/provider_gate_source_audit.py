@@ -40,24 +40,24 @@ _REVIEWED_RUNNER_CLIENT_LAUNCH_SECTIONS = {
     "_run_darwin_launch_worker": "sha256:378da675e749a543d9e34cf92fbd74131db04161ed5140a045e1436d4454be87",
 }
 _REVIEWED_RUNNER_CLIENT_SOURCE_SHA256 = (
-    "sha256:87ee8ac848811635cb5f8388146eb53afda657ff57636fc49987b23097d47a66"
+    "sha256:3190217af0d1ec4c0da0f320894c840a3d3cab9d9354e4772a9f1bba2306266f"
 )
 _REVIEWED_DARWIN_CONTAINMENT_SECTIONS = {
     "_validate_macos_launch_parent": "sha256:244beadfd89a4f2e6731109cd100042ba2a1ef8ea40e81bbd98f55211e7ebfb6",
 }
 _REVIEWED_DARWIN_CONTAINMENT_SOURCE_SHA256 = (
-    "sha256:91c3e666833997a4035f2bc868e7d0d81c0ea3ead9f9357dd9e97a8f4c898313"
+    "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c"
 )
 _REVIEWED_PARENT_DEATH_SOURCE_SHA256 = (
     "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df"
 )
 _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
-    "bluefire/runner_client.py": "sha256:87ee8ac848811635cb5f8388146eb53afda657ff57636fc49987b23097d47a66",
+    "bluefire/runner_client.py": "sha256:3190217af0d1ec4c0da0f320894c840a3d3cab9d9354e4772a9f1bba2306266f",
     "bluefire/runner_bootstrap.py": "sha256:2d2ffffec138fdf76587649170b91cc04d2e5fedb6d1768d85b725c7ba809cdf",
-    "bluefire/runner_darwin_containment.py": "sha256:91c3e666833997a4035f2bc868e7d0d81c0ea3ead9f9357dd9e97a8f4c898313",
-    "bluefire/runner_lifecycle.py": "sha256:921bf67c429aa71f8c3961954a1a28d9b82bf39c0fc8485cba9ffd9e2f581c7c",
+    "bluefire/runner_darwin_containment.py": "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c",
+    "bluefire/runner_lifecycle.py": "sha256:04e2cb1bc3147732a4be3ee54ead7313d350106cd019ccf939f0cfb845deff38",
     "bluefire/runner_parent_death.py": "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df",
-    "bluefire/runner_trust.py": "sha256:d244371ead22c1d6f01ccab3f7c14de194b0da8fcf0eba102afdcb918e023801",
+    "bluefire/runner_trust.py": "sha256:fc8811d61e0684b480ceb0a88a1124d0b8829363d5c10caa3513febfbb697c67",
     "bluefire/runner_watchdog.py": "sha256:9e6d4b9e4c4b3d64e17b0b138fc8a1b7910aed48a7849563f15ed8abe3fca542",
 }
 _REVIEWED_RUST_PROCESS_BOUNDARY_SOURCES = (
@@ -1099,12 +1099,16 @@ def _runner_darwin_popen_contract(path: Path) -> bool:
                 "-B",
                 "-X",
                 "utf8",
+                "-c",
+                _DARWIN_DESCRIPTOR_BOOTSTRAP,
                 helper_launch[0],
+                str(parent_death_script),
+                parent_death_script_digest,
                 str(os.getpid()),
                 str(child_socket.fileno()),
                 str(target_descriptor),
                 nonce,
-                ",".join(str(value) for value in helper_descriptors),
+                ",".join(str(value) for value in close_descriptors),
                 format(execution_timeout_seconds, ".17g"),
                 *argv,
             ]""",
@@ -1137,13 +1141,17 @@ def _runner_darwin_popen_contract(path: Path) -> bool:
                 "-B",
                 "-X",
                 "utf8",
+                "-c",
+                _DARWIN_DESCRIPTOR_BOOTSTRAP,
                 helper_launch[0],
+                str(parent_death_script),
+                parent_death_script_digest,
                 _DARWIN_NO_FORK_EXEC_MODE,
                 str(os.getpid()),
                 str(child_socket.fileno()),
                 str(target_descriptor),
                 nonce,
-                ",".join(str(value) for value in helper_descriptors),
+                ",".join(str(value) for value in close_descriptors),
                 *argv,
             ]""",
         )

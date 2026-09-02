@@ -16,6 +16,7 @@ import secrets
 import signal
 import stat
 import subprocess  # nosec B404
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -1446,7 +1447,7 @@ class ManagedRunnerLifecycle:
                 os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0),
             )
             _owner_private_open_regular(path, descriptor)
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
 
                 pin, pinned = _windows_open_pinned_path(
@@ -2302,7 +2303,7 @@ def _lock_file(
     while True:
         try:
             handle.seek(0)
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
 
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
@@ -2329,7 +2330,7 @@ def _lock_file(
 
 
 def _descriptor_identity(descriptor: int) -> tuple[int, ...]:
-    if os.name != "nt":
+    if sys.platform != "win32":
         details = os.fstat(descriptor)
         return int(details.st_dev), int(details.st_ino)
 
@@ -2384,7 +2385,7 @@ def _path_descriptor_identity(path: Path) -> tuple[int, ...]:
 def _unlock_file(handle: Any) -> None:
     try:
         handle.seek(0)
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
@@ -2951,6 +2952,8 @@ def _windows_open_pinned_path(
     share_delete: bool = False,
     write_dac: bool = False,
 ) -> tuple[int, tuple[int, ...]]:
+    if sys.platform != "win32":
+        raise OSError("Windows path handles are unavailable")
     import ctypes
     from ctypes import wintypes
 
@@ -3004,6 +3007,8 @@ def _windows_open_pinned_path(
 
 
 def _windows_handle_details(handle: int) -> tuple[int, int, int, int, int]:
+    if sys.platform != "win32":
+        raise OSError("Windows path identity is unavailable")
     import ctypes
     from ctypes import wintypes
 
@@ -3038,6 +3043,8 @@ def _windows_handle_details(handle: int) -> tuple[int, int, int, int, int]:
 
 
 def _windows_descriptor_details(descriptor: int) -> tuple[int, int, int, int, int]:
+    if sys.platform != "win32":
+        raise OSError("Windows path identity is unavailable")
     import msvcrt
 
     handle = msvcrt.get_osfhandle(descriptor)
@@ -3047,6 +3054,8 @@ def _windows_descriptor_details(descriptor: int) -> tuple[int, int, int, int, in
 
 
 def _windows_rename_handle(handle: int, destination: Path) -> None:
+    if sys.platform != "win32":
+        raise OSError("Windows path rename is unavailable")
     import ctypes
     from ctypes import wintypes
 
@@ -3079,6 +3088,8 @@ def _windows_rename_handle(handle: int, destination: Path) -> None:
 
 
 def _windows_path_identity(path: Path) -> tuple[int, int, int]:
+    if sys.platform != "win32":
+        raise OSError("Windows path identity is unavailable")
     import ctypes
     import msvcrt
     from ctypes import wintypes
@@ -3116,6 +3127,8 @@ def _windows_path_identity(path: Path) -> tuple[int, int, int]:
 
 
 def _windows_mark_delete(handle: int) -> None:
+    if sys.platform != "win32":
+        raise OSError("Windows path deletion is unavailable")
     import ctypes
     from ctypes import wintypes
 
@@ -3139,7 +3152,7 @@ def _windows_mark_delete(handle: int) -> None:
 def _remove_result_namespace(root: Path, *, expected_parent: Path) -> None:
     """Remove only one exact, strictly shaped, inactive result namespace."""
 
-    if os.name == "nt":
+    if sys.platform == "win32":
         _windows_remove_result_namespace(root, expected_parent=expected_parent)
         return
     parent_descriptor = os.open(

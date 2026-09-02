@@ -6,6 +6,7 @@ import errno
 import hashlib
 import os
 import stat
+import sys
 import time
 import weakref
 from dataclasses import dataclass, field
@@ -642,7 +643,7 @@ class SandboxObserver:
 def _windows_final_path(descriptor: int) -> str:
     """Return the normalized DOS path for an already-open Windows file handle."""
 
-    if os.name != "nt":  # pragma: no cover - guarded by SandboxObserver._open_file
+    if sys.platform != "win32":  # pragma: no cover - guarded by SandboxObserver._open_file
         raise OSError("Windows handle paths are unavailable")
     import msvcrt
 
@@ -655,7 +656,7 @@ def _windows_final_path(descriptor: int) -> str:
 def _windows_handle_final_path(raw_handle: int) -> str:
     """Return the normalized DOS path for an already-open Windows handle."""
 
-    if os.name != "nt":  # pragma: no cover - guarded by Windows-only callers
+    if sys.platform != "win32":  # pragma: no cover - guarded by Windows-only callers
         raise OSError("Windows handle paths are unavailable")
     import ctypes
     from ctypes import wintypes
@@ -684,7 +685,7 @@ def _windows_handle_final_path(raw_handle: int) -> str:
 def _windows_open_directory_handle(path: Path) -> int:
     """Pin a non-reparse directory for stable identity checks."""
 
-    if os.name != "nt":  # pragma: no cover - guarded by SandboxObserver
+    if sys.platform != "win32":  # pragma: no cover - guarded by SandboxObserver
         raise OSError("Windows directory handles are unavailable")
     import ctypes
     from ctypes import wintypes
@@ -719,7 +720,7 @@ def _windows_open_directory_handle(path: Path) -> int:
 def _windows_directory_identity(handle: int) -> tuple[int, int]:
     """Return a stable volume/file identity for a pinned Windows directory."""
 
-    if os.name != "nt":  # pragma: no cover - guarded by SandboxObserver
+    if sys.platform != "win32":  # pragma: no cover - guarded by SandboxObserver
         raise OSError("Windows directory identities are unavailable")
     import ctypes
     from ctypes import wintypes
@@ -755,7 +756,7 @@ def _windows_directory_identity(handle: int) -> tuple[int, int]:
 
 
 def _windows_close_handle(handle: int) -> None:
-    if os.name != "nt":  # pragma: no cover - guarded by SandboxObserver
+    if sys.platform != "win32":  # pragma: no cover - guarded by SandboxObserver
         return
     import ctypes
     from ctypes import wintypes

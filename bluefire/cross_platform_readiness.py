@@ -214,7 +214,7 @@ def _wsl_facts(
 def _trusted_wsl_executable() -> Path | None:
     """Resolve System32 through the kernel API, never PATH or environment state."""
 
-    if os.name != "nt":
+    if sys.platform != "win32":
         return None
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     get_system_directory = kernel32.GetSystemDirectoryW
@@ -270,7 +270,7 @@ def _probe_wsl_registry(
 ) -> Mapping[str, Any]:
     """Read the fixed WSL registration hive without interpreting localized text."""
 
-    if os.name != "nt":
+    if sys.platform != "win32":
         return _wsl_facts("absent", False, None, distribution_id=distribution_id)
     try:
         import winreg

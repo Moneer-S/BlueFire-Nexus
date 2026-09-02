@@ -193,6 +193,11 @@ def test_watchdog_run_rejects_identity_change_across_constructor_boundary(
     )
     monkeypatch.setattr(watchdog_module, "_wait_for_start", lambda _config: "started")
     monkeypatch.setattr(watchdog_module, "_signal_exists", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        watchdog_module,
+        "_publish_darwin_no_fork_proof",
+        lambda _descriptor, _nonce: None,
+    )
     try:
         assert watchdog_module._run(config, receiver_environment={}) == (
             "failed",

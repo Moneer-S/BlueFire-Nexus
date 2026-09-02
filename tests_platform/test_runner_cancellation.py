@@ -264,6 +264,48 @@ def _runner(
     )
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows child environment contract")
+def test_windows_spawn_uses_owned_work_root_for_temp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner(tmp_path)
+    poisoned = tmp_path / ("ambient-" + "x" * 80) / ("y" * 80)
+    monkeypatch.setenv("TEMP", str(poisoned))
+    monkeypatch.setenv("TMP", str(poisoned))
+    monkeypatch.setenv("BLUEFIRE_AMBIENT_MARKER", "must-not-cross-boundary")
+    probe = (
+        "import json,os,tempfile;"
+        "print(json.dumps({'ambient':os.environ.get('BLUEFIRE_AMBIENT_MARKER'),"
+        "'cwd':os.getcwd(),'temp':os.environ.get('TEMP'),'tempdir':tempfile.gettempdir(),"
+        "'tmp':os.environ.get('TMP')},sort_keys=True))"
+    )
+    process = runner._spawn(
+        [sys.executable, "-I", "-B", "-c", probe],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        process_sink=[],
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=10)
+    finally:
+        if process.poll() is None:
+            runner._terminate_windows_process_tree(process)
+
+    assert process.returncode == 0
+    assert stderr == b""
+    assert runner._finish_windows_job(process) is True
+    observed = json.loads(stdout)
+    assert observed == {
+        "ambient": None,
+        "cwd": str(runner.work_root),
+        "temp": str(runner.work_root),
+        "tempdir": str(runner.work_root),
+        "tmp": str(runner.work_root),
+    }
+    assert not poisoned.exists()
+
+
 @pytest.mark.parametrize("timeout_seconds", (float("nan"), float("inf"), 86_400.1))
 def test_runner_rejects_timeouts_outside_the_helper_protocol(
     tmp_path: Path,
@@ -305,6 +347,79 @@ def test_macos_runner_fixture_uses_an_owner_controlled_interpreter_copy(
     assert stat.S_IMODE(runner.work_root.stat().st_mode) == 0o700
     assert stat.S_IMODE(runner.runner_binary.stat().st_mode) == 0o700
     assert stat.S_IMODE(runner._watchdog_interpreter.stat().st_mode) == 0o700
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX inherited descriptors")
+def test_darwin_descriptor_backed_launch_uses_the_verified_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "verified-script.py"
+    script.write_text("print('verified')\n", encoding="utf-8")
+    digest = runner_client_module.file_hash(script)
+    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
+
+    with runner_client_module._pinned_launch_file(
+        script,
+        digest,
+        darwin_descriptor_backed=True,
+    ) as launch:
+        descriptor = int(launch[0])
+        assert descriptor > 2
+        assert launch[1] == (descriptor,)
+        assert os.path.samestat(os.fstat(descriptor), script.stat())
+        assert os.lseek(descriptor, 0, os.SEEK_CUR) == 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX inherited descriptors")
+def test_darwin_descriptor_bootstrap_verifies_digest_and_resets_offset(tmp_path: Path) -> None:
+    script = tmp_path / "verified-bootstrap.py"
+    script.write_text(
+        "import sys\nprint('|'.join(sys.argv))\n",
+        encoding="utf-8",
+    )
+    descriptor = os.open(script, os.O_RDONLY)
+    try:
+        os.lseek(descriptor, 0, os.SEEK_END)
+        arguments = [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            darwin_containment_module._DARWIN_DESCRIPTOR_BOOTSTRAP,
+            str(descriptor),
+            str(script.resolve()),
+            runner_client_module.file_hash(script),
+            "one",
+            "two",
+        ]
+        completed = subprocess.run(  # nosec B603
+            arguments,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            pass_fds=(descriptor,),
+            check=False,
+            timeout=5,
+        )
+        assert completed.returncode == 0
+        assert completed.stderr == b""
+        assert completed.stdout == f"{script.resolve()}|one|two\n".encode()
+
+        arguments[7] = "sha256:" + "0" * 64
+        rejected = subprocess.run(  # nosec B603
+            arguments,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            pass_fds=(descriptor,),
+            check=False,
+            timeout=5,
+        )
+        assert rejected.returncode == 74
+        assert rejected.stdout == b""
+    finally:
+        os.close(descriptor)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Darwin watchdog launch hard link")
@@ -487,7 +602,10 @@ def test_receiver_environment_is_consumed_and_invalid_key_factory_fails_closed(
     assert not durable.exists()
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX descriptor-backed launch boundary")
+@pytest.mark.skipif(
+    os.name == "nt" or sys.platform == "darwin",
+    reason="non-Darwin POSIX descriptor-backed launch boundary",
+)
 def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure(
     tmp_path: Path,
 ) -> None:
@@ -526,6 +644,7 @@ def test_posix_verified_launch_cannot_be_redirected_before_receiver_key_exposure
     assert not leaked.exists()
 
 
+@pytest.mark.skipif(sys.platform == "darwin", reason="Darwin requires proved process ownership")
 def test_finished_posix_group_waits_for_the_exact_child_exit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -954,11 +1073,12 @@ def test_darwin_watchdog_launch_passes_a_rewritable_proof_descriptor(
         returncode: int | None = None
 
     class Launch:
-        def __init__(self, path: Path) -> None:
+        def __init__(self, path: str, descriptors: tuple[int, ...]) -> None:
             self.path = path
+            self.descriptors = descriptors
 
         def __enter__(self) -> tuple[str, tuple[int, ...]]:
-            return str(self.path), ()
+            return self.path, self.descriptors
 
         def __exit__(self, *_args: object) -> None:
             return None
@@ -975,7 +1095,10 @@ def test_darwin_watchdog_launch_passes_a_rewritable_proof_descriptor(
     monkeypatch.setattr(
         runner_client_module,
         "_pinned_launch_file",
-        lambda path, _digest, **_kwargs: Launch(path),
+        lambda path, _digest, **options: Launch(
+            "73" if options.get("darwin_descriptor_backed") else str(path),
+            (73,) if options.get("darwin_descriptor_backed") else (),
+        ),
     )
     monkeypatch.setattr(runner, "_spawn", spawn)
     monkeypatch.setattr(runner, "_await_watchdog_readiness", lambda *_args: None)
@@ -990,12 +1113,14 @@ def test_darwin_watchdog_launch_passes_a_rewritable_proof_descriptor(
     try:
         argv = captured["argv"]
         options = captured["options"]
-        passed_descriptor = int(argv[10])
+        script_descriptor = int(argv[7])
+        passed_descriptor = int(argv[11])
         assert result is process
+        assert script_descriptor == 73
         assert passed_descriptor > 2
         assert proof.write_descriptor == -1
-        assert options["inherited_descriptors"] == (passed_descriptor,)
-        assert options["darwin_descriptor_argument_indexes"] == (10,)
+        assert options["inherited_descriptors"] == (script_descriptor, passed_descriptor)
+        assert options["darwin_descriptor_argument_indexes"] == (7, 11)
         assert options["darwin_allow_fork"] is True
     finally:
         proof.close_reader()
@@ -1915,24 +2040,39 @@ def test_darwin_drain_signals_a_live_sole_group_leader(
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="native Darwin hard-link launch boundary")
-def test_macos_verified_launch_cannot_be_redirected_before_receiver_key_exposure(
+def test_macos_configured_launch_rejects_canonical_replacement_before_key_exposure(
     tmp_path: Path,
 ) -> None:
-    runner = _runner(tmp_path)
-    executable = (tmp_path / "verified-echo").resolve()
-    parked = (tmp_path / "verified-echo.parked").resolve()
+    work_root = tmp_path / "runner-work"
+    work_root.mkdir(mode=0o700)
+    executable = (work_root / "configured-runner").resolve()
+    watchdog = (work_root / "python-watchdog").resolve()
+    parked = (work_root / "configured-runner.parked").resolve()
     leaked = Path(str(executable) + ".leaked")
     shutil.copyfile("/bin/echo", executable)
     executable.chmod(0o700)
-    expected_digest = runner_client_module.file_hash(executable)
+    shutil.copyfile(Path(sys.executable).resolve(), watchdog)
+    watchdog.chmod(0o700)
+    runner = SubprocessRustRunner(
+        executable,
+        work_root,
+        timeout_seconds=5.0,
+        output_limit_bytes=64 * 1024,
+        _watchdog_interpreter=watchdog,
+    )
+    assert runner.runner_binary == executable
+    assert runner._watchdog_interpreter == watchdog
     receiver_environment = {
         "BLUEFIRE_RECEIVER_TASK_ID": "task-macos-launch-01",
         "BLUEFIRE_RECEIVER_TASK_KEY": "a" * 64,
     }
-    with runner_client_module._pinned_launch_file(executable, expected_digest) as launch:
+    with runner_client_module._pinned_launch_file(
+        runner.runner_binary,
+        runner.runner_binary_digest,
+    ) as launch:
         assert launch[1] == ()
         launch_path = Path(launch[0])
-        assert launch_path.stat().st_ino == executable.stat().st_ino
+        assert os.path.samestat(launch_path.stat(), executable.stat())
         launch_nonce = launch_path.name.removeprefix(".bluefire-verified-launch-")
         assert len(launch_nonce) == 64
         assert set(launch_nonce) <= set("0123456789abcdef")
@@ -1942,21 +2082,17 @@ def test_macos_verified_launch_cannot_be_redirected_before_receiver_key_exposure
             encoding="utf-8",
         )
         executable.chmod(0o700)
-        process = runner._spawn(
-            [launch[0], "trusted"],
-            stdout=subprocess.PIPE,
-            receiver_environment=receiver_environment,
-            inherited_descriptors=launch[1],
-            process_sink=[],
-        )
+        with pytest.raises(RunnerTransportError, match="Darwin no-fork launch failed"):
+            runner._spawn(
+                [launch[0], "trusted"],
+                stdout=subprocess.PIPE,
+                receiver_environment=receiver_environment,
+                inherited_descriptors=launch[1],
+                process_sink=[],
+            )
 
-    assert process.stdout is not None
-    stdout = process.stdout.read()
-    assert runner._finish_posix_process_group(process) is True
-    assert process.returncode == 0
-    assert stdout == b"trusted\n"
     assert not leaked.exists()
-    assert not list(tmp_path.glob(".bluefire-verified-launch-*"))
+    assert not list(work_root.glob(".bluefire-verified-launch-*"))
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX Darwin hard-link launch boundary")

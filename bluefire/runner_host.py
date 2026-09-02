@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import stat
+import sys
 import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -346,6 +347,8 @@ def _windows_open_pinned_path(
     share_write: bool = True,
     write_dac: bool = False,
 ) -> tuple[int, tuple[int, int, int, int, int, int]]:
+    if sys.platform != "win32":
+        raise OSError("Windows path handles are unavailable")
     import ctypes
     from ctypes import wintypes
 
@@ -395,6 +398,8 @@ def _windows_open_pinned_path(
 
 
 def _windows_handle_details(handle: int) -> tuple[int, int, int, int, int, int]:
+    if sys.platform != "win32":
+        raise OSError("Windows path identity is unavailable")
     import ctypes
     from ctypes import wintypes
 
@@ -430,6 +435,8 @@ def _windows_handle_details(handle: int) -> tuple[int, int, int, int, int, int]:
 
 
 def _windows_descriptor_details(descriptor: int) -> tuple[int, int, int, int, int, int]:
+    if sys.platform != "win32":
+        raise OSError("Windows path identity is unavailable")
     import msvcrt
 
     handle = msvcrt.get_osfhandle(descriptor)
@@ -439,6 +446,8 @@ def _windows_descriptor_details(descriptor: int) -> tuple[int, int, int, int, in
 
 
 def _windows_close_handle(handle: int) -> None:
+    if sys.platform != "win32":
+        raise OSError("Windows path handles are unavailable")
     import ctypes
     from ctypes import wintypes
 
@@ -450,6 +459,8 @@ def _windows_close_handle(handle: int) -> None:
 
 
 def _windows_mark_delete(handle: int) -> None:
+    if sys.platform != "win32":
+        raise OSError("Windows path deletion is unavailable")
     import ctypes
     from ctypes import wintypes
 
@@ -663,6 +674,8 @@ def _windows_publish_process_record(path: Path, temporary: Path, payload: bytes)
 
 
 def _windows_rename_handle(handle: int, destination: Path) -> None:
+    if sys.platform != "win32":
+        raise OSError("Windows path rename is unavailable")
     import ctypes
     from ctypes import wintypes
 
@@ -698,7 +711,7 @@ def _remove_owned_process_record(path: Path, launch_id: str) -> None:
     """Best-effort cleanup of only this host's exact regular record."""
 
     try:
-        if os.name == "nt":
+        if sys.platform == "win32":
             _windows_remove_owned_process_record(path, launch_id)
             return
         parent_descriptor = os.open(

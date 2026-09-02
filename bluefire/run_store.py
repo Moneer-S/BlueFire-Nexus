@@ -226,6 +226,8 @@ class RunStore:
 
     def validate_bundle(self, run_id: str) -> Mapping[str, Any]:
         manifest = self.read_json(run_id, "manifest.json")
+        if manifest.get("run_id") != run_id:
+            raise RunStoreError("bundle manifest run ID does not match its directory")
         files = manifest.get("files")
         if not isinstance(files, dict):
             raise RunStoreError("bundle manifest has no files mapping")

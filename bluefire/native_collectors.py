@@ -104,6 +104,8 @@ def _observe_windows_process(
     expected_parent_process_id: int | None,
     deadline: float,
 ) -> Mapping[str, Any]:
+    if sys.platform != "win32":
+        raise NativeProcessError("the Windows process observer is unavailable")
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     create_snapshot = kernel32.CreateToolhelp32Snapshot
     create_snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)

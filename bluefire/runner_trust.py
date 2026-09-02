@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import stat
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -910,7 +911,7 @@ def _enrollment_transition_lock(destination: Path) -> Iterator[None]:
                 os.write(descriptor, b"\0")
                 os.fsync(descriptor)
             os.lseek(descriptor, 0, os.SEEK_SET)
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
 
                 while True:
@@ -944,7 +945,7 @@ def _enrollment_transition_lock(destination: Path) -> Iterator[None]:
             if locked:
                 try:
                     os.lseek(descriptor, 0, os.SEEK_SET)
-                    if os.name == "nt":
+                    if sys.platform == "win32":
                         import msvcrt
 
                         msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
@@ -1334,7 +1335,7 @@ class _PinnedRegularUpdate:
             _write_descriptor_all(self.descriptor, payload)
             os.ftruncate(self.descriptor, len(payload))
             os.fsync(self.descriptor)
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
 
                 information = _validate_windows_regular_information(
@@ -1381,7 +1382,7 @@ def _pinned_regular_update(
     *,
     maximum: int,
 ) -> Iterator[_PinnedRegularUpdate]:
-    if os.name == "nt":
+    if sys.platform == "win32":
         handle = -1
         descriptor: int | None = None
         try:
@@ -1499,7 +1500,7 @@ class _PinnedDirectory:
         return self._identity
 
     def __enter__(self) -> _PinnedDirectory:
-        if os.name == "nt":
+        if sys.platform == "win32":
             try:
                 self._handle = _windows_open_pinned(
                     self.path,
@@ -1601,7 +1602,7 @@ class _PinnedDirectory:
     def create(self, name: str, payload: bytes) -> tuple[int, int]:
         if not name or Path(name).name != name or len(payload) > _MAX_MATERIAL_BYTES:
             raise RunnerTrustError("Enrollment material could not be written safely.")
-        if os.name == "nt":
+        if sys.platform == "win32":
             handle = _windows_create_pinned(self.path / name)
             try:
                 windows_initial = _validate_windows_regular_information(
@@ -1685,7 +1686,7 @@ class _PinnedDirectory:
 
         if not name or Path(name).name != name:
             raise RunnerTrustError("Enrollment material is unavailable or unsafe.")
-        if os.name == "nt":
+        if sys.platform == "win32":
             handle = _windows_open_pinned(
                 self.path / name,
                 directory=False,
@@ -1818,7 +1819,7 @@ class _PinnedDirectory:
     ) -> None:
         if not name or Path(name).name != name:
             raise RunnerTrustError("Enrollment material is unavailable or unsafe.")
-        if os.name == "nt":
+        if sys.platform == "win32":
             handle = _windows_open_pinned(
                 self.path / name,
                 directory=False,
@@ -1991,7 +1992,7 @@ def _open_transition_lock_descriptor(path: Path) -> int:
         # Replaying a path-based Windows ACL update here would fail whenever a
         # peer already holds its no-delete-share lock handle open.  Validate the
         # exact handle below instead.
-        if os.name == "nt":
+        if sys.platform == "win32":
             handle = _windows_open_pinned(
                 path,
                 directory=False,

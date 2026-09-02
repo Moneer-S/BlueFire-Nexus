@@ -172,7 +172,7 @@ def _isolated_python_environment(
         and 0 < len(value) <= 4_096
         and "\0" not in value
     }
-    if os.name == "nt":
+    if sys.platform == "win32":
         buffer = ctypes.create_unicode_buffer(32_768)
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         get_windows_directory = kernel32.GetWindowsDirectoryW
