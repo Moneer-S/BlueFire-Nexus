@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -536,6 +536,40 @@ describe("product application", () => {
     expect(screen.getByRole("combobox", { name: "Effect mode" })).toHaveValue("simulate");
     expect(screen.getByRole("combobox", { name: "AI autonomy" })).toHaveValue("assist");
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.run-config.v1") ?? "{}")).toEqual({ schema_version: UI_PREFERENCE_SCHEMA_VERSION, theme: "light", effect_mode: "simulate", autonomy: "assist" }));
+  });
+
+  it("follows live operating-system color changes while the system theme is selected", async () => {
+    const user = userEvent.setup();
+    let colorSchemeListener: ((event: MediaQueryListEvent) => void) | undefined;
+    const addEventListener = vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+      if (type === "change" && typeof listener === "function") {
+        colorSchemeListener = listener as (event: MediaQueryListEvent) => void;
+      }
+    });
+    const removeEventListener = vi.fn();
+    vi.mocked(window.matchMedia).mockReturnValue({
+      matches: false,
+      media: "(prefers-color-scheme: light)",
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener,
+      removeEventListener,
+      dispatchEvent: vi.fn(),
+    });
+
+    const view = renderApp("/settings");
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /^System/ }));
+
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(addEventListener).toHaveBeenCalledWith("change", expect.any(Function));
+    expect(colorSchemeListener).toBeDefined();
+    act(() => colorSchemeListener!({ matches: true } as MediaQueryListEvent));
+    expect(document.documentElement.dataset.theme).toBe("light");
+
+    view.unmount();
+    expect(removeEventListener).toHaveBeenCalledWith("change", colorSchemeListener);
   });
 
   it("reviews a server-normalized graph draft before importing it", async () => {

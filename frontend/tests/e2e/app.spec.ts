@@ -27,6 +27,17 @@ test("skip navigation preserves the active HashRouter workspace", async ({ page 
   expect(new URL(page.url()).hash).toBe("#/builder");
 });
 
+test("system theme follows live operating-system color-scheme changes", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("./#/settings");
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await page.getByRole("button", { name: /^System/ }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+});
+
 test("all major workspaces are reachable", async ({ page }) => {
   const routes = [
     ["Scenarios", "Reusable security experiments"],

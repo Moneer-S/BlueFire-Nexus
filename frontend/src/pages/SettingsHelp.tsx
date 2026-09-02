@@ -49,8 +49,18 @@ export function SettingsPage() {
   useEffect(() => {
     writeBrowserTheme(theme);
     writeBrowserUiPreferences(buildUiPreferenceDocument(theme, runConfig.mode, runConfig.autonomy));
-    const resolved = theme === "system" ? (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark") : theme;
-    document.documentElement.dataset.theme = resolved;
+    if (theme !== "system") {
+      document.documentElement.dataset.theme = theme;
+      return;
+    }
+    const colorScheme = window.matchMedia("(prefers-color-scheme: light)");
+    const applySystemTheme = (matches: boolean) => {
+      document.documentElement.dataset.theme = matches ? "light" : "dark";
+    };
+    const handleColorSchemeChange = (event: MediaQueryListEvent) => applySystemTheme(event.matches);
+    applySystemTheme(colorScheme.matches);
+    colorScheme.addEventListener("change", handleColorSchemeChange);
+    return () => colorScheme.removeEventListener("change", handleColorSchemeChange);
   }, [runConfig.autonomy, runConfig.mode, theme]);
 
   const preferenceDocument = () => buildUiPreferenceDocument(theme, runConfig.mode, runConfig.autonomy);
