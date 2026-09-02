@@ -513,7 +513,7 @@ def test_service_recovers_inflight_product_jobs_after_restart(tmp_path: Path) ->
 def test_restart_cleanup_uses_exact_bound_workspace_and_audits_run_bundle(
     request: pytest.FixtureRequest,
 ) -> None:
-    short_root = Path(tempfile.mkdtemp(prefix="bf-recovery-"))
+    short_root = Path(tempfile.mkdtemp(prefix="bf-recovery-")).resolve(strict=True)
     request.addfinalizer(lambda: shutil.rmtree(short_root, ignore_errors=True))
     runs_dir = short_root / "r"
     database = short_root / "s.db"

@@ -887,7 +887,10 @@ def test_repository_state_rejects_non_eol_content_transform_attributes(
     assert any(f"forbidden {attribute_name} attribute" in item for item in state["status"])
 
 
-def test_release_precondition_refuses_dirty_workflow_code_without_execution(tmp_path: Path) -> None:
+def test_release_precondition_refuses_dirty_workflow_code_without_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     contract = _fixture_contract(tmp_path)
     repository = tmp_path / "repository"
     commands = [
@@ -900,6 +903,7 @@ def test_release_precondition_refuses_dirty_workflow_code_without_execution(tmp_
     for command in commands:
         subprocess.run(command, cwd=repository, check=True, capture_output=True)
     (repository / "uncommitted.txt").write_text("must not execute", encoding="utf-8")
+    monkeypatch.setattr(acceptance, "_process_containment_limitations", lambda: ())
 
     with pytest.raises(ValueError, match="refuses to execute an uncommitted worktree"):
         acceptance.run_acceptance(
@@ -911,7 +915,10 @@ def test_release_precondition_refuses_dirty_workflow_code_without_execution(tmp_
     assert not (tmp_path / "results").exists()
 
 
-def test_postflight_assessment_rejects_forged_clean_release_verdict(tmp_path: Path) -> None:
+def test_postflight_assessment_rejects_forged_clean_release_verdict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     contract = _fixture_contract(tmp_path, "dirty-repository")
     repository = tmp_path / "repository"
     commands = [
@@ -923,6 +930,7 @@ def test_postflight_assessment_rejects_forged_clean_release_verdict(tmp_path: Pa
     ]
     for command in commands:
         subprocess.run(command, cwd=repository, check=True, capture_output=True)
+    monkeypatch.setattr(acceptance, "_process_containment_limitations", lambda: ())
 
     result = acceptance.run_acceptance(
         contract,

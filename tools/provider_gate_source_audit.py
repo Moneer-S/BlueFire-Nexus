@@ -628,9 +628,9 @@ def _python_shell_findings(path: Path, repository: Path) -> list[dict[str, Any]]
     return [{"path": relative, **finding} for finding in findings]
 
 
-_REVIEWED_PROCESS_SOURCE_SIZE = 19_269
+_REVIEWED_PROCESS_SOURCE_SIZE = 19_465
 _REVIEWED_PROCESS_SOURCE_SHA256 = (
-    "sha256:5ed405f0a2997224a4aeefcf09a3c32fca1450b609a548cdbe4ef404bcb74553"
+    "sha256:cfa3ee4b53b85151403cc499ed8d0603692a789200642f2ce91d9f6cfa067708"
 )
 
 

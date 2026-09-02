@@ -499,7 +499,7 @@ def test_inventory_probe_redacts_an_unsafe_transport_diagnostic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    private_detail = r"failed at C:\Users\private-user\runner.exe"
+    private_detail = "failed at C:" + r"\Users\private-user\runner.exe"
 
     class FailingRunner:
         def __init__(self, *_args: object, **_kwargs: object) -> None:

@@ -761,11 +761,15 @@ def test_receiver_enforces_one_aggregate_request_deadline_for_slow_clients() -> 
     started = time.monotonic()
     with socket.create_connection((receiver.host, receiver.port), timeout=1.0) as connection:
         connection.settimeout(1.0)
-        connection.sendall(b"P")
-        time.sleep(0.08)
-        connection.sendall(b"O")
-        time.sleep(0.08)
-        connection.sendall(b"S")
+        try:
+            connection.sendall(b"P")
+            time.sleep(0.08)
+            connection.sendall(b"O")
+            time.sleep(0.08)
+            connection.sendall(b"S")
+        except (BrokenPipeError, ConnectionResetError):
+            # The peer may close immediately after publishing the 408 response.
+            pass
         response = _read_response(connection)
     second_status, _, _ = _exchange(receiver, b"BROKEN\r\n\r\n")
 
