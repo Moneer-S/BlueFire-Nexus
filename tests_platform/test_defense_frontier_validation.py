@@ -810,29 +810,28 @@ def test_runner_journal_creation_is_descriptor_relative_or_rebind_blocked(
     runs = tmp_path / "runs"
     displaced = tmp_path / "displaced-runs"
     runs.mkdir()
-    real_mkdir = private_files_module.os.mkdir
+    real_create_directory = private_files_module._PinnedPrivateDirectory.create_directory
     race: list[str] = []
 
     def race_before_relative_mkdir(
-        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
-        mode: int = 0o777,
-        *,
-        dir_fd: int | None = None,
-    ) -> None:
-        if Path(os.fsdecode(path)).name == ".bluefire-runner-results" and not race:
+        pinned: private_files_module._PinnedPrivateDirectory,
+        name: str,
+    ) -> tuple[tuple[int, int], int | None]:
+        if pinned.path == runs and name == ".bluefire-runner-results" and not race:
             try:
                 runs.rename(displaced)
             except OSError:
                 race.append("blocked")
             else:
                 race.append("replaced")
-                real_mkdir(runs, 0o700)
-        if dir_fd is None:
-            real_mkdir(path, mode)
-        else:
-            real_mkdir(path, mode, dir_fd=dir_fd)
+                runs.mkdir(mode=0o700)
+        return real_create_directory(pinned, name)
 
-    monkeypatch.setattr(private_files_module.os, "mkdir", race_before_relative_mkdir)
+    monkeypatch.setattr(
+        private_files_module._PinnedPrivateDirectory,
+        "create_directory",
+        race_before_relative_mkdir,
+    )
 
     if os.name == "nt":
         guard = frontier_module._create_pinned_runner_journal(runs)

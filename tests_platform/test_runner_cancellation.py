@@ -13,7 +13,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any, Mapping, cast
 
 import pytest
@@ -262,6 +262,13 @@ def _runner(
         durable_result_guard=durable_result_guard,
         _watchdog_interpreter=watchdog_interpreter,
     )
+
+
+def _isolated_module(source: ModuleType, **overrides: object) -> ModuleType:
+    isolated = ModuleType(source.__name__)
+    isolated.__dict__.update(vars(source))
+    isolated.__dict__.update(overrides)
+    return isolated
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows child environment contract")
@@ -1434,7 +1441,11 @@ def test_darwin_prelaunch_interruption_releases_reservation(
         interrupted = False
 
         def discard(self, element: object) -> None:
-            if not self.interrupted and element in self:
+            if (
+                not self.interrupted
+                and element in self
+                and runner_client_module._DARWIN_ACTIVE_PROCESSES.get(process) is runner
+            ):
                 self.interrupted = True
                 raise KeyboardInterrupt
             super().discard(element)
@@ -1442,8 +1453,16 @@ def test_darwin_prelaunch_interruption_releases_reservation(
     process = Process()
     slots = InterruptingSlots()
 
-    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
-    monkeypatch.setattr(runner_client_module.os, "name", "posix")
+    monkeypatch.setattr(
+        runner_client_module,
+        "sys",
+        _isolated_module(sys, platform="darwin"),
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "os",
+        _isolated_module(os, name="posix"),
+    )
     monkeypatch.setattr(
         runner_client_module,
         "_darwin_child_status_ownership_available",
@@ -1468,6 +1487,7 @@ def test_darwin_prelaunch_interruption_releases_reservation(
         assert process not in runner_client_module._DARWIN_ACTIVE_PROCESSES
         assert process not in runner_client_module._DARWIN_INDETERMINATE_PROCESSES
         assert not runner_client_module._DARWIN_PENDING_PROCESS_SLOTS
+    assert slots.interrupted is True
 
 
 def test_darwin_post_registration_interruption_quarantines_process(
@@ -1498,8 +1518,16 @@ def test_darwin_post_registration_interruption_quarantines_process(
             return super().startswith(prefix, *args)
 
     process = Process()
-    monkeypatch.setattr(runner_client_module.sys, "platform", InterruptingPlatform("darwin"))
-    monkeypatch.setattr(runner_client_module.os, "name", "posix")
+    monkeypatch.setattr(
+        runner_client_module,
+        "sys",
+        _isolated_module(sys, platform=InterruptingPlatform("darwin")),
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "os",
+        _isolated_module(os, name="posix"),
+    )
     monkeypatch.setattr(
         runner_client_module,
         "_darwin_child_status_ownership_available",
@@ -1548,8 +1576,16 @@ def test_darwin_popen_runtime_error_after_child_creation_is_quarantined(
             raise RuntimeError("signal handler interrupted launch")
 
     process_sink: list[Any] = []
-    monkeypatch.setattr(runner_client_module.sys, "platform", "darwin")
-    monkeypatch.setattr(runner_client_module.os, "name", "posix")
+    monkeypatch.setattr(
+        runner_client_module,
+        "sys",
+        _isolated_module(sys, platform="darwin"),
+    )
+    monkeypatch.setattr(
+        runner_client_module,
+        "os",
+        _isolated_module(os, name="posix"),
+    )
     monkeypatch.setattr(
         runner_client_module,
         "_darwin_child_status_ownership_available",
@@ -3206,6 +3242,103 @@ def test_atomic_private_publication_uses_a_fixed_short_temporary_basename(
     assert len(temporary) == 15
     assert all(character in "0123456789abcdef" for character in temporary[3:])
     assert "destination" not in temporary
+
+
+def test_cancel_staging_collision_cannot_claim_marker_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    durable = (tmp_path / "durable" / "result.json").resolve()
+    durable.parent.mkdir()
+    task_id = "task-cancel-staging-collision-01"
+    control_root = runner_watchdog_control_root(durable, task_id)
+    control_root.mkdir()
+
+    def collide_staging(
+        _pinned: private_files_module._PinnedPrivateDirectory,
+        _name: str,
+    ) -> int:
+        raise FileExistsError("injected staging collision")
+
+    monkeypatch.setattr(
+        private_files_module._PinnedPrivateDirectory,
+        "_open_new",
+        collide_staging,
+    )
+
+    with pytest.raises(RunnerTransportError, match="signal is unavailable"):
+        request_runner_task_cancel(durable, task_id)
+    assert tuple(control_root.iterdir()) == ()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows consumable marker publication")
+def test_cancel_marker_may_be_consumed_immediately_after_atomic_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    durable = (tmp_path / "durable" / "result.json").resolve()
+    durable.parent.mkdir()
+    task_id = "task-consumable-cancel-01"
+    control_root = runner_watchdog_control_root(durable, task_id)
+    control_root.mkdir()
+    marker = control_root / "cancel"
+    published = threading.Event()
+    consumed = threading.Event()
+    consumer_errors: list[BaseException] = []
+    pinned_type = private_files_module._PinnedPrivateDirectory
+    real_rename = private_files_module._windows_rename_descriptor
+    real_open_existing = pinned_type._open_existing
+
+    def observe_rename(*args: Any, **kwargs: Any) -> None:
+        real_rename(*args, **kwargs)
+        published.set()
+
+    def wait_for_consumption_before_reopen(
+        pinned: private_files_module._PinnedPrivateDirectory,
+        name: str,
+        *,
+        delete: bool = False,
+        write_dac: bool = True,
+    ) -> int:
+        if name == "cancel" and published.is_set():
+            assert consumed.wait(timeout=5)
+        return real_open_existing(
+            pinned,
+            name,
+            delete=delete,
+            write_dac=write_dac,
+        )
+
+    def consume_marker() -> None:
+        try:
+            assert published.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    marker.unlink()
+                    consumed.set()
+                    return
+                except PermissionError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
+        except BaseException as exc:
+            consumer_errors.append(exc)
+            consumed.set()
+
+    monkeypatch.setattr(private_files_module, "_windows_rename_descriptor", observe_rename)
+    monkeypatch.setattr(pinned_type, "_open_existing", wait_for_consumption_before_reopen)
+    consumer = threading.Thread(target=consume_marker, daemon=True)
+    consumer.start()
+    try:
+        request_runner_task_cancel(durable, task_id)
+    finally:
+        consumer.join(timeout=5)
+
+    assert not consumer.is_alive()
+    assert consumer_errors == []
+    assert consumed.is_set()
+    assert not marker.exists()
 
 
 def test_existing_pending_result_is_preserved_for_restart_reconciliation(tmp_path: Path) -> None:

@@ -25,6 +25,7 @@ from bluefire.runner_client import (
     RunnerTransportError,
     SubprocessRustRunner,
     canonical_runner_inventory,
+    request_runner_task_cancel,
     runner_pending_result_path,
     runner_transport_identity,
     runner_watchdog_cancel_path,
@@ -995,6 +996,36 @@ def test_completed_result_is_recoverable_after_server_restart(
     assert second_runner.calls == 0
 
 
+def test_unrecoverable_completed_row_transitions_to_indeterminate(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> None:
+    state_path = tmp_path / "transport.sqlite3"
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        RecordingRunner(),
+        state_path,
+        secret_provider=secret_provider,
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        client.execute(manifest, profile)
+        task_id, request_hash = client.execution_identity(manifest, profile)
+        server.durable_result_path(task_id).unlink()
+        with sqlite3.connect(state_path) as database:
+            database.execute(
+                "UPDATE transport_tasks SET result_json = ? WHERE task_id = ?",
+                (b"{}", task_id),
+            )
+
+        recovered = client.recover(task_id, request_hash)
+
+    assert recovered["state"] == "indeterminate"
+    assert recovered["error_code"] == "outcome_indeterminate"
+
+
 def test_complete_pending_result_is_promoted_and_recovered_after_restart(
     enrollment_root: Path,
     secret_provider: InMemorySecretProvider,
@@ -1912,7 +1943,15 @@ def test_restart_cancel_reaches_live_durable_watchdog_and_waits_for_confirmation
                 raise AssertionError("durable cancellation marker was not delivered")
             marker_seen.set()
             for entry in tuple(control_root.iterdir()):
-                entry.unlink()
+                unlink_deadline = time.monotonic() + 2
+                while True:
+                    try:
+                        entry.unlink()
+                        break
+                    except PermissionError:
+                        if time.monotonic() >= unlink_deadline:
+                            raise
+                        time.sleep(0.01)
             _write_watchdog_status(
                 control_root,
                 task_id,
@@ -2064,6 +2103,527 @@ def test_current_watchdog_cancellation_requires_exact_proof_fields(
             server._read_watchdog_status(task_id)
         status_path.unlink()
         control_root.rmdir()
+
+
+def test_terminal_watchdog_status_survives_an_exact_late_cancel_marker(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_id = "execute-" + "b" * 64
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        RecordingRunner(),
+        tmp_path / "transport.sqlite3",
+        secret_provider=secret_provider,
+    ) as server:
+        durable = server.durable_result_path(task_id)
+        control_root = runner_watchdog_control_root(durable, task_id)
+        control_root.mkdir()
+        _write_watchdog_status(
+            control_root,
+            task_id,
+            state="cancelled",
+            error_code="cancelled",
+        )
+        request_runner_task_cancel(durable, task_id)
+        real_names = wire._PinnedPrivateDirectory.names
+
+        def status_first_names(
+            pinned: wire._PinnedPrivateDirectory,
+            *,
+            maximum: int | None = None,
+        ) -> tuple[str, ...]:
+            names = real_names(pinned, maximum=maximum)
+            return tuple(sorted(names, key=lambda name: name != "status.json"))
+
+        monkeypatch.setattr(wire._PinnedPrivateDirectory, "names", status_first_names)
+
+        status = server._read_watchdog_status(task_id)
+
+    assert status is not None
+    assert status["state"] == "cancelled"
+    assert tuple(entry.name for entry in control_root.iterdir()) == ("status.json",)
+
+
+def test_concurrent_terminal_reconciliation_is_idempotent(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "transport.sqlite3"
+    outcomes: list[Mapping[str, Any]] = []
+    errors: list[BaseException] = []
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        RecordingRunner(),
+        state_path,
+        secret_provider=secret_provider,
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        client.execute(manifest, profile)
+        task_id, _request_hash = client.execution_identity(manifest, profile)
+        durable = server.durable_result_path(task_id)
+        durable.unlink()
+        control_root = runner_watchdog_control_root(durable, task_id)
+        control_root.mkdir()
+        _write_watchdog_status(
+            control_root,
+            task_id,
+            state="cancelled",
+            error_code="cancelled",
+        )
+        with sqlite3.connect(state_path) as database:
+            database.execute(
+                """
+                UPDATE transport_tasks
+                SET state = 'indeterminate', result_json = NULL,
+                    executor_instance = 'crashed-host', effect_dispatched = 1,
+                    error_code = 'outcome_indeterminate'
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            )
+
+        real_read = server._read_watchdog_status
+        readers = threading.Barrier(2)
+        calls_lock = threading.Lock()
+        calls = 0
+
+        def synchronized_read(current_task_id: str) -> dict[str, Any] | None:
+            nonlocal calls
+            status = real_read(current_task_id)
+            with calls_lock:
+                current_call = calls
+                calls += 1
+            if current_call < 2:
+                readers.wait(timeout=5)
+            return status
+
+        def reconcile() -> None:
+            try:
+                outcomes.append(server._reconcile_execute_task(task_id))
+            except BaseException as exc:
+                errors.append(exc)
+
+        monkeypatch.setattr(server, "_read_watchdog_status", synchronized_read)
+        workers = [threading.Thread(target=reconcile, daemon=True) for _index in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+        assert all(not worker.is_alive() for worker in workers)
+        monkeypatch.setattr(server, "_read_watchdog_status", real_read)
+
+        repeated = server._reconcile_execute_task(task_id)
+        with sqlite3.connect(state_path) as database:
+            stored = database.execute(
+                "SELECT state, error_code FROM transport_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+
+    assert errors == []
+    assert [outcome["state"] for outcome in outcomes] == ["cancelled", "cancelled"]
+    assert repeated["state"] == "cancelled"
+    assert stored == ("cancelled", "task_cancelled")
+    assert not control_root.exists()
+
+
+def test_concurrent_indeterminate_reconciliation_is_idempotent(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "transport.sqlite3"
+    outcomes: list[Mapping[str, Any]] = []
+    errors: list[BaseException] = []
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        RecordingRunner(),
+        state_path,
+        secret_provider=secret_provider,
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        client.execute(manifest, profile)
+        task_id, _request_hash = client.execution_identity(manifest, profile)
+        server.durable_result_path(task_id).unlink()
+        with sqlite3.connect(state_path) as database:
+            database.execute(
+                """
+                UPDATE transport_tasks
+                SET state = 'indeterminate', result_json = NULL,
+                    executor_instance = 'crashed-host', effect_dispatched = 1,
+                    error_code = 'outcome_indeterminate'
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            )
+
+        readers = threading.Barrier(2)
+        calls_lock = threading.Lock()
+        calls = 0
+
+        def synchronized_discovery(
+            _manifest: Mapping[str, Any],
+            _profile: Mapping[str, Any],
+        ) -> list[str]:
+            nonlocal calls
+            with calls_lock:
+                current_call = calls
+                calls += 1
+            if current_call < 2:
+                readers.wait(timeout=5)
+            return []
+
+        def reconcile() -> None:
+            try:
+                outcomes.append(server._reconcile_execute_task(task_id))
+            except BaseException as exc:
+                errors.append(exc)
+
+        monkeypatch.setattr(server, "_discover_recovery_receipts", synchronized_discovery)
+        workers = [threading.Thread(target=reconcile, daemon=True) for _index in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=10)
+        assert all(not worker.is_alive() for worker in workers)
+
+        repeated = server._reconcile_execute_task(task_id)
+        with sqlite3.connect(state_path) as database:
+            stored = database.execute(
+                "SELECT state, error_code FROM transport_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+
+    assert errors == []
+    assert [outcome["state"] for outcome in outcomes] == [
+        "indeterminate",
+        "indeterminate",
+    ]
+    assert repeated["state"] == "indeterminate"
+    assert stored == ("indeterminate", "outcome_indeterminate")
+
+
+@pytest.mark.parametrize(
+    ("watchdog_state", "watchdog_error"),
+    [("cancelled", "cancelled"), ("failed", "timed_out")],
+)
+def test_terminal_watchdog_cannot_erase_committed_recovery_receipts(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    watchdog_state: str,
+    watchdog_error: str,
+) -> None:
+    state_path = tmp_path / "transport.sqlite3"
+    receipt_id = "a" * 64
+    encoded_receipts = canonical_json_bytes({"receipt_ids": [receipt_id]})
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        RecordingRunner(),
+        state_path,
+        secret_provider=secret_provider,
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        client.execute(manifest, profile)
+        task_id, request_hash = client.execution_identity(manifest, profile)
+        durable = server.durable_result_path(task_id)
+        durable.unlink()
+        control_root = runner_watchdog_control_root(durable, task_id)
+        control_root.mkdir()
+        _write_watchdog_status(
+            control_root,
+            task_id,
+            state=watchdog_state,
+            error_code=watchdog_error,
+        )
+        with sqlite3.connect(state_path) as database:
+            database.execute(
+                """
+                UPDATE transport_tasks
+                SET state = 'recovery_required', result_json = NULL,
+                    recovery_receipts_json = ?, cleanup_required = 1,
+                    executor_instance = 'crashed-host', effect_dispatched = 1,
+                    error_code = 'recovery_required'
+                WHERE task_id = ?
+                """,
+                (encoded_receipts, task_id),
+            )
+        monkeypatch.setattr(server, "_discover_recovery_receipts", lambda *_args: [])
+
+        reconciled = server._reconcile_execute_task(task_id)
+        recovered = client.recover(task_id, request_hash)
+        with sqlite3.connect(state_path) as database:
+            stored = database.execute(
+                """
+                SELECT state, recovery_receipts_json, cleanup_required, error_code
+                FROM transport_tasks WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+
+    assert reconciled == {
+        "state": "recovery_required",
+        "result": None,
+        "receipt_ids": [receipt_id],
+    }
+    assert recovered["state"] == "recovery_required"
+    assert recovered["receipt_ids"] == [receipt_id]
+    assert recovered["cleanup_required"] is True
+    assert stored == ("recovery_required", encoded_receipts, 1, "recovery_required")
+
+
+def test_exact_result_cannot_erase_unreported_recovery_receipts(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "transport.sqlite3"
+    receipt_id = "a" * 64
+    encoded_receipts = canonical_json_bytes({"receipt_ids": [receipt_id]})
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        RecordingRunner(),
+        state_path,
+        secret_provider=secret_provider,
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        client.execute(manifest, profile)
+        task_id, request_hash = client.execution_identity(manifest, profile)
+        with sqlite3.connect(state_path) as database:
+            database.execute(
+                """
+                UPDATE transport_tasks
+                SET state = 'recovery_required', result_json = NULL,
+                    recovery_receipts_json = ?, cleanup_required = 1,
+                    executor_instance = 'crashed-host', effect_dispatched = 1,
+                    error_code = 'recovery_required'
+                WHERE task_id = ?
+                """,
+                (encoded_receipts, task_id),
+            )
+        monkeypatch.setattr(server, "_discover_recovery_receipts", lambda *_args: [])
+
+        recovered = client.recover(task_id, request_hash)
+
+    assert recovered["state"] == "recovery_required"
+    assert recovered["result"] is None
+    assert recovered["receipt_ids"] == [receipt_id]
+    assert recovered["cleanup_required"] is True
+
+
+def test_unhashable_receipt_values_fail_closed_as_transport_errors(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> None:
+    malformed = canonical_json_bytes({"receipt_ids": [{}]})
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        RecordingRunner(),
+        tmp_path / "transport.sqlite3",
+        secret_provider=secret_provider,
+    ) as server:
+        with pytest.raises(RunnerTransportError, match="recovery receipt state is invalid"):
+            server._stored_recovery_receipt_ids(malformed)
+        invalid_result: dict[str, Any] = _result(manifest, profile)
+        invalid_result["receipt_ids"] = [{}]
+        with pytest.raises(RunnerTransportError, match="receipt identity is invalid"):
+            server._validated_execute_result(invalid_result, manifest, profile)
+
+
+def test_late_recovery_receipt_overrides_a_committed_terminal_state(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "transport.sqlite3"
+    receipt_id = "a" * 64
+    discoveries = iter(([], [receipt_id], [receipt_id]))
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        RecordingRunner(),
+        state_path,
+        secret_provider=secret_provider,
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        client.execute(manifest, profile)
+        task_id, request_hash = client.execution_identity(manifest, profile)
+        durable = server.durable_result_path(task_id)
+        durable.unlink()
+        control_root = runner_watchdog_control_root(durable, task_id)
+        control_root.mkdir()
+        _write_watchdog_status(
+            control_root,
+            task_id,
+            state="cancelled",
+            error_code="cancelled",
+        )
+        with sqlite3.connect(state_path) as database:
+            database.execute(
+                """
+                UPDATE transport_tasks
+                SET state = 'indeterminate', result_json = NULL,
+                    executor_instance = 'crashed-host', effect_dispatched = 1,
+                    error_code = 'outcome_indeterminate'
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            )
+        monkeypatch.setattr(
+            server,
+            "_discover_recovery_receipts",
+            lambda *_args: next(discoveries),
+        )
+
+        first = server._reconcile_execute_task(task_id)
+        recovered = client.recover(task_id, request_hash)
+
+    assert first["state"] == "cancelled"
+    assert recovered["state"] == "recovery_required"
+    assert recovered["receipt_ids"] == [receipt_id]
+    assert recovered["cleanup_required"] is True
+
+
+def test_terminal_reconciliation_removes_an_exact_late_cancel_marker(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> None:
+    state_path = tmp_path / "transport.sqlite3"
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        RecordingRunner(),
+        state_path,
+        secret_provider=secret_provider,
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        client.execute(manifest, profile)
+        task_id, _request_hash = client.execution_identity(manifest, profile)
+        durable = server.durable_result_path(task_id)
+        durable.unlink()
+        control_root = runner_watchdog_control_root(durable, task_id)
+        control_root.mkdir()
+        _write_watchdog_status(
+            control_root,
+            task_id,
+            state="cancelled",
+            error_code="cancelled",
+        )
+        request_runner_task_cancel(durable, task_id)
+        with sqlite3.connect(state_path) as database:
+            database.execute(
+                """
+                UPDATE transport_tasks
+                SET state = 'cancelled', result_json = NULL,
+                    cancellation_requested = 1, effect_dispatched = 1,
+                    error_code = 'task_cancelled'
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            )
+
+        reconciled = server._reconcile_execute_task(task_id)
+
+    assert reconciled["state"] == "cancelled"
+    assert not control_root.exists()
+
+
+def test_recovery_update_advances_the_cas_token_when_the_clock_does_not(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "transport.sqlite3"
+    first_receipt = "a" * 64
+    second_receipt = "b" * 64
+    with AuthenticatedRunnerServer(
+        enrollment_root,
+        RecordingRunner(),
+        state_path,
+        secret_provider=secret_provider,
+    ) as server:
+        client = _client(enrollment_root, server, secret_provider)
+        result = client.execute(manifest, profile)
+        task_id, _request_hash = client.execution_identity(manifest, profile)
+        with sqlite3.connect(state_path) as database:
+            completed = database.execute(
+                "SELECT state, updated_at FROM transport_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        assert completed is not None
+        frozen_clock = int(completed[1])
+        monkeypatch.setattr(wire.time, "time_ns", lambda: frozen_clock)
+
+        first = server._set_execute_recovery_state(
+            task_id,
+            receipt_ids=[first_receipt],
+            expected_state=str(completed[0]),
+            expected_updated_at=frozen_clock,
+        )
+        with sqlite3.connect(state_path) as database:
+            stale = database.execute(
+                "SELECT state, updated_at FROM transport_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        assert stale is not None
+        second = server._set_execute_recovery_state(
+            task_id,
+            receipt_ids=[second_receipt],
+            expected_state=str(stale[0]),
+            expected_updated_at=int(stale[1]),
+        )
+        stale_completion = dict(result)
+        stale_completion["receipt_ids"] = [first_receipt, second_receipt]
+
+        completion_applied = server._set_reconciled_completion(
+            task_id,
+            stale_completion,
+            expected_state=str(stale[0]),
+            expected_updated_at=int(stale[1]),
+        )
+        with sqlite3.connect(state_path) as database:
+            stored = database.execute(
+                """
+                SELECT state, recovery_receipts_json, cleanup_required, updated_at
+                FROM transport_tasks WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+
+    assert first == ("recovery_required", [first_receipt])
+    assert second == ("recovery_required", [first_receipt, second_receipt])
+    assert completion_applied is False
+    assert stored == (
+        "recovery_required",
+        canonical_json_bytes({"receipt_ids": [first_receipt, second_receipt]}),
+        1,
+        int(stale[1]) + 1,
+    )
 
 
 @pytest.mark.parametrize(
@@ -2344,6 +2904,7 @@ def test_bounded_ledger_reserves_authenticated_control_at_execute_capacity(
     enrollment_root: Path,
     secret_provider: InMemorySecretProvider,
     tmp_path: Path,
+    request: pytest.FixtureRequest,
     manifest: Mapping[str, Any],
     profile: Mapping[str, Any],
 ) -> None:
@@ -2358,7 +2919,27 @@ def test_bounded_ledger_reserves_authenticated_control_at_execute_capacity(
         control_reserve_rows=3,
         secret_provider=secret_provider,
     ).start()
-    client = _client(enrollment_root, server, secret_provider)
+    control_workers: list[threading.Thread] = []
+    control_timeout_seconds = 30.0
+
+    def join_control_workers() -> None:
+        deadline = time.monotonic() + control_timeout_seconds + 5
+        for worker in control_workers:
+            if worker.is_alive():
+                worker.join(timeout=max(0.0, deadline - time.monotonic()))
+
+    def cleanup_server() -> None:
+        runner.release_inventory.set()
+        join_control_workers()
+        server.shutdown()
+
+    request.addfinalizer(cleanup_server)
+    client = _client(
+        enrollment_root,
+        server,
+        secret_provider,
+        timeout_seconds=control_timeout_seconds,
+    )
     for _index in range(5):
         client.health()
     with sqlite3.connect(state_path) as database:
@@ -2411,8 +2992,7 @@ def test_bounded_ledger_reserves_authenticated_control_at_execute_capacity(
         worker.start()
     assert runner.wait_for_inventory(3)
     runner.release_inventory.set()
-    for worker in control_workers:
-        worker.join(timeout=5)
+    join_control_workers()
     assert all(not worker.is_alive() for worker in control_workers)
     assert control_errors == []
     assert len(control_results) == 3
@@ -2420,9 +3000,7 @@ def test_bounded_ledger_reserves_authenticated_control_at_execute_capacity(
     recovered = client.recover(*identities[0])
     cancellation = client.cancel(*identities[0])
     acknowledgement = client.shutdown()
-    if server._serve_thread is not None:
-        server._serve_thread.join(timeout=5)
-    server.shutdown()
+    cleanup_server()
 
     assert recovered["state"] == "completed"
     assert cancellation["state"] == "completed"
@@ -2441,6 +3019,7 @@ def test_bounded_ledger_reserves_authenticated_control_at_execute_capacity(
             control_reserve_rows=3,
             secret_provider=secret_provider,
         ).start()
+        request.addfinalizer(restarted.shutdown)
         restarted_client = _client(enrollment_root, restarted, secret_provider)
         if cycle == 0:
             enrollment = load_local_enrollment(enrollment_root, secret_provider=secret_provider)

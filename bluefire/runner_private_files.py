@@ -65,6 +65,7 @@ from .windows_owner_acl import (
 
 _LINUX_AT_EMPTY_PATH = 0x1000
 _LINUX_STATX_MNT_ID = 0x1000
+_TEMPORARY_NAME_ATTEMPTS = 4
 
 
 def _is_link_or_reparse(path: Path) -> bool:
@@ -693,15 +694,27 @@ class _PinnedPrivateDirectory:
         *,
         maximum: int,
         executable: bool = False,
+        consumable: bool = False,
     ) -> None:
         if not 0 <= len(payload) <= maximum:
             raise OSError("private payload exceeds its size limit")
         name = self._name(name)
         # Keep the Win32-facing ACL path short even when the pinned directory
         # itself is near the legacy path limit. CREATE_NEW still makes the
-        # random 48-bit temporary name collision-safe and fail closed.
-        temporary = f".t-{secrets.token_hex(6)}"
-        descriptor = self._open_new(temporary)
+        # random 48-bit temporary name collision-safe. Exhaustion is reported
+        # distinctly from a destination collision so callers cannot mistake a
+        # staging failure for a published consumable marker.
+        descriptor: int | None = None
+        temporary = ""
+        for _attempt in range(_TEMPORARY_NAME_ATTEMPTS):
+            temporary = f".t-{secrets.token_hex(6)}"
+            try:
+                descriptor = self._open_new(temporary)
+                break
+            except FileExistsError:
+                continue
+        if descriptor is None:
+            raise OSError("private temporary name collisions exhausted")
         written_ok = False
         temporary_identity: tuple[int, int] | None = None
         try:
@@ -738,14 +751,25 @@ class _PinnedPrivateDirectory:
         try:
             if temporary_identity is None:
                 raise OSError("private temporary identity is unavailable")
-            self.promote(
-                temporary,
-                name,
-                maximum=maximum,
-                expected=payload,
-                permissions_already_private=True,
-                expected_identity=temporary_identity,
-            )
+            if consumable:
+                self.promote(
+                    temporary,
+                    name,
+                    maximum=maximum,
+                    expected=payload,
+                    permissions_already_private=True,
+                    expected_identity=temporary_identity,
+                    consumable=True,
+                )
+            else:
+                self.promote(
+                    temporary,
+                    name,
+                    maximum=maximum,
+                    expected=payload,
+                    permissions_already_private=True,
+                    expected_identity=temporary_identity,
+                )
         except BaseException:
             try:
                 self.unlink(
@@ -832,6 +856,7 @@ class _PinnedPrivateDirectory:
         expected: bytes,
         permissions_already_private: bool = False,
         expected_identity: tuple[int, int] | None = None,
+        consumable: bool = False,
     ) -> None:
         source = self._name(source)
         destination = self._name(destination)
@@ -850,26 +875,30 @@ class _PinnedPrivateDirectory:
                 _windows_rename_descriptor(descriptor, self._require_descriptor(), destination)
                 # A handle with DELETE access can transiently deny ordinary
                 # readers even after rename. Close it immediately after the
-                # handle-relative publication, then re-open and bind the final
-                # validation to the same file identity.
+                # handle-relative publication. Consumable markers may be
+                # removed by their trusted reader at that point, so the
+                # validated non-replacing rename is their publication commit.
                 os.close(descriptor)
                 descriptor = -1
-                final_descriptor = self._open_existing(destination)
-                try:
-                    final_details = os.fstat(final_descriptor)
-                    if (final_details.st_dev, final_details.st_ino) != (
-                        source_details.st_dev,
-                        source_details.st_ino,
-                    ):
-                        raise OSError("private promotion target changed")
-                    self._validate_file(
-                        destination,
-                        final_descriptor,
-                        maximum=maximum,
-                        apply_permissions=False,
-                    )
-                finally:
-                    os.close(final_descriptor)
+                if consumable:
+                    self._validate_directory()
+                else:
+                    final_descriptor = self._open_existing(destination)
+                    try:
+                        final_details = os.fstat(final_descriptor)
+                        if (final_details.st_dev, final_details.st_ino) != (
+                            source_details.st_dev,
+                            source_details.st_ino,
+                        ):
+                            raise OSError("private promotion target changed")
+                        self._validate_file(
+                            destination,
+                            final_descriptor,
+                            maximum=maximum,
+                            apply_permissions=False,
+                        )
+                    finally:
+                        os.close(final_descriptor)
             else:
                 os.link(
                     source,
@@ -879,12 +908,13 @@ class _PinnedPrivateDirectory:
                     follow_symlinks=False,
                 )
                 os.unlink(source, dir_fd=self._require_descriptor())
-                self._validate_file(
-                    destination,
-                    descriptor,
-                    maximum=maximum,
-                    apply_permissions=False,
-                )
+                if not consumable:
+                    self._validate_file(
+                        destination,
+                        descriptor,
+                        maximum=maximum,
+                        apply_permissions=False,
+                    )
             self.sync()
         finally:
             if descriptor >= 0:

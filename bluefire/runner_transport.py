@@ -1260,11 +1260,11 @@ class AuthenticatedRunnerServer:
         if (
             not isinstance(receipts, list)
             or len(receipts) > _MAX_RECOVERY_RECEIPTS
-            or len(receipts) != len(set(receipts))
             or any(
                 not isinstance(item, str) or _HEX_DIGEST.fullmatch(item) is None
                 for item in receipts
             )
+            or len(receipts) != len(set(receipts))
         ):
             raise RunnerTransportError("runner result receipt identity is invalid")
         evidence = checked.get("evidence")
@@ -2108,14 +2108,43 @@ class AuthenticatedRunnerServer:
                     SELECT task_id, operation, profile_id, request_hash, runner_id,
                            state, execute_payload_json, result_json,
                            recovery_receipts_json, cleanup_required, effect_dispatched,
-                           error_code, executor_instance, cancellation_requested
+                           error_code, executor_instance, cancellation_requested, updated_at
                     FROM transport_tasks WHERE task_id = ?
                     """,
                     (task_id,),
                 ).fetchone(),
             )
 
-    def _set_reconciled_completion(self, task_id: str, result: Mapping[str, Any]) -> None:
+    @staticmethod
+    def _stored_recovery_receipt_ids(raw: Any) -> list[str]:
+        if not isinstance(raw, bytes):
+            raise RunnerTransportError("recovery receipt state is invalid")
+        try:
+            stored = _decode_json_object(raw)
+        except RunnerAuthenticationError:
+            raise RunnerTransportError("recovery receipt state is invalid") from None
+        receipt_ids = stored.get("receipt_ids")
+        if (
+            set(stored) != {"receipt_ids"}
+            or not isinstance(receipt_ids, list)
+            or not 1 <= len(receipt_ids) <= _MAX_RECOVERY_RECEIPTS
+            or any(
+                not isinstance(item, str) or _HEX_DIGEST.fullmatch(item) is None
+                for item in receipt_ids
+            )
+            or len(receipt_ids) != len(set(receipt_ids))
+        ):
+            raise RunnerTransportError("recovery receipt state is invalid")
+        return list(receipt_ids)
+
+    def _set_reconciled_completion(
+        self,
+        task_id: str,
+        result: Mapping[str, Any],
+        *,
+        expected_state: str,
+        expected_updated_at: int,
+    ) -> bool:
         encoded = canonical_json_bytes({"result": dict(result)})
         if len(encoded) > self.max_frame_bytes:
             raise RunnerTransportError("runner result exceeds the transport limit")
@@ -2125,43 +2154,131 @@ class AuthenticatedRunnerServer:
                 """
                 UPDATE transport_tasks
                 SET state = 'completed', result_json = ?, recovery_receipts_json = NULL,
-                    cleanup_required = 0, error_code = NULL, updated_at = ?
+                    cleanup_required = 0, error_code = NULL,
+                    updated_at = MAX(updated_at + 1, ?)
                 WHERE task_id = ? AND operation = 'execute' AND effect_dispatched = 1
+                  AND state = ? AND updated_at = ?
                 """,
-                (encoded, time.time_ns(), task_id),
+                (
+                    encoded,
+                    time.time_ns(),
+                    task_id,
+                    expected_state,
+                    expected_updated_at,
+                ),
             )
             if cursor.rowcount != 1:
-                connection.rollback()
-                raise sqlite3.DatabaseError("execute task changed during reconciliation")
+                connection.commit()
+                return False
             connection.commit()
+        return True
 
-    def _set_execute_recovery_state(self, task_id: str, *, receipt_ids: list[str]) -> str:
-        state = "recovery_required" if receipt_ids else "indeterminate"
-        error_code = "recovery_required" if receipt_ids else "outcome_indeterminate"
-        encoded = canonical_json_bytes({"receipt_ids": receipt_ids}) if receipt_ids else None
+    def _set_execute_recovery_state(
+        self,
+        task_id: str,
+        *,
+        receipt_ids: list[str],
+        expected_state: str | None = None,
+        expected_updated_at: int | None = None,
+    ) -> tuple[str, list[str]] | None:
+        if (expected_state is None) != (expected_updated_at is None):
+            raise sqlite3.DatabaseError("incomplete execute reconciliation identity")
+        if (
+            len(receipt_ids) > _MAX_RECOVERY_RECEIPTS
+            or any(
+                not isinstance(item, str) or _HEX_DIGEST.fullmatch(item) is None
+                for item in receipt_ids
+            )
+            or len(receipt_ids) != len(set(receipt_ids))
+        ):
+            raise RunnerTransportError("recovery receipt identity is invalid")
         with self._database(write=True) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                """
+                SELECT state, recovery_receipts_json, cleanup_required, error_code, updated_at
+                FROM transport_tasks
+                WHERE task_id = ? AND operation = 'execute' AND effect_dispatched = 1
+                """,
+                (task_id,),
+            ).fetchone()
+            if current is None:
+                connection.rollback()
+                raise sqlite3.DatabaseError("execute task changed during reconciliation")
+            current_state = str(current["state"])
+            current_updated_at = int(current["updated_at"])
+            if expected_state is not None and (
+                current_state != expected_state or current_updated_at != expected_updated_at
+            ):
+                connection.commit()
+                return None
+            stored_receipts: list[str] = []
+            if current_state == "recovery_required":
+                stored_receipts = self._stored_recovery_receipt_ids(
+                    current["recovery_receipts_json"]
+                )
+            if receipt_ids:
+                if current_state == "completed" and expected_state != "completed":
+                    connection.commit()
+                    return current_state, []
+                committed_receipts = sorted(set(stored_receipts).union(receipt_ids))
+                if len(committed_receipts) > _MAX_RECOVERY_RECEIPTS:
+                    connection.rollback()
+                    raise RunnerTransportError("recovery receipt identity is invalid")
+                state = "recovery_required"
+                encoded = canonical_json_bytes({"receipt_ids": committed_receipts})
+                cleanup_required = 1
+                error_code = "recovery_required"
+            elif current_state == "recovery_required":
+                connection.commit()
+                return current_state, stored_receipts
+            elif current_state in {"completed", "failed", "cancelled", "timed_out"} and not (
+                current_state == "completed" and expected_state == "completed"
+            ):
+                connection.commit()
+                return current_state, []
+            elif current_state in {"running", "indeterminate", "completed"}:
+                state = "indeterminate"
+                committed_receipts = []
+                encoded = None
+                cleanup_required = 0
+                error_code = "outcome_indeterminate"
+            else:
+                connection.rollback()
+                raise sqlite3.DatabaseError("execute task changed during reconciliation")
+            if (
+                current_state == state
+                and current["recovery_receipts_json"] == encoded
+                and int(current["cleanup_required"]) == cleanup_required
+                and current["error_code"] == error_code
+            ):
+                connection.commit()
+                return state, committed_receipts
             cursor = connection.execute(
                 """
                 UPDATE transport_tasks
                 SET state = ?, result_json = NULL, recovery_receipts_json = ?,
-                    cleanup_required = ?, error_code = ?, updated_at = ?
+                    cleanup_required = ?, error_code = ?,
+                    updated_at = MAX(updated_at + 1, ?)
                 WHERE task_id = ? AND operation = 'execute' AND effect_dispatched = 1
+                  AND state = ? AND updated_at = ?
                 """,
                 (
                     state,
                     encoded,
-                    int(bool(receipt_ids)),
+                    cleanup_required,
                     error_code,
                     time.time_ns(),
                     task_id,
+                    current_state,
+                    current_updated_at,
                 ),
             )
             if cursor.rowcount != 1:
                 connection.rollback()
                 raise sqlite3.DatabaseError("execute task changed during reconciliation")
             connection.commit()
-        return state
+        return state, committed_receipts
 
     def _cleanup_reconciled_watchdog(self, task_id: str) -> None:
         destination = self._durable_result_path(task_id)
@@ -2179,77 +2296,229 @@ class AuthenticatedRunnerServer:
     def _read_watchdog_status(self, task_id: str) -> dict[str, Any] | None:
         destination = self._durable_result_path(task_id)
         control_root = runner_watchdog_control_root(destination, task_id)
+        validation_error: RunnerTransportError | None = None
+        status: dict[str, Any] | None = None
         try:
             with _PinnedPrivateDirectory(control_root) as pinned:
-                entries = pinned.names()
-                if entries != ("status.json",):
+                entries = frozenset(pinned.names(maximum=2))
+                if entries not in {
+                    frozenset({"status.json"}),
+                    frozenset({"cancel", "status.json"}),
+                }:
                     return None
+                late_cancel: tuple[bytes, tuple[int, int]] | None = None
+                if "cancel" in entries:
+                    cancel_payload, cancel_identity = pinned.read_with_identity(
+                        "cancel",
+                        maximum=32,
+                    )
+                    if cancel_payload != b"cancel\n":
+                        raise OSError("invalid late cancellation marker")
+                    late_cancel = cancel_payload, cancel_identity
                 payload = pinned.read("status.json", maximum=4096)
-            status = _decode_durable_json_object(payload)
+                try:
+                    status = validate_runner_watchdog_terminal_status(
+                        _decode_durable_json_object(payload),
+                        task_id=task_id,
+                    )
+                except RunnerTransportError as exc:
+                    validation_error = exc
+                if validation_error is None and late_cancel is not None:
+                    cancel_payload, cancel_identity = late_cancel
+                    try:
+                        pinned.unlink(
+                            "cancel",
+                            maximum=32,
+                            expected=cancel_payload,
+                            expected_identity=cancel_identity,
+                        )
+                    except FileNotFoundError:
+                        pass
         except FileNotFoundError:
             return None
         except (OSError, RunnerTransportError):
             raise RunnerTransportError("runner watchdog status is unavailable or unsafe") from None
-        return validate_runner_watchdog_terminal_status(status, task_id=task_id)
+        if validation_error is not None:
+            raise validation_error
+        if status is None:
+            raise RunnerTransportError("runner watchdog status is invalid")
+        return status
 
-    def _set_confirmed_execute_terminal(self, task_id: str, *, state: str, error_code: str) -> None:
+    def _set_confirmed_execute_terminal(
+        self,
+        task_id: str,
+        *,
+        state: str,
+        error_code: str,
+        expected_state: str | None = None,
+        expected_updated_at: int | None = None,
+    ) -> str | None:
         if state not in {"cancelled", "timed_out"}:
             raise sqlite3.DatabaseError("invalid confirmed execute terminal state")
+        if (expected_state is None) != (expected_updated_at is None):
+            raise sqlite3.DatabaseError("incomplete execute reconciliation identity")
         with self._database(write=True) as connection:
             connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                """
+                SELECT state, error_code, updated_at FROM transport_tasks
+                WHERE task_id = ? AND operation = 'execute' AND effect_dispatched = 1
+                """,
+                (task_id,),
+            ).fetchone()
+            if current is None:
+                connection.rollback()
+                raise sqlite3.DatabaseError("execute terminal state changed")
+            current_state = str(current["state"])
+            current_updated_at = int(current["updated_at"])
+            if expected_state is not None and (
+                current_state != expected_state or current_updated_at != expected_updated_at
+            ):
+                connection.commit()
+                return None
+            if current_state in {
+                "completed",
+                "failed",
+                "cancelled",
+                "timed_out",
+                "recovery_required",
+            }:
+                if current_state == state and current["error_code"] != error_code:
+                    connection.rollback()
+                    raise sqlite3.DatabaseError("execute terminal state changed")
+                connection.commit()
+                return current_state
+            if current_state not in {"running", "indeterminate"}:
+                connection.rollback()
+                raise sqlite3.DatabaseError("execute terminal state changed")
             cursor = connection.execute(
                 """
                 UPDATE transport_tasks
                 SET state = ?, result_json = NULL, recovery_receipts_json = NULL,
                     cleanup_required = 0, cancellation_requested = CASE
                         WHEN ? = 'cancelled' THEN 1 ELSE cancellation_requested END,
-                    error_code = ?, updated_at = ?
+                    error_code = ?, updated_at = MAX(updated_at + 1, ?)
                 WHERE task_id = ? AND operation = 'execute' AND effect_dispatched = 1
-                  AND state IN ('running', 'indeterminate', 'recovery_required')
+                  AND state = ? AND updated_at = ?
                 """,
-                (state, state, error_code, time.time_ns(), task_id),
+                (
+                    state,
+                    state,
+                    error_code,
+                    time.time_ns(),
+                    task_id,
+                    current_state,
+                    current_updated_at,
+                ),
             )
             if cursor.rowcount != 1:
                 connection.rollback()
                 raise sqlite3.DatabaseError("execute terminal state changed")
             connection.commit()
+        return state
 
     def _reconcile_execute_task(self, task_id: str) -> dict[str, Any]:
+        for _attempt in range(8):
+            outcome = self._reconcile_execute_task_attempt(task_id)
+            if outcome is not None:
+                return outcome
+        raise sqlite3.DatabaseError("execute task changed during reconciliation")
+
+    def _reconcile_execute_task_attempt(self, task_id: str) -> dict[str, Any] | None:
         row = self._execute_row(task_id)
         if row is None or row["operation"] != "execute":
             return {"state": "not_found", "result": None, "receipt_ids": []}
+        existing_state = str(row["state"])
+        observed_updated_at = int(row["updated_at"])
+        existing_terminal = existing_state in {"failed", "cancelled", "timed_out"}
         if not bool(row["effect_dispatched"]):
             with self._database(write=True) as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 if bool(row["cancellation_requested"]):
                     state = "cancelled"
-                    connection.execute(
+                    cursor = connection.execute(
                         """
                         UPDATE transport_tasks
-                        SET state = 'cancelled', error_code = 'task_cancelled', updated_at = ?
+                        SET state = 'cancelled', error_code = 'task_cancelled',
+                            updated_at = MAX(updated_at + 1, ?)
                         WHERE task_id = ? AND operation = 'execute' AND effect_dispatched = 0
-                          AND state = 'running'
+                          AND state = 'running' AND updated_at = ?
+                          AND cancellation_requested = 1
                         """,
-                        (time.time_ns(), task_id),
+                        (time.time_ns(), task_id, observed_updated_at),
                     )
                 else:
                     state = "failed"
-                    connection.execute(
+                    cursor = connection.execute(
                         """
                         UPDATE transport_tasks
-                        SET state = 'failed', error_code = 'runner_failure', updated_at = ?
+                        SET state = 'failed', error_code = 'runner_failure',
+                            updated_at = MAX(updated_at + 1, ?)
                         WHERE task_id = ? AND operation = 'execute' AND effect_dispatched = 0
-                          AND state = 'running'
+                          AND state = 'running' AND updated_at = ?
+                          AND cancellation_requested = 0
                         """,
-                        (time.time_ns(), task_id),
+                        (time.time_ns(), task_id, observed_updated_at),
                     )
+                if cursor.rowcount != 1:
+                    connection.commit()
+                    return None
                 connection.commit()
             return {"state": state, "result": None, "receipt_ids": []}
         try:
             manifest, profile = self._stored_execute_payload(dict(row))
         except (RunnerTransportError, RunnerAuthenticationError):
-            self._set_execute_recovery_state(task_id, receipt_ids=[])
-            return {"state": "indeterminate", "result": None, "receipt_ids": []}
+            if existing_terminal:
+                return {"state": existing_state, "result": None, "receipt_ids": []}
+            committed = self._set_execute_recovery_state(
+                task_id,
+                receipt_ids=[],
+                expected_state=existing_state,
+                expected_updated_at=observed_updated_at,
+            )
+            if committed is None:
+                return None
+            state, receipt_ids = committed
+            return {"state": state, "result": None, "receipt_ids": receipt_ids}
+        if existing_terminal:
+            receipts = self._discover_recovery_receipts(manifest, profile)
+            if receipts:
+                committed = self._set_execute_recovery_state(
+                    task_id,
+                    receipt_ids=receipts,
+                    expected_state=existing_state,
+                    expected_updated_at=observed_updated_at,
+                )
+                if committed is None:
+                    return None
+                state, committed_receipts = committed
+                return {
+                    "state": state,
+                    "result": None,
+                    "receipt_ids": committed_receipts,
+                }
+            try:
+                terminal_status = self._read_watchdog_status(task_id)
+            except RunnerTransportError:
+                terminal_status = None
+            status_matches = terminal_status is not None and (
+                (
+                    existing_state == "cancelled"
+                    and terminal_status.get("state") == "cancelled"
+                    and terminal_status.get("error_code") == "cancelled"
+                )
+                or (
+                    existing_state == "timed_out"
+                    and terminal_status.get("state") == "failed"
+                    and terminal_status.get("error_code") == "timed_out"
+                )
+            )
+            if status_matches:
+                try:
+                    self._cleanup_reconciled_watchdog(task_id)
+                except RunnerTransportError:
+                    pass
+            return {"state": existing_state, "result": None, "receipt_ids": []}
         invalid_watchdog_status = False
         try:
             watchdog_status = self._read_watchdog_status(task_id)
@@ -2267,8 +2536,41 @@ class AuthenticatedRunnerServer:
                     "result_digest"
                 ) != file_hash(destination):
                     result = None
+        receipts = self._discover_recovery_receipts(manifest, profile)
+        stored_receipts = (
+            self._stored_recovery_receipt_ids(row["recovery_receipts_json"])
+            if existing_state == "recovery_required"
+            else []
+        )
+        known_receipts = sorted(set(stored_receipts).union(receipts))
+        if len(known_receipts) > _MAX_RECOVERY_RECEIPTS:
+            raise RunnerTransportError("recovery receipt identity is invalid")
         if result is not None:
-            self._set_reconciled_completion(task_id, result)
+            result_receipts = result.get("receipt_ids")
+            if not isinstance(result_receipts, list):
+                raise RunnerTransportError("runner result receipt identity is invalid")
+            if not set(known_receipts).issubset(result_receipts):
+                committed = self._set_execute_recovery_state(
+                    task_id,
+                    receipt_ids=known_receipts,
+                    expected_state=existing_state,
+                    expected_updated_at=observed_updated_at,
+                )
+                if committed is None:
+                    return None
+                state, committed_receipts = committed
+                return {
+                    "state": state,
+                    "result": None,
+                    "receipt_ids": committed_receipts,
+                }
+            if not self._set_reconciled_completion(
+                task_id,
+                result,
+                expected_state=existing_state,
+                expected_updated_at=observed_updated_at,
+            ):
+                return None
             try:
                 self._cleanup_reconciled_watchdog(task_id)
             except RunnerTransportError:
@@ -2277,7 +2579,17 @@ class AuthenticatedRunnerServer:
                 # cleanup; a later host lifecycle pass may retry removal.
                 pass
             return {"state": "completed", "result": result, "receipt_ids": []}
-        receipts = self._discover_recovery_receipts(manifest, profile)
+        if existing_state == "recovery_required":
+            committed = self._set_execute_recovery_state(
+                task_id,
+                receipt_ids=receipts,
+                expected_state=existing_state,
+                expected_updated_at=observed_updated_at,
+            )
+            if committed is None:
+                return None
+            state, committed_receipts = committed
+            return {"state": state, "result": None, "receipt_ids": committed_receipts}
         terminal_state: str | None = None
         terminal_error: str | None = None
         if watchdog_status is not None:
@@ -2292,21 +2604,35 @@ class AuthenticatedRunnerServer:
             ):
                 terminal_state, terminal_error = "timed_out", "task_timed_out"
         if terminal_state is not None and terminal_error is not None and not receipts:
-            self._set_confirmed_execute_terminal(
-                task_id, state=terminal_state, error_code=terminal_error
+            committed_state = self._set_confirmed_execute_terminal(
+                task_id,
+                state=terminal_state,
+                error_code=terminal_error,
+                expected_state=existing_state,
+                expected_updated_at=observed_updated_at,
             )
+            if committed_state is None or committed_state != terminal_state:
+                return None
             try:
                 self._cleanup_reconciled_watchdog(task_id)
             except RunnerTransportError:
                 pass
             return {"state": terminal_state, "result": None, "receipt_ids": []}
-        state = self._set_execute_recovery_state(task_id, receipt_ids=receipts)
+        committed = self._set_execute_recovery_state(
+            task_id,
+            receipt_ids=receipts,
+            expected_state=existing_state,
+            expected_updated_at=observed_updated_at,
+        )
+        if committed is None:
+            return None
+        state, committed_receipts = committed
         if watchdog_status is not None:
             try:
                 self._cleanup_reconciled_watchdog(task_id)
             except RunnerTransportError:
                 pass
-        return {"state": state, "result": None, "receipt_ids": receipts}
+        return {"state": state, "result": None, "receipt_ids": committed_receipts}
 
     def _reconcile_interrupted_tasks(self) -> None:
         with self._database() as connection:
@@ -2325,7 +2651,8 @@ class AuthenticatedRunnerServer:
                 connection.execute(
                     """
                     UPDATE transport_tasks
-                    SET state = 'failed', error_code = 'runner_failure', updated_at = ?
+                    SET state = 'failed', error_code = 'runner_failure',
+                        updated_at = MAX(updated_at + 1, ?)
                     WHERE task_id = ? AND state = 'running'
                     """,
                     (time.time_ns(), task_id),
@@ -2370,7 +2697,8 @@ class AuthenticatedRunnerServer:
                             UPDATE transport_tasks
                             SET state = 'cancelled', result_json = NULL,
                                 recovery_receipts_json = NULL, cleanup_required = 0,
-                                error_code = 'task_cancelled', updated_at = ?
+                                error_code = 'task_cancelled',
+                                updated_at = MAX(updated_at + 1, ?)
                             WHERE task_id = ? AND state = 'running'
                               AND effect_dispatched = 0 AND cancellation_requested = 1
                             """,
@@ -2383,7 +2711,8 @@ class AuthenticatedRunnerServer:
                     cursor = connection.execute(
                         """
                         UPDATE transport_tasks
-                        SET effect_dispatched = 1, updated_at = ?
+                        SET effect_dispatched = 1,
+                            updated_at = MAX(updated_at + 1, ?)
                         WHERE task_id = ? AND operation = 'execute' AND state = 'running'
                           AND effect_dispatched = 0 AND cancellation_requested = 0
                         """,
@@ -2415,7 +2744,7 @@ class AuthenticatedRunnerServer:
                 SET state = 'cancelled', result_json = NULL,
                     recovery_receipts_json = NULL, cleanup_required = 0,
                     cancellation_requested = 1, error_code = 'task_cancelled',
-                    updated_at = ?
+                    updated_at = MAX(updated_at + 1, ?)
                 WHERE task_id = ? AND operation = 'execute' AND state = 'running'
                   AND effect_dispatched = 1
                 """,
@@ -2835,11 +3164,21 @@ class AuthenticatedRunnerServer:
                 try:
                     receipts = self._discover_recovery_receipts(manifest, profile)
                     if receipts:
-                        self._set_execute_recovery_state(task_id, receipt_ids=receipts)
+                        committed = self._set_execute_recovery_state(
+                            task_id,
+                            receipt_ids=receipts,
+                        )
+                        if committed is None:
+                            return self._post_dispatch_resolution(task_id)
+                        recovery_state, _committed_receipts = committed
+                        if recovery_state != "recovery_required":
+                            return self._post_dispatch_resolution(task_id)
                         raise _RequestRefusal("recovery_required")
-                    self._set_confirmed_execute_terminal(
+                    terminal_state = self._set_confirmed_execute_terminal(
                         task_id, state="timed_out", error_code="task_timed_out"
                     )
+                    if terminal_state != "timed_out":
+                        return self._post_dispatch_resolution(task_id)
                     try:
                         self._cleanup_reconciled_watchdog(task_id)
                     except RunnerTransportError:
@@ -2853,7 +3192,15 @@ class AuthenticatedRunnerServer:
                 try:
                     receipts = self._discover_recovery_receipts(manifest, profile)
                     if receipts:
-                        self._set_execute_recovery_state(task_id, receipt_ids=receipts)
+                        committed = self._set_execute_recovery_state(
+                            task_id,
+                            receipt_ids=receipts,
+                        )
+                        if committed is None:
+                            return self._post_dispatch_resolution(task_id)
+                        recovery_state, _committed_receipts = committed
+                        if recovery_state != "recovery_required":
+                            return self._post_dispatch_resolution(task_id)
                         raise _RequestRefusal("recovery_required")
                     self._mark_task_cancelled(task_id)
                     try:
@@ -3072,7 +3419,8 @@ class AuthenticatedRunnerServer:
                 """
                 UPDATE transport_tasks
                 SET state = 'completed', result_json = ?, recovery_receipts_json = NULL,
-                    cleanup_required = 0, error_code = NULL, updated_at = ?
+                    cleanup_required = 0, error_code = NULL,
+                    updated_at = MAX(updated_at + 1, ?)
                 WHERE task_id = ? AND state = 'running'
                 """,
                 (encoded, time.time_ns(), task_id),
@@ -3100,7 +3448,7 @@ class AuthenticatedRunnerServer:
                             THEN 'outcome_indeterminate'
                             ELSE ?
                         END,
-                        updated_at = ?
+                        updated_at = MAX(updated_at + 1, ?)
                     WHERE task_id = ? AND state = 'running'
                     """,
                     (code, time.time_ns(), task_id),
@@ -3197,8 +3545,10 @@ class AuthenticatedRunnerServer:
         ):
             raise _RequestRefusal("task_identity_mismatch")
         state = str(row["state"])
-        needs_reconciliation = state in {"indeterminate", "recovery_required"} or (
-            state == "running" and row["executor_instance"] != self.instance_id
+        needs_reconciliation = (
+            state in {"indeterminate", "recovery_required"}
+            or (state in {"failed", "cancelled", "timed_out"} and row["effect_dispatched"])
+            or (state == "running" and row["executor_instance"] != self.instance_id)
         )
         if state == "completed":
             try:
@@ -3310,7 +3660,8 @@ class AuthenticatedRunnerServer:
                         """
                         UPDATE transport_tasks
                         SET state = 'cancelled', cancellation_requested = 1,
-                            error_code = 'task_cancelled', updated_at = ?
+                            error_code = 'task_cancelled',
+                            updated_at = MAX(updated_at + 1, ?)
                         WHERE task_id = ? AND state = 'running' AND effect_dispatched = 0
                         """,
                         (time.time_ns(), original_task),
@@ -3322,7 +3673,8 @@ class AuthenticatedRunnerServer:
                 elif requested:
                     connection.execute(
                         """
-                        UPDATE transport_tasks SET cancellation_requested = 1, updated_at = ?
+                        UPDATE transport_tasks SET cancellation_requested = 1,
+                            updated_at = MAX(updated_at + 1, ?)
                         WHERE task_id = ? AND state IN ('running', 'indeterminate')
                           AND effect_dispatched = 1
                         """,

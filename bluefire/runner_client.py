@@ -1307,10 +1307,18 @@ def request_runner_task_cancel(
     try:
         with _PinnedPrivateDirectory(root) as pinned:
             try:
-                pinned.create("cancel", b"cancel\n", maximum=32)
+                pinned.create("cancel", b"cancel\n", maximum=32, consumable=True)
             except FileExistsError:
-                if pinned.read("cancel", maximum=32) != b"cancel\n":
-                    raise OSError("invalid cancellation marker") from None
+                try:
+                    existing = pinned.read("cancel", maximum=32)
+                except FileNotFoundError:
+                    # The trusted watchdog consumed the marker between the
+                    # non-replacing collision and validation. Its terminal
+                    # status remains the only proof that cancellation won.
+                    pass
+                else:
+                    if existing != b"cancel\n":
+                        raise OSError("invalid cancellation marker") from None
     except (OSError, RunnerTransportError):
         raise RunnerTransportError("runner cancellation signal is unavailable") from None
 
