@@ -326,10 +326,9 @@ class ParameterSpec:
         if self.enum and value not in self.enum:
             raise ContractError(f"{label} is not an allowed value")
         if self.type in {ParameterType.INTEGER, ParameterType.NUMBER}:
-            number = float(value)
-            if self.minimum is not None and number < self.minimum:
+            if self.minimum is not None and value < self.minimum:
                 raise ContractError(f"{label} is below the minimum")
-            if self.maximum is not None and number > self.maximum:
+            if self.maximum is not None and value > self.maximum:
                 raise ContractError(f"{label} exceeds the maximum")
 
     def signature(self) -> tuple[Any, ...]:

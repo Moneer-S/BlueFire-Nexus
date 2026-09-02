@@ -72,6 +72,22 @@ def test_parameter_contract_validates_type_range_and_unknown_values() -> None:
         spec.validate_value(4)
 
 
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [(10**309, "exceeds the maximum"), (-(10**309), "below the minimum")],
+)
+def test_integer_parameter_range_validation_handles_values_larger_than_float(
+    value: int,
+    message: str,
+) -> None:
+    spec = ParameterSpec.from_mapping(
+        {"name": "count", "type": "integer", "minimum": 1, "maximum": 100}
+    )
+
+    with pytest.raises(ContractError, match=message):
+        spec.validate_value(value, "scenario.parameters.count")
+
+
 def test_metadata_only_behavior_cannot_claim_execution_support() -> None:
     raw = _behavior_mapping()
     raw["execution_state"] = ExecutionState.METADATA_ONLY.value

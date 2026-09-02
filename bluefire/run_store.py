@@ -38,6 +38,8 @@ _ACCEPTANCE_BINDING_ENV = {
     "repository_tree": "BLUEFIRE_ACCEPTANCE_REPOSITORY_TREE",
     "release": "BLUEFIRE_ACCEPTANCE_RELEASE",
 }
+_UNSEALED_FINALIZATION_ERROR = "run finalization was not sealed by a manifest"
+_INTERRUPTED_RECOVERY_MESSAGE = "No finalized manifest was present after restart."
 
 
 class RunStoreError(ValueError):
@@ -339,6 +341,8 @@ class RunStore:
             manifest = manifest_value
 
         result = dict(self.read_json(run_id, "result.json"))
+        if manifest is None and self._result_requires_manifest(result):
+            raise RunStoreError(_UNSEALED_FINALIZATION_ERROR)
         result["scenario"] = self.read_json(run_id, "scenario.json")
         result["plan"] = self.read_json(run_id, "plan.json")
         result["policy"] = self.read_json(run_id, "policy.json")
@@ -515,9 +519,20 @@ class RunStore:
                     )
                     continue
             try:
-                items.append(self.read_json(path.name, "result.json"))
+                result = self.read_json(path.name, "result.json")
             except RunStoreError:
                 items.append({"run_id": path.name, "status": "incomplete"})
+                continue
+            if not manifest_path.exists() and self._result_requires_manifest(result):
+                items.append(
+                    {
+                        "run_id": path.name,
+                        "status": "interrupted",
+                        "recovery": _INTERRUPTED_RECOVERY_MESSAGE,
+                    }
+                )
+                continue
+            items.append(result)
         return items
 
     @staticmethod
@@ -540,7 +555,7 @@ class RunStore:
         }
 
     def recover_interrupted_runs(self) -> int:
-        """Mark created, unfinalized bundles as interrupted after a restart."""
+        """Mark every unfinalized bundle as interrupted after a restart."""
 
         recovered = 0
         for path in sorted(self.root.iterdir()):
@@ -553,19 +568,27 @@ class RunStore:
                 result = dict(self.read_json(path.name, "result.json"))
             except RunStoreError:
                 continue
-            if result.get("status") != "created":
+            if result.get("status") == "interrupted" and "finalized_at" not in result:
                 continue
+            result.pop("finalized_at", None)
             result.update(
                 {
                     "status": "interrupted",
                     "interrupted_at": utc_now(),
-                    "recovery": "No finalized manifest was present after restart.",
+                    "recovery": _INTERRUPTED_RECOVERY_MESSAGE,
                 }
             )
             self.write_json(path.name, "result.json", result)
             self.append_event(path.name, "run.interrupted", {"reason": "restart_recovery"})
             recovered += 1
         return recovered
+
+    @staticmethod
+    def _result_requires_manifest(result: Mapping[str, Any]) -> bool:
+        if "finalized_at" in result:
+            return True
+        status = result.get("status")
+        return status not in ("created", "interrupted")
 
     def _new_run_id(self) -> str:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

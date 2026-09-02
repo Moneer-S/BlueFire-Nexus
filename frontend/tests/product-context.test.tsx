@@ -2,8 +2,10 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { buildUiPreferenceDocument, parseUiPreferenceDocument, ProductProvider, readBrowserTheme, UI_PREFERENCE_SCHEMA_VERSION, useProduct } from "../src/state/ProductContext";
+import { demoScenario } from "../src/lib/demo";
 
 const settingsKey = "bluefire.local.run-config.v1";
+const scenarioKey = "bluefire.local.scenario.v1";
 
 function Harness() {
   const { scenario, setScenario, runConfig, setRunConfig, clearApproval } = useProduct();
@@ -14,6 +16,8 @@ function Harness() {
     <output aria-label="autonomy-state">{runConfig.autonomy}</output>
     <output aria-label="profile-state">{runConfig.profileId}</output>
     <output aria-label="provider-state">{runConfig.provider}</output>
+    <output aria-label="scenario-state">{scenario.title}</output>
+    <output aria-label="scenario-step-count">{scenario.steps.length}</output>
     <button onClick={() => setRunConfig({ ...runConfig, approved: true, approvedBy: "operator-a" })}>Approve</button>
     <button onClick={() => setRunConfig({ ...runConfig, profileId: "changed-profile.v1" })}>Change intent</button>
     <button onClick={() => setRunConfig({ ...runConfig, provider: "changed-provider.v1", model: "changed-model", profileId: "changed-profile.v1", scopeRefs: ["changed.scope"], safetyTier: "restricted", maxSeconds: 999, collectors: ["changed-collector"], detectionBackends: ["changed-backend"], cleanupPolicy: "manual", counterfactual: "always_preview", fixtureMode: false, actionImplementations: { step: "changed-action" } })}>Change authority fields</button>
@@ -96,5 +100,30 @@ describe("strict UI preference schema", () => {
 
   it("rejects unknown authority fields instead of applying them", () => {
     expect(() => parseUiPreferenceDocument({ schema_version: UI_PREFERENCE_SCHEMA_VERSION, theme: "dark", effect_mode: "simulate", autonomy: "off", profileId: "must-not-import", endpoint: "https://must-not-import.invalid" })).toThrow(/profileId, endpoint/);
+  });
+});
+
+describe("cached scenario hydration", () => {
+  beforeEach(() => window.localStorage.clear());
+
+  it.each([
+    ["null", null],
+    ["empty object", {}],
+    ["legacy document without steps", { ...structuredClone(demoScenario), steps: undefined }],
+  ])("replaces a structurally invalid %s with the demo scenario", (_label, cached) => {
+    window.localStorage.setItem(scenarioKey, JSON.stringify(cached));
+
+    expect(() => render(<ProductProvider><Harness /></ProductProvider>)).not.toThrow();
+    expect(screen.getByLabelText("scenario-state")).toHaveTextContent(demoScenario.title);
+    expect(screen.getByLabelText("scenario-step-count")).toHaveTextContent(String(demoScenario.steps.length));
+  });
+
+  it("hydrates a cached scenario that passes the import schema", () => {
+    const cached = { ...structuredClone(demoScenario), title: "Cached valid scenario" };
+    window.localStorage.setItem(scenarioKey, JSON.stringify(cached));
+
+    render(<ProductProvider><Harness /></ProductProvider>);
+
+    expect(screen.getByLabelText("scenario-state")).toHaveTextContent(cached.title);
   });
 });

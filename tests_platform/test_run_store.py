@@ -318,6 +318,54 @@ def test_restart_recovery_marks_only_unfinalized_created_runs(tmp_path: Path) ->
     assert store.get_run(completed.run_id)["status"] == "completed"
 
 
+@pytest.mark.parametrize("terminal_status", ["completed", "interrupted"])
+def test_manifestless_terminal_result_is_hidden_and_recovered_as_interrupted(
+    tmp_path: Path,
+    monkeypatch,
+    terminal_status: str,
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    handle = _create(store)
+    original_write_json = store.write_json
+
+    def fail_manifest_write(run_id, name, value):
+        if name == "manifest.json":
+            raise RunStoreError("simulated interruption before manifest publication")
+        return original_write_json(run_id, name, value)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "write_json", fail_manifest_write)
+        with pytest.raises(RunStoreError, match="simulated interruption"):
+            store.finalize(
+                handle.run_id,
+                result={"schema_version": "bluefire.run.v1", "status": terminal_status},
+                evidence=[{"kind": "final-evidence"}],
+                detections=[{"candidate_id": "final-detection"}],
+            )
+
+    unsealed = store.read_json(handle.run_id, "result.json")
+    assert unsealed["status"] == terminal_status
+    assert "finalized_at" in unsealed
+    assert store.read_events(handle.run_id)[-1]["event_type"] == "run.finalized"
+    with pytest.raises(RunStoreError, match="not sealed by a manifest"):
+        store.get_run(handle.run_id)
+    assert store.list_runs() == [
+        {
+            "run_id": handle.run_id,
+            "status": "interrupted",
+            "recovery": "No finalized manifest was present after restart.",
+        }
+    ]
+
+    assert store.recover_interrupted_runs() == 1
+    recovered = store.get_run(handle.run_id)
+    assert recovered["status"] == "interrupted"
+    assert "finalized_at" not in recovered
+    assert recovered["recovery"] == "No finalized manifest was present after restart."
+    assert recovered["events"][-1]["event_type"] == "run.interrupted"
+    assert store.recover_interrupted_runs() == 0
+
+
 def test_bundle_file_symlink_is_refused(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs")
     handle = _create(store)

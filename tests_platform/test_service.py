@@ -437,6 +437,35 @@ def test_default_run_store_uses_callers_working_directory(
     assert service.store.root == (tmp_path / ".bluefire-runs").resolve()
 
 
+def test_validate_reports_oversized_integer_as_invalid_scenario(tmp_path: Path) -> None:
+    service = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "runs",
+        product_db_path=tmp_path / "bluefire.sqlite3",
+    )
+    try:
+        scenario = copy.deepcopy(
+            next(
+                item
+                for item in service.scenarios()["scenarios"]
+                if item["id"] == "scenario.sandbox.research.chain.v1"
+            )
+        )
+        create_fixture = next(step for step in scenario["steps"] if step["id"] == "create_fixture")
+        create_fixture["parameters"]["record_count"] = 10**309
+
+        with pytest.raises(APIError) as refused:
+            service.validate({"scenario": scenario})
+
+        assert refused.value.status == 422
+        assert refused.value.code == "scenario_invalid"
+        assert refused.value.details == [
+            "step create_fixture.parameters.record_count exceeds the maximum"
+        ]
+    finally:
+        service.close()
+
+
 def test_service_seeds_durable_product_state_and_indexes_completed_runs(
     tmp_path: Path,
 ) -> None:

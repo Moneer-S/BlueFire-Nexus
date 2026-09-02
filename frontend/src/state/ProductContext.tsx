@@ -1,5 +1,6 @@
 import { createContext, type PropsWithChildren, useContext, useEffect, useState } from "react";
 import { demoScenario } from "../lib/demo";
+import { parseScenarioDocument } from "../lib/scenario";
 import type { RunConfiguration, RunRecord, Scenario } from "../types";
 
 const scenarioKey = "bluefire.local.scenario.v1";
@@ -107,9 +108,13 @@ function normalizeRunConfig(value: Partial<RunConfiguration>): RunConfiguration 
   };
 }
 
-function readLocal<T>(key: string, fallback: T): T {
-  try { const value = window.localStorage.getItem(key); return value ? JSON.parse(value) as T : fallback; }
-  catch { return fallback; }
+function readCachedScenario(): Scenario {
+  try {
+    const value = window.localStorage.getItem(scenarioKey);
+    return value ? parseScenarioDocument(JSON.parse(value) as unknown) : structuredClone(demoScenario);
+  } catch {
+    return structuredClone(demoScenario);
+  }
 }
 
 interface ProductState {
@@ -130,7 +135,7 @@ const ProductContext = createContext<ProductState | null>(null);
 
 export function ProductProvider({ children }: PropsWithChildren) {
   const [theme, setTheme] = useState<UiTheme>(() => readBrowserTheme());
-  const [scenario, setScenarioState] = useState<Scenario>(() => readLocal(scenarioKey, structuredClone(demoScenario)));
+  const [scenario, setScenarioState] = useState<Scenario>(() => readCachedScenario());
   const [runConfig, setRunConfigState] = useState<RunConfiguration>(() => {
     const preferences = readBrowserUiPreferences();
     return { ...normalizeRunConfig({ mode: preferences?.effect_mode, autonomy: preferences?.autonomy }), approved: false, approvedBy: "" };
