@@ -764,9 +764,9 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
         if drift == "core-independence":
             structural["checks"]["core_independence"]["provider_program_only"] = False
         elif drift == "typed-parameter-schema":
-            structural["checks"]["safe_contract"]["versions"][0]["typed_parameters"][0]["name"] = (
-                "command"
-            )
+            structural["checks"]["safe_contract"]["versions"][0]["typed_parameters"][0][
+                "name"
+            ] = "command"
         elif drift == "safe-version-fields":
             structural["checks"]["safe_contract"]["versions"][0]["unexpected"] = True
         elif drift == "source-audit-inventory":
