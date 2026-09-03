@@ -55,9 +55,9 @@ _CONTRACT_TESTS = (
     "tests_platform/test_detection_lab_service.py",
     "tests_platform/test_detection_gate.py",
 )
-_EXPECTED_CONTRACT_TEST_COUNT = 51
+_EXPECTED_CONTRACT_TEST_COUNT = 52
 _EXPECTED_CONTRACT_TESTS_SHA256 = (
-    "sha256:2ce1b674aef088a8fa003696f1ca0c5d5651ac43cd7d78dfb2e34a153d0a2e49"
+    "sha256:920ab13d2cc69b7cea1a461e49c1ffbe6982d47b28b3df569b86b87981c31b46"
 )
 _EXPECTED_ASSERTIONS: Mapping[str, tuple[str, str, tuple[str, ...], str]] = {
     "GATE-07-SIGMA-BACKEND": (
