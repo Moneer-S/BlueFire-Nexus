@@ -197,6 +197,12 @@ runner.execute_task(
 )
 """
 
+# Process publication can follow nested interpreter/watchdog startup under loaded CI.
+# This harness allowance does not alter runner or watchdog semantic deadlines.
+_NESTED_PROCESS_START_TIMEOUT_SECONDS = 15.0
+# Keep the synthetic deadline long enough to observe a live runner before parent loss.
+_PARENT_LOSS_TEST_RUNNER_TIMEOUT_SECONDS = 2.0
+
 
 def _manifest(behavior: str = "success", **extra: Any) -> dict[str, Any]:
     return {
@@ -3218,7 +3224,7 @@ def test_parent_loss_allows_watchdog_to_publish_recoverable_result(tmp_path: Pat
         shell=False,
     )
     try:
-        _wait_for_file(effect_marker)
+        _wait_for_file(effect_marker, timeout=_NESTED_PROCESS_START_TIMEOUT_SECONDS)
         parent.kill()
         parent.wait(timeout=5)
 
@@ -3626,7 +3632,7 @@ def test_atomic_promotion_refuses_racing_final_and_preserves_both_results(
             cancel_event=cancel_event,
             durable_result_path=durable,
         )
-        _wait_for_file(effect_marker, timeout=15.0)
+        _wait_for_file(effect_marker, timeout=_NESTED_PROCESS_START_TIMEOUT_SECONDS)
         sentinel = b"pre-existing-final"
         durable.write_bytes(sentinel)
         with pytest.raises(RunnerDurableResultExists, match="requires reconciliation"):
@@ -3682,7 +3688,7 @@ def test_parent_loss_hung_runner_is_killed_by_watchdog_deadline(tmp_path: Path) 
             str(runner.work_root),
             str(durable),
             str(manifest_path),
-            "0.35",
+            str(_PARENT_LOSS_TEST_RUNNER_TIMEOUT_SECONDS),
         ],
         cwd=Path(__file__).resolve().parents[1],
         stdin=subprocess.DEVNULL,
@@ -3692,7 +3698,7 @@ def test_parent_loss_hung_runner_is_killed_by_watchdog_deadline(tmp_path: Path) 
     )
     runner_pid: int | None = None
     try:
-        _wait_for_file(runner_pid_path)
+        _wait_for_file(runner_pid_path, timeout=_NESTED_PROCESS_START_TIMEOUT_SECONDS)
         runner_pid = int(runner_pid_path.read_text(encoding="ascii"))
         assert _pid_is_running(runner_pid)
         parent.kill()
