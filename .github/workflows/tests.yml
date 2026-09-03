@@ -3,30 +3,240 @@ name: tests
 on:
   pull_request:
   push:
-    branches:
-      - main
-      - cursor/**
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONNOUSERSITE: "1"
 
 jobs:
-  test:
+  frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: frontend
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+
+      - name: Enable locked pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.19.0 --activate
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Component and contract tests
+        run: pnpm test
+
+      - name: Build packaged UI
+        run: pnpm build
+
+      - name: Verify packaged assets are current
+        working-directory: .
+        run: git diff --exit-code -- bluefire/ui
+
+      - name: Install Playwright Chromium
+        run: pnpm test:e2e:install
+
+      - name: Browser accessibility and workflow tests
+        run: pnpm test:e2e
+
+  python:
+    name: Python ${{ matrix.python-version }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.10", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install maintained package and tools
+        run: |
+          python -m pip install --upgrade pip "setuptools==83.0.0"
+          python -m pip install -e ".[dev,detections]"
+
+      - name: Build bounded Rust runner for Python Execute tests
+        run: cargo build --locked --manifest-path runner/Cargo.toml --bin bluefire-runner
+
+      - name: Stage single-link runner for Python Execute tests
+        run: >-
+          python -c "import hashlib, os, shutil; from pathlib import Path; source = Path(os.environ['GITHUB_WORKSPACE']) / 'runner' / 'target' / 'debug' / ('bluefire-runner.exe' if os.name == 'nt' else 'bluefire-runner'); root = Path(os.environ['RUNNER_TEMP']) / 'bluefire-python-e2e-runner'; root.mkdir(mode=0o700); target = root / source.name; shutil.copyfile(source, target); target.chmod(0o700); assert hashlib.sha256(source.read_bytes()).digest() == hashlib.sha256(target.read_bytes()).digest()"
+
+      - name: Compile
+        run: python -m compileall -q bluefire tests_platform
+
+      - name: Test
+        env:
+          BLUEFIRE_E2E_RUNNER: ${{ runner.temp }}/bluefire-python-e2e-runner/bluefire-runner${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: python -m pytest -vv --durations=50
+
+      - name: Lint
+        run: python -m ruff check bluefire tests_platform
+
+      - name: Format
+        run: python -m black --check bluefire tests_platform
+
+      - name: Type-check
+        run: python -m mypy bluefire
+
+  package:
+    name: Native wheel - ${{ matrix.platform }} x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            architecture: x86_64
+            runner-path: runner/target/x86_64-unknown-linux-musl/release/bluefire-runner
+            wheel-platform-tag: linux_x86_64
+            venv-python: bin/python
+          - os: windows-latest
+            platform: windows
+            architecture: x86_64
+            runner-path: runner/target/release/bluefire-runner.exe
+            wheel-platform-tag: win_amd64
+            venv-python: Scripts/python.exe
+          - os: macos-15-intel
+            platform: macos
+            architecture: x86_64
+            runner-path: runner/target/release/bluefire-runner
+            wheel-platform-tag: macosx_11_0_x86_64
+            venv-python: bin/python
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
+          cache: pip
 
-      - name: Install dependencies
+      - name: Install build tooling only
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-          pip install -e .
+          python -m pip install build
 
-      - name: Compile gate
-        run: python -m compileall -q src tests
+      - name: Verify pinned Rust toolchain
+        run: rustup show
 
-      - name: Run tests
-        run: pytest -q
+      - name: Install static Linux runner target
+        if: matrix.platform == 'linux'
+        run: rustup target add x86_64-unknown-linux-musl
+
+      - name: Build static Linux release runner
+        if: matrix.platform == 'linux'
+        run: python tools/build_native_runner.py --target x86_64-unknown-linux-musl
+
+      - name: Build native release runner
+        if: matrix.platform != 'linux'
+        run: python tools/build_native_runner.py
+
+      - name: Stage verified native runner resources
+        run: >-
+          python tools/stage_native_runner.py
+          --runner "${{ github.workspace }}/${{ matrix.runner-path }}"
+          --output-root "${{ github.workspace }}/bluefire/native"
+          --platform "${{ matrix.platform }}"
+          --architecture "${{ matrix.architecture }}"
+
+      - name: Build platform wheel
+        run: python -m build --wheel
+
+      - name: Inspect wheel tag and native resources
+        run: >-
+          python tools/verify_packaged_runner.py inspect
+          --wheel-dir dist
+          --platform "${{ matrix.platform }}"
+          --architecture "${{ matrix.architecture }}"
+          --wheel-platform-tag "${{ matrix.wheel-platform-tag }}"
+          --report dist/package-inspection.json
+
+      - name: Install wheel into a clean environment
+        run: |
+          python -m venv "${{ runner.temp }}/bluefire-wheel-smoke"
+          python -c "import glob, os, subprocess; wheels = glob.glob(os.path.abspath('dist/*.whl')); assert len(wheels) == 1, wheels; executable = os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke', r'${{ matrix.venv-python }}'); subprocess.run([executable, '-m', 'pip', 'install', '--disable-pip-version-check', wheels[0]], check=True)"
+          python -c "import os, shutil; shutil.copyfile('tools/verify_packaged_runner.py', os.path.join(r'${{ runner.temp }}', 'verify_packaged_runner.py'))"
+
+      - name: Bootstrap and Execute from installed wheel outside checkout
+        working-directory: ${{ runner.temp }}
+        run: >-
+          python -c "import os, subprocess; executable = os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke', r'${{ matrix.venv-python }}'); subprocess.run([executable, '-I', os.path.join(r'${{ runner.temp }}', 'verify_packaged_runner.py'), 'smoke', '--work-root', os.path.join(r'${{ runner.temp }}', 'bluefire-wheel-smoke-state'), '--forbid-root', os.environ['GITHUB_WORKSPACE'], '--report', os.path.join(r'${{ runner.temp }}', 'installed-wheel-smoke.json')], check=True)"
+
+      - name: Upload wheel and verification reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bluefire-native-wheel-${{ matrix.platform }}-x86_64
+          path: |
+            dist/*.whl
+            dist/package-inspection.json
+            ${{ runner.temp }}/installed-wheel-smoke.json
+          if-no-files-found: error
+
+  rust:
+    name: Rust runner · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --manifest-path runner/Cargo.toml -- --check
+
+      - name: Lint
+        if: runner.os == 'Linux'
+        run: cargo clippy --manifest-path runner/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --manifest-path runner/Cargo.toml --all
+
+      - name: Build release runner
+        run: python tools/build_native_runner.py
+
+      - name: Upload platform runner
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bluefire-runner-${{ runner.os }}
+          path: runner/target/release/bluefire-runner${{ runner.os == 'Windows' && '.exe' || '' }}

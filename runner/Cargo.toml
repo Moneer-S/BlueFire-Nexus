@@ -1,0 +1,25 @@
+[package]
+name = "bluefire-runner"
+version = "3.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "bluefire_runner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bluefire-runner"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
+hex = "0.4"
+hmac = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+wasmi = { version = "=1.1.0", default-features = false, features = ["std", "extra-checks"] }
+
+[dev-dependencies]
+wat = "=1.239.0"

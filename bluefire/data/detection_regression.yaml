@@ -1,0 +1,116 @@
+schema_version: bluefire.scenario.v1
+id: scenario.detection.regression.v1
+title: Detection Regression Replay
+purpose: Produce a stable synthetic telemetry baseline, record an intentional loopback control outcome, replay after a declared detection or policy change, and compare evidence, field coverage, and candidate lifecycle without changing executable content.
+start: create_fixture
+steps:
+  - id: create_fixture
+    behavior_id: sandbox.fixture.create.v1
+    parameters:
+      record_count: 8
+
+  - id: transform_fixture
+    behavior_id: sandbox.fixture.transform.v1
+    parameters:
+      redact_values: true
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+  - id: inspect_fixture
+    behavior_id: sandbox.discovery.metadata.v1
+    alternates:
+      - sandbox.discovery.list.v1
+    inputs:
+      fixture:
+        from_step: transform_fixture
+        artifact: fixture
+
+  - id: stage_records
+    behavior_id: sandbox.collection.stage.v1
+    parameters:
+      bundle_format: jsonl
+    inputs:
+      records:
+        from_step: inspect_fixture
+        artifact: records
+
+  - id: control_probe
+    behavior_id: sandbox.network.loopback.v1
+    parameters:
+      port: 4317
+    inputs:
+      bundle:
+        from_step: stage_records
+        artifact: bundle
+
+  - id: preserve_locally
+    behavior_id: sandbox.export.local.v1
+    parameters:
+      retention_label: review
+    inputs:
+      bundle:
+        from_step: stage_records
+        artifact: bundle
+
+  - id: cleanup_workspace
+    behavior_id: sandbox.cleanup.v1
+    parameters:
+      verify_removal: true
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+edges:
+  - from_step: create_fixture
+    outcome: success
+    to_step: transform_fixture
+  - from_step: transform_fixture
+    outcome: success
+    to_step: inspect_fixture
+  - from_step: inspect_fixture
+    outcome: success
+    to_step: stage_records
+  - from_step: inspect_fixture
+    outcome: partial
+    to_step: stage_records
+  - from_step: stage_records
+    outcome: success
+    to_step: control_probe
+  - from_step: stage_records
+    outcome: partial
+    to_step: control_probe
+  - from_step: control_probe
+    outcome: success
+    to_step: cleanup_workspace
+  - from_step: control_probe
+    outcome: partial
+    to_step: preserve_locally
+  - from_step: control_probe
+    outcome: blocked
+    to_step: preserve_locally
+  - from_step: control_probe
+    outcome: failed
+    to_step: preserve_locally
+  - from_step: preserve_locally
+    outcome: success
+    to_step: cleanup_workspace
+  - from_step: preserve_locally
+    outcome: partial
+    to_step: cleanup_workspace
+  - from_step: preserve_locally
+    outcome: failed
+    to_step: cleanup_workspace
+
+provenance:
+  source: BlueFire Nexus authored validation scenario
+  reference: scenario.detection.regression.v1
+  license: MIT
+  derived: false
+  notes: MITRE ATT&CK and Sigma references inform technique and field terminology; the graph and fixtures are original sanitized BlueFire content.
+limitations:
+  - A comparison measures only evidence actually present in the selected runs.
+  - Detection candidates remain hypotheses until their parser, fixture, observed, and benign lifecycle states are recorded.
+  - Policy changes must be declared in replay lineage; this scenario does not alter host defenses.

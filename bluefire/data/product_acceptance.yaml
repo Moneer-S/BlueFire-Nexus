@@ -1,0 +1,269 @@
+schema_version: bluefire.product-acceptance-contract.v1
+contract_id: bluefire.release.v1
+release_command: bluefire acceptance run --release
+receipt_schema_version: bluefire.product-gate-receipt.v1
+result_schema: bluefire/data/product_acceptance_result.schema.json
+policy:
+  execute_sequentially: true
+  require_clean_committed_tree: true
+  require_dynamic_proof_for_every_gate: true
+  structural_proof_cannot_replace_dynamic_proof: true
+  documentation_is_not_gate_evidence: true
+gates:
+  - id: GATE-01
+    title: Clean install and Execute bootstrap
+    required: true
+    assertions:
+      - {id: GATE-01-FRESH-INSTALL, proof: dynamic, description: Install the built wheel in a fresh environment outside the checkout.}
+      - {id: GATE-01-UI-LAUNCH, proof: dynamic, description: Launch and health-check the production UI from the installed package.}
+      - {id: GATE-01-PACKAGED-RUNNER, proof: dynamic, description: Bootstrap a compatible packaged native runner without a source clone or manual Rust build.}
+      - {id: GATE-01-LOCAL-TRUST, proof: dynamic, description: Create or recover local runner trust without manual certificate or HMAC administration.}
+      - {id: GATE-01-EXECUTE-JOURNEY, proof: dynamic, description: Select a seeded Execute profile and complete preflight approval and execution.}
+      - {id: GATE-01-OBSERVE-CLEANUP-REPLAY-COMPARE, proof: dynamic, description: Receive independent observations then clean up replay and compare.}
+      - {id: GATE-01-SIMPLE-WORKFLOW, proof: structural, description: Keep the normal install launch runner-ready scenario preflight approve run path explicit and simple.}
+    required_proof: [dynamic, structural]
+    minimum_evidence_artifacts: 3
+    minimum_run_ids: 2
+    minimum_test_ids: 1
+    timeout_seconds: 1800
+    workflow:
+      command: ["{python}", "-m", "bluefire.product_gates", "--gate", "GATE-01", "--receipt", "{receipt}", "--evidence-dir", "{gate_dir}", "--release"]
+  - id: GATE-02
+    title: Genuine executable action-pack extension
+    required: true
+    assertions:
+      - {id: GATE-02-NEW-PROVIDER-ARTIFACT, proof: dynamic, description: Install and execute an independently distributed provider artifact that adds a new action.}
+      - {id: GATE-02-CORE-INDEPENDENCE, proof: structural, description: Prove the new action is neither a core runner opcode nor an alias of one.}
+      - {id: GATE-02-MANIFEST-INTEGRITY, proof: structural, description: Bind signature or hash version artifact integrity and compatibility in the manifest.}
+      - {id: GATE-02-SAFE-CONTRACT, proof: structural, description: Bind typed parameters capabilities tier platforms provenance license and ABI.}
+      - {id: GATE-02-LIFECYCLE, proof: dynamic, description: Exercise install activate deactivate upgrade and remove.}
+      - {id: GATE-02-INVENTORY-COMPATIBILITY, proof: dynamic, description: Show runner compatibility and inventory changes across activation.}
+      - {id: GATE-02-MANAGEMENT-PARITY, proof: dynamic, description: Exercise UI API and CLI management paths.}
+      - {id: GATE-02-TAMPER-REFUSAL, proof: dynamic, description: Refuse unknown altered or substituted packages and artifacts.}
+      - {id: GATE-02-LIMITS-CLEANUP, proof: dynamic, description: Enforce resource limits and complete provider cleanup.}
+      - {id: GATE-02-NO-MODEL-SHELL, proof: structural, description: Preserve the prohibition on arbitrary model-to-shell execution.}
+    required_proof: [dynamic, structural]
+    minimum_evidence_artifacts: 3
+    minimum_run_ids: 1
+    minimum_test_ids: 1
+    timeout_seconds: 1200
+    workflow:
+      command: ["{python}", "-m", "bluefire.product_gates", "--gate", "GATE-02", "--receipt", "{receipt}", "--evidence-dir", "{gate_dir}", "--release"]
+  - id: GATE-03
+    title: Deep behavior packs
+    required: true
+    assertions:
+      - {id: GATE-03-ENDPOINT-PHASES, proof: dynamic, description: Execute reviewed endpoint actions for execution discovery collection staging and persistence.}
+      - {id: GATE-03-AUTHORIZED-CREDENTIALS, proof: dynamic, description: Exercise credential research only against authorized seeded or lab material.}
+      - {id: GATE-03-DISPOSABLE-LATERAL, proof: dynamic, description: Move laterally only between disposable authorized peers.}
+      - {id: GATE-03-EVASION-TELEMETRY, proof: dynamic, description: Exercise a defense-evasion or telemetry-shaping variant.}
+      - {id: GATE-03-ENDPOINT-CLEANUP, proof: dynamic, description: Verify endpoint and identity cleanup.}
+      - {id: GATE-03-LINUX-EFFECTS, proof: dynamic, description: Produce real disposable Linux process filesystem and internal-network effects.}
+      - {id: GATE-03-LINUX-OBSERVATION, proof: dynamic, description: Observe Linux effects through collector or runtime telemetry.}
+      - {id: GATE-03-LINUX-ALTERNATE-CLEANUP, proof: dynamic, description: Execute an alternate Linux implementation and clean it up.}
+      - {id: GATE-03-CLOUD-PROFILE-SECRETS, proof: structural, description: Bind a lab cloud profile to opaque credential handles without graph or evidence secrets.}
+      - {id: GATE-03-CLOUD-ENUM-CONTROL, proof: dynamic, description: Perform cloud enumeration and one meaningful authorized control-plane or identity action.}
+      - {id: GATE-03-CLOUD-CLEANUP-AUDIT, proof: dynamic, description: Revoke or clean up cloud effects and verify audit expectations.}
+      - {id: GATE-03-CLOUD-SIMULATE-EXECUTE, proof: dynamic, description: Exercise both cloud Simulate fixtures and the Execute interface.}
+      - {id: GATE-03-CLOUD-DETERMINISTIC-INTEGRATION, proof: dynamic, description: Prove the cloud pack through deterministic local or mock integration.}
+      - {id: GATE-03-CLOUD-MANUAL-SMOKE-CONTRACT, proof: structural, description: Provide a bounded real-provider manual smoke path for operator lab credentials.}
+      - {id: GATE-03-NO-RAW-CREDENTIALS, proof: structural, description: Prevent raw credentials in graphs logs bundles evidence prompts fixtures screenshots and source.}
+    required_proof: [dynamic, structural]
+    minimum_evidence_artifacts: 4
+    minimum_run_ids: 3
+    minimum_test_ids: 3
+    timeout_seconds: 1800
+    workflow:
+      command: ["{python}", "-m", "bluefire.product_gates", "--gate", "GATE-03", "--receipt", "{receipt}", "--evidence-dir", "{gate_dir}", "--release"]
+  - id: GATE-04
+    title: Defense-frontier scenario
+    required: true
+    assertions:
+      - {id: GATE-04-CANONICAL-BLOCK, proof: dynamic, description: Execute or block and detect the canonical authorized behavior.}
+      - {id: GATE-04-INDEPENDENT-OBSERVATION, proof: dynamic, description: Record effects and telemetry with an independent collector.}
+      - {id: GATE-04-STRUCTURED-PLANNER-STATE, proof: dynamic, description: Feed structured observed state to the planner.}
+      - {id: GATE-04-VALID-ALTERNATE-SELECTION, proof: dynamic, description: Select a semantically valid registered alternate with deterministic Auto logic.}
+      - {id: GATE-04-POLICY-APPROVAL, proof: dynamic, description: Evaluate policy and obtain any required fresh approval.}
+      - {id: GATE-04-ALTERNATE-OBJECTIVE, proof: dynamic, description: Execute the alternate real action and reach the declared behavior objective.}
+      - {id: GATE-04-EVIDENCE-DETECTION-DELTA, proof: dynamic, description: Demonstrate differing evidence and detection outcomes.}
+      - {id: GATE-04-DEFENSE-CHANGE, proof: dynamic, description: Record a concrete defense change.}
+      - {id: GATE-04-REPLAY, proof: dynamic, description: Perform exact or controlled replay after the defense change.}
+      - {id: GATE-04-COMPARE-EXPLANATION, proof: dynamic, description: Explain path first block bypasses telemetry objective cleanup and defense regression or improvement.}
+      - {id: GATE-04-DETERMINISTIC-PROVIDER, proof: dynamic, description: Complete the scenario reliably without a live model key.}
+      - {id: GATE-04-REAL-PROVIDER-CONTRACT, proof: structural, description: Keep a manually testable generic OpenAI-compatible provider path.}
+    required_proof: [dynamic, structural]
+    minimum_evidence_artifacts: 4
+    minimum_run_ids: 3
+    minimum_test_ids: 1
+    timeout_seconds: 1200
+    workflow:
+      command: ["{python}", "-m", "bluefire.product_gates", "--gate", "GATE-04", "--receipt", "{receipt}", "--evidence-dir", "{gate_dir}", "--release"]
+  - id: GATE-05
+    title: Independent collectors
+    required: true
+    assertions:
+      - {id: GATE-05-PROCESS-COLLECTOR, proof: dynamic, description: Observe process or system effects independently of action execution.}
+      - {id: GATE-05-FILESYSTEM-COLLECTOR, proof: dynamic, description: Observe filesystem effects independently of action execution.}
+      - {id: GATE-05-NETWORK-COLLECTOR, proof: dynamic, description: Observe internal network receiver effects independently of action execution.}
+      - {id: GATE-05-PLATFORM-INTERFACES, proof: structural, description: Define Windows Linux cloud and SIEM or EDR collector adapter interfaces.}
+      - {id: GATE-05-NATIVE-WHEN-SUPPORTED, proof: dynamic, description: Dynamically exercise a supported platform-native collector beyond fixture JSONL.}
+      - {id: GATE-05-PREDICTED-VS-OBSERVED, proof: dynamic, description: Report predicted observed missing and unexpected fields.}
+      - {id: GATE-05-LINEAGE-HASH-HEALTH, proof: dynamic, description: Record evidence lineage content hashes and collector health.}
+      - {id: GATE-05-CORRUPTION-REFUSAL, proof: dynamic, description: Detect and refuse corrupted collector evidence.}
+      - {id: GATE-05-SETTINGS-TOGGLE, proof: dynamic, description: Prove enable and disable settings alter backend collection.}
+      - {id: GATE-05-REPLAY-COMPARE-DELTA, proof: dynamic, description: Preserve collector deltas through replay and comparison.}
+    required_proof: [dynamic, structural]
+    minimum_evidence_artifacts: 4
+    minimum_run_ids: 1
+    minimum_test_ids: 3
+    timeout_seconds: 1200
+    workflow:
+      command: ["{python}", "-m", "bluefire.product_gates", "--gate", "GATE-05", "--receipt", "{receipt}", "--evidence-dir", "{gate_dir}", "--release"]
+  - id: GATE-06
+    title: Materialized restart-from-node replay
+    required: true
+    assertions:
+      - {id: GATE-06-CHECKPOINT-INTEGRITY, proof: structural, description: Bind checkpoint manifest content hashes runner profile and scope.}
+      - {id: GATE-06-MATERIALIZED-STATE, proof: dynamic, description: Restore or recreate trusted materialized state instead of seeding metadata.}
+      - {id: GATE-06-SCOPE-CLEANUP-BINDING, proof: dynamic, description: Revalidate scope and cleanup state during restore.}
+      - {id: GATE-06-APPROVAL-REGENERATION, proof: dynamic, description: Regenerate transient approvals for resumed execution.}
+      - {id: GATE-06-CORRUPTION-REFUSAL, proof: dynamic, description: Refuse corrupted checkpoint content or manifests.}
+      - {id: GATE-06-EXACT-REPLAY, proof: dynamic, description: Complete exact replay from a trusted checkpoint.}
+      - {id: GATE-06-NODE-RESTART, proof: dynamic, description: Restart from a selected node with required prior state.}
+      - {id: GATE-06-PARAMETER-OVERRIDE, proof: dynamic, description: Replay with a typed parameter override.}
+      - {id: GATE-06-ACTION-SUBSTITUTION, proof: dynamic, description: Replay with a compatible behavior or action substitution.}
+      - {id: GATE-06-AUTONOMY-CHANGE, proof: dynamic, description: Replay with a changed AI autonomy level.}
+      - {id: GATE-06-PROFILE-CHANGE, proof: dynamic, description: Replay with a compatible changed runner profile.}
+      - {id: GATE-06-DEFENSE-METADATA, proof: dynamic, description: Bind defense-change metadata to replay lineage.}
+      - {id: GATE-06-COMPARISON-DIMENSIONS, proof: dynamic, description: Compare planner scope implementation evidence detection cleanup budgets and assessment.}
+    required_proof: [dynamic, structural]
+    minimum_evidence_artifacts: 4
+    minimum_run_ids: 4
+    minimum_test_ids: 2
+    timeout_seconds: 1200
+    workflow:
+      command: ["{python}", "-m", "bluefire.product_gates", "--gate", "GATE-06", "--receipt", "{receipt}", "--evidence-dir", "{gate_dir}", "--release"]
+  - id: GATE-07
+    title: Authoritative Detection Lab
+    required: true
+    assertions:
+      - {id: GATE-07-SIGMA-BACKEND, proof: dynamic, description: Parse Sigma and convert through pySigma plus a real backend.}
+      - {id: GATE-07-YARA-EXECUTION, proof: dynamic, description: Compile and execute YARA against malicious and benign fixtures.}
+      - {id: GATE-07-QUERY-VALIDATION, proof: dynamic, description: Validate SPL or another query language with an authoritative or bounded executable mechanism.}
+      - {id: GATE-07-OBSERVED-EVALUATION, proof: dynamic, description: Evaluate candidates against observed evidence.}
+      - {id: GATE-07-FIELD-MAPPING, proof: dynamic, description: Report field mappings and unsupported fields.}
+      - {id: GATE-07-NOTES-BASELINE, proof: structural, description: Preserve false-positive notes and public baseline associations.}
+      - {id: GATE-07-LIFECYCLE, proof: dynamic, description: Exercise clone tune reject and version comparison with lifecycle history.}
+      - {id: GATE-07-MANAGEMENT-PARITY, proof: dynamic, description: Exercise Detection Lab through UI API and CLI.}
+      - {id: GATE-07-THREE-EXECUTED-CANDIDATES, proof: dynamic, description: Advance Sigma YARA and query candidates beyond hypothesis through execution.}
+    required_proof: [dynamic, structural]
+    minimum_evidence_artifacts: 4
+    minimum_run_ids: 1
+    minimum_test_ids: 3
+    timeout_seconds: 1200
+    workflow:
+      command: ["{python}", "-m", "bluefire.product_gates", "--gate", "GATE-07", "--receipt", "{receipt}", "--evidence-dir", "{gate_dir}", "--release"]
+  - id: GATE-08
+    title: World-class operator UI
+    required: true
+    assertions:
+      - {id: GATE-08-SCENARIO-AUTHORING, proof: dynamic, description: Create edit version import and export scenarios without hand-editing YAML.}
+      - {id: GATE-08-GRAPH-EDITOR, proof: dynamic, description: Exercise focus resizing collapsing readable nodes typed edges undo redo copy paste and keyboard access.}
+      - {id: GATE-08-LAYERS-BRANCHES-PARAMETERS, proof: dynamic, description: Edit environment behavior evidence layers branch conditions parameters actions and compatibility.}
+      - {id: GATE-08-SAFETY-COLLECTORS-DETECTIONS, proof: dynamic, description: Configure safety approval cleanup collectors and detection hypotheses.}
+      - {id: GATE-08-AI-REPLAY-DIFF, proof: dynamic, description: Review AI proposal and replay diffs in operator-readable form.}
+      - {id: GATE-08-ACCESSIBILITY-PALETTE, proof: dynamic, description: Exercise keyboard access and command palette operations.}
+      - {id: GATE-08-MODE-AUTONOMY-PROVIDERS, proof: dynamic, description: Configure Simulate Execute and off assist auto provider settings.}
+      - {id: GATE-08-RUNNER-PACK-MANAGEMENT, proof: dynamic, description: Manage runners profiles and action packs from the UI.}
+      - {id: GATE-08-LIVE-WORKFLOW, proof: dynamic, description: Complete preflight approval live graph timeline evidence detections replay and compare against production services.}
+      - {id: GATE-08-PROVENANCE-SETTINGS, proof: dynamic, description: Show source provenance and prove settings alter backend behavior.}
+      - {id: GATE-08-NO-RAW-SHELL-APPROVAL, proof: structural, description: Exclude arbitrary shell input and raw hash or object-first approvals.}
+      - {id: GATE-08-CANONICAL-REQUESTS, proof: dynamic, description: Ensure visible controls are included in canonical backend requests.}
+    required_proof: [dynamic, structural]
+    minimum_evidence_artifacts: 3
+    minimum_run_ids: 1
+    minimum_test_ids: 2
+    timeout_seconds: 1800
+    workflow:
+      command: ["{python}", "-m", "bluefire.product_gates", "--gate", "GATE-08", "--receipt", "{receipt}", "--evidence-dir", "{gate_dir}", "--release"]
+  - id: GATE-09
+    title: Open-source content intake
+    required: true
+    assertions:
+      - {id: GATE-09-CLASSIFICATION-MODEL, proof: structural, description: Support all six intake classifications from reference-only through incompatible or restricted.}
+      - {id: GATE-09-PINNED-METADATA-IMPORT, proof: dynamic, description: Import pinned declarative metadata that adds usable behaviors.}
+      - {id: GATE-09-EXECUTABLE-ADAPTER, proof: dynamic, description: Execute an external adapter or clean independently implemented source-inspired action.}
+      - {id: GATE-09-SOURCE-LICENSE-REVIEW, proof: structural, description: Record exact source ref version date license and file-level review.}
+      - {id: GATE-09-ATTRIBUTION-INTEGRITY-TRANSFORM, proof: structural, description: Record attribution integrity and transformation history.}
+      - {id: GATE-09-UI-PROVENANCE, proof: dynamic, description: Display source provenance in the operator UI.}
+      - {id: GATE-09-THIRD-PARTY-NOTICES, proof: structural, description: Maintain accurate third-party notices.}
+      - {id: GATE-09-SAFE-INTAKE, proof: dynamic, description: Refuse blind copying or execution of unreviewed external content.}
+    required_proof: [dynamic, structural]
+    minimum_evidence_artifacts: 3
+    minimum_run_ids: 1
+    minimum_test_ids: 2
+    timeout_seconds: 1200
+    workflow:
+      command: ["{python}", "-m", "bluefire.product_gates", "--gate", "GATE-09", "--receipt", "{receipt}", "--evidence-dir", "{gate_dir}", "--release"]
+  - id: GATE-10
+    title: Architecture decomposition
+    required: true
+    assertions:
+      - {id: GATE-10-PYTHON-DECOMPOSITION, proof: structural, description: Separate Python transport trust replay lifecycle stores and service domains by responsibility.}
+      - {id: GATE-10-RUST-DECOMPOSITION, proof: structural, description: Separate Rust contract policy receipts registry packs transport cleanup and platform adapters.}
+      - {id: GATE-10-FILE-SIZE-BUDGET, proof: structural, description: Enforce new-file and existing-file size budgets with reviewed bounded exceptions only.}
+      - {id: GATE-10-DEPENDENCY-DIRECTION, proof: structural, description: Enforce dependency direction between architecture layers.}
+      - {id: GATE-10-IMPORT-CYCLES, proof: structural, description: Fail on Python or Rust module dependency cycles.}
+      - {id: GATE-10-PROPERTY-FUZZ, proof: dynamic, description: Execute property or fuzz tests for parsers canonicalization replay manifests and envelopes.}
+      - {id: GATE-10-CRYPTO-PRIMITIVES, proof: structural, description: Replace custom cryptographic arithmetic with maintained primitives where feasible.}
+      - {id: GATE-10-RESPONSIBILITY-SEPARATION, proof: structural, description: Keep security protocol persistence lifecycle UI service and package signing in separate modules.}
+      - {id: GATE-10-BEHAVIOR-PRESERVATION, proof: dynamic, description: Preserve product behavior through decomposition.}
+    required_proof: [dynamic, structural]
+    minimum_evidence_artifacts: 3
+    minimum_run_ids: 0
+    minimum_test_ids: 3
+    timeout_seconds: 1200
+    workflow:
+      command: ["{python}", "-m", "bluefire.product_gates", "--gate", "GATE-10", "--receipt", "{receipt}", "--evidence-dir", "{gate_dir}", "--release"]
+  - id: GATE-11
+    title: Cross-platform proof
+    required: true
+    assertions:
+      - {id: GATE-11-WINDOWS-PACKAGED-EXECUTE, proof: dynamic, description: Complete packaged Windows Execute proof.}
+      - {id: GATE-11-LINUX-CONTAINER-EXECUTE, proof: dynamic, description: Complete genuine disposable Linux or container Execute proof.}
+      - {id: GATE-11-PROCESS-TREE-CANCEL, proof: dynamic, description: Cancel an action process tree cooperatively and forcibly without survivors.}
+      - {id: GATE-11-NETWORK-RECEIVER, proof: dynamic, description: Complete authenticated internal network receiver transfer.}
+      - {id: GATE-11-TRANSPORT-RECOVERY, proof: dynamic, description: Recover authenticated multiprocess transport after interruption.}
+      - {id: GATE-11-PLATFORM-READINESS, proof: dynamic, description: Report truthful platform-specific readiness and errors.}
+      - {id: GATE-11-MACOS-CONTRACT, proof: structural, description: Validate macOS contract and package metadata when no macOS host exists.}
+      - {id: GATE-11-PROOF-CLASSIFICATION, proof: structural, description: Label dynamic and structural platform evidence without conflation.}
+    required_proof: [dynamic, structural]
+    minimum_evidence_artifacts: 4
+    minimum_run_ids: 2
+    minimum_test_ids: 3
+    timeout_seconds: 2400
+    workflow:
+      command: ["{python}", "-m", "bluefire.product_gates", "--gate", "GATE-11", "--receipt", "{receipt}", "--evidence-dir", "{gate_dir}", "--release"]
+  - id: GATE-12
+    title: Professional release artifact
+    required: true
+    assertions:
+      - {id: GATE-12-README-PRODUCT-LOOP, proof: structural, description: Streamline the README around the actual design execute observe adapt replay compare loop.}
+      - {id: GATE-12-SANITIZED-SCREENSHOTS, proof: dynamic, description: Regenerate sanitized screenshots from the final product.}
+      - {id: GATE-12-FRONTIER-COMPARE-ARTIFACT, proof: dynamic, description: Show a real defense-frontier replay and comparison result.}
+      - {id: GATE-12-CAPABILITY-CLASSIFICATION, proof: structural, description: Distinguish shipped environment-dependent structural and restricted capabilities.}
+      - {id: GATE-12-COMPLETE-DOCS, proof: structural, description: Update architecture runner action SDK plugins AI collectors detections replay security and user docs.}
+      - {id: GATE-12-GITHUB-METADATA, proof: structural, description: Prepare truthful repository description topics and social-preview recommendations.}
+      - {id: GATE-12-CLEAN-PACKAGE-INSTALL, proof: dynamic, description: Complete a clean final package install and launch.}
+      - {id: GATE-12-FULL-SUITES, proof: dynamic, description: Pass complete Python Rust frontend security and end-to-end gates.}
+      - {id: GATE-12-SECURITY-OPSEC, proof: dynamic, description: Complete security and OPSEC review without private or generated artifacts.}
+      - {id: GATE-12-CLEAN-WORKTREE, proof: structural, description: Finish on the committed tree with no tracked or unknown untracked changes.}
+      - {id: GATE-12-RIGHTS-AUDIT, proof: structural, description: Complete rights and third-party review after functional gates pass.}
+      - {id: GATE-12-LICENSE-DECISION, proof: structural, description: Change licensing only when the rights audit and intended release posture support it.}
+    required_proof: [dynamic, structural]
+    minimum_evidence_artifacts: 5
+    minimum_run_ids: 2
+    minimum_test_ids: 4
+    timeout_seconds: 3600
+    workflow:
+      command: ["{python}", "-m", "bluefire.product_gates", "--gate", "GATE-12", "--receipt", "{receipt}", "--evidence-dir", "{gate_dir}", "--release"]

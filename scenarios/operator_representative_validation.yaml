@@ -1,0 +1,141 @@
+schema_version: bluefire.scenario.v1
+id: scenario.operator.representative-validation.v1
+title: Representative Operator Validation Loop
+purpose: Exercise five narrow representative actions alongside the canonical fixture pipeline, credential-bound movement between authorized disposable lab peers, and receipt-bound cleanup.
+start: run_native_canary
+steps:
+  - id: run_native_canary
+    behavior_id: sandbox.execution.native-canary.v1
+    parameters:
+      rounds: 256
+
+  - id: seed_identity_material
+    behavior_id: sandbox.identity-material.seed.v1
+
+  - id: inspect_identity_material
+    behavior_id: sandbox.identity-material.inspect.v1
+    inputs:
+      identity_material:
+        from_step: seed_identity_material
+        artifact: identity_material
+
+  - id: create_fixture
+    behavior_id: sandbox.fixture.create.v1
+    parameters:
+      record_count: 8
+
+  - id: transform_fixture
+    behavior_id: sandbox.fixture.transform.v1
+    parameters:
+      redact_values: true
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+  - id: inspect_fixture_metadata
+    behavior_id: sandbox.discovery.metadata.v1
+    inputs:
+      fixture:
+        from_step: transform_fixture
+        artifact: fixture
+
+  - id: stage_records
+    behavior_id: sandbox.collection.stage.v1
+    parameters:
+      bundle_format: jsonl
+    inputs:
+      records:
+        from_step: inspect_fixture_metadata
+        artifact: records
+
+  - id: create_observability_variant
+    behavior_id: sandbox.observability.variant.v1
+    parameters:
+      representation: chunked_hex
+    inputs:
+      bundle:
+        from_step: stage_records
+        artifact: bundle
+
+  - id: handoff_to_peer
+    behavior_id: sandbox.peer.handoff.v1
+    parameters:
+      port: 4317
+    inputs:
+      bundle:
+        from_step: stage_records
+        artifact: bundle
+
+  - id: cleanup_workspace
+    behavior_id: sandbox.cleanup.v1
+    parameters:
+      verify_removal: true
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+edges:
+  - from_step: run_native_canary
+    outcome: success
+    to_step: seed_identity_material
+  - from_step: seed_identity_material
+    outcome: success
+    to_step: inspect_identity_material
+  - from_step: inspect_identity_material
+    outcome: success
+    to_step: create_fixture
+  - from_step: create_fixture
+    outcome: success
+    to_step: transform_fixture
+  - from_step: transform_fixture
+    outcome: success
+    to_step: inspect_fixture_metadata
+  - from_step: inspect_fixture_metadata
+    outcome: success
+    to_step: stage_records
+  - from_step: inspect_fixture_metadata
+    outcome: partial
+    to_step: stage_records
+  - from_step: stage_records
+    outcome: success
+    to_step: create_observability_variant
+  - from_step: create_observability_variant
+    outcome: success
+    to_step: handoff_to_peer
+  - from_step: create_observability_variant
+    outcome: partial
+    to_step: cleanup_workspace
+  - from_step: create_observability_variant
+    outcome: blocked
+    to_step: cleanup_workspace
+  - from_step: create_observability_variant
+    outcome: failed
+    to_step: cleanup_workspace
+  - from_step: handoff_to_peer
+    outcome: success
+    to_step: cleanup_workspace
+  - from_step: handoff_to_peer
+    outcome: partial
+    to_step: cleanup_workspace
+  - from_step: handoff_to_peer
+    outcome: blocked
+    to_step: cleanup_workspace
+  - from_step: handoff_to_peer
+    outcome: failed
+    to_step: cleanup_workspace
+
+provenance:
+  source: BlueFire Nexus authored operator validation scenario
+  reference: scenario.operator.representative-validation.v1
+  license: MIT
+  derived: false
+  notes: Authored as a safe, bounded demonstration of reviewed compiled actions and fixed runner-owned artifacts.
+limitations:
+  - Every filesystem artifact is synthetic, public, or runner-owned; the identity-material canary is not a credential.
+  - The native canary proves only bounded in-process computation and does not expose command, script, process, or arbitrary program execution.
+  - Peer handoff is lateral-movement control research only between the Rust runner and a separately managed disposable receiver on literal 127.0.0.1; it never compromises or authorizes another host, and the blocked-network profile must refuse it.
+  - The peer credential is a managed one-task capability; only an opaque credential handle and bounded process/lifecycle verification may enter output or evidence.
+  - The observability variant is transparent and exactly reversible for comparison; it makes no bypass, evasion, or control-impairment claim.
+  - A successful simulation is not evidence that an Execute action ran.

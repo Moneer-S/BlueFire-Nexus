@@ -1,0 +1,162 @@
+schema_version: bluefire.scenario.v1
+id: scenario.linux-container.validation.v1
+title: Linux Container Telemetry Chain
+purpose: Validate a disposable Linux or container runner by creating a harmless fixture, observing bounded system and process facts, discovering and archiving runner-owned files, exercising an internal transport with an approved fallback, and cleaning every receipt.
+start: create_fixture
+steps:
+  - id: create_fixture
+    behavior_id: sandbox.fixture.create.v1
+    parameters:
+      record_count: 12
+
+  - id: discover_system
+    behavior_id: endpoint.discovery.system.v1
+
+  - id: discover_processes
+    behavior_id: endpoint.discovery.processes.v1
+    parameters:
+      record_limit: 20
+
+  - id: discover_files
+    behavior_id: sandbox.discovery.recursive.v1
+    parameters:
+      record_limit: 40
+      max_depth: 4
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+  - id: archive_files
+    behavior_id: sandbox.archive.tar.v1
+    inputs:
+      records:
+        from_step: discover_files
+        artifact: records
+
+  - id: transform_fixture
+    behavior_id: sandbox.fixture.transform.v1
+    parameters:
+      redact_values: true
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+  - id: enumerate_fixture
+    behavior_id: sandbox.discovery.list.v1
+    alternates:
+      - sandbox.discovery.metadata.v1
+    inputs:
+      fixture:
+        from_step: transform_fixture
+        artifact: fixture
+
+  - id: stage_records
+    behavior_id: sandbox.collection.stage.v1
+    parameters:
+      bundle_format: jsonl
+    inputs:
+      records:
+        from_step: enumerate_fixture
+        artifact: records
+
+  - id: internal_transport
+    behavior_id: sandbox.network.loopback.v1
+    parameters:
+      port: 4317
+    inputs:
+      bundle:
+        from_step: stage_records
+        artifact: bundle
+
+  - id: approved_fallback
+    behavior_id: sandbox.export.local.v1
+    parameters:
+      retention_label: ephemeral
+    inputs:
+      bundle:
+        from_step: stage_records
+        artifact: bundle
+
+  - id: cleanup_workspace
+    behavior_id: sandbox.cleanup.v1
+    parameters:
+      verify_removal: true
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+edges:
+  - from_step: create_fixture
+    outcome: success
+    to_step: discover_system
+  - from_step: discover_system
+    outcome: success
+    to_step: discover_processes
+  - from_step: discover_processes
+    outcome: success
+    to_step: discover_files
+  - from_step: discover_processes
+    outcome: partial
+    to_step: discover_files
+  - from_step: discover_files
+    outcome: success
+    to_step: archive_files
+  - from_step: discover_files
+    outcome: partial
+    to_step: archive_files
+  - from_step: archive_files
+    outcome: success
+    to_step: transform_fixture
+  - from_step: archive_files
+    outcome: partial
+    to_step: transform_fixture
+  - from_step: transform_fixture
+    outcome: success
+    to_step: enumerate_fixture
+  - from_step: enumerate_fixture
+    outcome: success
+    to_step: stage_records
+  - from_step: enumerate_fixture
+    outcome: partial
+    to_step: stage_records
+  - from_step: stage_records
+    outcome: success
+    to_step: internal_transport
+  - from_step: stage_records
+    outcome: partial
+    to_step: internal_transport
+  - from_step: internal_transport
+    outcome: success
+    to_step: cleanup_workspace
+  - from_step: internal_transport
+    outcome: partial
+    to_step: approved_fallback
+  - from_step: internal_transport
+    outcome: blocked
+    to_step: approved_fallback
+  - from_step: internal_transport
+    outcome: failed
+    to_step: approved_fallback
+  - from_step: approved_fallback
+    outcome: success
+    to_step: cleanup_workspace
+  - from_step: approved_fallback
+    outcome: partial
+    to_step: cleanup_workspace
+  - from_step: approved_fallback
+    outcome: failed
+    to_step: cleanup_workspace
+
+provenance:
+  source: BlueFire Nexus authored validation scenario
+  reference: scenario.linux-container.validation.v1
+  license: MIT
+  derived: false
+  notes: Uses only reviewed cross-platform actions and synthetic runner-owned fixtures; public research informs technique attribution, not executable content.
+limitations:
+  - Host auditd or container-runtime telemetry is optional and must report its own collector readiness.
+  - Simulate mode produces synthetic evidence and does not prove the Linux runner executed.
+  - Execute is allowed only inside an explicitly approved disposable profile and target scope.

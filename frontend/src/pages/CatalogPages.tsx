@@ -1,0 +1,300 @@
+import * as Dialog from "@radix-ui/react-dialog";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Activity, Archive, Box, CheckCircle2, ExternalLink, FileCode2, Filter, Plus, Power, Search, Server, ShieldCheck, Unplug } from "lucide-react";
+import { useState } from "react";
+import { Link } from "react-router-dom";
+import { api } from "../lib/api";
+import type { Behavior, RunnerLifecycleStatus, RunnerProbe, RunnerProfile } from "../types";
+import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, Modal, PageHeader, Panel, PanelHeader, sentence } from "../components/Primitives";
+
+function tierTone(tier: string) { return tier === "restricted" ? "danger" as const : tier === "controlled" ? "warning" as const : "success" as const; }
+
+export function BehaviorsPage() {
+  const query = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
+  const [search, setSearch] = useState(""); const [platform, setPlatform] = useState("all"); const [tier, setTier] = useState("all"); const [selectedId, setSelectedId] = useState<string>();
+  if (query.isPending) return <LoadingState label="Loading behavior registry" />;
+  if (query.isError) return <ErrorState error={query.error} retry={() => query.refetch()} />;
+  const behaviors = query.data.behaviors.filter((item) => {
+    const text = `${item.id} ${item.title} ${item.purpose} ${item.capabilities.join(" ")} ${item.techniques.join(" ")}`.toLowerCase();
+    return (!search || text.includes(search.toLowerCase())) && (platform === "all" || item.platforms.includes(platform)) && (tier === "all" || item.safety_tier === tier);
+  });
+  const selected = query.data.behaviors.find((item) => item.id === selectedId) ?? behaviors[0];
+  const platforms = [...new Set(query.data.behaviors.flatMap((item) => item.platforms))].sort();
+  return <div className="page">
+    <PageHeader eyebrow="Behavior registry" title="Neutral, typed behavior contracts" description="Behaviors define intent, artifacts, expected telemetry, policy requirements, and the installed implementations that may satisfy them." />
+    <div className="catalog-layout">
+      <Panel className="catalog-list-panel">
+        <div className="catalog-filters"><label className="search-box"><Search/><span className="sr-only">Search behaviors</span><input aria-label="Search behaviors" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search behavior, capability, technique" /></label><label><span className="sr-only">Platform</span><select aria-label="Filter by platform" value={platform} onChange={(event) => setPlatform(event.target.value)}><option value="all">All platforms</option>{platforms.map((item) => <option key={item}>{item}</option>)}</select></label><label><span className="sr-only">Safety tier</span><select aria-label="Filter by safety tier" value={tier} onChange={(event) => setTier(event.target.value)}><option value="all">All tiers</option><option value="safe">Safe</option><option value="controlled">Controlled</option><option value="restricted">Restricted</option></select></label></div>
+        <div className="catalog-count"><Filter/> {behaviors.length} of {query.data.behaviors.length} behaviors</div>
+        <div className="behavior-table" role="list">{behaviors.map((item) => <button role="listitem" className={selected?.id === item.id ? "selected" : ""} onClick={() => setSelectedId(item.id)} key={item.id}><span className={`registry-icon tier-${item.safety_tier}`}><FileCode2/></span><span><strong>{item.title}</strong><small>{item.id}</small><em>{item.purpose}</em></span><span className="row-badges"><Badge tone={tierTone(item.safety_tier)}>{item.safety_tier}</Badge><Badge tone={item.execution_state === "action" ? "success" : item.execution_state === "simulation" ? "info" : "neutral"}>{sentence(item.execution_state)}</Badge></span></button>)}</div>
+        {!behaviors.length ? <EmptyState title="No matching behaviors" description="Clear one of the filters to broaden the registry view." /> : null}
+      </Panel>
+      {selected ? <BehaviorDetail behavior={selected} /> : null}
+    </div>
+  </div>;
+}
+
+function BehaviorDetail({ behavior }: { behavior: Behavior }) {
+  return <Panel className="detail-panel"><PanelHeader eyebrow="Contract detail" title={behavior.title} detail={behavior.purpose} actions={<Badge tone={tierTone(behavior.safety_tier)}>{behavior.safety_tier}</Badge>} />
+    <div className="detail-body">
+      {behavior.execution_state !== "action" ? <Callout tone="warning" title={sentence(behavior.execution_state)}>{behavior.limitations[0] ?? "No installed Execute action is advertised for this behavior."}</Callout> : null}
+      <DataList items={[{ label: "Behavior ID", value: <code>{behavior.id}</code> }, { label: "Platforms", value: behavior.platforms.join(", ") || "None" }, { label: "Techniques", value: behavior.techniques.join(", ") || "Not mapped" }, { label: "Simulation", value: behavior.simulation_id ? <code>{behavior.simulation_id}</code> : "Unavailable" }, { label: "Actions", value: behavior.action_ids.length ? behavior.action_ids.map((item) => <code key={item}>{item}</code>) : "None installed" }]} />
+      <section className="detail-section"><h3>Typed contract</h3><div className="contract-columns"><div><h4>Inputs</h4>{behavior.inputs.length ? behavior.inputs.map((item) => <div className="port-row" key={item.name}><span>{item.name}{item.required ? " *" : ""}</span><code>{item.type}</code></div>) : <p>No artifact inputs.</p>}</div><div><h4>Outputs</h4>{behavior.outputs.length ? behavior.outputs.map((item) => <div className="port-row" key={item.name}><span>{item.name}</span><code>{item.type}</code></div>) : <p>No emitted artifacts.</p>}</div></div></section>
+      <section className="detail-section"><h3>Expected telemetry</h3><div className="chip-list">{behavior.telemetry.map((item) => <Badge key={item} tone="info">{item}</Badge>)}</div>{!behavior.telemetry.length ? <p>None declared.</p> : null}</section>
+      <section className="detail-section"><h3>Detection value</h3>{behavior.detection_hints.length ? <ul>{behavior.detection_hints.map((item) => <li key={item}>{item}</li>)}</ul> : <p>No hypothesis declared.</p>}</section>
+      <section className="detail-section"><h3>Capabilities</h3><div className="chip-list">{behavior.capabilities.map((item) => <Badge key={item}>{item}</Badge>)}</div></section>
+      {behavior.provenance ? <section className="detail-section"><h3>Provenance</h3><DataList items={[{ label: "Source", value: behavior.provenance.source ?? "Not recorded" }, { label: "Source reference", value: behavior.provenance.reference ? <code>{behavior.provenance.reference}</code> : "Not recorded" }, { label: "Source license", value: behavior.provenance.license ?? "Not recorded" }, { label: "Relationship", value: behavior.provenance.notes ?? (behavior.provenance.derived ? "Derived" : "Independent implementation") }]} /></section> : null}
+    </div>
+  </Panel>;
+}
+
+export function RunnerProfilesPage() {
+  const query = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
+  const resourcesQuery = useQuery({ queryKey: ["resources", "runner-profiles"], queryFn: () => api.resources("runner-profiles") });
+  const queryClient = useQueryClient(); const [notice, setNotice] = useState<string>();
+  const saveMutation = useMutation({ mutationFn: (profile: RunnerProfile) => { const { secrets, ...secretSafeProfile } = profile; void secrets; return api.saveResource("runner-profiles", profile.id, secretSafeProfile as unknown as Record<string, unknown>, "draft"); }, onSuccess: ({ resource }) => { setNotice(`${resource.id} saved as a durable draft.`); queryClient.invalidateQueries({ queryKey: ["resources", "runner-profiles"] }); }, onError: (error) => setNotice(error instanceof Error ? error.message : "The runner profile could not be saved.") });
+  const lifecycleMutation = useMutation({ mutationFn: ({ id, action }: { id: string; action: "activate" | "deactivate" }) => action === "activate" ? api.activateResource("runner-profiles", id) : api.deactivateResource("runner-profiles", id), onSuccess: ({ resource }) => { setNotice(`${resource.id} is now ${resource.status}. Runtime selection was refreshed by the control plane.`); queryClient.invalidateQueries({ queryKey: ["resources", "runner-profiles"] }); queryClient.invalidateQueries({ queryKey: ["catalog"] }); }, onError: (error) => setNotice(error instanceof Error ? error.message : "The runner profile lifecycle action was refused.") });
+  if (query.isPending) return <LoadingState label="Loading runner profiles" />;
+  if (query.isError) return <ErrorState error={query.error} retry={() => query.refetch()} />;
+  const managedProfiles = (resourcesQuery.data?.resources ?? []).map((resource) => ({ profile: resource.document as unknown as RunnerProfile, resource })).filter((item) => item.profile?.id && Array.isArray(item.profile.platforms)); const managedIds = new Set(managedProfiles.map((item) => item.profile.id));
+  const profiles = [...query.data.runner_profiles.filter((item) => !managedIds.has(item.id)).map((profile) => ({ profile, resource: null })), ...managedProfiles];
+  return <div className="page"><PageHeader eyebrow="Authorization envelopes" title="Runner profiles" description="Profiles bind environment, scope, capabilities, safety tiers, approvals, budgets, and cleanup before a task can reach a runner." actions={<Modal title="Draft runner profile" description="Save a secret-safe profile document to the durable local control-plane store. A draft does not enroll or connect a runner." trigger={<Button variant="primary"><Plus/>New profile</Button>}><ProfileForm onCreate={(profile) => saveMutation.mutate(profile)} saving={saveMutation.isPending}/></Modal>} />
+    {notice ? <Callout title="Runner profile">{notice}</Callout> : resourcesQuery.isError ? <Callout tone="warning" title="Managed profiles unavailable">Catalog profiles remain visible; durable drafts could not be loaded.</Callout> : null}
+    <Callout title="Configuration is not connectivity">A profile can be valid while its runner is offline. Verify runner identity and inventory on the Runners page before Execute.</Callout>
+    <div className="profile-grid">{profiles.map(({ profile, resource }) => <Panel className="profile-card" key={profile.id}><header><span className={`registry-icon ${profile.mode === "execute" ? "tier-controlled" : "tier-safe"}`}>{profile.mode === "execute" ? <ShieldCheck/> : <Archive/>}</span><div><h2>{profile.id}</h2><p>{sentence(profile.environment_type)}</p></div><div className="row-badges"><Badge tone={profile.mode === "execute" ? "warning" : "info"}>{profile.mode}</Badge><Badge tone={resource?.status === "active" ? "success" : resource?.status === "inactive" ? "neutral" : "warning"}>{resource ? sentence(resource.status) : "Configuration baseline"}</Badge></div></header><DataList items={[{ label: "Scope", value: profile.scope.join(", ") }, { label: "Platforms", value: profile.platforms.join(", ") }, { label: "Safety tiers", value: profile.safety_tiers.join(", ") }, { label: "Approval", value: profile.approval_required ? "Required" : "Not required" }, { label: "Cleanup", value: sentence(profile.cleanup_policy) }]} /><div className="budget-strip"><span><small>Seconds</small><strong>{profile.budgets.max_seconds ?? "—"}</strong></span><span><small>Steps</small><strong>{profile.budgets.max_steps ?? "—"}</strong></span><span><small>Bytes</small><strong>{profile.budgets.max_bytes ? `${Math.round(profile.budgets.max_bytes / 1_048_576)} MiB` : "—"}</strong></span></div><footer><Badge tone="neutral">{profile.capabilities.length} capabilities</Badge><Badge tone="neutral">{profile.enabled_actions.length} actions</Badge>{resource ? <Button size="small" variant={resource.status === "active" ? "ghost" : "secondary"} disabled={lifecycleMutation.isPending} onClick={() => lifecycleMutation.mutate({ id: profile.id, action: resource.status === "active" ? "deactivate" : "activate" })}><Power/>{resource.status === "active" ? "Deactivate" : "Validate & activate"}</Button> : null}</footer></Panel>)}</div>
+  </div>;
+}
+
+function ProfileForm({ onCreate, saving }: { onCreate: (profile: RunnerProfile) => void; saving: boolean }) {
+  const [id, setId] = useState("local-sandbox-execute.v1"); const [mode, setMode] = useState<"simulate" | "execute">("execute"); const [runnerEnv, setRunnerEnv] = useState("BLUEFIRE_RUNNER_BINARY"); const [sandboxEnv, setSandboxEnv] = useState("BLUEFIRE_SANDBOX_ROOT");
+  return <form className="dialog-form" onSubmit={(event) => { event.preventDefault(); onCreate({ id, mode, environment_type: "disposable", platforms: ["linux"], runner_binary: { env: runnerEnv }, sandbox_root: { env: sandboxEnv }, scope: ["sandbox.workspace"], network_allowlist: ["127.0.0.1/32"], capabilities: ["filesystem.read", "filesystem.write"], safety_tiers: ["safe", "controlled"], approval_required: mode === "execute", enabled_actions: [], blocked_actions: [], cleanup_policy: "always", budgets: { max_seconds: 120, max_steps: 20, max_artifacts: 100, max_bytes: 8_388_608 }, secrets: {} }); }}><Field label="Profile ID"><input value={id} onChange={(event) => setId(event.target.value)} pattern="[a-z](?:[a-z0-9._]|-)+" required /></Field><Field label="Mode"><select value={mode} onChange={(event) => setMode(event.target.value as "simulate" | "execute")}><option value="simulate">Simulate</option><option value="execute">Execute</option></select></Field><Field label="Runner binary environment reference" hint="Only the variable name is stored."><input value={runnerEnv} onChange={(event) => setRunnerEnv(event.target.value.toUpperCase())} pattern="[A-Z_][A-Z0-9_]*" required/></Field><Field label="Sandbox root environment reference" hint="No resolved path enters browser state."><input value={sandboxEnv} onChange={(event) => setSandboxEnv(event.target.value.toUpperCase())} pattern="[A-Z_][A-Z0-9_]*" required/></Field><Field label="Authorized scope"><input value="sandbox.workspace" readOnly /></Field><div className="dialog-actions"><Dialog.Close asChild><Button type="button" variant="ghost">Cancel</Button></Dialog.Close><Dialog.Close asChild><Button type="button" onClick={(event) => { const form = event.currentTarget.form; if (!form?.reportValidity()) { event.preventDefault(); return; } form.requestSubmit(); }} variant="primary" disabled={saving}>{saving ? "Saving" : "Save durable draft"}</Button></Dialog.Close></div></form>;
+}
+
+export function RunnersPage() {
+  const query = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
+  const resourcesQuery = useQuery({ queryKey: ["resources", "runners"], queryFn: () => api.resources("runners") }); const profilesQuery = useQuery({ queryKey: ["resources", "runner-profiles"], queryFn: () => api.resources("runner-profiles") }); const lifecycleQuery = useQuery({ queryKey: ["runner-lifecycle"], queryFn: api.runnerStatus }); const queryClient = useQueryClient(); const [notice, setNotice] = useState<string>(); const [probe, setProbe] = useState<RunnerProbe>();
+  const saveMutation = useMutation({ mutationFn: (runner: { id: string; label: string; platform: string; binaryEnv: string }) => api.saveResource("runners", runner.id, { label: runner.label, platform: runner.platform, transport: "local", binary_reference: { env: runner.binaryEnv }, connectivity: "not_verified" }, "draft"), onSuccess: ({ resource }) => { setNotice(`${resource.id} saved as a runner record. No process was started and connectivity remains unverified.`); queryClient.invalidateQueries({ queryKey: ["resources", "runners"] }); }, onError: (error) => setNotice(error instanceof Error ? error.message : "The runner record could not be saved.") });
+  const probeMutation = useMutation({ mutationFn: (profileId: string) => api.probeRunnerProfile(profileId), onSuccess: (result) => { setProbe(result); setNotice(`Runner probe for ${result.profile_id} returned sanitized ${result.health.state} health.`); }, onError: (error) => { setProbe(undefined); setNotice(error instanceof Error ? error.message : "The bounded runner probe was refused."); } });
+  const lifecycleMutation = useMutation({ mutationFn: ({ action, profileId, confirmation }: { action: ManagedRunnerAction; profileId?: string; confirmation?: string }) => action === "bootstrap" ? api.bootstrapRunner(profileId) : action === "upgrade" ? api.bootstrapRunner(profileId, true) : action === "start" ? api.startRunner(profileId) : action === "stop" ? api.stopRunner(profileId) : action === "revoke" ? api.revokeRunner() : api.removeRunner(confirmation ?? ""), onSuccess: (status) => { setNotice(`Managed runner is now ${sentence(status.state)}.`); queryClient.setQueryData(["runner-lifecycle"], status); }, onError: (error) => setNotice(error instanceof Error ? error.message : "The managed runner lifecycle action was refused.") });
+  if (query.isPending) return <LoadingState label="Checking runner inventory" />;
+  if (query.isError) return <ErrorState error={query.error} retry={() => query.refetch()} />;
+  const executeProfiles = query.data.runner_profiles.filter((item) => item.mode === "execute");
+  const managedRunners = resourcesQuery.data?.resources ?? [];
+  const storedProfiles = profilesQuery.data?.resources ?? [];
+  const lifecycleProfileId = lifecycleQuery.data?.profile_id ?? executeProfiles[0]?.id;
+  return <div className="page"><PageHeader eyebrow="Execution boundary" title="Runners" description="Enroll, start, inspect, stop, revoke, and remove the authenticated local runner before Execute." actions={<Modal title="Register runner record" description="Persist a bounded runner reference. This does not launch, enroll, authenticate, or attest a runner." trigger={<Button variant="primary"><Plus/>Register record</Button>}><RunnerRecordForm onCreate={(runner) => saveMutation.mutate(runner)} saving={saveMutation.isPending}/></Modal>} />
+    {notice ? <Callout title="Runner record">{notice}</Callout> : resourcesQuery.isError ? <Callout tone="warning" title="Runner records unavailable">Profile metadata remains visible.</Callout> : null}
+    <ManagedRunnerPanel status={lifecycleQuery.data} loading={lifecycleQuery.isPending} failed={lifecycleQuery.isError} profileId={lifecycleProfileId} busy={lifecycleMutation.isPending} onRefresh={() => { void lifecycleQuery.refetch(); }} onAction={(action, confirmation) => lifecycleMutation.mutate({ action, profileId: lifecycleProfileId, confirmation })}/>
+    <Callout title="Bounded probe boundary">A probe contacts only the already-running authenticated local host for the selected profile. It never bootstraps or starts a process, and the response omits paths, credentials, stderr, and raw exception text.</Callout>
+    <div className="runner-grid">{managedRunners.map((runner) => <Panel className="runner-card" key={runner.id}><header><span className="runner-glyph"><Server/></span><div><Badge tone="neutral" dot>{sentence(runner.status)}</Badge><h2>{String(runner.document.label ?? runner.id)}</h2><p>{sentence(String(runner.document.transport ?? "unverified transport"))}</p></div></header><DataList items={[{ label: "Identity", value: <code>{runner.id}</code> }, { label: "Platform", value: String(runner.document.platform ?? "Not reported") }, { label: "Connectivity", value: "Not verified by this record" }]} /></Panel>)}{storedProfiles.map((resource) => { const profile = resource.document as unknown as RunnerProfile; return <Panel className="runner-card" key={resource.id}><header><span className="runner-glyph"><Server/></span><div><Badge tone={resource.status === "active" ? "success" : "warning"} dot>{sentence(resource.status)}</Badge><h2>{resource.id}</h2><p>{sentence(String(profile.environment_type ?? "stored profile"))}</p></div></header><DataList items={[{ label: "Probe authority", value: "Stored profile only" }, { label: "Platforms", value: Array.isArray(profile.platforms) ? profile.platforms.join(", ") : "Not reported" }, { label: "Enabled actions", value: Array.isArray(profile.enabled_actions) ? String(profile.enabled_actions.length) : "Not reported" }]} /><footer><Button size="small" onClick={() => probeMutation.mutate(resource.id)} disabled={probeMutation.isPending}>{probeMutation.isPending && probe?.profile_id === resource.id ? <Activity className="spin"/> : <Server/>}Probe health & inventory</Button></footer></Panel>; })}{!storedProfiles.length ? executeProfiles.map((profile) => <Panel className="runner-card ghost-runner" key={profile.id}><header><span className="runner-glyph"><Unplug/></span><div><Badge tone="warning">Configuration baseline</Badge><h2>{profile.id}</h2><p>{sentence(profile.environment_type)}</p></div></header><p>Persist this profile before requesting a bounded runtime probe.</p><div className="chip-list">{profile.platforms.map((item) => <Badge key={item}>{item}</Badge>)}</div></Panel>) : null}</div>
+    {probe ? <Panel><PanelHeader eyebrow="Sanitized inventory" title={probe.profile_id} actions={<Badge tone={probe.health.state === "ready" ? "success" : probe.health.state === "degraded" ? "warning" : "danger"} dot>{sentence(probe.health.state)}</Badge>}/><Callout tone={probe.health.state === "ready" ? "success" : "warning"} title="Runner health">{probe.health.message}</Callout><DataList items={[{ label: "Version", value: probe.version ?? "Unavailable" }, { label: "Platform", value: probe.platform ? sentence(probe.platform) : "Unavailable" }, { label: "Missing profile actions", value: probe.health.missing_actions?.join(", ") || "None reported" }]} />{probe.actions.length ? <div className="table-scroll"><table><thead><tr><th>Allowlisted action ID</th><th>Version</th><th>Readiness</th></tr></thead><tbody>{probe.actions.map((action) => <tr key={action.action_id}><td><code>{action.action_id}</code></td><td>{action.version ?? "Not reported"}</td><td><Badge tone={action.readiness === "ready" ? "success" : "neutral"}>{sentence(action.readiness ?? "not reported")}</Badge></td></tr>)}</tbody></table></div> : <EmptyState title="No actions reported" description="Unavailable inventory does not authorize Execute."/>}</Panel> : null}
+    <Panel><PanelHeader eyebrow="Local setup checklist" title="Prepare the packaged runner safely"/><ol className="step-list"><li><span>1</span><div><strong>Verify and enroll the packaged runner</strong><p>Bootstrap checks product version, platform, architecture, digest, inventory contract, and local trust.</p></div></li><li><span>2</span><div><strong>Start the authenticated host</strong><p>The host runs separately on loopback with exact runner and profile binding. Status never starts it implicitly.</p></div></li><li><span>3</span><div><strong>Review fresh Execute readiness</strong><p>Preflight binds authenticated identity, inventory, sandbox, scope, actions, budgets, approval, and cleanup before dispatch.</p></div></li></ol></Panel>
+  </div>;
+}
+
+type ManagedRunnerAction = "bootstrap" | "upgrade" | "start" | "stop" | "revoke" | "remove";
+
+function ManagedRunnerPanel({ status, loading, failed, profileId, busy, onRefresh, onAction }: { status?: RunnerLifecycleStatus; loading: boolean; failed: boolean; profileId?: string; busy: boolean; onRefresh: () => void; onAction: (action: ManagedRunnerAction, confirmation?: string) => void }) {
+  const [confirmation, setConfirmation] = useState("");
+  const tone = status?.state === "ready" ? "success" as const : status?.state === "stopped" ? "info" as const : status?.state === "unbootstrapped" ? "neutral" as const : "warning" as const;
+  const canUpgrade = status?.state === "stopped" && status.enrollment === "active";
+  const canStop = status?.state === "ready" || status?.state === "stale" || (status?.state === "unavailable" && status.process === "authenticated");
+  const stopLabel = status?.state === "stale" ? "Reconcile stale host" : status?.state === "unavailable" ? "Retry safe stop" : "Stop safely";
+  return <Panel>
+    <PanelHeader eyebrow="Authenticated local host" title="Managed runner lifecycle" detail="Lifecycle actions are explicit. Status and probes never install or start the runner." actions={status ? <Badge tone={tone} dot>{sentence(status.state)}</Badge> : null}/>
+    {loading ? <LoadingState label="Checking managed runner status"/> : failed ? <Callout tone="warning" title="Managed status unavailable">No lifecycle action was attempted. Refresh status or inspect the local service.</Callout> : status ? <>
+      <DataList items={[
+        { label: "Runner identity", value: <code>{status.runner_id}</code> },
+        { label: "Profile", value: status.profile_id ?? profileId ?? "Not selected" },
+        { label: "Enrollment", value: sentence(status.enrollment) },
+        { label: "Process", value: sentence(status.process) },
+        { label: "Transport", value: status.health?.transport ? `${status.health.transport} · ${status.health.tls ?? "authenticated TLS"}` : "Not authenticated" },
+        { label: "Execute admission", value: status.health?.accepting_execute ? "Authenticated and accepting" : "Unavailable" },
+      ]}/>
+      <footer className="dialog-actions">
+        <Button size="small" variant="ghost" disabled={busy} onClick={onRefresh}><Activity/>Refresh</Button>
+        {status.state === "unbootstrapped" ? <Button size="small" disabled={busy || !profileId} onClick={() => onAction("bootstrap")}><Box/>{busy ? "Working" : "Verify & enroll"}</Button> : null}
+        {canUpgrade ? <Modal title="Upgrade managed runner" description="Replace only the verified managed runner artifact, then establish fresh local enrollment trust." trigger={<Button size="small" variant="secondary" disabled={busy || !profileId}><Box/>Upgrade & re-enroll</Button>}><div className="dialog-form"><Callout tone="warning" title="Explicit verified upgrade">BlueFire will refuse an unverified package, running host, active task, unresolved receipt, or unsafe replacement. Existing trust is replaced only after the new managed artifact passes its identity and inventory gates.</Callout><div className="dialog-actions"><Dialog.Close asChild><Button type="button" variant="ghost">Cancel</Button></Dialog.Close><Dialog.Close asChild><Button type="button" variant="secondary" disabled={busy || !profileId} onClick={() => onAction("upgrade")}><Box/>Confirm verified upgrade</Button></Dialog.Close></div></div></Modal> : null}
+        {status.state === "stopped" && status.enrollment === "active" ? <><Button size="small" disabled={busy || !profileId} onClick={() => onAction("start")}><Power/>Start authenticated host</Button><Button size="small" variant="secondary" disabled={busy} onClick={() => onAction("revoke")}><ShieldCheck/>Revoke trust</Button></> : null}
+        {canStop ? <Button size="small" variant="secondary" disabled={busy} onClick={() => onAction("stop")}><Power/>{stopLabel}</Button> : null}
+        {status.enrollment === "revoked" ? <Modal title="Remove revoked runner trust" description="Removal is refused while tasks, receipts, cleanup, or host ownership remain unresolved." trigger={<Button size="small" variant="secondary"><Archive/>Remove revoked trust</Button>}><div className="dialog-form"><Callout tone="warning" title="Exact confirmation required">Type the complete runner ID shown below. This does not bypass cleanup or ledger safety checks.</Callout><Field label="Runner ID"><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder={status.runner_id}/></Field><code>{status.runner_id}</code><div className="dialog-actions"><Dialog.Close asChild><Button type="button" variant="ghost">Cancel</Button></Dialog.Close><Dialog.Close asChild><Button type="button" variant="secondary" disabled={busy || confirmation !== status.runner_id} onClick={() => { onAction("remove", confirmation); setConfirmation(""); }}><Archive/>Confirm removal</Button></Dialog.Close></div></div></Modal> : null}
+      </footer>
+    </> : null}
+  </Panel>;
+}
+
+function RunnerRecordForm({ onCreate, saving }: { onCreate: (runner: { id: string; label: string; platform: string; binaryEnv: string }) => void; saving: boolean }) {
+  const [id, setId] = useState("runner.local-sandbox.v1"); const [label, setLabel] = useState("Local sandbox runner"); const [platform, setPlatform] = useState("linux"); const [binaryEnv, setBinaryEnv] = useState("BLUEFIRE_RUNNER_BINARY");
+  return <form className="dialog-form" onSubmit={(event) => { event.preventDefault(); onCreate({ id, label, platform, binaryEnv }); }}><Field label="Runner record ID"><input value={id} onChange={(event) => setId(event.target.value)} pattern="[a-z](?:[a-z0-9._]|-)+" required/></Field><Field label="Display label"><input value={label} onChange={(event) => setLabel(event.target.value)} required/></Field><Field label="Platform"><select value={platform} onChange={(event) => setPlatform(event.target.value)}><option value="linux">Linux</option><option value="windows">Windows</option><option value="macos">macOS</option></select></Field><Field label="Binary environment reference" hint="The environment-variable name is saved; its resolved value never enters the browser."><input value={binaryEnv} onChange={(event) => setBinaryEnv(event.target.value.toUpperCase())} pattern="[A-Z_][A-Z0-9_]*" required/></Field><div className="dialog-actions"><Dialog.Close asChild><Button type="button" variant="ghost">Cancel</Button></Dialog.Close><Dialog.Close asChild><Button type="button" onClick={(event) => { const form = event.currentTarget.form; if (!form?.reportValidity()) { event.preventDefault(); return; } form.requestSubmit(); }} variant="primary" disabled={saving}>{saving ? "Saving" : "Save runner record"}</Button></Dialog.Close></div></form>;
+}
+
+export function ActionsPage() {
+  const query = useQuery({ queryKey: ["catalog"], queryFn: api.catalog }); const resourcesQuery = useQuery({ queryKey: ["resources", "plugins"], queryFn: () => api.resources("plugins") }); const queryClient = useQueryClient(); const [search, setSearch] = useState(""); const [notice, setNotice] = useState<string>();
+  const saveMutation = useMutation({ mutationFn: (plugin: PluginDraft) => api.saveResource("plugins", plugin.id, { schema_version: "bluefire.plugin.v1", id: plugin.id, name: plugin.name, version: plugin.version, enabled: plugin.enabled, trust: plugin.trust, integrity: { algorithm: "sha256", digest: plugin.digest }, license: plugin.license, provenance: { source: plugin.source, reference: plugin.reference, license: plugin.license, derived: false, notes: "Locally reviewed declarative metadata; executable loading remains disabled." }, permissions: ["catalog.read"], capabilities: [], behavior_ids: [], action_ids: [] }), onSuccess: ({ resource }) => { setNotice(`${resource.id} manifest saved as ${resource.status}. No package was downloaded or installed.`); queryClient.invalidateQueries({ queryKey: ["resources", "plugins"] }); }, onError: (error) => setNotice(error instanceof Error ? error.message : "The plugin manifest could not be saved.") });
+  if (query.isPending) return <LoadingState label="Loading action inventory" />;
+  if (query.isError) return <ErrorState error={query.error} retry={() => query.refetch()} />;
+  const actions = query.data.actions.filter((item) => `${item.id} ${item.title} ${item.purpose} ${item.capabilities.join(" ")}`.toLowerCase().includes(search.toLowerCase()));
+  const plugins = resourcesQuery.data?.resources ?? [];
+  const inventory = resourcesQuery.data?.inventory;
+  return <div className="page"><PageHeader eyebrow="Installed capability" title="Actions & plugins" description="Reviewed, versioned action contracts are the only path from orchestration intent to runner effects." actions={<Modal title="Add plugin manifest" description="Persist a strict declarative manifest. This does not download, verify bytes, install code, or register dynamic actions." trigger={<Button variant="primary"><Plus/>Add manifest</Button>}><PluginManifestForm onCreate={(plugin) => saveMutation.mutate(plugin)} saving={saveMutation.isPending}/></Modal>} />
+    {notice ? <Callout title="Plugin manifest">{notice}</Callout> : resourcesQuery.isError ? <Callout tone="warning" title="Plugin manifests unavailable">Built-in action contracts remain visible.</Callout> : null}
+    <Panel><div className="catalog-filters"><label className="search-box"><Search/><span className="sr-only">Search actions</span><input aria-label="Search actions" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search actions or capabilities" /></label><Badge tone="success">{actions.length} registered</Badge></div><div className="table-scroll"><table><thead><tr><th>Action</th><th>Platforms</th><th>Safety</th><th>Effects</th><th>Cleanup</th></tr></thead><tbody>{actions.map((item) => <tr key={item.id}><td><strong>{item.title}</strong><code>{item.id}</code><small>{item.purpose}</small></td><td>{item.platforms.join(", ")}</td><td><Badge tone={tierTone(item.safety_tier)}>{item.safety_tier}</Badge></td><td><Badge tone={item.mutates ? "warning" : "success"}>{item.mutates ? "Mutating" : "Read only"}</Badge></td><td>{item.cleanup_action_id ? <code>{item.cleanup_action_id}</code> : item.id.includes("cleanup") ? "Self" : "Not declared"}</td></tr>)}</tbody></table></div></Panel>
+    <div className="two-column"><Panel><PanelHeader eyebrow="Package boundary" title="Action SDK requirements"/><ul className="check-list"><li><CheckCircle2/>Versioned ID and typed parameters</li><li><CheckCircle2/>Capabilities, tier, target, and scope</li><li><CheckCircle2/>Preflight, receipts, and deterministic test hooks</li><li><CheckCircle2/>Cleanup and partial-result handling</li></ul>{inventory ? <DataList items={[{ label: "Manifest inventory", value: String(inventory.manifest_count) }, { label: "Legacy metadata IDs", value: inventory.active_manifest_ids.join(", ") || "None" }, { label: "Executable loading", value: inventory.executable_loading ? "Enabled" : "Disabled" }, { label: "Dynamic actions", value: inventory.dynamic_actions ? "Enabled" : "Disabled" }, { label: "Python entry points", value: inventory.python_entry_points ? "Enabled" : "Disabled" }]} /> : null}</Panel><Panel><PanelHeader eyebrow="Historical metadata" title="Legacy declarative manifests" actions={<Badge>{plugins.length}</Badge>}/>{plugins.length ? <div className="detail-body">{plugins.map((plugin) => <article className="secret-row" key={plugin.id}><span><Box/></span><div><strong>{String(plugin.document.name ?? plugin.id)}</strong><small>{plugin.id} · {String(plugin.document.version ?? "Version not declared")}</small></div><div className="row-badges"><Badge tone="neutral">Provenance only</Badge><Badge tone={plugin.status === "active" ? "warning" : "neutral"}>{sentence(plugin.status)}</Badge></div></article>)}<Callout tone="warning" title="Legacy metadata lifecycle retired">Declarative manifests remain available as provenance records, but their decorative activation control has been removed. Install and activate only independently verified signed packages through <Link to="/action-packages">Action Packages</Link>.</Callout></div> : <EmptyState icon={<Box/>} title="No external plugin manifests" description="The current catalog contains built-in reviewed actions. Add only secret-safe provenance metadata here." />}</Panel></div>
+  </div>;
+}
+
+interface PluginDraft { id: string; name: string; version: string; source: string; reference: string; license: string; digest: string; trust: "untrusted" | "reviewed" | "trusted"; enabled: boolean }
+
+function PluginManifestForm({ onCreate, saving }: { onCreate: (plugin: PluginDraft) => void; saving: boolean }) {
+  const [id, setId] = useState("plugin.local-review.v1"); const [name, setName] = useState("Local review plugin"); const [version, setVersion] = useState("0.1.0"); const [source, setSource] = useState("Local reviewed source"); const [reference, setReference] = useState("https://example.invalid/reviewed-release"); const [license, setLicense] = useState("Review required"); const [digest, setDigest] = useState(""); const [trust, setTrust] = useState<PluginDraft["trust"]>("untrusted"); const [enabled, setEnabled] = useState(false);
+  return <form className="dialog-form" onSubmit={(event) => { event.preventDefault(); onCreate({ id, name, version, source, reference, license, digest, trust, enabled }); }}><Field label="Plugin ID"><input value={id} onChange={(event) => setId(event.target.value)} pattern="[a-z](?:[a-z0-9._]|-)+[.]v[0-9]+" required/></Field><Field label="Display name"><input value={name} onChange={(event) => setName(event.target.value)} required/></Field><Field label="Version"><input value={version} onChange={(event) => setVersion(event.target.value)} pattern="[0-9]+\.[0-9]+\.[0-9]+" required/></Field><Field label="Reviewed source"><input value={source} onChange={(event) => setSource(event.target.value)} required/></Field><Field label="Pinned provenance reference" hint="Metadata only; the browser does not fetch it."><input type="url" value={reference} onChange={(event) => setReference(event.target.value)} required/></Field><Field label="Reviewed SHA-256" hint="Exactly 64 lowercase hex characters. BlueFire stores this identity but does not fetch or hash bytes."><input value={digest} onChange={(event) => setDigest(event.target.value.toLowerCase())} pattern="[0-9a-f]{64}" maxLength={64} required/></Field><Field label="Trust review"><select value={trust} onChange={(event) => setTrust(event.target.value as PluginDraft["trust"])}><option value="untrusted">Untrusted</option><option value="reviewed">Reviewed</option><option value="trusted">Trusted</option></select></Field><Field label="License"><input value={license} onChange={(event) => setLicense(event.target.value)} required/></Field><label className="check-row"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)}/><span><strong>Declaratively eligible</strong><small>Does not load code; reviewed/trusted metadata with a non-placeholder digest is still required for activation.</small></span></label><div className="dialog-actions"><Dialog.Close asChild><Button type="button" variant="ghost">Cancel</Button></Dialog.Close><Dialog.Close asChild><Button type="button" onClick={(event) => { const form = event.currentTarget.form; if (!form?.reportValidity()) { event.preventDefault(); return; } form.requestSubmit(); }} variant="primary" disabled={saving}>{saving ? "Saving" : "Save strict manifest"}</Button></Dialog.Close></div></form>;
+}
+
+interface ResearchSourceDraft {
+  id: string;
+  name: string;
+  source_type: string;
+  project: string;
+  authority: string;
+  reference_url: string;
+  version: string;
+  pin: string;
+  exact_ref: string;
+  retrieved_at: string;
+  license: string;
+  license_url: string;
+  file_level_license_review: string;
+  trademark_considerations: string;
+  relationship: "imported" | "adapted" | "inspired" | "comparative";
+  use_classification: "reference_only" | "metadata_import" | "clean_reimplementation" | "external_adapter" | "compatible_code_adaptation" | "incompatible_or_restricted";
+  imported_paths: string[];
+  attribution: string;
+  security_review: string;
+  transformation_history: string;
+}
+
+interface ResearchSourceHandling {
+  relationship: ResearchSourceDraft["relationship"];
+  license_review: "reviewed" | "conditional" | "prohibited";
+  uses: string[];
+  cache_policy: "metadata_only" | "external_only" | "vendored_code" | "vendored_declarative";
+  executable_content: boolean;
+  needs_paths: boolean;
+}
+
+export function researchSourceHandling(classification: ResearchSourceDraft["use_classification"]): ResearchSourceHandling {
+  switch (classification) {
+    case "metadata_import":
+      return { relationship: "imported", license_review: "reviewed", uses: ["behavior_mapping", "research_reference"], cache_policy: "vendored_declarative", executable_content: false, needs_paths: true };
+    case "clean_reimplementation":
+      return { relationship: "inspired", license_review: "conditional", uses: ["backend_conversion", "research_reference"], cache_policy: "metadata_only", executable_content: false, needs_paths: false };
+    case "external_adapter":
+      return { relationship: "imported", license_review: "conditional", uses: ["backend_conversion", "parser_validation"], cache_policy: "external_only", executable_content: true, needs_paths: false };
+    case "compatible_code_adaptation":
+      return { relationship: "adapted", license_review: "reviewed", uses: ["backend_conversion", "behavior_mapping"], cache_policy: "vendored_code", executable_content: true, needs_paths: true };
+    case "incompatible_or_restricted":
+      return { relationship: "comparative", license_review: "prohibited", uses: ["comparison", "research_reference"], cache_policy: "metadata_only", executable_content: false, needs_paths: false };
+    default:
+      return { relationship: "comparative", license_review: "conditional", uses: ["comparison", "research_reference"], cache_policy: "metadata_only", executable_content: false, needs_paths: false };
+  }
+}
+
+interface ResearchSourceView extends ResearchSourceDraft {
+  status: string;
+  license_review: string;
+  uses: string[];
+  imported_paths: string[];
+  cache_policy: string;
+  executable_content: boolean;
+  last_verified_at: string;
+  update_status: string;
+}
+
+export function ResearchSourcesPage() {
+  const query = useQuery({ queryKey: ["resources", "research-sources"], queryFn: () => api.resources("research-sources") }); const queryClient = useQueryClient(); const [notice, setNotice] = useState<string>();
+  const saveMutation = useMutation({ mutationFn: (source: ResearchSourceDraft) => {
+    const handling = researchSourceHandling(source.use_classification);
+    return api.saveResource("research-sources", source.id, {
+      schema_version: "bluefire.research-source.v1",
+      ...source,
+      relationship: handling.relationship,
+      license_review: handling.license_review,
+      uses: handling.uses,
+      imported_paths: handling.needs_paths ? source.imported_paths : [],
+      cache_policy: handling.cache_policy,
+      executable_content: handling.executable_content,
+      last_verified_at: source.retrieved_at,
+      update_status: "review_due",
+      notes: "Operator-reviewed public reference metadata. Remote content is not fetched or executed by this registry.",
+    }, "draft");
+  }, onSuccess: ({ resource }) => { setNotice(`${resource.id} saved as a durable review draft. No remote content was fetched.`); queryClient.invalidateQueries({ queryKey: ["resources", "research-sources"] }); }, onError: (error) => setNotice(error instanceof Error ? error.message : "The research source could not be saved.") });
+  const sources: ResearchSourceView[] = (query.data?.resources ?? []).map((item) => ({
+    id: item.id,
+    name: String(item.document.name ?? item.id),
+    source_type: String(item.document.source_type ?? "unclassified"),
+    project: String(item.document.project ?? "Not recorded"),
+    authority: String(item.document.authority ?? "Not recorded"),
+    reference_url: String(item.document.reference_url ?? ""),
+    version: String(item.document.version ?? "Not recorded"),
+    pin: String(item.document.pin ?? "Not recorded"),
+    exact_ref: String(item.document.exact_ref ?? item.document.pin ?? "Not recorded"),
+    retrieved_at: String(item.document.retrieved_at ?? "Not recorded"),
+    license: String(item.document.license ?? "Review required"),
+    license_url: String(item.document.license_url ?? ""),
+    file_level_license_review: String(item.document.file_level_license_review ?? "Not recorded"),
+    trademark_considerations: String(item.document.trademark_considerations ?? "Not recorded"),
+    relationship: String(item.document.relationship ?? "comparative") as ResearchSourceView["relationship"],
+    use_classification: String(item.document.use_classification ?? "reference_only") as ResearchSourceView["use_classification"],
+    attribution: String(item.document.attribution ?? "Not recorded"),
+    security_review: String(item.document.security_review ?? "Not recorded"),
+    transformation_history: String(item.document.transformation_history ?? "Not recorded"),
+    license_review: String(item.document.license_review ?? "not reviewed"),
+    uses: Array.isArray(item.document.uses) ? item.document.uses.map(String) : [],
+    imported_paths: Array.isArray(item.document.imported_paths) ? item.document.imported_paths.map(String) : [],
+    cache_policy: String(item.document.cache_policy ?? "metadata_only"),
+    executable_content: item.document.executable_content === true,
+    last_verified_at: String(item.document.last_verified_at ?? item.document.retrieved_at ?? "Not recorded"),
+    update_status: String(item.document.update_status ?? "review_due"),
+    status: item.status,
+  }));
+  return <div className="page"><PageHeader eyebrow="Research provenance" title="Research sources" description="Pin authoritative public material, record license and retrieval metadata, and distinguish imported, adapted, inspired, and comparative use." actions={<Modal title="Add research source" description="Save provenance metadata only. This does not fetch, synchronize, or execute remote content." trigger={<Button variant="primary"><Plus/>Add source</Button>}><ResearchSourceForm onCreate={(source) => saveMutation.mutate(source)} saving={saveMutation.isPending}/></Modal>} />
+    {notice ? <Callout title="Research source">{notice}</Callout> : query.isError ? <Callout tone="danger" title="Research registry unavailable">Pinned source state could not be loaded. Reload after the local control plane is healthy; no fallback status is fabricated.</Callout> : null}
+    <Callout title="Immutable references, no blind imports">Custom entries store provenance metadata without downloading or executing remote content. The reviewed packaged intake below transforms only pinned local bytes and activates only its fixed, independently implemented runner action after profile validation.</Callout>
+    <ReviewedT1082IntakePanel onNotice={setNotice}/>
+    {query.isPending ? <LoadingState label="Loading pinned research registry"/> : null}
+    {!query.isPending && !query.isError && !sources.length ? <EmptyState icon={<Archive/>} title="No research sources registered" description="Add a reviewed, immutable public reference before associating behaviors or detection baselines."/> : null}
+    <div className="source-grid">{sources.map((source) => <Panel className="source-card" key={source.id}><header><span className="source-icon"><Archive/></span><div><h2>{source.name}</h2><p>{source.authority} · {sentence(source.source_type)}</p></div><Badge tone={source.status === "pinned" ? "success" : source.status === "draft" ? "warning" : "neutral"}>{sentence(source.status)}</Badge></header><DataList items={[{ label: "Project", value: source.project }, { label: "Version", value: source.version }, { label: "Immutable pin", value: <code title={source.pin}>{source.pin.length > 18 ? `${source.pin.slice(0, 12)}…${source.pin.slice(-6)}` : source.pin}</code> }, { label: "Retrieved / verified", value: `${source.retrieved_at} / ${source.last_verified_at}` }, { label: "License", value: source.license_url ? <a href={source.license_url} target="_blank" rel="noreferrer">{source.license} <ExternalLink/></a> : source.license }, { label: "Relationship", value: sentence(source.relationship) }, { label: "Use classification", value: sentence(source.use_classification) }, { label: "Registry use", value: source.uses.length ? source.uses.map(sentence).join(", ") : "Not recorded" }, { label: "Content handling", value: sentence(source.cache_policy) }, { label: "Executable content", value: source.executable_content ? "External adapter only" : "No" }, { label: "License review", value: sentence(source.license_review) }, { label: "Update status", value: sentence(source.update_status) }]} /><details><summary>Intake review</summary><DataList items={[{ label: "Source ID", value: <code>{source.id}</code> }, { label: "Exact ref", value: <code>{source.exact_ref}</code> }, { label: "Imported/adapted paths", value: source.imported_paths.length ? source.imported_paths.join(", ") : "None" }, { label: "File-level license review", value: source.file_level_license_review }, { label: "Trademark considerations", value: source.trademark_considerations }, { label: "Attribution", value: source.attribution }, { label: "Security review", value: source.security_review }]} /><p>{source.transformation_history}</p></details><footer>{source.reference_url ? <a href={source.reference_url} target="_blank" rel="noreferrer">Review pinned source <ExternalLink/></a> : <span>Reference URL required</span>}<Button size="small" variant="ghost" onClick={() => { void navigator.clipboard?.writeText(source.pin); setNotice(`Copied immutable pin for ${source.name}.`); }}>Copy pin</Button></footer></Panel>)}</div>
+  </div>;
+}
+
+function ResearchSourceForm({ onCreate, saving }: { onCreate: (source: ResearchSourceDraft) => void; saving: boolean }) {
+  const [id, setId] = useState("research.local-source.v1"); const [name, setName] = useState("Local research source"); const [sourceType, setSourceType] = useState("documentation"); const [project, setProject] = useState(""); const [authority, setAuthority] = useState(""); const [referenceUrl, setReferenceUrl] = useState(""); const [version, setVersion] = useState(""); const [pin, setPin] = useState(""); const [retrievedAt, setRetrievedAt] = useState(new Date().toISOString().slice(0, 10)); const [license, setLicense] = useState("Review required"); const [licenseUrl, setLicenseUrl] = useState(""); const [useClassification, setUseClassification] = useState<ResearchSourceDraft["use_classification"]>("reference_only"); const [importedPaths, setImportedPaths] = useState(""); const [fileReview, setFileReview] = useState("No files copied; metadata review only."); const [trademark, setTrademark] = useState("No trademark use beyond attribution."); const [attribution, setAttribution] = useState(""); const [securityReview, setSecurityReview] = useState("No remote content is fetched or executed."); const [transformationHistory, setTransformationHistory] = useState("No imported or adapted content.");
+  const handling = researchSourceHandling(useClassification);
+  return <form className="dialog-form" onSubmit={(event) => { event.preventDefault(); onCreate({ id, name, source_type: sourceType, project, authority, reference_url: referenceUrl, version, pin, exact_ref: pin, retrieved_at: retrievedAt, license, license_url: licenseUrl, file_level_license_review: fileReview, trademark_considerations: trademark, relationship: handling.relationship, use_classification: useClassification, imported_paths: handling.needs_paths ? importedPaths.split(",").map((item) => item.trim()).filter(Boolean) : [], attribution, security_review: securityReview, transformation_history: transformationHistory }); }}><Field label="Source ID"><input value={id} onChange={(event) => setId(event.target.value)} pattern="[a-z](?:[a-z0-9._]|-)+" required/></Field><Field label="Display name"><input value={name} onChange={(event) => setName(event.target.value)} required/></Field><Field label="Project/repository"><input value={project} onChange={(event) => setProject(event.target.value)} placeholder="org/repo or publisher/project" required/></Field><Field label="Authority"><input value={authority} onChange={(event) => setAuthority(event.target.value)} placeholder="Publisher or project" required/></Field><Field label="Source type"><select value={sourceType} onChange={(event) => setSourceType(event.target.value)}><option value="dataset">Dataset</option><option value="documentation">Documentation</option><option value="software">Software</option><option value="rule_corpus">Rule corpus</option></select></Field><Field label="Pinned HTTPS reference" hint="Use a tag or full commit URL, never a mutable default branch."><input type="url" value={referenceUrl} onChange={(event) => setReferenceUrl(event.target.value)} placeholder="https://github.com/org/repo/tree/v1.2.3" required/></Field><Field label="Version"><input value={version} onChange={(event) => setVersion(event.target.value)} placeholder="1.2.3" required/></Field><Field label="Immutable pin" hint="Release tag or full commit digest."><input value={pin} onChange={(event) => setPin(event.target.value)} maxLength={128} required/></Field><Field label="Review date"><input type="date" value={retrievedAt} onChange={(event) => setRetrievedAt(event.target.value)} required/></Field><Field label="License"><input value={license} onChange={(event) => setLicense(event.target.value)} required/></Field><Field label="License HTTPS reference"><input type="url" value={licenseUrl} onChange={(event) => setLicenseUrl(event.target.value)} required/></Field><Field label="Use classification"><select value={useClassification} onChange={(event) => setUseClassification(event.target.value as ResearchSourceDraft["use_classification"])}><option value="reference_only">Reference only</option><option value="metadata_import">Metadata import</option><option value="clean_reimplementation">Clean reimplementation</option><option value="external_adapter">External adapter</option><option value="compatible_code_adaptation">Compatible code adaptation</option><option value="incompatible_or_restricted">Incompatible or restricted</option></select></Field><Field label="Derived relationship"><input value={sentence(handling.relationship)} readOnly/></Field>{handling.needs_paths ? <Field label="Imported/adapted repository paths" hint="Comma-separated repository-relative POSIX paths that were actually reviewed."><input value={importedPaths} onChange={(event) => setImportedPaths(event.target.value)} placeholder="bluefire/path/to/reviewed-file.py" required/></Field> : null}<Field label="File-level license review"><textarea value={fileReview} onChange={(event) => setFileReview(event.target.value)} required/></Field><Field label="Trademark considerations"><textarea value={trademark} onChange={(event) => setTrademark(event.target.value)} required/></Field><Field label="Attribution"><textarea value={attribution} onChange={(event) => setAttribution(event.target.value)} required/></Field><Field label="Security review"><textarea value={securityReview} onChange={(event) => setSecurityReview(event.target.value)} required/></Field><Field label="Transformation history"><textarea value={transformationHistory} onChange={(event) => setTransformationHistory(event.target.value)} required/></Field><Callout tone="warning" title="Classification-bound draft">{handling.needs_paths ? "This classification records only explicitly reviewed local paths; the browser still fetches or executes no remote content." : "The derived relationship and content policy prevent this draft from claiming copied files it does not identify."}</Callout><div className="dialog-actions"><Dialog.Close asChild><Button type="button" variant="ghost">Cancel</Button></Dialog.Close><Dialog.Close asChild><Button type="button" onClick={(event) => { const form = event.currentTarget.form; if (!form?.reportValidity()) { event.preventDefault(); return; } form.requestSubmit(); }} variant="primary" disabled={saving}>{saving ? "Saving" : "Save review draft"}</Button></Dialog.Close></div></form>;
+}
+
+function ReviewedT1082IntakePanel({ onNotice }: { onNotice: (message: string) => void }) {
+  const queryClient = useQueryClient();
+  const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
+  const [destinationId, setDestinationId] = useState("reviewed-t1082-local-v1");
+  const [profileId, setProfileId] = useState("");
+  const [operatorId, setOperatorId] = useState("local-source-reviewer");
+  const mutation = useMutation({
+    mutationFn: () => api.intakeReviewedT1082(destinationId, profileId, operatorId),
+    onSuccess: (result) => {
+      onNotice(`Reviewed T1082 intake ${result.package_activation.operation.replaceAll("_", " ")}.`);
+      void queryClient.invalidateQueries({ queryKey: ["catalog"] });
+      void queryClient.invalidateQueries({ queryKey: ["action-packages"] });
+    },
+    onError: (error) => onNotice(error instanceof Error ? error.message : "The reviewed source intake was refused."),
+  });
+  const profiles = (catalog.data?.runner_profiles ?? []).filter((profile) => profile.mode === "execute" && profile.platforms.includes("windows") && profile.enabled_actions.includes("endpoint.discovery.windows-version.v1"));
+  const result = mutation.data;
+  return <Panel className="reviewed-intake-panel"><PanelHeader eyebrow="Reviewed packaged intake" title="MITRE ATT&CK T1082 · v19.2" detail="Project one pinned declarative record, persist its content-addressed intake, and activate the fixed locally signed package. No upstream executable content is accepted." actions={<Badge tone="success"><ShieldCheck/>License reviewed</Badge>}/>
+    <div className="config-grid"><Field label="Destination ID" hint="A new lowercase product-state namespace; existing destinations are never overwritten."><input aria-label="Reviewed intake destination ID" value={destinationId} onChange={(event) => setDestinationId(event.target.value)} pattern="[a-z](?:[a-z0-9._]|-)+" maxLength={200} required/></Field><Field label="Execute runner profile"><select aria-label="Reviewed intake runner profile" value={profileId} onChange={(event) => setProfileId(event.target.value)} required><option value="">Select a reviewed Windows Execute profile</option>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.id}</option>)}</select></Field><Field label="Operator ID" hint="Recorded in local trust, install, and activation audit history."><input aria-label="Reviewed intake operator ID" value={operatorId} onChange={(event) => setOperatorId(event.target.value)} maxLength={128} required/></Field></div>
+    <Callout tone="warning" title="Activation boundary">This operation verifies the exact packaged source and license, creates a deterministic metadata envelope, validates the compiled runner inventory, and activates a fixed action package. It does not run the action or contact MITRE.</Callout>
+    <Button variant="primary" onClick={() => mutation.mutate()} disabled={mutation.isPending || !destinationId || !profileId || !operatorId}>{mutation.isPending ? <Activity className="spin"/> : <ShieldCheck/>}{mutation.isPending ? "Verifying and activating" : "Import and activate reviewed T1082"}</Button>
+    {catalog.isError ? <Callout tone="danger" title="Runner profiles unavailable">The local catalog could not be loaded, so intake activation is disabled.</Callout> : !catalog.isPending && !profiles.length ? <Callout tone="warning" title="No compatible runner profile">Enroll a Windows Execute profile that permits the reviewed Windows-version action.</Callout> : null}
+    {result ? <Callout tone="success" title="Reviewed intake active"><div data-testid="reviewed-intake-result"><DataList items={[{ label: "Destination", value: <code>{result.destination_id}</code> }, { label: "Intake record", value: <code>{result.intake.record_sha256}</code> }, { label: "Durable state", value: <code>{result.artifact.state_ref}</code> }, { label: "Receipt state", value: <code>{result.operation_receipt.state_ref}</code> }, { label: "Receipt SHA-256", value: <code>{result.operation_receipt.sha256}</code> }, { label: "Activation", value: sentence(result.package_activation.operation) }, { label: "Behavior", value: <code>{result.package_activation.availability.behavior_id}</code> }, { label: "Action", value: <code>{result.package_activation.availability.action_id}</code> }, { label: "Runner profile", value: <code>{result.package_activation.runner.profile_id}</code> }]} /></div></Callout> : null}
+  </Panel>;
+}

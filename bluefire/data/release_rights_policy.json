@@ -1,0 +1,429 @@
+{
+  "schema_version": "bluefire.release-rights-policy.v1",
+  "reviewed_at": "2026-08-30",
+  "review_scope": "base Python wheel, packaged web UI, native runner, committed data and documentation assets",
+  "allowed_license_expressions": [
+    "0BSD",
+    "(MIT OR Apache-2.0) AND Unicode-3.0",
+    "Apache-2.0",
+    "Apache-2.0 OR BSD-3-Clause",
+    "Apache-2.0 OR MIT",
+    "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+    "BSD-3-Clause",
+    "ISC",
+    "LGPL-2.1-only",
+    "LGPL-3.0-only",
+    "MIT",
+    "MIT-0",
+    "MIT OR Apache-2.0",
+    "Unlicense OR MIT",
+    "Zlib"
+  ],
+  "unresolved_items": [],
+  "project_license": {
+    "spdx_id": "MIT",
+    "primary_file": "LICENSE",
+    "sha256": "d0dab4d811fa55c3e661944ef6e44e06a4a080d6cb7ebb087fd0c666c747da2d",
+    "license_files": [
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
+    ]
+  },
+  "release_decision": {
+    "decision": "retain-mit",
+    "agpl_commercial_relicense": "not-authorized-by-repository-evidence",
+    "blocker": "The repository does not contain contributor assignments, a complete copyright ownership record, or other evidence authorizing an AGPL-3.0-only plus separate commercial-license relicense. Existing MIT history and the current MIT release license are retained without modification."
+  },
+  "notices": {
+    "path": "THIRD_PARTY_NOTICES.md",
+    "required_fragments": [
+      "LicenseRef-MITRE-ATTACK-2026",
+      "© 2026 The MITRE Corporation.",
+      "cffi (MIT-0)",
+      "69 packages in its production lock closure",
+      "48 external crates in `Cargo.lock`",
+      "pySigma 1.5.0 (LGPL-2.1-only)",
+      "BlueFire Nexus remains MIT licensed",
+      "does not contain contributor assignments"
+    ]
+  },
+  "python": {
+    "declared_runtime_requirements": [
+      "PyYAML>=6.0.1,<7",
+      "cryptography>=50,<51",
+      "PyNaCl>=1.5,<2"
+    ],
+    "locked_runtime_source": "bluefire/data/gate11_linux_wheelhouse.json",
+    "locked_runtime_distributions": [
+      {
+        "distribution": "cffi",
+        "version": "2.1.1",
+        "sha256": "c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf",
+        "license": "MIT-0"
+      },
+      {
+        "distribution": "cryptography",
+        "version": "50.0.0",
+        "sha256": "06a32a980526a6ab9a4b9bf8f7385800791e2bb960903cb6b530e4817509a3b7",
+        "license": "Apache-2.0 OR BSD-3-Clause"
+      },
+      {
+        "distribution": "pycparser",
+        "version": "3.0",
+        "sha256": "b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992",
+        "license": "BSD-3-Clause"
+      },
+      {
+        "distribution": "PyNaCl",
+        "version": "1.6.2",
+        "sha256": "22de65bb9010a725b0dac248f353bb072969c94fa8d6b1f34b87d7953cf7bbe4",
+        "license": "Apache-2.0"
+      },
+      {
+        "distribution": "PyYAML",
+        "version": "6.0.3",
+        "sha256": "ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc",
+        "license": "MIT"
+      }
+    ],
+    "optional_distributions": [
+      {
+        "requirement": "pysigma==1.5.0",
+        "license": "LGPL-2.1-only",
+        "shipping": "environment-dependent",
+        "redistribution_review_required": true
+      },
+      {
+        "requirement": "pysigma-backend-sqlite==1.2.2",
+        "license": "LGPL-3.0-only",
+        "shipping": "environment-dependent",
+        "redistribution_review_required": true
+      },
+      {
+        "requirement": "yara-python==4.5.4",
+        "license": "Apache-2.0",
+        "shipping": "environment-dependent",
+        "redistribution_review_required": true
+      }
+    ],
+    "development_requirements": [
+      "bandit[toml]>=1.8,<2",
+      "black>=26.3.1,<27",
+      "build>=1.2.2,<2",
+      "cyclonedx-bom>=7.3.1,<8",
+      "detect-secrets>=1.5,<2",
+      "jsonschema>=4.23,<5",
+      "mypy>=1.14,<2",
+      "pip-audit>=2.8,<3",
+      "pre-commit>=4.0,<5",
+      "pytest>=9.0.3,<10",
+      "pytest-timeout>=2.4,<3",
+      "ruff>=0.9,<1",
+      "types-PyYAML>=6.0.12,<7"
+    ]
+  },
+  "frontend": {
+    "lockfile_sha256": "6003d191eaa9eb6cf29948a36065c870acfd42299d01df3e4afb51f6e78fc54e",
+    "locked_package_count": 391,
+    "direct_requirements": {
+      "@radix-ui/react-dialog": "^1.1.15",
+      "@radix-ui/react-tooltip": "^1.2.8",
+      "@tanstack/react-query": "^5.90.2",
+      "@xyflow/react": "^12.8.6",
+      "lucide-react": "^0.544.0",
+      "react": "^19.1.1",
+      "react-dom": "^19.1.1",
+      "react-router-dom": "^7.9.1"
+    },
+    "development_requirements": {
+      "@axe-core/playwright": "^4.10.2",
+      "@eslint/js": "^9.36.0",
+      "@playwright/test": "^1.55.1",
+      "@testing-library/jest-dom": "6.9.1",
+      "@testing-library/react": "^16.3.0",
+      "@testing-library/user-event": "^14.6.1",
+      "@types/node": "^24.5.2",
+      "@types/react": "^19.1.16",
+      "@types/react-dom": "^19.1.9",
+      "@vitejs/plugin-react": "^5.0.3",
+      "eslint": "^9.36.0",
+      "eslint-plugin-react-hooks": "^5.2.0",
+      "eslint-plugin-react-refresh": "^0.4.20",
+      "globals": "^16.4.0",
+      "jsdom": "^27.0.0",
+      "typescript": "^5.9.2",
+      "typescript-eslint": "^8.44.1",
+      "vite": "^7.1.7",
+      "vitest": "^3.2.4"
+    },
+    "runtime_packages_by_license": {
+      "0BSD": [
+        "tslib@2.8.1"
+      ],
+      "BSD-3-Clause": [
+        "d3-ease@3.0.1"
+      ],
+      "ISC": [
+        "d3-color@3.1.0",
+        "d3-dispatch@3.0.1",
+        "d3-drag@3.0.0",
+        "d3-interpolate@3.0.1",
+        "d3-selection@3.0.0",
+        "d3-timer@3.0.1",
+        "d3-transition@3.0.1",
+        "d3-zoom@3.0.0",
+        "lucide-react@0.544.0"
+      ],
+      "MIT": [
+        "@floating-ui/core@1.8.0",
+        "@floating-ui/dom@1.8.0",
+        "@floating-ui/react-dom@2.1.9",
+        "@floating-ui/utils@0.2.12",
+        "@radix-ui/primitive@1.1.7",
+        "@radix-ui/react-arrow@1.1.15",
+        "@radix-ui/react-compose-refs@1.1.5",
+        "@radix-ui/react-context@1.2.2",
+        "@radix-ui/react-dialog@1.1.23",
+        "@radix-ui/react-dismissable-layer@1.1.19",
+        "@radix-ui/react-focus-guards@1.1.6",
+        "@radix-ui/react-focus-scope@1.1.16",
+        "@radix-ui/react-id@1.1.4",
+        "@radix-ui/react-popper@1.3.7",
+        "@radix-ui/react-portal@1.1.17",
+        "@radix-ui/react-presence@1.1.10",
+        "@radix-ui/react-primitive@2.1.10",
+        "@radix-ui/react-slot@1.3.3",
+        "@radix-ui/react-tooltip@1.2.16",
+        "@radix-ui/react-use-callback-ref@1.1.4",
+        "@radix-ui/react-use-controllable-state@1.2.6",
+        "@radix-ui/react-use-effect-event@0.0.5",
+        "@radix-ui/react-use-layout-effect@1.1.4",
+        "@radix-ui/react-use-rect@1.1.4",
+        "@radix-ui/react-use-size@1.1.4",
+        "@radix-ui/react-visually-hidden@1.2.11",
+        "@radix-ui/rect@1.1.3",
+        "@tanstack/query-core@5.102.0",
+        "@tanstack/react-query@5.102.0",
+        "@types/d3-color@3.1.3",
+        "@types/d3-drag@3.0.7",
+        "@types/d3-interpolate@3.0.4",
+        "@types/d3-selection@3.0.11",
+        "@types/d3-transition@3.0.9",
+        "@types/d3-zoom@3.0.8",
+        "@types/react-dom@19.2.4",
+        "@types/react@19.2.18",
+        "@xyflow/react@12.11.3",
+        "@xyflow/system@0.0.80",
+        "aria-hidden@1.2.6",
+        "classcat@5.0.5",
+        "cookie@1.1.1",
+        "csstype@3.2.3",
+        "detect-node-es@1.1.0",
+        "get-nonce@1.0.1",
+        "react-dom@19.2.8",
+        "react-remove-scroll-bar@2.3.8",
+        "react-remove-scroll@2.7.2",
+        "react-router-dom@7.18.2",
+        "react-router@7.18.2",
+        "react-style-singleton@2.2.3",
+        "react@19.2.8",
+        "scheduler@0.27.0",
+        "set-cookie-parser@2.7.2",
+        "use-callback-ref@1.3.3",
+        "use-sidecar@1.1.3",
+        "use-sync-external-store@1.6.0",
+        "zustand@4.5.7"
+      ]
+    }
+  },
+  "rust": {
+    "lockfile_sha256": "335d895468dc5daa6c83d3bd1f131f9115f9d68624b8794687c14042ba04e7d5",
+    "release_graph": [
+      "autocfg@1.5.1",
+      "bitflags@2.13.1",
+      "block-buffer@0.10.4",
+      "cfg-if@1.0.4",
+      "chrono@0.4.45",
+      "cpufeatures@0.2.17",
+      "crypto-common@0.1.7",
+      "digest@0.10.7",
+      "equivalent@1.0.2",
+      "foldhash@0.1.5",
+      "generic-array@0.14.7",
+      "hashbrown@0.15.5",
+      "hashbrown@0.17.1",
+      "hex@0.4.3",
+      "hmac@0.12.1",
+      "indexmap@2.14.0",
+      "itoa@1.0.18",
+      "libc@0.2.189",
+      "libm@0.2.16",
+      "memchr@2.8.3",
+      "num-traits@0.2.19",
+      "proc-macro2@1.0.107",
+      "quote@1.0.47",
+      "semver@1.0.28",
+      "serde@1.0.229",
+      "serde_core@1.0.229",
+      "serde_derive@1.0.229",
+      "serde_json@1.0.151",
+      "sha2@0.10.9",
+      "spin@0.9.9",
+      "string-interner@0.19.0",
+      "subtle@2.6.1",
+      "syn@3.0.3",
+      "typenum@1.20.1",
+      "unicode-ident@1.0.24",
+      "version_check@0.9.5",
+      "wasmi@1.1.0",
+      "wasmi_collections@1.1.0",
+      "wasmi_core@1.1.0",
+      "wasmi_ir@1.1.0",
+      "wasmparser@0.239.0",
+      "zmij@1.0.23"
+    ],
+    "locked_crates_by_license": {
+      "(MIT OR Apache-2.0) AND Unicode-3.0": [
+        "unicode-ident@1.0.24"
+      ],
+      "Apache-2.0 OR MIT": [
+        "autocfg@1.5.1",
+        "equivalent@1.0.2",
+        "indexmap@2.14.0"
+      ],
+      "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT": [
+        "wasm-encoder@0.239.0",
+        "wasmparser@0.239.0",
+        "wast@239.0.0",
+        "wat@1.239.0"
+      ],
+      "BSD-3-Clause": [
+        "subtle@2.6.1"
+      ],
+      "MIT": [
+        "generic-array@0.14.7",
+        "libm@0.2.16",
+        "spin@0.9.9",
+        "zmij@1.0.23"
+      ],
+      "MIT OR Apache-2.0": [
+        "bitflags@2.13.1",
+        "block-buffer@0.10.4",
+        "bumpalo@3.20.3",
+        "cfg-if@1.0.4",
+        "chrono@0.4.45",
+        "cpufeatures@0.2.17",
+        "crypto-common@0.1.7",
+        "digest@0.10.7",
+        "hashbrown@0.15.5",
+        "hashbrown@0.17.1",
+        "hex@0.4.3",
+        "hmac@0.12.1",
+        "itoa@1.0.18",
+        "leb128fmt@0.1.0",
+        "libc@0.2.189",
+        "num-traits@0.2.19",
+        "proc-macro2@1.0.107",
+        "quote@1.0.47",
+        "semver@1.0.28",
+        "serde@1.0.229",
+        "serde_core@1.0.229",
+        "serde_derive@1.0.229",
+        "serde_json@1.0.151",
+        "sha2@0.10.9",
+        "string-interner@0.19.0",
+        "syn@3.0.3",
+        "typenum@1.20.1",
+        "unicode-width@0.2.2",
+        "version_check@0.9.5",
+        "wasmi@1.1.0",
+        "wasmi_collections@1.1.0",
+        "wasmi_core@1.1.0",
+        "wasmi_ir@1.1.0"
+      ],
+      "Unlicense OR MIT": [
+        "memchr@2.8.3"
+      ],
+      "Zlib": [
+        "foldhash@0.1.5"
+      ]
+    }
+  },
+  "assets": {
+    "classifications": {
+      "project-authored-data-mit": [
+        "bluefire/catalog/actions.yaml",
+        "bluefire/catalog/behaviors.yaml",
+        "bluefire/data/__init__.py",
+        "bluefire/data/ai_adaptive_safe_chain.yaml",
+        "bluefire/data/architecture_policy.json",
+        "bluefire/data/bluefire.example.yaml",
+        "bluefire/data/deep_behavior_packs.json",
+        "bluefire/data/detection_regression.yaml",
+        "bluefire/data/endpoint_deep_behavior_lab.yaml",
+        "bluefire/data/gate11_linux_wheelhouse.json",
+        "bluefire/data/linux_container_validation.yaml",
+        "bluefire/data/operator_representative_validation.yaml",
+        "bluefire/data/product_acceptance.yaml",
+        "bluefire/data/product_acceptance_result.schema.json",
+        "bluefire/data/release_rights_policy.json",
+        "bluefire/data/research_sources.yaml",
+        "bluefire/data/restricted_persistence_canary.yaml",
+        "bluefire/data/sandbox_research_chain.yaml",
+        "bluefire/data/windows_endpoint_validation.yaml",
+        "bluefire/native/__init__.py"
+      ],
+      "third-party-declarative-metadata-custom-license": [
+        "bluefire/data/mitre_attack_t1082_v19_2.json",
+        "bluefire/data/mitre_attack_v19_2_LICENSE.txt"
+      ],
+      "generated-frontend-bundle-reviewed-dependency-graph": [
+        "bluefire/ui/app.js",
+        "bluefire/ui/index.html",
+        "bluefire/ui/styles.css"
+      ],
+      "generated-native-runner-reviewed-rust-graph": [
+        "bluefire/native/bluefire-runner.exe",
+        "bluefire/native/linux-x86_64/bluefire-runner",
+        "bluefire/native/linux-x86_64/runner-manifest.json",
+        "bluefire/native/runner-manifest.json"
+      ],
+      "generated-product-screenshot-mit": [
+        "docs/assets/screenshots/ai-planner.png",
+        "docs/assets/screenshots/builder.png",
+        "docs/assets/screenshots/compare.png",
+        "docs/assets/screenshots/detection-lab.png",
+        "docs/assets/screenshots/evidence.png",
+        "docs/assets/screenshots/execute-review.png",
+        "docs/assets/screenshots/live-run.png",
+        "docs/assets/screenshots/overview.png",
+        "docs/assets/screenshots/runners.png"
+      ]
+    },
+    "third_party_integrity": {
+      "bluefire/data/mitre_attack_t1082_v19_2.json": "dd2e50ceef844302a690a1debac8336864e93ebd19da526eefac3072f5ee9a02",
+      "bluefire/data/mitre_attack_v19_2_LICENSE.txt": "4de9222b0d5bc69b758f9cf0afdaea48fdcbfe7d33c7481973a6aa07d6cbea9d"
+    }
+  },
+  "project_authored_code": {
+    "license": "MIT",
+    "basis": "Repository-authored source covered by the root LICENSE; externally sourced declarative metadata is separately classified in assets.",
+    "roots": [
+      "bluefire",
+      "frontend/src",
+      "frontend/tests",
+      "runner/src",
+      "runner/tests",
+      "tests_platform",
+      "tools"
+    ],
+    "extensions": [
+      ".css",
+      ".html",
+      ".py",
+      ".rs",
+      ".ts",
+      ".tsx"
+    ]
+  }
+}

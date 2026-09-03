@@ -1,0 +1,114 @@
+schema_version: bluefire.scenario.v1
+id: scenario.sandbox.research.chain.v1
+title: Neutral sandbox research chain
+purpose: Exercise typed planning, an interchangeable discovery step, a blocked-network fallback, and cleanup.
+start: create_fixture
+steps:
+  - id: create_fixture
+    behavior_id: sandbox.fixture.create.v1
+    parameters:
+      record_count: 8
+
+  - id: transform_fixture
+    behavior_id: sandbox.fixture.transform.v1
+    parameters:
+      redact_values: true
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+  - id: discover_records
+    behavior_id: sandbox.discovery.list.v1
+    alternates:
+      - sandbox.discovery.metadata.v1
+    inputs:
+      fixture:
+        from_step: transform_fixture
+        artifact: fixture
+
+  - id: stage_records
+    behavior_id: sandbox.collection.stage.v1
+    parameters:
+      bundle_format: jsonl
+    inputs:
+      records:
+        from_step: discover_records
+        artifact: records
+
+  - id: try_loopback
+    behavior_id: sandbox.network.loopback.v1
+    parameters:
+      port: 4317
+    inputs:
+      bundle:
+        from_step: stage_records
+        artifact: bundle
+
+  - id: export_locally
+    behavior_id: sandbox.export.local.v1
+    parameters:
+      retention_label: ephemeral
+    inputs:
+      bundle:
+        from_step: stage_records
+        artifact: bundle
+
+  - id: cleanup_workspace
+    behavior_id: sandbox.cleanup.v1
+    parameters:
+      verify_removal: true
+    inputs:
+      workspace:
+        from_step: create_fixture
+        artifact: workspace
+
+edges:
+  - from_step: create_fixture
+    outcome: success
+    to_step: transform_fixture
+  - from_step: transform_fixture
+    outcome: success
+    to_step: discover_records
+  - from_step: discover_records
+    outcome: success
+    to_step: stage_records
+  - from_step: discover_records
+    outcome: partial
+    to_step: stage_records
+  - from_step: stage_records
+    outcome: success
+    to_step: try_loopback
+  - from_step: stage_records
+    outcome: partial
+    to_step: try_loopback
+  - from_step: try_loopback
+    outcome: success
+    to_step: cleanup_workspace
+  - from_step: try_loopback
+    outcome: partial
+    to_step: export_locally
+  - from_step: try_loopback
+    outcome: blocked
+    to_step: export_locally
+  - from_step: try_loopback
+    outcome: failed
+    to_step: export_locally
+  - from_step: export_locally
+    outcome: success
+    to_step: cleanup_workspace
+  - from_step: export_locally
+    outcome: partial
+    to_step: cleanup_workspace
+  - from_step: export_locally
+    outcome: failed
+    to_step: cleanup_workspace
+provenance:
+  source: BlueFire Nexus canonical sandbox design
+  reference: canonical neutral scenario contract
+  license: MIT
+  derived: false
+  notes: Authored as a safe fixture-only validation scenario.
+limitations:
+  - All artifacts are synthetic or runner-owned; the scenario makes no external target claims.
+  - A successful simulation is not evidence that an execute-mode action ran.

@@ -1,0 +1,596 @@
+schema_version: bluefire.behavior-catalog.v1
+items:
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.fixture.create.v1
+    title: Create deterministic fixture
+    purpose: Prepare 1..100 exact deterministic JSONL records at the fixed runner-owned fixtures/input.jsonl path.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.fixture, filesystem.write]
+    inputs: []
+    outputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+        description: Opaque runner-owned workspace reference.
+    parameters:
+      - name: record_count
+        type: integer
+        default: 6
+        minimum: 1
+        maximum: 100
+        description: Number of exact synthetic JSONL records to create at fixtures/input.jsonl.
+    simulation_id: simulation.sandbox.fixture.create.v1
+    action_ids: [sandbox.fixture.create.v1]
+    telemetry: [sandbox.fixture.created]
+    detection_hints: [Fixture creation is synthetic and should remain labeled synthetic.]
+    provenance: &authored
+      source: BlueFire Nexus canonical sandbox design
+      reference: canonical neutral behavior catalog
+      license: MIT
+      derived: false
+      notes: New control-plane metadata; no operational implementation is embedded.
+    limitations: [Represents only deterministic synthetic fixture data.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.fixture.transform.v1
+    title: Transform deterministic fixture
+    purpose: Validate and canonicalize the exact synthetic fixture schema, optionally replacing every value with the public synthetic-redacted placeholder.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.fixture, filesystem.read, filesystem.write]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    parameters:
+      - name: redact_values
+        type: boolean
+        default: true
+        description: When true, replace every accepted fixture value with the fixed public synthetic-redacted placeholder.
+    simulation_id: simulation.sandbox.fixture.transform.v1
+    action_ids: [sandbox.fixture.transform.v1]
+    telemetry: [sandbox.fixture.transformed]
+    detection_hints: [Transformation evidence should include the source artifact hash.]
+    provenance: *authored
+    limitations: [Only runner-owned fixture artifacts are eligible.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.discovery.list.v1
+    title: List exact fixture artifact
+    purpose: Verify and describe the exact typed sandbox fixture without enumerating siblings or contents.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1083]
+    capabilities: [sandbox.discovery, filesystem.read]
+    inputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    parameters: []
+    simulation_id: simulation.sandbox.discovery.list.v1
+    action_ids: [sandbox.discovery.list.v1]
+    telemetry: [sandbox.discovery.listed]
+    detection_hints: [Evidence contains one metadata record for the exact bound fixture; no sibling or content enumeration occurs.]
+    provenance: *authored
+    limitations: [Does not enumerate sibling paths, the host filesystem, or fixture contents.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.discovery.metadata.v1
+    title: Inspect exact fixture metadata
+    purpose: Produce the same exact-file discovery record through a compatible metadata-oriented strategy.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1083]
+    capabilities: [sandbox.discovery, filesystem.read]
+    inputs:
+      - name: fixture
+        type: artifact.sandbox.fixture.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    parameters: []
+    simulation_id: simulation.sandbox.discovery.metadata.v1
+    action_ids: [sandbox.discovery.metadata.v1]
+    telemetry: [sandbox.discovery.metadata_inspected]
+    detection_hints: [Evidence contains one metadata record for the exact bound fixture without opening or hashing its contents.]
+    provenance: *authored
+    limitations: [Compatible exact-file alternative to listing; it does not inspect siblings, host metadata, or fixture contents.]
+
+  - schema_version: bluefire.behavior.v1
+    id: endpoint.discovery.system.v1
+    title: Discover bounded system identity
+    purpose: Observe operating-system and architecture facts through compiled cross-platform APIs.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1082]
+    capabilities: [endpoint.discovery, system.discovery]
+    inputs: []
+    outputs:
+      - name: system
+        type: artifact.endpoint.system-profile.v1
+    parameters: []
+    simulation_id: simulation.endpoint.discovery.system.v1
+    action_ids: [endpoint.discovery.system.v1]
+    telemetry: [endpoint.discovery.system_observed]
+    detection_hints: [System discovery is bounded to non-sensitive platform identity fields.]
+    provenance:
+      source: Reviewed MITRE ATT&CK Enterprise 19.2 T1082 metadata
+      reference: https://github.com/mitre/cti/blob/8543c5b05bd9bbcace9fc37f30bba96b675b6f33/enterprise-attack/attack-pattern/attack-pattern--354a7f88-63fb-41b5-a801-ce3b377b36f1.json
+      license: LicenseRef-MITRE-ATTACK-2026
+      derived: false
+      notes: The reviewed neutral T1082 projection informs this mapping; descriptions, procedures, commands, and upstream executable content are neither copied nor executed.
+    limitations: [Does not collect account, network, or host file content.]
+
+  - schema_version: bluefire.behavior.v1
+    id: endpoint.discovery.processes.v1
+    title: Discover bounded process identities
+    purpose: Observe a bounded list of process IDs and names through a fixed platform adapter.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1057]
+    capabilities: [endpoint.discovery, process.discovery, process.spawn]
+    inputs: []
+    outputs:
+      - name: processes
+        type: artifact.endpoint.process-records.v1
+    parameters:
+      - name: record_limit
+        type: integer
+        default: 25
+        minimum: 1
+        maximum: 100
+        description: Maximum number of process identity records returned.
+    simulation_id: simulation.endpoint.discovery.processes.v1
+    action_ids: [endpoint.discovery.processes.v1]
+    telemetry: [endpoint.discovery.processes_observed]
+    detection_hints: [Process discovery uses only a compiled API or fixed reviewed command vector.]
+    provenance: *authored
+    limitations: [Does not accept an executable or caller-authored arguments.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.discovery.recursive.v1
+    title: Recursively discover sandbox files
+    purpose: Enumerate files and directories only below a bound runner-owned workspace.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: [T1083]
+    capabilities: [sandbox.discovery, filesystem.read]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: records
+        type: artifact.sandbox.filesystem.record.v1
+        multiple: true
+    parameters:
+      - name: record_limit
+        type: integer
+        default: 25
+        minimum: 1
+        maximum: 100
+        description: Maximum number of filesystem records returned.
+      - name: max_depth
+        type: integer
+        default: 3
+        minimum: 1
+        maximum: 16
+        description: Maximum directory depth traversed below the bound workspace.
+    simulation_id: simulation.sandbox.discovery.recursive.v1
+    action_ids: [sandbox.discovery.recursive.v1]
+    telemetry: [sandbox.discovery.recursive_completed]
+    detection_hints: [Recursive enumeration should retain the bound root and truncation signal.]
+    provenance: *authored
+    limitations: [Symlinks are reported as blocked and are never traversed.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.archive.tar.v1
+    title: Create deterministic sandbox archive
+    purpose: Stage selected runner-owned files into a bounded deterministic ustar archive.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: [T1560.001]
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write]
+    inputs:
+      - name: records
+        type: artifact.sandbox.filesystem.record.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.archive.v1
+    parameters: []
+    simulation_id: simulation.sandbox.archive.tar.v1
+    action_ids: [sandbox.archive.tar.v1]
+    telemetry: [sandbox.archive.created]
+    detection_hints: [Archive evidence should link its digest to every selected input record.]
+    provenance: *authored
+    limitations: [Only regular files inside runner-owned scope can be archived.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.collection.stage.v1
+    title: Stage selected fixture records
+    purpose: Validate exactly one typed discovery record and create one deterministic JSON or JSONL bundle, failing before any write on input error.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: [T1074.001]
+    capabilities: [sandbox.collection, filesystem.read, filesystem.write]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    parameters:
+      - name: bundle_format
+        type: string
+        default: jsonl
+        enum: [jsonl, json]
+        description: Deterministic JSONL or JSON representation for the single validated fixture bundle.
+    simulation_id: simulation.sandbox.collection.stage.v1
+    action_ids: [sandbox.collection.stage.v1]
+    telemetry: [sandbox.collection.staged]
+    detection_hints: [Staging should link each output hash to its discovery-record parents.]
+    provenance: *authored
+    limitations: [Accepts exactly one bound regular-file fixture record and never leaves a partial bundle after input failure.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.network.loopback.v1
+    title: Exercise loopback transport
+    purpose: Send a synthetic bundle only to a runner-enforced loopback sink.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: [T1041]
+    capabilities: [sandbox.network, filesystem.read, network.loopback]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.network.receipt.v1
+    parameters:
+      - name: port
+        type: integer
+        default: 4317
+        minimum: 1024
+        maximum: 65535
+        description: Loopback sink port selected by the reviewed runner profile.
+    simulation_id: simulation.sandbox.network.loopback.v1
+    action_ids: [sandbox.network.loopback.v1]
+    telemetry: [sandbox.network.loopback_attempted]
+    detection_hints: [A policy refusal is control-blocked evidence, not executed evidence.]
+    provenance: *authored
+    limitations: [The action contract permits loopback scope only.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.export.local.v1
+    title: Create a temporary policy-labelled local copy
+    purpose: Create a temporary synthetic bundle copy at a fixed runner-owned ephemeral or review path; normal cleanup removes both labels.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.export, filesystem.read, filesystem.write, export.local]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.export.receipt.v1
+    parameters:
+      - name: retention_label
+        type: string
+        default: ephemeral
+        enum: [ephemeral, review]
+        description: Selects the temporary ephemeral or review path; it is a policy label, not a preservation promise or caller path.
+    simulation_id: simulation.sandbox.export.local.v1
+    action_ids: [sandbox.export.local.v1]
+    telemetry: [sandbox.export.local_completed]
+    detection_hints: [Local-copy evidence should record the temporary policy label, bundle hash, and cleanup receipt.]
+    provenance: *authored
+    limitations: [The runner chooses the fixed local path; neither label survives normal cleanup and no caller path is accepted.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.execution.native-canary.v1
+    title: Run bounded native execution canary
+    purpose: Run a deterministic, bounded in-process numeric canary in compiled Rust without launching a process or producing filesystem or network effects.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [native.execution]
+    inputs: []
+    outputs:
+      - name: result
+        type: artifact.sandbox.execution.canary.v1
+        description: Bounded numeric canary result and requested round count.
+    parameters:
+      - name: rounds
+        type: integer
+        default: 256
+        minimum: 1
+        maximum: 4096
+        description: Number of deterministic in-process canary rounds; it never becomes a command or process argument.
+    simulation_id: simulation.sandbox.execution.native-canary.v1
+    action_ids: [sandbox.execution.native-canary.v1]
+    telemetry: [sandbox.execution.native_canary_completed]
+    detection_hints: [Treat this as proof of one bounded compiled action path, not general command or program execution.]
+    provenance: *authored
+    limitations: [Performs only deterministic in-process computation and has no process, filesystem, or network effect.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.execution.process-tree-cancellation-witness.v1
+    title: Witness cooperative and forced process-tree cancellation
+    purpose: Prove that the packaged Rust runner acknowledges a request-bound private cancellation signal and that Windows Job containment removes its fixed descendant tree.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows]
+    techniques: []
+    capabilities: [native.execution, filesystem.read, filesystem.write, process.spawn]
+    inputs: []
+    outputs: []
+    parameters: []
+    simulation_id: simulation.sandbox.execution.process-tree-cancellation-witness.v1
+    action_ids: [sandbox.execution.process-tree-cancellation-witness.v1]
+    telemetry: [sandbox.execution.process_tree_cancellation_witnessed]
+    detection_hints: [Treat success as a control-plane simulation only; dynamic proof requires a packaged Windows runner, nonce acknowledgement, and identity-bound absence probes.]
+    provenance: *authored
+    limitations: [Windows-only cancellation witness; it accepts no executable, command, path, script, or caller-selected process input.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.identity-material.seed.v1
+    title: Seed public identity material canary
+    purpose: Write one fixed public, non-secret canary document at identity-material/public-canary.json inside the runner-owned workspace.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.identity-material.seed, filesystem.write]
+    inputs: []
+    outputs:
+      - name: identity_material
+        type: artifact.sandbox.identity-material.v1
+        description: Exact fixed-path reference to the public identity-material canary.
+    parameters: []
+    simulation_id: simulation.sandbox.identity-material.seed.v1
+    action_ids: [sandbox.identity-material.seed.v1]
+    telemetry: [sandbox.identity_material.seeded]
+    detection_hints: [Evidence must label the document public synthetic canary material and retain its fixed path and digest.]
+    provenance: *authored
+    limitations: [Creates only a public synthetic canary; it does not access, derive, store, or represent a credential.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.identity-material.inspect.v1
+    title: Inspect public identity material canary
+    purpose: Read only the exact bound public canary and report its digest and bounded field count without returning document contents.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.identity-material.inspect, filesystem.read]
+    inputs:
+      - name: identity_material
+        type: artifact.sandbox.identity-material.v1
+    outputs:
+      - name: inspection
+        type: artifact.sandbox.identity-material.inspection.v1
+        description: Digest and bounded field count for the exact public canary.
+    parameters: []
+    simulation_id: simulation.sandbox.identity-material.inspect.v1
+    action_ids: [sandbox.identity-material.inspect.v1]
+    telemetry: [sandbox.identity_material.inspected]
+    detection_hints: [Inspection evidence should contain only the exact artifact identity, digest, size, and bounded field count.]
+    provenance: *authored
+    limitations: [Reads only the seeded public canary and never returns its values or enumerates adjacent files.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.credential.peer-challenge.v1
+    title: Exercise an authorized disposable peer credential
+    purpose: Prove possession of one managed one-task HMAC capability to a distinct one-shot authorized receiver process while transferring only the fixed public staged bundle and retaining no raw credential value.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.peer, filesystem.read, network.loopback]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.peer-handoff.receipt.v2
+        description: Authenticated lab receipt containing an opaque credential handle, challenge result, peer handles, and bounded process/lifecycle evidence.
+    parameters:
+      - name: port
+        type: integer
+        default: 4317
+        minimum: 1024
+        maximum: 65535
+        description: Port on the runner-enforced literal 127.0.0.1 destination; no hostname or address is accepted.
+    simulation_id: simulation.sandbox.credential.peer-challenge.v1
+    action_ids: [sandbox.peer.handoff.v1]
+    telemetry: [sandbox.credential.peer_challenge_attempted]
+    detection_hints: [A successful Execute result must prove the one-task challenge and retain only an opaque handle; Simulate never proves possession.]
+    provenance: *authored
+    limitations: [Uses only a managed high-entropy capability derived for one approved task and one ephemeral lab receiver; it never reads user, host, browser, cloud, or adjacent credentials.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.peer.handoff.v1
+    title: Move staged bundle between authorized disposable lab peers
+    purpose: Exercise credential-bound movement between a Rust runner process and a distinct one-shot managed receiver process by authenticating one managed one-task capability and sending exactly one bound staged bundle to literal 127.0.0.1, with no caller-selectable host or path.
+    execution_state: action
+    safety_tier: controlled
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.peer, filesystem.read, network.loopback]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.peer-handoff.receipt.v2
+        description: Authenticated handoff receipt with opaque authorization handles and bounded process/lifecycle evidence for the exact staged bundle.
+    parameters:
+      - name: port
+        type: integer
+        default: 4317
+        minimum: 1024
+        maximum: 65535
+        description: Port on the runner-enforced literal 127.0.0.1 destination; no hostname or address is accepted.
+    simulation_id: simulation.sandbox.peer.handoff.v1
+    action_ids: [sandbox.peer.handoff.v1]
+    telemetry: [sandbox.peer.handoff_attempted]
+    detection_hints: [A successful lab handoff must bind the exact artifact, opaque one-task credential handle, distinct runner and receiver process identities, one-shot memory-only lifecycle, and authenticated receiver acknowledgement; a blocked-network profile refusal is never a successful handoff.]
+    provenance: *authored
+    limitations: [This is lateral-movement control research only between explicitly authorized same-host disposable lab roles; it never compromises or authorizes a remote host, accepts only a typed staged bundle, and exposes no raw credential value.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.observability.variant.v1
+    title: Create reversible observability variant
+    purpose: Create one reversible canonical or chunked hexadecimal representation of a bound staged bundle at observability/variant.bin for comparison, never for bypass or control impairment.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.observability.variant, filesystem.read, filesystem.write]
+    inputs:
+      - name: bundle
+        type: artifact.sandbox.bundle.v1
+    outputs:
+      - name: variant
+        type: artifact.sandbox.observability.variant.v1
+        description: Fixed-path reversible representation whose metadata identifies canonical or chunked_hex and binds the exact staged bundle.
+    parameters:
+      - name: representation
+        type: string
+        default: canonical
+        enum: [canonical, chunked_hex]
+        description: Reviewed reversible representation for side-by-side observability comparison.
+    simulation_id: simulation.sandbox.observability.variant.v1
+    action_ids: [sandbox.observability.variant.v1]
+    telemetry: [sandbox.observability.variant_created]
+    detection_hints: [Comparison evidence should bind the source and variant digests and the exact reversible representation.]
+    provenance: *authored
+    limitations: [The representation is transparent and reversible; no defense bypass, evasion, or control-impairment claim is made.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.cleanup.v1
+    title: Clean runner-owned workspace
+    purpose: Quarantine, revalidate, and remove receipt-bound temporary artifacts, then emit an authoritative verification report.
+    execution_state: action
+    safety_tier: safe
+    platforms: [windows, linux, macos]
+    techniques: []
+    capabilities: [sandbox.cleanup, filesystem.write, cleanup]
+    inputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+    outputs:
+      - name: receipt
+        type: artifact.sandbox.cleanup.receipt.v1
+    parameters:
+      - name: verify_removal
+        type: boolean
+        default: true
+        enum: [true]
+        description: Require the runner to verify receipt and path removal and report authoritative verification counters.
+    simulation_id: simulation.sandbox.cleanup.v1
+    action_ids: [sandbox.cleanup.v1]
+    telemetry: [sandbox.cleanup.completed]
+    detection_hints: [Cleanup evidence should include the authoritative requested, removed, absent, retained, error, and verification fields.]
+    provenance: *authored
+    limitations: [Cannot name arbitrary paths; a public-path replacement is left untouched and makes cleanup fail visibly.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.restricted.persistence-marker.v1
+    title: Validate persistence detection with a restricted sandbox canary
+    purpose: Create one fixed, non-executable marker under the runner-owned restricted directory so operators can exercise restricted-tier approvals, observation, and cleanup without modifying host persistence.
+    execution_state: action
+    safety_tier: restricted
+    platforms: [windows, linux, macos]
+    techniques: [T1547]
+    capabilities: [sandbox.restricted, filesystem.write]
+    inputs: []
+    outputs:
+      - name: workspace
+        type: artifact.sandbox.workspace.v1
+        description: Opaque runner-owned restricted canary workspace reference.
+      - name: marker
+        type: artifact.sandbox.restricted-marker.v1
+        description: Fixed-path non-executable marker used only for detection validation.
+    parameters:
+      - name: label
+        type: string
+        default: persistence_detection_canary
+        enum: [persistence_detection_canary, control_validation]
+        description: Reviewed semantic label; it never becomes a path, command, or host persistence setting.
+    simulation_id: simulation.sandbox.restricted.persistence-marker.v1
+    action_ids: [sandbox.restricted.persistence-marker.v1]
+    telemetry: [sandbox.restricted.persistence_marker_created]
+    detection_hints: [Correlate the fixed marker path with its approval, runner receipt, independent collector evidence, and cleanup outcome.]
+    provenance: *authored
+    limitations: [Does not create, alter, or test operating-system persistence; it writes only restricted/persistence-marker.json inside the bound runner workspace.]
+
+  - &metadata_research
+    schema_version: bluefire.behavior.v1
+    id: research.credential.access.v1
+    title: Credential-access detection research
+    purpose: Describe credential-access observables for hypothesis and fixture design.
+    execution_state: metadata_only
+    safety_tier: restricted
+    platforms: [windows, linux, macos]
+    techniques: [T1003]
+    capabilities: [research.metadata]
+    inputs: []
+    outputs:
+      - name: hypothesis
+        type: artifact.research.hypothesis.v1
+    parameters:
+      - name: evidence_basis
+        type: string
+        required: true
+        enum: [public_documentation, synthetic_fixture]
+    action_ids: []
+    telemetry: [research.hypothesis.created]
+    detection_hints: [Treat the output as a hypothesis until fixture or observed evidence exists.]
+    provenance: &legacy_metadata
+      source: BlueFire Nexus existing neutral profile metadata
+      reference: src/core/modules/impl/standard_modules.py profile mappings
+      license: MIT
+      derived: true
+      notes: Only tactic mapping and observable concepts were retained; no implementation was copied.
+    limitations: [Metadata only; unavailable for execution or simulation dispatch.]
+
+  - <<: *metadata_research
+    id: research.persistence.change.v1
+    title: Persistence-change detection research
+    purpose: Describe persistence-change observables for hypothesis and fixture design.
+    techniques: [T1547]
+
+  - <<: *metadata_research
+    id: research.lateral.movement.v1
+    title: Lateral-movement detection research
+    purpose: Describe lateral-movement observables for hypothesis and fixture design.
+    techniques: [T1021]
+
+  - <<: *metadata_research
+    id: research.defense.evasion.v1
+    title: Defense-evasion detection research
+    purpose: Describe defense-evasion observables for hypothesis and fixture design.
+    techniques: [T1562.001]
