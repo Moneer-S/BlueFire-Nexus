@@ -10,7 +10,10 @@ const BROWSER_CAPABILITY = /^[A-Za-z0-9_-]{64}$/;
 // against stale catalog metadata.
 const AI_DRAFT_REQUEST_TIMEOUT_MS = 1_815_750;
 const RUNNER_TRUST_MUTATION_TIMEOUT_MS = 135_000;
-const SYNCHRONOUS_REPLAY_TIMEOUT_MS = 180_000;
+// Replay remains synchronous, and a browser disconnect does not cancel server-side
+// effects. Cover the backend's full 24-hour profile budget plus its 60-second
+// execution-completion margin without trusting potentially stale catalog metadata.
+const SYNCHRONOUS_REPLAY_TIMEOUT_MS = (24 * 60 * 60 * 1000) + 60_000;
 export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
 export const BROWSER_SESSION_RELAUNCH_MESSAGE = "This local browser session is unavailable. Close this tab and relaunch BlueFire with `bluefire ui`.";
 const EMPTY_ACTION_PACKAGE_CATALOG_DIGEST = `sha256:${"0".repeat(64)}`;
@@ -527,8 +530,8 @@ export const api = {
   },
   async replay(runId: string, body: Record<string, unknown>): Promise<RunRecord> {
     if (DEMO_MODE) return { ...structuredClone(demoRuns[0]!), run_id: `demo-replay-${Date.now()}`, replay: { source_run_id: runId, ...body }, is_demo: true };
-    // The endpoint returns only after the seeded 120-second Execute budget,
-    // bounded readiness/control work, persistence, and indexing complete.
+    // The endpoint returns only after the configured Execute budget, bounded
+    // readiness/control work, persistence, and indexing complete.
     return request(`/runs/${encodeURIComponent(runId)}/replays`, { method: "POST", body: JSON.stringify(body) }, SYNCHRONOUS_REPLAY_TIMEOUT_MS);
   },
   async compare(runIds: string[]): Promise<ComparisonResponse> {

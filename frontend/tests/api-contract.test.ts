@@ -104,17 +104,20 @@ describe("control-plane request contracts", () => {
     });
   });
 
-  it("allows a seeded synchronous Execute replay to finish inside its bounded 180-second request", async () => {
+  it("keeps a synchronous Execute replay open through the maximum configured profile budget", async () => {
     vi.useFakeTimers();
+    const timeoutSpy = vi.spyOn(window, "setTimeout");
     vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
-      const completion = window.setTimeout(() => resolve(new Response(JSON.stringify(demoRuns[0]), { status: 200, headers: { "Content-Type": "application/json" } })), 90_000);
+      const completion = window.setTimeout(() => resolve(new Response(JSON.stringify(demoRuns[0]), { status: 200, headers: { "Content-Type": "application/json" } })), 86_450_000);
       init?.signal?.addEventListener("abort", () => { window.clearTimeout(completion); reject(new DOMException("aborted", "AbortError")); }, { once: true });
     })));
     try {
       const replay = api.replay("run-source", { exact: true });
-      await vi.advanceTimersByTimeAsync(90_000);
+      expect(timeoutSpy.mock.calls[0]?.[1]).toBe(86_460_000);
+      await vi.advanceTimersByTimeAsync(86_450_000);
       await expect(replay).resolves.toMatchObject({ run_id: demoRuns[0]!.run_id });
     } finally {
+      timeoutSpy.mockRestore();
       vi.useRealTimers();
     }
   });
