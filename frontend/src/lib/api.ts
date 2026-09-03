@@ -271,9 +271,22 @@ export const api = {
     };
     return request("/action-packages");
   },
-  async installActionPackage(envelope: Record<string, unknown>, installedBy: string): Promise<{ schema_version: string; package: ActionPackageInstallation; catalog_changed: false; activation_required: true }> {
+  async installActionPackage(envelopeJson: string, installedBy: string): Promise<{ schema_version: string; package: ActionPackageInstallation; catalog_changed: false; activation_required: true }> {
     if (DEMO_MODE) throw new ApiError("Demo mode cannot install signed action packages.", "demo_action_package_refused", undefined, 409);
-    return request("/action-packages", { method: "POST", body: JSON.stringify({ envelope, installed_by: installedBy }) });
+    let envelope: unknown;
+    try {
+      envelope = JSON.parse(envelopeJson) as unknown;
+    } catch {
+      throw new ApiError("The signed package envelope must be valid JSON.", "invalid_action_package_envelope");
+    }
+    if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
+      throw new ApiError("The signed package envelope must be a JSON object.", "invalid_action_package_envelope");
+    }
+    // Keep the parsed envelope's original numeric tokens intact. Re-serializing
+    // through JavaScript would round signed 64-bit integers outside Number's
+    // safe range before the control plane can perform canonical verification.
+    const body = `{"envelope":${envelopeJson},"installed_by":${JSON.stringify(installedBy)}}`;
+    return request("/action-packages", { method: "POST", body });
   },
   async trustActionPackagePublisher(enrollment: ActionPackagePublisherEnrollment): Promise<{ schema_version: string; publisher: ActionPackagePublisherTrust }> {
     if (DEMO_MODE) throw new ApiError("Demo mode cannot enroll publisher trust.", "demo_action_package_refused", undefined, 409);

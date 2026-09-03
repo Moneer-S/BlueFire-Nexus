@@ -14,7 +14,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type {
   ActionPackageActivationEvent,
@@ -41,7 +41,7 @@ import {
 } from "../components/Primitives";
 
 type PackageOperation = "activate" | "deactivate" | "remove";
-const MAX_SIGNED_ENVELOPE_BYTES = 1_048_576;
+const MAX_SIGNED_ENVELOPE_BYTES = 256 * 1024;
 
 type PackageLifecycleTarget = {
   version: string;
@@ -115,7 +115,7 @@ export function ActionPackagesPage() {
   };
 
   const installMutation = useMutation({
-    mutationFn: ({ envelope, installedBy }: { envelope: Record<string, unknown>; installedBy: string }) => api.installActionPackage(envelope, installedBy),
+    mutationFn: ({ envelopeJson, installedBy }: { envelopeJson: string; installedBy: string }) => api.installActionPackage(envelopeJson, installedBy),
     onSuccess: ({ package: item }) => {
       setNotice(`${identityLabel(item)} passed signature and immutable-package verification. Activation is still required.`);
       refresh();
@@ -182,7 +182,7 @@ export function ActionPackagesPage() {
       description="Install immutable signed versions, bind them to an authenticated runner inventory, and manage the exact catalog generation operators approve."
       actions={<>
         <PublisherEnrollmentDialog pending={enrollmentMutation.isPending} onEnroll={(enrollment) => enrollmentMutation.mutateAsync(enrollment).then(() => undefined)} />
-        <PackageImportDialog pending={installMutation.isPending} onInstall={(envelope, installedBy) => installMutation.mutateAsync({ envelope, installedBy }).then(() => undefined)} />
+        <PackageImportDialog pending={installMutation.isPending} onInstall={(envelopeJson, installedBy) => installMutation.mutateAsync({ envelopeJson, installedBy }).then(() => undefined)} />
       </>}
     />
 
@@ -358,46 +358,66 @@ function PackageOperationDialog({ item, target, operation, catalog, profiles, pe
   </Dialog.Root>;
 }
 
-function PackageImportDialog({ pending, onInstall }: { pending: boolean; onInstall: (envelope: Record<string, unknown>, installedBy: string) => Promise<void> }) {
+function PackageImportDialog({ pending, onInstall }: { pending: boolean; onInstall: (envelopeJson: string, installedBy: string) => Promise<void> }) {
   const [open, setOpen] = useState(false);
   const [envelope, setEnvelope] = useState<Record<string, unknown>>();
+  const [envelopeJson, setEnvelopeJson] = useState<string>();
   const [fileName, setFileName] = useState("");
   const [installedBy, setInstalledBy] = useState("");
   const [parseError, setParseError] = useState<string>();
   const [submitError, setSubmitError] = useState<string>();
+  const readGeneration = useRef(0);
   const manifest = envelope?.manifest && typeof envelope.manifest === "object" && !Array.isArray(envelope.manifest) ? envelope.manifest as Record<string, unknown> : undefined;
+  const resetDialog = () => {
+    readGeneration.current += 1;
+    setEnvelope(undefined); setEnvelopeJson(undefined); setFileName(""); setInstalledBy(""); setParseError(undefined); setSubmitError(undefined);
+  };
+  const changeOpen = (next: boolean) => {
+    setOpen(next);
+    if (!next) resetDialog();
+  };
   const readFile = async (file?: File) => {
-    setEnvelope(undefined); setFileName(file?.name ?? ""); setParseError(undefined); setSubmitError(undefined);
+    const generation = ++readGeneration.current;
+    setEnvelope(undefined); setEnvelopeJson(undefined); setFileName(file?.name ?? ""); setParseError(undefined); setSubmitError(undefined);
     if (!file) return;
     try {
       if (file.size > MAX_SIGNED_ENVELOPE_BYTES) {
-        throw new Error("The signed envelope exceeds the 1 MiB browser/API limit.");
+        throw new Error("The signed envelope exceeds the 256 KiB package limit.");
       }
-      const parsed = JSON.parse(await file.text()) as unknown;
+      const originalJson = await file.text();
+      if (generation !== readGeneration.current) return;
+      const parsed = JSON.parse(originalJson) as unknown;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("The file root must be a signed envelope object.");
       const record = parsed as Record<string, unknown>;
       if (!record.manifest || !record.integrity || !record.signature) throw new Error("The envelope must contain manifest, integrity, and signature records.");
       setEnvelope(record);
+      setEnvelopeJson(originalJson);
     } catch (error) {
+      if (generation !== readGeneration.current) return;
       setParseError(error instanceof Error ? error.message : "The selected file is not valid JSON.");
     }
   };
-  return <Dialog.Root open={open} onOpenChange={setOpen}>
+  return <Dialog.Root open={open} onOpenChange={changeOpen}>
     <Dialog.Trigger asChild><Button variant="primary"><FileUp />Import signed package</Button></Dialog.Trigger>
     <Dialog.Portal><Dialog.Overlay className="dialog-overlay" /><Dialog.Content className="dialog-content">
       <div><Dialog.Title>Import signed package</Dialog.Title><Dialog.Description>Select a JSON envelope from disk. BlueFire independently verifies the enrolled publisher key, Ed25519 signature, canonical bytes, manifest, and immutable digest before installation. Provider packages additionally bind the signed WASM bytes to their declared digest, size, ABI, and limits.</Dialog.Description></div>
       <Dialog.Close asChild><button className="dialog-close" aria-label="Close dialog"><X /></button></Dialog.Close>
       <form className="dialog-form" onSubmit={async (event) => {
-        event.preventDefault(); if (!envelope) return; setSubmitError(undefined);
-        try { await onInstall(envelope, installedBy.trim()); setOpen(false); }
-        catch (error) { setSubmitError(error instanceof Error ? error.message : "The signed package was refused."); }
+        event.preventDefault(); if (!envelopeJson) return; setSubmitError(undefined);
+        const generation = readGeneration.current;
+        try {
+          await onInstall(envelopeJson, installedBy.trim());
+          if (generation === readGeneration.current) changeOpen(false);
+        } catch (error) {
+          if (generation === readGeneration.current) setSubmitError(error instanceof Error ? error.message : "The signed package was refused.");
+        }
       }}>
         <Field label="Signed envelope file" hint="JSON only. Package content is never executed in the browser or loaded as native code."><input aria-label="Signed envelope file" type="file" accept="application/json,.json" onChange={(event) => void readFile(event.target.files?.[0])} /></Field>
         {parseError ? <Callout tone="danger" title="Envelope could not be read">{parseError}</Callout> : null}
         {envelope ? <Callout tone="success" title="Envelope ready for independent verification"><span className="import-preview"><strong>{stringValue(manifest?.package_id, fileName)}</strong><span>Version {stringValue(manifest?.version)}</span><span>Publisher {stringValue((manifest?.provenance as Record<string, unknown> | undefined)?.publisher_id)}</span><span>The file has only been parsed for this preview; signature and compatibility are verified by the control plane on import.</span></span></Callout> : null}
         <Field label="Installed by"><input value={installedBy} onChange={(event) => setInstalledBy(event.target.value)} required autoComplete="off" placeholder="Operator identity" /></Field>
         {submitError ? <Callout tone="danger" title="Installation refused">{submitError}</Callout> : null}
-        <div className="dialog-actions"><Dialog.Close asChild><Button type="button" variant="ghost">Cancel</Button></Dialog.Close><Button type="submit" variant="primary" disabled={!envelope || !installedBy.trim() || pending}>{pending ? "Verifying signature…" : "Verify & install inactive"}</Button></div>
+        <div className="dialog-actions"><Dialog.Close asChild><Button type="button" variant="ghost">Cancel</Button></Dialog.Close><Button type="submit" variant="primary" disabled={!envelopeJson || !installedBy.trim() || pending}>{pending ? "Verifying signature…" : "Verify & install inactive"}</Button></div>
       </form>
     </Dialog.Content></Dialog.Portal>
   </Dialog.Root>;

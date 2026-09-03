@@ -46,6 +46,7 @@ _EXPECTED_UI_TESTS = frozenset(
         "action package management binds deactivation to the exact immutable package and current catalog snapshot",
         "action package management requires the exact package identity before immutable removal",
         "action package management forwards a file-backed v2 provider envelope to backend verification without a raw editor",
+        "action package management preserves signed 64-bit integer tokens from the latest selected package envelope",
         "action package management fails closed when the server does not report isolated provider support",
         "action package management refuses an oversized signed envelope before reading it into browser memory",
         "action package management uses exact publisher and package lifecycle API routes",

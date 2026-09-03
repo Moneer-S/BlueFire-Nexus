@@ -311,6 +311,45 @@ describe("action package management", () => {
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({ envelope, installed_by: "operator-import" });
   });
 
+  it("preserves signed 64-bit integer tokens from the latest selected package envelope", async () => {
+    const current = inventory();
+    const envelopeJson = '{"manifest":{"package_id":"bluefire.publisher.endpoint-pack"},"payload":{"behaviors":[{"parameters":[{"name":"exact_count","type":"integer","default":9007199254740993,"enum":[9007199254740993]}]}],"actions":[{"definition":{"parameters":[{"name":"exact_count","type":"integer","default":9007199254740993,"enum":[9007199254740993]}]}}]},"integrity":{},"signature":{}}';
+    const staleEnvelopeJson = '{"manifest":{"package_id":"bluefire.publisher.stale-pack"},"integrity":{},"signature":{}}';
+    let finishStaleRead!: (value: string) => void;
+    const staleRead = new Promise<string>((resolve) => { finishStaleRead = resolve; });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/action-packages") && init?.method === "POST") return json({ schema_version: "bluefire.action-package-install.v1", package: current.packages[0], catalog_changed: false, activation_required: true });
+      if (path.endsWith("/action-packages")) return json({ ...current, packages: [] });
+      if (path.endsWith("/catalog")) return json(demoCatalog);
+      throw new Error(`Unhandled request: ${path}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: "Import signed package" }));
+    const input = screen.getByLabelText("Signed envelope file");
+    const staleFile = new File([staleEnvelopeJson], "stale.json", { type: "application/json" });
+    Object.defineProperty(staleFile, "text", { value: vi.fn(() => staleRead) });
+    fireEvent.change(input, { target: { files: [staleFile] } });
+    const file = new File([envelopeJson], "signed-64-bit.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: vi.fn(async () => envelopeJson) });
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(await screen.findByText("Envelope ready for independent verification")).toBeVisible();
+    expect(screen.getAllByText("bluefire.publisher.endpoint-pack").some((element) => element.tagName === "STRONG")).toBe(true);
+    finishStaleRead(staleEnvelopeJson);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(screen.queryByText("bluefire.publisher.stale-pack")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Installed by"), { target: { value: 'operator \\ "exact"' } });
+    fireEvent.click(screen.getByRole("button", { name: "Verify & install inactive" }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith("/action-packages") && init?.method === "POST")).toHaveLength(1));
+    const request = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith("/action-packages") && init?.method === "POST");
+    expect(String(request?.[1]?.body)).toBe(`{"envelope":${envelopeJson},"installed_by":"operator \\\\ \\"exact\\""}`);
+    expect(String(request?.[1]?.body)).not.toContain("9007199254740992");
+  });
+
   it("fails closed when the server does not report isolated provider support", async () => {
     const current = inventory();
     current.execution_boundary = "signed-reviewed-opcodes-only";
@@ -343,12 +382,12 @@ describe("action package management", () => {
     renderPage();
 
     await user.click(await screen.findByRole("button", { name: "Import signed package" }));
-    const file = new File([new Uint8Array(1_048_577)], "oversized.json", { type: "application/json" });
+    const file = new File([new Uint8Array(256 * 1024 + 1)], "oversized.json", { type: "application/json" });
     const read = vi.fn(async () => "{}");
     Object.defineProperty(file, "text", { value: read });
     await user.upload(screen.getByLabelText("Signed envelope file"), file);
 
-    expect(await screen.findByText("The signed envelope exceeds the 1 MiB browser/API limit.")).toBeVisible();
+    expect(await screen.findByText("The signed envelope exceeds the 256 KiB package limit.")).toBeVisible();
     expect(read).not.toHaveBeenCalled();
   });
 

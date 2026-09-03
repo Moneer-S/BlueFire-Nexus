@@ -1368,7 +1368,7 @@ def test_frontend_verifier_rejects_renamed_test_even_when_count_passes(
 
     report = provider_gate._run_vitest(tmp_path)
 
-    assert report["tests"] == 8
+    assert report["tests"] == 9
     assert report["passed"] is False
 
 
