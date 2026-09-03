@@ -917,6 +917,8 @@ def _receive_exact(
             if abort_event is not None:
                 continue
             raise
+        if deadline is not None and time.monotonic() >= deadline:
+            raise RunnerConnectionError("Runner message deadline expired.")
         if not chunk:
             raise RunnerConnectionError("Runner connection closed before the message completed.")
         result.extend(chunk)

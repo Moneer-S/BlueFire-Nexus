@@ -743,23 +743,40 @@ def test_decoder_rejects_noncanonical_and_duplicate_key_json() -> None:
         wire._decode_json_object(b'{"a":1,"a":2}')
 
 
-def test_receive_deadline_rejects_slow_trickle_even_when_each_read_progresses() -> None:
+def test_receive_deadline_rejects_slow_trickle_even_when_each_read_progresses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Clock:
+        now = 100.0
+
+        def monotonic(self) -> float:
+            return self.now
+
+    clock = Clock()
+
     class SlowTrickle:
-        def settimeout(self, _value: float) -> None:
-            return
+        def __init__(self) -> None:
+            self.reads = 0
+            self.timeouts: list[float] = []
+
+        def settimeout(self, value: float) -> None:
+            self.timeouts.append(value)
 
         def recv(self, _length: int) -> bytes:
-            time.sleep(0.03)
+            self.reads += 1
+            clock.now += 0.03
             return b"x"
 
-    started = time.monotonic()
+    monkeypatch.setattr(wire, "time", clock)
+    trickle = SlowTrickle()
     with pytest.raises(RunnerConnectionError, match="deadline"):
         wire._receive_exact(
-            SlowTrickle(),  # type: ignore[arg-type]
-            32,
-            deadline=time.monotonic() + 0.08,
+            trickle,  # type: ignore[arg-type]
+            3,
+            deadline=clock.monotonic() + 0.08,
         )
-    assert time.monotonic() - started < 0.25
+    assert trickle.reads == 3
+    assert trickle.timeouts == pytest.approx([0.08, 0.05, 0.02])
 
 
 def test_authenticated_client_cannot_dispatch_same_payload_under_alternate_task_id(
