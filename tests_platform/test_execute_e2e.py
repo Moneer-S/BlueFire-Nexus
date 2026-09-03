@@ -7,6 +7,7 @@ import os
 import queue
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 from pathlib import Path
@@ -22,6 +23,7 @@ from bluefire.action_packages import (
 from bluefire.contracts import load_scenario
 from bluefire.receiver import LoopbackArtifactReceiver, ReceiverConfig
 from bluefire.receiver_auth import derive_receiver_task_key
+from bluefire.runner_bootstrap import managed_product_root
 from bluefire.runner_client import SubprocessRustRunner
 from bluefire.runner_trust import create_local_enrollment
 from bluefire.service import BlueFireService
@@ -48,6 +50,10 @@ from tests_platform.test_action_package_lifecycle import (
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER_ENV = "BLUEFIRE_E2E_RUNNER"
 E2E_ENROLLMENT_KEY = bytes(range(32))
+PEER_BEHAVIOR_IDS = {
+    "sandbox.credential.peer-challenge.v1",
+    "sandbox.peer.handoff.v1",
+}
 
 
 def _scenario_with_bound_loopback_port(
@@ -69,6 +75,25 @@ def _scenario_with_bound_loopback_port(
     return rebound_scenario
 
 
+def _scenario_with_bound_peer_port(
+    scenario_document: dict[str, Any], *, port: int
+) -> dict[str, Any]:
+    assert isinstance(port, int) and not isinstance(port, bool) and 1_024 <= port <= 65_535
+    rebound_scenario = copy.deepcopy(scenario_document)
+    steps = rebound_scenario.get("steps")
+    assert isinstance(steps, list)
+    peer_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("behavior_id") in PEER_BEHAVIOR_IDS
+    ]
+    assert len(peer_steps) == 1
+    parameters = peer_steps[0].get("parameters")
+    assert isinstance(parameters, dict)
+    parameters["port"] = port
+    return rebound_scenario
+
+
 def _read_process_line(stream: Any, *, timeout_seconds: float) -> str:
     lines: queue.Queue[str] = queue.Queue(maxsize=1)
     reader = threading.Thread(target=lambda: lines.put(stream.readline()), daemon=True)
@@ -81,27 +106,55 @@ def _read_process_line(stream: Any, *, timeout_seconds: float) -> str:
         ) from exc
 
 
+def _stop_process(process: subprocess.Popen[str] | None) -> None:
+    if process is None or process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+    except OSError:
+        if process.poll() is None:
+            raise
+
+
 def _start_disposable_peer_receiver(
     tmp_path: Path,
 ) -> tuple[subprocess.Popen[str], dict[str, Any], bytes]:
-    if os.name != "nt":
-        pytest.skip("managed disposable receiver enrollment currently requires Windows DPAPI")
     state_root = tmp_path / "receiver-state"
-    enrollment = create_local_enrollment(
-        state_root / "BlueFire Nexus" / "enrollment",
-        runner_id="bluefire-rust-runner.v1",
-        client_id="bluefire-control-plane.v1",
-        allowed_profile_ids=("sandbox-endpoint-deep-lab.v1", "sandbox-execute.v1"),
-    )
     child_environment = {
         name: os.environ[name]
         for name in ("COMSPEC", "PATH", "PATHEXT", "SYSTEMROOT", "TEMP", "TMP", "WINDIR")
         if name in os.environ
     }
-    child_environment["LOCALAPPDATA"] = str(state_root)
-    child_environment["PYTHONPATH"] = os.pathsep.join(
-        (str(ROOT), str(Path(sys.prefix) / "Lib" / "site-packages"))
+    isolated_state_environment = {
+        "HOME": str(state_root),
+        "LOCALAPPDATA": str(state_root),
+        "XDG_STATE_HOME": str(state_root),
+    }
+    child_environment.update(isolated_state_environment)
+    with pytest.MonkeyPatch.context() as patch:
+        for name, value in isolated_state_environment.items():
+            patch.setenv(name, value)
+        enrollment = create_local_enrollment(
+            managed_product_root() / "enrollment",
+            runner_id="bluefire-rust-runner.v1",
+            client_id="bluefire-control-plane.v1",
+            allowed_profile_ids=("sandbox-endpoint-deep-lab.v1", "sandbox-execute.v1"),
+        )
+        enrollment_key = enrollment.hmac_key()
+    python_paths = dict.fromkeys(
+        str(path)
+        for path in (
+            ROOT,
+            Path(sysconfig.get_path("purelib")),
+            Path(sysconfig.get_path("platlib")),
+        )
+        if path.is_dir()
     )
+    child_environment["PYTHONPATH"] = os.pathsep.join(python_paths)
     child_environment["PYTHONIOENCODING"] = "utf-8"
     child_environment["PYTHONUTF8"] = "1"
     receiver_python = Path(getattr(sys, "_base_executable", sys.executable)).resolve(strict=True)
@@ -114,7 +167,7 @@ def _start_disposable_peer_receiver(
             "--host",
             "127.0.0.1",
             "--port",
-            "4317",
+            "0",
             "--max-requests",
             "1",
             "--disposable-peer",
@@ -134,22 +187,22 @@ def _start_disposable_peer_receiver(
             stdout, stderr = process.communicate(timeout=10)
             raise AssertionError(f"receiver exited before readiness: {stdout!r} {stderr!r}")
         ready = json.loads(ready_line)
+        bound_port = ready.get("port")
+        assert type(bound_port) is int and 1_024 <= bound_port <= 65_535
         assert ready == {
             "schema_version": "bluefire.loopback-receiver-ready.v2",
             "mode": "disposable_peer",
             "process_id": process.pid,
             "host": "127.0.0.1",
-            "port": 4317,
+            "port": bound_port,
             "max_requests": 1,
             "max_connections": 8,
             "storage": "memory_only",
         }
     except BaseException:
-        if process.poll() is None:
-            process.terminate()
-            process.wait(timeout=5)
+        _stop_process(process)
         raise
-    return process, ready, enrollment.hmac_key()
+    return process, ready, enrollment_key
 
 
 @pytest.mark.skipif(
@@ -284,6 +337,23 @@ def test_bound_loopback_port_rewrite_clones_and_changes_only_the_port() -> None:
     )
     assert original_loopback_step["parameters"]["port"] == 4_317
 
+    peer_scenario_document = load_scenario(
+        ROOT / "scenarios" / "operator_representative_validation.yaml"
+    ).to_dict()
+    expected_peer = copy.deepcopy(peer_scenario_document)
+    expected_peer_step = next(
+        step for step in expected_peer["steps"] if step["behavior_id"] in PEER_BEHAVIOR_IDS
+    )
+    expected_peer_step["parameters"]["port"] = 43_218
+    rebound_peer = _scenario_with_bound_peer_port(peer_scenario_document, port=43_218)
+
+    assert rebound_peer == expected_peer
+    assert rebound_peer is not peer_scenario_document
+    original_peer_step = next(
+        step for step in peer_scenario_document["steps"] if step["behavior_id"] in PEER_BEHAVIOR_IDS
+    )
+    assert original_peer_step["parameters"]["port"] == 4_317
+
 
 @pytest.mark.skipif(
     not os.environ.get(RUNNER_ENV),
@@ -351,6 +421,7 @@ def test_bound_loopback_port_rewrite_clones_and_changes_only_the_port() -> None:
     ],
 )
 def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
+    request: pytest.FixtureRequest,
     tmp_path: Path,
     scenario_name: str,
     create_step: str,
@@ -361,10 +432,7 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
     sandbox = tmp_path / "sandbox"
     sandbox.mkdir()
     scenario = load_scenario(ROOT / "scenarios" / scenario_name)
-    peer_receiver_required = any(
-        step.behavior_id in {"sandbox.credential.peer-challenge.v1", "sandbox.peer.handoff.v1"}
-        for step in scenario.steps
-    )
+    peer_receiver_required = any(step.behavior_id in PEER_BEHAVIOR_IDS for step in scenario.steps)
     receiver_process: subprocess.Popen[str] | None = None
     receiver_ready: dict[str, Any] | None = None
     receiver_enrollment_key = E2E_ENROLLMENT_KEY
@@ -372,6 +440,7 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
         receiver_process, receiver_ready, receiver_enrollment_key = _start_disposable_peer_receiver(
             tmp_path
         )
+        request.addfinalizer(lambda: _stop_process(receiver_process))
     receiver_task_keys: list[bytes] = []
 
     def receiver_task_key(task_id: str) -> bytes:
@@ -392,10 +461,16 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
         product_db_path=tmp_path / "product.sqlite3",
         runner_factory=lambda _profile: (runner, sandbox),
     )
+    request.addfinalizer(service.close)
     generic_receiver_required = any(
         step.behavior_id == "sandbox.network.loopback.v1" for step in scenario.steps
     )
     scenario_document = scenario.to_dict()
+    if receiver_ready is not None:
+        scenario_document = _scenario_with_bound_peer_port(
+            scenario_document,
+            port=int(receiver_ready["port"]),
+        )
     receiver = (
         LoopbackArtifactReceiver(
             ReceiverConfig(
@@ -456,9 +531,7 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
         if receiver is not None and receiver_thread is not None and receiver_thread.is_alive():
             receiver.close()
             receiver_thread.join(timeout=2)
-        if receiver_process is not None and receiver_process.poll() is None:
-            receiver_process.terminate()
-            receiver_process.wait(timeout=5)
+        _stop_process(receiver_process)
 
     rows = {row["step_id"]: row for row in result["steps"]}
     assert result["objective_reached"] is True

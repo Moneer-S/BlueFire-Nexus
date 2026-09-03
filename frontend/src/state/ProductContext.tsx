@@ -108,12 +108,19 @@ function normalizeRunConfig(value: Partial<RunConfiguration>): RunConfiguration 
   };
 }
 
-function readCachedScenario(): Scenario {
+interface ScenarioHydration {
+  scenario: Scenario;
+  scenarioIsSeededFallback: boolean;
+}
+
+function readCachedScenario(): ScenarioHydration {
   try {
     const value = window.localStorage.getItem(scenarioKey);
-    return value ? parseScenarioDocument(JSON.parse(value) as unknown) : structuredClone(demoScenario);
+    return value
+      ? { scenario: parseScenarioDocument(JSON.parse(value) as unknown), scenarioIsSeededFallback: false }
+      : { scenario: structuredClone(demoScenario), scenarioIsSeededFallback: true };
   } catch {
-    return structuredClone(demoScenario);
+    return { scenario: structuredClone(demoScenario), scenarioIsSeededFallback: true };
   }
 }
 
@@ -121,6 +128,7 @@ interface ProductState {
   theme: UiTheme;
   setTheme: (theme: UiTheme) => void;
   scenario: Scenario;
+  scenarioIsSeededFallback: boolean;
   setScenario: (scenario: Scenario, dirty?: boolean) => void;
   dirty: boolean;
   markSaved: () => void;
@@ -135,7 +143,8 @@ const ProductContext = createContext<ProductState | null>(null);
 
 export function ProductProvider({ children }: PropsWithChildren) {
   const [theme, setTheme] = useState<UiTheme>(() => readBrowserTheme());
-  const [scenario, setScenarioState] = useState<Scenario>(() => readCachedScenario());
+  const [scenarioState, setScenarioState] = useState<ScenarioHydration>(() => readCachedScenario());
+  const { scenario, scenarioIsSeededFallback } = scenarioState;
   const [runConfig, setRunConfigState] = useState<RunConfiguration>(() => {
     const preferences = readBrowserUiPreferences();
     return { ...normalizeRunConfig({ mode: preferences?.effect_mode, autonomy: preferences?.autonomy }), approved: false, approvedBy: "" };
@@ -144,7 +153,7 @@ export function ProductProvider({ children }: PropsWithChildren) {
   const [dirty, setDirty] = useState(false);
 
   const clearApproval = () => setRunConfigState((current) => ({ ...current, approved: false, approvedBy: "" }));
-  const setScenario = (next: Scenario, markDirty = true) => { const previousBehaviors = new Map(scenario.steps.map((step) => [step.id, step.behavior_id])); const nextBehaviors = new Map(next.steps.map((step) => [step.id, step.behavior_id])); setScenarioState(next); setDirty(markDirty); setRunConfigState((current) => ({ ...current, approved: false, approvedBy: "", actionImplementations: Object.fromEntries(Object.entries(current.actionImplementations).filter(([stepId]) => previousBehaviors.get(stepId) === nextBehaviors.get(stepId))) })); };
+  const setScenario = (next: Scenario, markDirty = true) => { const previousBehaviors = new Map(scenario.steps.map((step) => [step.id, step.behavior_id])); const nextBehaviors = new Map(next.steps.map((step) => [step.id, step.behavior_id])); setScenarioState({ scenario: next, scenarioIsSeededFallback: false }); setDirty(markDirty); setRunConfigState((current) => ({ ...current, approved: false, approvedBy: "", actionImplementations: Object.fromEntries(Object.entries(current.actionImplementations).filter(([stepId]) => previousBehaviors.get(stepId) === nextBehaviors.get(stepId))) })); };
   const setRunConfig = (next: RunConfiguration) => setRunConfigState((current) => {
     const normalized = normalizeRunConfig(next);
     if (current.mode !== normalized.mode) normalized.actionImplementations = {};
@@ -152,7 +161,9 @@ export function ProductProvider({ children }: PropsWithChildren) {
     const nextIntent = { ...normalized, approved: false, approvedBy: "" };
     return JSON.stringify(currentIntent) === JSON.stringify(nextIntent) ? normalized : nextIntent;
   });
-  useEffect(() => { writeBrowserStorage(scenarioKey, JSON.stringify(scenario)); }, [scenario]);
+  useEffect(() => {
+    if (!scenarioIsSeededFallback) writeBrowserStorage(scenarioKey, JSON.stringify(scenario));
+  }, [scenario, scenarioIsSeededFallback]);
   useEffect(() => {
     writeBrowserTheme(theme);
     writeBrowserUiPreferences(buildUiPreferenceDocument(theme, runConfig.mode, runConfig.autonomy));
@@ -162,7 +173,7 @@ export function ProductProvider({ children }: PropsWithChildren) {
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  const value = { theme, setTheme, scenario, setScenario, dirty, markSaved: () => setDirty(false), runConfig, setRunConfig, clearApproval, activeRun, setActiveRun };
+  const value = { theme, setTheme, scenario, scenarioIsSeededFallback, setScenario, dirty, markSaved: () => setDirty(false), runConfig, setRunConfig, clearApproval, activeRun, setActiveRun };
   return <ProductContext.Provider value={value}>{children}</ProductContext.Provider>;
 }
 

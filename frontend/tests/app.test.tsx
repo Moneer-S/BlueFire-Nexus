@@ -274,7 +274,7 @@ describe("product application", () => {
 
     await user.upload(input, new File([JSON.stringify({ ...demoScenario, steps: [{ ...firstStep, parameters: { record_count: { toString: null, valueOf: null } } }] })], "object-parameter.json", { type: "application/json" }));
     expect(await screen.findByText(/parameters\.record_count must be a string, finite number, boolean, or string array/)).toBeVisible();
-    await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}").title).toBe(demoScenario.title));
+    expect(window.localStorage.getItem("bluefire.local.scenario.v1")).toBeNull();
     await user.click(screen.getByRole("link", { name: /^Scenario Builder$/ }));
     expect(await screen.findByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
     expect(screen.getByDisplayValue(demoScenario.title)).toBeVisible();
@@ -293,19 +293,29 @@ describe("product application", () => {
       ...demoCatalog,
       behaviors: demoCatalog.behaviors.filter((item) => item.id !== "sandbox.program.fixed.v1"),
     };
-    const fetchMock = vi.mocked(fetch);
-    const fallback = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input);
-      if (path.endsWith("/catalog")) return json(productionCatalog);
-      if (path.endsWith("/scenarios")) return json({ scenarios: [canonicalScenario] });
-      return fallback(input, init);
-    });
-
-    renderApp("/builder");
+    const seededClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    seededClient.setQueryData(["catalog"], productionCatalog);
+    seededClient.setQueryData(["scenarios"], { scenarios: [canonicalScenario] });
+    const seededApp = renderApp("/builder", seededClient);
 
     expect(await screen.findByDisplayValue("Registered production scenario")).toBeVisible();
     expect(screen.queryByDisplayValue(demoScenario.title)).not.toBeInTheDocument();
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}")).toEqual(canonicalScenario));
+
+    seededApp.unmount();
+    const cachedDraft = structuredClone(demoScenario);
+    cachedDraft.title = "Operator-owned demo-ID draft";
+    cachedDraft.purpose = "Preserve this valid local draft across catalog drift.";
+    cachedDraft.steps[0]!.parameters = { ...cachedDraft.steps[0]!.parameters, operator_marker: "preserve-this-draft" };
+    window.localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(cachedDraft));
+    const cachedClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    cachedClient.setQueryData(["catalog"], productionCatalog);
+    cachedClient.setQueryData(["scenarios"], { scenarios: [canonicalScenario] });
+    renderApp("/builder", cachedClient);
+
+    expect(await screen.findByDisplayValue(cachedDraft.title)).toBeVisible();
+    expect(screen.queryByDisplayValue(canonicalScenario.title)).not.toBeInTheDocument();
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}")).toEqual(cachedDraft));
   });
 
   it("treats serialized null parameter defaults as absent when adding a behavior", async () => {

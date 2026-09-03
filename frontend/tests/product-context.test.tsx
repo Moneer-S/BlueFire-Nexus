@@ -8,7 +8,7 @@ const settingsKey = "bluefire.local.run-config.v1";
 const scenarioKey = "bluefire.local.scenario.v1";
 
 function Harness() {
-  const { scenario, setScenario, runConfig, setRunConfig, clearApproval } = useProduct();
+  const { scenario, scenarioIsSeededFallback, setScenario, runConfig, setRunConfig, clearApproval } = useProduct();
   return <div>
     <output aria-label="approval-state">{runConfig.approved ? "approved" : "unchecked"}</output>
     <output aria-label="operator-state">{runConfig.approvedBy || "blank"}</output>
@@ -18,6 +18,7 @@ function Harness() {
     <output aria-label="provider-state">{runConfig.provider}</output>
     <output aria-label="scenario-state">{scenario.title}</output>
     <output aria-label="scenario-step-count">{scenario.steps.length}</output>
+    <output aria-label="scenario-origin">{scenarioIsSeededFallback ? "seeded" : "operator-owned"}</output>
     <button onClick={() => setRunConfig({ ...runConfig, approved: true, approvedBy: "operator-a" })}>Approve</button>
     <button onClick={() => setRunConfig({ ...runConfig, profileId: "changed-profile.v1" })}>Change intent</button>
     <button onClick={() => setRunConfig({ ...runConfig, provider: "changed-provider.v1", model: "changed-model", profileId: "changed-profile.v1", scopeRefs: ["changed.scope"], safetyTier: "restricted", maxSeconds: 999, collectors: ["changed-collector"], detectionBackends: ["changed-backend"], cleanupPolicy: "manual", counterfactual: "always_preview", fixtureMode: false, actionImplementations: { step: "changed-action" } })}>Change authority fields</button>
@@ -57,6 +58,7 @@ describe("ephemeral Execute approval", () => {
   it("clears approval when any intent or scenario field changes", async () => {
     const user = userEvent.setup();
     render(<ProductProvider><Harness /></ProductProvider>);
+    expect(window.localStorage.getItem(scenarioKey)).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Approve" }));
     expect(screen.getByLabelText("approval-state")).toHaveTextContent("approved");
@@ -65,8 +67,11 @@ describe("ephemeral Execute approval", () => {
     expect(screen.getByLabelText("operator-state")).toHaveTextContent("blank");
 
     await user.click(screen.getByRole("button", { name: "Approve" }));
+    expect(screen.getByLabelText("scenario-origin")).toHaveTextContent("seeded");
     await user.click(screen.getByRole("button", { name: "Change scenario" }));
     expect(screen.getByLabelText("approval-state")).toHaveTextContent("unchecked");
+    expect(screen.getByLabelText("scenario-origin")).toHaveTextContent("operator-owned");
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem(scenarioKey) ?? "{}").title).toMatch(/ changed$/));
   });
 
   it("consumes approval after a submission boundary", async () => {
@@ -116,6 +121,7 @@ describe("cached scenario hydration", () => {
     expect(() => render(<ProductProvider><Harness /></ProductProvider>)).not.toThrow();
     expect(screen.getByLabelText("scenario-state")).toHaveTextContent(demoScenario.title);
     expect(screen.getByLabelText("scenario-step-count")).toHaveTextContent(String(demoScenario.steps.length));
+    expect(screen.getByLabelText("scenario-origin")).toHaveTextContent("seeded");
   });
 
   it("hydrates a cached scenario that passes the import schema", () => {
@@ -125,5 +131,6 @@ describe("cached scenario hydration", () => {
     render(<ProductProvider><Harness /></ProductProvider>);
 
     expect(screen.getByLabelText("scenario-state")).toHaveTextContent(cached.title);
+    expect(screen.getByLabelText("scenario-origin")).toHaveTextContent("operator-owned");
   });
 });
