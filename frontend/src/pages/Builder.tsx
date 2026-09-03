@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { api } from "../lib/api";
+import { initialParameterValue, parameterValuesEqual, shouldInitializeParameter } from "../lib/parameters";
 import { useProduct } from "../state/ProductContext";
 import type { AIGraphDraftResult, Behavior, Outcome, Scenario, ScenarioEdge, ScenarioStep } from "../types";
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, IconButton, LoadingState, PageHeader, Panel, PanelHeader, sentence } from "../components/Primitives";
@@ -22,15 +23,6 @@ const outcomeColors: Record<Outcome, string> = { success: "#45d39d", partial: "#
 interface BehaviorNodeData extends Record<string, unknown> { step: ScenarioStep; behavior?: Behavior; invalid?: boolean; }
 type BehaviorFlowNode = Node<BehaviorNodeData, "behavior">;
 type FlowEdge = Edge<{ kind: "route" | "artifact"; outcome?: Outcome; artifactType?: string }>;
-
-function initialValue(spec: Behavior["parameters"][number]) {
-  if (spec.default !== undefined) return structuredClone(spec.default);
-  if (spec.enum?.length) return spec.enum[0];
-  if (spec.type === "boolean") return false;
-  if (spec.type === "integer" || spec.type === "number") return spec.minimum ?? 0;
-  if (spec.type === "string_list") return [];
-  return "";
-}
 
 function behaviorNode(step: ScenarioStep, behavior: Behavior | undefined, index: number, scenario: Scenario, invalid = false): BehaviorFlowNode {
   return { id: step.id, type: "behavior", position: scenario.layout?.[step.id] ?? { x: 40 + (index % 3) * 310, y: 50 + Math.floor(index / 3) * 220 }, data: { step, behavior, invalid } };
@@ -114,7 +106,7 @@ function GraphWorkspace({ behaviors }: { behaviors: Behavior[] }) {
 
   const uniqueId = (title: string) => { const root = title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").replace(/^[^a-z]+/, "") || "step"; let id = root; let suffix = 2; while (scenario.steps.some((step) => step.id === id)) id = `${root}_${suffix++}`; return id; };
   const addBehavior = (behavior: Behavior, position?: { x: number; y: number }) => {
-    const id = uniqueId(behavior.title); const step: ScenarioStep = { id, behavior_id: behavior.id, parameters: Object.fromEntries(behavior.parameters.filter((item) => item.required || item.default !== undefined).map((item) => [item.name, initialValue(item)])), inputs: {}, alternates: [] };
+    const id = uniqueId(behavior.title); const step: ScenarioStep = { id, behavior_id: behavior.id, parameters: Object.fromEntries(behavior.parameters.filter(shouldInitializeParameter).map((item) => [item.name, initialParameterValue(item)])), inputs: {}, alternates: [] };
     const previous = scenario.steps.at(-1); const next: Scenario = { ...scenario, start: scenario.steps.length ? scenario.start : id, steps: [...scenario.steps, step], edges: previous ? [...scenario.edges, { from_step: previous.id, outcome: "success", to_step: id }] : scenario.edges, layout: { ...scenario.layout, [id]: position ?? { x: 70 + (scenario.steps.length % 3) * 310, y: 70 + Math.floor(scenario.steps.length / 3) * 220 } } };
     applyScenario(next); setSelectedId(id); setCompatibility(`${behavior.title} added with a typed local draft contract.`);
   };
@@ -183,7 +175,7 @@ function GraphWorkspace({ behaviors }: { behaviors: Behavior[] }) {
     window.setTimeout(fitGraph, 0);
   };
   const runCommand = (action: () => void) => { setCommandPaletteOpen(false); action(); };
-  const offlineDraft = () => { const terms = objective.toLowerCase(); const picks = behaviors.filter((item) => item.execution_state !== "metadata_only" && `${item.title} ${item.purpose} ${item.techniques.join(" ")}`.toLowerCase().split(/\s+/).some((word) => word.length > 5 && terms.includes(word))).slice(0, 4); const selectedPicks = picks.length ? picks : behaviors.filter((item) => item.execution_state !== "metadata_only").slice(0, 4); const steps = selectedPicks.map((behavior, index) => ({ id: `local_draft_${index + 1}_${behavior.title.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 20)}`, behavior_id: behavior.id, parameters: Object.fromEntries(behavior.parameters.filter((item) => item.default !== undefined).map((item) => [item.name, initialValue(item)])), inputs: {}, alternates: [] })); const edges: ScenarioEdge[] = steps.slice(0, -1).map((step, index) => ({ from_step: step.id, outcome: "success", to_step: steps[index + 1]!.id })); const localScenario = { ...scenario, title: objective.slice(0, 80) || "Local fallback draft", purpose: objective || scenario.purpose, start: steps[0]?.id ?? "missing_start", steps, edges, layout: undefined }; setDraftResult({ schema_version: "bluefire.ai-graph-draft-result.v1", draft_id: `local-fallback-${Date.now()}`, saved: false, scenario: localScenario, rationale: "Browser-local deterministic keyword ranking over the loaded registered catalog.", assumptions: ["No provider or server draft endpoint was used."], audit: { unsaved: true, provider: { effective_provider_id: "browser-local-fallback", model: "keyword-ranking", attempts: 0, used_fallback: true, fallback_reason: "operator_selected_local_fallback" }, selected_behavior_ids: steps.map((step) => step.behavior_id), validation: { authority: "none", catalog_snapshot_only: true } } }); setCompatibility("Local fallback preview created. It has not changed, saved, authorized, or run the active graph."); };
+  const offlineDraft = () => { const terms = objective.toLowerCase(); const picks = behaviors.filter((item) => item.execution_state !== "metadata_only" && `${item.title} ${item.purpose} ${item.techniques.join(" ")}`.toLowerCase().split(/\s+/).some((word) => word.length > 5 && terms.includes(word))).slice(0, 4); const selectedPicks = picks.length ? picks : behaviors.filter((item) => item.execution_state !== "metadata_only").slice(0, 4); const steps = selectedPicks.map((behavior, index) => ({ id: `local_draft_${index + 1}_${behavior.title.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 20)}`, behavior_id: behavior.id, parameters: Object.fromEntries(behavior.parameters.filter(shouldInitializeParameter).map((item) => [item.name, initialParameterValue(item)])), inputs: {}, alternates: [] })); const edges: ScenarioEdge[] = steps.slice(0, -1).map((step, index) => ({ from_step: step.id, outcome: "success", to_step: steps[index + 1]!.id })); const localScenario = { ...scenario, title: objective.slice(0, 80) || "Local fallback draft", purpose: objective || scenario.purpose, start: steps[0]?.id ?? "missing_start", steps, edges, layout: undefined }; setDraftResult({ schema_version: "bluefire.ai-graph-draft-result.v1", draft_id: `local-fallback-${Date.now()}`, saved: false, scenario: localScenario, rationale: "Browser-local deterministic keyword ranking over the loaded registered catalog.", assumptions: ["No provider or server draft endpoint was used."], audit: { unsaved: true, provider: { effective_provider_id: "browser-local-fallback", model: "keyword-ranking", attempts: 0, used_fallback: true, fallback_reason: "operator_selected_local_fallback" }, selected_behavior_ids: steps.map((step) => step.behavior_id), validation: { authority: "none", catalog_snapshot_only: true } } }); setCompatibility("Local fallback preview created. It has not changed, saved, authorized, or run the active graph."); };
   const importDraft = () => { if (!draftResult) return; applyScenario({ ...draftResult.scenario, layout: Object.fromEntries(draftResult.scenario.steps.map((step, index) => [step.id, { x: 70 + (index % 4) * 300, y: 110 + Math.floor(index / 4) * 230 }])) }); setSelectedId(draftResult.scenario.steps[0]?.id ?? ""); setCompatibility(`${draftResult.draft_id} imported as unsaved graph changes. Validate before saving or preflight.`); setDraftResult(undefined); };
 
   return <div className={`page builder-page ${focusMode ? "builder-focus" : ""}`} onKeyDown={keyboard}>
@@ -260,7 +252,10 @@ function Inspector({ scenario, step, behavior, behaviors, updateStep, updateScen
 }
 
 function ParameterField({ spec, value, onChange }: { spec: Behavior["parameters"][number]; value: unknown; onChange: (value: unknown) => void }) {
-  if (spec.enum?.length) return <Field label={spec.name} hint={spec.description}><select value={String(value ?? "")} onChange={(event) => onChange(event.target.value)}>{spec.enum.map((item) => <option key={String(item)} value={String(item)}>{String(item)}</option>)}</select></Field>;
+  if (spec.enum?.length) {
+    const selectedIndex = spec.enum.findIndex((item) => parameterValuesEqual(item, value));
+    return <Field label={spec.name} hint={spec.description}><select value={selectedIndex < 0 ? "" : String(selectedIndex)} onChange={(event) => { const index = Number.parseInt(event.target.value, 10); const member = spec.enum?.[index]; if (member !== undefined) onChange(structuredClone(member)); }}><option value="" disabled>Choose an allowed value</option>{spec.enum.map((item, index) => <option key={index} value={String(index)}>{Array.isArray(item) ? item.join(", ") : String(item)}</option>)}</select></Field>;
+  }
   if (spec.type === "boolean") return <label className="check-row"><input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} /><span><strong>{spec.name}</strong><small>{spec.description ?? "Boolean parameter"}</small></span></label>;
-  return <Field label={spec.name} hint={spec.description}><input type={spec.type === "integer" || spec.type === "number" ? "number" : "text"} value={Array.isArray(value) ? value.join(", ") : String(value ?? "")} min={spec.minimum} max={spec.maximum} required={spec.required} onChange={(event) => onChange(spec.type === "integer" ? Number.parseInt(event.target.value, 10) : spec.type === "number" ? Number(event.target.value) : spec.type === "string_list" ? event.target.value.split(",").map((item) => item.trim()).filter(Boolean) : event.target.value)} /></Field>;
+  return <Field label={spec.name} hint={spec.description}><input type={spec.type === "integer" || spec.type === "number" ? "number" : "text"} value={Array.isArray(value) ? value.join(", ") : String(value ?? "")} min={spec.minimum ?? undefined} max={spec.maximum ?? undefined} required={spec.required} onChange={(event) => onChange(spec.type === "integer" ? Number.parseInt(event.target.value, 10) : spec.type === "number" ? Number(event.target.value) : spec.type === "string_list" ? event.target.value.split(",").map((item) => item.trim()).filter(Boolean) : event.target.value)} /></Field>;
 }

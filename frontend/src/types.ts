@@ -16,9 +16,9 @@ export interface ParameterSpec {
   type: "string" | "integer" | "number" | "boolean" | "string_list";
   required?: boolean;
   default?: unknown;
-  minimum?: number;
-  maximum?: number;
-  enum?: Array<string | number>;
+  minimum?: number | null;
+  maximum?: number | null;
+  enum?: Array<string | number | boolean | string[]>;
   description?: string;
 }
 

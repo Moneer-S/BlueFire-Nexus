@@ -5,6 +5,10 @@ const API_ROOT = "/api/v1";
 const BROWSER_BOOTSTRAP_FRAGMENT_KEY = "bluefire-session";
 const BROWSER_BOOTSTRAP_HEADER = "X-BlueFire-Browser-Bootstrap";
 const BROWSER_CAPABILITY = /^[A-Za-z0-9_-]{64}$/;
+// Server configuration permits six 300-second attempts, 5.75 seconds of retry
+// backoff, and 10 seconds for normalization. A static bound avoids aborting
+// against stale catalog metadata.
+const AI_DRAFT_REQUEST_TIMEOUT_MS = 1_815_750;
 const RUNNER_TRUST_MUTATION_TIMEOUT_MS = 135_000;
 const SYNCHRONOUS_REPLAY_TIMEOUT_MS = 180_000;
 export const DEMO_MODE = import.meta.env.VITE_DEMO_MODE === "true";
@@ -246,7 +250,7 @@ export const api = {
       const count = Math.max(1, Math.min(maxNodes, demoScenario.steps.length)); const steps = structuredClone(demoScenario.steps.slice(0, count)); const ids = new Set(steps.map((step) => step.id)); const edges = structuredClone(demoScenario.edges.filter((edge) => ids.has(edge.from_step) && ids.has(edge.to_step)).slice(0, maxEdges));
       return { schema_version: "bluefire.ai-graph-draft-result.v1", draft_id: `ai-draft-demo-${Date.now()}`, saved: false, scenario: { ...structuredClone(demoScenario), title: objective.slice(0, 80), purpose: objective, start: steps[0]!.id, steps, edges, layout: undefined }, rationale: "Sanitized demo control-plane draft using registered behavior contracts.", assumptions: ["Demo mode did not call an external model.", "Operator review is required before saving or running."], audit: { schema_version: "bluefire.ai-graph-draft-audit.v1", unsaved: true, provider: { requested_provider_id: providerId ?? null, effective_provider_id: "deterministic-offline.v1", model: "deterministic-planner.v1", attempts: 1, used_fallback: true, fallback_reason: "demo_mode", usage: null }, bounds: { max_nodes: maxNodes, max_edges: maxEdges }, selected_behavior_ids: steps.map((step) => step.behavior_id) } };
     }
-    return request("/ai/drafts", { method: "POST", body: JSON.stringify({ objective, ...(providerId ? { provider_id: providerId } : {}), max_nodes: maxNodes, max_edges: maxEdges }) });
+    return request("/ai/drafts", { method: "POST", body: JSON.stringify({ objective, ...(providerId ? { provider_id: providerId } : {}), max_nodes: maxNodes, max_edges: maxEdges }) }, AI_DRAFT_REQUEST_TIMEOUT_MS);
   },
   async catalog(): Promise<CatalogResponse> { return DEMO_MODE ? structuredClone(demoCatalog) : request("/catalog"); },
   async intakeReviewedT1082(destinationId: string, runnerProfileId: string, operatorId: string): Promise<ReviewedT1082IntakeResult> {

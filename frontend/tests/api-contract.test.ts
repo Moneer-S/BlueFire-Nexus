@@ -119,6 +119,24 @@ describe("control-plane request contracts", () => {
     }
   });
 
+  it("keeps AI drafting open through the maximum configured provider retry budget", async () => {
+    vi.useFakeTimers();
+    const timeoutSpy = vi.spyOn(window, "setTimeout");
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
+      const completion = window.setTimeout(() => resolve(new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } })), 1_805_750);
+      init?.signal?.addEventListener("abort", () => { window.clearTimeout(completion); reject(new DOMException("aborted", "AbortError")); }, { once: true });
+    })));
+    try {
+      const draft = api.aiDraft("Exercise the maximum provider budget", "openai-responses.v1");
+      expect(timeoutSpy.mock.calls[0]?.[1]).toBe(1_815_750);
+      await vi.advanceTimersByTimeAsync(1_805_750);
+      await expect(draft).resolves.toEqual({});
+    } finally {
+      timeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("excludes unfinalized run metadata from canonical browser history", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ schema_version: "bluefire.run-list.v1", runs: [{ schema_version: "1.0", run_id: "run-20300101T000000Z-aaaaaaaaaaaaaaaa", status: "created", created_at: "2030-01-01T00:00:00Z" }, demoRuns[0]] }), { status: 200, headers: { "Content-Type": "application/json" } })));
     await expect(api.runs()).resolves.toMatchObject({ runs: [demoRuns[0]], unavailable_run_count: 1 });

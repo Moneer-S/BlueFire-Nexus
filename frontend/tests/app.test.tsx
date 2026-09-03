@@ -1,15 +1,35 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
 import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import { ProductProvider, UI_PREFERENCE_SCHEMA_VERSION } from "../src/state/ProductContext";
-import type { ComparisonResponse, DetectionComparisonResponse, DetectionResource, PreflightReport, PublicBaselineReference, RunJob } from "../src/types";
+import type { Behavior, ComparisonResponse, DetectionComparisonResponse, DetectionResource, PreflightReport, PublicBaselineReference, RunJob } from "../src/types";
 
 const envelopeBehavior = demoCatalog.behaviors.find((item) => item.execution_state === "action")!;
 const envelopeAction = demoCatalog.actions.find((item) => item.id === envelopeBehavior.action_ids[0])!;
+const typedEnumBehavior: Behavior = {
+  ...structuredClone(envelopeBehavior),
+  id: "sandbox.typed-enum-review.v1",
+  title: "Typed enum review",
+  parameters: [
+    { name: "evidence_basis", type: "string", required: true, default: null, enum: ["hypothesis", "observed"] },
+    { name: "sample_count", type: "integer", required: true, default: null, enum: [1, 2] },
+    { name: "strict_match", type: "boolean", required: true, default: null, enum: [true, false] },
+    { name: "label_set", type: "string_list", required: true, default: null, enum: [["alpha"], ["beta", "gamma"]] },
+    { name: "optional_note", type: "string", required: false, default: null },
+    { name: "zero_default", type: "integer", required: false, default: 0 },
+    { name: "false_default", type: "boolean", required: false, default: false },
+    { name: "empty_default", type: "string", required: false, default: "" },
+    { name: "negative_number", type: "number", required: true, default: null, minimum: null, maximum: -0.5 },
+    { name: "fractional_number", type: "number", required: true, default: null, minimum: 0.25, maximum: null },
+    { name: "positive_integer", type: "integer", required: true, default: null, minimum: 0.25, maximum: null },
+    { name: "negative_integer", type: "integer", required: true, default: null, minimum: null, maximum: -0.25 },
+    { name: "empty_integer_range", type: "integer", required: true, default: null, minimum: 0.2, maximum: 0.8 },
+  ],
+};
 const executePreflight: PreflightReport = {
   ready: false,
   status: "approval_required",
@@ -285,6 +305,68 @@ describe("product application", () => {
 
     expect(await screen.findByDisplayValue("Registered production scenario")).toBeVisible();
     expect(screen.queryByDisplayValue(demoScenario.title)).not.toBeInTheDocument();
+  });
+
+  it("treats serialized null parameter defaults as absent when adding a behavior", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const fallback = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/catalog")) return json({ ...demoCatalog, behaviors: [...demoCatalog.behaviors, typedEnumBehavior] });
+      return fallback(input, init);
+    });
+
+    const user = userEvent.setup();
+    renderApp("/builder");
+    await user.click(await screen.findByRole("button", { name: /Typed enum review/ }));
+
+    const evidenceBasis = await screen.findByRole("combobox", { name: "evidence_basis" }) as HTMLSelectElement;
+    expect(evidenceBasis.selectedOptions[0]).toHaveTextContent("hypothesis");
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}") as { steps?: Array<{ behavior_id: string; parameters: Record<string, unknown> }> };
+      const parameters = stored.steps?.find((step) => step.behavior_id === typedEnumBehavior.id)?.parameters;
+      expect(parameters?.evidence_basis).toBe("hypothesis");
+      expect(parameters).toMatchObject({
+        label_set: ["alpha"],
+        zero_default: 0,
+        false_default: false,
+        empty_default: "",
+        negative_number: -0.5,
+        fractional_number: 0.25,
+        positive_integer: 1,
+        negative_integer: -1,
+      });
+      expect(parameters).not.toHaveProperty("optional_note");
+      expect(parameters).not.toHaveProperty("empty_integer_range");
+    });
+    expect(screen.getByRole("spinbutton", { name: "empty_integer_range" })).toHaveValue(null);
+  });
+
+  it("preserves numeric and boolean enum member types when editing parameters", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const fallback = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/catalog")) return json({ ...demoCatalog, behaviors: [...demoCatalog.behaviors, typedEnumBehavior] });
+      return fallback(input, init);
+    });
+
+    const user = userEvent.setup();
+    renderApp("/builder");
+    await user.click(await screen.findByRole("button", { name: /Typed enum review/ }));
+    const sampleCount = await screen.findByRole("combobox", { name: "sample_count" });
+    const strictMatch = screen.getByRole("combobox", { name: "strict_match" });
+    const labelSet = screen.getByRole("combobox", { name: "label_set" });
+    await user.selectOptions(sampleCount, within(sampleCount).getByRole("option", { name: "2" }));
+    await user.selectOptions(strictMatch, within(strictMatch).getByRole("option", { name: "false" }));
+    await user.selectOptions(labelSet, within(labelSet).getByRole("option", { name: "beta, gamma" }));
+
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}") as { steps?: Array<{ behavior_id: string; parameters: Record<string, unknown> }> };
+      const parameters = stored.steps?.find((step) => step.behavior_id === typedEnumBehavior.id)?.parameters;
+      expect(parameters).toMatchObject({ sample_count: 2, strict_match: false, label_set: ["beta", "gamma"] });
+      expect(typeof parameters?.sample_count).toBe("number");
+      expect(typeof parameters?.strict_match).toBe("boolean");
+      expect(Array.isArray(parameters?.label_set)).toBe(true);
+    });
   });
 
   it("guides first-run users through honest local readiness and Simulate", async () => {
