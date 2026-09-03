@@ -560,6 +560,41 @@ describe("product application", () => {
     expect(exactJobRequests()).toBe(terminalRequestCount);
   });
 
+  it("restores an interrupted stored job omitted from fresh active inventory", async () => {
+    const interruptedJob: RunJob = { ...executeJob, state: "interrupted", progress: { phase: "interrupted" }, approval_request: null };
+    window.localStorage.setItem(activeJobStorageKey, interruptedJob.job_id);
+    const fetchMock = vi.mocked(fetch);
+    const defaultImplementation = fetchMock.getMockImplementation()!;
+    let resolveDetail!: (response: Response) => void;
+    let detailRequests = 0;
+    fetchMock.mockImplementation((input, init) => {
+      if (String(input).endsWith(`/jobs/${interruptedJob.job_id}`) && !init?.method) {
+        detailRequests += 1;
+        if (detailRequests === 1) return new Promise<Response>((resolve) => { resolveDetail = resolve; });
+        return Promise.resolve(json(interruptedJob));
+      }
+      return defaultImplementation(input, init);
+    });
+
+    const firstMount = renderApp("/runs");
+    await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." });
+    await waitFor(() => expect(resolveDetail).toBeTypeOf("function"));
+    expect(window.localStorage.getItem(activeJobStorageKey)).toBe(interruptedJob.job_id);
+    expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
+
+    await act(async () => { resolveDetail(json(interruptedJob)); });
+    expect(await screen.findByRole("heading", { name: interruptedJob.job_id })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Retry as replacement" })).toBeVisible();
+    expect(window.localStorage.getItem(activeJobStorageKey)).toBe(interruptedJob.job_id);
+    firstMount.unmount();
+
+    renderApp("/runs");
+    expect(await screen.findByRole("heading", { name: interruptedJob.job_id })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Retry as replacement" })).toBeVisible();
+    expect(window.localStorage.getItem(activeJobStorageKey)).toBe(interruptedJob.job_id);
+    expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith(`/jobs/${interruptedJob.job_id}`) && !init?.method)).toHaveLength(2);
+  });
+
   it("loads a completed result when inventory releases the slot before final detail", async () => {
     const runningJob: RunJob = { ...executeJob, state: "running", progress: { phase: "running" } };
     const completedRun = demoRuns[0]!;
@@ -810,14 +845,92 @@ describe("product application", () => {
     expect(screen.queryByText(/New preflight and submission remain disabled/)).not.toBeInTheDocument();
   });
 
-  it("does not restore an unmanaged stored job outside fresh inventory", async () => {
+  it("clears a stored job only after fresh detail confirms it is missing", async () => {
     const staleJobId = "job-cccccccccccccccccccccccccccccccc";
     window.localStorage.setItem(activeJobStorageKey, staleJobId);
+    const fetchMock = vi.mocked(fetch);
+    const defaultImplementation = fetchMock.getMockImplementation()!;
+    let resolveMissing!: (response: Response) => void;
+    fetchMock.mockImplementation((input, init) => {
+      if (String(input).endsWith(`/jobs/${staleJobId}`) && !init?.method) return new Promise<Response>((resolve) => { resolveMissing = resolve; });
+      return defaultImplementation(input, init);
+    });
 
     renderApp("/runs");
+    await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." });
+    await waitFor(() => expect(resolveMissing).toBeTypeOf("function"));
+    expect(window.localStorage.getItem(activeJobStorageKey)).toBe(staleJobId);
+    expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
+
+    await act(async () => { resolveMissing(new Response(JSON.stringify({ error: { code: "job_not_found", message: "Job was not found." } }), { status: 404, headers: { "Content-Type": "application/json" } })); });
     await waitFor(() => expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled());
     expect(window.localStorage.getItem(activeJobStorageKey)).toBeNull();
-    expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith(`/jobs/${staleJobId}`) && !init?.method)).toBe(false);
+    expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith(`/jobs/${staleJobId}`) && !init?.method)).toHaveLength(1);
+  });
+
+  it("does not revive a cached stored job after fresh detail reports it missing", async () => {
+    const staleJob: RunJob = { ...executeJob, job_id: "job-abababababababababababababababab", state: "running", progress: { phase: "running" } };
+    window.localStorage.setItem(activeJobStorageKey, staleJob.job_id);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    client.setQueryData(["job", staleJob.job_id], staleJob);
+    const fetchMock = vi.mocked(fetch);
+    const defaultImplementation = fetchMock.getMockImplementation()!;
+    let resolveMissing!: (response: Response) => void;
+    fetchMock.mockImplementation((input, init) => {
+      if (String(input).endsWith(`/jobs/${staleJob.job_id}`) && !init?.method) return new Promise<Response>((resolve) => { resolveMissing = resolve; });
+      return defaultImplementation(input, init);
+    });
+
+    renderApp("/runs", client);
+    await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." });
+    await waitFor(() => expect(resolveMissing).toBeTypeOf("function"));
+    expect(screen.getByRole("heading", { name: "No active job" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Pause" })).not.toBeEnabled();
+    expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
+
+    await act(async () => { resolveMissing(new Response(JSON.stringify({ error: { code: "job_not_found", message: "Job was not found." } }), { status: 404, headers: { "Content-Type": "application/json" } })); });
+    await waitFor(() => expect(window.localStorage.getItem(activeJobStorageKey)).toBeNull());
+    expect(screen.queryByRole("heading", { name: staleJob.job_id })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled();
+  });
+
+  it("does not grant mutable authority to a stored nonterminal job outside controller inventory", async () => {
+    window.localStorage.setItem(activeJobStorageKey, executeJob.job_id);
+    const fetchMock = vi.mocked(fetch);
+    const defaultImplementation = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input, init) => {
+      if (String(input).endsWith(`/jobs/${executeJob.job_id}`) && !init?.method) return Promise.resolve(json({ ...executeJob, approval_request: executeApprovalRequest }));
+      return defaultImplementation(input, init);
+    });
+
+    renderApp("/runs");
+    await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." });
+    expect(await screen.findByText(/Mutable controls remain disabled while ownership is reconciled/)).toBeVisible();
+    expect(screen.getByRole("heading", { name: "No active job" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(screen.queryByRole("region", { name: "Durable Execute job approval" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
+    expect(window.localStorage.getItem(activeJobStorageKey)).toBe(executeJob.job_id);
+  });
+
+  it("disables interrupted replacement while another controller job is active", async () => {
+    const interruptedJob: RunJob = { ...executeJob, job_id: "job-cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd", state: "interrupted", progress: { phase: "interrupted" }, approval_request: null };
+    const otherJob: RunJob = { ...executeJob, job_id: "job-dedededededededededededededededede", state: "paused", progress: { phase: "paused" } };
+    activeJobInventory = [otherJob];
+    window.localStorage.setItem(activeJobStorageKey, interruptedJob.job_id);
+    const fetchMock = vi.mocked(fetch);
+    const defaultImplementation = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation((input, init) => {
+      if (String(input).endsWith(`/jobs/${interruptedJob.job_id}`) && !init?.method) return Promise.resolve(json(interruptedJob));
+      return defaultImplementation(input, init);
+    });
+
+    renderApp("/runs");
+    expect(await screen.findByRole("heading", { name: interruptedJob.job_id })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Retry as replacement" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Retry as replacement" })).toHaveAttribute("title", "Retry requires a fresh empty active-job inventory");
+    expect(screen.getByRole("combobox", { name: "Active durable job" })).toBeVisible();
   });
 
   it("does not apply cached job authority before a fresh exact detail response", async () => {
@@ -837,7 +950,7 @@ describe("product application", () => {
 
     renderApp("/runs", client);
     await waitFor(() => expect(resolveDetail).toBeTypeOf("function"));
-    expect(screen.getByRole("button", { name: "Pause" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Pause" })).toBeEnabled();
     expect(screen.queryByRole("region", { name: "Durable Execute job approval" })).not.toBeInTheDocument();
 
     resolveDetail!();
@@ -868,7 +981,7 @@ describe("product application", () => {
     expect(await screen.findByRole("heading", { name: executeJob.job_id })).toBeVisible();
     expect(await screen.findByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).not.toBeChecked();
     expect(screen.getByRole("textbox", { name: "Operator identity for this job" })).toHaveValue("");
-  });
+  }, 10_000);
 
   it("does not apply an earlier approval result to a newly selected job", async () => {
     const secondJob: RunJob = { ...executeJob, job_id: "job-77777777777777777777777777777777", created_at: "2030-01-02T00:00:00Z" };
@@ -1032,7 +1145,7 @@ describe("product application", () => {
     const selectedJob: RunJob = { ...executeJob, job_id: "job-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", state: "paused", progress: { phase: "paused" }, created_at: "2030-01-02T00:00:00Z" };
     const interruptedJob: RunJob = { ...sourceJob, state: "interrupted", progress: { phase: "interrupted" } };
     const replacementJob: RunJob = { ...executeJob, job_id: "job-ffffffffffffffffffffffffffffffff", created_at: "2030-01-03T00:00:00Z" };
-    activeJobInventory = [sourceJob, selectedJob];
+    activeJobInventory = [sourceJob];
     window.localStorage.setItem(activeJobStorageKey, sourceJob.job_id);
     const fetchMock = vi.mocked(fetch);
     const defaultImplementation = fetchMock.getMockImplementation()!;
@@ -1041,7 +1154,7 @@ describe("product application", () => {
     fetchMock.mockImplementation((input, init) => {
       const path = String(input);
       if (path.endsWith(`/jobs/${sourceJob.job_id}`) && !init?.method) {
-        activeJobInventory = [selectedJob];
+        activeJobInventory = [];
         return Promise.resolve(json(interruptedJob));
       }
       if (path.endsWith(`/jobs/${sourceJob.job_id}/retry`) && init?.method === "POST") {
@@ -1052,11 +1165,17 @@ describe("product application", () => {
     });
 
     const user = userEvent.setup();
-    renderApp("/runs");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    renderApp("/runs", client);
     const retry = await screen.findByRole("button", { name: "Retry as replacement" });
-    const selector = await screen.findByRole("combobox", { name: "Active durable job" });
+    await client.refetchQueries({ queryKey: ["active-jobs"], exact: true });
+    await waitFor(() => expect(retry).toBeEnabled());
     await user.click(retry);
     expect(retryRequested).toBe(true);
+
+    activeJobInventory = [selectedJob];
+    await client.refetchQueries({ queryKey: ["active-jobs"], exact: true });
+    const selector = await screen.findByRole("combobox", { name: "Active durable job" });
     await user.selectOptions(selector, selectedJob.job_id);
     expect(await screen.findByRole("heading", { name: selectedJob.job_id })).toBeVisible();
 

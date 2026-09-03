@@ -15,6 +15,10 @@ const activeJobStorageKey = "bluefire.local.active-job-id.v1";
 const activeJobInventoryUnavailableNotice = "Active-job inventory is unavailable. New preflight and submission remain disabled until it is restored.";
 const durableJobId = /^job-[0-9a-f]{32}$/;
 
+function isRetryableInterruptedJob(job: RunJob | null | undefined): boolean {
+  return job?.schema_version === "bluefire.job.v1" && job.kind === "scenario.run" && job.state === "interrupted";
+}
+
 function readStoredActiveJobId(): string | null {
   try {
     const jobId = window.localStorage.getItem(activeJobStorageKey);
@@ -96,14 +100,13 @@ export function RunsPage() {
   const { scenario, setScenario, dirty, runConfig, setRunConfig, clearApproval, activeRun, setActiveRun } = useProduct();
   const queryClient = useQueryClient();
   const [preflight, setPreflight] = useState<PreflightReport>(); const [notice, setNotice] = useState<string>();
-  const [activeJob, setActiveJob] = useState<RunJob | null>(null); const [activeJobId, setActiveJobId] = useState<string | null>(null); const [initialPreferredJobId] = useState<string | null>(() => readStoredActiveJobId()); const [jobPreflight, setJobPreflight] = useState<PreflightReport>(); const [approvalRequest, setApprovalRequest] = useState<Record<string, unknown> | null>(null);
+  const [activeJob, setActiveJob] = useState<RunJob | null>(null); const [activeJobId, setActiveJobId] = useState<string | null>(() => readStoredActiveJobId()); const [jobPreflight, setJobPreflight] = useState<PreflightReport>(); const [approvalRequest, setApprovalRequest] = useState<Record<string, unknown> | null>(null);
   const [knownTerminalJobIds, setKnownTerminalJobIds] = useState<ReadonlySet<string>>(() => new Set(queryClient.getQueriesData<RunJob>({ queryKey: ["job"] }).flatMap(([, job]) => job && terminalJobStates.has(job.state) ? [job.job_id] : [])));
   const [activeProposalReview, setActiveProposalReview] = useState<AIProposalReview>();
   const [jobApprovalConfirmed, setJobApprovalConfirmed] = useState(false); const [jobApprovedBy, setJobApprovedBy] = useState("");
   const [liveEvents, setLiveEvents] = useState<RunEventPage["items"]>([]);
   const preflightGeneration = useRef(0);
   const missingInventoryReconciliation = useRef<string | null>(null);
-  const initialPreferenceChecked = useRef(false);
   const activeJobIdRef = useRef(activeJobId);
   activeJobIdRef.current = activeJobId;
   const activeJobRef = useRef(activeJob);
@@ -115,6 +118,8 @@ export function RunsPage() {
   const inventoryJobs = useMemo(() => inventoryAuthoritative ? activeJobsQuery.data!.jobs : [], [activeJobsQuery.data, inventoryAuthoritative]);
   const selectableInventoryJobs = useMemo(() => inventoryJobs.filter((job) => !terminalJobStates.has(job.state) && !knownTerminalJobIds.has(job.job_id)), [inventoryJobs, knownTerminalJobIds]);
   const inventoryUnavailable = !inventoryAuthoritative;
+  const controllerOwnsActiveJob = Boolean(activeJob && inventoryAuthoritative && inventoryJobs.some((job) => job.job_id === activeJob.job_id));
+  const retryInventoryReady = inventoryAuthoritative && inventoryJobs.length === 0;
   const jobActivityBlocksNewIntent = inventoryUnavailable || inventoryJobs.length > 0 || Boolean(activeJobId) || Boolean(activeJob && !terminalJobStates.has(activeJob.state));
   const alternateInventoryJobAvailable = selectableInventoryJobs.some((job) => job.job_id !== activeJobId);
   const rememberTerminalJob = useCallback((job: RunJob) => {
@@ -127,7 +132,7 @@ export function RunsPage() {
     if (terminalJobStates.has(job.state)) {
       rememberTerminalJob(job);
       setActiveJobId((current) => { const next = current === job.job_id ? null : current; activeJobIdRef.current = next; return next; });
-      clearStoredActiveJobId(job.job_id);
+      if (isRetryableInterruptedJob(job)) storeActiveJobId(job.job_id); else clearStoredActiveJobId(job.job_id);
     } else {
       activeJobIdRef.current = job.job_id;
       setActiveJobId(job.job_id);
@@ -158,9 +163,9 @@ export function RunsPage() {
     void queryClient.invalidateQueries({ queryKey: ["job", job.job_id], exact: true });
     return snapshot;
   }, [queryClient, rememberTerminalJob]);
-  const jobQuery = useQuery({ queryKey: ["job", activeJobId], queryFn: async () => { const requestedJobId = activeJobId!; const receivedJob = await api.job(requestedJobId); if (receivedJob.job_id !== requestedJobId) throw new ApiError("The job detail response did not match the requested job.", "job_identity_mismatch", undefined, 502); let job = preferNewerJobSnapshot(queryClient.getQueryData<RunJob>(["job", requestedJobId]), receivedJob); if (activeJobRef.current?.job_id === requestedJobId) job = preferNewerJobSnapshot(activeJobRef.current, job); rememberTerminalJob(job); return job; }, enabled: Boolean(activeJobId && activeJob?.job_id === activeJobId && !terminalJobStates.has(activeJob.state)), refetchInterval: (query) => { const state = (query.state.data as RunJob | undefined)?.state; return state && terminalJobStates.has(state) ? false : 750; }, staleTime: 0 });
+  const jobQuery = useQuery({ queryKey: ["job", activeJobId], queryFn: async () => { const requestedJobId = activeJobId!; const receivedJob = await api.job(requestedJobId); if (receivedJob.job_id !== requestedJobId) throw new ApiError("The job detail response did not match the requested job.", "job_identity_mismatch", undefined, 502); let job = preferNewerJobSnapshot(queryClient.getQueryData<RunJob>(["job", requestedJobId]), receivedJob); if (activeJobRef.current?.job_id === requestedJobId) job = preferNewerJobSnapshot(activeJobRef.current, job); rememberTerminalJob(job); return job; }, enabled: Boolean(activeJobId && (!activeJob || (activeJob.job_id === activeJobId && !terminalJobStates.has(activeJob.state)))), refetchInterval: (query) => { const state = (query.state.data as RunJob | undefined)?.state; return state && terminalJobStates.has(state) ? false : 750; }, staleTime: 0 });
   const refetchJob = jobQuery.refetch;
-  const ordinaryApprovalNeedsPreflight = Boolean(activeJob?.state === "awaiting_approval" && !["ai_proposal", "ai_proposal_execute"].includes(String(activeJob.progress.approval_kind ?? "")) && !hasUsableStoredApprovalReview(jobPreflight));
+  const ordinaryApprovalNeedsPreflight = Boolean(controllerOwnsActiveJob && activeJob?.state === "awaiting_approval" && !["ai_proposal", "ai_proposal_execute"].includes(String(activeJob.progress.approval_kind ?? "")) && !hasUsableStoredApprovalReview(jobPreflight));
   const storedJobPreflightQuery = useQuery({ queryKey: ["job-preflight", activeJob?.job_id, activeJob?.request?.approval_request_id], queryFn: async () => ({ jobId: activeJob!.job_id, report: await api.preflightStoredJobRequest(activeJob!) }), enabled: ordinaryApprovalNeedsPreflight, staleTime: 0 });
   const unusableStoredJobPreflight = Boolean(storedJobPreflightQuery.isSuccess && storedJobPreflightQuery.data?.jobId === activeJob?.job_id && !hasUsableStoredApprovalReview(storedJobPreflightQuery.data.report));
   const liveRunId = typeof activeJob?.progress.run_id === "string" ? activeJob.progress.run_id : undefined;
@@ -171,17 +176,13 @@ export function RunsPage() {
   useEffect(() => {
     if (!inventoryAuthoritative) return;
     const candidates = selectableInventoryJobs;
-    const preferred = !initialPreferenceChecked.current && initialPreferredJobId ? candidates.find((job) => job.job_id === initialPreferredJobId) : undefined;
-    if (!initialPreferenceChecked.current) {
-      initialPreferenceChecked.current = true;
-      if (initialPreferredJobId && !preferred) clearStoredActiveJobId(initialPreferredJobId);
-    }
     const selected = candidates.find((job) => job.job_id === activeJobId);
     if (selected) {
       missingInventoryReconciliation.current = null;
       if (activeJob?.job_id !== selected.job_id) selectInventoryJob(selected);
       return;
     }
+    if (activeJobId && !activeJob) return;
     if (activeJobId && activeJob?.job_id === activeJobId && !terminalJobStates.has(activeJob.state)) {
       if (missingInventoryReconciliation.current !== activeJobId) {
         missingInventoryReconciliation.current = activeJobId;
@@ -190,8 +191,8 @@ export function RunsPage() {
       return;
     }
     if (activeJob && terminalJobStates.has(activeJob.state)) return;
-    if (preferred ?? candidates[0]) {
-      selectInventoryJob((preferred ?? candidates[0])!);
+    if (candidates[0]) {
+      selectInventoryJob(candidates[0]);
       return;
     }
     if (!activeJobId) return;
@@ -207,10 +208,45 @@ export function RunsPage() {
       setJobApprovedBy("");
       setLiveEvents([]);
     }
-  }, [activeJob, activeJobId, initialPreferredJobId, inventoryAuthoritative, refetchJob, selectableInventoryJobs, selectInventoryJob]);
+  }, [activeJob, activeJobId, inventoryAuthoritative, refetchJob, selectableInventoryJobs, selectInventoryJob]);
   useEffect(() => { if (activeJobsQuery.error) setNotice(activeJobInventoryUnavailableNotice); else if (inventoryAuthoritative) setNotice((current) => current === activeJobInventoryUnavailableNotice ? undefined : current); }, [activeJobsQuery.error, inventoryAuthoritative]);
-  useEffect(() => { if (jobQuery.isFetchedAfterMount && jobQuery.data && jobQuery.data.job_id === activeJobId) { trackActiveJob(jobQuery.data); if (jobQuery.data.approval_request !== undefined) setApprovalRequest(jobQuery.data.approval_request); } }, [activeJobId, jobQuery.data, jobQuery.isFetchedAfterMount, trackActiveJob]);
-  useEffect(() => { if (jobQuery.isFetchedAfterMount && jobQuery.error) { const definitivelyMissing = jobQuery.error instanceof ApiError && jobQuery.error.status === 404 && jobQuery.error.code === "job_not_found"; const inventoryStillOwnsJob = Boolean(activeJobId && activeJobsQuery.data?.jobs.some((job) => job.job_id === activeJobId)); if (definitivelyMissing && activeJobId && activeJobsQuery.isSuccess && !inventoryStillOwnsJob) { clearStoredActiveJobId(activeJobId); setActiveJobId(null); if (activeJob?.job_id === activeJobId) setActiveJob(null); } setNotice(jobQuery.error instanceof Error ? jobQuery.error.message : "Job status could not be refreshed."); } }, [activeJob?.job_id, activeJobId, activeJobsQuery.data?.jobs, activeJobsQuery.isSuccess, jobQuery.error, jobQuery.isFetchedAfterMount]);
+  useEffect(() => {
+    if (!jobQuery.isFetchedAfterMount || !jobQuery.isSuccess || !jobQuery.data || jobQuery.data.job_id !== activeJobId) return;
+    const receivedJob = jobQuery.data;
+    const trackedJob = activeJobRef.current?.job_id === receivedJob.job_id ? activeJobRef.current : undefined;
+    if (trackedJob && terminalJobStates.has(receivedJob.state)) {
+      trackActiveJob(receivedJob);
+      if (receivedJob.approval_request !== undefined) setApprovalRequest(receivedJob.approval_request);
+      return;
+    }
+    if (!inventoryAuthoritative) return;
+    const inventoryJob = inventoryJobs.find((job) => job.job_id === receivedJob.job_id);
+    if (!inventoryJob) {
+      if (isRetryableInterruptedJob(receivedJob)) {
+        trackActiveJob(receivedJob);
+        if (receivedJob.approval_request !== undefined) setApprovalRequest(receivedJob.approval_request);
+        return;
+      }
+      if (terminalJobStates.has(receivedJob.state)) {
+        rememberTerminalJob(receivedJob);
+        clearStoredActiveJobId(receivedJob.job_id);
+        setActiveJobId((current) => {
+          if (current !== receivedJob.job_id) return current;
+          activeJobIdRef.current = null;
+          return null;
+        });
+        setNotice(`Stored job ${receivedJob.job_id} is terminal and has no supported replacement path.`);
+        return;
+      }
+      setNotice(`Stored job ${receivedJob.job_id} is not present in the active controller inventory. Mutable controls remain disabled while ownership is reconciled.`);
+      return;
+    }
+    let snapshot = preferNewerJobSnapshot(inventoryJob, receivedJob);
+    if (trackedJob) snapshot = preferNewerJobSnapshot(trackedJob, snapshot);
+    trackActiveJob(snapshot);
+    if (snapshot.approval_request !== undefined) setApprovalRequest(snapshot.approval_request);
+  }, [activeJobId, inventoryAuthoritative, inventoryJobs, jobQuery.data, jobQuery.isFetchedAfterMount, jobQuery.isSuccess, rememberTerminalJob, trackActiveJob]);
+  useEffect(() => { if (jobQuery.isFetchedAfterMount && jobQuery.error) { const definitivelyMissing = jobQuery.error instanceof ApiError && jobQuery.error.status === 404 && jobQuery.error.code === "job_not_found"; const inventoryStillOwnsJob = Boolean(activeJobId && inventoryJobs.some((job) => job.job_id === activeJobId)); if (definitivelyMissing && activeJobId && inventoryAuthoritative && !inventoryStillOwnsJob) { clearStoredActiveJobId(activeJobId); setActiveJobId(null); if (activeJob?.job_id === activeJobId) setActiveJob(null); } setNotice(jobQuery.error instanceof Error ? jobQuery.error.message : "Job status could not be refreshed."); } }, [activeJob?.job_id, activeJobId, inventoryAuthoritative, inventoryJobs, jobQuery.error, jobQuery.isFetchedAfterMount]);
   useEffect(() => { if (storedJobPreflightQuery.isFetchedAfterMount && storedJobPreflightQuery.data && storedJobPreflightQuery.data.jobId === activeJob?.job_id) setJobPreflight(hasUsableStoredApprovalReview(storedJobPreflightQuery.data.report) ? storedJobPreflightQuery.data.report : undefined); }, [activeJob?.job_id, storedJobPreflightQuery.data, storedJobPreflightQuery.isFetchedAfterMount]);
   useEffect(() => { if (storedJobPreflightQuery.isFetchedAfterMount && storedJobPreflightQuery.error) setNotice(storedJobPreflightQuery.error instanceof Error ? storedJobPreflightQuery.error.message : "The durable job approval review could not be restored."); }, [storedJobPreflightQuery.error, storedJobPreflightQuery.isFetchedAfterMount]);
   useEffect(() => { setLiveEvents([]); }, [activeJob?.job_id]);
@@ -225,7 +261,7 @@ export function RunsPage() {
   const approvalMutation = useMutation({ mutationFn: ({ jobId, approvedBy }: { jobId: string; approvedBy: string }) => api.approveJob(jobId, approvedBy), onSuccess: async (result, variables) => { const snapshot = await synchronizeJobSnapshot({ ...result.job, approval_request: result.approval_request ?? result.job.approval_request }); void queryClient.invalidateQueries({ queryKey: ["active-jobs"] }); if (activeJobIdRef.current !== variables.jobId || snapshot.job_id !== variables.jobId) return; trackActiveJob(snapshot); setApprovalRequest(snapshot.approval_request ?? null); setNotice(`The exact envelope for ${snapshot.job_id} was approved once and released to the job controller.`); }, onError: (error, variables) => { if (activeJobIdRef.current === variables.jobId) setNotice(error instanceof Error ? error.message : "Job approval was refused."); }, onSettled: (_result, _error, variables) => { if (activeJobIdRef.current !== variables.jobId) return; setJobApprovalConfirmed(false); setJobApprovedBy(""); clearApproval(); } });
   const runnerLifecycleMutation = useMutation({ mutationFn: (action: "bootstrap" | "start") => action === "bootstrap" ? api.bootstrapRunner(GUIDED_EXECUTE_PROFILE_ID) : api.startRunner(GUIDED_EXECUTE_PROFILE_ID), onSuccess: (status) => { queryClient.setQueryData(["runner-lifecycle"], status); setNotice(status.state === "ready" ? "The packaged runner is authenticated and ready for the guided Execute path." : "The packaged runner and recoverable local trust are verified. Start the authenticated host next."); }, onError: (error) => setNotice(error instanceof Error ? error.message : "The guided runner action was refused.") });
   const controlMutation = useMutation({ mutationFn: ({ jobId, action }: { jobId: string; action: "pause" | "resume" | "cancel" }) => api.controlJob(jobId, action), onSuccess: async (job, variables) => { const snapshot = await synchronizeJobSnapshot(job); void queryClient.invalidateQueries({ queryKey: ["active-jobs"] }); if (activeJobIdRef.current !== variables.jobId || snapshot.job_id !== variables.jobId) return; trackActiveJob(snapshot); setNotice(`${sentence(variables.action)} was requested for ${snapshot.job_id}; the durable state is ${sentence(snapshot.state)}.`); }, onError: (error, variables) => { if (activeJobIdRef.current === variables.jobId) setNotice(error instanceof Error ? error.message : "Job control request was refused."); } });
-  const retryMutation = useMutation({ mutationFn: (jobId: string) => api.retryJob(jobId), onSuccess: async (result, sourceJobId) => { const snapshot = await synchronizeJobSnapshot({ ...result.job, approval_request: result.approval_request ?? result.job.approval_request }); void queryClient.invalidateQueries({ queryKey: ["active-jobs"] }); if (displayedJobIdRef.current !== sourceJobId || result.retry_of_job_id !== sourceJobId) return; trackActiveJob(snapshot); setJobPreflight(result.preflight ?? undefined); setApprovalRequest(snapshot.approval_request ?? null); setActiveProposalReview(undefined); setNotice(`Replacement job ${snapshot.job_id} was created from interrupted job ${result.retry_of_job_id}. The source remains immutable.`); }, onError: (error, sourceJobId) => { if (displayedJobIdRef.current === sourceJobId) setNotice(error instanceof Error ? error.message : "The interrupted job could not be retried safely."); } });
+  const retryMutation = useMutation({ mutationFn: (jobId: string) => api.retryJob(jobId), onSuccess: async (result, sourceJobId) => { const snapshot = await synchronizeJobSnapshot({ ...result.job, approval_request: result.approval_request ?? result.job.approval_request }); void queryClient.invalidateQueries({ queryKey: ["active-jobs"] }); if (displayedJobIdRef.current !== sourceJobId || result.retry_of_job_id !== sourceJobId) return; clearStoredActiveJobId(sourceJobId); setJobApprovalConfirmed(false); setJobApprovedBy(""); trackActiveJob(snapshot); setJobPreflight(result.preflight ?? undefined); setApprovalRequest(snapshot.approval_request ?? null); setActiveProposalReview(undefined); setNotice(`Replacement job ${snapshot.job_id} was created from interrupted job ${result.retry_of_job_id}. The source remains immutable.`); }, onError: (error, sourceJobId) => { if (displayedJobIdRef.current === sourceJobId) setNotice(error instanceof Error ? error.message : "The interrupted job could not be retried safely."); } });
   const handleProposalDecision = (result: AIProposalDecisionResult, review: AIProposalReview) => { void synchronizeJobSnapshot({ ...result.job, approval_request: result.approval_request ?? result.job.approval_request }).then((snapshot) => { void queryClient.invalidateQueries({ queryKey: ["active-jobs"] }); if (activeJobIdRef.current !== snapshot.job_id) return; trackActiveJob(snapshot); setActiveProposalReview(review); setApprovalRequest(snapshot.approval_request ?? null); if (snapshot.progress.approval_kind === "ai_proposal_execute") setJobPreflight(undefined); setNotice(snapshot.progress.approval_kind === "ai_proposal_execute" ? "The registered proposal was accepted. Execute remains stopped at a new, separately bound one-time approval stage." : `The proposal was ${review.status}; durable job state is ${sentence(snapshot.state)}.`); }); };
   if (catalog.isPending || (runId && historicalRunQuery.isPending)) return <LoadingState label={runId ? "Loading canonical run review" : "Loading run controls"} />;
   if (catalog.isError) return <ErrorState error={catalog.error} retry={() => catalog.refetch()} />;
@@ -263,7 +299,7 @@ export function RunsPage() {
       <div className="run-action-bar"><div>{activeJob ? <Badge tone={statusTone(activeJob.state)} dot>{sentence(activeJob.state)}</Badge> : <Badge tone={preflight?.ready ? "success" : preflight?.status === "approval_required" ? "warning" : preflight ? "danger" : "neutral"} dot>{preflight?.ready ? "Ready" : preflight?.status === "approval_required" ? "Envelope reviewed locally" : preflight ? sentence(preflight.status) : "Preflight required"}</Badge>}<span>{runConfig.mode === "simulate" ? "No external behavior effects" : "Job creation and one-time durable approval remain separate"}</span></div><Button variant="secondary" onClick={requestPreflight} disabled={preflightMutation.isPending || !scenario.steps.length || jobActivityBlocksNewIntent}>{preflightMutation.isPending ? <Activity className="spin"/> : <ShieldCheck/>}Run preflight</Button><Button variant="primary" onClick={() => runMutation.mutate()} disabled={!canStart}>{runMutation.isPending ? <Activity className="spin"/> : <Play/>}{runMutation.isPending ? "Submitting job" : runConfig.mode === "execute" ? "Create approval-gated job" : "Submit Simulate job"}</Button></div>
       {alternateInventoryJobAvailable ? <Panel><PanelHeader eyebrow="Active controller inventory" title="Choose an active durable job" detail="Every controller-owned job remains available after navigation or reload." actions={<Badge tone="warning">{selectableInventoryJobs.length} active</Badge>} /><div className="detail-body"><Field label="Active durable job"><select value={selectableInventoryJobs.some((job) => job.job_id === activeJobId) ? activeJobId ?? "" : ""} onChange={(event) => { const selected = selectableInventoryJobs.find((job) => job.job_id === event.target.value); if (selected) selectInventoryJob(selected); }}><option value="" disabled>Select an active job</option>{selectableInventoryJobs.map((job) => <option key={job.job_id} value={job.job_id}>{sentence(job.state)} · {job.job_id}</option>)}</select></Field></div></Panel> : null}
       {(storedJobPreflightQuery.isError || unusableStoredJobPreflight) && ordinaryApprovalNeedsPreflight ? <Callout tone="danger" title="Exact approval review unavailable"><p>The active job remains controllable, but approval stays disabled until its canonical stored request returns an exact approval-required plan, binding, and envelope.</p><Button size="small" variant="secondary" disabled={storedJobPreflightQuery.isFetching} onClick={() => { void storedJobPreflightQuery.refetch(); }}><RotateCcw/>{storedJobPreflightQuery.isFetching ? "Retrying approval review" : "Retry approval review"}</Button></Callout> : null}
-      <LiveConsole run={activeRun} job={activeJob} events={liveEvents} pending={runMutation.isPending || Boolean(resultRunId && resultQuery.isPending) || Boolean(activeJob && !terminalJobStates.has(activeJob.state))} config={runConfig} approvalPreflight={jobPreflight} approvalRequest={approvalRequest} proposalReview={activeProposalReview} approvalConfirmed={jobApprovalConfirmed} approvedBy={jobApprovedBy} approvalPending={approvalMutation.isPending} controlPending={controlMutation.isPending || retryMutation.isPending} onApprovalConfirmed={setJobApprovalConfirmed} onApprovedBy={setJobApprovedBy} onApprove={() => activeJob && approvalMutation.mutate({ jobId: activeJob.job_id, approvedBy: jobApprovedBy })} onControl={(action) => activeJob && controlMutation.mutate({ jobId: activeJob.job_id, action })} onRetry={() => activeJob && retryMutation.mutate(activeJob.job_id)} onProposalDecision={handleProposalDecision} onProposalReviewLoaded={setActiveProposalReview} onReview={() => activeRun && navigate(runReviewPath(activeRun.run_id))} />
+      <LiveConsole run={activeRun} job={activeJob} events={liveEvents} pending={runMutation.isPending || Boolean(resultRunId && resultQuery.isPending) || Boolean(activeJob && !terminalJobStates.has(activeJob.state))} config={runConfig} approvalPreflight={jobPreflight} approvalRequest={approvalRequest} proposalReview={activeProposalReview} approvalConfirmed={jobApprovalConfirmed} approvedBy={jobApprovedBy} approvalPending={approvalMutation.isPending} controlPending={controlMutation.isPending || retryMutation.isPending} mutableControlsEnabled={controllerOwnsActiveJob} retryEnabled={retryInventoryReady} onApprovalConfirmed={setJobApprovalConfirmed} onApprovedBy={setJobApprovedBy} onApprove={() => activeJob && controllerOwnsActiveJob && approvalMutation.mutate({ jobId: activeJob.job_id, approvedBy: jobApprovedBy })} onControl={(action) => activeJob && controllerOwnsActiveJob && controlMutation.mutate({ jobId: activeJob.job_id, action })} onRetry={() => activeJob && retryInventoryReady && isRetryableInterruptedJob(activeJob) && retryMutation.mutate(activeJob.job_id)} onProposalDecision={handleProposalDecision} onProposalReviewLoaded={setActiveProposalReview} onReview={() => activeRun && navigate(runReviewPath(activeRun.run_id))} />
       <RunHistoryPanel runs={runsQuery.data?.runs} pending={runsQuery.isPending} error={runsQuery.error} retry={() => runsQuery.refetch()} />
     </>
   </div>;
@@ -374,6 +410,8 @@ interface LiveConsoleProps {
   approvedBy: string;
   approvalPending: boolean;
   controlPending: boolean;
+  mutableControlsEnabled: boolean;
+  retryEnabled: boolean;
   onApprovalConfirmed: (confirmed: boolean) => void;
   onApprovedBy: (identity: string) => void;
   onApprove: () => void;
@@ -384,17 +422,17 @@ interface LiveConsoleProps {
   onReview: () => void;
 }
 
-function LiveConsole({ run, job, events, pending, config, approvalPreflight, approvalRequest, proposalReview, approvalConfirmed, approvedBy, approvalPending, controlPending, onApprovalConfirmed, onApprovedBy, onApprove, onControl, onRetry, onProposalDecision, onProposalReviewLoaded, onReview }: LiveConsoleProps) {
+function LiveConsole({ run, job, events, pending, config, approvalPreflight, approvalRequest, proposalReview, approvalConfirmed, approvedBy, approvalPending, controlPending, mutableControlsEnabled, retryEnabled, onApprovalConfirmed, onApprovedBy, onApprove, onControl, onRetry, onProposalDecision, onProposalReviewLoaded, onReview }: LiveConsoleProps) {
   const [tab, setTab] = useState<"timeline" | "planner" | "policy" | "runner" | "evidence" | "detections">("timeline");
   const previewSteps: RunStep[] = pending ? [{ step_id: "durable_job", status: job?.state ?? "planning", execution_disposition: job?.state === "awaiting_approval" ? "callback_not_started" : config.mode === "simulate" ? "simulation_job" : "approval_gated_job" }] : [];
   const steps = run?.steps ?? previewSteps;
-  const canPause = job?.state === "running";
-  const canResume = job?.state === "paused";
-  const canCancel = Boolean(job && !terminalJobStates.has(job.state));
-  return <Panel className="live-console"><PanelHeader eyebrow="Live orchestration" title={run ? run.run_id : job ? job.job_id : pending ? "Job submission in progress" : "No active job"} detail={run ? `${sentence(run.mode)} · ${sentence(run.status)} · ${run.is_demo ? "sanitized demo" : "canonical local record"}` : job ? `${sentence(job.kind)} · durable ${sentence(job.state)} state · ${events.length} incremental events · updated ${formatDate(job.updated_at)}` : "Complete preflight, then submit a durable local job."} actions={<div className="run-controls"><Button size="small" variant="ghost" disabled={!canPause || controlPending} onClick={() => onControl("pause")} title={canPause ? "Pause at the next cooperative checkpoint" : "Pause is available only while running"}><Pause/>Pause</Button><Button size="small" variant="ghost" disabled={!canResume || controlPending} onClick={() => onControl("resume")} title={canResume ? "Resume the cooperatively paused job" : "Resume is available only while paused"}><RotateCcw/>Resume</Button>{job?.state === "interrupted" ? <Button size="small" variant="secondary" disabled={controlPending} onClick={onRetry} title="Create a replacement job with fresh preflight and approval"><RotateCcw/>Retry as replacement</Button> : null}<Button size="small" variant="danger" disabled={!canCancel || controlPending} onClick={() => onControl("cancel")} title={canCancel ? "Request cooperative cancellation" : "This job is terminal"}><CircleStop/>Cancel</Button>{run ? <Button size="small" onClick={onReview}><FileSearch/>Review</Button> : null}</div>} />
+  const canPause = mutableControlsEnabled && job?.state === "running";
+  const canResume = mutableControlsEnabled && job?.state === "paused";
+  const canCancel = Boolean(mutableControlsEnabled && job && !terminalJobStates.has(job.state));
+  return <Panel className="live-console"><PanelHeader eyebrow="Live orchestration" title={run ? run.run_id : job ? job.job_id : pending ? "Job submission in progress" : "No active job"} detail={run ? `${sentence(run.mode)} · ${sentence(run.status)} · ${run.is_demo ? "sanitized demo" : "canonical local record"}` : job ? `${sentence(job.kind)} · durable ${sentence(job.state)} state · ${events.length} incremental events · updated ${formatDate(job.updated_at)}` : "Complete preflight, then submit a durable local job."} actions={<div className="run-controls"><Button size="small" variant="ghost" disabled={!canPause || controlPending} onClick={() => onControl("pause")} title={canPause ? "Pause at the next cooperative checkpoint" : "Pause requires a running controller-owned job"}><Pause/>Pause</Button><Button size="small" variant="ghost" disabled={!canResume || controlPending} onClick={() => onControl("resume")} title={canResume ? "Resume the cooperatively paused job" : "Resume requires a paused controller-owned job"}><RotateCcw/>Resume</Button>{isRetryableInterruptedJob(job) ? <Button size="small" variant="secondary" disabled={!retryEnabled || controlPending} onClick={onRetry} title={retryEnabled ? "Create a replacement job with fresh preflight and approval" : "Retry requires a fresh empty active-job inventory"}><RotateCcw/>Retry as replacement</Button> : null}<Button size="small" variant="danger" disabled={!canCancel || controlPending} onClick={() => onControl("cancel")} title={canCancel ? "Request cooperative cancellation" : "Cancel requires a nonterminal controller-owned job"}><CircleStop/>Cancel</Button>{run ? <Button size="small" onClick={onReview}><FileSearch/>Review</Button> : null}</div>} />
     {DEMO_MODE ? <div className="console-banner"><Sparkles/>Demo lifecycle states are presentation fixtures only. No runner was dispatched.</div> : null}
-    {job?.state === "awaiting_approval" && job.progress.approval_kind !== "ai_proposal" ? <JobApprovalGate job={job} preflight={approvalPreflight} approvalRequest={approvalRequest} proposalReview={proposalReview} confirmed={approvalConfirmed} approvedBy={approvedBy} pending={approvalPending} onConfirmed={onApprovalConfirmed} onApprovedBy={onApprovedBy} onApprove={onApprove} /> : null}
-    {job && typeof job.progress.proposal_record_id === "string" ? <ProposalReviewWorkspace job={job} onDecision={onProposalDecision} onReviewLoaded={onProposalReviewLoaded}/> : null}
+    {job?.state === "awaiting_approval" && job.progress.approval_kind !== "ai_proposal" ? mutableControlsEnabled ? <JobApprovalGate job={job} preflight={approvalPreflight} approvalRequest={approvalRequest} proposalReview={proposalReview} confirmed={approvalConfirmed} approvedBy={approvedBy} pending={approvalPending} onConfirmed={onApprovalConfirmed} onApprovedBy={onApprovedBy} onApprove={onApprove} /> : <Callout tone="warning" title="Controller ownership unavailable">Approval remains disabled until fresh active-job inventory confirms that this controller owns the job.</Callout> : null}
+    {job && typeof job.progress.proposal_record_id === "string" ? mutableControlsEnabled ? <ProposalReviewWorkspace job={job} onDecision={onProposalDecision} onReviewLoaded={onProposalReviewLoaded}/> : <Callout tone="warning" title="Controller ownership unavailable">Proposal decisions remain disabled until fresh active-job inventory confirms that this controller owns the job.</Callout> : null}
     {job?.error ? <Callout tone="danger" title={job.error.code ?? "Job failed"}>{job.error.message ?? "The durable job ended with a sanitized error record."}</Callout> : null}
     <div className="live-path">{steps.length ? steps.map((step, index) => <article key={`${step.step_id}-${index}`} data-status={normalizeStatus(step.status)}><header><span>{String(index + 1).padStart(2, "0")}</span><Badge tone={statusTone(step.status)} dot>{sentence(normalizeStatus(step.status))}</Badge></header><strong>{step.step_id}</strong><small>{step.action_id ?? step.simulation_id ?? sentence(step.execution_disposition ?? "pending")}</small></article>) : <div className="console-empty"><Activity/><strong>Awaiting a run</strong><span>Planner, policy, dispatch, evidence, detection, and cleanup events will remain separate.</span></div>}</div>
     <div className="console-tabs" role="tablist" aria-label="Run detail views">{(["timeline", "planner", "policy", "runner", "evidence", "detections"] as const).map((item) => <button key={item} role="tab" aria-selected={tab === item} onClick={() => setTab(item)}>{sentence(item)}</button>)}</div>
