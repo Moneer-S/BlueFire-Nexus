@@ -282,6 +282,25 @@ def validate_provider_action(action: ActionDefinition, context: str) -> None:
             raise ActionPackageError(
                 f"{context} provider parameter {parameter.name} has nonnumeric bounds"
             )
+        if numeric:
+            # These values enter browser scenario authoring and must survive
+            # native JSON parse/stringify without changing the signed contract.
+            catalog_values: list[tuple[str, Any]] = []
+            if parameter.default is not None:
+                catalog_values.append(("default", parameter.default))
+            catalog_values.extend(
+                (f"enum[{index}]", value) for index, value in enumerate(parameter.enum)
+            )
+            for field, value in catalog_values:
+                if (
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and not -_MAX_SAFE_INTEGER <= value <= _MAX_SAFE_INTEGER
+                ):
+                    raise ActionPackageError(
+                        f"{context} provider parameter {parameter.name} {field} "
+                        "is outside the catalog-safe integer range"
+                    )
         for bound in (parameter.minimum, parameter.maximum):
             if bound is not None and (
                 not float(bound).is_integer()

@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+import bluefire.action_provider_packages as action_provider_packages_module
 from bluefire.action_packages import (
     ACTION_PACKAGE_PAYLOAD_V2_SCHEMA,
     ACTION_PACKAGE_V2_SCHEMA,
@@ -443,6 +444,140 @@ def test_provider_package_rejects_ambiguous_parameter_contracts() -> None:
             manifest=unsafe["manifest"],
             payload=unsafe["payload"],
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("default", 1 << 53),
+        ("default", (1 << 53) + 1),
+        ("default", -(1 << 53)),
+        ("enum", [1 << 53]),
+        ("enum", [(1 << 53) + 1]),
+        ("enum", [-(1 << 53)]),
+    ],
+)
+@pytest.mark.parametrize("parameter_type", ["integer", "number"])
+def test_provider_package_rejects_catalog_unsafe_integer_values(
+    field: str, value: Any, parameter_type: str
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    document = {"manifest": _manifest(), "payload": _payload()}
+    for parameter in (
+        document["payload"]["behaviors"][0]["parameters"][0],
+        document["payload"]["actions"][0]["definition"]["parameters"][0],
+    ):
+        parameter["type"] = parameter_type
+        parameter.pop("minimum")
+        parameter.pop("maximum")
+        if field == "default":
+            parameter["default"] = value
+            parameter["enum"] = [value]
+        else:
+            parameter.pop("default")
+            parameter["enum"] = value
+    definition = document["payload"]["actions"][0]["definition"]
+    document["payload"]["actions"][0]["program"]["action_contract_digest"] = (
+        provider_action_contract_digest(
+            ActionDefinition.from_mapping(definition, "provider action")
+        )
+    )
+
+    with pytest.raises(ActionPackageError, match="outside the catalog-safe integer range"):
+        _signed(
+            private_key,
+            manifest=document["manifest"],
+            payload=document["payload"],
+        )
+
+
+@pytest.mark.parametrize("parameter_type", ["integer", "number"])
+def test_provider_package_accepts_catalog_safe_integer_boundaries(parameter_type: str) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    document = {"manifest": _manifest(), "payload": _payload()}
+    minimum = -((1 << 53) - 1)
+    maximum = (1 << 53) - 1
+    for parameter in (
+        document["payload"]["behaviors"][0]["parameters"][0],
+        document["payload"]["actions"][0]["definition"]["parameters"][0],
+    ):
+        parameter.update(
+            {
+                "type": parameter_type,
+                "default": maximum,
+                "enum": [minimum, maximum],
+                "minimum": minimum,
+                "maximum": maximum,
+            }
+        )
+    definition = document["payload"]["actions"][0]["definition"]
+    document["payload"]["actions"][0]["program"]["action_contract_digest"] = (
+        provider_action_contract_digest(
+            ActionDefinition.from_mapping(definition, "provider action")
+        )
+    )
+
+    envelope = _signed(
+        private_key,
+        manifest=document["manifest"],
+        payload=document["payload"],
+    )
+    verified = verify_action_package(
+        envelope,
+        trusted_signers=_trust(private_key),
+        bluefire_version="0.1.0",
+        platform="windows",
+    )
+
+    parameter = verified.actions[0].definition.parameters[0]
+    assert parameter.default == maximum
+    assert parameter.enum == (minimum, maximum)
+    assert parameter.minimum == minimum
+    assert parameter.maximum == maximum
+
+
+def test_current_verifiers_reject_a_preexisting_signed_unsafe_catalog_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    document = {"manifest": _manifest(), "payload": _payload()}
+    unsafe_integer = (1 << 53) + 1
+    for parameter in (
+        document["payload"]["behaviors"][0]["parameters"][0],
+        document["payload"]["actions"][0]["definition"]["parameters"][0],
+    ):
+        parameter.update({"default": unsafe_integer, "enum": [unsafe_integer]})
+        parameter.pop("minimum")
+        parameter.pop("maximum")
+    definition = document["payload"]["actions"][0]["definition"]
+    document["payload"]["actions"][0]["program"]["action_contract_digest"] = (
+        provider_action_contract_digest(
+            ActionDefinition.from_mapping(definition, "provider action")
+        )
+    )
+
+    # Model an envelope accepted before the catalog-safe contract existed.
+    with monkeypatch.context() as previous_contract:
+        previous_contract.setattr(
+            action_provider_packages_module,
+            "validate_provider_action",
+            lambda _action, _context: None,
+        )
+        envelope = _signed(
+            private_key,
+            manifest=document["manifest"],
+            payload=document["payload"],
+        )
+
+    with pytest.raises(ActionPackageError, match="outside the catalog-safe integer range"):
+        verify_action_package(
+            envelope,
+            trusted_signers=_trust(private_key),
+            bluefire_version="0.1.0",
+            platform="windows",
+        )
+    with pytest.raises(ActionPackageError, match="outside the catalog-safe integer range"):
+        audit_action_package(envelope, trusted_signers=_trust(private_key))
 
 
 @pytest.mark.parametrize(

@@ -81,6 +81,10 @@ A logical `bluefire.action.v1` entry contains:
 - mutation flag and cleanup action ID;
 - provenance.
 
+Signed provider parameter defaults, enum members, and numeric bounds must remain within the
+JavaScript/IEEE-754 safe-integer range (`-(2^53 - 1)` through `2^53 - 1`) so the local browser
+catalog preserves their exact values through authoring and validation.
+
 The logical catalog describes operator intent. It must not expose executor-only fields such as `path`, `destination`, `executable`, `args`, `receipt_ids`, or socket objects unless those values are derived by a reviewed adapter from typed artifacts and policy.
 
 ## Built-in action pack
