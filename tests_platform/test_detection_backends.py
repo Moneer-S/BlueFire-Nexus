@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import builtins
-import importlib.util
 from dataclasses import replace
 
 import pytest
@@ -59,15 +58,6 @@ def _yara_candidate() -> DetectionCandidate:
         predicted_fields=("data",),
         provenance={"source": "BlueFire Nexus", "license": "MIT"},
     )
-
-
-def _sigma_sqlite_available() -> bool:
-    if importlib.util.find_spec("sigma") is None:
-        return False
-    try:
-        return importlib.util.find_spec("sigma.backends.sqlite") is not None
-    except ModuleNotFoundError:
-        return False
 
 
 def test_legacy_validator_import_is_compatible() -> None:
@@ -218,28 +208,34 @@ falsepositives:
   - Approved inventory tooling
 level: low
 """
-    probe_calls: list[str] = []
+    missing_pysigma_error = (
+        "pysigma is unavailable; install pysigma==1.5.0; " "candidate remains a hypothesis"
+    )
+    real_package_version = detection_backends.metadata.version
 
-    def missing_parent_probe(name: str) -> None:
-        probe_calls.append(name)
-        if name != "sigma":
-            raise AssertionError("The child module must not be resolved without its parent")
-        return None
+    def missing_pysigma(distribution: str) -> str:
+        if distribution == "pysigma":
+            raise detection_backends.metadata.PackageNotFoundError(distribution)
+        return real_package_version(distribution)
 
-    with monkeypatch.context() as missing_parent:
-        missing_parent.setattr(importlib.util, "find_spec", missing_parent_probe)
-        assert _sigma_sqlite_available() is False
-        assert probe_calls == ["sigma"]
-
-    if not _sigma_sqlite_available():
-        with pytest.raises(
-            DetectionError,
-            match=r"pysigma-backend-sqlite==1\.2\.2.*remains a hypothesis",
-        ):
+    with monkeypatch.context() as missing_dependency:
+        missing_dependency.setattr(detection_backends.metadata, "version", missing_pysigma)
+        with pytest.raises(DetectionError) as missing_error:
             validator.parse_sigma(_sigma_candidate(), source)
+        assert str(missing_error.value) == missing_pysigma_error
+
+    try:
+        parsed = validator.parse_sigma(_sigma_candidate(), source)
+    except DetectionError as exc:
+        assert str(exc) in {
+            missing_pysigma_error,
+            "pysigma-backend-sqlite is unavailable; install "
+            "pysigma-backend-sqlite==1.2.2; candidate remains a hypothesis",
+            "pySigma SQLite backend is unavailable; install "
+            "pysigma-backend-sqlite==1.2.2; candidate remains a hypothesis",
+        }
         return
 
-    parsed = validator.parse_sigma(_sigma_candidate(), source)
     assert parsed.state is DetectionState.PARSED
     assert parsed.parser_backend["name"] == "pySigma"
     assert parsed.parser_backend["conversion_backend"] == "pySigma SQLite"
