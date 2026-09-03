@@ -419,7 +419,7 @@ class AIProposal:
         confidence = value["confidence"]
         if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
             raise AIProviderError("AI proposal confidence must be numeric")
-        if not 0.0 <= float(confidence) <= 1.0:
+        if not 0.0 <= confidence <= 1.0:
             raise AIProviderError("AI proposal confidence must be between zero and one")
         review = value["requires_operator_review"]
         if not isinstance(review, bool):

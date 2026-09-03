@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,40 @@ def test_seeded_execute_profiles_budget_the_installed_ten_step_journey() -> None
         "sandbox.network.loopback.v1",
         "sandbox.peer.handoff.v1",
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "maximum"),
+    [
+        ("max_steps", 256),
+        ("max_seconds", 24 * 60 * 60),
+        ("max_artifacts", 512),
+        ("max_bytes", 256 * 1024 * 1024),
+    ],
+)
+def test_runner_budgets_enforce_runtime_and_wire_bounds(field: str, maximum: int) -> None:
+    raw = load_config(CONFIG_PATH).to_dict()
+    budgets = raw["runner_profiles"][0]["budgets"]
+    budgets[field] = maximum
+    parsed = BlueFireConfig.from_mapping(raw)
+
+    assert parsed.runner_profiles[0].budgets.to_dict()[field] == maximum
+
+    budgets[field] = maximum + 1
+    with pytest.raises(ConfigError, match=field):
+        BlueFireConfig.from_mapping(raw)
+
+
+def test_load_config_rejects_max_seconds_too_large_for_runtime_conversion(
+    tmp_path: Path,
+) -> None:
+    raw = load_config(CONFIG_PATH).to_dict()
+    raw["runner_profiles"][0]["budgets"]["max_seconds"] = 10**400
+    config_path = tmp_path / "oversized-runner-budget.yaml"
+    config_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="max_seconds"):
+        load_config(config_path)
 
 
 def test_environment_values_remain_unresolved_references(monkeypatch: pytest.MonkeyPatch) -> None:

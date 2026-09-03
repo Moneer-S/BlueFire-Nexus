@@ -32,6 +32,10 @@ class ConfigError(ContractError):
 
 
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_MAX_RUNNER_ARTIFACT_BYTES = 256 * 1024 * 1024
+_MAX_RUNNER_ARTIFACTS = 512
+_MAX_RUNNER_EXECUTION_SECONDS = 24 * 60 * 60
+_MAX_RUNNER_STEPS = 256
 
 
 class EnvironmentType(str, Enum):
@@ -58,12 +62,6 @@ class AutonomyLevel(str, Enum):
 class AIProviderKind(str, Enum):
     DETERMINISTIC = "deterministic"
     OPENAI_RESPONSES = "openai_responses"
-
-
-def _positive_int(value: Any, context: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ConfigError(f"{context} must be a positive integer")
-    return int(value)
 
 
 def _bounded_int(value: Any, context: str, *, minimum: int, maximum: int) -> int:
@@ -398,10 +396,30 @@ class RunnerBudgets:
         fields = {"max_steps", "max_seconds", "max_artifacts", "max_bytes"}
         _strict_fields(data, allowed=fields, required=fields, context=context)
         return cls(
-            max_steps=_positive_int(data["max_steps"], f"{context}.max_steps"),
-            max_seconds=_positive_int(data["max_seconds"], f"{context}.max_seconds"),
-            max_artifacts=_positive_int(data["max_artifacts"], f"{context}.max_artifacts"),
-            max_bytes=_positive_int(data["max_bytes"], f"{context}.max_bytes"),
+            max_steps=_bounded_int(
+                data["max_steps"],
+                f"{context}.max_steps",
+                minimum=1,
+                maximum=_MAX_RUNNER_STEPS,
+            ),
+            max_seconds=_bounded_int(
+                data["max_seconds"],
+                f"{context}.max_seconds",
+                minimum=1,
+                maximum=_MAX_RUNNER_EXECUTION_SECONDS,
+            ),
+            max_artifacts=_bounded_int(
+                data["max_artifacts"],
+                f"{context}.max_artifacts",
+                minimum=1,
+                maximum=_MAX_RUNNER_ARTIFACTS,
+            ),
+            max_bytes=_bounded_int(
+                data["max_bytes"],
+                f"{context}.max_bytes",
+                minimum=1,
+                maximum=_MAX_RUNNER_ARTIFACT_BYTES,
+            ),
         )
 
     def to_dict(self) -> dict[str, int]:

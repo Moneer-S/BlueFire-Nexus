@@ -197,6 +197,27 @@ def test_invalid_structured_response_falls_back_without_applying_untrusted_outpu
     assert "command" not in result.proposal.to_dict()
 
 
+@pytest.mark.parametrize("confidence", [10**309, -(10**309)])
+def test_oversized_confidence_uses_deterministic_fallback(confidence: int) -> None:
+    config = load_config(CONFIG_PATH).ai
+    invalid = _proposal()
+    invalid["confidence"] = confidence
+    transport = FakeTransport(_response(invalid))
+    provider = build_ai_provider(
+        config,
+        provider_id="openai-responses.v1",
+        environ={"OPENAI_API_KEY": "unit-test-key-value"},  # pragma: allowlist secret
+        transport=transport,
+    )
+
+    result = provider.propose(_request(AutonomyLevel.ASSIST))
+
+    assert result.used_fallback is True
+    assert result.fallback_reason == "response_invalid"
+    assert result.effective_provider_id == "deterministic-offline.v1"
+    assert result.proposal.selected_behavior_id == "sandbox.discovery.v1"
+
+
 def test_retry_budget_and_missing_credential_use_deterministic_fallback() -> None:
     config = load_config(CONFIG_PATH).ai
     retryable = AIProviderTransportError("temporary failure", retryable=True)
