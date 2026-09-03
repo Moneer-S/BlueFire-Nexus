@@ -21,6 +21,7 @@ const typedEnumBehavior: Behavior = {
     { name: "label_set", type: "string_list", required: true, default: null, enum: [["alpha"], ["beta", "gamma"]] },
     { name: "optional_note", type: "string", required: false, default: null },
     { name: "zero_default", type: "integer", required: false, default: 0 },
+    { name: "optional_number", type: "number", required: false, default: 0.5 },
     { name: "false_default", type: "boolean", required: false, default: false },
     { name: "empty_default", type: "string", required: false, default: "" },
     { name: "negative_number", type: "number", required: true, default: null, minimum: null, maximum: -0.5 },
@@ -366,6 +367,57 @@ describe("product application", () => {
       expect(typeof parameters?.sample_count).toBe("number");
       expect(typeof parameters?.strict_match).toBe("boolean");
       expect(Array.isArray(parameters?.label_set)).toBe(true);
+    });
+  });
+
+  it("omits cleared numeric parameters instead of persisting null or NaN", async () => {
+    const fetchMock = vi.mocked(fetch);
+    const fallback = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/catalog")) return json({ ...demoCatalog, behaviors: [...demoCatalog.behaviors, typedEnumBehavior] });
+      return fallback(input, init);
+    });
+
+    const user = userEvent.setup();
+    const view = renderApp("/builder");
+    await user.click(await screen.findByRole("button", { name: /Typed enum review/ }));
+    const optionalInteger = await screen.findByRole("spinbutton", { name: "zero_default" });
+    const optionalNumber = screen.getByRole("spinbutton", { name: "optional_number" });
+    const requiredInteger = screen.getByRole("spinbutton", { name: "positive_integer" });
+
+    await user.clear(optionalInteger);
+    await user.clear(optionalNumber);
+    await user.clear(requiredInteger);
+
+    await waitFor(() => {
+      const serialized = window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}";
+      const stored = JSON.parse(serialized) as { steps?: Array<{ behavior_id: string; parameters: Record<string, unknown> }> };
+      const parameters = stored.steps?.find((step) => step.behavior_id === typedEnumBehavior.id)?.parameters;
+      expect(parameters).not.toHaveProperty("zero_default");
+      expect(parameters).not.toHaveProperty("optional_number");
+      expect(parameters).not.toHaveProperty("positive_integer");
+      expect(serialized).not.toContain('"zero_default":null');
+      expect(serialized).not.toContain('"optional_number":null');
+      expect(serialized).not.toContain('"positive_integer":null');
+    });
+
+    await user.type(requiredInteger, "3");
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}") as { steps?: Array<{ behavior_id: string; parameters: Record<string, unknown> }> };
+      const value = stored.steps?.find((step) => step.behavior_id === typedEnumBehavior.id)?.parameters.positive_integer;
+      expect(value).toBe(3);
+      expect(Number.isFinite(value)).toBe(true);
+    });
+
+    view.unmount();
+    renderApp("/builder");
+    await waitFor(() => expect(screen.getAllByText("Typed enum review")).toHaveLength(2));
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}") as { steps?: Array<{ behavior_id: string; parameters: Record<string, unknown> }> };
+      const parameters = stored.steps?.find((step) => step.behavior_id === typedEnumBehavior.id)?.parameters;
+      expect(parameters?.positive_integer).toBe(3);
+      expect(parameters).not.toHaveProperty("zero_default");
+      expect(parameters).not.toHaveProperty("optional_number");
     });
   });
 
