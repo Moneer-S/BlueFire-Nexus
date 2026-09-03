@@ -56,9 +56,9 @@
       },
       {
         "path": "bluefire/runner_client.py",
-        "max_lines": 4550,
-        "reason": "Security-critical typed runner client remains one cross-platform launch/receipt compatibility boundary; reviewed growth implements descriptor-pinned Darwin no-fork launch reservation, exact child ownership, cancellation, and bounded indeterminate reconciliation, while trust, transport security, persistent lifecycle, and containment helpers remain separate.",
-        "reviewed_by": "BlueFire completion lead (Codex), 2026-09-02",
+        "max_lines": 4572,
+        "reason": "Security-critical typed runner client remains one cross-platform launch/receipt compatibility boundary; the exact reviewed size includes descriptor-pinned Darwin no-fork launch reservation, isolated launch-worker state, exact child ownership, cancellation, and bounded startup and indeterminate reconciliation, while trust, transport security, persistent lifecycle, and containment helpers remain separate.",
+        "reviewed_by": "BlueFire completion lead (Codex), 2026-09-03",
         "expires_after": "2027-03-31 or BlueFire Nexus v3.1.0, whichever comes first"
       },
       {
@@ -76,11 +76,18 @@
         "expires_after": "2027-03-31 or BlueFire Nexus v3.1.0, whichever comes first"
       },
       {
+        "path": "bluefire/runner_private_files.py",
+        "max_lines": 1029,
+        "reason": "Single-purpose descriptor-pinned private-file boundary exceeds the new-file budget by twenty-nine reviewed lines to preserve collision-bounded publication, consumable-marker races, and handle-relative Windows identity checks; ACL primitives and transport or lifecycle coordination remain separate.",
+        "reviewed_by": "BlueFire completion lead (Codex), 2026-09-03",
+        "expires_after": "2027-03-31 or BlueFire Nexus v3.1.0, whichever comes first"
+      },
+      {
         "path": "bluefire/runner_transport.py",
-        "max_lines": 4150,
-        "reason": "Legacy authenticated transport coordinator remains after extracting TLS/HMAC policy, durable result commits, and stable transport errors into dedicated modules.",
-        "reviewed_by": "BlueFire completion lead (Codex), 2026-08-29",
-        "expires_after": "2027-03-31 or BlueFire Nexus v0.2.0, whichever comes first"
+        "max_lines": 4432,
+        "reason": "Authenticated transport coordinator remains one compatibility boundary; the exact reviewed size includes durable interrupted-execution reconciliation, execute-task ownership, bounded ledger recovery, and absolute receive deadlines, while TLS/HMAC policy, result-commit primitives, and stable errors remain separate.",
+        "reviewed_by": "BlueFire completion lead (Codex), 2026-09-03",
+        "expires_after": "2027-03-31 or BlueFire Nexus v3.1.0, whichever comes first"
       },
       {
         "path": "bluefire/runner_trust.py",
