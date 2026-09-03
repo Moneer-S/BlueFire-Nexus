@@ -58,10 +58,13 @@ python -m bandit -r bluefire -ll
 python -m pip_audit --ignore-vuln PYSEC-2026-2447
 detect-secrets-hook --baseline .secrets.baseline $(git ls-files)
 gitleaks git --redact --no-banner
-python -m build
+python -m build --sdist
 ```
 
 The single `pip-audit` exception is the reviewed, transitive optional pySigma/DiskCache advisory documented in [Security](../SECURITY.md); do not add or silently broaden exceptions.
+
+Source-distribution verification is host-independent. Wheel verification is platform-specific because
+each wheel embeds one matching native runner; use the staged procedure below.
 
 Run targeted tests while iterating, then the complete suite. Do not weaken refusal, provenance, cleanup, or boundary assertions to obtain green.
 
@@ -161,14 +164,61 @@ Migration changes must be additive and transactional where possible. Add tests f
 
 ## Package and installed-wheel smoke
 
-Build the frontend first when its source changed, then build Python artifacts:
+Build the frontend first when its source changed:
 
 ```bash
-cd frontend && pnpm build && cd ..
-python -m build
+cd frontend
+pnpm build
+cd ..
 ```
 
-Inspect wheel contents: only the `bluefire` package, catalog/data YAML, and built UI assets should ship. Then install the wheel into a fresh temporary virtual environment and smoke:
+Before building a wheel, build and stage a runner for the wheel host. A clean checkout currently
+contains a Windows x86_64 top-level manifest, so a bare wheel build on Linux or macOS is expected
+to fail closed until the matching host runner is staged.
+
+For Linux x86_64, build the release-compatible static runner and stage it explicitly:
+
+```bash
+rustup target add x86_64-unknown-linux-musl
+python tools/build_native_runner.py --target x86_64-unknown-linux-musl
+python tools/stage_native_runner.py \
+  --runner "$PWD/runner/target/x86_64-unknown-linux-musl/release/bluefire-runner" \
+  --output-root "$PWD/bluefire/native" \
+  --platform linux \
+  --architecture x86_64
+python -m build --wheel
+```
+
+For macOS, use `aarch64` on Apple Silicon or `x86_64` on Intel:
+
+```bash
+BLUEFIRE_ARCH=aarch64 # use x86_64 on Intel
+python tools/build_native_runner.py
+python tools/stage_native_runner.py \
+  --runner "$PWD/runner/target/release/bluefire-runner" \
+  --output-root "$PWD/bluefire/native" \
+  --platform macos \
+  --architecture "$BLUEFIRE_ARCH"
+python -m build --wheel
+```
+
+Windows x86_64 uses the same explicit staging contract from PowerShell:
+
+```powershell
+python tools/build_native_runner.py
+python tools/stage_native_runner.py `
+  --runner "$PWD\runner\target\release\bluefire-runner.exe" `
+  --output-root "$PWD\bluefire\native" `
+  --platform windows `
+  --architecture x86_64
+python -m build --wheel
+```
+
+Build the source distribution separately with `python -m build --sdist`.
+
+Inspect wheel contents: only the `bluefire` package, catalog/data files, built UI assets, and the
+single staged runner plus its manifest should ship. Then install the wheel into a fresh temporary
+virtual environment and smoke:
 
 ```bash
 bluefire --help
@@ -177,7 +227,8 @@ bluefire --runs-dir path/to/temp-runs scenario run --scenario-id scenario.restri
 bluefire --runs-dir path/to/temp-runs ui --host 127.0.0.1 --port 8765
 ```
 
-The runner is a separate release artifact and must be built/tested independently.
+Each supported wheel contains exactly one matching native runner. Build and test that runner
+independently before staging it; staging and wheel tags are packaging controls, not dynamic host proof.
 
 Native-wheel CI additionally runs `tools/verify_packaged_runner.py inspect` and then copies the verifier outside the checkout for installed-wheel `smoke`. The smoke report includes a sanitized `disposable_workspace` proof showing the temporary work root is outside the checkout, source runner overrides are absent, sandbox scopes remain inside the disposable root, and cleanup leaves zero retained files. The proof deliberately omits absolute paths.
 

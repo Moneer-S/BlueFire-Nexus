@@ -36,7 +36,7 @@ python -m mypy bluefire
 python -m bandit -r bluefire -ll
 python -m pip_audit
 pre-commit run --all-files
-python -m build
+python -m build --sdist
 
 cargo fmt --manifest-path runner/Cargo.toml -- --check
 cargo clippy --manifest-path runner/Cargo.toml --all-targets --all-features -- -D warnings
@@ -50,6 +50,10 @@ pnpm test
 pnpm build
 pnpm test:e2e
 ~~~
+
+Wheel verification is host-specific because every wheel embeds one matching native runner.
+Follow [Package and installed-wheel smoke](docs/DEVELOPMENT.md#package-and-installed-wheel-smoke),
+which builds and stages the host runner before invoking the wheel backend.
 
 Tests must use temporary sandbox roots and loopback only. They must not require
 credentials, external targets, host security-control changes, elevated
