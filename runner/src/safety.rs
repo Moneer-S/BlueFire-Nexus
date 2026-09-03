@@ -21,6 +21,8 @@ const RECEIPT_DIR: &str = "receipts";
 const RECEIPT_COMMIT_DIR: &str = "receipt-commits";
 const STAGING_DIR: &str = "staging";
 const MAX_RECEIPT_BYTES: u64 = 256 * 1024;
+const CLEANUP_ABSENCE_RETRY_MILLIS: u64 = 25;
+const CLEANUP_DEFAULT_WINDOW_MILLIS: u64 = 2_500;
 
 #[derive(Debug)]
 pub struct SafeRoot {
@@ -221,6 +223,34 @@ struct CleanupEntry {
     identity: CleanupIdentity,
 }
 
+#[derive(Debug)]
+enum CleanupEntryOpenError {
+    Retryable(String),
+    Unsafe(String),
+}
+
+impl std::fmt::Display for CleanupEntryOpenError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Retryable(message) | Self::Unsafe(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl From<CleanupEntryOpenError> for String {
+    fn from(error: CleanupEntryOpenError) -> Self {
+        error.to_string()
+    }
+}
+
+fn require_cleanup_deadline(deadline: std::time::Instant) -> Result<(), String> {
+    if std::time::Instant::now() >= deadline {
+        Err("cleanup action exceeded its monotonic deadline".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 struct CleanupQuarantine<'a> {
     normalized: &'a str,
     source_directory: Option<&'a CleanupDirectory>,
@@ -255,6 +285,8 @@ mod cleanup_platform {
     const O_NONBLOCK: c_int = 0x0000_0800;
     #[cfg(target_os = "linux")]
     const AT_REMOVEDIR: c_int = 0x0200;
+    #[cfg(target_os = "linux")]
+    const ELOOP_ERRNO: i32 = 40;
 
     #[cfg(target_os = "macos")]
     const O_CLOEXEC: c_int = 0x0100_0000;
@@ -266,6 +298,8 @@ mod cleanup_platform {
     const O_NONBLOCK: c_int = 0x0000_0004;
     #[cfg(target_os = "macos")]
     const AT_REMOVEDIR: c_int = 0x0080;
+    #[cfg(target_os = "macos")]
+    const ELOOP_ERRNO: i32 = 62;
 
     const O_RDONLY: c_int = 0;
 
@@ -341,8 +375,8 @@ mod cleanup_platform {
         parent: &File,
         name: &OsStr,
         _kind: &OwnedPathKind,
-    ) -> Result<Option<File>, String> {
-        let name = portable_name(name, "cleanup entry")?;
+    ) -> Result<Option<File>, CleanupEntryOpenError> {
+        let name = portable_name(name, "cleanup entry").map_err(CleanupEntryOpenError::Unsafe)?;
         // O_NONBLOCK prevents an attacker-controlled FIFO replacement from
         // blocking cleanup while the descriptor is inspected and rejected.
         let descriptor = unsafe {
@@ -360,9 +394,12 @@ mod cleanup_platform {
         if error.kind() == io::ErrorKind::NotFound {
             Ok(None)
         } else {
-            Err(format!(
-                "cannot open cleanup entry without traversal: {error}"
-            ))
+            let message = format!("cannot open cleanup entry without traversal: {error}");
+            if error.raw_os_error() == Some(ELOOP_ERRNO) {
+                Err(CleanupEntryOpenError::Unsafe(message))
+            } else {
+                Err(CleanupEntryOpenError::Retryable(message))
+            }
         }
     }
 
@@ -541,6 +578,7 @@ mod cleanup_platform {
     const GENERIC_READ: u32 = 0x8000_0000;
     const FILE_SHARE_READ: u32 = 0x0000_0001;
     const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+    const FILE_SHARE_DELETE: u32 = 0x0000_0004;
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     const FILE_DISPOSITION_INFO_CLASS: u32 = 4;
@@ -633,7 +671,7 @@ mod cleanup_platform {
         _parent: &File,
         path: &OsStr,
         kind: &OwnedPathKind,
-    ) -> Result<Option<File>, String> {
+    ) -> Result<Option<File>, CleanupEntryOpenError> {
         let flags = FILE_FLAG_OPEN_REPARSE_POINT
             | if *kind == OwnedPathKind::Directory {
                 FILE_FLAG_BACKUP_SEMANTICS
@@ -665,9 +703,47 @@ mod cleanup_platform {
         {
             Ok(file) => Ok(Some(file)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!(
-                "cannot open cleanup entry without traversal: {error}"
-            )),
+            Err(error) => {
+                let message = format!("cannot open cleanup entry without traversal: {error}");
+                // A file-to-directory or file-to-junction replacement can
+                // make the exact access request fail with AccessDenied before
+                // common metadata validation sees the concrete object. Probe
+                // attributes through a reparse-point handle solely to classify
+                // that observable replacement; never use this weaker handle
+                // to validate, rename, or delete an expected object.
+                match OpenOptions::new()
+                    .access_mode(FILE_READ_ATTRIBUTES)
+                    .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                    .open(Path::new(path))
+                {
+                    Ok(probe) => match probe.metadata() {
+                        Ok(metadata)
+                            if metadata_is_link_or_reparse(&metadata)
+                                || matches!(
+                                    kind,
+                                    OwnedPathKind::File if !metadata.is_file()
+                                )
+                                || matches!(
+                                    kind,
+                                    OwnedPathKind::Directory if !metadata.is_dir()
+                                ) =>
+                        {
+                            Err(CleanupEntryOpenError::Unsafe(
+                                "cleanup entry was replaced with an unsafe object".to_string(),
+                            ))
+                        }
+                        Ok(_) => Err(CleanupEntryOpenError::Retryable(message)),
+                        Err(probe_error) => Err(CleanupEntryOpenError::Retryable(format!(
+                            "{message}; cannot classify cleanup entry: {probe_error}"
+                        ))),
+                    },
+                    Err(probe_error) if probe_error.kind() == io::ErrorKind::NotFound => Ok(None),
+                    Err(probe_error) => Err(CleanupEntryOpenError::Retryable(format!(
+                        "{message}; cannot classify cleanup entry: {probe_error}"
+                    ))),
+                }
+            }
         }
     }
 
@@ -1447,9 +1523,22 @@ impl SafeRoot {
     }
 
     pub fn delete_receipt(&self, receipt_id: &str) -> Result<(), String> {
+        self.delete_receipt_with_deadline(
+            receipt_id,
+            std::time::Instant::now()
+                + std::time::Duration::from_millis(CLEANUP_DEFAULT_WINDOW_MILLIS),
+        )
+    }
+
+    pub(crate) fn delete_receipt_with_deadline(
+        &self,
+        receipt_id: &str,
+        deadline: std::time::Instant,
+    ) -> Result<(), String> {
         if !valid_receipt_id(receipt_id) {
             return Err("receipt ID must be a 64-character hexadecimal digest".to_string());
         }
+        require_cleanup_deadline(deadline)?;
         let Some(root) = self.open_cleanup_directory(&[])? else {
             return Ok(());
         };
@@ -1469,15 +1558,20 @@ impl SafeRoot {
                 format!(".{receipt_id}.intent.tmp"),
                 format!(".{receipt_id}.commit.tmp"),
             ] {
-                self.remove_optional_cleanup_file(staging, &name, "receipt temporary")?;
+                self.remove_optional_cleanup_file(staging, &name, "receipt temporary", deadline)?;
             }
         }
         let metadata_name = format!("{receipt_id}.json");
         if let Some(commits) = commits.as_ref() {
-            self.remove_optional_cleanup_file(commits, &metadata_name, "receipt commit")?;
+            self.remove_optional_cleanup_file(commits, &metadata_name, "receipt commit", deadline)?;
         }
         if let Some(receipts) = receipts.as_ref() {
-            self.remove_optional_cleanup_file(receipts, &metadata_name, "receipt intent")?;
+            self.remove_optional_cleanup_file(
+                receipts,
+                &metadata_name,
+                "receipt intent",
+                deadline,
+            )?;
         }
 
         // Per-path staging files are deleted only by remove_staging_for_owned,
@@ -1494,9 +1588,24 @@ impl SafeRoot {
         receipt_id: &str,
         owned: &OwnedPath,
     ) -> Result<(), String> {
+        self.remove_staging_for_owned_with_deadline(
+            receipt_id,
+            owned,
+            std::time::Instant::now()
+                + std::time::Duration::from_millis(CLEANUP_DEFAULT_WINDOW_MILLIS),
+        )
+    }
+
+    pub(crate) fn remove_staging_for_owned_with_deadline(
+        &self,
+        receipt_id: &str,
+        owned: &OwnedPath,
+        deadline: std::time::Instant,
+    ) -> Result<(), String> {
         if !valid_receipt_id(receipt_id) {
             return Err("receipt ID must be a 64-character hexadecimal digest".to_string());
         }
+        require_cleanup_deadline(deadline)?;
         if owned.kind != OwnedPathKind::File {
             return Ok(());
         }
@@ -1513,6 +1622,7 @@ impl SafeRoot {
             &staging,
             &self.staging_name(receipt_id, &owned.relative_path),
             "receipt-owned staging file",
+            deadline,
         )?;
         Ok(())
     }
@@ -1589,7 +1699,7 @@ impl SafeRoot {
         directory: &CleanupDirectory,
         name: &str,
         kind: &OwnedPathKind,
-    ) -> Result<Option<CleanupEntry>, String> {
+    ) -> Result<Option<CleanupEntry>, CleanupEntryOpenError> {
         #[cfg(unix)]
         let opened = cleanup_platform::open_entry(directory.handle(), OsStr::new(name), kind)?;
         #[cfg(windows)]
@@ -1601,22 +1711,31 @@ impl SafeRoot {
         let Some(file) = opened else {
             return Ok(None);
         };
-        let metadata = file
-            .metadata()
-            .map_err(|error| format!("cannot inspect opened cleanup entry: {error}"))?;
+        let metadata = file.metadata().map_err(|error| {
+            CleanupEntryOpenError::Retryable(format!(
+                "cannot inspect opened cleanup entry: {error}"
+            ))
+        })?;
         if metadata_is_link_or_reparse(&metadata) {
-            return Err("cleanup entry is a link or reparse point".to_string());
+            return Err(CleanupEntryOpenError::Unsafe(
+                "cleanup entry is a link or reparse point".to_string(),
+            ));
         }
         match kind {
             OwnedPathKind::File if !metadata.is_file() => {
-                return Err("cleanup file was replaced with another object type".to_string());
+                return Err(CleanupEntryOpenError::Unsafe(
+                    "cleanup file was replaced with another object type".to_string(),
+                ));
             }
             OwnedPathKind::Directory if !metadata.is_dir() => {
-                return Err("cleanup directory was replaced with another object type".to_string());
+                return Err(CleanupEntryOpenError::Unsafe(
+                    "cleanup directory was replaced with another object type".to_string(),
+                ));
             }
             _ => {}
         }
-        let identity = cleanup_platform::identity(&file)?;
+        let identity =
+            cleanup_platform::identity(&file).map_err(CleanupEntryOpenError::Retryable)?;
         Ok(Some(CleanupEntry { file, identity }))
     }
 
@@ -1685,7 +1804,10 @@ impl SafeRoot {
         name: &str,
         kind: &OwnedPathKind,
         entry: CleanupEntry,
+        deadline: std::time::Instant,
     ) -> Result<(), String> {
+        #[cfg(windows)]
+        let expected_identity = entry.identity;
         #[cfg(unix)]
         {
             let current = self
@@ -1698,7 +1820,54 @@ impl SafeRoot {
                 );
             }
         }
-        cleanup_platform::remove_entry(directory.handle(), OsStr::new(name), kind, entry.file)
+        require_cleanup_deadline(deadline)?;
+        cleanup_platform::remove_entry(directory.handle(), OsStr::new(name), kind, entry.file)?;
+
+        let last_error = loop {
+            let probe_error = match self.open_cleanup_entry(directory, name, kind) {
+                Ok(None) => return Ok(()),
+                Ok(Some(current)) => {
+                    #[cfg(windows)]
+                    let delete_pending = current.identity == expected_identity
+                        || (current.identity.volume == 0 && current.identity.object == 0);
+                    #[cfg(unix)]
+                    let delete_pending = {
+                        drop(current);
+                        false
+                    };
+                    if !delete_pending {
+                        return Err(
+                            "cleanup path was rebound after removal; replacement retained"
+                                .to_string(),
+                        );
+                    }
+                    None
+                }
+                Err(CleanupEntryOpenError::Unsafe(error)) => {
+                    return Err(format!(
+                        "cleanup path was rebound after removal; replacement retained: {error}"
+                    ));
+                }
+                Err(CleanupEntryOpenError::Retryable(error)) => Some(error),
+            };
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                break probe_error;
+            }
+            std::thread::sleep(
+                std::time::Duration::from_millis(CLEANUP_ABSENCE_RETRY_MILLIS)
+                    .min(deadline.saturating_duration_since(now)),
+            );
+        };
+        match last_error {
+            Some(error) => Err(format!(
+                "cleanup path absence could not be verified after removal: {error}"
+            )),
+            None => Err(
+                "cleanup path absence could not be verified after removal within the bounded retry window"
+                    .to_string(),
+            ),
+        }
     }
 
     fn remove_optional_cleanup_file(
@@ -1706,6 +1875,7 @@ impl SafeRoot {
         directory: &CleanupDirectory,
         name: &str,
         subject: &str,
+        deadline: std::time::Instant,
     ) -> Result<bool, String> {
         let Some(entry) = self
             .open_cleanup_entry(directory, name, &OwnedPathKind::File)
@@ -1713,7 +1883,7 @@ impl SafeRoot {
         else {
             return Ok(false);
         };
-        self.remove_cleanup_entry(directory, name, &OwnedPathKind::File, entry)
+        self.remove_cleanup_entry(directory, name, &OwnedPathKind::File, entry, deadline)
             .map_err(|error| format!("cannot remove {subject}: {error}"))?;
         cleanup_platform::sync(directory.handle())?;
         Ok(true)
@@ -1729,6 +1899,7 @@ impl SafeRoot {
         context: &CleanupQuarantine<'_>,
         quarantine: CleanupEntry,
         validation_error: String,
+        deadline: std::time::Instant,
     ) -> String {
         let Some(source_directory) = context.source_directory else {
             return format!(
@@ -1747,6 +1918,11 @@ impl SafeRoot {
                     "{validation_error}; changed object remains quarantined because the public path is unsafe: {error}"
                 );
             }
+        }
+        if let Err(error) = require_cleanup_deadline(deadline) {
+            return format!(
+                "{validation_error}; changed object remains quarantined because {error}"
+            );
         }
         match self.rename_cleanup_entry(
             context.staging_directory,
@@ -1778,15 +1954,17 @@ impl SafeRoot {
         &self,
         context: &CleanupQuarantine<'_>,
         quarantine: CleanupEntry,
+        deadline: std::time::Instant,
     ) -> Result<Option<String>, String> {
         if let Err(error) = self.validate_cleanup_entry(&quarantine, context.owned) {
-            return Err(self.restore_changed_quarantine(context, quarantine, error));
+            return Err(self.restore_changed_quarantine(context, quarantine, error, deadline));
         }
         self.remove_cleanup_entry(
             context.staging_directory,
             context.quarantine_name,
             &context.owned.kind,
             quarantine,
+            deadline,
         )?;
         cleanup_platform::sync(context.staging_directory.handle())?;
         if let Some(source_directory) = context.source_directory {
@@ -1817,9 +1995,24 @@ impl SafeRoot {
         receipt_id: &str,
         owned: &OwnedPath,
     ) -> Result<Option<String>, String> {
+        self.remove_owned_with_deadline(
+            receipt_id,
+            owned,
+            std::time::Instant::now()
+                + std::time::Duration::from_millis(CLEANUP_DEFAULT_WINDOW_MILLIS),
+        )
+    }
+
+    pub(crate) fn remove_owned_with_deadline(
+        &self,
+        receipt_id: &str,
+        owned: &OwnedPath,
+        deadline: std::time::Instant,
+    ) -> Result<Option<String>, String> {
         if !valid_receipt_id(receipt_id) {
             return Err("receipt ID must be a 64-character hexadecimal digest".to_string());
         }
+        require_cleanup_deadline(deadline)?;
         let normalized = normalize_relative(&owned.relative_path, false)?;
         self.ensure_state_dirs()?;
         let staging_directory = self
@@ -1839,7 +2032,7 @@ impl SafeRoot {
                 quarantine_name: &quarantine_name,
                 owned,
             };
-            return self.remove_validated_quarantine(&context, quarantine);
+            return self.remove_validated_quarantine(&context, quarantine, deadline);
         }
 
         let Some(source_directory) = source_directory else {
@@ -1850,6 +2043,7 @@ impl SafeRoot {
             return Ok(None);
         };
         self.validate_cleanup_entry(&source, owned)?;
+        require_cleanup_deadline(deadline)?;
         self.rename_cleanup_entry(
             &source_directory,
             &source_name,
@@ -1880,11 +2074,12 @@ impl SafeRoot {
                     &context,
                     moved,
                     "owned path identity changed before quarantine; cleanup refused".to_string(),
+                    deadline,
                 ));
             }
             moved
         };
-        self.remove_validated_quarantine(&context, quarantine)
+        self.remove_validated_quarantine(&context, quarantine, deadline)
     }
 }
 
@@ -2003,6 +2198,10 @@ pub fn ensure_network_authorized(
 mod tests {
     use super::*;
 
+    fn cleanup_test_deadline() -> std::time::Instant {
+        std::time::Instant::now() + std::time::Duration::from_secs(3)
+    }
+
     fn isolated_test_root(label: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2077,6 +2276,131 @@ mod tests {
         .is_ok());
     }
 
+    #[test]
+    fn expired_cleanup_deadline_leaves_every_owned_path_untouched() {
+        let root = isolated_test_root("expired-deadline-owned");
+        fs::create_dir_all(&root).unwrap();
+        let first_bytes = b"first-owned-path";
+        let second_bytes = b"second-owned-path";
+        fs::write(root.join("first.bin"), first_bytes).unwrap();
+        fs::write(root.join("second.bin"), second_bytes).unwrap();
+        let safe_root = SafeRoot::open(&root).unwrap();
+        let receipt_id = "a".repeat(64);
+        let deadline = std::time::Instant::now();
+
+        for owned in [
+            owned_file("first.bin".to_string(), first_bytes),
+            owned_file("second.bin".to_string(), second_bytes),
+        ] {
+            let error = safe_root
+                .remove_owned_with_deadline(&receipt_id, &owned, deadline)
+                .unwrap_err();
+            assert!(error.contains("exceeded its monotonic deadline"), "{error}");
+        }
+
+        assert_eq!(fs::read(root.join("first.bin")).unwrap(), first_bytes);
+        assert_eq!(fs::read(root.join("second.bin")).unwrap(), second_bytes);
+        assert!(!root.join(STATE_DIR).exists());
+        drop(safe_root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expired_cleanup_deadline_retains_a_changed_quarantine() {
+        let root = isolated_test_root("expired-deadline-quarantine");
+        fs::create_dir_all(root.join("source")).unwrap();
+        fs::create_dir_all(root.join(".bluefire/staging")).unwrap();
+        let expected = b"expected-owned-content";
+        let changed = b"changed-quarantine-content";
+        let owned = owned_file("source/owned.bin".to_string(), expected);
+        let receipt_id = "b".repeat(64);
+        let safe_root = SafeRoot::open(&root).unwrap();
+        let quarantine_name = safe_root.cleanup_quarantine_name(&receipt_id, &owned);
+        let quarantine_path = root.join(".bluefire/staging").join(&quarantine_name);
+        fs::write(&quarantine_path, changed).unwrap();
+        let source = safe_root
+            .open_cleanup_directory(&["source"])
+            .unwrap()
+            .unwrap();
+        let staging = safe_root
+            .open_cleanup_directory(&[STATE_DIR, STAGING_DIR])
+            .unwrap()
+            .unwrap();
+        let quarantine = safe_root
+            .open_cleanup_entry(&staging, &quarantine_name, &owned.kind)
+            .unwrap()
+            .unwrap();
+        let context = CleanupQuarantine {
+            normalized: "source/owned.bin",
+            source_directory: Some(&source),
+            source_name: "owned.bin",
+            staging_directory: &staging,
+            quarantine_name: &quarantine_name,
+            owned: &owned,
+        };
+
+        let error = safe_root
+            .remove_validated_quarantine(&context, quarantine, std::time::Instant::now())
+            .unwrap_err();
+        assert!(
+            error.contains("remains quarantined because cleanup action exceeded"),
+            "{error}"
+        );
+        assert!(!root.join("source/owned.bin").exists());
+        assert_eq!(fs::read(&quarantine_path).unwrap(), changed);
+
+        drop(staging);
+        drop(source);
+        drop(safe_root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_final_component_symlink_is_an_immediate_unsafe_open() {
+        use std::os::unix::fs::symlink;
+
+        let root = isolated_test_root("unix-final-symlink");
+        fs::create_dir_all(root.join("source")).unwrap();
+        fs::write(root.join("target.bin"), b"outside-cleanup-entry").unwrap();
+        symlink(root.join("target.bin"), root.join("source/link.bin")).unwrap();
+        let safe_root = SafeRoot::open(&root).unwrap();
+        let source = safe_root
+            .open_cleanup_directory(&["source"])
+            .unwrap()
+            .unwrap();
+
+        let error = safe_root
+            .open_cleanup_entry(&source, "link.bin", &OwnedPathKind::File)
+            .unwrap_err();
+        assert!(matches!(error, CleanupEntryOpenError::Unsafe(_)));
+
+        drop(source);
+        drop(safe_root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_wrong_type_replacement_is_immediately_unsafe() {
+        let root = isolated_test_root("windows-wrong-type");
+        fs::create_dir_all(root.join("source/replaced.bin")).unwrap();
+        let safe_root = SafeRoot::open(&root).unwrap();
+        let source = safe_root
+            .open_cleanup_directory(&["source"])
+            .unwrap()
+            .unwrap();
+
+        let error = safe_root
+            .open_cleanup_entry(&source, "replaced.bin", &OwnedPathKind::File)
+            .unwrap_err();
+        assert!(matches!(error, CleanupEntryOpenError::Unsafe(_)));
+
+        drop(source);
+        drop(safe_root);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_cleanup_anchor_denies_an_intermediate_parent_rename() {
@@ -2104,11 +2428,23 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_metadata_cleanup_deletes_the_exact_opened_file_handle() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::sync::mpsc::{self, RecvTimeoutError};
+
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+        const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+
         let root = isolated_test_root("windows-metadata-handle");
         fs::create_dir_all(root.join(".bluefire/receipts")).unwrap();
         let receipt_name = format!("{}.json", "a".repeat(64));
         let receipt_path = root.join(".bluefire/receipts").join(&receipt_name);
         fs::write(&receipt_path, b"receipt metadata").unwrap();
+        let delayed_reader = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&receipt_path)
+            .unwrap();
         let safe_root = SafeRoot::open(&root).unwrap();
         let receipts = safe_root
             .open_cleanup_directory(&[STATE_DIR, RECEIPT_DIR])
@@ -2124,13 +2460,37 @@ mod tests {
             attempted.is_err(),
             "an exact metadata file with a no-share-delete handle was replaced"
         );
-        safe_root
-            .remove_cleanup_entry(&receipts, &receipt_name, &OwnedPathKind::File, receipt)
+        let (started_tx, started_rx) = mpsc::channel();
+        let (completed_tx, completed_rx) = mpsc::channel();
+        let cleanup = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = safe_root.remove_cleanup_entry(
+                &receipts,
+                &receipt_name,
+                &OwnedPathKind::File,
+                receipt,
+                cleanup_test_deadline(),
+            );
+            completed_tx.send(result).unwrap();
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("cleanup worker did not start");
+        assert!(
+            matches!(
+                completed_rx.recv_timeout(std::time::Duration::from_millis(100)),
+                Err(RecvTimeoutError::Timeout)
+            ),
+            "cleanup returned while a share-delete reader still held the file"
+        );
+        drop(delayed_reader);
+        completed_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("cleanup did not finish after the reader released the file")
             .unwrap();
+        cleanup.join().unwrap();
         assert!(!receipt_path.exists());
 
-        drop(receipts);
-        drop(safe_root);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -2247,13 +2607,28 @@ mod tests {
         symlink(&outside, root.join(STATE_DIR)).unwrap();
 
         safe_root
-            .remove_optional_cleanup_file(&staging, &temporary_name, "receipt temporary")
+            .remove_optional_cleanup_file(
+                &staging,
+                &temporary_name,
+                "receipt temporary",
+                cleanup_test_deadline(),
+            )
             .unwrap();
         safe_root
-            .remove_optional_cleanup_file(&commits, &metadata_name, "receipt commit")
+            .remove_optional_cleanup_file(
+                &commits,
+                &metadata_name,
+                "receipt commit",
+                cleanup_test_deadline(),
+            )
             .unwrap();
         safe_root
-            .remove_optional_cleanup_file(&receipts, &metadata_name, "receipt intent")
+            .remove_optional_cleanup_file(
+                &receipts,
+                &metadata_name,
+                "receipt intent",
+                cleanup_test_deadline(),
+            )
             .unwrap();
 
         assert!(!root
@@ -2362,7 +2737,7 @@ mod tests {
         };
 
         let error = safe_root
-            .remove_validated_quarantine(&context, captured)
+            .remove_validated_quarantine(&context, captured, cleanup_test_deadline())
             .unwrap_err();
         assert!(error.contains("replacement retained"), "{error}");
         assert!(!root.join(".bluefire/staging/captured.bin").exists());

@@ -6,6 +6,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -15,6 +16,7 @@ import pytest
 import bluefire.defense_frontier as frontier_module
 import bluefire.defense_frontier_gate as gate_module
 import bluefire.defense_frontier_validation as validation_module
+import bluefire.native_journey_runtime as runtime_module
 import bluefire.product_gates as product_gates
 import bluefire.runner_private_files as private_files_module
 from bluefire.collectors import CollectionRequest, FilesystemCollector
@@ -365,7 +367,10 @@ def test_runtime_cleanup_rejects_a_noop_removal(
     )
     monkeypatch.setattr(frontier_module.time, "sleep", lambda _seconds: None)
 
-    with pytest.raises(DefenseFrontierError, match="runtime path was rebound"):
+    expected_message = (
+        "runtime absence could not be verified" if os.name == "nt" else "runtime path was rebound"
+    )
+    with pytest.raises(DefenseFrontierError, match=expected_message):
         frontier_module._close_runtime_and_remove(runtime, runtime_guard, lambda: None)
 
 
@@ -691,7 +696,10 @@ def test_runtime_cleanup_aggregates_removal_and_guard_close_failures(
     close_failure = OSError("close failed")
     real_close = runtime_guard.close
 
-    def fail_remove(_guard: private_files_module._PinnedPrivateDirectory) -> None:
+    def fail_remove(
+        _guard: private_files_module._PinnedPrivateDirectory, *, deadline: float
+    ) -> None:
+        assert deadline > 0
         raise removal_failure
 
     def fail_close() -> None:
@@ -719,7 +727,10 @@ def test_runtime_cleanup_flattens_private_file_close_failures(
     parent_failure = OSError("parent descriptor close failed")
     real_close = runtime_guard.close
 
-    def fail_remove(_guard: private_files_module._PinnedPrivateDirectory) -> None:
+    def fail_remove(
+        _guard: private_files_module._PinnedPrivateDirectory, *, deadline: float
+    ) -> None:
+        assert deadline > 0
         raise removal_failure
 
     def fail_close() -> None:
@@ -757,6 +768,260 @@ def test_cleanup_retry_does_not_wrap_private_file_cleanup_failures() -> None:
 
     assert caught.value is cleanup_failure
     assert attempts == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows delete-pending metadata contract")
+def test_cleanup_absence_wait_accepts_only_transient_windows_identities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_identity = (17, 31)
+    states: list[tuple[int, int] | None] = [expected_identity, (0, 0), None]
+    sleeps: list[float] = []
+
+    def has_name(_name: str) -> bool:
+        return states[0] is not None
+
+    def entry_metadata(_name: str) -> tuple[SimpleNamespace, None]:
+        identity = states.pop(0)
+        assert identity is not None
+        return (
+            SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o600,
+                st_dev=identity[0],
+                st_ino=identity[1],
+                st_file_attributes=0,
+            ),
+            None,
+        )
+
+    probe = SimpleNamespace(
+        has_name=has_name,
+        entry_metadata_with_mount_identity=entry_metadata,
+    )
+    monkeypatch.setattr(runtime_module.time, "sleep", sleeps.append)
+
+    runtime_module._wait_for_pinned_name_absent(
+        probe,  # type: ignore[arg-type]
+        "retiring.json",
+        expected_identity=expected_identity,
+        expected_mount_identity=None,
+        deadline=time.monotonic() + runtime_module._CLEANUP_WINDOW_SECONDS,
+        rebound_message="rebound",
+        absence_message="absence unverified",
+    )
+
+    assert states == [None]
+    assert sleeps == [
+        runtime_module._CLEANUP_RETRY_SECONDS,
+        runtime_module._CLEANUP_RETRY_SECONDS,
+    ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows delete-pending path contract")
+def test_cleanup_path_absence_wait_accepts_only_transient_windows_identities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected_identity = (17, 31)
+    states: list[tuple[int, int] | None] = [expected_identity, (0, 0), None]
+    sleeps: list[float] = []
+    runtime = tmp_path / "retiring-runtime"
+
+    def lstat(_path: Path) -> SimpleNamespace:
+        identity = states.pop(0)
+        if identity is None:
+            raise FileNotFoundError(runtime)
+        return SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o700,
+            st_dev=identity[0],
+            st_ino=identity[1],
+            st_file_attributes=0,
+        )
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    monkeypatch.setattr(runtime_module.time, "sleep", sleeps.append)
+
+    runtime_module._wait_for_path_absent(
+        runtime,
+        expected_identity=expected_identity,
+        deadline=time.monotonic() + runtime_module._CLEANUP_WINDOW_SECONDS,
+        rebound_message="rebound",
+        absence_message="absence unverified",
+    )
+
+    assert states == []
+    assert sleeps == [
+        runtime_module._CLEANUP_RETRY_SECONDS,
+        runtime_module._CLEANUP_RETRY_SECONDS,
+    ]
+
+
+def test_cleanup_absence_wait_rejects_a_concrete_replacement_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+    probe = SimpleNamespace(
+        has_name=lambda _name: True,
+        entry_metadata_with_mount_identity=lambda _name: (
+            SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o600,
+                st_dev=41,
+                st_ino=43,
+                st_file_attributes=0,
+            ),
+            None,
+        ),
+    )
+    monkeypatch.setattr(runtime_module.time, "sleep", sleeps.append)
+
+    with pytest.raises(DefenseFrontierError, match="replacement rebound"):
+        runtime_module._wait_for_pinned_name_absent(
+            probe,  # type: ignore[arg-type]
+            "retiring.json",
+            expected_identity=(17, 31),
+            expected_mount_identity=None,
+            deadline=time.monotonic() + runtime_module._CLEANUP_WINDOW_SECONDS,
+            rebound_message="replacement rebound",
+            absence_message="absence unverified",
+        )
+
+    assert sleeps == []
+
+
+def test_cleanup_absence_wait_retries_probe_errors_but_never_calls_them_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe_failure = OSError("sharing violation")
+    attempts = 0
+    sleeps: list[float] = []
+
+    def fail_probe(_name: str) -> bool:
+        nonlocal attempts
+        attempts += 1
+        raise probe_failure
+
+    probe = SimpleNamespace(has_name=fail_probe)
+    monkeypatch.setattr(runtime_module.time, "sleep", sleeps.append)
+
+    with pytest.raises(DefenseFrontierError, match="absence unverified") as caught:
+        runtime_module._wait_for_pinned_name_absent(
+            probe,  # type: ignore[arg-type]
+            "retiring.json",
+            expected_identity=(17, 31),
+            expected_mount_identity=None,
+            deadline=time.monotonic() + runtime_module._CLEANUP_WINDOW_SECONDS,
+            rebound_message="replacement rebound",
+            absence_message="absence unverified",
+        )
+
+    assert caught.value.__cause__ is probe_failure
+    assert attempts == runtime_module._CLEANUP_ATTEMPTS
+    assert len(sleeps) == runtime_module._CLEANUP_ATTEMPTS - 1
+
+
+def test_cleanup_absence_wait_does_not_sleep_past_the_shared_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe_failure = OSError("sharing violation")
+    attempts = 0
+
+    def fail_probe(_name: str) -> bool:
+        nonlocal attempts
+        attempts += 1
+        raise probe_failure
+
+    def unexpected_sleep(_seconds: float) -> None:
+        raise AssertionError("cleanup slept after its shared deadline")
+
+    probe = SimpleNamespace(has_name=fail_probe)
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(runtime_module.time, "sleep", unexpected_sleep)
+
+    with pytest.raises(DefenseFrontierError, match="absence unverified") as caught:
+        runtime_module._wait_for_pinned_name_absent(
+            probe,  # type: ignore[arg-type]
+            "retiring.json",
+            expected_identity=(17, 31),
+            expected_mount_identity=None,
+            deadline=100.0,
+            rebound_message="replacement rebound",
+            absence_message="absence unverified",
+        )
+
+    assert caught.value.__cause__ is probe_failure
+    assert attempts == 1
+
+
+def test_shared_cleanup_deadline_prevents_the_next_tree_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    clock = iter((90.0, 90.0, 90.0, 90.0, 100.0, 100.0))
+
+    def unlink(*_args: Any, **_kwargs: Any) -> None:
+        calls.append("unlink")
+
+    def remove() -> None:
+        calls.append("remove")
+
+    directory = SimpleNamespace(
+        directory_identity=lambda: (17, 31),
+        directory_mount_identity=lambda: None,
+        names=lambda *, maximum: ("owned.bin",),
+        entry_metadata_with_mount_identity=lambda _name: (
+            SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o600,
+                st_dev=17,
+                st_ino=31,
+                st_nlink=1,
+                st_size=1,
+                st_file_attributes=0,
+            ),
+            None,
+        ),
+        unlink=unlink,
+        remove=remove,
+    )
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(DefenseFrontierError, match="exceeded its monotonic deadline"):
+        runtime_module._remove_pinned_tree(  # type: ignore[arg-type]
+            directory,
+            deadline=100.0,
+        )
+
+    assert calls == []
+
+
+def test_cleanup_absence_wait_preserves_private_file_cleanup_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptor_failure = OSError("descriptor close failed")
+    cleanup_failure = private_files_module._PrivateFileCleanupError((descriptor_failure,))
+    attempts = 0
+    sleeps: list[float] = []
+
+    def fail_probe(_name: str) -> bool:
+        nonlocal attempts
+        attempts += 1
+        raise cleanup_failure
+
+    probe = SimpleNamespace(has_name=fail_probe)
+    monkeypatch.setattr(runtime_module.time, "sleep", sleeps.append)
+
+    with pytest.raises(private_files_module._PrivateFileCleanupError) as caught:
+        runtime_module._wait_for_pinned_name_absent(
+            probe,  # type: ignore[arg-type]
+            "retiring.json",
+            expected_identity=(17, 31),
+            expected_mount_identity=None,
+            deadline=time.monotonic() + runtime_module._CLEANUP_WINDOW_SECONDS,
+            rebound_message="replacement rebound",
+            absence_message="absence unverified",
+        )
+
+    assert caught.value is cleanup_failure
+    assert attempts == 1
+    assert sleeps == []
 
 
 def test_runner_journal_cleanup_retries_and_refuses_unexpected_entries(

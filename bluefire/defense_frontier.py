@@ -117,7 +117,7 @@ def _close_runtime_and_remove(
         runtime,
         runtime_guard,
         close_service,
-        remove_tree=_remove_pinned_tree,
+        remove_tree=lambda guard, deadline: _remove_pinned_tree(guard, deadline=deadline),
     )
 
 

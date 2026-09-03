@@ -3974,6 +3974,24 @@ struct CleanupParams {
 
 struct CleanupPrepared(CleanupParams);
 
+const CLEANUP_DEADLINE_MESSAGE: &str = "cleanup action exceeded its monotonic deadline";
+
+fn cleanup_deadline_elapsed(
+    deadline: Instant,
+    report: &mut CleanupReport,
+    exhausted: &mut bool,
+) -> bool {
+    if *exhausted || Instant::now() >= deadline {
+        if !*exhausted {
+            report.errors.push(CLEANUP_DEADLINE_MESSAGE.to_string());
+        }
+        *exhausted = true;
+        true
+    } else {
+        false
+    }
+}
+
 impl PreparedAction for CleanupPrepared {
     fn execute(
         self: Box<Self>,
@@ -3987,6 +4005,14 @@ impl PreparedAction for CleanupPrepared {
                 "cleanup receipt count is empty or exceeds the manifest file limit",
             ));
         }
+        let cleanup_deadline = Instant::now()
+            .checked_add(Duration::from_millis(context.manifest.limits.timeout_ms))
+            .ok_or_else(|| {
+                ActionFailure::blocked(
+                    "invalid_resource_limits",
+                    "cleanup timeout exceeds the monotonic deadline range",
+                )
+            })?;
         let mut report = CleanupReport {
             requested_receipts: self.0.receipt_ids.len(),
             ..CleanupReport::default()
@@ -3996,7 +4022,11 @@ impl PreparedAction for CleanupPrepared {
         let mut verified_receipts = 0_usize;
         let mut loaded = Vec::new();
         let mut seen = BTreeSet::new();
+        let mut deadline_exhausted = false;
         for receipt_id in &self.0.receipt_ids {
+            if cleanup_deadline_elapsed(cleanup_deadline, &mut report, &mut deadline_exhausted) {
+                break;
+            }
             if !seen.insert(receipt_id.clone()) {
                 report.errors.push(format!(
                     "{receipt_id}: cleanup receipt IDs must not contain duplicates"
@@ -4020,7 +4050,17 @@ impl PreparedAction for CleanupPrepared {
                         }
                     }
                     report.already_absent_receipts.push(receipt_id.clone());
-                    match context.root.delete_receipt(receipt_id) {
+                    if cleanup_deadline_elapsed(
+                        cleanup_deadline,
+                        &mut report,
+                        &mut deadline_exhausted,
+                    ) {
+                        break;
+                    }
+                    match context
+                        .root
+                        .delete_receipt_with_deadline(receipt_id, cleanup_deadline)
+                    {
                         Ok(()) => match context.root.load_receipt(receipt_id) {
                             Ok(None) => verified_receipts += 1,
                             Ok(Some(_)) => report.errors.push(format!(
@@ -4055,9 +4095,20 @@ impl PreparedAction for CleanupPrepared {
                 .then_with(|| right.0.cmp(&left.0))
         });
         for (receipt_id, record) in loaded {
+            if cleanup_deadline_elapsed(cleanup_deadline, &mut report, &mut deadline_exhausted) {
+                break;
+            }
             let mut receipt_failed = false;
             for owned in &record.paths {
-                match context.root.remove_owned(&receipt_id, owned) {
+                if cleanup_deadline_elapsed(cleanup_deadline, &mut report, &mut deadline_exhausted)
+                {
+                    receipt_failed = true;
+                    break;
+                }
+                match context
+                    .root
+                    .remove_owned_with_deadline(&receipt_id, owned, cleanup_deadline)
+                {
                     Ok(Some(path)) => match context.root.path_is_absent(&path) {
                         Ok(true) => {
                             verified_removed_paths += 1;
@@ -4087,15 +4138,34 @@ impl PreparedAction for CleanupPrepared {
                             .push(format!("{}: {error}", owned.relative_path));
                     }
                 }
-                if let Err(error) = context.root.remove_staging_for_owned(&receipt_id, owned) {
+                if cleanup_deadline_elapsed(cleanup_deadline, &mut report, &mut deadline_exhausted)
+                {
+                    receipt_failed = true;
+                    break;
+                }
+                if let Err(error) = context.root.remove_staging_for_owned_with_deadline(
+                    &receipt_id,
+                    owned,
+                    cleanup_deadline,
+                ) {
                     receipt_failed = true;
                     report
                         .errors
                         .push(format!("{} staging: {error}", owned.relative_path));
                 }
             }
+            if deadline_exhausted {
+                break;
+            }
             if !receipt_failed {
-                match context.root.delete_receipt(&receipt_id) {
+                if cleanup_deadline_elapsed(cleanup_deadline, &mut report, &mut deadline_exhausted)
+                {
+                    break;
+                }
+                match context
+                    .root
+                    .delete_receipt_with_deadline(&receipt_id, cleanup_deadline)
+                {
                     Ok(()) => match context.root.load_receipt(&receipt_id) {
                         Ok(None) => verified_receipts += 1,
                         Ok(Some(_)) => report.errors.push(format!(
@@ -4370,5 +4440,25 @@ mod tests {
             .err()
             .expect("unknown command field must be rejected");
         assert_eq!(error.code, "invalid_action_params");
+    }
+
+    #[test]
+    fn cleanup_deadline_is_shared_and_reported_once() {
+        let mut report = CleanupReport::default();
+        let mut exhausted = false;
+        let deadline = Instant::now();
+
+        assert!(cleanup_deadline_elapsed(
+            deadline,
+            &mut report,
+            &mut exhausted
+        ));
+        assert!(cleanup_deadline_elapsed(
+            deadline,
+            &mut report,
+            &mut exhausted
+        ));
+        assert!(exhausted);
+        assert_eq!(report.errors, [CLEANUP_DEADLINE_MESSAGE]);
     }
 }

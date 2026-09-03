@@ -19,6 +19,8 @@ _MAX_REPORT_BYTES = 8 * 1024 * 1024
 _MAX_SCAN_BYTES = 128 * 1024 * 1024
 _CLEANUP_ATTEMPTS = 10
 _CLEANUP_RETRY_SECONDS = 0.25
+_CLEANUP_WINDOW_SECONDS = _CLEANUP_ATTEMPTS * _CLEANUP_RETRY_SECONDS
+_CLEANUP_DEADLINE_MESSAGE = "the native cleanup exceeded its monotonic deadline"
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _MAX_RUNTIME_CLEANUP_DEPTH = 32
 _MAX_RUNTIME_CLEANUP_ENTRIES = 16_384
@@ -64,11 +66,15 @@ def _raise_cleanup_failures(failures: Sequence[BaseException]) -> None:
 def _retry_cleanup(
     operation: Callable[[], _CleanupResult],
     message: str,
+    *,
+    deadline: float | None = None,
 ) -> _CleanupResult:
     """Retry a pinned cleanup operation without converting disappearance to success."""
 
     last_error: OSError | RunnerTransportError | None = None
     for attempt in range(_CLEANUP_ATTEMPTS):
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         try:
             return operation()
         except _PrivateFileCleanupError:
@@ -76,8 +82,103 @@ def _retry_cleanup(
         except (OSError, RunnerTransportError) as exc:
             last_error = exc
             if attempt + 1 < _CLEANUP_ATTEMPTS:
-                time.sleep(_CLEANUP_RETRY_SECONDS)
+                if deadline is None:
+                    time.sleep(_CLEANUP_RETRY_SECONDS)
+                    continue
+                now = time.monotonic()
+                if now >= deadline:
+                    break
+                time.sleep(min(_CLEANUP_RETRY_SECONDS, deadline - now))
+    if deadline is not None and time.monotonic() >= deadline:
+        raise DefenseFrontierError(_CLEANUP_DEADLINE_MESSAGE) from last_error
     raise DefenseFrontierError(message) from last_error
+
+
+def _is_windows_delete_pending_identity(identity: tuple[int, int]) -> bool:
+    """Recognize Win32 metadata for a name whose final handle is still closing."""
+
+    return os.name == "nt" and identity == (0, 0)
+
+
+def _wait_for_pinned_name_absent(
+    directory: _PinnedPrivateDirectory,
+    name: str,
+    *,
+    expected_identity: tuple[int, int],
+    expected_mount_identity: int | None,
+    deadline: float,
+    rebound_message: str,
+    absence_message: str,
+) -> None:
+    """Wait for one removed child name to become terminally absent."""
+
+    last_error: OSError | RunnerTransportError | None = None
+    for attempt in range(_CLEANUP_ATTEMPTS):
+        try:
+            if not directory.has_name(name):
+                return
+            details, mount_identity = directory.entry_metadata_with_mount_identity(name)
+        except FileNotFoundError:
+            return
+        except _PrivateFileCleanupError:
+            raise
+        except (OSError, RunnerTransportError) as exc:
+            last_error = exc
+        else:
+            identity = int(details.st_dev), int(details.st_ino)
+            delete_pending = os.name == "nt" and (
+                identity == expected_identity or _is_windows_delete_pending_identity(identity)
+            )
+            if (
+                stat.S_ISLNK(details.st_mode)
+                or int(getattr(details, "st_file_attributes", 0)) & _REPARSE_POINT
+                or mount_identity != expected_mount_identity
+                or not delete_pending
+            ):
+                raise DefenseFrontierError(rebound_message)
+            last_error = None
+        now = time.monotonic()
+        if attempt + 1 >= _CLEANUP_ATTEMPTS or now >= deadline:
+            break
+        time.sleep(min(_CLEANUP_RETRY_SECONDS, deadline - now))
+    raise DefenseFrontierError(absence_message) from last_error
+
+
+def _wait_for_path_absent(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int],
+    deadline: float,
+    rebound_message: str,
+    absence_message: str,
+) -> None:
+    """Wait for a just-unpinned owned path to become terminally absent."""
+
+    last_error: OSError | None = None
+    for attempt in range(_CLEANUP_ATTEMPTS):
+        try:
+            details = path.lstat()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+        else:
+            identity = int(details.st_dev), int(details.st_ino)
+            delete_pending = os.name == "nt" and (
+                identity == expected_identity or _is_windows_delete_pending_identity(identity)
+            )
+            if (
+                stat.S_ISLNK(details.st_mode)
+                or int(getattr(details, "st_file_attributes", 0)) & _REPARSE_POINT
+                or not delete_pending
+            ):
+                raise DefenseFrontierError(rebound_message)
+            last_error = None
+        now = time.monotonic()
+        if attempt + 1 >= _CLEANUP_ATTEMPTS or now >= deadline:
+            break
+        time.sleep(min(_CLEANUP_RETRY_SECONDS, deadline - now))
+    raise DefenseFrontierError(absence_message) from last_error
 
 
 def _safe_directory_details(path: Path, message: str) -> os.stat_result:
@@ -254,6 +355,7 @@ def _remove_pinned_tree(
     root_mount_identity: int | None = None,
     depth: int = 0,
     budget: list[int] | None = None,
+    deadline: float | None = None,
 ) -> None:
     """Remove only entries proven to belong to one continuously pinned tree."""
 
@@ -261,15 +363,19 @@ def _remove_pinned_tree(
         raise DefenseFrontierError("the native runtime cleanup depth bound was exceeded")
     if budget is None:
         budget = [_MAX_RUNTIME_CLEANUP_ENTRIES]
+    if deadline is None:
+        deadline = time.monotonic() + _CLEANUP_WINDOW_SECONDS
     current_identity = _retry_cleanup(
         directory.directory_identity,
         "the native runtime directory identity changed during cleanup",
+        deadline=deadline,
     )
     if root_device is None:
         root_device = current_identity[0]
     current_mount_identity = _retry_cleanup(
         directory.directory_mount_identity,
         "the native runtime mount identity changed during cleanup",
+        deadline=deadline,
     )
     if root_mount_identity is None:
         root_mount_identity = current_mount_identity
@@ -279,6 +385,7 @@ def _remove_pinned_tree(
         _retry_cleanup(
             lambda: directory.names(maximum=budget[0]),
             "the native runtime could not be enumerated safely",
+            deadline=deadline,
         )
     )
     for name in names:
@@ -288,6 +395,7 @@ def _remove_pinned_tree(
         details, mount_identity = _retry_cleanup(
             partial(directory.entry_metadata_with_mount_identity, name),
             "a native runtime entry disappeared before validation",
+            deadline=deadline,
         )
         attributes = int(getattr(details, "st_file_attributes", 0))
         if (
@@ -310,12 +418,17 @@ def _remove_pinned_tree(
                     expected_mount_identity=root_mount_identity,
                 ),
                 "a native runtime file could not be removed exactly",
+                deadline=deadline,
             )
-            if _retry_cleanup(
-                partial(directory.has_name, name),
-                "a native runtime file could not be checked after removal",
-            ):
-                raise DefenseFrontierError("a native runtime file path was rebound during cleanup")
+            _wait_for_pinned_name_absent(
+                directory,
+                name,
+                expected_identity=identity,
+                expected_mount_identity=root_mount_identity,
+                deadline=deadline,
+                rebound_message="a native runtime file path was rebound during cleanup",
+                absence_message="a native runtime file absence could not be verified",
+            )
             continue
         if not stat.S_ISDIR(details.st_mode):
             raise DefenseFrontierError("the native runtime contains a special entry")
@@ -344,6 +457,7 @@ def _remove_pinned_tree(
         child = _retry_cleanup(
             open_child,
             "a native runtime directory disappeared before it could be pinned",
+            deadline=deadline,
         )
         child_failures: list[BaseException] = []
         try:
@@ -353,6 +467,7 @@ def _remove_pinned_tree(
                 root_mount_identity=root_mount_identity,
                 depth=depth + 1,
                 budget=budget,
+                deadline=deadline,
             )
         except BaseException as exc:
             _extend_cleanup_failures(child_failures, exc)
@@ -361,14 +476,19 @@ def _remove_pinned_tree(
         except BaseException as exc:
             _extend_cleanup_failures(child_failures, exc)
         _raise_cleanup_failures(child_failures)
-        if _retry_cleanup(
-            partial(directory.has_name, name),
-            "a native runtime directory could not be checked after removal",
-        ):
-            raise DefenseFrontierError("a native runtime directory path was rebound during cleanup")
+        _wait_for_pinned_name_absent(
+            directory,
+            name,
+            expected_identity=identity,
+            expected_mount_identity=root_mount_identity,
+            deadline=deadline,
+            rebound_message="a native runtime directory path was rebound during cleanup",
+            absence_message="a native runtime directory absence could not be verified",
+        )
     _retry_cleanup(
         directory.remove,
         "the native runtime directory could not be removed exactly",
+        deadline=deadline,
     )
 
 
@@ -377,7 +497,7 @@ def _close_runtime_and_remove(
     runtime_guard: _PinnedPrivateDirectory,
     close_service: Callable[[], None],
     *,
-    remove_tree: Callable[[_PinnedPrivateDirectory], None] | None = None,
+    remove_tree: Callable[[_PinnedPrivateDirectory, float], None] | None = None,
 ) -> None:
     """Close the service and remove only the continuously pinned runtime."""
 
@@ -401,10 +521,20 @@ def _close_runtime_and_remove(
 
     cleanup_completed = False
     cleanup_failures: list[BaseException] = []
+    runtime_identity: tuple[int, int] | None = None
+    cleanup_deadline = time.monotonic() + _CLEANUP_WINDOW_SECONDS
     try:
         if runtime_guard.path != runtime:
             raise DefenseFrontierError("the native runtime cleanup guard is mismatched")
-        (remove_tree or _remove_pinned_tree)(runtime_guard)
+        runtime_identity = _retry_cleanup(
+            runtime_guard.directory_identity,
+            "the native runtime identity could not be verified before cleanup",
+            deadline=cleanup_deadline,
+        )
+        if remove_tree is None:
+            _remove_pinned_tree(runtime_guard, deadline=cleanup_deadline)
+        else:
+            remove_tree(runtime_guard, cleanup_deadline)
         cleanup_completed = True
     except BaseException as exc:
         _extend_cleanup_failures(cleanup_failures, exc)
@@ -413,21 +543,17 @@ def _close_runtime_and_remove(
     except BaseException as exc:
         _extend_cleanup_failures(cleanup_failures, exc)
 
-    if cleanup_completed:
+    if cleanup_completed and runtime_identity is not None:
         try:
-            runtime.lstat()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            absence_failure = DefenseFrontierError(
-                "the BlueFire native runtime absence could not be verified"
+            _wait_for_path_absent(
+                runtime,
+                expected_identity=runtime_identity,
+                deadline=cleanup_deadline,
+                rebound_message="the BlueFire native runtime path was rebound during cleanup",
+                absence_message="the BlueFire native runtime absence could not be verified",
             )
-            absence_failure.__cause__ = exc
-            cleanup_failures.append(absence_failure)
-        else:
-            cleanup_failures.append(
-                DefenseFrontierError("the BlueFire native runtime path was rebound during cleanup")
-            )
+        except BaseException as exc:
+            _extend_cleanup_failures(cleanup_failures, exc)
     failures.extend(cleanup_failures)
     _raise_cleanup_failures(failures)
 
@@ -444,6 +570,7 @@ def _remove_runner_journal(
     deletion_guard: _PinnedPrivateDirectory | None = None
     deletion_guard_closed = False
     failures: list[BaseException] = []
+    cleanup_deadline = time.monotonic() + _CLEANUP_WINDOW_SECONDS
     try:
         _require(pinned.path == journal, "runner result journal guard is mismatched")
         journal_identity = pinned.directory_identity()
@@ -453,6 +580,7 @@ def _remove_runner_journal(
             _retry_cleanup(
                 lambda: pinned.names(maximum=_MAX_JOURNAL_ENTRIES),
                 "runner result journal could not be enumerated safely",
+                deadline=cleanup_deadline,
             )
         )
         _require(
@@ -468,6 +596,7 @@ def _remove_runner_journal(
             details, mount_identity = _retry_cleanup(
                 partial(pinned.entry_metadata_with_mount_identity, name),
                 "runner result journal entry disappeared before validation",
+                deadline=cleanup_deadline,
             )
             _require(
                 stat.S_ISREG(details.st_mode)
@@ -494,14 +623,17 @@ def _remove_runner_journal(
                     expected_mount_identity=journal_mount_identity,
                 ),
                 "runner result journal entry could not be removed exactly",
+                deadline=cleanup_deadline,
             )
-            if _retry_cleanup(
-                partial(pinned.has_name, name),
-                "runner result journal entry could not be checked after removal",
-            ):
-                raise DefenseFrontierError(
-                    "runner result journal entry path was rebound during cleanup"
-                )
+            _wait_for_pinned_name_absent(
+                pinned,
+                name,
+                expected_identity=identity,
+                expected_mount_identity=journal_mount_identity,
+                deadline=cleanup_deadline,
+                rebound_message=("runner result journal entry path was rebound during cleanup"),
+                absence_message=("runner result journal entry absence could not be verified"),
+            )
 
         # The request host and crash-surviving watchdog use compatible
         # non-DELETE, non-share-delete handles for a continuous lease. Once
@@ -522,10 +654,12 @@ def _remove_runner_journal(
         deletion_guard = _retry_cleanup(
             open_deletion_guard,
             "runner result journal could not be rebound for exact removal",
+            deadline=cleanup_deadline,
         )
         _retry_cleanup(
             deletion_guard.remove,
             "runner result journal could not be removed exactly",
+            deadline=cleanup_deadline,
         )
         deletion_guard_closed = True
         deletion_guard.close()
@@ -546,18 +680,15 @@ def _remove_runner_journal(
             _extend_cleanup_failures(failures, exc)
     if cleanup_completed:
         try:
-            journal.lstat()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            failures.append(
-                DefenseFrontierError("runner result journal absence could not be verified")
+            _wait_for_path_absent(
+                journal,
+                expected_identity=journal_identity,
+                deadline=cleanup_deadline,
+                rebound_message="runner result journal path was rebound during cleanup",
+                absence_message="runner result journal absence could not be verified",
             )
-            failures[-1].__cause__ = exc
-        else:
-            failures.append(
-                DefenseFrontierError("runner result journal path was rebound during cleanup")
-            )
+        except BaseException as exc:
+            _extend_cleanup_failures(failures, exc)
     _raise_cleanup_failures(failures)
 
 
