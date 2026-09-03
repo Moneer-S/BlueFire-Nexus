@@ -13,6 +13,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { api } from "../lib/api";
 import { initialParameterValue, parameterValuesEqual, shouldInitializeParameter } from "../lib/parameters";
+import { deleteScenarioGraphElements } from "../lib/scenario";
 import { useProduct } from "../state/ProductContext";
 import type { AIGraphDraftResult, Behavior, Outcome, Scenario, ScenarioEdge, ScenarioStep } from "../types";
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, IconButton, LoadingState, PageHeader, Panel, PanelHeader, sentence } from "../components/Primitives";
@@ -112,16 +113,21 @@ function GraphWorkspace({ behaviors }: { behaviors: Behavior[] }) {
   };
 
   const updateStep = (stepId: string, update: (step: ScenarioStep) => ScenarioStep) => applyScenario({ ...scenario, steps: scenario.steps.map((step) => step.id === stepId ? update(structuredClone(step)) : step) });
-  const removeSteps = (ids: string[]) => { const removed = new Set(ids); const remaining = scenario.steps.filter((step) => !removed.has(step.id)).map((step) => ({ ...step, inputs: Object.fromEntries(Object.entries(step.inputs).filter(([, binding]) => !removed.has(binding.from_step))) })); applyScenario({ ...scenario, start: removed.has(scenario.start) ? remaining[0]?.id ?? "missing_start" : scenario.start, steps: remaining, edges: scenario.edges.filter((edge) => !removed.has(edge.from_step) && !removed.has(edge.to_step)), layout: Object.fromEntries(Object.entries(scenario.layout ?? {}).filter(([id]) => !removed.has(id))) }); setSelectedId(remaining[0]?.id ?? ""); };
-
   const onNodesChange = (changes: NodeChange<BehaviorFlowNode>[]) => setNodes((items) => applyNodeChanges(changes, items));
   const onEdgesChange = (changes: EdgeChange<FlowEdge>[]) => setEdges((items) => applyEdgeChanges(changes, items));
   const onNodeDragStop = (_: unknown, node: BehaviorFlowNode) => applyScenario({ ...scenario, layout: { ...scenario.layout, [node.id]: { x: Math.round(node.position.x), y: Math.round(node.position.y) } } });
-  const onNodesDelete = (deleted: BehaviorFlowNode[]) => removeSteps(deleted.map((node) => node.id));
-  const onEdgesDelete = (deleted: FlowEdge[]) => {
-    const next = structuredClone(scenario);
-    for (const edge of deleted) if (edge.data?.kind === "route") next.edges = next.edges.filter((item) => !(item.from_step === edge.source && item.to_step === edge.target && item.outcome === edge.data?.outcome)); else { const target = next.steps.find((item) => item.id === edge.target); if (target) target.inputs = Object.fromEntries(Object.entries(target.inputs).filter(([, binding]) => !(binding.from_step === edge.source && edge.sourceHandle === `out:${binding.artifact}`))); }
+  const onDelete = ({ nodes: deletedNodes, edges: deletedEdges }: { nodes: BehaviorFlowNode[]; edges: FlowEdge[] }) => {
+    const deletedNodeIds = deletedNodes.map((node) => node.id);
+    const next = deleteScenarioGraphElements(scenario, deletedNodeIds, deletedEdges.map((edge) => ({
+      kind: edge.data?.kind,
+      outcome: edge.data?.outcome,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourceHandle,
+      targetHandle: edge.targetHandle,
+    })));
     applyScenario(next);
+    if (deletedNodeIds.includes(selectedId)) setSelectedId(next.steps[0]?.id ?? "");
   };
   const confirmDelete = useCallback(async ({ nodes: requestedNodes, edges: requestedEdges }: { nodes: BehaviorFlowNode[]; edges: FlowEdge[] }) => {
     const parts = [requestedNodes.length ? `${requestedNodes.length} node${requestedNodes.length === 1 ? "" : "s"}` : "", requestedEdges.length ? `${requestedEdges.length} edge${requestedEdges.length === 1 ? "" : "s"}` : ""].filter(Boolean);
@@ -208,7 +214,7 @@ function GraphWorkspace({ behaviors }: { behaviors: Behavior[] }) {
           <div><strong>Outcome routes</strong><span><i className="legend-status status-success"/>Success</span><span><i className="legend-status status-partial"/>Partial</span><span><i className="legend-status status-blocked"/>Blocked</span><span><i className="legend-status status-failed"/>Failed</span><span><i className="legend-artifact"/>Typed artifact</span></div>
         </div>
         <div className="graph-canvas" tabIndex={0} aria-label="Scenario graph canvas" onPointerDown={(event) => { const target = event.target as HTMLElement; if (!target.closest("button, input, select, textarea")) event.currentTarget.focus(); }} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-bluefire-behavior")) event.preventDefault(); }} onDrop={drop}>
-        <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={(_, node) => setSelectedId(node.id)} onNodeDragStop={onNodeDragStop} onNodesDelete={onNodesDelete} onEdgesDelete={onEdgesDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} fitView minZoom={0.25} maxZoom={1.6} deleteKeyCode={["Backspace", "Delete"]} connectionLineStyle={{ stroke: "#38a8ff", strokeWidth: 2 }} proOptions={{ hideAttribution: true }}>
+        <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={(_, node) => setSelectedId(node.id)} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} fitView minZoom={0.25} maxZoom={1.6} deleteKeyCode={["Backspace", "Delete"]} connectionLineStyle={{ stroke: "#38a8ff", strokeWidth: 2 }} proOptions={{ hideAttribution: true }}>
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="rgba(117,198,255,.18)"/><MiniMap pannable zoomable nodeColor={(node) => { const behavior = behaviorMap.get((node.data as BehaviorNodeData).step.behavior_id); return behavior?.safety_tier === "restricted" ? "#ff6e79" : behavior?.safety_tier === "controlled" ? "#f7b84b" : "#38a8ff"; }} maskColor="rgba(5,9,19,.74)"/><Controls showInteractive={false}/>
         </ReactFlow>{!nodes.length ? <div className="graph-empty-overlay"><GitBranch/><strong>Start with a registered behavior</strong><span>Select one from the palette or create an offline planner draft.</span></div> : null}</div>
         <div className={`validation-bar ${validationState}`}><div><strong>{validationState === "valid" ? "Deterministic validation passed" : validationState === "invalid" ? "Graph validation returned findings" : "Validate before preflight"}</strong><span>{validationIssues[0] ?? `${scenario.steps.length} nodes · ${scenario.edges.length} outcome routes`}</span></div>{validationIssues.length > 1 ? <details><summary>{validationIssues.length} findings</summary><ul>{validationIssues.map((item) => <li key={item}>{item}</li>)}</ul></details> : null}</div>

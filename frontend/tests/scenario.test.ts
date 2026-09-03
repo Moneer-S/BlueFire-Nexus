@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { demoScenario } from "../src/lib/demo";
-import { parseScenarioDocument } from "../src/lib/scenario";
+import { deleteScenarioGraphElements, parseScenarioDocument } from "../src/lib/scenario";
 
 describe("scenario document parsing", () => {
   it("normalizes omitted optional scenario fields without mutating the source document", () => {
@@ -56,5 +56,57 @@ describe("scenario document parsing", () => {
     (document.steps[0] as unknown as Record<string, unknown>)[field] = null;
 
     expect(() => parseScenarioDocument(document)).toThrow(new RegExp(`steps\\[0\\]\\.${field} must be an object`));
+  });
+});
+
+describe("scenario graph deletion", () => {
+  it("removes a connected node and every incident route, binding, and layout entry atomically", () => {
+    const scenario = structuredClone(demoScenario);
+
+    const next = deleteScenarioGraphElements(scenario, ["place_fixture"], [
+      {
+        kind: "route",
+        outcome: "success",
+        source: "place_fixture",
+        target: "run_fixture",
+        sourceHandle: "route:success",
+        targetHandle: "route:in",
+      },
+      {
+        kind: "artifact",
+        source: "place_fixture",
+        target: "run_fixture",
+        sourceHandle: "out:workspace",
+        targetHandle: "in:workspace",
+      },
+    ]);
+
+    expect(next.start).toBe("run_fixture");
+    expect(next.steps.map((step) => step.id)).not.toContain("place_fixture");
+    expect(next.edges.every((edge) => edge.from_step !== "place_fixture" && edge.to_step !== "place_fixture")).toBe(true);
+    expect(next.steps.every((step) => Object.values(step.inputs).every((binding) => binding.from_step !== "place_fixture"))).toBe(true);
+    expect(next.layout).not.toHaveProperty("place_fixture");
+    expect(scenario.steps.map((step) => step.id)).toContain("place_fixture");
+  });
+
+  it("removes only the target input represented by an artifact edge", () => {
+    const scenario = structuredClone(demoScenario);
+    const target = scenario.steps.find((step) => step.id === "run_fixture")!;
+    target.inputs = {
+      primary_workspace: { from_step: "place_fixture", artifact: "workspace" },
+      secondary_workspace: { from_step: "place_fixture", artifact: "workspace" },
+    };
+
+    const next = deleteScenarioGraphElements(scenario, [], [{
+      kind: "artifact",
+      source: "place_fixture",
+      target: "run_fixture",
+      sourceHandle: "out:workspace",
+      targetHandle: "in:primary_workspace",
+    }]);
+
+    expect(next.steps.find((step) => step.id === "run_fixture")?.inputs).toEqual({
+      secondary_workspace: { from_step: "place_fixture", artifact: "workspace" },
+    });
   });
 });

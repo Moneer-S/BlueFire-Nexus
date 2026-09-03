@@ -61,6 +61,15 @@ def _yara_candidate() -> DetectionCandidate:
     )
 
 
+def _sigma_sqlite_available() -> bool:
+    if importlib.util.find_spec("sigma") is None:
+        return False
+    try:
+        return importlib.util.find_spec("sigma.backends.sqlite") is not None
+    except ModuleNotFoundError:
+        return False
+
+
 def test_legacy_validator_import_is_compatible() -> None:
     assert LegacyExternalDetectionValidator is ExternalDetectionValidator
 
@@ -191,7 +200,9 @@ def test_fixture_and_conversion_metadata_are_fail_closed() -> None:
         )
 
 
-def test_real_sigma_backend_conversion_and_execution_or_exact_dependency_error() -> None:
+def test_real_sigma_backend_conversion_and_execution_or_exact_dependency_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     validator = ExternalDetectionValidator()
     source = r"""
 title: Fixed Process Discovery
@@ -207,7 +218,20 @@ falsepositives:
   - Approved inventory tooling
 level: low
 """
-    if importlib.util.find_spec("sigma.backends.sqlite") is None:
+    probe_calls: list[str] = []
+
+    def missing_parent_probe(name: str) -> None:
+        probe_calls.append(name)
+        if name != "sigma":
+            raise AssertionError("The child module must not be resolved without its parent")
+        return None
+
+    with monkeypatch.context() as missing_parent:
+        missing_parent.setattr(importlib.util, "find_spec", missing_parent_probe)
+        assert _sigma_sqlite_available() is False
+        assert probe_calls == ["sigma"]
+
+    if not _sigma_sqlite_available():
         with pytest.raises(
             DetectionError,
             match=r"pysigma-backend-sqlite==1\.2\.2.*remains a hypothesis",

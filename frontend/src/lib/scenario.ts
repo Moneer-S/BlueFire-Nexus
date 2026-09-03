@@ -1,4 +1,4 @@
-import type { Scenario } from "../types";
+import type { Outcome, Scenario } from "../types";
 
 const scenarioOutcomes = new Set(["success", "partial", "blocked", "failed"]);
 
@@ -69,4 +69,56 @@ export function parseScenarioDocument(value: unknown): Scenario {
     }
   }
   return { ...value, steps, provenance, limitations } as unknown as Scenario;
+}
+
+export interface ScenarioGraphDeletionEdge {
+  kind?: "route" | "artifact";
+  outcome?: Outcome;
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+}
+
+export function deleteScenarioGraphElements(
+  scenario: Scenario,
+  deletedNodeIds: readonly string[],
+  deletedEdges: readonly ScenarioGraphDeletionEdge[],
+): Scenario {
+  const deletedNodes = new Set(deletedNodeIds);
+  const deletedRoutes = deletedEdges.filter((edge) => edge.kind === "route");
+  const deletedArtifacts = deletedEdges.filter((edge) => edge.kind === "artifact");
+  const steps = scenario.steps
+    .filter((step) => !deletedNodes.has(step.id))
+    .map((step) => ({
+      ...step,
+      inputs: Object.fromEntries(Object.entries(step.inputs).filter(([inputName, binding]) => (
+        !deletedNodes.has(binding.from_step)
+        && !deletedArtifacts.some((edge) => (
+          edge.source === binding.from_step
+          && edge.target === step.id
+          && edge.sourceHandle === `out:${binding.artifact}`
+          && edge.targetHandle === `in:${inputName}`
+        ))
+      ))),
+    }));
+  const edges = scenario.edges.filter((edge) => (
+    !deletedNodes.has(edge.from_step)
+    && !deletedNodes.has(edge.to_step)
+    && !deletedRoutes.some((deleted) => (
+      deleted.source === edge.from_step
+      && deleted.target === edge.to_step
+      && deleted.outcome === edge.outcome
+    ))
+  ));
+  const layout = scenario.layout === undefined
+    ? undefined
+    : Object.fromEntries(Object.entries(scenario.layout).filter(([stepId]) => !deletedNodes.has(stepId)));
+  return {
+    ...scenario,
+    start: deletedNodes.has(scenario.start) ? steps[0]?.id ?? "missing_start" : scenario.start,
+    steps,
+    edges,
+    layout,
+  };
 }

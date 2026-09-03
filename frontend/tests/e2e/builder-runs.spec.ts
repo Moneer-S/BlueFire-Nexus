@@ -68,6 +68,26 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
   await page.getByRole("button", { name: "Delete selected node" }).click();
   expect(prompt).toContain("Delete 1 node");
   await expect(nodes).toHaveCount(initial);
+
+  page.once("dialog", async (dialog) => { await dialog.accept(); });
+  await page.getByRole("button", { name: "Delete selected node" }).click();
+  await expect(nodes).toHaveCount(initial - 1);
+  await expect(page.locator('.react-flow__node[data-id="place_fixture"]')).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => {
+    const scenario = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "null");
+    return {
+      binding: scenario.steps.some((step: { inputs: Record<string, { from_step: string }> }) => Object.values(step.inputs).some((binding) => binding.from_step === "place_fixture")),
+      layout: scenario.layout?.place_fixture !== undefined,
+      route: scenario.edges.some((edge: { from_step: string; to_step: string }) => edge.from_step === "place_fixture" || edge.to_step === "place_fixture"),
+      start: scenario.start,
+      step: scenario.steps.some((step: { id: string }) => step.id === "place_fixture"),
+    };
+  })).toEqual({ binding: false, layout: false, route: false, start: "run_fixture", step: false });
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
+  await expect(nodes).toHaveCount(initial - 1);
+  await expect(page.locator('.react-flow__node[data-id="place_fixture"]')).toHaveCount(0);
 });
 
 test("Execute approval cannot bypass canonical review and legacy authority is scrubbed after reload", async ({ page }) => {
