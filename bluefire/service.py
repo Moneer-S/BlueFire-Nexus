@@ -20,6 +20,7 @@ from importlib.resources import as_file, files
 from ipaddress import ip_address
 from pathlib import Path, PurePosixPath
 from secrets import token_hex
+from time import monotonic
 from typing import Any, Callable, Mapping, Sequence, cast
 
 import yaml
@@ -172,6 +173,7 @@ _COLLECTOR_PATH_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _EXECUTE_READINESS_KEY = "_execute_readiness"
 _ACTION_CATALOG_AUTHORITY_KEY = "_action_catalog_authority"
 _EXECUTE_READINESS_MAX_AGE_SECONDS = 15 * 60
+_REPLAY_ADMISSION_SECONDS = 5.0
 _AVAILABLE_PER_RUN_COLLECTORS = frozenset({"collector.filesystem.sandbox.v1"})
 _AVAILABLE_RUNTIME_COLLECTORS = frozenset(
     {
@@ -4726,8 +4728,11 @@ class BlueFireService(RunnerManagementServiceMixin):
             raise APIError(HTTPStatus.NOT_FOUND, "run_not_found", "Run was not found.") from exc
 
     def replay(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        admission_deadline = monotonic() + _REPLAY_ADMISSION_SECONDS
         with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
             try:
+                if monotonic() >= admission_deadline:
+                    raise APIError(HTTPStatus.CONFLICT, "replay_busy", "Replay admission expired.")
                 self._action_catalog_boundary()
                 return self._replay_locked(run_id, request)
             except APIError:
@@ -5028,9 +5033,6 @@ class BlueFireService(RunnerManagementServiceMixin):
                     action_implementations=resolved_replay_actions,
                     catalog_authority=replay_catalog_authority,
                 )
-            else:
-                replay_approval_context = None
-                replay_approval_id = None
             result = orchestrator.run(
                 prepared.scenario,
                 mode=mode,

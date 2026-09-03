@@ -2036,6 +2036,115 @@ def test_legacy_ai_flag_maps_to_assist_and_conflicts_are_rejected(tmp_path: Path
     assert exc_info.value.code == "autonomy_conflict"
 
 
+def test_replay_refuses_expired_local_catalog_queue_before_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
+    admission_started = threading.Event()
+    outcome: list[BaseException] = []
+    ticks = iter((100.0, 105.0))
+
+    def admission_clock() -> float:
+        value = next(ticks)
+        if value == 100.0:
+            admission_started.set()
+        return value
+
+    def forbidden_replay_work(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("expired replay reached catalog or effect work")
+
+    def queued_replay() -> None:
+        try:
+            service.replay("run-source", {})
+        except BaseException as exc:
+            outcome.append(exc)
+        else:
+            outcome.append(AssertionError("expired replay was admitted"))
+
+    monkeypatch.setattr("bluefire.service.monotonic", admission_clock)
+    monkeypatch.setattr(service, "_action_catalog_boundary", forbidden_replay_work)
+    monkeypatch.setattr(service, "_replay_locked", forbidden_replay_work)
+    worker = threading.Thread(target=queued_replay, daemon=True)
+    try:
+        with service._action_catalog_lock:
+            worker.start()
+            assert admission_started.wait(timeout=3)
+            assert worker.is_alive()
+        worker.join(timeout=3)
+        assert not worker.is_alive()
+        assert len(outcome) == 1
+        error = outcome[0]
+        assert isinstance(error, APIError)
+        assert error.status == 409
+        assert error.code == "replay_busy"
+        assert service.store.list_runs() == []
+        assert service.product_store.list_execution_workspaces() == []
+    finally:
+        worker.join(timeout=3)
+        service.close()
+
+
+def test_replay_refuses_expired_shared_catalog_lease_before_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "product.sqlite3"
+    first = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "first-runs",
+        product_db_path=database,
+    )
+    second = BlueFireService(
+        project_root=ROOT,
+        runs_dir=tmp_path / "second-runs",
+        product_db_path=database,
+    )
+    admission_started = threading.Event()
+    outcome: list[BaseException] = []
+    ticks = iter((200.0, 205.0))
+
+    def admission_clock() -> float:
+        value = next(ticks)
+        if value == 200.0:
+            admission_started.set()
+        return value
+
+    def forbidden_replay_work(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("expired replay reached catalog or effect work")
+
+    def queued_replay() -> None:
+        try:
+            second.replay("run-source", {})
+        except BaseException as exc:
+            outcome.append(exc)
+        else:
+            outcome.append(AssertionError("expired replay was admitted"))
+
+    monkeypatch.setattr("bluefire.service.monotonic", admission_clock)
+    monkeypatch.setattr(second, "_action_catalog_boundary", forbidden_replay_work)
+    monkeypatch.setattr(second, "_replay_locked", forbidden_replay_work)
+    worker = threading.Thread(target=queued_replay, daemon=True)
+    try:
+        with first.product_store.action_package_catalog_lease():
+            worker.start()
+            assert admission_started.wait(timeout=3)
+            assert worker.is_alive()
+        worker.join(timeout=3)
+        assert not worker.is_alive()
+        assert len(outcome) == 1
+        error = outcome[0]
+        assert isinstance(error, APIError)
+        assert error.status == 409
+        assert error.code == "replay_busy"
+        assert second.store.list_runs() == []
+        assert second.product_store.list_execution_workspaces() == []
+    finally:
+        worker.join(timeout=3)
+        second.close()
+        first.close()
+
+
 def test_simulate_run_and_replay_persist_autonomy_provider_and_lineage(tmp_path: Path) -> None:
     service = BlueFireService(project_root=ROOT, runs_dir=tmp_path / "runs")
     base = {

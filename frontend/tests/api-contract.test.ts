@@ -108,13 +108,13 @@ describe("control-plane request contracts", () => {
     vi.useFakeTimers();
     const timeoutSpy = vi.spyOn(window, "setTimeout");
     vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((resolve, reject) => {
-      const completion = window.setTimeout(() => resolve(new Response(JSON.stringify(demoRuns[0]), { status: 200, headers: { "Content-Type": "application/json" } })), 86_450_000);
+      const completion = window.setTimeout(() => resolve(new Response(JSON.stringify(demoRuns[0]), { status: 200, headers: { "Content-Type": "application/json" } })), 86_455_000);
       init?.signal?.addEventListener("abort", () => { window.clearTimeout(completion); reject(new DOMException("aborted", "AbortError")); }, { once: true });
     })));
     try {
       const replay = api.replay("run-source", { exact: true });
-      expect(timeoutSpy.mock.calls[0]?.[1]).toBe(86_460_000);
-      await vi.advanceTimersByTimeAsync(86_450_000);
+      expect(timeoutSpy.mock.calls[0]?.[1]).toBe(86_465_000);
+      await vi.advanceTimersByTimeAsync(86_455_000);
       await expect(replay).resolves.toMatchObject({ run_id: demoRuns[0]!.run_id });
     } finally {
       timeoutSpy.mockRestore();
