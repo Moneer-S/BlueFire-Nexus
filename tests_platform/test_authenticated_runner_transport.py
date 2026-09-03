@@ -59,6 +59,8 @@ from bluefire.util import canonical_json_bytes, content_hash, file_hash
 PROFILE_ID = "sandbox-execute.v1"
 RUNNER_ID = "bluefire-rust-runner.v1"
 POLICY_DIGEST = "sha256:" + "2" * 64
+# Match the real client/server bound; deadline-specific tests pass shorter explicit clocks.
+TEST_TRANSPORT_TIMEOUT_SECONDS = 10.0
 
 
 def _inventory() -> Mapping[str, Any]:
@@ -536,7 +538,7 @@ def _client(
     secret_provider: InMemorySecretProvider,
     *,
     profile_id: str = PROFILE_ID,
-    timeout_seconds: float = 2,
+    timeout_seconds: float = TEST_TRANSPORT_TIMEOUT_SECONDS,
 ) -> AuthenticatedRunnerClient:
     host, port = server.server_address
     return AuthenticatedRunnerClient(
@@ -590,8 +592,8 @@ def _raw_exchange_enrollment(
 ) -> Mapping[str, Any]:
     context = wire._client_context(enrollment)
     host, port = server.server_address
-    with socket.create_connection((host, port), timeout=2) as raw:
-        raw.settimeout(2)
+    with socket.create_connection((host, port), timeout=TEST_TRANSPORT_TIMEOUT_SECONDS) as raw:
+        raw.settimeout(TEST_TRANSPORT_TIMEOUT_SECONDS)
         with context.wrap_socket(raw, server_hostname=host) as connection:
             wire._verify_peer(
                 connection,
