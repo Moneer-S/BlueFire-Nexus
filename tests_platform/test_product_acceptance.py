@@ -241,7 +241,18 @@ def _fixture_contract(tmp_path: Path, mode: str = "pass") -> acceptance.ReleaseC
         raw_gate["minimum_evidence_artifacts"] = 1
         raw_gate["minimum_run_ids"] = 0
         raw_gate["minimum_test_ids"] = 1
-        raw_gate["timeout_seconds"] = 5
+        raw_gate["timeout_seconds"] = (
+            15
+            if raw_gate["id"] == "GATE-01"
+            and mode
+            in {
+                "real-run-bundle",
+                "stale-run-bundle",
+                "extra-run-file",
+                "extra-run-directory",
+            }
+            else 5
+        )
         raw_gate["workflow"]["command"] = [
             "{python}",
             "{repository}/gate_helper.py",
@@ -262,6 +273,25 @@ def _run_fixture(tmp_path: Path, mode: str = "pass") -> dict:
         output_dir=tmp_path / "results",
         release=False,
     )
+
+
+def test_durable_bundle_fixture_scopes_its_windows_startup_budget(tmp_path: Path) -> None:
+    durable_modes = (
+        "real-run-bundle",
+        "stale-run-bundle",
+        "extra-run-file",
+        "extra-run-directory",
+    )
+
+    for mode in durable_modes:
+        gates = _fixture_contract(tmp_path, mode).document["gates"]
+        assert gates[0]["id"] == "GATE-01"
+        assert gates[0]["timeout_seconds"] == 15
+        assert {gate["timeout_seconds"] for gate in gates[1:]} == {5}
+
+    assert {gate["timeout_seconds"] for gate in _fixture_contract(tmp_path).document["gates"]} == {
+        5
+    }
 
 
 def _persist_result(result_path: Path, document: dict) -> None:
