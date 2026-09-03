@@ -19,7 +19,11 @@ _MAX_REPORT_BYTES = 8 * 1024 * 1024
 _MAX_SCAN_BYTES = 128 * 1024 * 1024
 _CLEANUP_ATTEMPTS = 10
 _CLEANUP_RETRY_SECONDS = 0.25
-_CLEANUP_WINDOW_SECONDS = _CLEANUP_ATTEMPTS * _CLEANUP_RETRY_SECONDS
+_CLEANUP_RETRY_WINDOW_SECONDS = _CLEANUP_ATTEMPTS * _CLEANUP_RETRY_SECONDS
+# Reserve bounded aggregate filesystem work for every accepted entry, then
+# retain one complete transient-retry window for the final removal. The
+# maximum 16,384-entry tree remains capped below three minutes.
+_CLEANUP_ENTRY_ALLOWANCE_SECONDS = 0.01
 _CLEANUP_DEADLINE_MESSAGE = "the native cleanup exceeded its monotonic deadline"
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _MAX_RUNTIME_CLEANUP_DEPTH = 32
@@ -61,6 +65,22 @@ def _raise_cleanup_failures(failures: Sequence[BaseException]) -> None:
         raise failures[0]
     if failures:
         raise _RuntimeCleanupError(failures) from failures[0]
+
+
+def _cleanup_deadline(maximum_entries: int) -> float:
+    """Return one bounded deadline sized for an accepted cleanup inventory."""
+
+    if (
+        isinstance(maximum_entries, bool)
+        or not isinstance(maximum_entries, int)
+        or not 0 <= maximum_entries <= _MAX_RUNTIME_CLEANUP_ENTRIES
+    ):
+        raise DefenseFrontierError("the native cleanup entry budget is invalid")
+    return (
+        time.monotonic()
+        + _CLEANUP_RETRY_WINDOW_SECONDS
+        + maximum_entries * _CLEANUP_ENTRY_ALLOWANCE_SECONDS
+    )
 
 
 def _retry_cleanup(
@@ -364,7 +384,7 @@ def _remove_pinned_tree(
     if budget is None:
         budget = [_MAX_RUNTIME_CLEANUP_ENTRIES]
     if deadline is None:
-        deadline = time.monotonic() + _CLEANUP_WINDOW_SECONDS
+        deadline = _cleanup_deadline(budget[0])
     current_identity = _retry_cleanup(
         directory.directory_identity,
         "the native runtime directory identity changed during cleanup",
@@ -522,13 +542,13 @@ def _close_runtime_and_remove(
     cleanup_completed = False
     cleanup_failures: list[BaseException] = []
     runtime_identity: tuple[int, int] | None = None
-    cleanup_deadline = time.monotonic() + _CLEANUP_WINDOW_SECONDS
+    cleanup_deadline = _cleanup_deadline(_MAX_RUNTIME_CLEANUP_ENTRIES)
     try:
         if runtime_guard.path != runtime:
             raise DefenseFrontierError("the native runtime cleanup guard is mismatched")
         runtime_identity = _retry_cleanup(
             runtime_guard.directory_identity,
-            "the native runtime identity could not be verified before cleanup",
+            "the native runtime directory identity changed during cleanup",
             deadline=cleanup_deadline,
         )
         if remove_tree is None:
@@ -570,7 +590,7 @@ def _remove_runner_journal(
     deletion_guard: _PinnedPrivateDirectory | None = None
     deletion_guard_closed = False
     failures: list[BaseException] = []
-    cleanup_deadline = time.monotonic() + _CLEANUP_WINDOW_SECONDS
+    cleanup_deadline = _cleanup_deadline(_MAX_JOURNAL_ENTRIES)
     try:
         _require(pinned.path == journal, "runner result journal guard is mismatched")
         journal_identity = pinned.directory_identity()

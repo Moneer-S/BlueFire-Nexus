@@ -805,7 +805,7 @@ def test_cleanup_absence_wait_accepts_only_transient_windows_identities(
         "retiring.json",
         expected_identity=expected_identity,
         expected_mount_identity=None,
-        deadline=time.monotonic() + runtime_module._CLEANUP_WINDOW_SECONDS,
+        deadline=time.monotonic() + runtime_module._CLEANUP_RETRY_WINDOW_SECONDS,
         rebound_message="rebound",
         absence_message="absence unverified",
     )
@@ -843,7 +843,7 @@ def test_cleanup_path_absence_wait_accepts_only_transient_windows_identities(
     runtime_module._wait_for_path_absent(
         runtime,
         expected_identity=expected_identity,
-        deadline=time.monotonic() + runtime_module._CLEANUP_WINDOW_SECONDS,
+        deadline=time.monotonic() + runtime_module._CLEANUP_RETRY_WINDOW_SECONDS,
         rebound_message="rebound",
         absence_message="absence unverified",
     )
@@ -879,7 +879,7 @@ def test_cleanup_absence_wait_rejects_a_concrete_replacement_immediately(
             "retiring.json",
             expected_identity=(17, 31),
             expected_mount_identity=None,
-            deadline=time.monotonic() + runtime_module._CLEANUP_WINDOW_SECONDS,
+            deadline=time.monotonic() + runtime_module._CLEANUP_RETRY_WINDOW_SECONDS,
             rebound_message="replacement rebound",
             absence_message="absence unverified",
         )
@@ -908,7 +908,7 @@ def test_cleanup_absence_wait_retries_probe_errors_but_never_calls_them_absent(
             "retiring.json",
             expected_identity=(17, 31),
             expected_mount_identity=None,
-            deadline=time.monotonic() + runtime_module._CLEANUP_WINDOW_SECONDS,
+            deadline=time.monotonic() + runtime_module._CLEANUP_RETRY_WINDOW_SECONDS,
             rebound_message="replacement rebound",
             absence_message="absence unverified",
         )
@@ -992,6 +992,97 @@ def test_shared_cleanup_deadline_prevents_the_next_tree_mutation(
     assert calls == []
 
 
+@pytest.mark.parametrize(
+    ("maximum_entries", "expected_window"),
+    (
+        (0, 2.5),
+        (runtime_module._MAX_JOURNAL_ENTRIES, 5.06),
+        (runtime_module._MAX_RUNTIME_CLEANUP_ENTRIES, 166.34),
+    ),
+)
+def test_cleanup_deadline_scales_with_the_accepted_inventory(
+    maximum_entries: int,
+    expected_window: float,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: 100.0)
+
+    assert runtime_module._cleanup_deadline(maximum_entries) == pytest.approx(
+        100.0 + expected_window
+    )
+
+
+@pytest.mark.parametrize(
+    "maximum_entries",
+    (-1, runtime_module._MAX_RUNTIME_CLEANUP_ENTRIES + 1, True, 1.5),
+)
+def test_cleanup_deadline_rejects_an_invalid_inventory(maximum_entries: Any) -> None:
+    with pytest.raises(DefenseFrontierError, match="entry budget is invalid"):
+        runtime_module._cleanup_deadline(maximum_entries)
+
+
+def test_default_tree_cleanup_deadline_scales_for_the_full_entry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    names = tuple(
+        f"owned-{index:05d}.bin" for index in range(runtime_module._MAX_RUNTIME_CLEANUP_ENTRIES)
+    )
+    unlinked: list[str] = []
+    removed = 0
+    clock = 100.0
+
+    def monotonic() -> float:
+        nonlocal clock
+        clock += runtime_module._CLEANUP_ENTRY_ALLOWANCE_SECONDS / 2
+        return clock
+
+    def listed_names(*, maximum: int) -> tuple[str, ...]:
+        assert maximum == runtime_module._MAX_RUNTIME_CLEANUP_ENTRIES
+        return names
+
+    def entry_metadata(_name: str) -> tuple[SimpleNamespace, None]:
+        return (
+            SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o600,
+                st_dev=17,
+                st_ino=31,
+                st_nlink=1,
+                st_size=1,
+                st_file_attributes=0,
+            ),
+            None,
+        )
+
+    def unlink(name: str, **_kwargs: Any) -> None:
+        unlinked.append(name)
+
+    def remove() -> None:
+        nonlocal removed
+        removed += 1
+
+    directory = SimpleNamespace(
+        directory_identity=lambda: (17, 31),
+        directory_mount_identity=lambda: None,
+        names=listed_names,
+        entry_metadata_with_mount_identity=entry_metadata,
+        unlink=unlink,
+        has_name=lambda _name: False,
+        remove=remove,
+    )
+    monkeypatch.setattr(runtime_module.time, "monotonic", monotonic)
+
+    runtime_module._remove_pinned_tree(directory)  # type: ignore[arg-type]
+
+    assert unlinked == list(names)
+    assert removed == 1
+    assert (
+        runtime_module._CLEANUP_RETRY_WINDOW_SECONDS
+        + runtime_module._MAX_RUNTIME_CLEANUP_ENTRIES
+        * runtime_module._CLEANUP_ENTRY_ALLOWANCE_SECONDS
+        < 180
+    )
+
+
 def test_cleanup_absence_wait_preserves_private_file_cleanup_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1014,7 +1105,7 @@ def test_cleanup_absence_wait_preserves_private_file_cleanup_failures(
             "retiring.json",
             expected_identity=(17, 31),
             expected_mount_identity=None,
-            deadline=time.monotonic() + runtime_module._CLEANUP_WINDOW_SECONDS,
+            deadline=time.monotonic() + runtime_module._CLEANUP_RETRY_WINDOW_SECONDS,
             rebound_message="replacement rebound",
             absence_message="absence unverified",
         )
