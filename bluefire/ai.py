@@ -11,13 +11,12 @@ import math
 import os
 import re
 import time
-import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from .ai_record_validation import DurableProposalRecordError, validate_v3_proposal_record
+from .ai_transport import UrllibAIJSONTransport
 from .ai_wire import (
     AIProviderError,
     AIProviderTransportError,
@@ -771,76 +770,6 @@ class AIJSONTransport(Protocol):
         body: bytes,
         timeout_seconds: float,
     ) -> bytes: ...
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
-        return None
-
-
-class UrllibAIJSONTransport:
-    """Small HTTPS transport with bounded response reads and no ambient cookies."""
-
-    def post(
-        self,
-        url: str,
-        *,
-        headers: Mapping[str, str],
-        body: bytes,
-        timeout_seconds: float,
-    ) -> bytes:
-        request = urllib.request.Request(
-            url,
-            data=body,
-            headers=dict(headers),
-            method="POST",
-        )
-        opener = urllib.request.build_opener(_NoRedirectHandler())
-        try:
-            with opener.open(request, timeout=timeout_seconds) as response:  # nosec B310
-                status = int(getattr(response, "status", 200))
-                response_headers = getattr(response, "headers", None)
-                content_type = (
-                    response_headers.get_content_type()
-                    if response_headers is not None
-                    and hasattr(response_headers, "get_content_type")
-                    else None
-                )
-                if content_type != "application/json":
-                    raise AIProviderTransportError(
-                        "Provider endpoint returned a non-JSON content type",
-                        retryable=False,
-                    )
-                raw_payload = response.read(_MAX_RESPONSE_BYTES + 1)
-                if not isinstance(raw_payload, bytes):
-                    raise AIProviderTransportError(
-                        "Provider endpoint returned a non-bytes body",
-                        retryable=False,
-                    )
-                payload = raw_payload
-        except urllib.error.HTTPError as exc:
-            retryable = exc.code == 429 or 500 <= exc.code <= 599
-            raise AIProviderTransportError(
-                f"Provider endpoint returned HTTP {exc.code}",
-                retryable=retryable,
-                code=(
-                    "authentication_failed"
-                    if exc.code in {401, 403}
-                    else "rate_limited" if exc.code == 429 else "endpoint_rejected"
-                ),
-            ) from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise AIProviderTransportError(
-                "Provider endpoint could not be reached", retryable=True
-            ) from exc
-        if not 200 <= status <= 299:
-            raise AIProviderTransportError(
-                f"Provider endpoint returned HTTP {status}",
-                retryable=status == 429 or 500 <= status <= 599,
-            )
-        if len(payload) > _MAX_RESPONSE_BYTES:
-            raise AIProviderTransportError("Provider payload exceeded 1 MiB", retryable=False)
-        return payload
 
 
 def redact_for_model(value: Any, policy: AIRedactionPolicy, *, _key: str = "") -> Any:

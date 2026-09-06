@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import io
 import json
-import urllib.error
 from dataclasses import replace
 from typing import Any, Mapping
 
@@ -11,7 +9,6 @@ import pytest
 from bluefire.ai import (
     AIProviderTransportError,
     ChatCompletionsProvider,
-    UrllibAIJSONTransport,
     build_ai_provider,
 )
 from bluefire.ai_drafts import ChatCompletionsDraftProvider, build_ai_draft_provider
@@ -60,7 +57,7 @@ def no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
     def fail_if_called(*args: Any, **kwargs: Any) -> None:
         pytest.fail("Provider runtime tests must never make a real network request")
 
-    monkeypatch.setattr("bluefire.ai.urllib.request.build_opener", fail_if_called)
+    monkeypatch.setattr("bluefire.ai_transport.subprocess.Popen", fail_if_called)
 
 
 def _provider_config(kind: AIProviderKind, *, authenticated: bool = False) -> AIProviderConfig:
@@ -369,24 +366,19 @@ def test_deterministic_probe_never_connects() -> None:
 
 @pytest.mark.parametrize("status", [401, 403])
 def test_authentication_errors_do_not_expose_remote_body_or_credentials(
-    status: int, monkeypatch: pytest.MonkeyPatch
+    status: int,
 ) -> None:
-    class RejectingOpener:
-        def open(self, request: Any, *, timeout: float) -> None:
-            raise urllib.error.HTTPError(
-                request.full_url,
-                status,
-                "private server rejection text",
-                {},
-                io.BytesIO(b"private remote error body"),
-            )
-
-    monkeypatch.setattr("bluefire.ai.urllib.request.build_opener", lambda *args: RejectingOpener())
     result = check_provider(
         _provider_config(AIProviderKind.CHAT_COMPLETIONS, authenticated=True),
         connect=True,
         environ={"TEST_PROVIDER_KEY": "test-only-value"},
-        transport=UrllibAIJSONTransport(),
+        transport=FakeTransport(
+            AIProviderTransportError(
+                f"HTTP {status}: private server rejection text; private remote error body",
+                retryable=False,
+                code="authentication_failed",
+            )
+        ),
     )
     assert result["code"] == "authentication_failed"
     assert "rejected authentication" in result["message"]
