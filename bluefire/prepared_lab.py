@@ -13,6 +13,7 @@ import os
 import re
 import stat
 import subprocess  # nosec B404
+import sys
 import tarfile
 import time
 import zipfile
@@ -86,6 +87,10 @@ def verify(lease: DisposableWslDistribution, document: Mapping[str, Any]) -> Non
         raise ValueError("lab state directory identity changed")
     if identity(lease.install_root, directory=True) != lease.install_identity:
         raise ValueError("owned distribution storage identity changed")
+    if identity(lease.runtime / "management.lock", directory=False) != tuple(
+        document["lock_identity"]
+    ):
+        raise ValueError("lab management lock identity changed")
     current = registration(lease.distribution_name)
     if current is None or current != (document["registration_id"], lease.install_root):
         raise ValueError("owned distribution registration identity changed")
@@ -167,6 +172,31 @@ def wheel_inputs(product: Path, wheelhouse: Path) -> list[Path]:
     return paths
 
 
+@contextmanager
+def management_lock(handle: Any) -> Iterator[None]:
+    """Use one OS lock for prepare/start/destroy, including failure cleanup."""
+    handle.seek(0)
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        raise ValueError("this lab already has an active session or management operation") from exc
+    try:
+        yield
+    finally:
+        handle.seek(0)
+        if sys.platform == "win32":
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def prepare(state: Path, product: Path, wheelhouse: Path) -> None:
     paths = wheel_inputs(product, wheelhouse)
     state = state.resolve()
@@ -174,6 +204,11 @@ def prepare(state: Path, product: Path, wheelhouse: Path) -> None:
     executable = _trusted_wsl_executable()
     if executable is None:
         raise ValueError("prepared WSL labs require a Windows host")
+    with (state / "management.lock").open("x+b") as handle, management_lock(handle):
+        _prepare_locked(state, paths, executable)
+
+
+def _prepare_locked(state: Path, paths: list[Path], executable: Path) -> None:
     lease = create_disposable_wsl_distribution(executable, state)
     record: dict[str, Any] | None = None
     try:
@@ -185,6 +220,7 @@ def prepare(state: Path, product: Path, wheelhouse: Path) -> None:
             "distribution_name": lease.distribution_name,
             "state_identity": identity(state, directory=True),
             "install_identity": lease.install_identity,
+            "lock_identity": identity(state / "management.lock", directory=False),
             "registration_id": current[0],
         }
         with (state / "lease.json").open("x", encoding="utf-8") as handle:
@@ -227,23 +263,21 @@ def prepare(state: Path, product: Path, wheelhouse: Path) -> None:
 
 @contextmanager
 def owned(state: Path) -> Iterator[tuple[DisposableWslDistribution, Mapping[str, Any]]]:
-    import msvcrt
-
     state = state.resolve(strict=True)
     identity(state, directory=True)
+    lock_path = state / "management.lock"
+    original_lock = identity(lock_path, directory=False)
     lease_path = state / "lease.json"
-    original = identity(lease_path, directory=False)
-    with lease_path.open("r+b") as handle:
-        if (os.fstat(handle.fileno()).st_dev, os.fstat(handle.fileno()).st_ino) != original:
-            raise ValueError("lab lease identity changed during open")
-        try:
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError as exc:
-            raise ValueError(
-                "this lab already has an active session or management operation"
-            ) from exc
-        try:
-            handle.seek(0)
+    with lock_path.open("r+b") as lock_handle, management_lock(lock_handle):
+        if (
+            os.fstat(lock_handle.fileno()).st_dev,
+            os.fstat(lock_handle.fileno()).st_ino,
+        ) != original_lock:
+            raise ValueError("lab management lock changed during open")
+        original = identity(lease_path, directory=False)
+        with lease_path.open("rb") as handle:
+            if (os.fstat(handle.fileno()).st_dev, os.fstat(handle.fileno()).st_ino) != original:
+                raise ValueError("lab lease identity changed during open")
             raw = handle.read(16385)
             if len(raw) > 16384:
                 raise ValueError("lab lease exceeds its size bound")
@@ -256,6 +290,7 @@ def owned(state: Path) -> Iterator[tuple[DisposableWslDistribution, Mapping[str,
                     "distribution_name",
                     "state_identity",
                     "install_identity",
+                    "lock_identity",
                     "registration_id",
                 }
                 or document.get("schema_version") != SCHEMA
@@ -277,9 +312,6 @@ def owned(state: Path) -> Iterator[tuple[DisposableWslDistribution, Mapping[str,
             )
             verify(lease, document)
             yield lease, document
-        finally:
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def stop_client(process: subprocess.Popen[bytes] | None) -> None:

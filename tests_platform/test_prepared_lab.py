@@ -58,9 +58,11 @@ def test_lease_refuses_replaced_registration_and_storage_before_cleanup(
         install,
         lab.identity(install, directory=True),
     )
+    (tmp_path / "management.lock").touch()
     record = {
         "state_identity": lab.identity(tmp_path, directory=True),
         "registration_id": "original",
+        "lock_identity": lab.identity(tmp_path / "management.lock", directory=False),
     }
     monkeypatch.setattr(lab, "registration", lambda _name: ("original", install))
     lab.verify(lease, record)
@@ -224,6 +226,10 @@ def test_preparation_canonicalizes_state_and_never_cleans_unbound_registration(
 
     def create(executable: Path, runtime: Path) -> lab.DisposableWslDistribution:
         assert runtime == state.resolve()
+        with (runtime / "management.lock").open("r+b") as competing:
+            with pytest.raises(ValueError, match="active session"):
+                with lab.management_lock(competing):
+                    pytest.fail("preparation must hold its lock before clone creation")
         token = "1" * 16
         install = runtime / ("wsl-distribution-" + token)
         install.mkdir()
@@ -246,7 +252,15 @@ def test_preparation_canonicalizes_state_and_never_cleans_unbound_registration(
         "registration",
         lambda _name: ("guid", tmp_path if replaced else captured["lease"].install_root),
     )
-    monkeypatch.setattr(lab.subprocess, "run", lambda command, **_kwargs: commands.append(command))
+
+    def managed_command(command, **_kwargs):
+        with (state / "management.lock").open("r+b") as competing:
+            with pytest.raises(ValueError, match="active session"):
+                with lab.management_lock(competing):
+                    pytest.fail("installation and termination must retain the management lock")
+        commands.append(command)
+
+    monkeypatch.setattr(lab.subprocess, "run", managed_command)
     if replaced:
         with pytest.raises(ValueError, match="does not match"):
             lab.prepare(state, tmp_path / "product.whl", tmp_path)
