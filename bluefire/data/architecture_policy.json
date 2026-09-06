@@ -335,6 +335,7 @@
         "bluefire.collector_comparison",
         "bluefire.collector_interfaces",
         "bluefire.collection_semantics",
+        "bluefire.collection_methods",
         "bluefire.collectors",
         "bluefire.detection_backend_health",
         "bluefire.detection_backends",
