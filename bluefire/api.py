@@ -416,7 +416,21 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
             return
-        if path.endswith("/detection-revision-decisions"):
+        method_context_id = self._routes._run_method_comparison_id(path, context=True)
+        if method_context_id is not None:
+            if method_context_id:
+                self._dispatch(
+                    lambda: self.platform_server.service.method_comparison_context(
+                        method_context_id
+                    )
+                )
+            return
+        method_submission_id = self._routes._run_method_comparison_id(path)
+        if method_submission_id is not None:
+            if method_submission_id:
+                self._method_not_allowed("POST")
+            return
+        if path.endswith(("/detection-revision-decisions", "/method-comparison-decisions")):
             decision_request = self._routes._job_action_request(path)
             if decision_request is not None:
                 if decision_request[0]:
@@ -790,6 +804,9 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
             job_operations = {
+                "method-comparison-decisions": lambda: self.platform_server.service.decide_method_comparison(
+                    job_id, body
+                ),
                 "detection-revision-decisions": lambda: self.platform_server.service.decide_detection_ai_revision(
                     job_id, body
                 ),
@@ -803,6 +820,21 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/comparisons":
             self._dispatch(lambda: self.platform_server.service.compare(body))
+            return
+        method_run_id = self._routes._run_method_comparison_id(path)
+        if method_run_id is not None:
+            if method_run_id:
+                self._dispatch(
+                    lambda: self.platform_server.service.submit_method_comparison(
+                        method_run_id, body
+                    ),
+                    success_status=HTTPStatus.ACCEPTED,
+                )
+            return
+        method_context_id = self._routes._run_method_comparison_id(path, context=True)
+        if method_context_id is not None:
+            if method_context_id:
+                self._method_not_allowed("GET")
             return
         preparation_run_id = self._routes._run_replay_preparation_id(path)
         if preparation_run_id is not None:

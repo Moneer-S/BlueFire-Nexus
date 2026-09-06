@@ -4281,6 +4281,16 @@ class ProductStore:
             row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
             if row is not None:
                 return self._matching_job_submission(row, job_kind, binding), False
+            if "method_comparison" in document:
+                from .product_store_method_comparison import publication_guard
+
+                if job_kind != "scenario.replay":
+                    raise ProductStoreError("Method publication must use the replay job contract.")
+                publication_guard(self, connection, document)
+            elif job_kind == "replay.comparison.recover":
+                from .product_store_method_comparison import recovery_guard
+
+                recovery_guard(self, connection, document)
             now = utc_now()
             connection.execute(
                 """

@@ -108,12 +108,16 @@ class APIRoutes:
             "cancel",
             "retry",
             "detection-revision-decisions",
+            "method-comparison-decisions",
         }:
             return None
         if not _JOB_ID.fullmatch(parts[0]):
             self._error(HTTPStatus.BAD_REQUEST, "invalid_job_id", "Job identifier is invalid.")
             return ("", parts[1])
-        if parts[1] == "detection-revision-decisions" and not self._management_query_free():
+        if (
+            parts[1] in {"detection-revision-decisions", "method-comparison-decisions"}
+            and not self._management_query_free()
+        ):
             return ("", parts[1])
         return parts[0], parts[1]
 
@@ -471,6 +475,19 @@ class APIRoutes:
     def _run_replay_preparation_id(self, path: str) -> str | None:
         prefix = f"{API_PREFIX}/runs/"
         suffix = "/replay-preparations"
+        if not path.startswith(prefix) or not path.endswith(suffix):
+            return None
+        if not self._management_query_free():
+            return ""
+        run_id = path[len(prefix) : -len(suffix)]
+        if not _RUN_ID.fullmatch(run_id):
+            self._error(HTTPStatus.BAD_REQUEST, "invalid_run_id", "Run identifier is invalid.")
+            return ""
+        return run_id
+
+    def _run_method_comparison_id(self, path: str, *, context: bool = False) -> str | None:
+        prefix = f"{API_PREFIX}/runs/"
+        suffix = "/method-comparison-context" if context else "/ai-method-comparison-jobs"
         if not path.startswith(prefix) or not path.endswith(suffix):
             return None
         if not self._management_query_free():

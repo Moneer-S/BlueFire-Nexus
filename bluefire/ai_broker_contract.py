@@ -29,6 +29,7 @@ _PURPOSES = {
     "bluefire_ai_proposal",
     "bluefire_ai_graph_draft",
     "bluefire_detection_source_revision",
+    "bluefire_method_comparison",
 }
 ERROR_CODES = frozenset(
     {

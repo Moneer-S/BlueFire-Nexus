@@ -96,6 +96,7 @@ from .job_runtime import (
     JobStateError,
     RunJobController,
 )
+from .method_comparison_jobs import MethodComparisonJobs
 from .orchestrator import OrchestrationError, Orchestrator, SimulationCancelled
 from .package_management import ActionPackageOperations
 from .plugins import PluginManifest, PluginManifestError, PluginTrust
@@ -264,6 +265,7 @@ class BlueFireService(RunnerManagementServiceMixin):
             ai_config=self._runtime_ai,
             access=self._provider_access,
         )
+        self.method_comparison = MethodComparisonJobs(self)
         self.cleanup_recovery = self._recover_interrupted_cleanup()
         self.seed_counts = seed_product_metadata(
             self.product_store,
@@ -749,6 +751,19 @@ class BlueFireService(RunnerManagementServiceMixin):
         self, candidate_id: str, request: Mapping[str, Any]
     ) -> Mapping[str, Any]:
         return self.detection_ai.submit(candidate_id, request)
+
+    def method_comparison_context(self, run_id: str) -> Mapping[str, Any]:
+        return self.method_comparison.context(run_id)
+
+    def submit_method_comparison(
+        self, run_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return self.method_comparison.submit(run_id, request)
+
+    def decide_method_comparison(
+        self, job_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return self.method_comparison.decision(job_id, request)
 
     def decide_detection_ai_revision(
         self, job_id: str, request: Mapping[str, Any]
@@ -1697,6 +1712,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "scenario.replay",
                     "detection.ai.propose",
                     "detection.ai.apply",
+                    "replay.ai.propose",
+                    "replay.comparison.recover",
                 }
                 or state is None
                 or created is None
@@ -1733,6 +1750,18 @@ class BlueFireService(RunnerManagementServiceMixin):
 
         if source.get("kind") in {"detection.ai.propose", "detection.ai.apply"}:
             return self.detection_ai.retry(job_id)
+
+        if source.get("kind") in {"replay.ai.propose", "replay.comparison.recover"} or source.get(
+            "request", {}
+        ).get("method_comparison"):
+            try:
+                return self.method_comparison.retry(job_id)
+            except (ProductStoreError, JobRuntimeError) as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "method_comparison_recovery_refused",
+                    "The comparison recovery could not be admitted. Its exact replay remains unchanged.",
+                ) from exc
 
         try:
             with self._job_retry_lock:
@@ -2274,6 +2303,12 @@ class BlueFireService(RunnerManagementServiceMixin):
         return self._signal_job(job_id, "resume")
 
     def cancel_job(self, job_id: str) -> Mapping[str, Any]:
+        try:
+            job = self.product_store.get_job(job_id)
+        except ProductStoreError:
+            return self._signal_job(job_id, "cancel")
+        if job.get("kind") == "replay.ai.propose":
+            return self.method_comparison.cancel(job_id)
         return self._signal_job(job_id, "cancel")
 
     def _signal_job(self, job_id: str, signal: str) -> Mapping[str, Any]:
@@ -2310,6 +2345,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                     review,
                 )
             elif self.product_store.get_job(context.job_id).get("kind") == "scenario.replay":
+                if request.get("method_comparison"):
+                    self.method_comparison.before_replay(request)
                 result = self._execute_replay_job(context, request)
             else:
                 result = self.run(
@@ -2397,10 +2434,16 @@ class BlueFireService(RunnerManagementServiceMixin):
                 },
                 awaiting_approval=True,
             )
+        comparison_progress = {}
+        if request.get("method_comparison"):
+            comparison_progress["comparison"] = self.method_comparison.after_replay(
+                context, request, result
+            )
         return JobResult(
             result_ref=run_id,
             progress={
                 **terminal_progress,
+                **comparison_progress,
                 "proposal_status": (
                     "continued" if isinstance(proposal_record_id, str) else "not_requested"
                 ),
@@ -4301,11 +4344,21 @@ class BlueFireService(RunnerManagementServiceMixin):
                 "The exact replay submission could not be resolved safely.",
             ) from exc
 
-    def submit_replay(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+    def submit_replay(
+        self,
+        run_id: str,
+        request: Mapping[str, Any],
+        *,
+        _method_comparison: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
         """Persist one reviewed full replay intent; approval remains a separate gate."""
         deadline = monotonic() + _REPLAY_ADMISSION_SECONDS
         try:
             submission_id, intent_digest, submitted = replay_job_submission(run_id, request)
+            if _method_comparison is not None:
+                intent_digest = content_hash(
+                    {"replay_intent": intent_digest, "method_comparison": _method_comparison}
+                )
             existing = self.product_store.get_job_submission(
                 "scenario.replay", submission_id=submission_id, intent_digest=intent_digest
             )
@@ -4340,6 +4393,11 @@ class BlueFireService(RunnerManagementServiceMixin):
                         raise ReplayError("; ".join(problems))
                     stored = {
                         "schema_version": "bluefire.replay-job-request.v1",
+                        **(
+                            {"method_comparison": dict(_method_comparison)}
+                            if _method_comparison is not None
+                            else {}
+                        ),
                         "source_run_id": run_id,
                         "mode": mode.value,
                         "scenario_id": prepared["scenario"]["id"],

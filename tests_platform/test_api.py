@@ -202,6 +202,18 @@ class StubService:
         self.calls.append(("submit_detection_ai_revision", candidate_id, request))
         return {"job": {"job_id": JOB_ID, "kind": "detection.ai.propose"}}
 
+    def method_comparison_context(self, run_id):
+        self.calls.append(("method_comparison_context", run_id))
+        return {"source_run": {"run_id": run_id}, "options": []}
+
+    def submit_method_comparison(self, run_id, request):
+        self.calls.append(("submit_method_comparison", run_id, request))
+        return {"job": {"job_id": JOB_ID, "kind": "replay.ai.propose"}}
+
+    def decide_method_comparison(self, job_id, request):
+        self.calls.append(("decide_method_comparison", job_id, request))
+        return {"proposal_job": {"job_id": job_id}, "replay_job": None, "decision": request}
+
     def decide_detection_ai_revision(self, job_id, request):
         self.calls.append(("decide_detection_ai_revision", job_id, request))
         return {"proposal_job": {"job_id": job_id}, "application_job": None, "decision": request}

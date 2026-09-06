@@ -140,6 +140,15 @@ class PlatformService(Protocol):
     def submit_detection_ai_revision(self, candidate_id: str, request: JsonObject) -> JsonResult:
         """Submit a durable, explicitly reviewed detection source suggestion."""
 
+    def method_comparison_context(self, run_id: str) -> JsonResult:
+        """Read compatible methods in the recorded authority."""
+
+    def submit_method_comparison(self, run_id: str, request: JsonObject) -> JsonResult:
+        """Propose one connected method replay and detector comparison."""
+
+    def decide_method_comparison(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Review a method proposal and recover its exact replay identity."""
+
     def decide_detection_ai_revision(self, job_id: str, request: JsonObject) -> JsonResult:
         """Retain one decision and recover its idempotent application job."""
 

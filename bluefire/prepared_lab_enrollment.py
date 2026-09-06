@@ -12,6 +12,7 @@ from .ai import PROPOSAL_JSON_SCHEMA
 from .ai_broker_contract import BrokerEnrollment, refusal
 from .ai_detection_revision import _OUTPUT_SCHEMA as DETECTION_REVISION_SCHEMA
 from .ai_drafts import AIGraphDraftRequest, graph_draft_json_schema
+from .ai_method_comparison import OUTPUT_SCHEMA as METHOD_COMPARISON_SCHEMA
 from .ai_probe import _SCHEMA as CONNECTION_SCHEMA
 from .config import AIProviderConfig, BlueFireConfig, load_config
 from .registry import load_builtin_registry
@@ -37,6 +38,7 @@ def enroll(
             ("bluefire_ai_proposal", content_hash(PROPOSAL_JSON_SCHEMA)),
             ("bluefire_ai_graph_draft", content_hash(graph_draft_json_schema(request))),
             ("bluefire_detection_source_revision", content_hash(DETECTION_REVISION_SCHEMA)),
+            ("bluefire_method_comparison", content_hash(METHOD_COMPARISON_SCHEMA)),
         ),
     )
 

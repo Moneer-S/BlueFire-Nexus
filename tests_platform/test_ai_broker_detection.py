@@ -142,7 +142,7 @@ def test_detection_enrollment_does_not_admit_modified_schema_or_arbitrary_operat
                 cancel_event=threading.Event(),
             )
         assert transport.requests == [] and worker.is_alive()
-        assert len(enrollment.schemas) == 4
+        assert len(enrollment.schemas) == 5
     finally:
         access.close()
         worker.join(3)
