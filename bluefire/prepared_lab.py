@@ -169,7 +169,7 @@ def wheel_inputs(product: Path, wheelhouse: Path) -> list[Path]:
 
 def prepare(state: Path, product: Path, wheelhouse: Path) -> None:
     paths = wheel_inputs(product, wheelhouse)
-    state = state.absolute()
+    state = state.resolve()
     state.mkdir(mode=0o700)  # Deliberately refuses any pre-existing state directory.
     executable = _trusted_wsl_executable()
     if executable is None:
@@ -217,8 +217,10 @@ def prepare(state: Path, product: Path, wheelhouse: Path) -> None:
         )  # nosec B603
         print("Prepared owned Linux lab. Installation completed; no experiment was run.")
     except BaseException:
-        if record is not None:
-            verify(lease, record)
+        if record is None:
+            # No binding was established: a name alone cannot authorize deletion.
+            raise
+        verify(lease, record)
         lease.cleanup()
         raise
 
@@ -340,37 +342,40 @@ def start(state: Path, port: int) -> None:
         except KeyboardInterrupt:
             pass
         finally:
-            verify(lease, record)
             try:
-                subprocess.run(  # nosec B603
-                    guest(
-                        lease,
-                        "root",
-                        GUEST_PYTHON,
-                        "-I",
-                        "-B",
-                        "-m",
-                        "bluefire.prepared_lab_guest",
-                        "stop",
-                        str(port),
-                    ),
-                    stdin=subprocess.DEVNULL,
-                    check=True,
-                    timeout=50,
-                    **options(lease),
-                )  # nosec B603
+                verify(lease, record)
+                try:
+                    subprocess.run(  # nosec B603
+                        guest(
+                            lease,
+                            "root",
+                            GUEST_PYTHON,
+                            "-I",
+                            "-B",
+                            "-m",
+                            "bluefire.prepared_lab_guest",
+                            "stop",
+                            str(port),
+                        ),
+                        stdin=subprocess.DEVNULL,
+                        check=True,
+                        timeout=50,
+                        **options(lease),
+                    )
+                finally:
+                    # WSL client exit does not prove that guest descendants exited.
+                    # Terminate only the verified clone, retaining its filesystem.
+                    verify(lease, record)
+                    subprocess.run(  # nosec B603
+                        [str(lease.executable), "--terminate", lease.distribution_name],
+                        check=True,
+                        timeout=30,
+                        **options(lease),
+                    )
             finally:
+                # These handles remain ours even if registration ownership changes.
                 stop_client(outer)
                 stop_client(inner)
-                # A WSL client exiting is not proof that its guest descendants did.
-                # Stop only the lease-bound clone, retaining its filesystem for review.
-                verify(lease, record)
-                subprocess.run(  # nosec B603
-                    [str(lease.executable), "--terminate", lease.distribution_name],
-                    check=True,
-                    timeout=30,
-                    **options(lease),
-                )  # nosec B603
     print("Lab session stopped. Data remains in the owned clone; use destroy when finished.")
 
 

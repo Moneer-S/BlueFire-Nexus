@@ -5,6 +5,7 @@ import socket
 import stat
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -209,3 +210,107 @@ def test_namespace_witness_refuses_remaining_authority(
     monkeypatch.setattr(Path, "read_text", lambda path, **_kwargs: files[path.as_posix()])
     with pytest.raises(ValueError):
         guest.isolation_facts()
+
+
+@pytest.mark.parametrize("replaced", [False, True])
+def test_preparation_canonicalizes_state_and_never_cleans_unbound_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replaced: bool
+) -> None:
+    (tmp_path / "intermediate").mkdir()
+    state = tmp_path / "intermediate" / ".." / "lab"
+    captured = {}
+    cleaned = []
+    commands = []
+
+    def create(executable: Path, runtime: Path) -> lab.DisposableWslDistribution:
+        assert runtime == state.resolve()
+        token = "1" * 16
+        install = runtime / ("wsl-distribution-" + token)
+        install.mkdir()
+        lease = lab.DisposableWslDistribution(
+            executable,
+            runtime,
+            "BlueFire-Gate11-Run-" + token,
+            install,
+            lab.identity(install, directory=True),
+        )
+        monkeypatch.setattr(lease, "cleanup", lambda: cleaned.append(True))
+        captured["lease"] = lease
+        return lease
+
+    monkeypatch.setattr(lab, "wheel_inputs", lambda *_args: [])
+    monkeypatch.setattr(lab, "_trusted_wsl_executable", lambda: Path(sys.executable))
+    monkeypatch.setattr(lab, "create_disposable_wsl_distribution", create)
+    monkeypatch.setattr(
+        lab,
+        "registration",
+        lambda _name: ("guid", tmp_path if replaced else captured["lease"].install_root),
+    )
+    monkeypatch.setattr(lab.subprocess, "run", lambda command, **_kwargs: commands.append(command))
+    if replaced:
+        with pytest.raises(ValueError, match="does not match"):
+            lab.prepare(state, tmp_path / "product.whl", tmp_path)
+        assert not commands and not cleaned
+    else:
+        lab.prepare(state, tmp_path / "product.whl", tmp_path)
+        assert (state / "lease.json").is_file()
+        assert commands[-1] == [
+            str(Path(sys.executable)),
+            "--terminate",
+            captured["lease"].distribution_name,
+        ]
+        assert not cleaned
+
+
+def test_start_stops_owned_clients_even_when_distribution_identity_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lease = lab.DisposableWslDistribution(
+        Path(sys.executable),
+        tmp_path,
+        "BlueFire-Gate11-Run-" + "1" * 16,
+        tmp_path / "install",
+        (1, 2),
+    )
+    processes = []
+    management = []
+    interrupt = True
+
+    @contextmanager
+    def owned(_state: Path):
+        yield lease, {}
+
+    class Client:
+        returncode = None
+        stopped = False
+
+        def __init__(self, *_args, **_kwargs):
+            processes.append(self)
+
+        def poll(self):
+            nonlocal interrupt
+            if interrupt:
+                interrupt = False
+                raise KeyboardInterrupt
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+            self.stopped = True
+
+        def wait(self, **_kwargs):
+            return self.returncode
+
+    def refuse(*_args):
+        raise ValueError("registration identity changed")
+
+    monkeypatch.setattr(lab, "owned", owned)
+    monkeypatch.setattr(lab, "verify", refuse)
+    monkeypatch.setattr(lab.subprocess, "Popen", Client)
+    monkeypatch.setattr(
+        lab.subprocess, "run", lambda command, **_kwargs: management.append(command)
+    )
+    with pytest.raises(ValueError, match="identity changed"):
+        lab.start(tmp_path, 8767)
+    assert len(processes) == 2 and all(process.stopped for process in processes)
+    assert not management

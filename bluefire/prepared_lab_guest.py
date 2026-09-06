@@ -101,7 +101,7 @@ def enter(port: int, parent: str) -> None:
         path = Path(name)
         if not path.is_dir() or path.is_symlink():
             raise ValueError("a required isolation mount point is absent or linked")
-        mode = "1777" if name in {"/tmp", "/dev/shm"} else "0755"  # nosec B108  # nosec B108
+        mode = "1777" if name in {"/tmp", "/dev/shm"} else "0755"  # nosec B108
         subprocess.run(  # nosec B603
             [
                 "/usr/bin/mount",
