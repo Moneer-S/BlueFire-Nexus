@@ -532,7 +532,18 @@ class RunStore:
                     }
                 )
                 continue
-            items.append(result)
+            # Present the title frozen with this run, not a mutable catalog name.
+            # Enrich the response only; immutable result files and hashes stay intact.
+            summary = dict(result)
+            if manifest_path.exists():
+                try:
+                    scenario = self.read_json(path.name, "scenario.json")
+                except RunStoreError:
+                    scenario = {}
+                title = scenario.get("title")
+                if isinstance(title, str) and title.strip():
+                    summary["scenario_title"] = title
+            items.append(summary)
         return items
 
     @staticmethod

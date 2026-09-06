@@ -18,6 +18,36 @@ def _create(store: RunStore):
     )
 
 
+def test_history_uses_frozen_title_without_rewriting_bundle(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    handle = store.create_run(
+        scenario={
+            "schema_version": "bluefire.scenario.v1",
+            "id": "test",
+            "title": "Original experiment",
+        },
+        plan={"schema_version": "bluefire.plan.v1", "steps": []},
+        policy={"schema_version": "bluefire.policy.v1", "allowed": True},
+        profile=None,
+    )
+    store.finalize(
+        handle.run_id,
+        result={"schema_version": "bluefire.run.v1", "status": "success"},
+        evidence=[],
+        detections=[],
+    )
+    original = (handle.path / "result.json").read_bytes()
+    assert store.list_runs()[0]["scenario_title"] == "Original experiment"
+    assert (handle.path / "result.json").read_bytes() == original
+    assert store.validate_bundle(handle.run_id)["valid"] is True
+
+    # A changed snapshot must fail integrity, not lend its new name to history.
+    (handle.path / "scenario.json").write_text('{"title":"Changed experiment"}', encoding="utf-8")
+    summary = store.list_runs()[0]
+    assert summary["status"] == "corrupted"
+    assert "scenario_title" not in summary
+
+
 def test_run_ids_are_generated_and_contained(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs")
     handle = _create(store)

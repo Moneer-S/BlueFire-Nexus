@@ -9,11 +9,13 @@ import { ExecuteOnboarding, GUIDED_EXECUTE_PROFILE_ID, GUIDED_EXECUTE_SCENARIO_I
 import { ProposalReviewWorkspace } from "../components/ProposalReview";
 import { useProduct } from "../state/ProductContext";
 import type { AIProposalDecisionResult, AIProposalReview, AutonomyLevel, CatalogResponse, PreflightReport, RunConfiguration, RunEventPage, RunJob, RunRecord, RunStep, Scenario } from "../types";
-import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, Stat, formatDate, sentence } from "../components/Primitives";
+import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, formatDate, sentence } from "../components/Primitives";
 
 import { CanonicalPlanReview } from "../components/CanonicalPlanReview";
 import { continuationApprovalPreflight, hasUsableStoredApprovalReview } from "../lib/approvalReview";
 import { settlePendingReplay } from "../lib/replay-submission";
+
+import { objectiveLabel, runLabel, stepOutcomeLabel } from "../lib/run-presentation";
 
 import "./Runs.css";
 
@@ -323,9 +325,7 @@ export function RunsPage() {
 
 function HistoricalRunReview({ run, catalog }: { run: RunRecord; catalog: CatalogResponse }) {
   return <div className="page runs-page">
-    <PageHeader eyebrow="Run history" title="Canonical run review" description={`${runLabel(run)} · ${sentence(run.mode)} · ${shortId(run.run_id)} · finalized ${formatDate(run.finalized_at ?? run.created_at)}`} actions={<><Link to="/runs"><Button variant="secondary">Back to run workspace</Button></Link><Link to={detectionLink(run.run_id)}><Button variant="secondary">Open Detection Lab</Button></Link><Link to={comparisonLink(run.run_id)}><Button>Replay & compare</Button></Link></>} />
-    <Callout tone="info" title="Durable historical review">This page was loaded from the canonical run record and can be bookmarked or reopened after a browser reload. Full identifiers and raw metadata remain available in the technical details below.</Callout>
-    {typeof run.replay?.source_run_id === "string" ? <Link className="button button-primary button-medium" to={comparisonLink(run.replay.source_run_id, run.run_id)}>Compare with original run</Link> : null}
+    <PageHeader eyebrow="Run review" title={runLabel(run)} description={`${sentence(run.mode)} · ${sentence(run.status)} · ${formatDate(run.finalized_at ?? run.created_at)}`} actions={<><Link to="/runs"><Button variant="secondary">Back to run workspace</Button></Link><Link to={detectionLink(run.run_id)}><Button variant="secondary">Open Detection Lab</Button></Link><Link to={comparisonLink(run.run_id)}><Button variant={typeof run.replay?.source_run_id === "string" ? "secondary" : "primary"}>Replay & compare</Button></Link>{typeof run.replay?.source_run_id === "string" ? <Link className="button button-primary button-medium" to={comparisonLink(run.replay.source_run_id, run.run_id)}>Compare with original run</Link> : null}</>} />
     <RunReview run={run} catalog={catalog} />
   </div>;
 }
@@ -333,13 +333,12 @@ function HistoricalRunReview({ run, catalog }: { run: RunRecord; catalog: Catalo
 function RunHistoryPanel({ runs, pending, error, retry }: { runs?: RunRecord[]; pending: boolean; error: unknown; retry: () => void }) {
   const history = runs ?? [];
   return <Panel>
-    <PanelHeader eyebrow="Run history" title="Canonical records" detail="Open any completed record in a durable, reload-safe review URL." actions={<Button size="small" variant="ghost" onClick={retry}><RotateCcw/>Refresh</Button>} />
-    {pending ? <LoadingState label="Loading canonical run history" /> : error ? <ErrorState title="Run history unavailable" error={error} retry={retry} /> : history.length ? <div className="table-scroll"><table><thead><tr><th>Experiment</th><th>Mode</th><th>Created</th><th>Status</th></tr></thead><tbody>{history.map((run) => <tr key={run.run_id}><td><Link to={runReviewPath(run.run_id)} aria-label={`Review canonical run ${runLabel(run)} (${shortId(run.run_id)})`}><strong>{runLabel(run)}</strong><br/><code title={run.run_id}>{shortId(run.run_id)}</code></Link>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</td><td><Badge tone={run.mode === "execute" ? "warning" : "info"}>{sentence(run.mode)}</Badge></td><td>{formatDate(run.created_at)}</td><td><Badge tone={run.status === "completed" ? "success" : "neutral"} dot>{sentence(run.status)}</Badge></td></tr>)}</tbody></table></div> : <div className="inline-empty"><span>No canonical runs yet.</span><span>Complete a Simulate run to create the first durable record.</span></div>}
+    <PanelHeader title="Run history" detail="Reopen a result to inspect evidence, test a detection, or prepare a replay." actions={<Button size="small" variant="ghost" onClick={retry}><RotateCcw/>Refresh</Button>} />
+    {pending ? <LoadingState label="Loading canonical run history" /> : error ? <ErrorState title="Run history unavailable" error={error} retry={retry} /> : history.length ? <div className="table-scroll"><table><thead><tr><th>Experiment</th><th>Mode</th><th>Created</th><th>Status</th></tr></thead><tbody>{history.map((run) => <tr key={run.run_id}><td><Link to={runReviewPath(run.run_id)} aria-label={`Review canonical run ${runLabel(run)} (${shortId(run.run_id)})`}><strong>{runLabel(run)}</strong><br/><code title={run.run_id}>{shortId(run.run_id)}</code></Link>{run.is_demo ? <Badge tone="violet">Demo</Badge> : null}</td><td><Badge tone={run.mode === "execute" ? "warning" : "info"}>{sentence(run.mode)}</Badge></td><td>{formatDate(run.created_at)}</td><td><Badge tone={run.status === "completed" ? "success" : "neutral"} dot>{sentence(run.status)}</Badge></td></tr>)}</tbody></table></div> : <div className="inline-empty"><span>No runs yet.</span><span>Start with Simulate to explore an experiment without lab effects.</span></div>}
   </Panel>;
 }
 
 function runReviewPath(runId: string) { return `/runs/${encodeURIComponent(runId)}`; }
-function runLabel(run: Pick<RunRecord, "objective" | "scenario_id">) { return run.objective ?? run.scenario_id ?? "Completed experiment"; }
 function shortId(value: string) { return value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
 function cleanupSummary(cleanup: RunRecord["cleanup"]) {
   if (cleanup === true) return "Complete";
@@ -517,15 +516,52 @@ export function DetectionDetail({ run }: { run: RunRecord | null }) {
 }
 
 export function RunReview({ run, catalog }: { run: RunRecord; catalog: CatalogResponse }) {
-  const firstBlocked = run.steps.find((step) => ["blocked", "control_blocked", "refused"].includes(step.status)); const evidence = run.evidence?.records ?? []; const detections = run.detections?.candidates ?? [];
+  const steps = run.steps ?? [];
+  const stopped = steps.find((step) => step.execution_disposition !== "counterfactual" && ["blocked", "control_blocked", "refused", "failed", "error", "cancelled"].includes(step.status));
+  const evidence = run.evidence?.records;
+  const observed = evidence?.filter((record) => record.provenance === "observed");
+  const executed = evidence?.filter((record) => record.provenance === "executed");
+  const synthetic = evidence?.filter((record) => ["synthetic", "counterfactual"].includes(record.provenance));
+  const policyRecords = evidence?.filter((record) => record.provenance === "control_blocked");
+  const otherRecords = evidence?.filter((record) => !["observed", "executed", "synthetic", "counterfactual", "control_blocked"].includes(record.provenance));
+  const sources = [
+    [executed?.length, "runner-reported"], [synthetic?.length, "synthetic or simulated-continuation"],
+    [observed?.length, "independently observed"], [policyRecords?.length, "policy or refusal"], [otherRecords?.length, "other or unknown"],
+  ].filter(([count]) => typeof count === "number" && count > 0).map(([count, label]) => `${count} ${label}`).join(" · ");
+  const detections = run.detections?.candidates;
   const aiProposals = Array.isArray(run.ai_proposals) ? run.ai_proposals : [];
-  const provenance = Object.fromEntries([...new Set(evidence.map((item) => item.provenance))].map((kind) => [kind, evidence.filter((item) => item.provenance === kind).length]));
-  return <div className="review-stack">{run.is_demo ? <Callout title="Seeded review">This is a sanitized Simulate record. It does not prove runner execution, independent observation, or a real control block.</Callout> : null}{run.approval_pause ? <Callout tone="warning" title="Planner stopped before the next action">A review-required proposal paused before the selected node. Its durable job—not this immutable run record—owns the exact-digest accept/reject gate; accepting Execute still requires a new one-time approval.</Callout> : null}<div className="stat-grid"><Stat label="Objective" value={run.objective_reached ? "Reached" : "Prevented / incomplete"} tone={run.objective_reached ? "success" : "warning"}/><Stat label="Path" value={`${run.steps.length} nodes`} detail={`${run.steps.filter((step) => step.action_id).length} runner actions`}/><Stat label="Evidence" value={evidence.length} detail={Object.entries(provenance).map(([key, value]) => `${key}: ${value}`).join(" · ") || "None"}/><Stat label="Detections" value={detections.length} detail={detections.map((item) => sentence(item.state)).join(" · ") || "None"}/></div>
-    <div className="review-grid"><Panel><PanelHeader eyebrow="Executive summary" title={run.objective ?? run.scenario_id ?? "Completed experiment"}/><div className="review-summary"><Badge tone={statusTone(run.status)} dot>{sentence(run.status)}</Badge><p>{run.objective_reached ? "The recorded path reached its declared objective within the selected policy envelope." : firstBlocked ? `The recorded path did not reach its objective. The first prevention or refusal point was ${firstBlocked.step_id}.` : "The objective was not recorded as reached; inspect limitations and evidence before drawing a conclusion."}</p><DataList items={[{ label: "Run ID", value: <code title={run.run_id}>{shortId(run.run_id)}</code> }, { label: "Mode", value: sentence(run.mode) }, { label: "Autonomy", value: sentence(run.autonomy ?? run.autonomy_level ?? (run.ai_enabled ? "assist" : "off")) }, { label: "Profile", value: run.runner_profile_id ?? "Not recorded" }, { label: "Started", value: formatDate(run.created_at) }, { label: "Finalized", value: formatDate(run.finalized_at) }]} /></div></Panel><Panel><PanelHeader eyebrow="First prevention" title={firstBlocked ? firstBlocked.step_id : "No block recorded"}/>{firstBlocked ? <Callout tone="warning" title={sentence(firstBlocked.status)}>{firstBlocked.execution_disposition ? sentence(firstBlocked.execution_disposition) : "Inspect policy and independently observed evidence before attributing the cause."}</Callout> : <Callout tone="success" title="Path completed without a recorded block">Absence of a block is not proof that every defensive control observed the behavior.</Callout>}<DataList items={[{ label: "Cleanup", value: cleanupSummary(run.cleanup) }, { label: "Manifest", value: run.manifest ? "Canonical file table available" : "Not attached" }, { label: "Replay lineage", value: run.replay ? "Replay-linked" : "Original run" }]} /></Panel></div>
-    <Panel><PanelHeader eyebrow="Path taken" title="Behavior and execution outcomes"/><div className="review-path">{run.steps.map((step, index) => { const behavior = catalog.behaviors.find((item) => item.id === step.behavior_id); return <article key={`${step.step_id}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{behavior?.title ?? step.step_id}</strong><code>{step.step_id}</code></div><div><Badge tone={statusTone(step.status)}>{sentence(normalizeStatus(step.status))}</Badge><small>{step.action_id ? `Action ${step.action_id}` : step.simulation_id ? `Simulation ${step.simulation_id}` : sentence(step.execution_disposition ?? "unknown")}</small></div></article>; })}</div></Panel>
-    <AIProposalTrail proposals={aiProposals} />
-    <div className="two-column"><Panel><PanelHeader eyebrow="Evidence graph" title="Provenance-separated records"/><EvidenceDetail run={run}/></Panel><Panel><PanelHeader eyebrow="Detection outcome" title="Candidate lifecycle"/><DetectionDetail run={run}/></Panel></div>
-    <Panel><PanelHeader eyebrow="Reproducibility" title="Limitations and technical metadata"/><div><h3>Limitations</h3>{run.limitations?.length ? <ul>{run.limitations.map((item) => <li key={item}>{item}</li>)}</ul> : <p>No limitations were attached. Treat missing limitations as incomplete metadata.</p>}<details><summary>Show raw reproducibility metadata</summary><div className="raw-columns"><StructuredPanel value={run.manifest ?? { schema_version: run.schema_version, scenario_id: run.scenario_id, profile_id: run.runner_profile_id }} empty="No manifest metadata."/><pre aria-label="Canonical run technical record">{JSON.stringify({ run_id: run.run_id, schema_version: run.schema_version, scenario_id: run.scenario_id, runner_profile_id: run.runner_profile_id, cleanup: run.cleanup ?? null, replay: run.replay ?? null }, null, 2)}</pre></div></details></div></Panel>
+  const outcome = objectiveLabel(run.objective_reached, run.mode);
+  const cleanup = cleanupSummary(run.cleanup);
+  const needsCleanup = cleanup.startsWith("Needs attention") || cleanup.startsWith("Failed");
+  const stepName = (step: RunStep) => catalog.behaviors.find((item) => item.id === step.behavior_id)?.title ?? step.step_id;
+  const outcomeDescription = run.objective_reached === true
+    ? run.mode === "simulate" ? "The simulated path reached the experiment's objective. This does not establish a real effect or a working defense." : "The run records its objective as achieved. Check independent observations below to assess what was verified."
+    : run.objective_reached === false ? "The run did not achieve its objective. An unmet objective alone does not establish that a target control prevented it."
+    : "This record does not establish whether the objective was achieved. Review the path and available evidence before drawing a conclusion.";
+  return <div className="review-stack run-review">
+    {run.is_demo ? <Callout title="Seeded review">This is a sanitized Simulate record. It does not prove runner execution, independent observation, or a real control block.</Callout> : null}
+    {run.approval_pause ? <Callout tone="warning" title="Waiting for a reviewed continuation">The planner paused before the next action. Return to its saved job to review the proposed change and, for Execute, approve the next run.</Callout> : null}
+    <section className="run-outcome" aria-label="Recorded run outcome">
+      <div className="run-outcome-main"><p className="eyebrow">Recorded outcome</p><h2>{outcome}</h2><p>{outcomeDescription}</p>{run.objective ? <div className="run-objective"><strong>Objective</strong><p>{run.objective}</p></div> : null}</div>
+      <dl className="run-outcome-facts">
+        <div><dt>Independent observations</dt><dd>{observed ? `${observed.length} observed records` : "Not reported"}<small>{observed?.length === 0 ? "No independent confirmation is recorded." : observed ? "Collector observations; inspect their content and limitations." : "The evidence document is unavailable."}</small></dd></div>
+        <div><dt>First stopped step</dt><dd>{stopped ? <>{stepName(stopped)}<small>{stepOutcomeLabel(stopped, run.mode)}</small></> : <>None recorded<small>This does not establish that the path completed.</small></>}</dd></div>
+        <div className={needsCleanup ? "cleanup-attention" : ""}><dt>Cleanup</dt><dd>{cleanup}<small>{run.mode === "simulate" ? "Simulate does not perform lab effects." : "Recorded cleanup result; inspect any outstanding effects."}</small></dd></div>
+      </dl>
+    </section>
+    {stopped?.error?.message ? <Callout tone="warning" title={stepOutcomeLabel(stopped, run.mode)}>{stopped.error.message}</Callout> : null}
+    <section className="run-evidence-summary" aria-label="Evidence and detection summary">
+      <div><h3>Evidence sources</h3><p>{evidence ? (sources || "No evidence records") : "Evidence not reported"}</p><small>These sources support different claims. Runner output and simulated records are not independent observations.</small></div>
+      <div><h3>Detection work</h3><p>{detections ? `${detections.length} linked candidate${detections.length === 1 ? "" : "s"}` : "Not reported"}</p><small>{detections?.length ? "Review each candidate's validation stage and evaluated inputs before claiming coverage." : "No evaluated detection result is established here. Open Detection Lab to investigate this run."}</small></div>
+    </section>
+    <section className="run-path-section" aria-label="Recorded step outcomes"><header><h2>Path taken</h2><p>{steps.length} recorded steps · outcomes as reported by this run</p></header>
+      {steps.length ? <ol className="run-path-list">{steps.map((step, index) => <li key={`${step.step_id}-${index}`}><span className="run-step-number" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span><div><strong>{stepName(step)}</strong><small>{stepOutcomeLabel(step, run.mode)}</small></div><details><summary>Step details</summary><DataList items={[{ label: "Step", value: step.step_id }, { label: "Method", value: step.action_id ?? step.simulation_id ?? "Not reported" }, { label: "Disposition", value: sentence(step.execution_disposition ?? "not reported") }, { label: "Evidence references", value: step.evidence_ids?.join(", ") || "None recorded" }]} />{step.error?.message ? <p>{step.error.message}</p> : null}</details></li>)}</ol> : <p className="field-note">No step outcomes are recorded.</p>}
+    </section>
+    <details className="run-review-details"><summary>Inspect evidence records{evidence ? ` (${evidence.length})` : " · not reported"}</summary><EvidenceDetail run={run}/></details>
+    <details className="run-review-details"><summary>Inspect detection candidates{detections ? ` (${detections.length})` : " · not reported"}</summary><DetectionDetail run={run}/></details>
+    {aiProposals.length ? <details className="run-review-details"><summary>AI decisions ({aiProposals.length})</summary><AIProposalTrail proposals={aiProposals}/></details> : <p className="run-ai-note">No runtime AI proposal records are attached.</p>}
+    <section className="run-limitations"><h2>Limitations</h2>{run.limitations?.length ? <ul>{run.limitations.map((item) => <li key={item}>{item}</li>)}</ul> : <p>No limitations were attached. This is incomplete metadata, not proof that there are none.</p>}</section>
+    <details className="run-review-details"><summary>Run identity, environment and technical record</summary><DataList items={[{ label: "Run ID", value: <code>{run.run_id}</code> }, { label: "Mode", value: sentence(run.mode) }, { label: "AI mode", value: sentence(run.autonomy ?? run.autonomy_level ?? (run.ai_enabled ? "assist" : "off")) }, { label: "Profile", value: run.runner_profile_id ?? "Not recorded" }, { label: "Targets", value: run.target_scope?.scope_refs?.join(", ") || "Not recorded" }, { label: "Started", value: formatDate(run.created_at) }, { label: "Finalized", value: formatDate(run.finalized_at) }, { label: "Replay lineage", value: run.replay ? "Replay-linked" : "Original run" }]} /><details><summary>Raw reproducibility metadata</summary><div className="raw-columns"><StructuredPanel value={run.manifest ?? { schema_version: run.schema_version, scenario_id: run.scenario_id, profile_id: run.runner_profile_id }} empty="No manifest metadata."/><pre aria-label="Canonical run technical record">{JSON.stringify({ run_id: run.run_id, schema_version: run.schema_version, scenario_id: run.scenario_id, runner_profile_id: run.runner_profile_id, cleanup: run.cleanup ?? null, replay: run.replay ?? null }, null, 2)}</pre></div></details></details>
   </div>;
 }
 

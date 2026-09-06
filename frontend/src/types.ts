@@ -646,12 +646,15 @@ export interface RunStep {
   artifacts?: unknown[];
   evidence_ids?: string[];
   telemetry?: string[];
+  policy?: { allowed?: boolean; status?: string; reasons?: string[] };
+  error?: { code?: string; message?: string };
 }
 
 export interface RunRecord {
   schema_version?: string;
   run_id: string;
   scenario_id?: string;
+  scenario_title?: string;
   mode: RunMode;
   status: string;
   created_at?: string;
