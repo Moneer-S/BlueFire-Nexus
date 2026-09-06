@@ -78,6 +78,18 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
   const [compatibility, setCompatibility] = useState<string>(); const [objective, setObjective] = useState(""); const [draftResult, setDraftResult] = useState<AIGraphDraftResult>();
   const [validationIssues, setValidationIssues] = useState<string[]>([]); const [validationState, setValidationState] = useState<"idle" | "valid" | "invalid">("idle");
   const [history, setHistory] = useState<Scenario[]>([structuredClone(scenario)]); const [historyIndex, setHistoryIndex] = useState(0);
+  const currentScenario = useRef(scenario);
+  // Local edits retain their history; a context replacement starts a new history.
+  const locallyAppliedScenario = useRef(scenario);
+  currentScenario.current = scenario;
+  useEffect(() => {
+    if (locallyAppliedScenario.current !== scenario) {
+      setHistory([structuredClone(scenario)]);
+      setHistoryIndex(0);
+      locallyAppliedScenario.current = scenario;
+    }
+    setValidationState("idle"); setValidationIssues([]); setInvalidNodes(new Set());
+  }, [scenario]);
   const [focusMode, setFocusMode] = useState(false); const [paletteOpen, setPaletteOpen] = useState(false); const [inspectorOpen, setInspectorOpen] = useState(false); const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [viewMode, setViewMode] = useState<"graph" | "steps">(() => window.matchMedia?.("(max-width: 760px)")?.matches ? "steps" : "graph");
@@ -124,15 +136,20 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
     window.addEventListener("keydown", openCommands);
     return () => window.removeEventListener("keydown", openCommands);
   }, []);
-  const applyScenario = useCallback((next: Scenario, record = true) => {
+  const replaceScenario = useCallback((next: Scenario) => {
+    locallyAppliedScenario.current = next;
+    currentScenario.current = next;
     setScenario(next);
+    setValidationState("idle"); setValidationIssues([]); setInvalidNodes(new Set());
+  }, [setScenario]);
+  const applyScenario = useCallback((next: Scenario, record = true) => {
+    replaceScenario(next);
     if (record) { setHistory((items) => [...items.slice(0, historyIndex + 1), structuredClone(next)]); setHistoryIndex((index) => index + 1); }
     else setHistory((items) => [...items.slice(0, historyIndex), structuredClone(next)]);
-    setValidationState("idle"); setValidationIssues([]); setInvalidNodes(new Set());
-  }, [historyIndex, setScenario]);
+  }, [historyIndex, replaceScenario]);
 
-  const undo = useCallback(() => { if (historyIndex <= 0) return; const index = historyIndex - 1; setHistoryIndex(index); setScenario(structuredClone(history[index]!), true); }, [history, historyIndex, setScenario]);
-  const redo = useCallback(() => { if (historyIndex >= history.length - 1) return; const index = historyIndex + 1; setHistoryIndex(index); setScenario(structuredClone(history[index]!), true); }, [history, historyIndex, setScenario]);
+  const undo = useCallback(() => { if (historyIndex <= 0) return; const index = historyIndex - 1; setHistoryIndex(index); replaceScenario(structuredClone(history[index]!)); }, [history, historyIndex, replaceScenario]);
+  const redo = useCallback(() => { if (historyIndex >= history.length - 1) return; const index = historyIndex + 1; setHistoryIndex(index); replaceScenario(structuredClone(history[index]!)); }, [history, historyIndex, replaceScenario]);
 
   const uniqueId = (title: string) => { const root = title.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").replace(/^[^a-z]+/, "") || "step"; let id = root; let suffix = 2; while (scenario.steps.some((step) => step.id === id)) id = `${root}_${suffix++}`; return id; };
   const addBehavior = (behavior: Behavior, position?: { x: number; y: number }) => {
@@ -205,7 +222,20 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
     else duplicateSelected();
   };
 
-  const validateMutation = useMutation({ mutationFn: () => api.validate(scenario), onSuccess: (result) => { const issues = (result.issues ?? []).map((item) => typeof item === "string" ? item : JSON.stringify(item)); setValidationIssues(issues); setValidationState(result.valid ? "valid" : "invalid"); setInvalidNodes(new Set(scenario.steps.filter((step) => issues.some((issue) => issue.includes(step.id))).map((step) => step.id))); }, onError: (error) => { const message = error instanceof Error ? error.message : "Validation failed."; setValidationIssues([message]); setValidationState("invalid"); } });
+  const validateMutation = useMutation({
+    mutationFn: (submitted: Scenario) => api.validate(submitted),
+    onSuccess: (result, submitted) => {
+      if (JSON.stringify(currentScenario.current) !== JSON.stringify(submitted)) return;
+      const issues = (result.issues ?? []).map((item) => typeof item === "string" ? item : JSON.stringify(item));
+      setValidationIssues(issues); setValidationState(result.valid ? "valid" : "invalid");
+      setInvalidNodes(new Set(submitted.steps.filter((step) => issues.some((issue) => issue.includes(step.id))).map((step) => step.id)));
+    },
+    onError: (error, submitted) => {
+      if (JSON.stringify(currentScenario.current) !== JSON.stringify(submitted)) return;
+      const message = error instanceof Error ? error.message : "Validation failed.";
+      setValidationIssues([message]); setValidationState("invalid");
+    },
+  });
   const saveMutation = useMutation({ mutationFn: (submitted: Scenario) => api.saveScenarioVersion(submitted), onSuccess: ({ scenario: saved }, submitted) => { const currentSaved = markSaved(submitted); setCompatibility(`Version ${saved.version} saved${currentSaved ? "." : "; newer changes remain unsaved."}`); }, onError: (error) => setCompatibility(`Save refused: ${error instanceof Error ? error.message : "The scenario version could not be saved."}`) });
   const serverDraftMutation = useMutation({ mutationFn: () => api.aiDraft(objective.trim(), runConfig.provider || null, 8, 16), onSuccess: (result) => { setDraftResult(result); setCompatibility(`${result.draft_id} is an unsaved preview. Review its audit before importing it.`); }, onError: (error) => setCompatibility(`Draft refused: ${error instanceof Error ? error.message : "The control-plane draft was unavailable."}`) });
   const selected = scenario.steps.find((step) => step.id === selectedId && shownIds.has(step.id)); const selectedBehavior = behaviorMap.get(selected?.behavior_id ?? "");
@@ -232,7 +262,7 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
   const importDraft = () => { if (!draftResult) return; applyScenario({ ...draftResult.scenario, layout: Object.fromEntries(draftResult.scenario.steps.map((step, index) => [step.id, { x: 70 + (index % 4) * 300, y: 110 + Math.floor(index / 4) * 230 }])) }); setSelectedId(draftResult.scenario.steps[0]?.id ?? ""); setCompatibility(`${draftResult.draft_id} imported as unsaved graph changes. Validate before saving or preflight.`); setDraftResult(undefined); };
 
   return <div className={`page builder-page workbench-builder ${focusMode ? "builder-focus" : ""} ${showInputs ? "show-inputs" : ""} ${summaryZoom ? "graph-summary-zoom" : ""}`} onKeyDownCapture={keyboard}>
-    <PageHeader eyebrow="Build" title="Build your experiment" description="Choose steps, connect the path, and review what will run." actions={<div className="builder-actions"><Badge tone={dirty ? "warning" : "success"} dot>{dirty ? "Draft changes" : "Saved"}</Badge><IconButton label="Undo" onClick={undo} disabled={historyIndex <= 0}><Undo2/></IconButton><IconButton label="Redo" onClick={redo} disabled={historyIndex >= history.length - 1}><Redo2/></IconButton><Button variant="secondary" onClick={() => { navigator.clipboard?.writeText(JSON.stringify(scenario, null, 2)); const url = URL.createObjectURL(new Blob([JSON.stringify(scenario, null, 2)], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = `${scenario.id}.json`; link.click(); URL.revokeObjectURL(url); }}><Download/>Export</Button><Button variant="secondary" onClick={() => validateMutation.mutate()} disabled={validateMutation.isPending}><Check/>Validate</Button><Button variant="secondary" onClick={() => saveMutation.mutate(structuredClone(scenario))} disabled={saveMutation.isPending}>{saveMutation.isPending ? "Saving version" : "Save version"}</Button><Link className="button button-primary button-medium" to="/runs">Review run<ArrowRight/></Link></div>} />
+    <PageHeader eyebrow="Build" title="Build your experiment" description="Choose steps, connect the path, and review what will run." actions={<div className="builder-actions"><Badge tone={dirty ? "warning" : "success"} dot>{dirty ? "Draft changes" : "Saved"}</Badge><IconButton label="Undo" onClick={undo} disabled={historyIndex <= 0}><Undo2/></IconButton><IconButton label="Redo" onClick={redo} disabled={historyIndex >= history.length - 1}><Redo2/></IconButton><Button variant="secondary" onClick={() => { navigator.clipboard?.writeText(JSON.stringify(scenario, null, 2)); const url = URL.createObjectURL(new Blob([JSON.stringify(scenario, null, 2)], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = `${scenario.id}.json`; link.click(); URL.revokeObjectURL(url); }}><Download/>Export</Button><Button variant="secondary" onClick={() => validateMutation.mutate(structuredClone(scenario))} disabled={validateMutation.isPending}><Check/>Validate</Button><Button variant="secondary" onClick={() => saveMutation.mutate(structuredClone(scenario))} disabled={saveMutation.isPending}>{saveMutation.isPending ? "Saving version" : "Save version"}</Button><Link className="button button-primary button-medium" to="/runs">Review run<ArrowRight/></Link></div>} />
     <div className="experiment-summary"><p>{scenario.purpose}</p><Button variant="ghost" size="small" aria-expanded={aiOpen} onClick={() => setAiOpen((open) => !open)}><Sparkles/>AI assistance</Button></div>
     {aiOpen ? <Panel className="objective-bar"><Sparkles/><Field label="Natural-language objective" hint="Describe the security question. Review a proposed experiment before applying it."><input value={objective} maxLength={4000} onChange={(event) => { setObjective(event.target.value); setDraftResult(undefined); }} placeholder="Validate fixture execution, discovery, staging, a blocked transport, and cleanup" /></Field><Button variant="secondary" onClick={() => serverDraftMutation.mutate()} disabled={!objective.trim() || serverDraftMutation.isPending}>{serverDraftMutation.isPending ? "Generating preview" : "Draft experiment"}</Button><Button variant="ghost" onClick={offlineDraft} disabled={!objective.trim() || serverDraftMutation.isPending}>Use offline draft</Button></Panel> : null}
     {draftResult ? <Panel><PanelHeader eyebrow="Unsaved draft preview" title={draftResult.scenario.title} detail={draftResult.rationale} actions={<Badge tone="warning">Not imported · not authorized</Badge>}/><DataList items={[{ label: "Draft ID", value: <code>{draftResult.draft_id}</code> }, { label: "Provider", value: draftResult.audit.provider?.effective_provider_id ?? "Not reported" }, { label: "Fallback", value: draftResult.audit.provider?.used_fallback ? sentence(draftResult.audit.provider.fallback_reason ?? "used") : "No fallback reported" }, { label: "Graph", value: `${draftResult.scenario.steps.length} nodes · ${draftResult.scenario.edges.length} edges` }, { label: "Validation metadata", value: draftResult.audit.validation ? "Returned for review" : "Not reported" }]} />{draftResult.assumptions.length ? <Callout title="Assumptions"><ul>{draftResult.assumptions.map((item) => <li key={item}>{item}</li>)}</ul></Callout> : null}<details><summary>Provider, normalization, and validation audit</summary><pre>{JSON.stringify(draftResult.audit, null, 2)}</pre></details><Button variant="primary" onClick={importDraft}>Import as unsaved graph</Button></Panel> : null}
@@ -283,7 +313,7 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
             <button onClick={() => runCommand(togglePalette)}>{paletteOpen ? <PanelLeftClose/> : <PanelLeftOpen/>}<span><strong>{paletteOpen ? "Hide behavior palette" : "Show behavior palette"}</strong><small>Toggle the registered behavior catalog.</small></span></button>
             <button onClick={() => runCommand(toggleInspector)}>{inspectorOpen ? <PanelRightClose/> : <PanelRightOpen/>}<span><strong>{inspectorOpen ? "Hide node inspector" : "Show node inspector"}</strong><small>Toggle selected-node configuration.</small></span></button>
             <button onClick={() => runCommand(() => setFocusMode((active) => !active))}>{focusMode ? <Minimize2/> : <Maximize2/>}<span><strong>{focusMode ? "Exit graph focus mode" : "Enter graph focus mode"}</strong><small>Toggle the full-window Builder workspace.</small></span></button>
-            <button onClick={() => runCommand(() => validateMutation.mutate())} disabled={validateMutation.isPending}><Check/><span><strong>Validate graph</strong><small>Run deterministic contract validation.</small></span></button>
+            <button onClick={() => runCommand(() => validateMutation.mutate(structuredClone(scenario)))} disabled={validateMutation.isPending}><Check/><span><strong>Validate graph</strong><small>Run deterministic contract validation.</small></span></button>
             <button onClick={() => runCommand(undo)} disabled={historyIndex <= 0}><Undo2/><span><strong>Undo</strong><small>Restore the previous graph edit.</small></span></button>
             <button onClick={() => runCommand(redo)} disabled={historyIndex >= history.length - 1}><Redo2/><span><strong>Redo</strong><small>Reapply the next graph edit.</small></span></button>
           </div>
