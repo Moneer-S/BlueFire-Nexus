@@ -598,6 +598,10 @@ describe("product application", () => {
 
     expect(await screen.findByText("Material deltas")).toBeVisible();
     expect(screen.getByRole("link", { name: "Review baseline run summary" })).toHaveAttribute("href", `/runs/${encodeURIComponent(demoRuns[0]!.run_id)}`);
+    expect(screen.getByRole("region", { name: "Compared run outcomes" })).toBeVisible();
+    expect(screen.getByText("Observed: 3, Synthetic: 1")).not.toBeVisible();
+    await user.click(screen.getByText("Step-by-step results and run details"));
+    await user.click(screen.getByText("Detailed changes in evidence, policy, and runtime"));
     expect(screen.getByText("Observed: 3, Synthetic: 1")).toBeVisible();
     expect(screen.getByText("Benign evaluated: 1, Observed exercised: 2")).toBeVisible();
     expect(screen.getByText("Allowed: 1, Blocked: 1")).toBeVisible();
@@ -632,7 +636,7 @@ describe("product application", () => {
     expect(screen.getAllByRole("checkbox")).toHaveLength(2);
   });
 
-  it("binds the independent filesystem collector into Execute replay preflight", async () => {
+  it("uses the server-bound replay collector review and discards it after a scope edit", async () => {
     const user = userEvent.setup();
     const executeRun = {
       ...demoRuns[0]!,
@@ -648,6 +652,14 @@ describe("product application", () => {
     let resolveFirstPreflight!: (response: Response) => void;
     const firstPreflight = new Promise<Response>((resolve) => { resolveFirstPreflight = resolve; });
     let preflightAttempts = 0;
+    let firstRequest: Record<string, unknown>;
+    const preparation = (request: Record<string, unknown>) => ({
+      schema_version: "bluefire.replay-preparation.v1", preparation_id: "prepared-replay",
+      preparation_context: { schema_version: "bluefire.replay-preparation-context.v1", runner_readiness: null },
+      binding: { source: { run_id: executeRun.run_id }, replay_request: request },
+      replay_request: request, replay_extent: "full", scenario: demoScenario, lineage: {}, approval_created: false, effects_started: false,
+      preflight: { ...executePreflight, collectors: ["collector.filesystem.sandbox.v1"] },
+    });
     fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/runs") && init?.method !== "POST") {
@@ -656,7 +668,11 @@ describe("product application", () => {
       if (path.endsWith(`/runs/${encodeURIComponent(executeRun.run_id)}`)) {
         return json(executeRun);
       }
-      if (path.endsWith("/runs/preflight") && preflightAttempts++ === 0) return firstPreflight;
+      if (path.endsWith("/replay-preparations")) {
+        const request = JSON.parse(String(init?.body));
+        if (preflightAttempts++ === 0) { firstRequest = request; return firstPreflight; }
+        return json(preparation(request));
+      }
       return fallback(input, init);
     });
 
@@ -664,25 +680,29 @@ describe("product application", () => {
     expect(await screen.findByRole("heading", { name: "Measure what changed" })).toBeVisible();
     await user.selectOptions(screen.getByLabelText("Source run"), executeRun.run_id);
     await waitFor(() => expect(screen.getByLabelText("Exact target scope")).toHaveValue("sandbox.workspace"));
-    await user.click(screen.getByRole("button", { name: "Run prospective base-plan check" }));
-    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/runs/preflight"))).toBe(true));
+    await user.click(screen.getByRole("button", { name: "Review Execute replay" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/replay-preparations"))).toBe(true));
     const targetScope = screen.getByLabelText("Exact target scope");
     await user.clear(targetScope);
     await user.type(targetScope, "sandbox.changed");
-    resolveFirstPreflight(json(executePreflight));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Run prospective base-plan check" })).toBeEnabled());
+    resolveFirstPreflight(json(preparation(firstRequest!)));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Review Execute replay" })).toBeEnabled());
     expect(screen.getByRole("checkbox", { name: /I approve this reviewed Execute replay request once/ })).toBeDisabled();
 
     await waitFor(() => {
-      const preflightCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/runs/preflight"));
+      const preflightCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/replay-preparations"));
       expect(preflightCall).toBeDefined();
       expect(JSON.parse(String((preflightCall?.[1] as RequestInit).body))).toMatchObject({
-        mode: "execute",
-        collectors: ["collector.filesystem.sandbox.v1"],
+        exact: true,
+        target_scope: { scope_refs: ["sandbox.workspace"] },
       });
     });
-    await user.click(screen.getByRole("button", { name: "Run prospective base-plan check" }));
+    await user.click(screen.getByRole("button", { name: "Review Execute replay" }));
     await waitFor(() => expect(screen.getByRole("checkbox", { name: /I approve this reviewed Execute replay request once/ })).toBeEnabled());
+    expect(screen.getByRole("region", { name: "Prepared Execute replay" })).toBeVisible();
+    const calls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/replay-preparations"));
+    expect(JSON.parse(String(calls[1]![1]?.body))).toMatchObject({ target_scope: { scope_refs: ["sandbox.changed"] } });
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/runs/preflight"))).toBe(false);
   });
 
   it("reviews immutable detection revisions, pinned public baselines, and complete deltas", async () => {

@@ -211,8 +211,22 @@ const demoSettings = new Map<string, ManagedSetting>();
 const demoScenarioVersions = new Map<string, ScenarioVersion>();
 const demoResources = new Map<string, ManagedResource>();
 
+export interface ReplayPreparation {
+  schema_version: "bluefire.replay-preparation.v1";
+  preparation_id: string;
+  preparation_context: Record<string, unknown>;
+  binding: { source: { run_id: string }; replay_request: Record<string, unknown>; [key: string]: unknown };
+  replay_request: Record<string, unknown>;
+  replay_extent: "full";
+  scenario: Scenario;
+  lineage: Record<string, unknown>;
+  preflight: PreflightReport;
+  approval_created: false;
+  effects_started: false;
+}
+
 export interface ReplayPayloadOptions {
-  strategy: "exact" | "from_node" | "swap" | "parameters";
+  strategy: "exact" | "from_node" | "swap" | "parameters" | "setup";
   fromStep?: string;
   swapStep?: string;
   swapBehavior?: string;
@@ -547,6 +561,10 @@ export const api = {
       return structuredClone(job);
     }
     return request(`/jobs/${encodeURIComponent(jobId)}/${action}`, { method: "POST", body: JSON.stringify({}) });
+  },
+  async prepareReplay(runId: string, body: Record<string, unknown>): Promise<ReplayPreparation> {
+    if (DEMO_MODE) throw new ApiError("Execute replay preparation requires a connected BlueFire service.", "demo_no_execution");
+    return request(`/runs/${encodeURIComponent(runId)}/replay-preparations`, { method: "POST", body: JSON.stringify(body) });
   },
   async replay(runId: string, body: Record<string, unknown>): Promise<RunRecord> {
     if (DEMO_MODE) return { ...structuredClone(demoRuns[0]!), run_id: `demo-replay-${Date.now()}`, replay: { source_run_id: runId, ...body }, is_demo: true };

@@ -2,20 +2,25 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, GitCompareArrows, RotateCcw, Search, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { api, buildReplayPayload } from "../lib/api";
+import { api, buildReplayPayload, type ReplayPreparation } from "../lib/api";
 import { hasMaterialDelta } from "../lib/comparison-materiality";
+import { comparisonReport } from "../lib/comparison-report";
 import { sourceRunParam } from "../lib/run-handoffs";
+import { ReplayParameterEditor } from "../components/ReplayParameterEditor";
+import { CanonicalPlanReview } from "../components/CanonicalPlanReview";
 import { DetectorEvaluationComparison } from "../components/DetectorEvaluationComparison";
 import type { AutonomyLevel, ComparisonResponse, PreflightReport, RunConfiguration, RunRecord, Scenario } from "../types";
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, formatDate, sentence } from "../components/Primitives";
 
-type ReplayStrategy = "exact" | "from_node" | "swap" | "parameters";
-const defaultParameterJson = '{\n  "place_fixture": { "record_count": 3 }\n}';
+type ReplayStrategy = "exact" | "from_node" | "swap" | "parameters" | "setup";
+const defaultParameterJson = "{}";
 interface ReplayAttempt { sourceId: string; navigationGeneration: number; payload: Record<string, unknown> }
 interface ComparisonAttempt { runIds: string[]; generation: number }
 
 
 interface ReplayPreflightAttempt {
+  sourceId: string;
+  payload: Record<string, unknown>;
   generation: number;
   scenario: Scenario;
   config: RunConfiguration;
@@ -36,9 +41,14 @@ export function ComparePage() {
   const [selected, setSelected] = useState<string[]>(() => [...new Set([linkedSource, linkedReplay].filter(Boolean))]); const [search, setSearch] = useState(""); const [comparison, setComparison] = useState<ComparisonResponse>(); const [sourceId, setSourceId] = useState(linkedSource); const [strategy, setStrategy] = useState<ReplayStrategy>("exact");
   const [fromStep, setFromStep] = useState(""); const [swapStep, setSwapStep] = useState(""); const [swapBehavior, setSwapBehavior] = useState(""); const [profile, setProfile] = useState(""); const [autonomy, setAutonomy] = useState<"preserve" | AutonomyLevel>("preserve"); const [provider, setProvider] = useState(""); const [defenseChange, setDefenseChange] = useState(""); const [parameterJson, setParameterJson] = useState(defaultParameterJson); const [targetScope, setTargetScope] = useState("");
   const [replayPreflight, setReplayPreflight] = useState<PreflightReport>(); const [replayConfirmed, setReplayConfirmed] = useState(false); const [approvedBy, setApprovedBy] = useState(""); const [localError, setLocalError] = useState<string>();
+  const [preparation, setPreparation] = useState<ReplayPreparation>();
+  const [parameterDraftValid, setParameterDraftValid] = useState(true);
+  const parameterDraftValidRef = useRef(true);
   const preflightGeneration = useRef(0);
   const navigationGeneration = useRef(0);
   const comparisonGeneration = useRef(0);
+  const resultsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (comparison) { resultsRef.current?.focus({ preventScroll: true }); resultsRef.current?.scrollIntoView({ block: "start" }); } }, [comparison]);
   const detailQuery = useQuery({ queryKey: ["run", sourceId], queryFn: () => api.runDetail(sourceId), enabled: Boolean(sourceId) });
   const compareMutation = useMutation({ mutationFn: async (attempt: ComparisonAttempt) => {
     const result = await api.compare(attempt.runIds);
@@ -53,7 +63,7 @@ export function ComparePage() {
     setComparison(undefined);
     setSelected((items) => checked ? [...new Set([...items, runId])] : items.filter((id) => id !== runId));
   };
-  const resetReview = () => { preflightGeneration.current += 1; setReplayPreflight(undefined); setReplayConfirmed(false); setApprovedBy(""); setLocalError(undefined); };
+  const resetReview = () => { preflightGeneration.current += 1; setReplayPreflight(undefined); setPreparation(undefined); setReplayConfirmed(false); setApprovedBy(""); setLocalError(undefined); };
   useEffect(() => {
     navigationGeneration.current += 1;
     comparisonGeneration.current += 1;
@@ -61,22 +71,57 @@ export function ComparePage() {
     setSelected([...new Set([linkedSource, linkedReplay].filter(Boolean))]);
     setComparison(undefined);
     preflightGeneration.current += 1;
-    setReplayPreflight(undefined); setReplayConfirmed(false); setApprovedBy("");
+    setReplayPreflight(undefined); setPreparation(undefined); setReplayConfirmed(false); setApprovedBy("");
   }, [linkedSource, linkedReplay]);
   useEffect(() => {
     setStrategy("exact"); setFromStep(""); setSwapStep(""); setSwapBehavior("");
     setProfile(""); setAutonomy("preserve"); setProvider(""); setTargetScope("");
-    setParameterJson(defaultParameterJson); setDefenseChange(""); setLocalError(undefined);
+    setParameterJson(defaultParameterJson); parameterDraftValidRef.current = true; setParameterDraftValid(true); setDefenseChange(""); setLocalError(undefined);
   }, [linkedSource]);
   useEffect(() => { if (!detailQuery.data || detailQuery.data.mode !== "execute") return; const refs = executionScope(detailQuery.data); setTargetScope(refs.join(", ")); resetReview(); }, [detailQuery.data]);
   const parameterOverrides = useMemo(() => { if (strategy !== "parameters") return {}; try { return parseParameterOverrides(parameterJson, source?.scenario); } catch { return {}; } }, [parameterJson, source?.scenario, strategy]);
+  const parameterError = useMemo(() => {
+    if (strategy !== "parameters" || parameterJson.trim() === "{}") return undefined;
+    try { parseParameterOverrides(parameterJson, source?.scenario); return undefined; }
+    catch (error) { return error instanceof Error ? error.message : "Invalid parameter JSON."; }
+  }, [parameterJson, source?.scenario, strategy]);
+  const changeParameterValidity = (valid: boolean) => {
+    if (parameterDraftValidRef.current !== valid) resetReview();
+    parameterDraftValidRef.current = valid; setParameterDraftValid(valid);
+  };
   const replayScenario = useMemo(() => source?.scenario ? prepareReplayScenario(source.scenario, strategy, swapStep, swapBehavior, parameterOverrides) : undefined, [parameterOverrides, source?.scenario, strategy, swapBehavior, swapStep]);
   const actionImplementations = resolvedActions(source, strategy === "swap" ? swapStep : undefined);
-  const variantReady = strategy === "exact" || (strategy === "from_node" ? Boolean(fromStep) : strategy === "swap" ? Boolean(swapStep && swapBehavior) : Object.keys(parameterOverrides).length > 0);
+  const variantReady = strategy === "exact" || (strategy === "setup" ? Boolean(profile || autonomy !== "preserve" || provider || defenseChange.trim()) : strategy === "from_node" ? Boolean(fromStep) : strategy === "swap" ? Boolean(swapStep && swapBehavior) : parameterDraftValid && !parameterError && Object.keys(parameterOverrides).length > 0);
   const effectiveAutonomy = autonomy === "preserve" ? source?.autonomy ?? source?.autonomy_level ?? "off" : autonomy; const effectiveProvider = provider || providerId(source) || catalogQuery.data?.ai.active_provider || "deterministic-offline.v1"; const effectiveProfile = profile || source?.runner_profile_id || ""; const scopeRefs = targetScope.split(",").map((item) => item.trim()).filter(Boolean);
   const replayConfig: RunConfiguration | undefined = replayScenario ? { mode: source?.mode ?? "simulate", autonomy: effectiveAutonomy, provider: effectiveProvider, model: "", endpoint: "", profileId: effectiveProfile, runnerIds: [], scopeRefs, safetyTier: "controlled", approvalPolicy: "profile", approved: false, approvedBy: "", maxSeconds: 120, maxSteps: 25, maxBytes: 10_485_760, collectors: source?.mode === "execute" ? ["collector.filesystem.sandbox.v1"] : [], detectionBackends: [], cleanupPolicy: "always", counterfactual: "disabled", fixtureMode: false, actionImplementations } : undefined;
-  const preflightMutation = useMutation({ mutationFn: async (attempt: ReplayPreflightAttempt) => { assertReplayVariant(attempt.strategy, attempt.fromStep, attempt.swapStep, attempt.swapBehavior); if (!attempt.scopeRefs.length) throw new Error("Execute replay requires an exact target scope."); if (attempt.strategy === "parameters") parseParameterOverrides(attempt.parameterJson, attempt.sourceScenario); return { generation: attempt.generation, report: await api.preflight(attempt.scenario, attempt.config) }; }, onSuccess: ({ generation, report }) => { if (generation !== preflightGeneration.current) return; setReplayPreflight(report); setReplayConfirmed(false); setApprovedBy(""); setLocalError(undefined); }, onError: (error, attempt) => { if (attempt.generation !== preflightGeneration.current) return; setReplayPreflight(undefined); setLocalError(error instanceof Error ? error.message : "Replay preflight failed."); } });
-  const requestPreflight = () => { if (!replayScenario || !replayConfig) return; const generation = ++preflightGeneration.current; preflightMutation.mutate({ generation, scenario: structuredClone(replayScenario), config: structuredClone(replayConfig), strategy, fromStep, swapStep, swapBehavior, scopeRefs: [...scopeRefs], parameterJson, sourceScenario: source?.scenario ? structuredClone(source.scenario) : undefined }); };
+  const currentReplayPayload = () => buildReplayPayload({ strategy, fromStep, swapStep, swapBehavior, profile, autonomy, provider, defenseChange,
+    parameterOverrides: strategy === "parameters" ? parseParameterOverrides(parameterJson, source?.scenario) : undefined,
+    targetScope: source?.mode === "execute" ? scopeRefs : undefined,
+    actionImplementations: source?.mode === "execute" && strategy !== "exact" ? actionImplementations : undefined });
+  const preflightMutation = useMutation({ mutationFn: async (attempt: ReplayPreflightAttempt) => {
+    assertReplayVariant(attempt.strategy, attempt.fromStep, attempt.swapStep, attempt.swapBehavior);
+    if (!attempt.scopeRefs.length) throw new Error("Execute replay requires an exact target scope.");
+    if (attempt.strategy === "parameters") parseParameterOverrides(attempt.parameterJson, attempt.sourceScenario);
+    if (attempt.strategy === "from_node") return { generation: attempt.generation, report: await api.preflight(attempt.scenario, attempt.config), preparation: undefined };
+    const prepared = await api.prepareReplay(attempt.sourceId, attempt.payload);
+    if (prepared.schema_version !== "bluefire.replay-preparation.v1" || prepared.replay_extent !== "full" || prepared.binding.source.run_id !== attempt.sourceId ||
+      !sameJson(prepared.replay_request, attempt.payload) || !sameJson(prepared.binding.replay_request, attempt.payload) || prepared.effects_started !== false || prepared.approval_created !== false)
+      throw new Error("The returned review does not match this replay request. Prepare it again.");
+    return { generation: attempt.generation, report: prepared.preflight, preparation: prepared };
+  }, onSuccess: ({ generation, report, preparation: prepared }) => {
+    if (generation !== preflightGeneration.current) return;
+    setReplayPreflight(report); setPreparation(prepared); setReplayConfirmed(false); setApprovedBy(""); setLocalError(undefined);
+  }, onError: (error, attempt) => {
+    if (attempt.generation !== preflightGeneration.current) return;
+    setReplayPreflight(undefined); setPreparation(undefined); setLocalError(error instanceof Error ? error.message : "Replay preparation failed.");
+  } });
+  const requestPreflight = () => {
+    if (!replayScenario || !replayConfig || !variantReady || (strategy === "parameters" && !parameterDraftValidRef.current)) return;
+    try {
+      resetReview(); const generation = preflightGeneration.current;
+      preflightMutation.mutate({ generation, sourceId, payload: structuredClone(currentReplayPayload()), scenario: structuredClone(replayScenario), config: structuredClone(replayConfig), strategy, fromStep, swapStep, swapBehavior, scopeRefs: [...scopeRefs], parameterJson, sourceScenario: source?.scenario ? structuredClone(source.scenario) : undefined });
+    } catch (error) { setLocalError(error instanceof Error ? error.message : "Replay preparation failed."); }
+  };
   const replayMutation = useMutation({
     mutationFn: (attempt: ReplayAttempt) => api.replay(attempt.sourceId, attempt.payload),
     onSuccess: (run, attempt) => {
@@ -85,7 +130,7 @@ export function ComparePage() {
       if (attempt.navigationGeneration !== navigationGeneration.current) return;
       setSelected([attempt.sourceId, run.run_id]); setComparison(undefined);
       setSearchParams({ source: attempt.sourceId, replay: run.run_id });
-      setLocalError(undefined); setReplayPreflight(undefined); setReplayConfirmed(false); setApprovedBy("");
+      setLocalError(undefined); setReplayPreflight(undefined); setPreparation(undefined); setReplayConfirmed(false); setApprovedBy("");
     },
     onError: (error, attempt) => { if (attempt.navigationGeneration === navigationGeneration.current) setLocalError(error instanceof Error ? error.message : "Replay was refused."); },
     onSettled: (_run, _error, attempt) => { if (attempt.navigationGeneration === navigationGeneration.current) { setReplayConfirmed(false); setApprovedBy(""); } },
@@ -94,10 +139,16 @@ export function ComparePage() {
     try {
       if (!detailQuery.isSuccess || !source || source.run_id !== sourceId) throw new Error("Select a source run.");
       assertReplayVariant(strategy, fromStep, swapStep, swapBehavior);
-      const overrides = strategy === "parameters" ? parseParameterOverrides(parameterJson, source.scenario) : undefined;
+      if (!variantReady || (strategy === "parameters" && !parameterDraftValidRef.current)) throw new Error("Finish the parameter change before running the replay.");
       const execute = source.mode === "execute";
       if (execute && (!replayConfirmed || !approvedBy.trim() || !scopeRefs.length || !executeReviewReady(replayPreflight))) throw new Error("Execute replay requires the displayed prospective review and a fresh explicit approval.");
-      const payload = buildReplayPayload({ strategy, fromStep, swapStep, swapBehavior, profile, autonomy, provider, defenseChange, parameterOverrides: overrides, targetScope: execute ? scopeRefs : undefined, approval: execute ? { confirmed: true, approved_by: approvedBy.trim() } : undefined, actionImplementations: execute && strategy !== "exact" ? actionImplementations : undefined });
+      const current = currentReplayPayload();
+      if (execute && strategy !== "from_node" && (!preparation || preparation.binding.source.run_id !== sourceId || !sameJson(preparation.replay_request, current))) throw new Error("Prepare the exact replay before approving it.");
+      const payload = execute ? {
+        ...(preparation ? preparation.replay_request : current),
+        ...(preparation ? { preparation_id: preparation.preparation_id, preparation_context: preparation.preparation_context } : {}),
+        approval: { confirmed: true, approved_by: approvedBy.trim() },
+      } : current;
       replayMutation.mutate({ sourceId, navigationGeneration: navigationGeneration.current, payload: structuredClone(payload) });
     } catch (error) { setLocalError(error instanceof Error ? error.message : "Replay was refused."); }
   };
@@ -105,21 +156,38 @@ export function ComparePage() {
   if (runsQuery.isError) return <ErrorState error={runsQuery.error} retry={() => runsQuery.refetch()} />;
   if (catalogQuery.isError) return <ErrorState error={catalogQuery.error} retry={() => catalogQuery.refetch()} />;
   const runs = runsQuery.data.runs.filter((run) => `${run.run_id} ${run.objective ?? ""} ${run.scenario_id ?? ""}`.toLowerCase().includes(search.toLowerCase())); const sourceSteps = source?.steps ?? []; const selectedSwapBehavior = sourceSteps.find((step) => step.step_id === swapStep)?.behavior_id; const sourceBehavior = catalogQuery.data.behaviors.find((item) => item.id === selectedSwapBehavior); const compatible = catalogQuery.data.behaviors.filter((candidate) => sourceBehavior && candidate.id !== sourceBehavior.id && JSON.stringify(candidate.inputs.map((item) => [item.type, item.required, item.multiple])) === JSON.stringify(sourceBehavior.inputs.map((item) => [item.type, item.required, item.multiple])) && JSON.stringify(candidate.outputs.map((item) => [item.type, item.multiple])) === JSON.stringify(sourceBehavior.outputs.map((item) => [item.type, item.multiple])));
-  const execute = source?.mode === "execute"; const reviewReady = executeReviewReady(replayPreflight);
-  return <div className="page compare-page"><PageHeader eyebrow="Replay & compare" title="Measure what changed" description="Create immutable lineage-linked replays, including strict parameter variants and freshly reviewed Execute replays, then compare canonical outcomes." actions={<Button variant="secondary" onClick={() => runsQuery.refetch()}><RotateCcw/>Refresh history</Button>} />
+  const execute = source?.mode === "execute"; const reviewReady = executeReviewReady(replayPreflight) && (strategy === "from_node" || Boolean(preparation)) && variantReady;
+  return <div className="page compare-page"><PageHeader eyebrow="Replay & compare" title="Measure what changed" description="Compare what happened, inspect the evidence, and prepare the next run." actions={<Button variant="secondary" onClick={() => runsQuery.refetch()}><RotateCcw/>Refresh history</Button>} />
     {runsQuery.data.unavailable_run_count ? <Callout tone="warning" title="Unavailable run records excluded">{runsQuery.data.unavailable_run_count} in-flight, interrupted, or integrity-failed run record{runsQuery.data.unavailable_run_count === 1 ? " is" : "s are"} unavailable for replay and comparison. Refresh after finalization or recovery completes.</Callout> : null}
-    <div className="compare-top-grid"><Panel className="history-panel"><PanelHeader eyebrow="Run history" title="Select a cohort" actions={<Badge>{selected.length} selected</Badge>} /><div className="history-search"><Search/><input aria-label="Search run history" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search run or objective"/></div><div className="run-select-list">{runs.map((run) => <label key={run.run_id}><input type="checkbox" checked={selected.includes(run.run_id)} onChange={(event) => changeSelection(run.run_id, event.target.checked)}/><span><strong>{run.objective ?? run.scenario_id ?? "Experiment"}</strong><code title={run.run_id}>{shortId(run.run_id)}</code><small>{formatDate(run.created_at)} · {run.steps.length} nodes</small></span><span><Badge tone={run.mode === "execute" ? "warning" : "info"}>{sentence(run.mode)}</Badge><Badge tone={run.status === "completed" ? "success" : "neutral"} dot>{sentence(run.status)}</Badge></span></label>)}</div>{!runs.length ? <EmptyState title="No run records" description="Complete a Simulate run to create a canonical baseline." /> : null}<footer><Button variant="primary" onClick={() => compareMutation.mutate({ runIds: [...selected], generation: comparisonGeneration.current })} disabled={selected.length < 2 || compareMutation.isPending}><GitCompareArrows/>{compareMutation.isPending ? "Comparing" : "Compare selected"}</Button></footer></Panel>
-      <Panel className="replay-panel"><PanelHeader eyebrow="Immutable lineage" title="Replay experiment" detail="The source bundle never changes; the result receives a new run ID." /><div className="replay-body"><Field label="Source run"><select value={sourceId} onChange={(event) => setSearchParams(event.target.value ? { source: event.target.value } : {})} disabled={replayMutation.isPending}><option value="">Select a canonical run</option>{sourceId && !runsQuery.data.runs.some((run) => run.run_id === sourceId) ? <option value={sourceId}>{sourceId}</option> : null}{runsQuery.data.runs.map((run) => <option value={run.run_id} key={run.run_id}>{run.objective ?? run.scenario_id ?? "Experiment"} · {shortId(run.run_id)} · {sentence(run.mode)}</option>)}</select></Field>{sourceId && detailQuery.isError ? <ErrorState title="Source run unavailable" error={detailQuery.error} retry={() => detailQuery.refetch()} /> : null}{sourceId && detailQuery.isPending ? <LoadingState label="Loading immutable source bundle"/> : null}<fieldset><legend>Replay strategy</legend><div className="choice-grid two replay-choices">{(["exact", "from_node", "swap", "parameters"] as const).map((item) => <label key={item}><input type="radio" name="replay-strategy" checked={strategy === item} onChange={() => { setStrategy(item); resetReview(); }}/><span><strong>{item === "swap" ? "Compatible substitution" : sentence(item)}</strong><small>{item === "exact" ? "Preserve declared inputs" : item === "from_node" ? "Restart from an explicit node" : item === "swap" ? "Replace one typed contract" : "Strict step-to-parameter JSON"}</small></span></label>)}</div></fieldset>
-        <div className="config-grid"><Field label="Restart node"><select value={fromStep} onChange={(event) => { setFromStep(event.target.value); resetReview(); }} disabled={strategy !== "from_node"}><option value="">Select node</option>{sourceSteps.map((step) => <option key={step.step_id}>{step.step_id}</option>)}</select></Field><Field label="Substitute node"><select value={swapStep} onChange={(event) => { setSwapStep(event.target.value); setSwapBehavior(""); resetReview(); }} disabled={strategy !== "swap"}><option value="">Select node</option>{sourceSteps.map((step) => <option key={step.step_id}>{step.step_id}</option>)}</select></Field><Field label="Compatible behavior"><select value={swapBehavior} onChange={(event) => { setSwapBehavior(event.target.value); resetReview(); }} disabled={strategy !== "swap" || !swapStep}><option value="">Select compatible behavior</option>{compatible.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}</select></Field><Field label="Profile override"><select value={profile} onChange={(event) => { setProfile(event.target.value); resetReview(); }} disabled={strategy === "exact"}><option value="">Preserve original</option>{catalogQuery.data.runner_profiles.map((item) => <option key={item.id}>{item.id}</option>)}</select></Field><Field label="AI autonomy override"><select value={autonomy} onChange={(event) => { setAutonomy(event.target.value as typeof autonomy); resetReview(); }} disabled={strategy === "exact"}><option value="preserve">Preserve original</option><option value="off">Off</option><option value="assist">Assist</option><option value="auto">Auto</option></select></Field><Field label="AI provider override"><select value={provider} onChange={(event) => { setProvider(event.target.value); resetReview(); }} disabled={strategy === "exact"}><option value="">Preserve original</option>{(catalogQuery.data.ai.providers ?? []).map((item) => <option value={item.provider_id} key={item.provider_id}>{item.provider_id}</option>)}</select></Field></div>
-        {strategy === "parameters" ? <Field label="Parameter overrides JSON" hint='Strict object: {"step_id":{"parameter":value}}. Unknown steps/parameters and invalid types are refused by replay validation.'><textarea rows={8} value={parameterJson} onChange={(event) => { setParameterJson(event.target.value); resetReview(); }} spellCheck={false}/></Field> : null}<Field label="Declared defense change" hint={strategy === "exact" ? "Exact replay cannot include variant metadata." : "Recorded in immutable replay lineage; BlueFire does not deploy a defense change."}><textarea rows={3} maxLength={500} value={defenseChange} onChange={(event) => { setDefenseChange(event.target.value); resetReview(); }} placeholder="Describe the externally applied or modeled defense change" disabled={strategy === "exact"}/></Field>
-        {execute ? <><Callout tone="warning" title="Execute replay is a new effect authorization">The original approval is never reused. This check previews the resulting base scenario, scope, profile, actions, alternates, and cleanup; it is not the replay-specific lineage binding. The synchronous replay endpoint reconstructs that binding, re-runs policy and preflight, and atomically consumes a fresh one-time approval or refuses the request.</Callout><Field label="Exact target scope"><input value={targetScope} onChange={(event) => { setTargetScope(event.target.value); resetReview(); }} placeholder="sandbox.workspace"/></Field><Button variant="secondary" onClick={requestPreflight} disabled={!replayScenario || !variantReady || preflightMutation.isPending || !scopeRefs.length}><ShieldCheck/>{preflightMutation.isPending ? "Resolving prospective check" : "Run prospective base-plan check"}</Button>{replayPreflight ? <ReplayPreflight report={replayPreflight}/> : null}<label className="check-row"><input type="checkbox" checked={replayConfirmed} onChange={(event) => setReplayConfirmed(event.target.checked)} disabled={!reviewReady}/><span><strong>I approve this reviewed Execute replay request once</strong><small>Unchecked by default; the server derives the exact replay binding and clears/refuses any mismatch</small></span></label><Field label="Fresh replay operator identity"><input value={approvedBy} onChange={(event) => setApprovedBy(event.target.value)} disabled={!reviewReady} autoComplete="off" maxLength={128}/></Field></> : null}
-        {!variantReady && sourceId ? <Callout tone="warning" title="Replay variant incomplete">{strategy === "from_node" ? "Choose a restart node." : strategy === "swap" ? "Choose both a source node and compatible behavior." : "Supply at least one valid step parameter override."}</Callout> : null}{localError ? <Callout tone="danger" title="Replay refused">{localError}</Callout> : replayMutation.isSuccess ? <Callout tone="success" title="Replay created"><code>{replayMutation.data.run_id}</code> is lineage-linked to <code>{replayMutation.variables?.sourceId}</code>.{linkedSource === replayMutation.variables?.sourceId && linkedReplay === replayMutation.data.run_id ? " The source and replay are selected for comparison." : " Your current source selection was preserved."}</Callout> : null}<Button variant="primary" className="button-full" onClick={requestReplay} disabled={!sourceId || !detailQuery.isSuccess || !variantReady || replayMutation.isPending || Boolean(execute && (!reviewReady || !replayConfirmed || !approvedBy.trim()))}>{replayMutation.isPending ? "Creating immutable replay" : execute ? "Create approved Execute replay" : "Create Simulate replay"}</Button></div></Panel>
+    {compareMutation.isError && compareMutation.variables?.generation === comparisonGeneration.current ? <ErrorState title="Comparison unavailable" error={compareMutation.error} /> : comparison ? <div className="comparison-workspace" ref={resultsRef} tabIndex={-1} role="region" aria-label="Comparison results"><ComparisonResult comparison={comparison} /><DetectorEvaluationComparison runIds={comparison.summaries.map((run) => run.run_id)} /></div> : null}
+    <details className="compare-setup" open={!comparison}><summary>{comparison ? "Choose different runs or prepare a replay" : "Choose runs and prepare a replay"}</summary>
+    <div className="compare-top-grid"><Panel className="history-panel"><PanelHeader eyebrow="Run history" title="Choose runs to compare" actions={<Badge>{selected.length} selected</Badge>} /><div className="history-search"><Search/><input aria-label="Search run history" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search run or objective"/></div><div className="run-select-list">{runs.map((run) => <label key={run.run_id}><input type="checkbox" checked={selected.includes(run.run_id)} onChange={(event) => changeSelection(run.run_id, event.target.checked)}/><span><strong>{run.scenario?.title ?? (source?.run_id === run.run_id ? source.scenario?.title : undefined) ?? run.scenario_id ?? run.objective ?? "Experiment"}</strong><code title={run.run_id}>{shortId(run.run_id)}</code><small>{formatDate(run.created_at)} · {run.steps.length} steps</small></span><span><Badge tone={run.mode === "execute" ? "warning" : "info"}>{sentence(run.mode)}</Badge><Badge tone={run.status === "completed" ? "success" : "neutral"} dot>{sentence(run.status)}</Badge></span></label>)}</div>{!runs.length ? <EmptyState title="No run records" description="Run an experiment to create your first result. Simulate is available without a lab." /> : null}<footer><Button variant="primary" onClick={() => compareMutation.mutate({ runIds: [...selected], generation: comparisonGeneration.current })} disabled={selected.length < 2 || compareMutation.isPending}><GitCompareArrows/>{compareMutation.isPending ? "Comparing" : "Compare selected"}</Button></footer></Panel>
+      <Panel className="replay-panel"><PanelHeader title="Prepare another run" detail="Keep the original result and test the same experiment with a deliberate change." /><div className="replay-body"><Field label="Source run"><select value={sourceId} onChange={(event) => setSearchParams(event.target.value ? { source: event.target.value } : {})} disabled={replayMutation.isPending}><option value="">Choose a completed run</option>{sourceId && !runsQuery.data.runs.some((run) => run.run_id === sourceId) ? <option value={sourceId}>{sourceId}</option> : null}{runsQuery.data.runs.map((run) => <option value={run.run_id} key={run.run_id}>{run.scenario?.title ?? (source?.run_id === run.run_id ? source.scenario?.title : undefined) ?? run.scenario_id ?? run.objective ?? "Experiment"} · {shortId(run.run_id)} · {sentence(run.mode)}</option>)}</select></Field>{sourceId && detailQuery.isError ? <ErrorState title="Source run unavailable" error={detailQuery.error} retry={() => detailQuery.refetch()} /> : null}{sourceId && detailQuery.isPending ? <LoadingState label="Loading the original experiment"/> : null}<Field label="What will change?"><select value={strategy} onChange={(event) => { setStrategy(event.target.value as ReplayStrategy); parameterDraftValidRef.current = true; setParameterDraftValid(true); resetReview(); }} disabled={!sourceId || replayMutation.isPending}>
+          <option value="exact">Nothing — repeat the original run</option><option value="swap">Try another method</option><option value="parameters">Change step parameters</option><option value="setup">Change environment or AI setup</option><option value="from_node">Resume from a step</option>
+        </select></Field>
+        {strategy === "from_node" ? <Field label="Restart node"><select value={fromStep} onChange={(event) => { setFromStep(event.target.value); resetReview(); }}><option value="">Choose a step</option>{sourceSteps.map((step) => <option key={step.step_id} value={step.step_id}>{catalogQuery.data.behaviors.find((item) => item.id === step.behavior_id)?.title ?? step.step_id}</option>)}</select></Field> : null}
+        {strategy === "swap" ? <div className="config-grid"><Field label="Substitute node"><select value={swapStep} onChange={(event) => { setSwapStep(event.target.value); setSwapBehavior(""); resetReview(); }}><option value="">Choose a step</option>{sourceSteps.map((step) => <option key={step.step_id} value={step.step_id}>{catalogQuery.data.behaviors.find((item) => item.id === step.behavior_id)?.title ?? step.step_id}</option>)}</select></Field><Field label="Compatible behavior"><select value={swapBehavior} onChange={(event) => { setSwapBehavior(event.target.value); resetReview(); }} disabled={!swapStep}><option value="">Choose a compatible method</option>{compatible.map((item) => <option value={item.id} key={item.id}>{item.title}</option>)}</select></Field></div> : null}
+        {strategy === "setup" ? <fieldset><legend>Run setup</legend><div className="config-grid"><Field label="Profile override"><select value={profile} onChange={(event) => { setProfile(event.target.value); resetReview(); }}><option value="">Preserve original</option>{catalogQuery.data.runner_profiles.map((item) => <option key={item.id}>{item.id}</option>)}</select></Field><Field label="AI autonomy override"><select value={autonomy} onChange={(event) => { setAutonomy(event.target.value as typeof autonomy); resetReview(); }}><option value="preserve">Preserve original</option><option value="off">Off</option><option value="assist">Assist</option><option value="auto">Auto</option></select></Field><Field label="AI provider override"><select value={provider} onChange={(event) => { setProvider(event.target.value); resetReview(); }}><option value="">Preserve original</option>{(catalogQuery.data.ai.providers ?? []).map((item) => <option value={item.provider_id} key={item.provider_id}>{item.provider_id}</option>)}</select></Field></div></fieldset> : strategy !== "exact" ? <details className="replay-settings"><summary>Environment and AI settings</summary><div className="config-grid"><Field label="Profile override"><select value={profile} onChange={(event) => { setProfile(event.target.value); resetReview(); }}><option value="">Preserve original</option>{catalogQuery.data.runner_profiles.map((item) => <option key={item.id}>{item.id}</option>)}</select></Field><Field label="AI autonomy override"><select value={autonomy} onChange={(event) => { setAutonomy(event.target.value as typeof autonomy); resetReview(); }}><option value="preserve">Preserve original</option><option value="off">Off</option><option value="assist">Assist</option><option value="auto">Auto</option></select></Field><Field label="AI provider override"><select value={provider} onChange={(event) => { setProvider(event.target.value); resetReview(); }}><option value="">Preserve original</option>{(catalogQuery.data.ai.providers ?? []).map((item) => <option value={item.provider_id} key={item.provider_id}>{item.provider_id}</option>)}</select></Field></div></details> : null}
+        {strategy === "parameters" ? <>
+          {source?.scenario ? <ReplayParameterEditor scenario={source.scenario} behaviors={catalogQuery.data.behaviors} value={parameterOverrides} onChange={(next) => { setParameterJson(JSON.stringify(next, null, 2)); resetReview(); }} onValidityChange={changeParameterValidity} disabled={replayMutation.isPending}/> : <Callout title="Original graph unavailable">The original scenario is required to edit its parameters.</Callout>}
+          <details className="replay-settings"><summary>Advanced parameter JSON</summary><Field label="Parameter overrides JSON" hint='Object keyed by step, then parameter. All values are validated before a replay.'><textarea rows={8} value={parameterJson} onChange={(event) => { setParameterJson(event.target.value); resetReview(); }} disabled={replayMutation.isPending} spellCheck={false}/></Field></details>
+          {parameterError ? <Callout tone="danger" title="Parameter changes need attention">{parameterError}</Callout> : null}
+        </> : null}{strategy !== "exact" ? <details className="replay-settings"><summary>Record a defense change</summary><Field label="Declared defense change" hint="Describe a change already applied in your lab. This note does not change a defense."><textarea rows={3} maxLength={500} value={defenseChange} onChange={(event) => { setDefenseChange(event.target.value); resetReview(); }} placeholder="For example: revised the receiver policy to require redacted records"/></Field></details> : null}
+        {execute ? <><Callout tone="warning" title="Execute replay is a new effect authorization">{strategy === "from_node" ? "Resuming from a step currently uses a prospective base-plan check. The server resolves the replay lineage and restored inputs again before it accepts a fresh approval." : "Review the complete replay, including the original run, your changes, allowed effects, and cleanup. Preparing a replay does not approve it or start any effects."}</Callout><Field label="Exact target scope"><input value={targetScope} onChange={(event) => { setTargetScope(event.target.value); resetReview(); }} placeholder="sandbox.workspace"/></Field><Button variant="secondary" onClick={requestPreflight} disabled={!replayScenario || !variantReady || preflightMutation.isPending || !scopeRefs.length}><ShieldCheck/>{preflightMutation.isPending ? "Preparing review" : strategy === "from_node" ? "Run prospective base-plan check" : "Review Execute replay"}</Button>{replayPreflight ? <ReplayPreflight report={replayPreflight} preparation={preparation}/> : null}<label className="check-row"><input type="checkbox" checked={replayConfirmed} onChange={(event) => setReplayConfirmed(event.target.checked)} disabled={!reviewReady}/><span><strong>I approve this reviewed Execute replay request once</strong><small>{preparation ? "Approval applies only to this prepared replay. Changed inputs or stale readiness require a new review." : "Unchecked by default; the server derives the exact replay binding and refuses any mismatch."}</small></span></label><Field label="Fresh replay operator identity"><input value={approvedBy} onChange={(event) => setApprovedBy(event.target.value)} disabled={!reviewReady} autoComplete="off" maxLength={128}/></Field></> : null}
+        {!variantReady && sourceId ? <Callout tone="warning" title="Replay variant incomplete">{strategy === "from_node" ? "Choose a restart step." : strategy === "swap" ? "Choose a step and its replacement method." : strategy === "setup" ? "Change an environment or AI setting, or record the defense change made in your lab." : "Change at least one step parameter."}</Callout> : null}{localError ? <Callout tone="danger" title="Replay refused">{localError}</Callout> : replayMutation.isSuccess ? <Callout tone="success" title="Replay created"><code>{replayMutation.data.run_id}</code> is lineage-linked to <code>{replayMutation.variables?.sourceId}</code>.{linkedSource === replayMutation.variables?.sourceId && linkedReplay === replayMutation.data.run_id ? " The source and replay are selected for comparison." : " Your current source selection was preserved."}</Callout> : null}<Button variant="primary" className="button-full" onClick={requestReplay} disabled={!sourceId || !detailQuery.isSuccess || !variantReady || replayMutation.isPending || Boolean(execute && (!reviewReady || !replayConfirmed || !approvedBy.trim()))}>{replayMutation.isPending ? "Creating immutable replay" : execute ? "Create approved Execute replay" : "Create Simulate replay"}</Button></div></Panel>
     </div>
-    {compareMutation.isError && compareMutation.variables?.generation === comparisonGeneration.current ? <ErrorState title="Comparison unavailable" error={compareMutation.error} /> : comparison ? <><DetectorEvaluationComparison runIds={comparison.summaries.map((run) => run.run_id)} /><ComparisonResult comparison={comparison} /></> : <Panel><EmptyState icon={<GitCompareArrows/>} title="Select at least two runs" description="The first selected run becomes the baseline. Compare what ran, the observations, and cleanup here." /></Panel>}
+    </details>
+    {!comparison && <Panel><EmptyState icon={<GitCompareArrows/>} title="Select at least two runs" description="The first selected run becomes the baseline. Compare what ran, the observations, and cleanup here." /></Panel>}
   </div>;
 }
 
-function ReplayPreflight({ report }: { report: PreflightReport }) {
+function ReplayPreflight({ report, preparation }: { report: PreflightReport; preparation?: ReplayPreparation }) {
+  if (preparation) return <section aria-label="Prepared Execute replay">
+    {report.plan ? <CanonicalPlanReview plan={report.plan} cleanup={report.cleanup} scope={report.scope} binding={report.approval_binding} envelope={report.approval_envelope}/> : null}
+    <DataList items={[{ label: "Independent observers", value: report.collectors?.length ? report.collectors.join(", ") : "None reported" }]} />
+    {report.findings?.length ? <Callout tone={executeReviewReady(report) ? "warning" : "danger"} title={executeReviewReady(report) ? "Review findings" : "Replay is blocked"}><ul>{report.findings.map((item, index) => <li key={index}>{typeof item === "string" ? item : item.message ?? item.code ?? "Finding"}</li>)}</ul></Callout> : null}
+    <details><summary>Original run and replay identity</summary><p>Original run: <code>{preparation.binding.source.run_id}</code></p><pre>{JSON.stringify({ preparation_id: preparation.preparation_id, binding: preparation.binding, lineage: preparation.lineage, preflight: report }, null, 2)}</pre></details>
+  </section>;
   const binding = report.approval_binding; const envelope = report.approval_envelope; const steps = Array.isArray(report.plan?.steps) ? report.plan.steps.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object") : [];
   return <section className={`preflight-result ${executeReviewReady(report) ? "approval-required" : "blocked"}`} aria-label="Prospective Execute replay check"><header><strong>{executeReviewReady(report) ? "Prospective base plan ready for review" : "Prospective check blocked"}</strong><Badge tone={executeReviewReady(report) ? "warning" : "danger"}>{sentence(report.status)}</Badge></header><Callout title="Not the replay binding">These digests cover this prospective base-plan compilation. Replay lineage, restart position, and source identity are bound only inside the replay request and may change or refuse the final authorization.</Callout><DataList items={[{ label: "Prospective state digest", value: binding ? <code>{binding.state_digest}</code> : "Not reported" }, { label: "Prospective plan digest", value: binding ? <code>{binding.plan_digest}</code> : "Not reported" }, { label: "Prospective scope digest", value: binding ? <code>{binding.target_scope_digest}</code> : "Not reported" }, { label: "Prospective envelope digest", value: envelope ? <code>{envelope.envelope_digest}</code> : "Not reported" }, { label: "Profile / tier", value: binding ? `${binding.profile_id} / ${sentence(binding.maximum_tier)}` : "Not reported" }, { label: "Cleanup", value: JSON.stringify(report.cleanup ?? {}) }]} />{steps.map((step) => <article className="replay-plan-step" key={String(step.step_id)}><strong>{String(step.step_id)}</strong><code>{String(step.behavior_id)}</code><Badge tone={step.action_id ? "warning" : "info"}>{String(step.action_id ?? step.simulation_id ?? "Unresolved")}</Badge><pre>{JSON.stringify(step.parameters ?? {}, null, 2)}</pre></article>)}{envelope ? <p className="field-note">{envelope.steps.reduce((count, step) => count + step.options.length, 0)} primary/alternate contract options appear in this prospective compilation.</p> : null}{report.findings?.length ? <ul>{report.findings.map((item, index) => <li key={index}>{typeof item === "string" ? item : item.message ?? item.code ?? "Finding"}</li>)}</ul> : null}</section>;
 }
@@ -150,13 +218,31 @@ function resolvedActions(source?: RunRecord, omittedStep?: string) { const steps
 export function ComparisonResult({ comparison }: { comparison: ComparisonResponse }) {
   const baseline = comparison.summaries.find((item) => item.run_id === comparison.baseline_run_id) ?? comparison.summaries[0];
   const changed = comparison.deltas.filter(hasMaterialDelta).length;
+  const [reportUrl, setReportUrl] = useState<string>();
+  useEffect(() => {
+    const url = URL.createObjectURL(new Blob([comparisonReport(comparison)], { type: "text/markdown;charset=utf-8" }));
+    setReportUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [comparison]);
   return <div className="comparison-results">
-    <div className="stat-grid">
-      <article className="stat stat-info"><span>Baseline</span><strong><Link to={runReviewPath(comparison.baseline_run_id)} aria-label="Review baseline run summary"><code title={comparison.baseline_run_id}>{shortId(comparison.baseline_run_id)}</code></Link></strong><small>{baseline?.path.length ?? 0} path nodes</small></article>
-      <article className="stat stat-info"><span>Cohort</span><strong>{comparison.run_ids.length}</strong><small>Canonical run records</small></article>
-      <article className={`stat ${changed ? "stat-warning" : "stat-success"}`}><span>Material deltas</span><strong>{changed}</strong><small>{changed ? "Inspect assessments below" : "No material delta reported"}</small></article>
-      <article className="stat stat-success"><span>Comparison ID</span><strong><code title={comparison.comparison_id}>{shortId(comparison.comparison_id)}</code></strong><small>Content-derived record</small></article>
-    </div>
+    <Panel className="comparison-outcomes">
+      <PanelHeader title="Run outcomes" detail="Objective, observation, and cleanup are separate results. A stopped step alone does not establish target prevention." actions={reportUrl ? <a className="button button-secondary button-medium" href={reportUrl} download="bluefire-comparison.md">Download report</a> : null} />
+      <div className="comparison-context"><span>{comparison.run_ids.length} runs</span><span className="comparison-changes">Material deltas <strong>{changed}</strong></span><span>{changed ? "Review the changes below" : "No material change reported"}</span></div>
+      <div className="table-scroll" role="region" aria-label="Compared run outcomes" tabIndex={0}>
+        <table><thead><tr><th scope="col">Run</th><th scope="col">Mode</th><th scope="col">Objective</th><th scope="col">Independent evidence</th><th scope="col">First stopped step</th><th scope="col">Cleanup</th></tr></thead>
+          <tbody>{comparison.summaries.map((summary, index) => <tr key={summary.run_id}>
+            <th scope="row"><Link to={runReviewPath(summary.run_id)} aria-label={summary.run_id === comparison.baseline_run_id ? "Review baseline run summary" : `Review variant ${index} run summary`}>{summary.run_id === comparison.baseline_run_id ? "Baseline" : `Variant ${index}`}</Link><small><code title={summary.run_id}>{shortId(summary.run_id)}</code></small></th>
+            <td>{sentence(summary.mode ?? "not_reported")}</td>
+            <td>{summary.objective_reached === true ? (summary.mode === "simulate" ? "Achieved (synthetic)" : "Achieved") : summary.objective_reached === false ? "Not achieved" : "Not established"}</td>
+            <td>{Array.isArray(summary.evidence_details?.observed_artifacts) ? <>{summary.evidence_details.observed_artifacts.length} observed items<small>{Array.isArray(summary.evidence_details.evidence_gaps) ? `${summary.evidence_details.evidence_gaps.length} recorded evidence gaps` : "Evidence gaps not reported"}</small></> : "Not reported"}</td>
+            <td>{summary.first_blocked_step ?? "None recorded"}</td>
+            <td>{summary.cleanup_success === false ? "Needs attention" : summary.cleanup_success === true ? (summary.mode === "simulate" ? "No real effects" : "Complete") : "Not reported"}</td>
+          </tr>)}</tbody>
+        </table>
+      </div>
+      <details className="comparison-identity"><summary>Comparison record</summary><code>{comparison.comparison_id}</code><p>Baseline: {baseline?.run_id ?? comparison.baseline_run_id}</p></details>
+    </Panel>
+    <details className="comparison-detail"><summary>Step-by-step results and run details</summary>
     <Panel><PanelHeader eyebrow="Path overlay" title="Side-by-side execution lanes" detail="Human-readable outcomes come first; each run links back to its canonical review."/><div className="compare-lanes">{comparison.summaries.map((summary, laneIndex) => <article key={summary.run_id}>
       <header><Badge tone={laneIndex === 0 ? "info" : "neutral"}>{laneIndex === 0 ? "Baseline" : `Variant ${laneIndex}`}</Badge><Link to={runReviewPath(summary.run_id)} aria-label={`Review ${laneIndex === 0 ? "baseline" : `variant ${laneIndex}`} execution lane`}><code title={summary.run_id}>{shortId(summary.run_id)}</code></Link></header>
       <ol>{summary.path.map((step, index) => <li key={`${step}-${index}`} data-status={summary.outcomes[step] === "success" ? "succeeded" : summary.outcomes[step]}><span>{String(index + 1).padStart(2, "0")}</span><strong>{step}</strong><small>{sentence(summary.outcomes[step] ?? "unknown")}</small></li>)}</ol>
@@ -164,9 +250,9 @@ export function ComparisonResult({ comparison }: { comparison: ComparisonRespons
         { label: "Mode / profile", value: `${sentence(summary.mode ?? "not_reported")} / ${summary.profile_id ?? "Not reported"}` },
         { label: "Target scope", value: formatTargetScope(summary.target_scope) },
         { label: "Replay Variant", value: formatReplayLineage(summary.replay_lineage) },
-        { label: "Objective", value: summary.objective_reached === true ? "Reached" : summary.objective_reached === false ? "Prevented / incomplete" : "Not reported" },
+        { label: "Objective", value: summary.objective_reached === true ? "Reached" : summary.objective_reached === false ? "Not achieved" : "Not reported" },
         { label: "First block", value: summary.first_blocked_step ?? "None recorded" },
-        { label: "Cleanup", value: summary.cleanup_success === true ? "Reconciled" : summary.cleanup_success === false ? "Outstanding" : "Not reported" },
+        { label: "Cleanup", value: summary.cleanup_success === false ? "Outstanding" : summary.cleanup_success === true ? (summary.mode === "simulate" ? "No real effects (Simulate)" : "Reconciled") : "Not reported" },
         { label: "Duration", value: formatDuration(summary.duration_ms) },
         { label: "Outcomes", value: formatCountMap(summary.outcome_counts ?? countValues(Object.values(summary.outcomes)), "None reported") },
         { label: "Evidence provenance", value: formatCountMap(summary.evidence_provenance, "None reported") },
@@ -184,11 +270,13 @@ export function ComparisonResult({ comparison }: { comparison: ComparisonRespons
         { label: "Counterfactual path", value: formatList(summary.counterfactual_steps, "None recorded") },
       ]} />
     </article>)}</div></Panel>
+    </details>
+    <details className="comparison-detail"><summary>Detailed changes in evidence, policy, and runtime</summary>
     <div className="delta-grid">{comparison.deltas.map((delta) => {
       const assessment = delta.assessment ?? (hasMaterialDelta(delta) ? "material_change" : "no_material_change");
       const noPathDivergence = delta.first_path_divergence === null || delta.first_path_divergence === undefined || delta.first_path_divergence < 0;
       return <Panel key={delta.to_run_id}><PanelHeader eyebrow="Delta assessment" title={`${shortId(delta.from_run_id)} → ${shortId(delta.to_run_id)}`} detail={`${sentence(assessment)} · ${formatList(delta.signals, "No assessment signals")}`} actions={<Badge tone={assessmentTone(assessment)}>{sentence(assessment)}</Badge>} />
-        <div className="delta-summary"><div><span>{noPathDivergence ? <CheckCircle2/> : <ShieldAlert/>}</span><strong>Path divergence</strong><small>{noPathDivergence ? "No divergence" : `Node index ${delta.first_path_divergence! + 1}`}</small></div><div><span>{delta.objective_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>Objective</strong><small>{formatChanged(delta.objective_changed)}</small></div><div><span>{delta.first_blocked_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>First prevention</strong><small>{formatChanged(delta.first_blocked_changed)}</small></div><div><span>{delta.cleanup_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>Cleanup</strong><small>{formatChanged(delta.cleanup_changed)}</small></div></div>
+        <div className="delta-summary"><div><span>{noPathDivergence ? <CheckCircle2/> : <ShieldAlert/>}</span><strong>Path divergence</strong><small>{noPathDivergence ? "No divergence" : `Node index ${delta.first_path_divergence! + 1}`}</small></div><div><span>{delta.objective_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>Objective</strong><small>{formatChanged(delta.objective_changed)}</small></div><div><span>{delta.first_blocked_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>First stopped step</strong><small>{formatChanged(delta.first_blocked_changed)}</small></div><div><span>{delta.cleanup_changed ? <ShieldAlert/> : <CheckCircle2/>}</span><strong>Cleanup</strong><small>{formatChanged(delta.cleanup_changed)}</small></div></div>
         <div className="delta-columns">
           <div><h3>Evidence, detections & outcomes</h3><DataList items={[
             { label: "Evidence delta", value: formatDeltaMap(delta.evidence_delta) },
@@ -219,6 +307,7 @@ export function ComparisonResult({ comparison }: { comparison: ComparisonRespons
         <details><summary>Show technical comparison delta</summary><pre aria-label={`Technical comparison delta ${delta.to_run_id}`}>{JSON.stringify(delta, null, 2)}</pre></details>
       </Panel>;
     })}</div>
+    </details>
   </div>;
 }
 
@@ -278,3 +367,11 @@ function formatDurationDelta(value?: number | null) { if (value === undefined ||
 function formatMilliseconds(value: number) { return Math.abs(value) < 1_000 ? `${new Intl.NumberFormat().format(value)} ms` : `${(value / 1_000).toLocaleString(undefined, { maximumFractionDigits: 2 })} s`; }
 function runReviewPath(runId: string) { return `/runs/${encodeURIComponent(runId)}`; }
 function shortId(value: string) { return value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
+
+function sameJson(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (Array.isArray(left) && Array.isArray(right)) return left.length === right.length && left.every((value, index) => sameJson(value, right[index]));
+  if (!isPlainObject(left) || !isPlainObject(right)) return false;
+  const keys = Object.keys(left);
+  return keys.length === Object.keys(right).length && keys.every((key) => Object.hasOwn(right, key) && sameJson(left[key], right[key]));
+}

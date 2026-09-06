@@ -5,7 +5,7 @@ import type { ButtonHTMLAttributes, HTMLAttributes, PropsWithChildren, ReactNode
 
 export function PageHeader({ eyebrow, title, description, actions }: { eyebrow?: string; title: string; description: string; actions?: ReactNode }) {
   return <header className="page-header">
-    <div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p>{description}</p></div>
+    <div>{eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}<h1>{title}</h1><p>{description}</p></div>
     {actions ? <div className="page-actions">{actions}</div> : null}
   </header>;
 }
@@ -44,7 +44,7 @@ export function Callout({ tone = "info", title, children }: PropsWithChildren<{ 
 }
 
 export function LoadingState({ label = "Loading workspace" }: { label?: string }) {
-  return <div className="loading-state" role="status"><LoaderCircle className="spin" aria-hidden="true" /><strong>{label}</strong><span>Reading canonical local records…</span></div>;
+  return <div className="loading-state" role="status"><LoaderCircle className="spin" aria-hidden="true" /><strong>{label}</strong><span>Loading your workspace…</span></div>;
 }
 
 export function EmptyState({ icon, title, description, action }: { icon?: ReactNode; title: string; description: string; action?: ReactNode }) {

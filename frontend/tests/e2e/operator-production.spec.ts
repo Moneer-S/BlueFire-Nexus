@@ -433,7 +433,7 @@ test("production operator UI completes authoring, management, run, replay, and c
   await navigation.getByRole("link", { name: "Compare" }).click();
   await expect(page.getByRole("heading", { name: "Measure what changed" })).toBeVisible();
   await page.getByLabel("Source run").selectOption(browserRunId);
-  await expect(page.getByRole("radio", { name: /Exact Preserve declared inputs/ })).toBeChecked();
+  await expect(page.getByRole("combobox", { name: "What will change?" })).toHaveValue("exact");
   const replayResponse = page.waitForResponse((response) => /^\/api\/v1\/runs\/[^/]+\/replays$/.test(new URL(response.url()).pathname) && response.request().method() === "POST");
   await page.getByRole("button", { name: "Create Simulate replay" }).click();
   const replayRun = await (await replayResponse).json() as JsonObject;
@@ -451,9 +451,11 @@ test("production operator UI completes authoring, management, run, replay, and c
   const comparison = await (await comparisonResponse).json() as JsonObject;
   const comparisonId = comparison.comparison_id;
   expect(comparisonId).toMatch(/^comparison-[0-9a-f]{20}$/);
-  const material = page.locator(".stat").filter({ hasText: "Material deltas" });
+  const material = page.locator(".comparison-changes");
   await expect(material).toBeVisible();
   expect(Number(await material.locator("strong").innerText())).toBeGreaterThan(0);
+  await expect(page.getByRole("region", { name: "Compared run outcomes" })).toBeVisible();
+  await page.getByText("Step-by-step results and run details", { exact: true }).click();
   await expect(page.getByRole("heading", { name: "Side-by-side execution lanes" })).toBeVisible();
   await material.scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[2]) });

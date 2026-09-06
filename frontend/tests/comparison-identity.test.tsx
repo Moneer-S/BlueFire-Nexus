@@ -22,6 +22,20 @@ function baseMocks() {
 }
 afterEach(() => { vi.restoreAllMocks(); });
 
+it("prepares a full replay with only an AI setup change and preserves the graph", async () => {
+  const user = userEvent.setup();
+  baseMocks();
+  const replay = vi.spyOn(api, "replay").mockResolvedValue({ ...demoRuns[0]!, run_id: "run-20300101T000000Z-bbbbbbbbbbbbbbbb" });
+  mount(`/compare?source=${encodeURIComponent(demoRuns[0]!.run_id)}`, <ComparePage />);
+  await screen.findByRole("heading", { name: "Measure what changed" });
+  await user.selectOptions(screen.getByRole("combobox", { name: "What will change?" }), "setup");
+  expect(screen.getByRole("button", { name: "Create Simulate replay" })).toBeDisabled();
+  await user.selectOptions(screen.getByRole("combobox", { name: "AI autonomy override" }), "assist");
+  await user.click(screen.getByRole("button", { name: "Create Simulate replay" }));
+  expect(replay).toHaveBeenCalledWith(demoRuns[0]!.run_id, expect.objectContaining({ exact: false, autonomy: "assist", from_step_id: null, swap_step_id: null, swap_behavior_id: null, parameter_overrides: null }));
+  expect(replay.mock.calls[0]![1]).not.toHaveProperty("approval");
+});
+
 it.each(["selection", "navigation"])("discards a late comparison after %s changes and never exposes its detector export", async (change) => {
   const user = userEvent.setup();
   baseMocks();
