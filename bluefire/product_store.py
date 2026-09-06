@@ -3773,6 +3773,28 @@ class ProductStore:
             )
         return self.get_approval_request(approval_id)
 
+    def withdraw_pending_approval(self, approval_id: str) -> Mapping[str, Any]:
+        """Retire an unpublished pending request without deleting its exact binding.
+
+        This cannot revoke an approval already released by an operator. Callers
+        must first preserve any request linked to a successfully published job.
+        """
+
+        with self._connection(write=True) as connection:
+            row = self._approval_row(connection, approval_id)
+            if row["status"] == "withdrawn":
+                return self._approval_from_row(row).to_dict()
+            if row["status"] != "pending":
+                raise ProductStoreError("only a pending approval request can be withdrawn")
+            cursor = connection.execute(
+                "UPDATE approval_requests SET status = 'withdrawn' "
+                "WHERE approval_id = ? AND status = 'pending'",
+                (approval_id,),
+            )
+            if cursor.rowcount != 1:
+                raise ProductStoreError("approval withdrawal lost a concurrent race")
+            return self._approval_from_row(self._approval_row(connection, approval_id)).to_dict()
+
     def approve(
         self,
         approval_id: str,
