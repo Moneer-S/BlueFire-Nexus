@@ -1,0 +1,65 @@
+import { ShieldCheck } from "lucide-react";
+import type { ApprovalBinding, ApprovalEnvelope } from "../types";
+import { Badge, Callout, DataList, sentence } from "./Primitives";
+
+export function CanonicalPlanReview({ plan, cleanup, scope, binding, envelope }: { plan: Record<string, unknown>; cleanup?: unknown; scope?: unknown; binding?: ApprovalBinding | null; envelope?: ApprovalEnvelope | null }) {
+  const steps = Array.isArray(plan.steps) ? plan.steps.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object") : [];
+  const edges = Array.isArray(plan.edges) ? plan.edges : [];
+  const digest = binding?.plan_digest ?? plan.plan_digest ?? plan.digest ?? plan.scenario_digest;
+  const scopeRecord = scope && typeof scope === "object" ? scope as Record<string, unknown> : null;
+  const scopeLabel = typeof scope === "string" ? scope : Array.isArray(scopeRecord?.scope_refs) ? scopeRecord.scope_refs.join(", ") : "Not reported";
+  const cleanupRecord = cleanup && typeof cleanup === "object" ? cleanup as Record<string, unknown> : null;
+  const cleanupLabel = typeof cleanup === "string" ? sentence(cleanup) : cleanupRecord?.policy === "always" ? "Remove created lab files after the run" : sentence(String(cleanupRecord?.policy ?? "not reported"));
+  return <section className="canonical-plan" aria-label="Canonical preflight plan">
+    <header><div><span>{envelope ? "Ready for your review" : "Run review"}</span><strong>What this run will do</strong></div><Badge tone={envelope ? "warning" : "info"}>{steps.length} steps · {sentence(String(plan.mode ?? "not reported"))}</Badge></header>
+    <DataList items={[
+      { label: "Environment", value: binding?.profile_id ?? String(plan.runner_profile_id ?? "Not reported") },
+      { label: "Allowed scope", value: scopeLabel },
+      { label: "Cleanup", value: cleanupLabel },
+      { label: "Full experiment", value: `${steps.length} steps and ${edges.length} routes, including hidden branches` },
+    ]} />
+    <div className="canonical-steps review-steps">{steps.map((step, index) => {
+      const allowed = envelope?.steps.find((item) => item.step_id === step.step_id)?.options;
+      const selected = allowed?.find((option) => option.behavior_id === step.behavior_id);
+      const title = selected?.contract.title ?? sentence(String(step.step_id ?? "Unnamed step"));
+      return <article key={String(step.step_id ?? index)}>
+        <span>{String(index + 1).padStart(2, "0")}</span>
+        <div><strong>{String(title)}</strong>{selected?.contract.purpose ? <p>{String(selected.contract.purpose)}</p> : null}
+          <small>{step.action_id ? "Run in the authorized lab" : "Simulate this step"}{allowed && allowed.length > 1 ? ` · ${allowed.length} allowed methods` : ""}</small>
+        </div>
+        <details><summary>Step details</summary><dl>
+          <div><dt>Step / method</dt><dd><code>{String(step.step_id)}</code><code>{String(step.action_id ?? step.simulation_id ?? step.behavior_id ?? "Unresolved")}</code></dd></div>
+          <div><dt>Parameters</dt><dd><pre>{JSON.stringify(step.parameters ?? {}, null, 2)}</pre></dd></div>
+          <div><dt>Input from</dt><dd><pre>{JSON.stringify(step.inputs ?? {}, null, 2)}</pre></dd></div>
+          <div><dt>Outputs</dt><dd>{stringList(step.expected_outputs)}</dd></div>
+          <div><dt>Required capabilities</dt><dd>{stringList(step.required_capabilities)}</dd></div>
+        </dl></details>
+      </article>;
+    })}</div>
+    {envelope ? <ApprovalEnvelopeReview envelope={envelope} binding={binding} /> : null}
+    <details><summary>Run identities and full plan</summary>
+      <DataList items={[
+        { label: "Plan digest", value: digest ? <code>{String(digest)}</code> : "Not reported" },
+        { label: "State digest", value: binding ? <code>{binding.state_digest}</code> : "No Execute approval binding" },
+        { label: "Scope digest", value: binding ? <code>{binding.target_scope_digest}</code> : "No Execute approval binding" },
+        { label: "Envelope digest", value: envelope ? <code>{envelope.envelope_digest}</code> : "No Execute approval binding" },
+      ]} />
+      <pre>{JSON.stringify(plan, null, 2)}</pre>
+    </details>
+  </section>;
+}
+
+function stringList(value: unknown) {
+  if (!Array.isArray(value)) return "Not reported";
+  return value.map((item) => typeof item === "object" && item !== null ? String((item as Record<string, unknown>).name ?? (item as Record<string, unknown>).id ?? JSON.stringify(item)) : String(item)).join(", ") || "None";
+}
+
+function ApprovalEnvelopeReview({ envelope, binding }: { envelope: ApprovalEnvelope; binding?: ApprovalBinding | null }) {
+  return <section className="approval-envelope" aria-label="Complete Execute approval envelope">
+    <header><div><span>Allowed methods</span><strong>Review effects and alternatives</strong></div><Badge tone="warning">{envelope.steps.reduce((count, step) => count + step.options.length, 0)} methods</Badge></header><details><summary>All permitted methods, effects and parameters</summary>
+    {binding ? <p className="envelope-binding-note"><ShieldCheck/>Confirmation binds this envelope to state <code>{binding.state_digest}</code>, plan <code>{binding.plan_digest}</code>, and scope <code>{binding.target_scope_digest}</code>.</p> : null}
+    <div className="envelope-steps">{envelope.steps.map((step, stepIndex) => <article key={step.step_id}><header><span>{String(stepIndex + 1).padStart(2, "0")}</span><strong>{step.step_id}</strong><Badge>{step.options.length} option{step.options.length === 1 ? "" : "s"}</Badge></header>{step.options.map((option) => { const contract = option.contract; return <section className="envelope-option" key={`${step.step_id}-${option.behavior_id}`}><header><div><Badge tone={option.is_primary ? "info" : "violet"}>{option.is_primary ? "Primary" : "Auto alternate"}</Badge><strong>{String(contract.title ?? option.behavior_id)}</strong><code>{option.behavior_id}</code></div><code title="Behavior contract digest">{option.contract_digest}</code></header><p>{String(contract.purpose ?? "No behavior purpose was reported.")}</p><dl><div><dt>Resolved parameters</dt><dd><pre>{JSON.stringify(option.resolved_parameters, null, 2)}</pre></dd></div><div><dt>Effects contract</dt><dd>{sentence(String(contract.execution_state ?? "not reported"))} · {sentence(String(contract.safety_tier ?? "not reported"))}</dd></div><div><dt>Expected outputs</dt><dd>{stringList(contract.outputs)}</dd></div><div><dt>Observables</dt><dd>{stringList(contract.telemetry)}{Array.isArray(contract.detection_hints) && contract.detection_hints.length ? ` · Detection hints: ${contract.detection_hints.map(String).join(", ")}` : ""}</dd></div></dl><div className="envelope-actions">{option.actions.length ? option.actions.map((action) => <article key={action.action_id}><header><div><Badge tone={action.contract.mutates ? "warning" : "info"}>{action.contract.mutates ? "Mutating action" : "Non-mutating action"}</Badge><strong>{String(action.contract.title ?? action.action_id)}</strong><code>{action.action_id}</code></div><code title="Action contract digest">{action.contract_digest}</code></header><p>{String(action.contract.purpose ?? "No action purpose was reported.")}</p><DataList items={[{ label: "Capabilities", value: stringList(action.contract.capabilities) }, { label: "Platforms", value: stringList(action.contract.platforms) }, { label: "Effects", value: `${action.contract.mutates ? "Mutates fixture state" : "Read-only"}; ${sentence(String(action.contract.safety_tier ?? "tier not reported"))}` }, { label: "Expected outputs", value: stringList(action.contract.outputs) }, { label: "Cleanup", value: String(action.contract.cleanup_action_id ?? "No cleanup action declared") }]} /><details><summary>Full deterministic action contract</summary><pre>{JSON.stringify(action.contract, null, 2)}</pre></details></article>) : <Callout tone="warning" title="No deterministic action contract">This option cannot authorize runner effects unless the backend resolves an installed action contract.</Callout>}</div><details><summary>Full behavior contract</summary><pre>{JSON.stringify(contract, null, 2)}</pre></details></section>; })}</article>)}</div>
+    </details><details><summary>Raw complete approval envelope</summary><pre>{JSON.stringify(envelope, null, 2)}</pre></details>
+  </section>;
+}
+

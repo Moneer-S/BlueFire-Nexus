@@ -5,16 +5,16 @@ import { api } from "../lib/api";
 import type { AIProposalDecisionResult, AIProposalReview, RunJob } from "../types";
 import { Badge, Button, Callout, DataList, Field, LoadingState, Panel, PanelHeader, formatDate, sentence } from "./Primitives";
 
-export function ProposalReviewWorkspace({ job, onDecision, onReviewLoaded }: { job: RunJob; onDecision?: (result: AIProposalDecisionResult, review: AIProposalReview) => void; onReviewLoaded?: (review: AIProposalReview) => void }) {
+export function ProposalReviewWorkspace({ job, onDecision, onReviewLoaded }: { job: RunJob; onDecision?: (result: AIProposalDecisionResult, review: AIProposalReview) => void; onReviewLoaded?: (review: AIProposalReview | undefined) => void }) {
   const client = useQueryClient();
   const listQuery = useQuery({ queryKey: ["job-proposals", job.job_id], queryFn: () => api.proposalReviews(job.job_id), refetchInterval: job.state === "awaiting_approval" ? 1000 : false });
   const requestedId = typeof job.progress.proposal_record_id === "string" ? job.progress.proposal_record_id : undefined;
   const [selectedId, setSelectedId] = useState<string>(); const [confirmed, setConfirmed] = useState(false); const [decidedBy, setDecidedBy] = useState("");
   const resolvedId = selectedId ?? requestedId ?? listQuery.data?.proposals.at(-1)?.proposal_record_id;
-  const detailQuery = useQuery({ queryKey: ["job-proposal", job.job_id, resolvedId], queryFn: () => api.proposalReview(job.job_id, resolvedId!), enabled: Boolean(resolvedId) });
+  const detailQuery = useQuery({ queryKey: ["job-proposal", job.job_id, resolvedId, job.progress.approval_request_id], queryFn: () => api.proposalReview(job.job_id, resolvedId!), enabled: Boolean(resolvedId) });
   useEffect(() => { setSelectedId(undefined); setConfirmed(false); setDecidedBy(""); }, [job.job_id]);
   useEffect(() => { setConfirmed(false); setDecidedBy(""); }, [resolvedId]);
-  useEffect(() => { if (detailQuery.data) onReviewLoaded?.(detailQuery.data); }, [detailQuery.data, onReviewLoaded]);
+  useEffect(() => { onReviewLoaded?.(detailQuery.isFetching || detailQuery.isError ? undefined : detailQuery.data); }, [detailQuery.data, detailQuery.isFetching, detailQuery.isError, onReviewLoaded]);
   const decisionMutation = useMutation({ mutationFn: (decision: "accept" | "reject") => api.decideProposal(job.job_id, detailQuery.data!, decidedBy, decision), onSuccess: (result) => { setConfirmed(false); setDecidedBy(""); client.invalidateQueries({ queryKey: ["job-proposals", job.job_id] }); client.invalidateQueries({ queryKey: ["job-proposal", job.job_id] }); onDecision?.(result, result.proposal); } });
   if (listQuery.isPending) return <LoadingState label="Loading durable proposal reviews" />;
   if (listQuery.isError) return <Callout tone="danger" title="Proposal reviews unavailable">{listQuery.error.message}</Callout>;

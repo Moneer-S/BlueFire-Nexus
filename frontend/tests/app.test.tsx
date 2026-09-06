@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App";
 import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import { ProductProvider, UI_PREFERENCE_SCHEMA_VERSION } from "../src/state/ProductContext";
-import type { Behavior, ComparisonResponse, DetectionComparisonResponse, DetectionResource, PreflightReport, PublicBaselineReference, RunJob } from "../src/types";
+import type { AIProposalDecisionResult, AIProposalReview, Behavior, ComparisonResponse, DetectionComparisonResponse, DetectionResource, PreflightReport, PublicBaselineReference, RunJob } from "../src/types";
 
 const envelopeBehavior = demoCatalog.behaviors.find((item) => item.execution_state === "action")!;
 const envelopeAction = demoCatalog.actions.find((item) => item.id === envelopeBehavior.action_ids[0])!;
@@ -50,7 +50,19 @@ const executeJob = { schema_version: "bluefire.job.v1", job_id: "job-0123456789a
 const activeJobStorageKey = "bluefire.local.active-job-id.v1";
 const proposalJob = { ...executeJob, job_id: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", progress: { phase: "awaiting_approval", approval_kind: "ai_proposal", proposal_record_id: "proposal-review-0123456789abcdef0123456789abcdef" } } as const;
 let activeJobInventory: RunJob[] = [];
-const proposalReview = { schema_version: "bluefire.ai-proposal-review.v1", proposal_record_id: "proposal-review-0123456789abcdef0123456789abcdef", job_id: proposalJob.job_id, source_run_id: "run-source", source_proposal_id: "proposal-source", state_digest: "sha256:" + "1".repeat(64), plan_digest: "sha256:" + "2".repeat(64), proposal_digest: "sha256:" + "3".repeat(64), status: "pending", record: { allowed_step_ids: ["discover"], allowed_behavior_ids: ["endpoint.discovery.system.v1"], proposal: { proposal_id: "proposal-source", proposal_type: "select_registered", selected_step_id: "discover", selected_behavior_id: "endpoint.discovery.system.v1", selected_action_id: null, rationale: "Registered compatible alternate" } }, resolution: null, created_at: "2030-01-01T00:00:00Z" } as const;
+const proposalReview: AIProposalReview = { schema_version: "bluefire.ai-proposal-review.v1", proposal_record_id: "proposal-review-0123456789abcdef0123456789abcdef", job_id: proposalJob.job_id, source_run_id: "run-source", source_proposal_id: "proposal-source", state_digest: "sha256:" + "1".repeat(64), plan_digest: "sha256:" + "2".repeat(64), proposal_digest: "sha256:" + "3".repeat(64), status: "pending", record: { allowed_step_ids: ["discover"], allowed_behavior_ids: ["endpoint.discovery.system.v1"], proposal: { proposal_id: "proposal-source", proposal_type: "select_registered", selected_step_id: "discover", selected_behavior_id: "endpoint.discovery.system.v1", selected_action_id: null, rationale: "Registered compatible alternate" } }, resolution: null, created_at: "2030-01-01T00:00:00Z" };
+function acceptedProposalFixture(): AIProposalDecisionResult {
+  const approval = { approval_id: "approval-fresh", status: "pending", state_digest: "sha256:" + "5".repeat(64), plan_digest: "sha256:" + "6".repeat(64), target_scope_digest: "sha256:" + "7".repeat(64), profile_id: "sandbox-execute.v1", maximum_tier: "controlled", expires_at: "2030-01-01T00:00:00Z" };
+  const preflight = { ...structuredClone(executePreflight), approval_binding: { state_digest: approval.state_digest, plan_digest: approval.plan_digest, target_scope_digest: approval.target_scope_digest, profile_id: approval.profile_id, maximum_tier: approval.maximum_tier } };
+  return {
+    schema_version: "bluefire.ai-proposal-decision.v1",
+    job: { ...proposalJob, approval_request: approval, progress: { phase: "awaiting_approval", approval_kind: "ai_proposal_execute", approval_request_id: approval.approval_id, proposal_record_id: proposalReview.proposal_record_id } },
+    proposal: { ...structuredClone(proposalReview), status: "accepted", resolution: { decision: "accepted", approval_request_id: approval.approval_id, continuation: { execute_approval_binding_digest: "sha256:" + "4".repeat(64), continuation_plan_digest: approval.plan_digest, selected_behavior_id: "endpoint.discovery.system.v1" } }, execute_approval_review: { schema_version: "bluefire.continuation-approval-review.v1", job_id: proposalJob.job_id, proposal_record_id: proposalReview.proposal_record_id, approval_request_id: approval.approval_id, preflight } },
+    approval_request: approval,
+  };
+}
+let currentProposal: AIProposalReview;
+let currentProposalJob: RunJob;
 const richComparison: ComparisonResponse = {
   comparison_id: "comparison-0123456789abcdef0123456789abcdef",
   baseline_run_id: demoRuns[0]!.run_id,
@@ -192,6 +204,8 @@ describe("product application", () => {
   beforeEach(() => {
     window.localStorage.clear();
     activeJobInventory = [];
+    currentProposal = structuredClone(proposalReview);
+    currentProposalJob = structuredClone(proposalJob);
     vi.stubGlobal("scrollTo", vi.fn());
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
@@ -216,11 +230,11 @@ describe("product application", () => {
         const run = demoRuns.find((item) => item.run_id === runId);
         if (run) return json(run);
       }
-      if (path.endsWith("/proposals")) return json({ schema_version: "bluefire.ai-proposal-review-list.v1", job_id: proposalJob.job_id, proposals: [proposalReview] });
-      if (path.endsWith("/accept")) return json({ schema_version: "bluefire.ai-proposal-decision.v1", job: { ...proposalJob, progress: { phase: "awaiting_approval", approval_kind: "ai_proposal_execute", approval_request_id: "approval-fresh", proposal_record_id: proposalReview.proposal_record_id } }, proposal: { ...proposalReview, status: "accepted", resolution: { decision: "accepted", approval_request_id: "approval-fresh", continuation: { execute_approval_binding_digest: "sha256:" + "4".repeat(64), selected_behavior_id: "endpoint.discovery.system.v1" } } }, approval_request: { approval_id: "approval-fresh", status: "pending", state_digest: "sha256:" + "5".repeat(64), plan_digest: "sha256:" + "6".repeat(64), target_scope_digest: "sha256:" + "7".repeat(64), profile_id: "sandbox-execute.v1", maximum_tier: "controlled", expires_at: "2030-01-01T00:00:00Z" } });
-      if (path.includes("/proposals/")) return json(proposalReview);
+      if (path.endsWith("/proposals")) return json({ schema_version: "bluefire.ai-proposal-review-list.v1", job_id: proposalJob.job_id, proposals: [currentProposal] });
+      if (path.endsWith("/accept")) { const accepted = acceptedProposalFixture(); currentProposal = accepted.proposal; currentProposalJob = accepted.job; activeJobInventory = [accepted.job]; return json(accepted); }
+      if (path.includes("/proposals/")) return json(currentProposal);
       if (path.endsWith("/jobs")) return json({ schema_version: "bluefire.active-job-list.v1", jobs: activeJobInventory });
-      if (path.includes(`/jobs/${proposalJob.job_id}`)) return json(proposalJob);
+      if (path.includes(`/jobs/${proposalJob.job_id}`)) return json(currentProposalJob);
       const inventoryJob = activeJobInventory.find((job) => path.endsWith(`/jobs/${job.job_id}`));
       if (inventoryJob) return json({ ...inventoryJob, approval_request: inventoryJob.state === "awaiting_approval" ? executeApprovalRequest : null });
       if (path.includes("/jobs/")) return json({ ...executeJob, approval_request: executeApprovalRequest });
@@ -1158,7 +1172,8 @@ describe("product application", () => {
       return defaultImplementation(input, init);
     });
 
-    renderApp("/runs");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    renderApp("/runs", client);
     await screen.findByRole("heading", { name: "Review and run" });
     expect(await screen.findByText(/Mutable controls remain disabled while ownership is reconciled/)).toBeVisible();
     expect(screen.getByRole("heading", { name: "No active job" })).toBeVisible();
@@ -1167,6 +1182,10 @@ describe("product application", () => {
     expect(screen.queryByRole("region", { name: "Durable Execute job approval" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(executeJob.job_id);
+    activeJobInventory = [{ ...executeJob, state: "running", progress: { phase: "running" } }];
+    await act(async () => { await client.invalidateQueries({ queryKey: ["active-jobs"] }); });
+    await waitFor(() => expect(screen.queryByText(/Mutable controls remain disabled while ownership is reconciled/)).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
   });
 
   it("disables interrupted replacement while another controller job is active", async () => {
@@ -1541,6 +1560,52 @@ describe("product application", () => {
     expect(JSON.parse(String((call?.[1] as RequestInit).body))).toMatchObject({ objective: "Validate a bounded registered graph", max_nodes: 8, max_edges: 16 });
   });
 
+  it.each(["/runs", "/ai-planner"])("reloads the exact continuation plan before enabling approval on %s", async (path) => {
+    const accepted = acceptedProposalFixture();
+    currentProposal = accepted.proposal;
+    currentProposalJob = accepted.job;
+    activeJobInventory = [accepted.job];
+    const user = userEvent.setup();
+    renderApp(path);
+    if (path === "/ai-planner") await user.type(await screen.findByRole("textbox", { name: "Job ID" }), accepted.job.job_id);
+    const canonical = await screen.findByRole("region", { name: "Canonical preflight plan" });
+    expect(canonical).toBeVisible();
+    expect(within(canonical).getByText("sandbox.workspace")).toBeVisible();
+    expect(within(canonical).getByText("Remove created lab files after the run")).toBeVisible();
+    await user.click(within(canonical).getByText("All permitted methods, effects and parameters"));
+    expect(within(canonical).getByText("Resolved parameters")).toBeVisible();
+    expect(within(canonical).getByText("Effects contract")).toBeVisible();
+    const checkbox = screen.getByRole("checkbox", { name: /I approve this exact.*once/ });
+    expect(checkbox).toBeEnabled();
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+    await user.type(screen.getByRole("textbox", { name: /Operator identity/ }), "continuation-reviewer");
+    expect(screen.getByRole("button", { name: /Approve and release/ })).toBeEnabled();
+    expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/approval") && init?.method === "POST")).toBe(false);
+  });
+
+  it.each([
+    ["/runs", "missing"], ["/ai-planner", "missing"],
+    ["/runs", "mismatch"], ["/ai-planner", "mismatch"],
+    ["/runs", "consumed"], ["/ai-planner", "consumed"],
+  ])("refuses a %s continuation with %s canonical authority", async (path, change) => {
+    const accepted = acceptedProposalFixture();
+    if (change === "missing") delete accepted.proposal.execute_approval_review;
+    else if (change === "mismatch") accepted.proposal.execute_approval_review!.preflight.approval_binding!.state_digest = "a-different-state";
+    else accepted.approval_request!.status = "consumed";
+    currentProposal = accepted.proposal;
+    currentProposalJob = accepted.job;
+    activeJobInventory = [accepted.job];
+    const user = userEvent.setup();
+    renderApp(path);
+    if (path === "/ai-planner") await user.type(await screen.findByRole("textbox", { name: "Job ID" }), accepted.job.job_id);
+    await screen.findByText("Proposal is accepted");
+    expect(screen.queryByRole("region", { name: "Canonical preflight plan" })).not.toBeInTheDocument();
+    const release = screen.queryByRole("button", { name: /Approve and release/ });
+    if (release) expect(release).toBeDisabled();
+    expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/approval") && init?.method === "POST")).toBe(false);
+  });
+
   it("keeps proposal acceptance separate from a fresh unchecked Execute approval", async () => {
     const user = userEvent.setup();
     renderApp("/ai-planner");
@@ -1553,6 +1618,7 @@ describe("product application", () => {
     expect(await screen.findByText("Fresh Execute approval after proposal acceptance")).toBeVisible();
     const fresh = screen.getByRole("checkbox", { name: /I approve this exact proposal-continuation envelope once/ });
     expect(fresh).not.toBeChecked();
+    expect(await screen.findByRole("region", { name: "Canonical preflight plan" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Approve and release continuation" })).toBeDisabled();
   }, 15_000);
 });

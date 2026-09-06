@@ -35,6 +35,8 @@ from bluefire.util import canonical_json_bytes, content_hash
 
 ROOT = Path(__file__).resolve().parents[1]
 EXECUTE_ACTIONS = {
+    "sandbox.collection.archive.v1",
+    "sandbox.collection.records.v1",
     "endpoint.discovery.processes.v1",
     "endpoint.discovery.system.v1",
     "endpoint.discovery.windows-version.v1",
@@ -926,6 +928,7 @@ def test_execute_proposal_acceptance_requires_a_fresh_exact_approval(
         runner_factory=lambda _profile: (runner, sandbox),
         ai_provider_factory=provider_factory,
     )
+    request.addfinalizer(service.close)
     profile = next(item for item in service.config.runner_profiles if item.mode.value == "execute")
     submission = service.submit_run(
         {
@@ -971,6 +974,25 @@ def test_execute_proposal_acceptance_requires_a_fresh_exact_approval(
     assert reloaded["approval_request"]["status"] == "pending"
     assert "nonce" not in reloaded["approval_request"]
 
+    calls_before_review = list(runner.calls)
+    canonical = accepted["proposal"]["execute_approval_review"]
+    assert canonical["job_id"] == job_id
+    assert canonical["proposal_record_id"] == proposal_record_id
+    assert canonical["approval_request_id"] == fresh_approval_id
+    report = canonical["preflight"]
+    assert report["status"] == "approval_required" and report["ready"] is False
+    assert report["plan"]["steps"] and report["approval_envelope"]["steps"]
+    assert report["scope"] == {"scope_refs": list(profile.scope)}
+    assert report["cleanup"]["policy"] == profile.cleanup_policy.value
+    assert all(
+        accepted["approval_request"][key] == value
+        for key, value in report["approval_binding"].items()
+    )
+    assert (
+        service.proposal_review(job_id, proposal_record_id)["execute_approval_review"] == canonical
+    )
+    assert runner.calls == calls_before_review
+
     tampered_job = service.job(job_id)
     tampered_progress = dict(tampered_job["progress"])
     tampered_progress["approval_request_id"] = original_approval_id
@@ -982,6 +1004,10 @@ def test_execute_proposal_acceptance_requires_a_fresh_exact_approval(
     with pytest.raises(APIError) as reused:
         service.approve_job(job_id, {"approved_by": "must-not-reuse"})
     assert reused.value.code == "approval_refused"
+    with pytest.raises(APIError) as stale_review:
+        service.proposal_review(job_id, proposal_record_id)
+    assert stale_review.value.code == "proposal_approval_review_unavailable"
+    assert runner.calls == calls_before_review
     tampered_progress["approval_request_id"] = fresh_approval_id
     service.product_store.transition_job(
         job_id,
@@ -1099,6 +1125,7 @@ def test_execute_registered_action_change_gets_fresh_approval_and_full_replay(
         runner_factory=lambda _profile: (runner, sandbox),
         ai_provider_factory=provider_factory,
     )
+    request.addfinalizer(service.close)
     profile = next(
         item for item in service.config.runner_profiles if item.mode is ExecutionMode.EXECUTE
     )
@@ -1145,6 +1172,15 @@ def test_execute_registered_action_change_gets_fresh_approval_and_full_replay(
     assert continuation_audit["selected_action_id"] == "sandbox.discovery.metadata.v1"
     assert continuation_audit["resume_from_step_id"] is None
     assert continuation_audit["replay"]["execute_fresh_workspace_full_replay"] is True
+    report = accepted["proposal"]["execute_approval_review"]["preflight"]
+    selected_step_id = proposal["selected_step_id"]
+    selected = next(step for step in report["plan"]["steps"] if step["step_id"] == selected_step_id)
+    assert selected["action_id"] == "sandbox.discovery.metadata.v1"
+    assert isinstance(selected["parameters"], Mapping)
+    assert report["approval_envelope"]["steps"]
+    assert (
+        report["approval_binding"]["plan_digest"] == continuation_audit["continuation_plan_digest"]
+    )
 
     service.approve_job(job_id, {"approved_by": "fresh-reviewer"})
     completed = service.job_controller.wait(job_id, timeout=SECURE_RECEIPT_EXECUTION_TIMEOUT)

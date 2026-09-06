@@ -338,6 +338,7 @@
         "bluefire.approvals",
         "bluefire.collector_comparison",
         "bluefire.collector_schedule",
+        "bluefire.continuation_review",
         "bluefire.collector_interfaces",
         "bluefire.collection_semantics",
         "bluefire.collection_methods",

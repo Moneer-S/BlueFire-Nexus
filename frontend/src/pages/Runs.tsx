@@ -8,8 +8,11 @@ import { collectionObservationSteps, collectionObserverSelection, collectionSema
 import { ExecuteOnboarding, GUIDED_EXECUTE_PROFILE_ID, GUIDED_EXECUTE_SCENARIO_ID, guidedExecuteConfiguration } from "../components/ExecuteOnboarding";
 import { ProposalReviewWorkspace } from "../components/ProposalReview";
 import { useProduct } from "../state/ProductContext";
-import type { AIProposalDecisionResult, AIProposalReview, ApprovalBinding, ApprovalEnvelope, AutonomyLevel, CatalogResponse, PreflightReport, RunConfiguration, RunEventPage, RunJob, RunRecord, RunStep, Scenario } from "../types";
+import type { AIProposalDecisionResult, AIProposalReview, AutonomyLevel, CatalogResponse, PreflightReport, RunConfiguration, RunEventPage, RunJob, RunRecord, RunStep, Scenario } from "../types";
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, Stat, formatDate, sentence } from "../components/Primitives";
+
+import { CanonicalPlanReview } from "../components/CanonicalPlanReview";
+import { continuationApprovalPreflight, hasUsableStoredApprovalReview } from "../lib/approvalReview";
 
 import "./Runs.css";
 
@@ -50,18 +53,7 @@ function clearStoredActiveJobId(jobId: string): void {
   }
 }
 
-function hasUsableStoredApprovalReview(report?: PreflightReport): boolean {
-  return Boolean(
-    report?.status === "approval_required"
-    && report.plan
-    && report.approval_binding
-    && approvalBindingFields.every((field) => typeof report.approval_binding?.[field] === "string" && report.approval_binding[field].length > 0)
-    && report.approval_envelope
-    && typeof report.approval_envelope.envelope_digest === "string"
-    && report.approval_envelope.envelope_digest.length > 0
-    && Array.isArray(report.approval_envelope.steps),
-  );
-}
+
 
 function preferNewerJobSnapshot(current: RunJob | undefined, candidate: RunJob): RunJob {
   if (!current || current.job_id !== candidate.job_id) return candidate;
@@ -245,6 +237,7 @@ export function RunsPage() {
       setNotice(`Stored job ${receivedJob.job_id} is not present in the active controller inventory. Mutable controls remain disabled while ownership is reconciled.`);
       return;
     }
+    setNotice((current) => current === `Stored job ${receivedJob.job_id} is not present in the active controller inventory. Mutable controls remain disabled while ownership is reconciled.` ? undefined : current);
     let snapshot = preferNewerJobSnapshot(inventoryJob, receivedJob);
     if (trackedJob) snapshot = preferNewerJobSnapshot(trackedJob, snapshot);
     trackActiveJob(snapshot);
@@ -258,6 +251,7 @@ export function RunsPage() {
   useEffect(() => { if (eventsQuery.error) setNotice(eventsQuery.error instanceof Error ? eventsQuery.error.message : "Live event polling failed."); }, [eventsQuery.error]);
   useEffect(() => { if (resultQuery.data) { setActiveRun(resultQuery.data); setNotice(`Run ${resultQuery.data.run_id} completed and its canonical record is ready for review.`); queryClient.invalidateQueries({ queryKey: ["runs"] }); } }, [queryClient, resultQuery.data, setActiveRun]);
   useEffect(() => { setJobApprovalConfirmed(false); setJobApprovedBy(""); }, [activeJob?.job_id, activeJob?.progress.approval_kind, activeJob?.progress.approval_request_id, activeJob?.request?.approval_request_id, approvalRequest?.approval_id, approvalRequest?.status, approvalRequest?.state_digest, approvalRequest?.plan_digest, approvalRequest?.target_scope_digest, approvalRequest?.profile_id, approvalRequest?.maximum_tier]);
+  useEffect(() => { setJobApprovalConfirmed(false); setJobApprovedBy(""); }, [activeProposalReview?.execute_approval_review?.approval_request_id, activeProposalReview?.execute_approval_review?.preflight.approval_envelope?.envelope_digest]);
   const preflightMutation = useMutation({ mutationFn: async (attempt: RunPreflightAttempt) => ({ generation: attempt.generation, report: await api.preflight(attempt.scenario, attempt.config) }), onSuccess: ({ generation, report }) => { if (generation !== preflightGeneration.current) return; setPreflight(report); setNotice(report.ready ? "Preflight resolved the current policy envelope." : report.status === "approval_required" && report.approval_binding && report.approval_envelope ? "Preflight resolved the exact Execute envelope. Review it before creating an approval-gated job." : "Preflight did not authorize this intent."); }, onError: (error, attempt) => { if (attempt.generation !== preflightGeneration.current) return; setPreflight(undefined); setNotice(error instanceof Error ? error.message : "Preflight failed."); }, onSettled: (_result, _error, attempt) => { if (attempt.generation === preflightGeneration.current) clearApproval(); } });
   const requestPreflight = () => { if (jobActivityBlocksNewIntent) { setNotice("Active-job inventory must be available and empty before starting another preflight."); return; } const generation = ++preflightGeneration.current; preflightMutation.mutate({ generation, scenario: structuredClone(scenario), config: structuredClone(runConfig) }); };
   const invalidatePreflight = () => { preflightGeneration.current += 1; setPreflight(undefined); };
@@ -403,67 +397,6 @@ function PlanPreview({ scenarioTitle, stepIds, edgeCount, dirty, config, catalog
   </Panel>;
 }
 
-function CanonicalPlanReview({ plan, cleanup, scope, binding, envelope }: { plan: Record<string, unknown>; cleanup?: unknown; scope?: unknown; binding?: ApprovalBinding | null; envelope?: ApprovalEnvelope | null }) {
-  const steps = Array.isArray(plan.steps) ? plan.steps.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object") : [];
-  const edges = Array.isArray(plan.edges) ? plan.edges : [];
-  const digest = binding?.plan_digest ?? plan.plan_digest ?? plan.digest ?? plan.scenario_digest;
-  const scopeRecord = scope && typeof scope === "object" ? scope as Record<string, unknown> : null;
-  const scopeLabel = typeof scope === "string" ? scope : Array.isArray(scopeRecord?.scope_refs) ? scopeRecord.scope_refs.join(", ") : "Not reported";
-  const cleanupRecord = cleanup && typeof cleanup === "object" ? cleanup as Record<string, unknown> : null;
-  const cleanupLabel = typeof cleanup === "string" ? sentence(cleanup) : cleanupRecord?.policy === "always" ? "Remove created lab files after the run" : sentence(String(cleanupRecord?.policy ?? "not reported"));
-  return <section className="canonical-plan" aria-label="Canonical preflight plan">
-    <header><div><span>{envelope ? "Ready for your review" : "Run review"}</span><strong>What this run will do</strong></div><Badge tone={envelope ? "warning" : "info"}>{steps.length} steps · {sentence(String(plan.mode ?? "not reported"))}</Badge></header>
-    <DataList items={[
-      { label: "Environment", value: binding?.profile_id ?? String(plan.runner_profile_id ?? "Not reported") },
-      { label: "Allowed scope", value: scopeLabel },
-      { label: "Cleanup", value: cleanupLabel },
-      { label: "Full experiment", value: `${steps.length} steps and ${edges.length} routes, including hidden branches` },
-    ]} />
-    <div className="canonical-steps review-steps">{steps.map((step, index) => {
-      const allowed = envelope?.steps.find((item) => item.step_id === step.step_id)?.options;
-      const selected = allowed?.find((option) => option.behavior_id === step.behavior_id);
-      const title = selected?.contract.title ?? sentence(String(step.step_id ?? "Unnamed step"));
-      return <article key={String(step.step_id ?? index)}>
-        <span>{String(index + 1).padStart(2, "0")}</span>
-        <div><strong>{String(title)}</strong>{selected?.contract.purpose ? <p>{String(selected.contract.purpose)}</p> : null}
-          <small>{step.action_id ? "Run in the authorized lab" : "Simulate this step"}{allowed && allowed.length > 1 ? ` · ${allowed.length} allowed methods` : ""}</small>
-        </div>
-        <details><summary>Step details</summary><dl>
-          <div><dt>Step / method</dt><dd><code>{String(step.step_id)}</code><code>{String(step.action_id ?? step.simulation_id ?? step.behavior_id ?? "Unresolved")}</code></dd></div>
-          <div><dt>Parameters</dt><dd><pre>{JSON.stringify(step.parameters ?? {}, null, 2)}</pre></dd></div>
-          <div><dt>Input from</dt><dd><pre>{JSON.stringify(step.inputs ?? {}, null, 2)}</pre></dd></div>
-          <div><dt>Outputs</dt><dd>{stringList(step.expected_outputs)}</dd></div>
-          <div><dt>Required capabilities</dt><dd>{stringList(step.required_capabilities)}</dd></div>
-        </dl></details>
-      </article>;
-    })}</div>
-    {envelope ? <ApprovalEnvelopeReview envelope={envelope} binding={binding} /> : null}
-    <details><summary>Run identities and full plan</summary>
-      <DataList items={[
-        { label: "Plan digest", value: digest ? <code>{String(digest)}</code> : "Not reported" },
-        { label: "State digest", value: binding ? <code>{binding.state_digest}</code> : "No Execute approval binding" },
-        { label: "Scope digest", value: binding ? <code>{binding.target_scope_digest}</code> : "No Execute approval binding" },
-        { label: "Envelope digest", value: envelope ? <code>{envelope.envelope_digest}</code> : "No Execute approval binding" },
-      ]} />
-      <pre>{JSON.stringify(plan, null, 2)}</pre>
-    </details>
-  </section>;
-}
-
-function stringList(value: unknown) {
-  if (!Array.isArray(value)) return "Not reported";
-  return value.map((item) => typeof item === "object" && item !== null ? String((item as Record<string, unknown>).name ?? (item as Record<string, unknown>).id ?? JSON.stringify(item)) : String(item)).join(", ") || "None";
-}
-
-function ApprovalEnvelopeReview({ envelope, binding }: { envelope: ApprovalEnvelope; binding?: ApprovalBinding | null }) {
-  return <section className="approval-envelope" aria-label="Complete Execute approval envelope">
-    <header><div><span>Allowed methods</span><strong>Review effects and alternatives</strong></div><Badge tone="warning">{envelope.steps.reduce((count, step) => count + step.options.length, 0)} methods</Badge></header><details><summary>All permitted methods, effects and parameters</summary>
-    {binding ? <p className="envelope-binding-note"><ShieldCheck/>Confirmation binds this envelope to state <code>{binding.state_digest}</code>, plan <code>{binding.plan_digest}</code>, and scope <code>{binding.target_scope_digest}</code>.</p> : null}
-    <div className="envelope-steps">{envelope.steps.map((step, stepIndex) => <article key={step.step_id}><header><span>{String(stepIndex + 1).padStart(2, "0")}</span><strong>{step.step_id}</strong><Badge>{step.options.length} option{step.options.length === 1 ? "" : "s"}</Badge></header>{step.options.map((option) => { const contract = option.contract; return <section className="envelope-option" key={`${step.step_id}-${option.behavior_id}`}><header><div><Badge tone={option.is_primary ? "info" : "violet"}>{option.is_primary ? "Primary" : "Auto alternate"}</Badge><strong>{String(contract.title ?? option.behavior_id)}</strong><code>{option.behavior_id}</code></div><code title="Behavior contract digest">{option.contract_digest}</code></header><p>{String(contract.purpose ?? "No behavior purpose was reported.")}</p><dl><div><dt>Resolved parameters</dt><dd><pre>{JSON.stringify(option.resolved_parameters, null, 2)}</pre></dd></div><div><dt>Effects contract</dt><dd>{sentence(String(contract.execution_state ?? "not reported"))} · {sentence(String(contract.safety_tier ?? "not reported"))}</dd></div><div><dt>Expected outputs</dt><dd>{stringList(contract.outputs)}</dd></div><div><dt>Observables</dt><dd>{stringList(contract.telemetry)}{Array.isArray(contract.detection_hints) && contract.detection_hints.length ? ` · Detection hints: ${contract.detection_hints.map(String).join(", ")}` : ""}</dd></div></dl><div className="envelope-actions">{option.actions.length ? option.actions.map((action) => <article key={action.action_id}><header><div><Badge tone={action.contract.mutates ? "warning" : "info"}>{action.contract.mutates ? "Mutating action" : "Non-mutating action"}</Badge><strong>{String(action.contract.title ?? action.action_id)}</strong><code>{action.action_id}</code></div><code title="Action contract digest">{action.contract_digest}</code></header><p>{String(action.contract.purpose ?? "No action purpose was reported.")}</p><DataList items={[{ label: "Capabilities", value: stringList(action.contract.capabilities) }, { label: "Platforms", value: stringList(action.contract.platforms) }, { label: "Effects", value: `${action.contract.mutates ? "Mutates fixture state" : "Read-only"}; ${sentence(String(action.contract.safety_tier ?? "tier not reported"))}` }, { label: "Expected outputs", value: stringList(action.contract.outputs) }, { label: "Cleanup", value: String(action.contract.cleanup_action_id ?? "No cleanup action declared") }]} /><details><summary>Full deterministic action contract</summary><pre>{JSON.stringify(action.contract, null, 2)}</pre></details></article>) : <Callout tone="warning" title="No deterministic action contract">This option cannot authorize runner effects unless the backend resolves an installed action contract.</Callout>}</div><details><summary>Full behavior contract</summary><pre>{JSON.stringify(contract, null, 2)}</pre></details></section>; })}</article>)}</div>
-    </details><details><summary>Raw complete approval envelope</summary><pre>{JSON.stringify(envelope, null, 2)}</pre></details>
-  </section>;
-}
-
 function normalizeStatus(status: string) { return status === "success" ? "succeeded" : status === "control_blocked" ? "blocked" : status; }
 function statusTone(status: string) { const value = normalizeStatus(status); return value === "succeeded" || value === "completed" || value === "cleaned" ? "success" as const : ["blocked", "partial", "awaiting_approval", "paused", "cancelling", "cancelled"].includes(value) ? "warning" as const : ["failed", "refused", "interrupted"].includes(value) ? "danger" as const : value === "counterfactual" ? "violet" as const : "info" as const; }
 
@@ -488,7 +421,7 @@ interface LiveConsoleProps {
   onControl: (action: "pause" | "resume" | "cancel") => void;
   onRetry: () => void;
   onProposalDecision: (result: AIProposalDecisionResult, review: AIProposalReview) => void;
-  onProposalReviewLoaded: (review: AIProposalReview) => void;
+  onProposalReviewLoaded: (review: AIProposalReview | undefined) => void;
   onReview: () => void;
 }
 
@@ -510,10 +443,11 @@ function LiveConsole({ run, job, events, pending, config, approvalPreflight, app
   </Panel>;
 }
 
-function JobApprovalGate({ job, preflight, approvalRequest, proposalReview, confirmed, approvedBy, pending, onConfirmed, onApprovedBy, onApprove }: { job: RunJob; preflight?: PreflightReport; approvalRequest: Record<string, unknown> | null; proposalReview?: AIProposalReview; confirmed: boolean; approvedBy: string; pending: boolean; onConfirmed: (confirmed: boolean) => void; onApprovedBy: (identity: string) => void; onApprove: () => void }) {
+function JobApprovalGate({ job, preflight: ordinaryPreflight, approvalRequest, proposalReview, confirmed, approvedBy, pending, onConfirmed, onApprovedBy, onApprove }: { job: RunJob; preflight?: PreflightReport; approvalRequest: Record<string, unknown> | null; proposalReview?: AIProposalReview; confirmed: boolean; approvedBy: string; pending: boolean; onConfirmed: (confirmed: boolean) => void; onApprovedBy: (identity: string) => void; onApprove: () => void }) {
+  const proposalExecute = job.progress.approval_kind === "ai_proposal_execute";
+  const preflight = proposalExecute ? continuationApprovalPreflight(job, proposalReview, approvalRequest) : ordinaryPreflight;
   const binding = preflight?.approval_binding;
   const envelope = preflight?.approval_envelope;
-  const proposalExecute = job.progress.approval_kind === "ai_proposal_execute";
   const resolutionRecord = proposalReview?.resolution && typeof proposalReview.resolution === "object" ? proposalReview.resolution : undefined;
   const continuation = resolutionRecord?.continuation;
   const continuationRecord = continuation && typeof continuation === "object" ? continuation as Record<string, unknown> : undefined;
@@ -524,13 +458,13 @@ function JobApprovalGate({ job, preflight, approvalRequest, proposalReview, conf
   const proposalRequestReady = Boolean(approvalRequestId && progressApprovalRequestId === approvalRequestId && originalApprovalRequestId && originalApprovalRequestId !== approvalRequestId && resolutionRecord?.approval_request_id === approvalRequestId);
   const pendingRequestReady = approvalRequest?.status === "pending" && (proposalExecute ? proposalRequestReady : ordinaryRequestReady);
   const exactBindingMatches = Boolean(binding && approvalBindingFields.every((field) => typeof approvalRequest?.[field] === "string" && approvalRequest[field] === binding[field]));
-  const freshBindingReady = pendingRequestReady && approvalBindingFields.every((field) => typeof approvalRequest?.[field] === "string") && proposalReview?.status === "accepted" && Boolean(continuationRecord?.execute_approval_binding_digest);
-  const exactEnvelopeReady = proposalExecute ? freshBindingReady : Boolean(hasUsableStoredApprovalReview(preflight) && pendingRequestReady && exactBindingMatches);
+  const exactEnvelopeReady = Boolean(hasUsableStoredApprovalReview(preflight) && pendingRequestReady && exactBindingMatches);
   return <section className="job-approval-gate" id="durable-execute-approval" aria-label="Durable Execute job approval">
     <header><div><AlertTriangle/><span><strong>{proposalExecute ? "Fresh Execute approval after proposal acceptance" : "Explicit one-time Execute approval"}</strong><small>The execution callback has not started. Proposal acceptance and effect authorization are separate decisions.</small></span></div><Badge tone="warning" dot>Awaiting approval</Badge></header>
     <DataList items={[{ label: "Durable job", value: <code>{job.job_id}</code> }, { label: "Approval request", value: <code>{String(approvalRequest?.approval_id ?? "Not reported")}</code> }, { label: "Expires", value: formatDate(typeof approvalRequest?.expires_at === "string" ? approvalRequest.expires_at : undefined) }, { label: "Profile / tier", value: proposalExecute ? `${String(approvalRequest?.profile_id ?? "Not reported")} / ${sentence(String(approvalRequest?.maximum_tier ?? "not reported"))}` : binding ? `${binding.profile_id} / ${sentence(binding.maximum_tier)}` : "Not reported" }, { label: "State digest", value: <code>{String(proposalExecute ? approvalRequest?.state_digest ?? "Not reported" : binding?.state_digest ?? "Not reported")}</code> }, { label: "Plan digest", value: <code>{String(proposalExecute ? approvalRequest?.plan_digest ?? "Not reported" : binding?.plan_digest ?? "Not reported")}</code> }, { label: "Scope digest", value: <code>{String(proposalExecute ? approvalRequest?.target_scope_digest ?? "Not reported" : binding?.target_scope_digest ?? "Not reported")}</code> }, { label: proposalExecute ? "Continuation binding digest" : "Envelope digest", value: <code>{String(proposalExecute ? continuationRecord?.execute_approval_binding_digest ?? "Not reported" : envelope?.envelope_digest ?? "Not reported")}</code> }]} />
     {!pendingRequestReady ? <Callout tone="danger" title="Pending approval binding unavailable">Approval remains disabled until this job reports the same pending approval request ID returned with its immutable envelope.</Callout> : null}
-    {proposalExecute ? proposalReview && continuationRecord ? <><Callout tone="warning" title="Fresh envelope, original approval refused">The accepted registered behavior is recompiled into a lineage-linked continuation. This fresh request is bound to the mutated scenario, resume point, exact scope, profile, tier, provider, and proposal lineage.</Callout><DataList items={[{ label: "Proposal record", value: <code>{proposalReview.proposal_record_id}</code> }, { label: "Selected behavior", value: <code>{String(continuationRecord.selected_behavior_id ?? proposalReview.record.proposal?.selected_behavior_id ?? "Not reported")}</code> }, { label: "Resume step", value: <code>{String(continuationRecord.resume_from_step_id ?? "Not reported")}</code> }, { label: "Continuation plan digest", value: <code>{String(continuationRecord.continuation_plan_digest ?? "Not reported")}</code> }, { label: "Proposal digest", value: <code>{proposalReview.proposal_digest}</code> }]} /></> : <Callout tone="danger" title="Fresh proposal envelope unavailable">Approval remains disabled until the accepted proposal detail and fresh binding are loaded.</Callout> : preflight?.plan ? <><CanonicalPlanReview plan={preflight.plan} cleanup={preflight.cleanup} scope={preflight.scope} binding={binding} envelope={envelope} />{binding && !exactBindingMatches ? <Callout tone="danger" title="Approval envelope mismatch">Approval remains disabled because the server-returned request does not exactly match all five preflight binding fields.</Callout> : null}</> : <Callout tone="danger" title="Exact review unavailable">Approval remains disabled because the job submission did not return its canonical preflight plan.</Callout>}
+    {proposalExecute && proposalReview && continuationRecord ? <DataList items={[{ label: "Proposal record", value: <code>{proposalReview.proposal_record_id}</code> }, { label: "Selected behavior", value: <code>{String(continuationRecord.selected_behavior_id ?? "Not reported")}</code> }, { label: "Resume step", value: <code>{String(continuationRecord.resume_from_step_id ?? "Full replay")}</code> }, { label: "Proposal digest", value: <code>{proposalReview.proposal_digest}</code> }]} /> : null}
+    {preflight?.plan ? <><CanonicalPlanReview plan={preflight.plan} cleanup={preflight.cleanup} scope={preflight.scope} binding={binding} envelope={envelope} />{binding && !exactBindingMatches ? <Callout tone="danger" title="Approval envelope mismatch">Approval remains disabled because the pending request does not exactly match all five preflight binding fields.</Callout> : null}</> : <Callout tone="danger" title="Exact review unavailable">Approval remains disabled until the current pending request has its complete canonical plan and approval envelope.</Callout>}
     <div className="job-approval-controls"><label className="check-row"><input type="checkbox" checked={confirmed} disabled={!exactEnvelopeReady || pending} onChange={(event) => onConfirmed(event.target.checked)}/><span><strong>I approve this exact immutable {proposalExecute ? "proposal continuation" : "job envelope"} once</strong><small>Unchecked by default and never stored in browser persistence</small></span></label><Field label="Operator identity for this job"><input value={approvedBy} disabled={!exactEnvelopeReady || pending} onChange={(event) => onApprovedBy(event.target.value)} autoComplete="off" placeholder="Operator label"/></Field><Button variant="primary" disabled={!exactEnvelopeReady || !confirmed || !approvedBy.trim() || pending} onClick={onApprove}>{pending ? <Activity className="spin"/> : <ShieldCheck/>}{pending ? "Applying one-time approval" : "Approve and release job"}</Button><p>The server recomputes the binding, validates the pending capability, consumes it atomically, then releases only this job. Changing configuration elsewhere cannot alter this immutable request.</p></div>
   </section>;
 }

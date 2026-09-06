@@ -88,6 +88,7 @@ from .config import (
     RunnerProfile,
     load_config,
 )
+from .continuation_review import continuation_approval_review
 from .contracts import (
     ContractError,
     ExecutionMode,
@@ -2988,6 +2989,40 @@ class BlueFireService(RunnerManagementServiceMixin):
                 "proposal_not_found",
                 "Proposal review was not found.",
             ) from exc
+        if proposal.get("status") == "accepted":
+            job = self.product_store.get_job(job_id)
+            progress = job.get("progress")
+            if (
+                job.get("state") == "awaiting_approval"
+                and isinstance(progress, Mapping)
+                and progress.get("approval_kind") == "ai_proposal_execute"
+                and progress.get("proposal_record_id") == proposal_record_id
+            ):
+                try:
+                    pending = self.product_store.get_approval_request(
+                        str(progress.get("approval_request_id"))
+                    )
+                    prepared = self._prepare_ai_proposal_continuation(job, proposal)
+                    return {
+                        **proposal,
+                        "execute_approval_review": continuation_approval_review(
+                            job, proposal, prepared, pending
+                        ),
+                    }
+                except (
+                    ProductStoreError,
+                    ReplayError,
+                    RunStoreError,
+                    OrchestrationError,
+                    RunnerContractError,
+                    RunnerTransportError,
+                    ValueError,
+                ) as exc:
+                    raise APIError(
+                        HTTPStatus.CONFLICT,
+                        "proposal_approval_review_unavailable",
+                        "The current continuation cannot be reviewed for approval.",
+                    ) from exc
         return proposal
 
     def accept_proposal_review(
@@ -3069,6 +3104,13 @@ class BlueFireService(RunnerManagementServiceMixin):
                 if fresh_approval is None
                 else self.product_store.get_job(job_id)
             )
+            if fresh_approval is not None:
+                resolved = {
+                    **resolved,
+                    "execute_approval_review": continuation_approval_review(
+                        resumed, resolved, prepared, fresh_approval
+                    ),
+                }
         except (
             ProductStoreError,
             ReplayError,
@@ -3906,6 +3948,32 @@ class BlueFireService(RunnerManagementServiceMixin):
             "approval_context": approval_context,
             "runner_readiness": runner_readiness,
             "approval_binding": binding,
+            "approval_preflight": (
+                {
+                    **preflight.to_dict(),
+                    "ready": False,
+                    "status": "approval_required",
+                    "approval": "required",
+                    "findings": ["Fresh operator approval is required for this continuation."],
+                    "runner_profile": profile.id,
+                    "scope": dict(target_scope),
+                    "cleanup": {
+                        "policy": profile.cleanup_policy.value,
+                        "action_id": "sandbox.cleanup.v1",
+                    },
+                    "approval_binding": binding,
+                    "approval_envelope": execution_approval_envelope(
+                        registry=self.registry,
+                        scenario=prepared.scenario,
+                        catalog_authority=self._catalog_snapshot.to_dict(),
+                    ),
+                    "collector_binding": collector_binding,
+                    "collector_registry_authority": collector_authority,
+                    "runner_readiness": runner_readiness,
+                }
+                if mode is ExecutionMode.EXECUTE and profile is not None
+                else None
+            ),
             "action_implementations": resolved_actions,
             "collector_ids": collector_ids,
             "collector_runtime": collector_runtime,

@@ -740,6 +740,14 @@ export interface AIProposal {
   requires_operator_review?: boolean;
 }
 
+export interface ContinuationApprovalReview {
+  schema_version: "bluefire.continuation-approval-review.v1";
+  job_id: string;
+  proposal_record_id: string;
+  approval_request_id: string;
+  preflight: PreflightReport;
+}
+
 export interface AIProposalReview {
   schema_version: "bluefire.ai-proposal-review.v1" | string;
   proposal_record_id: string;
@@ -761,6 +769,7 @@ export interface AIProposalReview {
     proposal?: AIProposal;
   };
   resolution?: Record<string, unknown> | null;
+  execute_approval_review?: ContinuationApprovalReview | null;
   created_at: string;
   decided_at?: string | null;
   decided_by?: string | null;
