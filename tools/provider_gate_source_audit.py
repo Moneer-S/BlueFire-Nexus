@@ -40,7 +40,7 @@ _REVIEWED_RUNNER_CLIENT_LAUNCH_SECTIONS = {
     "_run_darwin_launch_worker": "sha256:a969f6e5c14c2bc0b150be268321faf33dd00da035548706cb9eded992ac01aa",
 }
 _REVIEWED_RUNNER_CLIENT_SOURCE_SHA256 = (
-    "sha256:3b02392e5aca03bf752d6684786ddf032ce9c9ae839daa507bafaa67ed15fecd"
+    "sha256:100648d43e32fe2e5064a9141903aea13cd1648943c57f51b69a173b04b1b077"
 )
 _REVIEWED_DARWIN_CONTAINMENT_SECTIONS = {
     "_validate_macos_launch_parent": "sha256:244beadfd89a4f2e6731109cd100042ba2a1ef8ea40e81bbd98f55211e7ebfb6",
@@ -52,7 +52,7 @@ _REVIEWED_PARENT_DEATH_SOURCE_SHA256 = (
     "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df"
 )
 _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
-    "bluefire/runner_client.py": "sha256:3b02392e5aca03bf752d6684786ddf032ce9c9ae839daa507bafaa67ed15fecd",
+    "bluefire/runner_client.py": "sha256:100648d43e32fe2e5064a9141903aea13cd1648943c57f51b69a173b04b1b077",
     "bluefire/runner_bootstrap.py": "sha256:2d2ffffec138fdf76587649170b91cc04d2e5fedb6d1768d85b725c7ba809cdf",
     "bluefire/runner_darwin_containment.py": "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c",
     "bluefire/runner_windows_containment.py": "sha256:937456440a3c2dce94d24af695951ce19ca682b7752aa7437a5fae1f86bfb733",

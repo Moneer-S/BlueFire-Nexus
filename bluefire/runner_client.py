@@ -54,6 +54,8 @@ from .runner_darwin_containment import spawn_no_fork_exec as spawn_darwin_no_for
 from .runner_darwin_containment import (
     spawn_parent_death as spawn_darwin_parent_death,
 )
+from .runner_durable_result import DurableRunnerResult
+from .runner_durable_result import runner_pending_result_path as runner_pending_result_path
 from .runner_inventory import RunnerInventoryAuthorityError
 from .runner_inventory import canonical_runner_inventory as _canonical_runner_inventory
 from .runner_private_files import (
@@ -1262,30 +1264,6 @@ def reject_forbidden_execution_keys(value: Any, *, path: str = "$") -> None:
         raise RunnerTransportError(str(exc)) from exc
 
 
-def runner_pending_result_path(
-    durable_result_path: str | Path,
-    task_id: str,
-) -> Path:
-    """Return the deterministic crash-recovery path for a task's runner stdout.
-
-    The task identifier is hashed into a fixed filename, so it can never select
-    a path.  A server that restarts after its parent process was interrupted can
-    use this helper to find and reconcile a complete, parseable runner result.
-    """
-
-    if not isinstance(task_id, str) or _TASK_IDENTIFIER.fullmatch(task_id) is None:
-        raise RunnerTransportError("runner task identity is invalid")
-    destination = Path(durable_result_path).expanduser()
-    if not destination.is_absolute() or destination.name in {"", ".", ".."}:
-        raise RunnerTransportError("runner durable result destination is invalid")
-    try:
-        destination = destination.resolve(strict=False)
-    except OSError:
-        raise RunnerTransportError("runner durable result destination is invalid") from None
-    identity = sha256(f"{task_id}\0{destination.name}".encode("utf-8")).hexdigest()
-    return destination.with_name(f".bluefire-result-{identity}.pending")
-
-
 def runner_watchdog_control_root(
     durable_result_path: str | Path,
     task_id: str,
@@ -1446,6 +1424,7 @@ class SubprocessRustRunner:
         self.output_limit_bytes = output_limit_bytes
         self._receiver_task_key_factory = receiver_task_key_factory
         self._durable_result_guard = durable_result_guard
+        self._durable_results = DurableRunnerResult(parent_guard=durable_result_guard)
         self._kill_child_on_job_close = bool(_kill_child_on_job_close)
         runtime = Path(
             _watchdog_interpreter
@@ -1744,22 +1723,6 @@ class SubprocessRustRunner:
         if restart:
             _start_darwin_indeterminate_reconciler()
 
-    def _result_parent_guard(self, parent: Path) -> _PinnedPrivateDirectory:
-        live = self._durable_result_guard
-        if live is None:
-            return _PinnedPrivateDirectory(parent)
-        if live.path != parent or live.delete or live.share_delete:
-            raise RunnerTransportError(
-                "runner durable result guard cannot provide an exclusive watchdog handoff"
-            )
-        identity = live.directory_identity()
-        mount_identity = live.directory_mount_identity()
-        return _PinnedPrivateDirectory(
-            parent,
-            expected_identity=identity,
-            expected_mount_identity=mount_identity,
-        )
-
     def inventory(self) -> Mapping[str, Any]:
         output = self._invoke([str(self.runner_binary), "inventory", "--json"])
         return self._decode_json(output, "runner inventory")
@@ -1810,7 +1773,7 @@ class SubprocessRustRunner:
                 "Runner task did not start because cancellation was requested."
             )
 
-        destination, pending, handoff_guard = self._durable_paths(
+        destination, pending, handoff_guard = self._durable_results.prepare(
             durable_result_path,
             task_id,
             retain_parent_guard=True,
@@ -1994,7 +1957,7 @@ class SubprocessRustRunner:
             raise RunnerTaskCancelled(
                 "Runner task did not start because cancellation was requested."
             )
-        destination, pending, retained_guard = self._durable_paths(
+        destination, pending, retained_guard = self._durable_results.prepare(
             durable_result_path,
             task_id,
         )
@@ -2030,7 +1993,7 @@ class SubprocessRustRunner:
                     darwin_launch_sealed=darwin_launch_sealed,
                 )
             result = self._validate_result(output, manifest, profile)
-            self._promote_pending_result(
+            self._durable_results.promote(
                 pending,
                 destination,
                 pending_expected=output,
@@ -2041,7 +2004,7 @@ class SubprocessRustRunner:
         except (RunnerDurableResultExists, RunnerPendingResultExists):
             raise
         except BaseException:
-            self._remove_pending_result(
+            self._durable_results.remove_pending(
                 pending,
                 expected_identity=(pending_identities[-1] if pending_identities else None),
             )
@@ -2491,8 +2454,8 @@ class SubprocessRustRunner:
             raise RunnerDurableResultExists(
                 "Runner durable result already exists and requires reconciliation."
             )
-        pending_present = self._private_name_exists(pending)
-        destination_present = self._private_name_exists(destination)
+        pending_present = self._durable_results.exists(pending)
+        destination_present = self._durable_results.exists(destination)
         if code == "pending_result_exists" or pending_present:
             raise RunnerPendingResultExists(
                 "Runner pending result requires recovery before the task can start."
@@ -2504,23 +2467,9 @@ class SubprocessRustRunner:
         if code == "invalid_result":
             raise RunnerTransportError("runner returned a result that did not match its request")
         if state == "succeeded" or (status is None and destination_present):
-            output = self._read_private_result(destination)
+            output = self._durable_results.read(destination, maximum=self.output_limit_bytes)
             return self._validate_result(output, manifest, profile)
         raise RunnerTransportError("Runner watchdog failed before publishing a valid result")
-
-    def _read_private_result(self, path: Path) -> bytes:
-        try:
-            with self._result_parent_guard(path.parent) as pinned:
-                return pinned.read(path.name, maximum=self.output_limit_bytes)
-        except (OSError, RunnerTransportError):
-            raise RunnerTransportError("runner durable result is unavailable") from None
-
-    def _private_name_exists(self, path: Path) -> bool:
-        try:
-            with self._result_parent_guard(path.parent) as pinned:
-                return pinned.has_name(path.name)
-        except (OSError, RunnerTransportError):
-            raise RunnerTransportError("runner durable result is unavailable") from None
 
     @staticmethod
     def _cleanup_watchdog_control(root: Path) -> None:
@@ -2667,7 +2616,7 @@ class SubprocessRustRunner:
         darwin_launch_started: Callable[[], None] | None,
         darwin_launch_sealed: Callable[[], None] | None,
     ) -> tuple[bytes, tuple[int, int]]:
-        output = self._open_pending_result(pending_result_path)
+        output = self._durable_results.open_pending(pending_result_path)
         guarded_output = cast(_GuardedBinaryFile, output)
         identity_sink.append(guarded_output.identity())
         stderr = bytearray()
@@ -4032,139 +3981,6 @@ class SubprocessRustRunner:
                 return False
             return process.returncode is not None
         return self._terminate_posix_process_tree(process)
-
-    def _durable_paths(
-        self,
-        durable_result_path: str | Path,
-        task_id: str,
-        *,
-        retain_parent_guard: bool = False,
-    ) -> tuple[Path, Path, _PinnedPrivateDirectory | None]:
-        destination = Path(durable_result_path).expanduser()
-        if not destination.is_absolute() or destination.name in {"", ".", ".."}:
-            raise RunnerTransportError("runner durable result destination is invalid")
-        try:
-            requested_parent = destination.parent
-            destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            if _is_link_or_reparse(destination.parent):
-                raise OSError("durable result parent is linked")
-            metadata = destination.parent.stat(follow_symlinks=False)
-            parent = destination.parent.resolve(strict=True)
-            if (
-                os.path.normcase(os.path.normpath(str(requested_parent)))
-                != os.path.normcase(os.path.normpath(str(parent)))
-                or not parent.is_dir()
-                or _is_link_or_reparse(parent)
-            ):
-                raise OSError("durable result parent is not a directory")
-            destination = parent / destination.name
-            pending = runner_pending_result_path(destination, task_id)
-            pinned = self._result_parent_guard(parent)
-            try:
-                pinned.__enter__()
-                if pinned.directory_identity() != (metadata.st_dev, metadata.st_ino):
-                    raise OSError("durable result parent identity changed")
-                if pinned.has_name(destination.name):
-                    raise RunnerDurableResultExists(
-                        "Runner durable result already exists and requires reconciliation."
-                    )
-                if pinned.has_name(pending.name):
-                    raise RunnerPendingResultExists(
-                        "Runner pending result requires recovery before the task can start."
-                    )
-            except BaseException as exc:
-                pinned.__exit__(type(exc), exc, exc.__traceback__)
-                raise
-            if not retain_parent_guard:
-                pinned.__exit__(None, None, None)
-        except RunnerDurableResultExists:
-            raise
-        except RunnerPendingResultExists:
-            raise
-        except _PrivateFileCleanupError:
-            raise
-        except (OSError, RunnerTransportError):
-            raise RunnerTransportError("runner durable result destination is unavailable") from None
-        return destination, pending, pinned if retain_parent_guard else None
-
-    def _open_pending_result(self, path: Path) -> BinaryIO:
-        pinned = self._result_parent_guard(path.parent)
-        try:
-            pinned.__enter__()
-            return cast(
-                BinaryIO,
-                pinned.open_new(path.name, maximum=_WATCHDOG_CONFIG_LIMIT_BYTES),
-            )
-        except FileExistsError:
-            pinned.close()
-            raise RunnerPendingResultExists(
-                "Runner pending result requires recovery before the task can start."
-            ) from None
-        except (OSError, RunnerTransportError):
-            pinned.close()
-            raise RunnerTransportError("runner pending result is unavailable") from None
-
-    def _promote_pending_result(
-        self,
-        pending: Path,
-        destination: Path,
-        *,
-        pending_expected: bytes,
-        pending_identity: tuple[int, int],
-        final_payload: bytes,
-    ) -> None:
-        final_created = False
-        try:
-            if pending.parent != destination.parent:
-                raise OSError("durable result directories differ")
-            with self._result_parent_guard(destination.parent) as pinned:
-                checked, checked_identity = pinned.read_with_identity(
-                    pending.name,
-                    maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
-                    expected_identity=pending_identity,
-                )
-                if checked != pending_expected or checked_identity != pending_identity:
-                    raise OSError("runner pending result identity changed")
-                pinned.create(
-                    destination.name,
-                    final_payload,
-                    maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
-                )
-                final_created = True
-                pinned.unlink(
-                    pending.name,
-                    maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
-                    expected=pending_expected,
-                    expected_identity=pending_identity,
-                )
-        except FileExistsError:
-            raise RunnerDurableResultExists(
-                "Runner durable result already exists and requires reconciliation."
-            ) from None
-        except (OSError, RunnerTransportError):
-            if final_created:
-                raise RunnerDurableResultExists(
-                    "Runner durable result may be committed and requires reconciliation."
-                ) from None
-            raise RunnerTransportError("runner durable result could not be committed") from None
-
-    def _remove_pending_result(
-        self,
-        path: Path,
-        *,
-        expected_identity: tuple[int, int] | None,
-    ) -> None:
-        if expected_identity is None:
-            return
-        try:
-            with self._result_parent_guard(path.parent) as pinned:
-                pinned.unlink(
-                    path.name,
-                    maximum=_WATCHDOG_CONFIG_LIMIT_BYTES,
-                    expected_identity=expected_identity,
-                )
-        except (OSError, RunnerTransportError):
-            pass
 
     @staticmethod
     def _decode_json(payload: bytes, label: str) -> Mapping[str, Any]:

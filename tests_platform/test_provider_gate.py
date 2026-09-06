@@ -82,6 +82,7 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/action_catalog.py",
         "bluefire/provider_runner_contracts.py",
         "bluefire/runner_adapter.py",
+        "bluefire/runner_durable_result.py",
         "bluefire/orchestrator.py",
         "bluefire/service.py",
         "bluefire/package_management.py",
@@ -353,6 +354,7 @@ def test_windows_containment_owner_remains_pinned_without_new_process_launches(
     [
         "bluefire/api_context.py",
         "bluefire/api_routes.py",
+        "bluefire/runner_durable_result.py",
         "bluefire/package_management.py",
         "bluefire/package_management_context.py",
         "bluefire/reviewed_source_intake.py",

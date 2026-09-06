@@ -306,6 +306,7 @@
         "bluefire.runner_state_directory",
         "bluefire.runner_parent_death",
         "bluefire.runner_private_files",
+        "bluefire.runner_durable_result",
         "bluefire.runner_result_persistence",
         "bluefire.runner_transport",
         "bluefire.runner_transport_errors",
