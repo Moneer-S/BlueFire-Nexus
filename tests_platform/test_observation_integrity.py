@@ -178,7 +178,8 @@ def test_production_wire_identities_bind_actual_independent_file_reads(
             "artifact": path,
             "byte_count": 189,
             "classification": "public",
-            "sha256": "4af6ae2cf13d13d9d325632af3f90d1730faae52424f176b2cc34a0eef0db6ca",
+            # Pinned digest of the public fixture above, not authentication material.
+            "sha256": "4af6ae2cf13d13d9d325632af3f90d1730faae52424f176b2cc34a0eef0db6ca",  # pragma: allowlist secret
             "synthetic": True,
         }
         action_id = "sandbox.identity-material.seed.v1"
