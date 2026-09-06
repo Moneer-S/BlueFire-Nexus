@@ -127,6 +127,7 @@ TRUSTED_PROCESS_BOUNDARY_PATHS = (
     "bluefire/runner_bootstrap.py",
     "bluefire/runner_darwin_containment.py",
     "bluefire/runner_windows_containment.py",
+    "bluefire/runner_linux_containment.py",
     "bluefire/runner_lifecycle.py",
     "bluefire/runner_parent_death.py",
     "bluefire/runner_trust.py",

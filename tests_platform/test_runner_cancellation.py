@@ -23,6 +23,7 @@ import bluefire.runner_darwin_containment as darwin_containment_module
 import bluefire.runner_private_files as private_files_module
 import bluefire.runner_trust as runner_trust_module
 import bluefire.runner_watchdog as runner_watchdog_module
+from bluefire import runner_linux_containment as linux_containment_module
 from bluefire.runner_client import (
     RunnerDurableResultExists,
     RunnerPendingResultExists,
@@ -36,6 +37,7 @@ from bluefire.runner_client import (
     runner_watchdog_ready_path,
     runner_watchdog_status_path,
 )
+from bluefire.runner_linux_containment import LinuxPrivateProcessContainment
 
 _HELPER = r"""
 import json
@@ -2526,19 +2528,19 @@ def test_linux_identity_change_is_never_signalled(
     descriptor = os.open(os.devnull, os.O_RDONLY)
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(
-        SubprocessRustRunner,
-        "_linux_process_identity",
+        LinuxPrivateProcessContainment,
+        "process_identity",
         staticmethod(lambda _process_id: next(observations)),
     )
-    monkeypatch.setattr(runner_client_module, "_PIDFD_OPEN", lambda _pid, _flags: descriptor)
+    monkeypatch.setattr(linux_containment_module, "_PIDFD_OPEN", lambda _pid, _flags: descriptor)
     monkeypatch.setattr(
-        runner_client_module,
+        linux_containment_module,
         "_PIDFD_SEND_SIGNAL",
         lambda pidfd, signum, _info, _flags: signals.append((pidfd, signum)),
     )
 
     force_signal = getattr(signal, "SIGKILL", signal.SIGTERM)
-    assert SubprocessRustRunner._signal_linux_process_identity(identity, force_signal) is False
+    assert LinuxPrivateProcessContainment._signal_identity(identity, force_signal) is False
     assert signals == []
 
 
@@ -2557,7 +2559,7 @@ def test_linux_process_identity_accepts_zero_scoped_namespace_process(
 
     monkeypatch.setattr(Path, "read_bytes", read_bytes)
 
-    assert SubprocessRustRunner._linux_process_identity(process_id) == (
+    assert LinuxPrivateProcessContainment.process_identity(process_id) == (
         process_id,
         start_time_ticks,
         0,
@@ -2584,7 +2586,7 @@ def test_linux_process_identity_rejects_negative_scope(
     for invalid_scope in ((-1, 0), (0, -1)):
         scope[:] = invalid_scope
         with pytest.raises(RunnerTransportError, match="identity is invalid"):
-            SubprocessRustRunner._linux_process_identity(process_id)
+            LinuxPrivateProcessContainment.process_identity(process_id)
 
 
 def test_linux_private_session_scan_ignores_zero_scoped_namespace_process(
@@ -2602,14 +2604,14 @@ def test_linux_private_session_scan_ignores_zero_scoped_namespace_process(
         def __exit__(self, *_args: object) -> None:
             return None
 
-    monkeypatch.setattr(runner_client_module.os, "scandir", lambda _path: Entries())
+    monkeypatch.setattr(linux_containment_module.os, "scandir", lambda _path: Entries())
     monkeypatch.setattr(
-        runner,
-        "_linux_process_identity",
+        runner._linux_containment,
+        "process_identity",
         lambda process_id: identities[process_id],
     )
 
-    assert runner._linux_private_session_identities((*leader, 91)) == [leader]
+    assert runner._linux_containment._session_identities((*leader, 91)) == [leader]
 
 
 def test_linux_private_registration_rejects_zero_scoped_target(
@@ -2632,14 +2634,14 @@ def test_linux_private_registration_rejects_zero_scoped_target(
             return 0
 
     monkeypatch.setattr(
-        runner,
-        "_linux_process_identity",
+        runner._linux_containment,
+        "process_identity",
         lambda _process_id: (process_id, 7001, 0, 0),
     )
-    monkeypatch.setattr(runner_client_module, "_PIDFD_OPEN", lambda _pid, _flags: descriptor)
+    monkeypatch.setattr(linux_containment_module, "_PIDFD_OPEN", lambda _pid, _flags: descriptor)
 
     with pytest.raises(RunnerTransportError, match="containment is unavailable"):
-        runner._register_linux_private_process(Process())  # type: ignore[arg-type]
+        runner._linux_containment.register(Process())  # type: ignore[arg-type]
 
     assert stopped == ["kill", "wait:5.0"]
     with pytest.raises(OSError):
@@ -2673,11 +2675,11 @@ def test_linux_private_leader_is_reaped_only_after_wnowait_and_empty_session(
         events.append(("waitid", pidfd, options))
         return SimpleNamespace(si_pid=process_id)
 
-    monkeypatch.setattr(runner_client_module, "_WAIT_ID", wait_id)
-    monkeypatch.setattr(runner_client_module, "_PIDFD_ID_TYPE", 3)
-    monkeypatch.setattr(runner_client_module, "_WAIT_EXITED", 4)
-    monkeypatch.setattr(runner_client_module, "_WAIT_NO_HANG", 1)
-    monkeypatch.setattr(runner_client_module, "_WAIT_NO_REAP", wait_no_reap)
+    monkeypatch.setattr(linux_containment_module, "_WAIT_ID", wait_id)
+    monkeypatch.setattr(linux_containment_module, "_PIDFD_ID_TYPE", 3)
+    monkeypatch.setattr(linux_containment_module, "_WAIT_EXITED", 4)
+    monkeypatch.setattr(linux_containment_module, "_WAIT_NO_HANG", 1)
+    monkeypatch.setattr(linux_containment_module, "_WAIT_NO_REAP", wait_no_reap)
 
     def empty_session(
         _containment: tuple[int, int, int, int, int],
@@ -2685,11 +2687,11 @@ def test_linux_private_leader_is_reaped_only_after_wnowait_and_empty_session(
         events.append("session-empty")
         return [identity]
 
-    monkeypatch.setattr(runner, "_linux_private_session_identities", empty_session)
+    monkeypatch.setattr(runner._linux_containment, "_session_identities", empty_session)
 
     process = Process()
-    runner._linux_process_containments[process] = (*identity, descriptor)  # type: ignore[index]
-    assert runner._release_linux_private_process(process, terminate=False) is True  # type: ignore[arg-type]
+    runner._linux_containment._processes[process] = (*identity, descriptor)  # type: ignore[index]
+    assert runner._linux_containment.release(process, terminate=False) is True  # type: ignore[arg-type]
     wait_events = [event for event in events if isinstance(event, tuple) and event[0] == "waitid"]
     assert wait_events
     assert all(int(event[2]) & wait_no_reap for event in wait_events)
@@ -2698,8 +2700,8 @@ def test_linux_private_leader_is_reaped_only_after_wnowait_and_empty_session(
         for index, event in enumerate(events)
         if isinstance(event, tuple) and event[0] == "reap"
     )
-    assert process not in runner._linux_process_containments
-    assert process in runner._released_linux_processes
+    assert process not in runner._linux_containment._processes
+    assert process in runner._linux_containment._released_processes
     assert runner._process_exited_without_reap(process) is True  # type: ignore[arg-type]
     assert runner._finish_posix_process_group(process) is True  # type: ignore[arg-type]
 
@@ -2725,24 +2727,24 @@ def test_linux_private_session_cleanup_includes_alternate_process_groups(
             return 0
 
     monkeypatch.setattr(
-        runner,
-        "_process_exited_without_reap",
+        runner._linux_containment,
+        "exited_without_reap",
         lambda _process: True,
     )
     monkeypatch.setattr(
-        runner,
-        "_linux_private_session_identities",
+        runner._linux_containment,
+        "_session_identities",
         lambda _containment: list(next(inventories)),
     )
     monkeypatch.setattr(
-        runner,
-        "_signal_linux_process_identity",
+        runner._linux_containment,
+        "_signal_identity",
         lambda identity, _signum: signalled.append(identity) or True,
     )
 
     process = Process()
-    runner._linux_process_containments[process] = (*leader, descriptor)  # type: ignore[index]
-    assert runner._release_linux_private_process(process, terminate=False) is True  # type: ignore[arg-type]
+    runner._linux_containment._processes[process] = (*leader, descriptor)  # type: ignore[index]
+    assert runner._linux_containment.release(process, terminate=False) is True  # type: ignore[arg-type]
     assert signalled == [alternate_group_child]
 
 

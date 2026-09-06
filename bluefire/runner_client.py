@@ -58,6 +58,7 @@ from .runner_durable_result import DurableRunnerResult
 from .runner_durable_result import runner_pending_result_path as runner_pending_result_path
 from .runner_inventory import RunnerInventoryAuthorityError
 from .runner_inventory import canonical_runner_inventory as _canonical_runner_inventory
+from .runner_linux_containment import LinuxPrivateProcessContainment
 from .runner_private_files import (
     _WINDOWS_LEGACY_PRIVATE_ROOT_LIMIT as _WINDOWS_LEGACY_PRIVATE_ROOT_LIMIT,
 )
@@ -115,13 +116,7 @@ _KILL_PROCESS_GROUP = getattr(os, "killpg", None)
 _GET_PROCESS_GROUP = getattr(os, "getpgrp", None)
 _GET_PROCESS_GROUP_ID = getattr(os, "getpgid", None)
 _GET_SESSION_ID = getattr(os, "getsid", None)
-_PIDFD_OPEN = getattr(os, "pidfd_open", None)
-_PIDFD_SEND_SIGNAL = getattr(signal, "pidfd_send_signal", None)
 _WAIT_ID = getattr(os, "waitid", None)
-_PIDFD_ID_TYPE = getattr(os, "P_PIDFD", None)
-_WAIT_EXITED = getattr(os, "WEXITED", 0)
-_WAIT_NO_HANG = getattr(os, "WNOHANG", 0)
-_WAIT_NO_REAP = getattr(os, "WNOWAIT", 0)
 _FORCE_KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 _DARWIN_P_PID = 1
 _DARWIN_WAITID_OPTIONS = 0x0000_0001 | 0x0000_0004 | 0x0000_0020
@@ -1469,10 +1464,7 @@ class SubprocessRustRunner:
         self._windows_containment = WindowsJobContainment(
             kill_on_close=self._kill_child_on_job_close
         )
-        self._linux_process_containments: weakref.WeakKeyDictionary[
-            subprocess.Popen[bytes], tuple[int, int, int, int, int]
-        ] = weakref.WeakKeyDictionary()
-        self._released_linux_processes: weakref.WeakSet[subprocess.Popen[bytes]] = weakref.WeakSet()
+        self._linux_containment = LinuxPrivateProcessContainment()
         self._released_darwin_processes: weakref.WeakSet[subprocess.Popen[bytes]] = (
             weakref.WeakSet()
         )
@@ -2904,58 +2896,6 @@ class SubprocessRustRunner:
             for proven in proven_processes:
                 self._darwin_no_fork_proven.add(proven)
 
-    @staticmethod
-    def _linux_process_identity(process_id: int) -> tuple[int, int, int, int]:
-        try:
-            payload = (Path("/proc") / str(process_id) / "stat").read_bytes()
-        except FileNotFoundError:
-            raise ProcessLookupError(process_id) from None
-        except OSError:
-            raise RunnerTransportError("Linux process identity is unavailable") from None
-        close = payload.rfind(b")")
-        fields = payload[close + 2 :].split() if 0 < close < len(payload) - 2 else []
-        try:
-            identity = (
-                process_id,
-                int(fields[19]),
-                int(fields[2]),
-                int(fields[3]),
-            )
-        except (IndexError, ValueError):
-            raise RunnerTransportError("Linux process identity is invalid") from None
-        if (
-            not 0 < len(payload) <= 4096
-            or identity[0] <= 0
-            or identity[1] <= 0
-            or identity[2] < 0
-            or identity[3] < 0
-        ):
-            raise RunnerTransportError("Linux process identity is invalid")
-        return identity
-
-    def _register_linux_private_process(self, process: subprocess.Popen[bytes]) -> None:
-        descriptor = -1
-        try:
-            if not callable(_PIDFD_OPEN):
-                raise OSError("pidfd_open unavailable")
-            before = self._linux_process_identity(process.pid)
-            descriptor = int(_PIDFD_OPEN(process.pid, 0))
-            after = self._linux_process_identity(process.pid)
-            if before != after or before[2:] != (process.pid, process.pid):
-                raise OSError("private process identity mismatch")
-            self._linux_process_containments[process] = (*before, descriptor)
-            descriptor = -1
-        except (OSError, ProcessLookupError, RunnerTransportError):
-            try:
-                process.kill()
-                process.wait(timeout=_PROCESS_KILL_GRACE_SECONDS)
-            except (OSError, subprocess.SubprocessError):
-                pass
-            raise RunnerTransportError("Linux private process containment is unavailable") from None
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-
     def _complete_verified_darwin_release(
         self,
         process: subprocess.Popen[bytes],
@@ -3030,7 +2970,7 @@ class SubprocessRustRunner:
         *,
         _reconciling: bool = False,
     ) -> bool:
-        if process in self._released_linux_processes:
+        if self._linux_containment.was_released(process):
             return process.returncode is not None
         if process in self._released_darwin_processes:
             if not self._close_darwin_process_containment(process):
@@ -3042,8 +2982,8 @@ class SubprocessRustRunner:
                 return False
             self._drop_owned_darwin_process(process)
             return True
-        containment = self._linux_process_containments.get(process)
-        if containment is None and sys.platform == "darwin":
+        linux_contained = self._linux_containment.contains(process)
+        if not linux_contained and sys.platform == "darwin":
             darwin_private = process in self._darwin_process_containments
             if process in self._darwin_identity_lost:
                 return False
@@ -3072,29 +3012,9 @@ class SubprocessRustRunner:
                     self._darwin_identity_lost.add(process)
                     self._retain_indeterminate_darwin_process(process, identity_lost=True)
                 return False
-        if containment is None:
+        if not linux_contained:
             return process.poll() is not None
-        if (
-            not callable(_WAIT_ID)
-            or _PIDFD_ID_TYPE is None
-            or not _WAIT_EXITED
-            or not _WAIT_NO_HANG
-            or not _WAIT_NO_REAP
-        ):
-            raise RunnerTransportError("Linux unreaped process observation is unavailable")
-        try:
-            observed = _WAIT_ID(
-                _PIDFD_ID_TYPE,
-                containment[4],
-                _WAIT_EXITED | _WAIT_NO_HANG | _WAIT_NO_REAP,
-            )
-        except (ChildProcessError, OSError):
-            raise RunnerTransportError("Linux process was reaped before containment") from None
-        if observed is None:
-            return False
-        if int(getattr(observed, "si_pid", 0)) != process.pid:
-            raise RunnerTransportError("Linux exit identity is invalid")
-        return True
+        return self._linux_containment.exited_without_reap(process)
 
     def _spawn(
         self,
@@ -3160,15 +3080,7 @@ class SubprocessRustRunner:
                 # group. Its child inherits both and arms a kernel parent-death
                 # signal before the verified runner inode executes.
             else:
-                if sys.platform.startswith("linux") and (
-                    not callable(_PIDFD_OPEN)
-                    or not callable(_PIDFD_SEND_SIGNAL)
-                    or not callable(_WAIT_ID)
-                    or _PIDFD_ID_TYPE is None
-                    or not _WAIT_EXITED
-                    or not _WAIT_NO_HANG
-                    or not _WAIT_NO_REAP
-                ):
+                if sys.platform.startswith("linux") and not self._linux_containment.available():
                     raise RunnerTransportError("Linux private process containment is unavailable")
                 options["start_new_session"] = True
             options["pass_fds"] = inherited_descriptors
@@ -3254,7 +3166,7 @@ class SubprocessRustRunner:
                 and sys.platform.startswith("linux")
                 and not self._kill_child_on_job_close
             ):
-                self._register_linux_private_process(process)
+                self._linux_containment.register(process)
             if windows_job is not None:
                 self._windows_containment.assign(windows_job, process)
                 windows_job = None  # ownership moved to the Windows containment owner
@@ -3403,7 +3315,7 @@ class SubprocessRustRunner:
         return True
 
     def _terminate_posix_process_tree(self, process: subprocess.Popen[bytes]) -> bool:
-        if process in self._released_linux_processes:
+        if self._linux_containment.was_released(process):
             return process.returncode is not None
         if process in self._released_darwin_processes:
             if not self._close_darwin_process_containment(process):
@@ -3412,8 +3324,8 @@ class SubprocessRustRunner:
             return process.returncode is not None
         if self._kill_child_on_job_close:
             return self._terminate_inherited_posix_process_tree(process)
-        if process in self._linux_process_containments:
-            return self._release_linux_private_process(process, terminate=True)
+        if self._linux_containment.contains(process):
+            return self._linux_containment.release(process, terminate=True)
         if sys.platform == "darwin":
             return self._release_darwin_process_group(process)
         if not callable(_KILL_PROCESS_GROUP):
@@ -3688,129 +3600,6 @@ class SubprocessRustRunner:
         self._darwin_release_verified.add(process)
         return self._complete_verified_darwin_release(process)
 
-    def _linux_private_session_identities(
-        self,
-        containment: tuple[int, int, int, int, int],
-    ) -> list[tuple[int, int, int, int]] | None:
-        identities: list[tuple[int, int, int, int]] = []
-        try:
-            with os.scandir("/proc") as entries:
-                for entry in entries:
-                    if not entry.name.isdecimal():
-                        continue
-                    try:
-                        identity = self._linux_process_identity(int(entry.name))
-                    except ProcessLookupError:
-                        continue
-                    if identity[3] == containment[3]:
-                        identities.append(identity)
-        except (OSError, RunnerTransportError):
-            return None
-        if containment[:4] not in identities:
-            return None
-        return identities
-
-    @staticmethod
-    def _signal_linux_process_identity(
-        identity: tuple[int, int, int, int],
-        signum: int,
-    ) -> bool:
-        descriptor = -1
-        try:
-            if not callable(_PIDFD_OPEN) or not callable(_PIDFD_SEND_SIGNAL):
-                return False
-            before = SubprocessRustRunner._linux_process_identity(identity[0])
-            if before != identity:
-                return False
-            descriptor = int(_PIDFD_OPEN(identity[0], 0))
-            try:
-                after = SubprocessRustRunner._linux_process_identity(identity[0])
-            except ProcessLookupError:
-                return True
-            if after != identity:
-                return False
-            _PIDFD_SEND_SIGNAL(descriptor, signum, None, 0)
-            return True
-        except ProcessLookupError:
-            return True
-        except (OSError, RunnerTransportError):
-            return False
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-
-    def _signal_linux_private_leader(
-        self,
-        containment: tuple[int, int, int, int, int],
-        signum: int,
-    ) -> bool:
-        try:
-            if (
-                not callable(_PIDFD_SEND_SIGNAL)
-                or self._linux_process_identity(containment[0]) != containment[:4]
-            ):
-                return False
-            _PIDFD_SEND_SIGNAL(containment[4], signum, None, 0)
-            return True
-        except ProcessLookupError:
-            return True
-        except (OSError, RunnerTransportError):
-            return False
-
-    def _release_linux_private_process(
-        self,
-        process: subprocess.Popen[bytes],
-        *,
-        terminate: bool,
-    ) -> bool:
-        containment = self._linux_process_containments.get(process)
-        if containment is None:
-            return False
-        if terminate and not self._process_exited_without_reap(process):
-            if not self._signal_linux_private_leader(containment, signal.SIGTERM):
-                return False
-            graceful_deadline = time.monotonic() + _PROCESS_TERM_GRACE_SECONDS
-            while (
-                not self._process_exited_without_reap(process)
-                and time.monotonic() < graceful_deadline
-            ):
-                time.sleep(_PROCESS_POLL_SECONDS)
-            if not self._process_exited_without_reap(process):
-                if not self._signal_linux_private_leader(containment, _FORCE_KILL_SIGNAL):
-                    return False
-        exit_deadline = time.monotonic() + _PROCESS_KILL_GRACE_SECONDS
-        while not self._process_exited_without_reap(process) and time.monotonic() < exit_deadline:
-            time.sleep(_PROCESS_POLL_SECONDS)
-        if not self._process_exited_without_reap(process):
-            return False
-
-        descendant_grace = time.monotonic() + _PROCESS_TERM_GRACE_SECONDS
-        descendant_deadline = descendant_grace + _PROCESS_KILL_GRACE_SECONDS
-        while True:
-            identities = self._linux_private_session_identities(containment)
-            if identities is None:
-                return False
-            targets = [identity for identity in identities if identity != containment[:4]]
-            if not targets:
-                break
-            now = time.monotonic()
-            if now >= descendant_deadline:
-                return False
-            signum = _FORCE_KILL_SIGNAL if now >= descendant_grace else signal.SIGTERM
-            if not all(
-                self._signal_linux_process_identity(identity, signum) for identity in targets
-            ):
-                return False
-            time.sleep(_PROCESS_POLL_SECONDS)
-        try:
-            process.wait(timeout=_PROCESS_KILL_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            return False
-        self._linux_process_containments.pop(process, None)
-        self._released_linux_processes.add(process)
-        os.close(containment[4])
-        return process.returncode is not None
-
     def _release_darwin_private_process(
         self,
         process: subprocess.Popen[bytes],
@@ -3964,10 +3753,10 @@ class SubprocessRustRunner:
             return self._release_darwin_private_process(process, terminate=False)
         if self._kill_child_on_job_close:
             return self._terminate_inherited_posix_process_tree(process)
-        if process in self._released_linux_processes:
+        if self._linux_containment.was_released(process):
             return process.returncode is not None
-        if process in self._linux_process_containments:
-            return self._release_linux_private_process(process, terminate=False)
+        if self._linux_containment.contains(process):
+            return self._linux_containment.release(process, terminate=False)
         if sys.platform == "darwin":
             return self._release_darwin_process_group(process)
         if not self._posix_process_group_exists(process.pid):

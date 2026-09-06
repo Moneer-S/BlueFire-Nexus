@@ -40,7 +40,7 @@ _REVIEWED_RUNNER_CLIENT_LAUNCH_SECTIONS = {
     "_run_darwin_launch_worker": "sha256:a969f6e5c14c2bc0b150be268321faf33dd00da035548706cb9eded992ac01aa",
 }
 _REVIEWED_RUNNER_CLIENT_SOURCE_SHA256 = (
-    "sha256:100648d43e32fe2e5064a9141903aea13cd1648943c57f51b69a173b04b1b077"
+    "sha256:789a988b9bfcd572c61dce5df4ff217dce97e8a187451c134c9ccddf236dc07e"
 )
 _REVIEWED_DARWIN_CONTAINMENT_SECTIONS = {
     "_validate_macos_launch_parent": "sha256:244beadfd89a4f2e6731109cd100042ba2a1ef8ea40e81bbd98f55211e7ebfb6",
@@ -52,10 +52,11 @@ _REVIEWED_PARENT_DEATH_SOURCE_SHA256 = (
     "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df"
 )
 _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
-    "bluefire/runner_client.py": "sha256:100648d43e32fe2e5064a9141903aea13cd1648943c57f51b69a173b04b1b077",
+    "bluefire/runner_client.py": "sha256:789a988b9bfcd572c61dce5df4ff217dce97e8a187451c134c9ccddf236dc07e",
     "bluefire/runner_bootstrap.py": "sha256:2d2ffffec138fdf76587649170b91cc04d2e5fedb6d1768d85b725c7ba809cdf",
     "bluefire/runner_darwin_containment.py": "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c",
     "bluefire/runner_windows_containment.py": "sha256:937456440a3c2dce94d24af695951ce19ca682b7752aa7437a5fae1f86bfb733",
+    "bluefire/runner_linux_containment.py": "sha256:7b0f3cf3cd36304ba3c400439586efba98f682d34aa4053a12f478ef02eaea3a",
     "bluefire/runner_lifecycle.py": "sha256:8edfe6dc2af32aadc8b74c6660eb60b885a130cdd9b7e8e7fc26ad9465f3f87c",
     "bluefire/runner_parent_death.py": "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df",
     "bluefire/runner_trust.py": "sha256:fc8811d61e0684b480ceb0a88a1124d0b8829363d5c10caa3513febfbb697c67",
@@ -1482,6 +1483,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         "runner_bootstrap.py": [],
         "runner_darwin_containment.py": [],
         "runner_windows_containment.py": [],
+        "runner_linux_containment.py": [],
         "runner_lifecycle.py": ["subprocess.Popen"],
         "runner_trust.py": [],
     }
@@ -1490,6 +1492,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         "runner_bootstrap.py": 0,
         "runner_darwin_containment.py": 1,
         "runner_windows_containment.py": 1,
+        "runner_linux_containment.py": 1,
         "runner_lifecycle.py": 1,
         "runner_trust.py": 0,
     }

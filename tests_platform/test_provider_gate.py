@@ -107,6 +107,7 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/runner_bootstrap.py",
         "bluefire/runner_darwin_containment.py",
         "bluefire/runner_windows_containment.py",
+        "bluefire/runner_linux_containment.py",
         "bluefire/runner_lifecycle.py",
         "bluefire/runner_parent_death.py",
         "bluefire/runner_trust.py",
@@ -284,6 +285,12 @@ def _structural_report() -> dict[str, Any]:
                             "process_calls": [],
                             "unexpected_findings": [],
                         },
+                        "runner_linux_containment.py": {
+                            "passed": True,
+                            "shell_imports": 1,
+                            "process_calls": [],
+                            "unexpected_findings": [],
+                        },
                         "runner_lifecycle.py": {
                             "passed": True,
                             "unexpected_findings": [],
@@ -323,10 +330,13 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
     assert checks["no_model_shell"]["process_boundary"]["passed"] is True
 
 
-def test_windows_containment_owner_remains_pinned_without_new_process_launches(
+@pytest.mark.parametrize("platform", ["windows", "linux"])
+def test_containment_owner_remains_pinned_without_new_process_launches(
     tmp_path: Path,
+    platform: str,
 ) -> None:
-    relative = "bluefire/runner_windows_containment.py"
+    filename = f"runner_{platform}_containment.py"
+    relative = "bluefire/" + filename
     assert relative in provider_gate_source_audit.TRUSTED_PROCESS_BOUNDARY_PATHS
     sources = {
         name: (REPOSITORY / name).read_text(encoding="utf-8")
@@ -334,7 +344,7 @@ def test_windows_containment_owner_remains_pinned_without_new_process_launches(
     }
     assert provider_gate_source_audit._reviewed_python_process_boundary_sources(sources)
     boundary = provider_gate_source_audit._process_boundary_report(REPOSITORY)
-    assert boundary["python_boundaries"]["runner_windows_containment.py"] == {
+    assert boundary["python_boundaries"][filename] == {
         "passed": True,
         "shell_imports": 1,
         "process_calls": [],
@@ -343,7 +353,7 @@ def test_windows_containment_owner_remains_pinned_without_new_process_launches(
     changed = dict(sources)
     changed[relative] += "\nsubprocess.Popen(['unreviewed-program'])\n"
     assert not provider_gate_source_audit._reviewed_python_process_boundary_sources(changed)
-    candidate = tmp_path / "runner_windows_containment.py"
+    candidate = tmp_path / filename
     candidate.write_text(changed[relative], encoding="utf-8")
     findings = provider_gate_source_audit._python_shell_findings(candidate, tmp_path)
     assert any(item.get("kind") == "dynamic_execution_call" for item in findings)
