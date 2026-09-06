@@ -1,7 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Beaker, CheckCircle2, Code2, FileCheck2, FlaskConical, Plus, Search, ShieldQuestion } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
+import { hypothesisFromRun, runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
   DetectionCandidate,
   DetectionCloneRequest,
@@ -114,6 +116,10 @@ function stringList(value: unknown) {
 }
 
 export function DetectionLabPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sourceRunId = sourceRunParam(searchParams, "run");
+  const linkedCandidateId = sourceRunParam(searchParams, "candidate");
+  const sourceQuery = useQuery({ queryKey: ["run", sourceRunId], queryFn: () => api.runDetail(sourceRunId), enabled: Boolean(sourceRunId) });
   const runsQuery = useQuery({ queryKey: ["runs"], queryFn: api.runs });
   const catalogQuery = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
   const healthQuery = useQuery({ queryKey: ["detection-health"], queryFn: api.detectionHealth });
@@ -129,6 +135,11 @@ export function DetectionLabPage() {
   const [title, setTitle] = useState("Sandbox staging observation");
   const [behaviorId, setBehaviorId] = useState("sandbox.collection.stage.v1");
   const [language, setLanguage] = useState("internal");
+
+  useEffect(() => {
+    setSelectedId(sourceRunId && linkedCandidateId ? runCandidateKey(sourceRunId, linkedCandidateId) : undefined);
+    setSearch("");
+  }, [sourceRunId, linkedCandidateId]);
 
   const refreshDetections = () => {
     void client.invalidateQueries({ queryKey: ["detections"] });
@@ -151,6 +162,15 @@ export function DetectionLabPage() {
       refreshDetections();
     },
     onError: (error) => setNotice(error instanceof Error ? error.message : "The hypothesis could not be saved."),
+  });
+  const saveLinkedMutation = useMutation({
+    mutationFn: ({ candidate, run }: { candidate: DetectionCandidate; run: RunRecord }) => api.upsertDetection(hypothesisFromRun(candidate, run)),
+    onSuccess: ({ candidate }) => {
+      setSelectedId(candidate.id);
+      setNotice(`${candidate.id} saved in the registry as ${sentence(candidate.status)}. The source run's lifecycle and match results were not copied.`);
+      refreshDetections();
+    },
+    onError: (error) => setNotice(error instanceof Error ? error.message : "The run-linked definition could not be saved."),
   });
   const actionMutation = useMutation({
     mutationFn: ({ id, action, body }: { id: string; action: LifecycleAction; body: Record<string, unknown> }) => api.detectionAction(id, action, body),
@@ -190,15 +210,16 @@ export function DetectionLabPage() {
     resolvedId: resource.id,
     resourceId: resource.id,
   }));
-  const linked: CandidateView[] = runsQuery.data.runs.flatMap((run) => (run.detections?.candidates ?? []).map((candidate, index) => ({
+  const sourceRun = sourceQuery.data;
+  const linked: CandidateView[] = sourceRun ? (sourceRun.detections?.candidates ?? []).map((candidate, index) => ({
     ...candidate,
-    resolvedId: candidate.candidate_id ?? candidate.id ?? `${run.run_id}-${index}`,
-    runId: run.run_id,
-    demo: run.is_demo,
-  })));
+    resolvedId: runCandidateKey(sourceRun.run_id, candidate.candidate_id ?? candidate.id ?? String(index)),
+    runId: sourceRun.run_id,
+    demo: sourceRun.is_demo,
+  })) : [];
   const candidates = [...new Map([...persisted, ...linked].map((item) => [item.resolvedId, item])).values()];
   const filtered = candidates.filter((item) => `${item.resolvedId} ${item.title ?? ""} ${item.behavior_id ?? ""} ${item.target_language ?? item.language ?? ""}`.toLowerCase().includes(search.toLowerCase()));
-  const selected = filtered.find((item) => item.resolvedId === selectedId) ?? filtered[0];
+  const selected = filtered.find((item) => item.resolvedId === selectedId) ?? filtered.find((item) => item.runId === sourceRunId) ?? filtered[0];
   const counts = Object.fromEntries(lifecycle.map((state) => [state, candidates.filter((item) => item.state === state).length]));
   const finalizedRuns = runsQuery.data.runs.filter((run) => Boolean(run.finalized_at) || run.status === "completed");
   const rootId = selected?.revision_root_id ?? selected?.candidate_id ?? selected?.resolvedId;
@@ -210,6 +231,13 @@ export function DetectionLabPage() {
   return <div className="page detection-page">
     <PageHeader eyebrow="Detection research" title="Detection Lab" description="Persist strict behavior-linked hypotheses, preserve immutable revision lineage, and advance only through parser, fixture, observed-evidence, benign, or rejection stages the control plane actually completed." />
     {notice ? <Callout title="Detection control plane">{notice}</Callout> : null}
+    <Panel>
+      <PanelHeader eyebrow="Run handoff" title="Source run and evidence" actions={sourceRun ? <Link className="button button-secondary" to={`/runs/${encodeURIComponent(sourceRun.run_id)}`}>Review source run</Link> : undefined} />
+      <div className="detail-body">
+        <Field label="Detection source run" hint="Loads the full immutable run record, including its candidates and evidence."><select value={sourceRunId} onChange={(event) => setSearchParams(event.target.value ? { run: event.target.value } : {})}><option value="">Select source run</option>{sourceRunId && !runsQuery.data.runs.some((run) => run.run_id === sourceRunId) ? <option value={sourceRunId}>{sourceRunId}</option> : null}{runsQuery.data.runs.map((run) => <option key={run.run_id} value={run.run_id}>{run.run_id}</option>)}</select></Field>
+        {sourceRunId && sourceQuery.isPending ? <LoadingState label="Loading source run evidence" /> : sourceQuery.isError ? <ErrorState title="Source run unavailable" error={sourceQuery.error} retry={() => { void sourceQuery.refetch(); }} /> : sourceRun ? <SourceRunEvidence run={sourceRun} /> : <p>Select a run to inspect its linked candidates or create a hypothesis below.</p>}
+      </div>
+    </Panel>
     <div className="two-column">
       <Panel>
         <PanelHeader eyebrow="New hypothesis" title="Behavior-linked candidate" />
@@ -238,6 +266,9 @@ export function DetectionLabPage() {
         resource={candidatesQuery.data.candidates.find((item) => item.id === selected.resourceId)}
         backend={healthQuery.data.languages[selected.target_language ?? selected.language ?? "internal"]}
         finalizedRuns={finalizedRuns}
+        sourceRunId={sourceRunId}
+        saveLinkedPending={saveLinkedMutation.isPending}
+        onSaveLinked={() => sourceRun && selected.runId === sourceRun.run_id && saveLinkedMutation.mutate({ candidate: selected, run: sourceRun })}
         lineage={lineage}
         researchSources={sources}
         researchSourcesUnavailable={researchSourcesQuery.isError}
@@ -253,11 +284,33 @@ export function DetectionLabPage() {
   </div>;
 }
 
+function SourceRunEvidence({ run }: { run: RunRecord }) {
+  const records = run.evidence?.records ?? [];
+  const counts = records.reduce<Record<string, number>>((result, record) => {
+    result[record.provenance] = (result[record.provenance] ?? 0) + 1;
+    return result;
+  }, {});
+  return <>
+    <DataList items={[
+      { label: "Source run", value: <code>{run.run_id}</code> },
+      { label: "Run mode", value: `${sentence(run.mode ?? "not_reported")}${run.is_demo ? " · Demo" : ""}` },
+      { label: "Run-linked candidates", value: run.detections?.candidates?.length ?? 0 },
+      { label: "Evidence by provenance", value: Object.entries(counts).map(([kind, count]) => `${sentence(kind)}: ${count}`).join(" · ") || "No evidence records" },
+    ]} />
+    <Callout title="Source evidence stays distinct">Run-linked lifecycle and match results describe this source run. Internal structured matcher results retain internal semantics; they do not establish deployment or execution in an external detection engine. Saving a definition starts the registry workflow separately.</Callout>
+    {!sourceObservedRecords(run).length ? <Callout tone="warning" title="Observed exercise unavailable">This source has no eligible independently observed records. Synthetic, executed, and counterfactual records cannot substitute for observed evidence.</Callout> : null}
+    <details><summary>Inspect source evidence ({records.length})</summary><div className="structured-list">{records.map((record, index) => <article key={record.evidence_id ?? record.id ?? index}><strong>{record.evidence_id ?? record.id ?? `Record ${index + 1}`}</strong><Badge tone={record.provenance === "observed" ? "info" : "neutral"}>{sentence(record.provenance)}</Badge><small>{record.producer ?? "Producer not reported"}{record.step_id ? ` · ${record.step_id}` : ""}</small><pre>{JSON.stringify(record, null, 2)}</pre></article>)}</div></details>
+  </>;
+}
+
 function CandidateWorkspace({
   candidate,
   resource,
   backend,
   finalizedRuns,
+  sourceRunId,
+  saveLinkedPending,
+  onSaveLinked,
   lineage,
   researchSources,
   researchSourcesUnavailable,
@@ -273,6 +326,9 @@ function CandidateWorkspace({
   resource?: DetectionResource;
   backend?: { ready: boolean; authoritative: boolean; backend: string; version?: string | null };
   finalizedRuns: RunRecord[];
+  sourceRunId: string;
+  saveLinkedPending: boolean;
+  onSaveLinked: () => void;
   lineage: CandidateView[];
   researchSources: ResearchSourceResource[];
   researchSourcesUnavailable: boolean;
@@ -289,7 +345,7 @@ function CandidateWorkspace({
   const [fixtures, setFixtures] = useState('[{"fixture_id":"malicious-1","artifact_type":"file_observation","path":"staged/a.txt"}]');
   const [benign, setBenign] = useState('[{"fixture_id":"benign-1","artifact_type":"file_observation","path":"documents/a.txt"}]');
   const [notes, setNotes] = useState("Declared benign fixture did not match.");
-  const [runId, setRunId] = useState("");
+  const [runId, setRunId] = useState(sourceRunId);
   const [evidenceIds, setEvidenceIds] = useState("");
   const [reason, setReason] = useState("");
   const [localError, setLocalError] = useState<string>();
@@ -300,6 +356,13 @@ function CandidateWorkspace({
   const [logsourceJson, setLogsourceJson] = useState(JSON.stringify(candidate.logsource ?? {}, null, 2));
   const [selectedBaselineIds, setSelectedBaselineIds] = useState<string[]>(candidate.public_baselines?.map((item) => item.research_source_id) ?? []);
   const [compareId, setCompareId] = useState("");
+  const observedRunQuery = useQuery({ queryKey: ["run", runId], queryFn: () => api.runDetail(runId), enabled: tab === "observed" && Boolean(runId) });
+  const observedRecords = sourceObservedRecords(observedRunQuery.data);
+
+  useEffect(() => {
+    setRunId(sourceRunId);
+    setEvidenceIds("");
+  }, [sourceRunId]);
 
   const language = candidate.target_language ?? candidate.language ?? "internal";
   const storedSource = candidate.rule_source ?? source;
@@ -400,7 +463,7 @@ function CandidateWorkspace({
     <PanelHeader eyebrow="Candidate workspace" title={candidate.title ?? candidate.resolvedId} detail={candidate.behavior_id ?? "Behavior not linked"} actions={<Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : "success"}>{sentence(candidate.state)}</Badge>} />
     <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "revisions", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{sentence(item)}</button>)}</div>
     <div className="candidate-body">
-      {!persisted ? <Callout title="Run-linked record">This candidate is part of an immutable run. Persist a new strict hypothesis to use lifecycle or revision actions.</Callout> : null}
+      {!persisted ? <Callout title="Run-linked record">This candidate is part of an immutable run. Save its definition as a separate hypothesis to use lifecycle or revision actions.<Button size="small" onClick={onSaveLinked} disabled={saveLinkedPending || !candidate.behavior_id || !candidate.selection || !candidate.logsource}>{saveLinkedPending ? "Saving hypothesis" : "Save as new hypothesis"}</Button></Callout> : null}
       {localError ? <Callout tone="danger" title="Input refused locally">{localError}</Callout> : null}
       {tab === "candidate" ? <>
         <div className="editor-header"><span><Code2 />Candidate source</span><Badge tone={authoritativeParsed ? "success" : "warning"}>{authoritativeParsed ? "Authoritatively parsed" : "Not authoritative validation"}</Badge></div>
@@ -408,7 +471,7 @@ function CandidateWorkspace({
         <div className="candidate-actions"><Button size="small" onClick={() => onAction("parse", language === "internal" ? {} : { source })} disabled={!canParse || lifecyclePending || (language !== "internal" && !source)}>Parse / compile honestly</Button><Button size="small" variant="ghost" onClick={exportDraft}>Export draft</Button><Button size="small" variant="danger" onClick={() => onAction("reject", { reason, notes: [] })} disabled={!canReject || lifecyclePending || !reason.trim()}>Reject</Button></div>
         <Field label="Rejection reason" hint="Required only for explicit terminal rejection."><input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={1000} disabled={!canReject} /></Field>
         <DataList items={[
-          { label: "Candidate ID", value: <code>{candidate.resolvedId}</code> },
+          { label: "Candidate ID", value: <code>{candidate.candidate_id ?? candidate.id ?? candidate.resolvedId}</code> },
           { label: "Immutable revision", value: candidate.revision ? `${candidate.revision} · ${sentence(candidate.revision_kind ?? "origin")}` : "Legacy candidate" },
           { label: "Revision root", value: <code>{candidate.revision_root_id ?? candidate.resolvedId}</code> },
           { label: "Parent candidate", value: candidate.parent_candidate_id ? <code>{candidate.parent_candidate_id}</code> : "Origin has no parent" },
@@ -468,9 +531,10 @@ function CandidateWorkspace({
         <div className="fixture-grid"><article><Beaker /><strong>Malicious fixtures</strong><Badge tone={candidate.malicious_fixtures?.length ? "success" : "neutral"}>{candidate.malicious_fixtures?.length ?? 0} retained</Badge></article><article><CheckCircle2 /><strong>Benign fixtures</strong><Badge tone={candidate.benign_fixtures?.length ? "success" : "neutral"}>{candidate.benign_fixtures?.length ?? 0} retained</Badge></article></div>
       </> : tab === "observed" ? <>
         <Callout title="Immutable observed evidence only">The control plane verifies the finalized run bundle and independently observed provenance. Evidence content cannot be pasted here.{!["internal", "sigma", "sqlite"].includes(language) ? " This language has no normalized observed-JSON evaluator." : ""}</Callout>
-        <Field label="Finalized run"><select value={runId} onChange={(event) => setRunId(event.target.value)} disabled={!canObserved}><option value="">Select run</option>{finalizedRuns.map((run) => <option key={run.run_id} value={run.run_id}>{run.run_id}</option>)}</select></Field>
+        <Field label="Finalized run"><select value={runId} onChange={(event) => { setRunId(event.target.value); setEvidenceIds(""); }} disabled={!canObserved}><option value="">Select run</option>{runId && !finalizedRuns.some((run) => run.run_id === runId) ? <option value={runId}>{runId}</option> : null}{finalizedRuns.map((run) => <option key={run.run_id} value={run.run_id}>{run.run_id}</option>)}</select></Field>
+        {runId && observedRunQuery.isPending ? <LoadingState label="Loading observed evidence selection" /> : observedRunQuery.isError ? <ErrorState title="Observed run unavailable" error={observedRunQuery.error} retry={() => { void observedRunQuery.refetch(); }} /> : runId && !observedRecords.length ? <Callout tone="warning" title="No eligible observed evidence">Choose a finalized run with independently observed records. This source cannot advance observed exercise.</Callout> : observedRecords.length ? <p>{observedRecords.length} observed records available: {observedRecords.map((record) => record.evidence_id).join(", ")}. The service verifies their immutable bundle before evaluation.</p> : null}
         <Field label="Evidence IDs" hint="Comma-separated immutable evidence identifiers. Leave empty to use all eligible observed records."><input value={evidenceIds} onChange={(event) => setEvidenceIds(event.target.value)} disabled={!canObserved} /></Field>
-        <Button size="small" onClick={() => onAction("exercise-observed", { run_id: runId, ...(evidenceIds.trim() ? { evidence_ids: evidenceIds.split(",").map((item) => item.trim()).filter(Boolean) } : {}) })} disabled={!canObserved || lifecyclePending || !runId}><FileCheck2 />Exercise observed evidence</Button>
+        <Button size="small" onClick={() => onAction("exercise-observed", { run_id: runId, ...(evidenceIds.trim() ? { evidence_ids: evidenceIds.split(",").map((item) => item.trim()).filter(Boolean) } : {}) })} disabled={!canObserved || lifecyclePending || !runId || !observedRunQuery.isSuccess || !observedRecords.length}><FileCheck2 />Exercise observed evidence</Button>
         <DataList items={[{ label: "Observed evidence IDs", value: candidate.observed_evidence_ids?.join(", ") || "None" }, { label: "Predicted fields", value: candidate.predicted_fields?.join(", ") || "None" }, { label: "Observed fields", value: candidate.observed_fields?.join(", ") || "None" }, { label: "Field drift", value: candidate.field_drift ? driftText(candidate.field_drift) : "Not measured" }]} />
         {candidate.field_drift ? <details><summary>Show raw field drift</summary><pre>{JSON.stringify(candidate.field_drift, null, 2)}</pre></details> : null}
       </> : <div className="structured-list">{candidate.lifecycle_history?.length ? candidate.lifecycle_history.map((item, index) => <article key={item.sequence ?? index}><strong>{item.sequence ?? index + 1}. {sentence(item.action ?? "transition")}</strong><span>{sentence(item.from_state ?? item.prior_state ?? "new")} → {sentence(item.to_state ?? item.current_state ?? candidate.state)} · {sentence(item.outcome ?? "recorded")}</span><small>{item.recorded_at ?? item.timestamp ?? "Timestamp not reported"}{item.run_id ? ` · ${item.run_id}` : ""}</small></article>) : <EmptyState title="No lifecycle history" description="Run-linked legacy candidates may not include explicit durable lifecycle rows." />}</div>}

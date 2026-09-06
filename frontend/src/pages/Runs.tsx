@@ -3,6 +3,7 @@ import { Activity, AlertTriangle, CheckCircle2, CircleStop, Clock3, FileSearch, 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, ApiError, DEMO_MODE } from "../lib/api";
+import { comparisonLink, detectionLink } from "../lib/run-handoffs";
 import { ExecuteOnboarding, GUIDED_EXECUTE_PROFILE_ID, GUIDED_EXECUTE_SCENARIO_ID, guidedExecuteConfiguration } from "../components/ExecuteOnboarding";
 import { ProposalReviewWorkspace } from "../components/ProposalReview";
 import { useProduct } from "../state/ProductContext";
@@ -307,7 +308,7 @@ export function RunsPage() {
 
 function HistoricalRunReview({ run, catalog }: { run: RunRecord; catalog: CatalogResponse }) {
   return <div className="page runs-page">
-    <PageHeader eyebrow="Run history" title="Canonical run review" description={`${runLabel(run)} · ${sentence(run.mode)} · ${shortId(run.run_id)} · finalized ${formatDate(run.finalized_at ?? run.created_at)}`} actions={<><Link to="/runs"><Button variant="secondary">Back to run workspace</Button></Link><Link to="/compare"><Button>Replay & compare</Button></Link></>} />
+    <PageHeader eyebrow="Run history" title="Canonical run review" description={`${runLabel(run)} · ${sentence(run.mode)} · ${shortId(run.run_id)} · finalized ${formatDate(run.finalized_at ?? run.created_at)}`} actions={<><Link to="/runs"><Button variant="secondary">Back to run workspace</Button></Link><Link to={detectionLink(run.run_id)}><Button variant="secondary">Open Detection Lab</Button></Link><Link to={comparisonLink(run.run_id)}><Button>Replay & compare</Button></Link></>} />
     <Callout tone="info" title="Durable historical review">This page was loaded from the canonical run record and can be bookmarked or reopened after a browser reload. Full identifiers and raw metadata remain available in the technical details below.</Callout>
     <RunReview run={run} catalog={catalog} />
   </div>;
