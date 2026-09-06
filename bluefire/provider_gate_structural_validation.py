@@ -91,6 +91,7 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/runner_client.py",
     "bluefire/runner_bootstrap.py",
     "bluefire/runner_darwin_containment.py",
+    "bluefire/runner_windows_containment.py",
     "bluefire/runner_lifecycle.py",
     "bluefire/runner_parent_death.py",
     "bluefire/runner_trust.py",
@@ -122,6 +123,12 @@ _PYTHON_BOUNDARIES = {
         "unexpected_findings": [],
     },
     "runner_darwin_containment.py": {
+        "passed": True,
+        "shell_imports": 1,
+        "process_calls": [],
+        "unexpected_findings": [],
+    },
+    "runner_windows_containment.py": {
         "passed": True,
         "shell_imports": 1,
         "process_calls": [],

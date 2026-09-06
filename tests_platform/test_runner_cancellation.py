@@ -302,11 +302,11 @@ def test_windows_spawn_uses_owned_work_root_for_temp(
         stdout, stderr = process.communicate(timeout=10)
     finally:
         if process.poll() is None:
-            runner._terminate_windows_process_tree(process)
+            runner._windows_containment.terminate(process)
 
     assert process.returncode == 0
     assert stderr == b""
-    assert runner._finish_windows_job(process) is True
+    assert runner._windows_containment.finish(process) is True
     observed = json.loads(stdout)
     assert observed == {
         "ambient": None,
@@ -2403,7 +2403,7 @@ def test_watchdog_readiness_failure_retains_and_stops_spawned_process(
             assert spawned[0] not in runner_client_module._DARWIN_INDETERMINATE_PROCESSES
     else:
         assert spawned[0].poll() is not None
-    assert runner._windows_jobs == {}
+    assert runner._windows_containment._jobs == {}
     assert not runner_watchdog_control_root(durable, task_id).exists()
 
 
@@ -3735,7 +3735,7 @@ def test_windows_watchdog_gate_blocks_rust_until_outer_job_assignment(
     effect_marker = (tmp_path / "gated-effect").resolve()
     assignment_entered = threading.Event()
     release_assignment = threading.Event()
-    original_assignment = runner._assign_windows_job
+    original_assignment = runner._windows_containment.assign
 
     def delayed_assignment(job: int, process: subprocess.Popen[bytes]) -> None:
         assignment_entered.set()
@@ -3743,7 +3743,7 @@ def test_windows_watchdog_gate_blocks_rust_until_outer_job_assignment(
             raise RunnerTransportError("synthetic assignment release timed out")
         original_assignment(job, process)
 
-    monkeypatch.setattr(runner, "_assign_windows_job", delayed_assignment)
+    monkeypatch.setattr(runner._windows_containment, "assign", delayed_assignment)
     cancel_event = threading.Event()
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
@@ -3785,7 +3785,7 @@ def test_windows_inner_rust_is_suspended_until_kill_on_close_job_assignment(
     effect_marker = (tmp_path / "inner-gated-effect").resolve()
     assignment_entered = threading.Event()
     release_assignment = threading.Event()
-    original_assignment = runner._assign_windows_job
+    original_assignment = runner._windows_containment.assign
 
     def delayed_assignment(job: int, process: subprocess.Popen[bytes]) -> None:
         assignment_entered.set()
@@ -3793,7 +3793,7 @@ def test_windows_inner_rust_is_suspended_until_kill_on_close_job_assignment(
             raise RunnerTransportError("synthetic inner assignment release timed out")
         original_assignment(job, process)
 
-    monkeypatch.setattr(runner, "_assign_windows_job", delayed_assignment)
+    monkeypatch.setattr(runner._windows_containment, "assign", delayed_assignment)
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             runner.execute,
