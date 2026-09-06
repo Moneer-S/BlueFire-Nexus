@@ -306,7 +306,7 @@ test("production operator UI completes authoring, management, run, replay, and c
   await page.getByRole("button", { name: "Save version" }).click();
   const scenarioVersionEnvelope = await (await scenarioVersionResponse).json() as JsonObject;
   const scenarioProof = page.locator(".compatibility-banner");
-  await expect(scenarioProof).toContainText("Durable scenario version");
+  await expect(scenarioProof).toContainText(/Version \d+ saved\./);
   await scenarioProof.scrollIntoViewIfNeeded();
   await page.screenshot({ path: join(screenshotDirectory, SCREENSHOTS[0]) });
   completed.push("validate_and_version_scenario");
