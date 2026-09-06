@@ -80,7 +80,7 @@ const defaultRunConfig: RunConfiguration = {
 
 function strings(value: unknown, fallback: string[]) { return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : fallback; }
 function collectors(value: unknown) {
-  const allowed = new Set(["collector.filesystem.sandbox.v1"]);
+  const allowed = new Set(["collector.filesystem.sandbox.v1", "collector.collection-semantics.sandbox.v1"]);
   const selected = strings(value, defaultRunConfig.collectors).filter((item) => allowed.has(item));
   return selected.length ? selected : defaultRunConfig.collectors;
 }

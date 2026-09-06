@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
+from .collection_methods import COLLECTION_METHODS
 from .evidence import EvidenceProvenance, EvidenceRecord
 from .util import parse_iso8601_datetime
 
@@ -74,6 +75,9 @@ def evaluate_observation_integrity(
     postconditions: list[dict[str, Any]] = []
     positions = {record.evidence_id: index for index, record in enumerate(records)}
     for path, execution in requirements:
+        semantic_container = (
+            COLLECTION_METHODS.get(execution.action_id or "") if execution else None
+        )
         output = execution.content.get("output") if execution is not None else None
         expected = output if isinstance(output, Mapping) else {}
         digest = expected.get("sha256")
@@ -126,6 +130,11 @@ def evaluate_observation_integrity(
                 ):
                     continue
                 content = observed.content
+                if semantic_container is not None and (
+                    observed.producer != "collector.collection-semantics.sandbox.v1"
+                    or content.get("observation_kind") != "collection_semantics"
+                ):
+                    continue
                 if content.get("artifact_type") == "collector_observation":
                     if content.get("observation_kind") not in {
                         "filesystem",
@@ -139,11 +148,15 @@ def evaluate_observation_integrity(
                     continue
                 if not isinstance(fields, Mapping) or fields.get("path") != path:
                     continue
+                semantic_valid = semantic_container is None or _valid_collection_counts(
+                    fields, semantic_container
+                )
                 if (
                     fields.get("sha256") == digest
                     and type(fields.get("size_bytes")) is int
                     and fields["size_bytes"] >= 0
                     and (digest_only or fields["size_bytes"] == expected_size)
+                    and semantic_valid
                 ):
                     matching.append(observed.evidence_id)
                 else:
@@ -165,7 +178,22 @@ def evaluate_observation_integrity(
                 "observed_evidence_ids": sorted(matching),
                 "conflicting_evidence_ids": sorted(conflicting),
                 "verified_dimensions": (
-                    ["path", "sha256", *([] if digest_only else ["size_bytes"])]
+                    [
+                        "path",
+                        "sha256",
+                        *([] if digest_only else ["size_bytes"]),
+                        *(
+                            [
+                                "container",
+                                "record_count",
+                                "retained_record_count",
+                                "redacted_record_count",
+                                "empty_record_count",
+                            ]
+                            if semantic_container
+                            else []
+                        ),
+                    ]
                     if state == "verified"
                     else []
                 ),
@@ -197,3 +225,21 @@ def evaluate_observation_integrity(
             "unselected intermediate effects are not independently established by this report.",
         ],
     }
+
+
+def _valid_collection_counts(fields: Mapping[str, Any], container: str) -> bool:
+    counts: list[Any] = [
+        fields.get(name)
+        for name in (
+            "record_count",
+            "retained_record_count",
+            "redacted_record_count",
+            "empty_record_count",
+        )
+    ]
+    return bool(
+        fields.get("container") == container
+        and all(type(count) is int and 0 <= count <= 100 for count in counts)
+        and counts[0] > 0
+        and counts[0] == sum(counts[1:])
+    )

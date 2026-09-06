@@ -53,6 +53,8 @@ EXECUTE_PROFILE_ACTIONS = {
     "sandbox.archive.tar.v1",
     "sandbox.cleanup.v1",
     "sandbox.collection.stage.v1",
+    "sandbox.collection.records.v1",
+    "sandbox.collection.archive.v1",
     "sandbox.discovery.list.v1",
     "sandbox.discovery.metadata.v1",
     "sandbox.discovery.recursive.v1",

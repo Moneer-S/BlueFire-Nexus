@@ -176,7 +176,9 @@ _EXECUTE_READINESS_KEY = "_execute_readiness"
 _ACTION_CATALOG_AUTHORITY_KEY = "_action_catalog_authority"
 _EXECUTE_READINESS_MAX_AGE_SECONDS = 15 * 60
 _REPLAY_ADMISSION_SECONDS = 5.0
-_AVAILABLE_PER_RUN_COLLECTORS = frozenset({"collector.filesystem.sandbox.v1"})
+_AVAILABLE_PER_RUN_COLLECTORS = frozenset(
+    {FilesystemCollector.descriptor.id, CollectionSemanticsCollector.descriptor.id}
+)
 _AVAILABLE_RUNTIME_COLLECTORS = frozenset(
     {
         CollectionSemanticsCollector.descriptor.id,

@@ -1,8 +1,18 @@
 # Collection semantics observer
 
 `collector.collection-semantics.sandbox.v1` independently observes aggregate facts
-about reviewed synthetic collection artifacts. Enable it through versioned
-`collector_runtime` settings with explicit `paths` and a `collect_after_step`:
+about reviewed synthetic collection artifacts. In Runs, choose **Collection
+contents (bounded synthetic records)** for the compatible collection scenarios.
+Switching those scenarios to Execute selects this observer and shows its path.
+The API/CLI accepts its ID in the existing per-run `collectors` list. The server
+schedules it only after `sandbox.collection.records.v1` or
+`sandbox.collection.archive.v1`, using the exact output declared by the approved
+method and parameters. Replay binds its own approved method/path. The selection
+is part of preflight and one-time approval; missing contents observation leaves
+these new methods' objective incomplete even when filesystem hashes exist.
+
+Other reviewed uses can enable it through versioned `collector_runtime` settings
+with explicit `paths` and a `collect_after_step`:
 
 ```json
 {

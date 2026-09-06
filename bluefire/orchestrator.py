@@ -21,6 +21,7 @@ from .approvals import (
     public_approval_record,
     validate_claimed_approval,
 )
+from .collection_methods import COLLECTION_METHODS
 from .collectors import (
     CollectionRequest,
     CollectionResult,
@@ -3048,8 +3049,16 @@ class Orchestrator:
             timeout_seconds=5.0,
         )
         for collector_id in collector_ids:
+            collector_request = request
+            if collector_id == CollectionSemanticsCollector.descriptor.id:
+                if step.action_id not in COLLECTION_METHODS:
+                    continue
+                collector_request = replace(
+                    request,
+                    settings={"paths": list(paths), "collect_after_step": step.step_id},
+                )
             try:
-                result = self.collector_registry.collect(collector_id, request)
+                result = self.collector_registry.collect(collector_id, collector_request)
             except CollectorError as exc:
                 raise OrchestrationError(str(exc)) from exc
             collected.extend(result.records)
