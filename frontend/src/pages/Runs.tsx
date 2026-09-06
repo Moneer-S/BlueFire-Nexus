@@ -508,6 +508,14 @@ export function DetectionDetail({ run }: { run: RunRecord | null }) {
   return <div className="record-grid">{candidates.map((item, index) => <article key={item.candidate_id ?? item.id ?? index}><header><Badge tone={item.state === "rejected" ? "danger" : item.state.includes("exercised") || item.state === "benign_evaluated" ? "success" : "info"}>{sentence(item.state)}</Badge><code>{item.target_language ?? item.language ?? "query"}</code></header><strong>{item.title ?? item.candidate_id ?? "Detection candidate"}</strong><p>{item.summary ?? "Lifecycle state reflects only completed validation stages."}</p></article>)}</div>;
 }
 
+function recordedTargetScope(run: RunRecord & { authorized_target_scope?: unknown }): string {
+  for (const scope of [run.authorized_target_scope, run.policy?.authorized_target_scope, run.target_scope]) {
+    if (!scope || typeof scope !== "object" || !("scope_refs" in scope) || !Array.isArray(scope.scope_refs)) continue;
+    return scope.scope_refs.filter((ref): ref is string => typeof ref === "string" && Boolean(ref.trim())).join(", ") || "None recorded";
+  }
+  return "Not recorded";
+}
+
 export function RunReview({ run, catalog }: { run: RunRecord; catalog: CatalogResponse }) {
   const steps = run.steps ?? [];
   const stopped = steps.find((step) => step.execution_disposition !== "counterfactual" && ["blocked", "control_blocked", "refused", "failed", "error", "cancelled"].includes(step.status));
@@ -554,7 +562,7 @@ export function RunReview({ run, catalog }: { run: RunRecord; catalog: CatalogRe
     <details className="run-review-details"><summary>Inspect detection candidates{detections ? ` (${detections.length})` : " · not reported"}</summary><DetectionDetail run={run}/></details>
     {aiProposals.length ? <details className="run-review-details"><summary>AI decisions ({aiProposals.length})</summary><AIProposalTrail proposals={aiProposals}/></details> : <p className="run-ai-note">No runtime AI proposal records are attached.</p>}
     <section className="run-limitations"><h2>Limitations</h2>{run.limitations?.length ? <ul>{run.limitations.map((item) => <li key={item}>{item}</li>)}</ul> : <p>No limitations were attached. This is incomplete metadata, not proof that there are none.</p>}</section>
-    <details className="run-review-details"><summary>Run identity, environment and technical record</summary><DataList items={[{ label: "Run ID", value: <code>{run.run_id}</code> }, { label: "Mode", value: sentence(run.mode) }, { label: "AI mode", value: sentence(run.autonomy ?? run.autonomy_level ?? (run.ai_enabled ? "assist" : "off")) }, { label: "Profile", value: run.runner_profile_id ?? "Not recorded" }, { label: "Targets", value: run.target_scope?.scope_refs?.join(", ") || "Not recorded" }, { label: "Started", value: formatDate(run.created_at) }, { label: "Finalized", value: formatDate(run.finalized_at) }, { label: "Replay lineage", value: run.replay ? "Replay-linked" : "Original run" }]} /><details><summary>Raw reproducibility metadata</summary><div className="raw-columns"><StructuredPanel value={run.manifest ?? { schema_version: run.schema_version, scenario_id: run.scenario_id, profile_id: run.runner_profile_id }} empty="No manifest metadata."/><pre aria-label="Canonical run technical record">{JSON.stringify({ run_id: run.run_id, schema_version: run.schema_version, scenario_id: run.scenario_id, runner_profile_id: run.runner_profile_id, cleanup: run.cleanup ?? null, replay: run.replay ?? null }, null, 2)}</pre></div></details></details>
+    <details className="run-review-details"><summary>Run identity, environment and technical record</summary><DataList items={[{ label: "Run ID", value: <code>{run.run_id}</code> }, { label: "Mode", value: sentence(run.mode) }, { label: "AI mode", value: sentence(run.autonomy ?? run.autonomy_level ?? (run.ai_enabled ? "assist" : "off")) }, { label: "Profile", value: run.runner_profile_id ?? "Not recorded" }, { label: "Targets", value: recordedTargetScope(run) }, { label: "Started", value: formatDate(run.created_at) }, { label: "Finalized", value: formatDate(run.finalized_at) }, { label: "Replay lineage", value: run.replay ? "Replay-linked" : "Original run" }]} /><details><summary>Raw reproducibility metadata</summary><div className="raw-columns"><StructuredPanel value={run.manifest ?? { schema_version: run.schema_version, scenario_id: run.scenario_id, profile_id: run.runner_profile_id }} empty="No manifest metadata."/><pre aria-label="Canonical run technical record">{JSON.stringify({ run_id: run.run_id, schema_version: run.schema_version, scenario_id: run.scenario_id, runner_profile_id: run.runner_profile_id, cleanup: run.cleanup ?? null, replay: run.replay ?? null }, null, 2)}</pre></div></details></details>
   </div>;
 }
 

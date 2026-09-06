@@ -10,6 +10,20 @@ function run(overrides: Partial<RunRecord>): RunRecord {
   return { ...structuredClone(demoRuns[0]!), is_demo: false, mode: "execute", ...overrides };
 }
 
+it.each([
+  [{ authorized_target_scope: { scope_refs: ["canonical.workspace", "canonical.loopback"] }, policy: { authorized_target_scope: { scope_refs: ["policy.workspace"] } }, target_scope: { scope_refs: ["legacy.workspace"] } }, "canonical.workspace, canonical.loopback"],
+  [{ authorized_target_scope: null, policy: { authorized_target_scope: { scope_refs: ["policy.workspace"] } }, target_scope: { scope_refs: ["legacy.workspace"] } }, "policy.workspace"],
+  [{ policy: { authorized_target_scope: null }, target_scope: { scope_refs: ["legacy.workspace"] } }, "legacy.workspace"],
+  [{ authorized_target_scope: null, policy: {}, target_scope: undefined }, "Not recorded"],
+  [{ authorized_target_scope: { scope_refs: [] }, target_scope: { scope_refs: ["legacy.workspace"] } }, "None recorded"],
+])("shows the retained authorized scope with legacy fallback: %j", async (scope, expected) => {
+  const record = { ...run({}), ...scope };
+  render(<RunReview run={record} catalog={demoCatalog}/>);
+  await userEvent.setup().click(screen.getByText("Run identity, environment and technical record"));
+  const targets = screen.getByText("Targets").closest("div")!;
+  expect(within(targets).getByText(expected)).toBeVisible();
+});
+
 it("keeps unknown objective and missing observation metadata distinct from prevention and zero", () => {
   render(<RunReview run={run({ objective_reached: undefined, evidence: undefined, status: "interrupted", steps: [] })} catalog={demoCatalog}/>);
   const outcome = within(screen.getByRole("region", { name: "Recorded run outcome" }));
