@@ -14,7 +14,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { Link } from "react-router-dom";
 import "./Builder.css";
 import { ParameterField } from "../components/ParameterField";
-import { branchLabels, GRAPH_SECTION_SIZE, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel } from "../lib/graph-view";
+import { branchLabels, GRAPH_SECTION_SIZE, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel, type ScenarioGraph } from "../lib/graph-view";
 import { api } from "../lib/api";
 import { initialParameterValue, shouldInitializeParameter } from "../lib/parameters";
 import { deleteScenarioGraphElements, selectScenarioAlternative } from "../lib/scenario";
@@ -29,11 +29,11 @@ interface BehaviorNodeData extends Record<string, unknown> { step: ScenarioStep;
 type BehaviorFlowNode = Node<BehaviorNodeData, "behavior">;
 type FlowEdge = Edge<{ kind: "route" | "artifact"; outcome?: Outcome; artifactType?: string }>;
 
-function behaviorNode(step: ScenarioStep, behavior: Behavior | undefined, index: number, scenario: Scenario, invalid = false): BehaviorFlowNode {
+function behaviorNode(step: ScenarioStep, behavior: Behavior | undefined, index: number, scenario: ScenarioGraph, invalid = false): BehaviorFlowNode {
   return { id: step.id, type: "behavior", position: scenario.layout?.[step.id] ?? initialGraphLayout(scenario)[step.id] ?? { x: 48 + (index % 3) * 320, y: 48 + Math.floor(index / 3) * 210 }, data: { step, behavior, invalid } };
 }
 
-function flowEdges(scenario: Scenario, behaviors: Map<string, Behavior>): FlowEdge[] {
+function flowEdges(scenario: ScenarioGraph, behaviors: Map<string, Behavior>): FlowEdge[] {
   const routes: FlowEdge[] = scenario.edges.map((edge, index) => ({ id: `route-${edge.from_step}-${edge.outcome}-${edge.to_step}-${index}`, source: edge.from_step, target: edge.to_step, sourceHandle: `route:${edge.outcome}`, targetHandle: "route:in", label: branchLabels[edge.outcome], type: "smoothstep", animated: edge.outcome === "partial", markerEnd: { type: MarkerType.ArrowClosed, color: outcomeColors[edge.outcome] }, style: { stroke: outcomeColors[edge.outcome], strokeWidth: 2 }, labelStyle: { fill: outcomeColors[edge.outcome], fontWeight: 700 }, data: { kind: "route", outcome: edge.outcome } }));
   const artifacts: FlowEdge[] = [];
   for (const target of scenario.steps) for (const [input, binding] of Object.entries(target.inputs)) {
@@ -68,12 +68,15 @@ export function BuilderPage() {
 
 function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions: ActionDefinition[] }) {
   const { scenario, setScenario, dirty, markSaved, runConfig, setRunConfig } = useProduct();
+  // Naming and other metadata edits keep the graph's presentation inputs stable.
+  // The complete scenario still updates immediately for history, saves, and review.
+  const graph = useMemo(() => ({ steps: scenario.steps, edges: scenario.edges, start: scenario.start, layout: scenario.layout }), [scenario.steps, scenario.edges, scenario.start, scenario.layout]);
   const behaviorMap = useMemo(() => new Map(behaviors.map((item) => [item.id, item])), [behaviors]);
   const actionMap = useMemo(() => new Map(actions.map((item) => [item.id, item])), [actions]);
   const [invalidNodes, setInvalidNodes] = useState<Set<string>>(new Set());
-  const makeNodes = useCallback((value: Scenario) => value.steps.map((step, index) => behaviorNode(step, behaviorMap.get(step.behavior_id), index, value, invalidNodes.has(step.id))), [behaviorMap, invalidNodes]);
-  const [nodes, setNodes] = useState<BehaviorFlowNode[]>(() => makeNodes(scenario).map((node, index) => ({ ...node, selected: index === 0 })));
-  const [edges, setEdges] = useState<FlowEdge[]>(() => flowEdges(scenario, behaviorMap));
+  const makeNodes = useCallback((value: ScenarioGraph) => value.steps.map((step, index) => behaviorNode(step, behaviorMap.get(step.behavior_id), index, value, invalidNodes.has(step.id))), [behaviorMap, invalidNodes]);
+  const [nodes, setNodes] = useState<BehaviorFlowNode[]>(() => makeNodes(graph).map((node, index) => ({ ...node, selected: index === 0 })));
+  const [edges, setEdges] = useState<FlowEdge[]>(() => flowEdges(graph, behaviorMap));
   const [selectedId, setSelectedId] = useState(scenario.steps[0]?.id ?? "");
   const [search, setSearch] = useState(""); const [platform, setPlatform] = useState("all"); const [tier, setTier] = useState("all");
   const [compatibility, setCompatibility] = useState<string>(); const [objective, setObjective] = useState(""); const [draftResult, setDraftResult] = useState<AIGraphDraftResult>();
@@ -89,7 +92,7 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
       setHistoryIndex(0);
       locallyAppliedScenario.current = scenario;
     }
-    setValidationState("idle"); setValidationIssues([]); setInvalidNodes(new Set());
+    setValidationState("idle"); setValidationIssues((current) => current.length ? [] : current); setInvalidNodes((current) => current.size ? new Set() : current);
   }, [scenario]);
   const [focusMode, setFocusMode] = useState(false); const [paletteOpen, setPaletteOpen] = useState(false); const [inspectorOpen, setInspectorOpen] = useState(false); const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
@@ -97,7 +100,7 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
   const [allBranches, setAllBranches] = useState(false);
   const [showInputs, setShowInputs] = useState(false);
   const [expandedBranches, setExpandedBranches] = useState<Set<string>>(new Set());
-  const visibleGraph = useMemo(() => graphView(scenario, allBranches, expandedBranches), [scenario, allBranches, expandedBranches]);
+  const visibleGraph = useMemo(() => graphView(graph, allBranches, expandedBranches), [graph, allBranches, expandedBranches]);
   const [focusedSection, setFocusedSection] = useState<number | null>(0);
   const [summaryZoom, setSummaryZoom] = useState(false);
   const sections = useMemo(() => graphSections(visibleGraph.ordered), [visibleGraph]);
@@ -123,7 +126,7 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
   const [paletteWidth, setPaletteWidth] = useState(290); const [inspectorWidth, setInspectorWidth] = useState(330);
   const clipboard = useRef<ScenarioStep | undefined>(undefined); const flow = useReactFlow<BehaviorFlowNode, FlowEdge>();
 
-  useEffect(() => { setNodes((current) => makeNodes(scenario).map((node) => ({ ...node, selected: current.find((item) => item.id === node.id)?.selected ?? node.id === selectedId }))); setEdges(flowEdges(scenario, behaviorMap)); }, [scenario, behaviorMap, makeNodes, selectedId]);
+  useEffect(() => { setNodes((current) => makeNodes(graph).map((node) => ({ ...node, selected: current.find((item) => item.id === node.id)?.selected ?? node.id === selectedId }))); setEdges(flowEdges(graph, behaviorMap)); }, [graph, behaviorMap, makeNodes, selectedId]);
   useEffect(() => {
     if (!focusMode) return;
     const exitFocus = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape" && !commandPaletteOpen) setFocusMode(false); };
@@ -141,7 +144,7 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
     locallyAppliedScenario.current = next;
     currentScenario.current = next;
     setScenario(next);
-    setValidationState("idle"); setValidationIssues([]); setInvalidNodes(new Set());
+    setValidationState("idle"); setValidationIssues((current) => current.length ? [] : current); setInvalidNodes((current) => current.size ? new Set() : current);
   }, [setScenario]);
   const applyScenario = useCallback((next: Scenario, record = true) => {
     replaceScenario(next);

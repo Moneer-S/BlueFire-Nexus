@@ -1,5 +1,7 @@
 import type { Outcome, Scenario, ScenarioStep } from "../types";
 
+export type ScenarioGraph = Pick<Scenario, "steps" | "edges" | "start" | "layout">;
+
 export const GRAPH_SECTION_SIZE = 8;
 
 /** Reading-order groups are a view, never scenario nodes or execution phases. */
@@ -25,7 +27,7 @@ export function inputTypeLabel(type: string): string {
 }
 
 /** A presentation-only projection. The complete scenario remains the execution plan. */
-export function graphView(scenario: Scenario, allBranches: boolean, expanded: ReadonlySet<string> = new Set()) {
+export function graphView(scenario: ScenarioGraph, allBranches: boolean, expanded: ReadonlySet<string> = new Set()) {
   const known = new Set(scenario.steps.map((step) => step.id));
   const visible = new Set<string>();
   const queue = allBranches ? scenario.steps.map((step) => step.id) : [scenario.start];
@@ -43,7 +45,7 @@ export function graphView(scenario: Scenario, allBranches: boolean, expanded: Re
 }
 
 /** Stable initial positions and an explicit arrange action; never moves saved positions. */
-export function initialGraphLayout(scenario: Scenario): NonNullable<Scenario["layout"]> {
+export function initialGraphLayout(scenario: ScenarioGraph): NonNullable<Scenario["layout"]> {
   const ordered = graphView(scenario, false).ordered;
   const placed = new Set(ordered.map((step) => step.id));
   ordered.push(...scenario.steps.filter((step) => !placed.has(step.id)));

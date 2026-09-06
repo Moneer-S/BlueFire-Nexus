@@ -154,7 +154,20 @@ export function ProductProvider({ children }: PropsWithChildren) {
   const [dirty, setDirty] = useState(false);
 
   const clearApproval = () => setRunConfigState((current) => ({ ...current, approved: false, approvedBy: "" }));
-  const setScenario = (next: Scenario, markDirty = true) => { const previousBehaviors = new Map(currentScenario.current.steps.map((step) => [step.id, step.behavior_id])); const nextBehaviors = new Map(next.steps.map((step) => [step.id, step.behavior_id])); currentScenario.current = next; setScenarioState({ scenario: next, scenarioIsSeededFallback: false }); setDirty(markDirty); setRunConfigState((current) => ({ ...current, approved: false, approvedBy: "", actionImplementations: Object.fromEntries(Object.entries(current.actionImplementations).filter(([stepId]) => previousBehaviors.get(stepId) === nextBehaviors.get(stepId))) })); };
+  const setScenario = (next: Scenario, markDirty = true) => {
+    const previousBehaviors = new Map(currentScenario.current.steps.map((step) => [step.id, step.behavior_id]));
+    const nextBehaviors = new Map(next.steps.map((step) => [step.id, step.behavior_id]));
+    currentScenario.current = next;
+    setScenarioState({ scenario: next, scenarioIsSeededFallback: false });
+    setDirty(markDirty);
+    setRunConfigState((current) => {
+      const selected = Object.entries(current.actionImplementations);
+      const retained = selected.filter(([stepId]) => previousBehaviors.get(stepId) === nextBehaviors.get(stepId));
+      const actionImplementations = retained.length === selected.length ? current.actionImplementations : Object.fromEntries(retained);
+      if (!current.approved && current.approvedBy === "" && actionImplementations === current.actionImplementations) return current;
+      return { ...current, approved: false, approvedBy: "", actionImplementations };
+    });
+  };
   const markSaved = (savedScenario: Scenario) => {
     if (JSON.stringify(currentScenario.current) !== JSON.stringify(savedScenario)) return false;
     setDirty(false);
