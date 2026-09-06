@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import { comparisonLink, detectionLink, hypothesisFromRun, sourceObservedRecords, sourceRunParam } from "../src/lib/run-handoffs";
@@ -47,6 +47,7 @@ const syntheticRun: RunRecord = {
 
 let runs: RunRecord[];
 let registry: DetectionResource[];
+let replayBarrier: Promise<void> | undefined;
 
 function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
@@ -61,7 +62,8 @@ function summary(run: RunRecord) {
 
 function LocationProbe() {
   const location = useLocation();
-  return <output aria-label="Current route">{location.pathname}{location.search}</output>;
+  const navigate = useNavigate();
+  return <><output aria-label="Current route">{location.pathname}{location.search}</output><Link to={comparisonLink(sourceId)}>Navigate to alternate source</Link><button onClick={() => navigate(-1)}>Browser back</button></>;
 }
 
 function renderJourney(path: string) {
@@ -77,6 +79,7 @@ function postBody(suffix: string) {
 beforeEach(() => {
   runs = structuredClone([observedRun, syntheticRun]);
   registry = [];
+  replayBarrier = undefined;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (path.endsWith("/catalog")) return json(demoCatalog);
@@ -98,6 +101,7 @@ beforeEach(() => {
     }
     if (path.endsWith(`/detections/${savedId}/exercise-observed`)) return json({ candidate: registry.at(-1) });
     if (path.endsWith(`/runs/${syntheticId}/replays`)) {
+      await replayBarrier;
       const replay = { ...structuredClone(syntheticRun), run_id: replayId, replay: { source_run_id: syntheticId } };
       runs.push(replay);
       return json(replay);
@@ -193,6 +197,44 @@ describe("run journey handoffs", () => {
     expect(screen.getByRole("checkbox", { name: /I approve this reviewed Execute replay/ })).not.toBeChecked();
     expect(screen.getByRole("textbox", { name: "Fresh replay operator identity" })).toHaveValue("");
     expect(postBody(`/runs/${sourceId}/replays`)).toBeUndefined();
+  });
+
+  it("keeps a late replay completion from overwriting navigation to another source", async () => {
+    let finishReplay!: () => void;
+    replayBarrier = new Promise<void>((resolve) => { finishReplay = resolve; });
+    const user = userEvent.setup();
+    renderJourney(comparisonLink(syntheticId));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create Simulate replay" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "Create Simulate replay" }));
+    expect(screen.getByRole("combobox", { name: "Source run" })).toBeDisabled();
+    await user.click(screen.getByRole("link", { name: "Navigate to alternate source" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Source run" })).toHaveValue(sourceId));
+    await act(async () => { finishReplay(); });
+    expect(await screen.findByText("Replay created")).toBeInTheDocument();
+    expect(screen.getByLabelText("Current route")).toHaveTextContent(comparisonLink(sourceId));
+    expect(screen.getByRole("combobox", { name: "Source run" })).toHaveValue(sourceId);
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Compare selected" })).toBeDisabled();
+  });
+
+  it("resets source-specific replay inputs on URL navigation and browser back", async () => {
+    const user = userEvent.setup();
+    renderJourney(comparisonLink(syntheticId));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Create Simulate replay" })).toBeEnabled());
+    await user.click(screen.getByRole("radio", { name: /From node/ }));
+    await user.selectOptions(screen.getByRole("combobox", { name: "Restart node" }), syntheticRun.steps[0]!.step_id);
+    await user.selectOptions(screen.getByRole("combobox", { name: "AI autonomy override" }), "assist");
+    await user.type(screen.getByRole("textbox", { name: /Declared defense change/ }), "Prior source note");
+    await user.click(screen.getByRole("link", { name: "Navigate to alternate source" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Source run" })).toHaveValue(sourceId));
+    expect(screen.getByRole("radio", { name: /Exact/ })).toBeChecked();
+    expect(screen.getByRole("combobox", { name: "Restart node" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "AI autonomy override" })).toHaveValue("preserve");
+    expect(screen.getByRole("textbox", { name: /Declared defense change/ })).toHaveValue("");
+    await user.click(screen.getByRole("button", { name: "Browser back" }));
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "Source run" })).toHaveValue(syntheticId));
+    expect(screen.getByRole("radio", { name: /Exact/ })).toBeChecked();
+    expect(screen.getByRole("combobox", { name: "Restart node" })).toHaveValue("");
   });
 });
 
