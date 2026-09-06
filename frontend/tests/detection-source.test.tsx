@@ -39,7 +39,8 @@ async function edit(user: ReturnType<typeof userEvent.setup>) {
   const editor = await screen.findByRole("textbox", { name: /sqlite source/i });
   expect(editor).toBeEnabled();
   await user.clear(editor);
-  await user.type(editor, edited);
+  // Replace the full SQL document as a user pasting an edited rule would.
+  await user.paste(edited);
   await user.type(screen.getByRole("textbox", { name: "Reason for source revision" }), "Inspect contents observations");
   expect(screen.getByText("Draft source not validated")).toBeVisible();
 }
@@ -100,6 +101,8 @@ it("offers an editable SQLite starter without claiming validation or sending it 
   expect(screen.getByText(/example has not been validated or evaluated/)).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Insert SQLite starter" }));
   expect(editor).toHaveValue("SELECT fixture_id FROM logs\nWHERE artifact_type = 'file_observation'\n  AND path LIKE '%staged/%'");
+  await user.type(editor, "{End}{Enter}LIMIT 1");
+  expect(editor).toHaveValue("SELECT fixture_id FROM logs\nWHERE artifact_type = 'file_observation'\n  AND path LIKE '%staged/%'\nLIMIT 1");
   expect(screen.getByText("Draft source not validated")).toBeVisible();
   expect(screen.getByRole("button", { name: "Parse / compile honestly" })).toBeEnabled();
   expect(action).not.toHaveBeenCalled();

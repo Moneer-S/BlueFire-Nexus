@@ -75,6 +75,36 @@ describe("Builder metadata and graph updates", () => {
     expect(leaving.defaultPrevented).toBe(true);
   });
 
+  it("remounts the palette with its filters and keyboard toggle focus intact", async () => {
+    const user = userEvent.setup();
+    renderBuilder();
+    expect(screen.queryByRole("textbox", { name: "Search palette", hidden: true })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add step" }));
+    await user.type(screen.getByRole("textbox", { name: "Search palette" }), "fix");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Safety tier filter" }), "safe");
+    await user.click(screen.getByRole("button", { name: "Add step" }));
+    const toggle = screen.getByRole("button", { name: "Add step" });
+    expect(toggle).toHaveFocus();
+    expect(screen.queryByRole("textbox", { name: "Search palette", hidden: true })).not.toBeInTheDocument();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("textbox", { name: "Search palette" })).toHaveValue("fix");
+    expect(screen.getByRole("combobox", { name: "Safety tier filter" })).toHaveValue("safe");
+    expect(screen.getByRole("button", { name: "Add step" })).toHaveFocus();
+  });
+
+  it("returns focus from closed step details and reopens the same selected step by keyboard", async () => {
+    const user = userEvent.setup();
+    renderBuilder();
+    expect(screen.queryByLabelText(/^Step ID/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show node inspector" }));
+    expect(screen.getByLabelText(/^Step ID/)).toHaveValue(demoScenario.steps[0]!.id);
+    await user.click(screen.getByRole("button", { name: "Close step details" }));
+    expect(screen.queryByLabelText(/^Step ID/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show node inspector" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByLabelText(/^Step ID/)).toHaveValue(demoScenario.steps[0]!.id);
+    expect(screen.getByRole("button", { name: "Hide node inspector" })).toHaveFocus();
+  });
   it("refreshes changed graph inputs and removes a method when its behavior changes", async () => {
     const user = userEvent.setup();
     renderBuilder();
