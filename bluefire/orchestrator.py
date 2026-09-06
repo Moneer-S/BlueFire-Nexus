@@ -1294,8 +1294,9 @@ class Orchestrator:
             in {StepOutcome.SUCCESS.value, StepOutcome.PARTIAL.value}
             and terminal_business.get("execution_disposition") != "counterfactual"
         )
-        configured_file_paths: Sequence[str] = ()
+        configured_file_paths: Sequence[str] | None = None
         if collector_runtime_settings is not None:
+            configured_file_paths = ()
             filesystem_settings = collector_runtime_settings.collectors.get(
                 FilesystemCollector.descriptor.id
             )
@@ -2907,9 +2908,7 @@ class Orchestrator:
                 **({"runner_task_id": runner_task_id} if runner_task_id is not None else {}),
                 "policy_digest": runner_profile["policy_digest"],
                 "runner_status": runner_status,
-                "expected_observable_paths": (
-                    [] if collector_runtime_active else list(adapted.observable_paths)
-                ),
+                "expected_observable_paths": list(adapted.observable_paths),
                 "runner_evidence": runner_result.get("evidence", []),
                 "output": runner_result.get("output"),
                 "stdout": runner_result.get("stdout", {}),

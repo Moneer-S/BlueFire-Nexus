@@ -18,12 +18,14 @@ _FILESYSTEM_PRODUCERS = frozenset({"sandbox-observer.v1", "collector.filesystem.
 def evaluate_observation_integrity(
     records: Sequence[EvidenceRecord],
     *,
-    configured_file_paths: Sequence[str] = (),
+    configured_file_paths: Sequence[str] | None = None,
 ) -> Mapping[str, Any]:
     """Reconcile required file effects and preserve every unavailable observation.
 
-    Managed collectors explicitly select their file paths. Other Execute runs use
-    the adapter's per-action declarations, retained in the executed evidence. A
+    Managed collectors explicitly select their file paths. Their final produced
+    file effect must still be observed; choosing an unrelated sensor cannot
+    establish it. No additional files are read by this evaluator. Other Execute
+    runs use all adapter per-action declarations retained in executed evidence. A
     scheduled observation may occur after another step, but must remain in the same
     run/profile and occur after the producing action's evidence.
     """
@@ -40,31 +42,55 @@ def evaluate_observation_integrity(
         and record.producer == "bluefire-rust-runner"
         and record.content.get("runner_status") in {"success", "partial"}
     ]
+    file_producers = [
+        record for record in executions if record.content.get("expected_observable_paths")
+    ]
+    final_file_paths = (
+        list(file_producers[-1].content["expected_observable_paths"]) if file_producers else []
+    )
     requirements: list[tuple[str, EvidenceRecord | None]] = []
-    for record in executions:
-        requirements.extend(
-            (path, record) for path in record.content.get("expected_observable_paths", ())
-        )
-    for path in configured_file_paths:
-        producers = [
-            record
-            for record in executions
-            if isinstance(record.content.get("output"), Mapping)
-            and record.content["output"].get("artifact") == path
-        ]
-        requirements.append((path, producers[-1] if producers else None))
+    if configured_file_paths is None:
+        for record in executions:
+            requirements.extend(
+                (path, record) for path in record.content.get("expected_observable_paths", ())
+            )
+    else:
+        for path in dict.fromkeys((*configured_file_paths, *final_file_paths)):
+            producers = [
+                record
+                for record in executions
+                if path in record.content.get("expected_observable_paths", ())
+                and isinstance(record.content.get("output"), Mapping)
+                and record.content["output"].get("artifact") == path
+            ]
+            requirements.append((path, producers[-1] if producers else None))
 
     postconditions: list[dict[str, Any]] = []
     for path, execution in requirements:
         output = execution.content.get("output") if execution is not None else None
         expected = output if isinstance(output, Mapping) else {}
+        digest = expected.get("sha256")
+        digest = digest.removeprefix("sha256:") if isinstance(digest, str) else None
+        size_field = (
+            "byte_count"
+            if execution is not None and execution.action_id == "sandbox.identity-material.seed.v1"
+            else "size"
+        )
+        expected_size = expected.get(size_field)
+        # The reviewed marker wire contract reports a digest but no byte count.
+        # Its independent read still proves byte identity; retain that narrower
+        # verified dimension rather than deriving or inventing a producer size.
+        digest_only = (
+            execution is not None
+            and execution.action_id == "sandbox.restricted.persistence-marker.v1"
+            and size_field not in expected
+        )
         valid_identity = (
             expected.get("artifact") == path
-            and isinstance(expected.get("sha256"), str)
-            and len(expected["sha256"]) == 64
-            and all(character in "0123456789abcdef" for character in expected["sha256"])
-            and type(expected.get("size")) is int
-            and expected["size"] >= 0
+            and isinstance(digest, str)
+            and len(digest) == 64
+            and all(character in "0123456789abcdef" for character in digest)
+            and (digest_only or (type(expected_size) is int and expected_size >= 0))
         )
         matching: list[str] = []
         conflicting: list[str] = []
@@ -92,9 +118,10 @@ def evaluate_observation_integrity(
                 if not isinstance(fields, Mapping) or fields.get("path") != path:
                     continue
                 if (
-                    fields.get("sha256") == expected["sha256"]
+                    fields.get("sha256") == digest
                     and type(fields.get("size_bytes")) is int
-                    and fields["size_bytes"] == expected["size"]
+                    and fields["size_bytes"] >= 0
+                    and (digest_only or fields["size_bytes"] == expected_size)
                 ):
                     matching.append(observed.evidence_id)
                 else:
@@ -115,12 +142,23 @@ def evaluate_observation_integrity(
                 "execution_evidence_id": execution.evidence_id if execution else None,
                 "observed_evidence_ids": sorted(matching),
                 "conflicting_evidence_ids": sorted(conflicting),
+                "verified_dimensions": (
+                    ["path", "sha256", *([] if digest_only else ["size_bytes"])]
+                    if state == "verified"
+                    else []
+                ),
             }
         )
     satisfied = not gaps and all(row["state"] == "verified" for row in postconditions)
     return {
         "schema_version": "bluefire.observation-integrity.v1",
         "satisfied": satisfied,
+        "requirement_scope": (
+            "all_declared_file_effects"
+            if configured_file_paths is None
+            else "selected_paths_and_final_file_effect"
+        ),
+        "final_file_effect_paths": final_file_paths,
         "state": (
             "not_required"
             if not postconditions and not gaps
@@ -132,6 +170,8 @@ def evaluate_observation_integrity(
         "file_postconditions": postconditions,
         "limitations": [
             "File postconditions establish independent metadata and digest observation; "
-            "they do not establish host audit events or that a detector fired."
+            "they do not establish host audit events or that a detector fired.",
+            "Managed collection verifies selected paths and the final produced file effect; "
+            "unselected intermediate effects are not independently established by this report.",
         ],
     }

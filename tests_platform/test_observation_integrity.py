@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from bluefire.contracts import ExecutionMode, load_scenario
-from bluefire.evidence import EvidenceProvenance, EvidenceRecord
+from bluefire.evidence import EvidenceProvenance, EvidenceRecord, SandboxObserver
 from bluefire.observation_integrity import evaluate_observation_integrity
 
 PATH = "staged/bundle.jsonl"
@@ -106,8 +108,8 @@ def test_conflicting_observation_is_not_masked_by_another_matching_record() -> N
 def test_managed_schedule_requires_only_the_configured_file_postconditions() -> None:
     report = evaluate_observation_integrity(
         [
-            _execution(declared=False, path="fixtures/input.jsonl"),
-            _execution(declared=False),
+            _execution(path="fixtures/input.jsonl"),
+            _execution(),
             replace(_observation(), step_id="later_collection_step"),
         ],
         configured_file_paths=[PATH],
@@ -118,6 +120,152 @@ def test_managed_schedule_requires_only_the_configured_file_postconditions() -> 
 
 def test_managed_file_without_executed_producer_fails_visibly() -> None:
     report = evaluate_observation_integrity([_observation()], configured_file_paths=[PATH])
+    assert report["satisfied"] is False
+    assert report["file_postconditions"][0]["state"] == "producer_identity_unavailable"
+
+
+def test_managed_postcondition_uses_producer_not_later_transport_output() -> None:
+    producer = _execution()
+    transport = replace(
+        producer,
+        evidence_id="evidence-transport",
+        action_id="sandbox.network.loopback.v1",
+        timestamp="2026-09-06T12:00:00.500Z",
+        content={
+            "runner_status": "success",
+            "expected_observable_paths": [],
+            "output": {"artifact": PATH, "sha256": DIGEST, "bytes_sent": 32},
+        },
+    )
+    report = evaluate_observation_integrity(
+        [producer, transport, _observation()], configured_file_paths=[PATH]
+    )
+    assert report["satisfied"] is True
+    assert report["file_postconditions"][0]["execution_evidence_id"] == producer.evidence_id
+
+
+@pytest.mark.parametrize("tampered", [False, True])
+@pytest.mark.parametrize("action", ["seed", "marker"])
+def test_production_wire_identities_bind_actual_independent_file_reads(
+    tmp_path: Path, action: str, tampered: bool
+) -> None:
+    if action == "seed":
+        path = "identity-material/public-canary.json"
+        payload = (
+            b'{"canary_id":"bluefire-public-identity-canary-v1","classification":"public",'
+            b'"material":"synthetic-public-identity-canary","schema_version":'
+            b'"bluefire.identity-material.v1","synthetic":true}\n'
+        )
+        assert len(payload) == 189
+        output = {
+            "artifact": path,
+            "byte_count": 189,
+            "classification": "public",
+            "sha256": "4af6ae2cf13d13d9d325632af3f90d1730faae52424f176b2cc34a0eef0db6ca",
+            "synthetic": True,
+        }
+        action_id = "sandbox.identity-material.seed.v1"
+        dimensions = ["path", "sha256", "size_bytes"]
+    else:
+        path = "restricted/persistence-marker.json"
+        payload = (
+            b'{"executable":false,"kind":"non_executable_marker",'
+            b'"label":"persistence_detection_canary",'
+            b'"schema_version":"bluefire.persistence-detection-canary/v1"}\n'
+        )
+        output = {
+            "artifact": path,
+            "sha256": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "label": "persistence_detection_canary",
+            "executable": False,
+        }
+        action_id = "sandbox.restricted.persistence-marker.v1"
+        dimensions = ["path", "sha256"]
+    producer = replace(
+        _execution(path=path),
+        action_id=action_id,
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        content={
+            "runner_status": "success",
+            "expected_observable_paths": [path],
+            "output": output,
+        },
+    )
+    effect = tmp_path / path
+    effect.parent.mkdir()
+    # Keep the tampered file the same size: only a real digest comparison can fail it.
+    effect.write_bytes(
+        payload.replace(b"public", b"PUBLIC", 1)
+        if tampered and action == "seed"
+        else payload.replace(b"marker", b"MARKER", 1) if tampered else payload
+    )
+    observed = SandboxObserver(tmp_path).observe_file(
+        relative_path=path,
+        run_id=producer.run_id,
+        step_id=producer.step_id,
+        behavior_id=producer.behavior_id,
+        action_id=action_id,
+        runner_profile_id=producer.runner_profile_id,
+        parent_evidence_ids=(producer.evidence_id,),
+    )
+    report = evaluate_observation_integrity([producer, observed])
+    assert report["satisfied"] is (not tampered)
+    row = report["file_postconditions"][0]
+    assert row["state"] == ("conflicting_observation" if tampered else "verified")
+    assert row["verified_dimensions"] == ([] if tampered else dimensions)
+
+
+def test_disabling_filesystem_does_not_establish_final_file_effect() -> None:
+    report = evaluate_observation_integrity([_execution()], configured_file_paths=[])
+    assert report["satisfied"] is False
+    assert report["final_file_effect_paths"] == [PATH]
+    assert report["required_file_count"] == 1
+
+
+def test_observing_only_earlier_fixture_does_not_establish_final_staging() -> None:
+    fixture_path = "fixtures/input.jsonl"
+    report = evaluate_observation_integrity(
+        [_execution(path=fixture_path), _execution(), _observation(path=fixture_path)],
+        configured_file_paths=[fixture_path],
+    )
+    assert report["satisfied"] is False
+    assert report["verified_file_count"] == 1
+    assert report["required_file_count"] == 2
+
+
+def test_later_local_export_requires_its_own_observation() -> None:
+    export_path = "exports/ephemeral/bundle.bin"
+    exported = replace(_execution(path=export_path), action_id="sandbox.export.local.v1")
+    records = [_execution(), exported, _observation()]
+    report = evaluate_observation_integrity(records, configured_file_paths=[PATH])
+    assert report["satisfied"] is False
+    assert report["final_file_effect_paths"] == [export_path]
+    completed = evaluate_observation_integrity(
+        [*records, _observation(path=export_path)], configured_file_paths=[PATH, export_path]
+    )
+    assert completed["satisfied"] is True
+
+
+@pytest.mark.parametrize(
+    "action_id, output",
+    [
+        ("sandbox.identity-material.seed.v1", {"byte_count": True, "sha256": DIGEST}),
+        ("sandbox.restricted.persistence-marker.v1", {"sha256": "sha256:sha256:" + DIGEST}),
+    ],
+)
+def test_malformed_reviewed_size_or_digest_is_not_a_file_identity(
+    action_id: str, output: dict
+) -> None:
+    execution = replace(
+        _execution(),
+        action_id=action_id,
+        content={
+            "runner_status": "success",
+            "expected_observable_paths": [PATH],
+            "output": {"artifact": PATH, **output},
+        },
+    )
+    report = evaluate_observation_integrity([execution, _observation()])
     assert report["satisfied"] is False
     assert report["file_postconditions"][0]["state"] == "producer_identity_unavailable"
 
