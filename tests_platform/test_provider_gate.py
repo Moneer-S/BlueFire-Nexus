@@ -84,6 +84,10 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/runner_adapter.py",
         "bluefire/orchestrator.py",
         "bluefire/service.py",
+        "bluefire/reviewed_source_intake.py",
+        "bluefire/source_intake_context.py",
+        "bluefire/source_intake_workspace.py",
+        "bluefire/source_intake_publication.py",
         "bluefire/ai.py",
         "bluefire/ai_drafts.py",
         "bluefire/planner.py",
@@ -309,8 +313,18 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
     assert checks["no_model_shell"]["process_boundary"]["passed"] is True
 
 
-@pytest.mark.parametrize("relative", ["bluefire/api_context.py", "bluefire/api_routes.py"])
-def test_extracted_http_boundaries_retain_strict_process_source_auditing(
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "bluefire/api_context.py",
+        "bluefire/api_routes.py",
+        "bluefire/reviewed_source_intake.py",
+        "bluefire/source_intake_context.py",
+        "bluefire/source_intake_workspace.py",
+        "bluefire/source_intake_publication.py",
+    ],
+)
+def test_extracted_boundaries_retain_strict_process_source_auditing(
     tmp_path: Path,
     relative: str,
 ) -> None:

@@ -6,8 +6,9 @@ from typing import Any
 
 import pytest
 
-import bluefire.service as service_module
 import bluefire.source_intake as source_intake
+import bluefire.source_intake_publication as publication_module
+import bluefire.source_intake_workspace as workspace_module
 from bluefire.source_intake import SourceIntakeError
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX no-replace publication regression")
@@ -29,12 +30,12 @@ def test_posix_retained_destination_is_quarantined_without_path_deletion(
     def refuse_path_cleanup(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("retained POSIX state must not be deleted by pathname")
 
-    monkeypatch.setattr(service_module, "token_hex", lambda _size: token)
+    monkeypatch.setattr(workspace_module, "token_hex", lambda _size: token)
     monkeypatch.setattr(Path, "unlink", refuse_path_cleanup)
-    outcome = service_module._release_failed_source_intake_destination(
+    outcome = workspace_module._release_failed_source_intake_destination(
         destination,
-        destination_identity=service_module._filesystem_identity(destination.lstat()),
-        intake_root_identity=service_module._filesystem_identity(intake_root.lstat()),
+        destination_identity=publication_module._filesystem_identity(destination.lstat()),
+        intake_root_identity=publication_module._filesystem_identity(intake_root.lstat()),
         destination_created=True,
         published_artifact=None,
         published_receipt=None,

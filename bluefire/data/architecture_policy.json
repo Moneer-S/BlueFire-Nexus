@@ -260,6 +260,9 @@
       "layer": "application",
       "patterns": [
         "bluefire.application_errors",
+        "bluefire.reviewed_source_intake",
+        "bluefire.source_intake_context",
+        "bluefire.source_intake_workspace",
         "bluefire.bootstrap",
         "bluefire.cloud_identity_contracts",
         "bluefire.cloud_identity_manual_smoke",
@@ -360,6 +363,7 @@
         "bluefire.source_intake",
         "bluefire.source_intake_contracts",
         "bluefire.source_intake_package",
+        "bluefire.source_intake_publication",
         "bluefire.runner_contracts",
         "bluefire.runner_inventory",
         "bluefire.simulation"

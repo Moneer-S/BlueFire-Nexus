@@ -5,13 +5,15 @@ import os
 import stat
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
 import bluefire.cli as cli
-import bluefire.service as service_module
+import bluefire.reviewed_source_intake as intake_module
 import bluefire.source_intake as source_intake_module
+import bluefire.source_intake_publication as publication_module
+import bluefire.source_intake_workspace as workspace_module
 from bluefire.api import APIError
 from bluefire.runner_inventory import (
     BUILTIN_RUNNER_ACTION_VERSIONS,
@@ -42,6 +44,25 @@ from bluefire.util import canonical_json_bytes, content_hash
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE_ID = "sandbox-windows-source-intake.v1"
 OPERATOR_ID = "local-source-reviewer"
+
+
+def _inject_activation_for_service(
+    monkeypatch: pytest.MonkeyPatch,
+    service: BlueFireService,
+    replacement: Callable[..., Any],
+) -> None:
+    """Fault only the original service's operation; leave restarted owners real."""
+
+    original = intake_module.ReviewedSourceIntake._activate_reviewed_t1082_intake
+
+    def activate(operation: intake_module.ReviewedSourceIntake, *args: Any, **kwargs: Any) -> Any:
+        if operation._context is service:
+            return replacement(operation, *args, **kwargs)
+        return original(operation, *args, **kwargs)
+
+    monkeypatch.setattr(
+        intake_module.ReviewedSourceIntake, "_activate_reviewed_t1082_intake", activate
+    )
 
 
 class SimulatedHardStop(BaseException):
@@ -94,17 +115,17 @@ def test_new_destination_is_removed_when_private_pinning_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     destination_id = "private-pin-failure"
-    original_enter = service_module._PinnedDirectory.__enter__
+    original_enter = workspace_module._PinnedDirectory.__enter__
 
     def fail_destination_private_pin(
-        directory: service_module._PinnedDirectory,
-    ) -> service_module._PinnedDirectory:
+        directory: workspace_module._PinnedDirectory,
+    ) -> workspace_module._PinnedDirectory:
         if directory.path.name == destination_id and directory.private:
-            raise service_module.RunnerTrustError("injected private pin failure")
+            raise workspace_module.RunnerTrustError("injected private pin failure")
         return original_enter(directory)
 
     monkeypatch.setattr(
-        service_module._PinnedDirectory,
+        workspace_module._PinnedDirectory,
         "__enter__",
         fail_destination_private_pin,
     )
@@ -321,7 +342,7 @@ def test_failed_intake_releases_exact_destination_for_retry(
     service: BlueFireService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original = service_module.perform_source_intake
+    original = intake_module.perform_source_intake
     calls = 0
 
     def fail_once(*args: Any, **kwargs: Any):
@@ -331,7 +352,7 @@ def test_failed_intake_releases_exact_destination_for_retry(
             raise SourceIntakeError("injected reviewed-source refusal")
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(service_module, "perform_source_intake", fail_once)
+    monkeypatch.setattr(intake_module, "perform_source_intake", fail_once)
     request = _surface_request("retryable-review")
 
     with pytest.raises(APIError) as raised:
@@ -350,7 +371,7 @@ def test_failed_intake_quarantines_retained_state_without_path_deletion(
     service: BlueFireService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original = service_module.perform_source_intake
+    original = intake_module.perform_source_intake
     destination_id = "retained-retry"
     destination = service.store.root / "source-intakes" / destination_id
     token = "e" * 16
@@ -372,8 +393,8 @@ def test_failed_intake_quarantines_retained_state_without_path_deletion(
             raise AssertionError("retained source-intake state must not be deleted by pathname")
         real_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(service_module, "perform_source_intake", fail_once)
-    monkeypatch.setattr(service_module, "token_hex", lambda _size: token)
+    monkeypatch.setattr(intake_module, "perform_source_intake", fail_once)
+    monkeypatch.setattr(workspace_module, "token_hex", lambda _size: token)
     monkeypatch.setattr(Path, "unlink", refuse_destination_unlink)
 
     with pytest.raises(APIError) as raised:
@@ -402,7 +423,7 @@ def test_failed_intake_bounds_flooded_namespace_probe_before_quarantine(
     token = "d" * 16
     quarantine_name = f".retained-{destination_id}-{token}"
     quarantine = destination.parent / quarantine_name
-    real_names = service_module._PinnedDirectory.names
+    real_names = workspace_module._PinnedDirectory.names
     observed_bounds: list[int | None] = []
 
     def fail_with_flooded_state(_source: Path, retained_destination: Path, _request: Any) -> None:
@@ -419,9 +440,9 @@ def test_failed_intake_bounds_flooded_namespace_probe_before_quarantine(
         assert maximum == 1
         return real_names(pinned, maximum=maximum)
 
-    monkeypatch.setattr(service_module, "perform_source_intake", fail_with_flooded_state)
-    monkeypatch.setattr(service_module, "token_hex", lambda _size: token)
-    monkeypatch.setattr(service_module._PinnedDirectory, "names", require_bounded_names)
+    monkeypatch.setattr(intake_module, "perform_source_intake", fail_with_flooded_state)
+    monkeypatch.setattr(workspace_module, "token_hex", lambda _size: token)
+    monkeypatch.setattr(workspace_module._PinnedDirectory, "names", require_bounded_names)
 
     with pytest.raises(APIError) as raised:
         service.intake_reviewed_t1082(_surface_request(destination_id))
@@ -440,9 +461,9 @@ def test_failed_intake_bounds_flooded_namespace_probe_before_quarantine(
     assert not destination.exists()
     assert (quarantine / "retained-00").read_bytes() == b"retained"
     assert (quarantine / "retained-63").read_bytes() == b"retained"
-    with service_module._PinnedDirectory(quarantine, private=False) as pinned:
+    with workspace_module._PinnedDirectory(quarantine, private=False) as pinned:
         with pytest.raises(
-            service_module.RunnerTrustError,
+            workspace_module.RunnerTrustError,
             match="directory entry bound was exceeded",
         ):
             pinned.names(maximum=1)
@@ -466,8 +487,8 @@ def test_failed_intake_never_replaces_a_collided_quarantine(
         (destination / ".bfi-retained").write_bytes(b"retained-owned-state")
         raise SourceIntakeError("injected pre-publication refusal")
 
-    monkeypatch.setattr(service_module, "perform_source_intake", fail_with_retained_state)
-    monkeypatch.setattr(service_module, "token_hex", lambda _size: token)
+    monkeypatch.setattr(intake_module, "perform_source_intake", fail_with_retained_state)
+    monkeypatch.setattr(workspace_module, "token_hex", lambda _size: token)
 
     with pytest.raises(APIError) as raised:
         service.intake_reviewed_t1082(_surface_request(destination_id))
@@ -495,8 +516,8 @@ def test_failed_intake_reports_a_destination_rebound_after_exact_quarantine(
         (retained_destination / ".bfi-retained").write_bytes(b"retained-owned-state")
         raise SourceIntakeError("injected pre-publication refusal")
 
-    monkeypatch.setattr(service_module, "perform_source_intake", fail_with_retained_state)
-    monkeypatch.setattr(service_module, "token_hex", lambda _size: token)
+    monkeypatch.setattr(intake_module, "perform_source_intake", fail_with_retained_state)
+    monkeypatch.setattr(workspace_module, "token_hex", lambda _size: token)
     if os.name == "nt":
         real_rename = source_intake_module._windows_rename_descriptor
 
@@ -544,7 +565,7 @@ def test_failed_intake_retains_quarantine_ref_after_post_rename_failure(
     token = "b" * 16
     quarantine_name = f".retained-{destination_id}-{token}"
     quarantine = destination.parent / quarantine_name
-    real_quarantine = service_module._quarantine_directory_no_replace
+    real_quarantine = workspace_module._quarantine_directory_no_replace
 
     def fail_with_retained_state(_source: Path, retained_destination: Path, _request: Any) -> None:
         (retained_destination / ".bfi-retained").write_bytes(b"retained-owned-state")
@@ -556,10 +577,10 @@ def test_failed_intake_retains_quarantine_ref_after_post_rename_failure(
         assert released
         raise SourceIntakeError("simulated descriptor close failure")
 
-    monkeypatch.setattr(service_module, "perform_source_intake", fail_with_retained_state)
-    monkeypatch.setattr(service_module, "token_hex", lambda _size: token)
+    monkeypatch.setattr(intake_module, "perform_source_intake", fail_with_retained_state)
+    monkeypatch.setattr(workspace_module, "token_hex", lambda _size: token)
     monkeypatch.setattr(
-        service_module,
+        workspace_module,
         "_quarantine_directory_no_replace",
         quarantine_then_report_failure,
     )
@@ -579,20 +600,20 @@ def test_failed_post_publication_validation_releases_artifact_for_retry(
     service: BlueFireService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original = service_module.source_intake_package.validate_gate09_intake_envelope
+    original = intake_module.source_intake_package.validate_gate09_intake_envelope
     calls = 0
 
     def fail_once(envelope: Any):
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise service_module.source_intake_package.SourceIntakePackageError(
+            raise intake_module.source_intake_package.SourceIntakePackageError(
                 "injected post-publication refusal"
             )
         return original(envelope)
 
     monkeypatch.setattr(
-        service_module.source_intake_package,
+        intake_module.source_intake_package,
         "validate_gate09_intake_envelope",
         fail_once,
     )
@@ -617,7 +638,7 @@ def test_service_refuses_missing_or_tampered_packaged_license(
     monkeypatch: pytest.MonkeyPatch,
     failure: str,
 ) -> None:
-    real_root = service_module.files("bluefire.data")
+    real_root = intake_module.files("bluefire.data")
     fake_license = tmp_path / f"{failure}-license.txt"
     if failure == "tampered":
         with (ROOT / "bluefire" / "data" / LICENSE_ASSET).open("rb") as source:
@@ -632,7 +653,7 @@ def test_service_refuses_missing_or_tampered_packaged_license(
                 return fake_license
             return real_root.joinpath(name)
 
-    monkeypatch.setattr(service_module, "files", lambda _package: ResourceRoot())
+    monkeypatch.setattr(intake_module, "files", lambda _package: ResourceRoot())
     destination_id = f"{failure}-license-review"
 
     with pytest.raises(APIError) as raised:
@@ -662,11 +683,11 @@ def test_absent_stage_read_does_not_create_or_retain_empty_directory(
     stage_root = service.store.root / "source-intake-package-staging"
     assert not stage_root.exists()
 
-    assert service_module._read_reviewed_t1082_package_stage(service.store.root) is None
+    assert workspace_module._read_reviewed_t1082_package_stage(service.store.root) is None
     assert not stage_root.exists()
 
     stage_root.mkdir(mode=0o700)
-    assert service_module._read_reviewed_t1082_package_stage(service.store.root) is None
+    assert workspace_module._read_reviewed_t1082_package_stage(service.store.root) is None
     assert not stage_root.exists()
 
 
@@ -686,26 +707,26 @@ def test_valid_pretrust_stage_file_acl_failure_never_enrolls_its_signing_authori
     stage = (
         service.store.root
         / "source-intake-package-staging"
-        / service_module._REVIEWED_T1082_STAGE_FILE
+        / workspace_module._REVIEWED_T1082_STAGE_FILE
     )
     staged_bytes = stage.read_bytes()
     assert service.action_packages()["publishers"] == []
     monkeypatch.undo()
-    original_read = service_module._PinnedDirectory.read_with_identity
+    original_read = workspace_module._PinnedDirectory.read_with_identity
 
     def refuse_stage_file(
-        directory: service_module._PinnedDirectory,
+        directory: workspace_module._PinnedDirectory,
         name: str,
         *,
         maximum: int,
         exclusive: bool = False,
     ) -> tuple[bytes, tuple[int, int], tuple[int, int, int, int, int]]:
-        if name == service_module._REVIEWED_T1082_STAGE_FILE:
-            raise service_module.RunnerTrustError("injected owner validation failure")
+        if name == workspace_module._REVIEWED_T1082_STAGE_FILE:
+            raise workspace_module.RunnerTrustError("injected owner validation failure")
         return original_read(directory, name, maximum=maximum, exclusive=exclusive)
 
     monkeypatch.setattr(
-        service_module._PinnedDirectory,
+        workspace_module._PinnedDirectory,
         "read_with_identity",
         refuse_stage_file,
     )
@@ -727,30 +748,32 @@ def test_stage_publication_failure_leaves_no_authoritative_file_and_retries(
     failure_point: str,
 ) -> None:
     if failure_point == "partial_write":
-        original = service_module._write_reviewed_state_payload
+        original = publication_module._write_reviewed_state_payload
 
         def fail_partial(descriptor: int, payload: bytes, *, context: str) -> None:
             del context
-            assert service_module.os.write(descriptor, payload[:17]) == 17
+            assert publication_module.os.write(descriptor, payload[:17]) == 17
             raise OSError("injected partial stage write")
 
-        monkeypatch.setattr(service_module, "_write_reviewed_state_payload", fail_partial)
+        monkeypatch.setattr(publication_module, "_write_reviewed_state_payload", fail_partial)
         restore_name = "_write_reviewed_state_payload"
     elif failure_point == "fsync":
-        original = service_module._fsync_reviewed_state_temporary
+        original = publication_module._fsync_reviewed_state_temporary
 
         def fail_fsync(_descriptor: int) -> None:
             raise OSError("injected stage fsync failure")
 
-        monkeypatch.setattr(service_module, "_fsync_reviewed_state_temporary", fail_fsync)
+        monkeypatch.setattr(publication_module, "_fsync_reviewed_state_temporary", fail_fsync)
         restore_name = "_fsync_reviewed_state_temporary"
     else:
-        original = service_module._validate_reviewed_state_temporary
+        original = publication_module._validate_reviewed_state_temporary
 
         def fail_post_write(**_kwargs: Any) -> None:
             raise OSError("injected post-write stage validation failure")
 
-        monkeypatch.setattr(service_module, "_validate_reviewed_state_temporary", fail_post_write)
+        monkeypatch.setattr(
+            publication_module, "_validate_reviewed_state_temporary", fail_post_write
+        )
         restore_name = "_validate_reviewed_state_temporary"
 
     destination_id = f"stage-{failure_point.replace('_', '-')}"
@@ -763,7 +786,7 @@ def test_stage_publication_failure_leaves_no_authoritative_file_and_retries(
     assert not (service.store.root / "source-intakes" / destination_id).exists()
     assert not stage_root.exists()
     assert service.action_packages()["publishers"] == []
-    monkeypatch.setattr(service_module, restore_name, original)
+    monkeypatch.setattr(publication_module, restore_name, original)
 
     response = service.intake_reviewed_t1082(request)
     assert response["package_activation"]["operation"] == "installed_and_activated"
@@ -774,14 +797,14 @@ def test_tampered_receipt_shape_is_not_published_and_destination_retries(
     service: BlueFireService,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original = service_module._build_reviewed_t1082_operation_receipt
+    original = intake_module._build_reviewed_t1082_operation_receipt
 
     def tampered(**kwargs: Any) -> dict[str, Any]:
         record = dict(original(**kwargs))
         record["unexpected"] = True
         return record
 
-    monkeypatch.setattr(service_module, "_build_reviewed_t1082_operation_receipt", tampered)
+    monkeypatch.setattr(intake_module, "_build_reviewed_t1082_operation_receipt", tampered)
     request = _surface_request("receipt-shape-retry")
 
     with pytest.raises(APIError) as raised:
@@ -791,7 +814,7 @@ def test_tampered_receipt_shape_is_not_published_and_destination_retries(
     assert raised.value.code == "source_intake_rejected"
     assert not destination.exists()
     assert service.action_packages()["packages"][0]["status"] == "active"
-    monkeypatch.setattr(service_module, "_build_reviewed_t1082_operation_receipt", original)
+    monkeypatch.setattr(intake_module, "_build_reviewed_t1082_operation_receipt", original)
 
     response = service.intake_reviewed_t1082(request)
     assert response["package_activation"]["operation"] == "already_active_revalidated"
@@ -807,14 +830,14 @@ def test_partial_receipt_write_leaves_no_destination_and_retries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service.intake_reviewed_t1082(_surface_request("receipt-prerequisite"))
-    original = service_module._write_reviewed_state_payload
+    original = publication_module._write_reviewed_state_payload
 
     def fail_partial(descriptor: int, payload: bytes, *, context: str) -> None:
         assert context == "reviewed source operation receipt"
-        assert service_module.os.write(descriptor, payload[:19]) == 19
+        assert publication_module.os.write(descriptor, payload[:19]) == 19
         raise OSError("injected partial receipt write")
 
-    monkeypatch.setattr(service_module, "_write_reviewed_state_payload", fail_partial)
+    monkeypatch.setattr(publication_module, "_write_reviewed_state_payload", fail_partial)
     request = _surface_request("receipt-write-retry")
 
     with pytest.raises(APIError) as raised:
@@ -824,7 +847,7 @@ def test_partial_receipt_write_leaves_no_destination_and_retries(
     assert raised.value.code == "source_intake_rejected"
     assert not destination.exists()
     assert len(service.action_packages()["activation_events"]) == 1
-    monkeypatch.setattr(service_module, "_write_reviewed_state_payload", original)
+    monkeypatch.setattr(publication_module, "_write_reviewed_state_payload", original)
 
     response = service.intake_reviewed_t1082(request)
     assert response["package_activation"]["operation"] == "already_active_revalidated"
@@ -911,7 +934,7 @@ def test_install_failure_resumes_staged_signature_without_new_trust(
     ] == [(PUBLISHER_ID, KEY_ID, "trusted")]
     if os.name != "nt":
         stage_root = service.store.root / "source-intake-package-staging"
-        stage = stage_root / service_module._REVIEWED_T1082_STAGE_FILE
+        stage = stage_root / workspace_module._REVIEWED_T1082_STAGE_FILE
         assert stat.S_IMODE(stage_root.stat().st_mode) == 0o700
         assert stat.S_IMODE(stage.stat().st_mode) == 0o600
 
@@ -954,7 +977,7 @@ def test_staged_signature_retry_requires_the_original_operator(
         service.intake_reviewed_t1082(request)
 
     assert interrupted.value.code == "action_package_install_refused"
-    staged = service_module._read_reviewed_t1082_package_stage(service.store.root)
+    staged = workspace_module._read_reviewed_t1082_package_stage(service.store.root)
     assert staged is not None
     assert staged[0]["trust_actor"] == OPERATOR_ID
     different_operator = {**request, "operator_id": "different-local-reviewer"}
@@ -965,7 +988,7 @@ def test_staged_signature_retry_requires_the_original_operator(
     assert refused.value.status == 409
     assert refused.value.code == "source_intake_operator_conflict"
     assert install_calls == 1
-    staged_after_refusal = service_module._read_reviewed_t1082_package_stage(service.store.root)
+    staged_after_refusal = workspace_module._read_reviewed_t1082_package_stage(service.store.root)
     assert staged_after_refusal is not None
     assert staged_after_refusal[1] == staged[1]
     assert service.action_packages()["packages"] == []
@@ -1037,7 +1060,7 @@ def test_restart_resumes_an_artifact_only_hard_stop(
     def hard_stop(*_args: Any, **_kwargs: Any) -> None:
         raise SimulatedHardStop("process stopped after artifact publication")
 
-    monkeypatch.setattr(first, "_activate_reviewed_t1082_intake", hard_stop)
+    _inject_activation_for_service(monkeypatch, first, hard_stop)
     try:
         with pytest.raises(SimulatedHardStop):
             first.intake_reviewed_t1082(request)
@@ -1070,13 +1093,13 @@ def test_restart_publishes_receipt_after_activation_hard_stop(
     request = _surface_request(destination_id)
     destination = state_root / "source-intakes" / destination_id
     first = _service_for_state(state_root)
-    original_builder = service_module._build_reviewed_t1082_operation_receipt
+    original_builder = intake_module._build_reviewed_t1082_operation_receipt
 
     def hard_stop(**_kwargs: Any) -> None:
         raise SimulatedHardStop("process stopped after package activation")
 
     monkeypatch.setattr(
-        service_module,
+        intake_module,
         "_build_reviewed_t1082_operation_receipt",
         hard_stop,
     )
@@ -1088,7 +1111,7 @@ def test_restart_publishes_receipt_after_activation_hard_stop(
     finally:
         first.close()
     monkeypatch.setattr(
-        service_module,
+        intake_module,
         "_build_reviewed_t1082_operation_receipt",
         original_builder,
     )
@@ -1146,7 +1169,7 @@ def test_restart_refuses_tampered_interrupted_destination_without_activation(
     def hard_stop(*_args: Any, **_kwargs: Any) -> None:
         raise SimulatedHardStop("process stopped after artifact publication")
 
-    monkeypatch.setattr(first, "_activate_reviewed_t1082_intake", hard_stop)
+    _inject_activation_for_service(monkeypatch, first, hard_stop)
     try:
         with pytest.raises(SimulatedHardStop):
             first.intake_reviewed_t1082(request)
@@ -1186,7 +1209,7 @@ def test_concurrent_service_instances_serialize_the_same_destination(
     entered_activation = threading.Event()
     allow_activation = threading.Event()
     second_done = threading.Event()
-    original_activation = first._activate_reviewed_t1082_intake
+    original_activation = intake_module.ReviewedSourceIntake._activate_reviewed_t1082_intake
     results: dict[str, Any] = {}
     failures: list[BaseException] = []
 
@@ -1205,7 +1228,7 @@ def test_concurrent_service_instances_serialize_the_same_destination(
             if name == "second":
                 second_done.set()
 
-    monkeypatch.setattr(first, "_activate_reviewed_t1082_intake", blocked_activation)
+    _inject_activation_for_service(monkeypatch, first, blocked_activation)
     first_thread = threading.Thread(target=invoke, args=("first", first), daemon=True)
     second_thread = threading.Thread(target=invoke, args=("second", second), daemon=True)
     try:
