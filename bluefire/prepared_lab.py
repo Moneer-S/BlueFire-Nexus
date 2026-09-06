@@ -8,6 +8,7 @@ installation and interactive effects are separate explicit commands.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -123,6 +124,19 @@ def guest(lease: DisposableWslDistribution, user: str, *arguments: str) -> list[
     )
 
 
+def wheel_digest(path: Path) -> bytes:
+    identity(path, directory=False)
+    digest = hashlib.sha256()
+    total = 0
+    with path.open("rb") as source:
+        while block := source.read(65536):
+            total += len(block)
+            if total > 128 * 1024 * 1024:
+                raise ValueError("wheel copy exceeds its byte bound")
+            digest.update(block)
+    return digest.digest()
+
+
 def wheel_inputs(product: Path, wheelhouse: Path) -> list[Path]:
     product = product.resolve(strict=True)
     wheelhouse = wheelhouse.resolve(strict=True)
@@ -135,6 +149,13 @@ def wheel_inputs(product: Path, wheelhouse: Path) -> list[Path]:
             if path.suffix == ".whl" and path.resolve() != product
         ),
     ]
+    # pip download also copies its local product input into the wheelhouse.
+    # Only an identical copy of the explicitly selected artifact is redundant.
+    for copy in paths[1:]:
+        if copy.name == product.name:
+            if wheel_digest(copy) != wheel_digest(product):
+                raise ValueError("the wheelhouse product copy differs from the selected wheel")
+            paths.remove(copy)
     if not 1 <= len(paths) <= 128 or len({path.name for path in paths}) != len(paths):
         raise ValueError("wheel inputs exceed the count bound or duplicate a name")
     size = 0

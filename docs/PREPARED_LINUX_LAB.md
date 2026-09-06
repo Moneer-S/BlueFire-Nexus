@@ -48,18 +48,34 @@ WSL's Windows-to-Linux localhost forwarding must be available for browser access
 does not change the user's global `.wslconfig`. See Microsoft's
 [localhost forwarding and per-distribution settings](https://learn.microsoft.com/en-us/windows/wsl/wsl-config).
 
-For source development, build a Linux wheel in a separate Linux build environment with the
-reviewed native artifact and normal build prerequisites. From that source checkout:
+For source development, use a separate Ubuntu 24.04 x86_64 build environment with CPython 3.12,
+`python3.12-venv`, `build-essential`, `musl-tools`, and Rustup installed. Run these commands from
+the source checkout. Rustup reads the checked-in `rust-toolchain.toml`; the build helper applies
+the repository's fixed build arguments and path-remapping checks. The native input below is
+the newly compiled Cargo output, separate from the package staging destination:
 
 ```bash
-python tools/stage_native_runner.py --runner bluefire/native/linux-x86_64/bluefire-runner --output-root bluefire/native --platform linux --architecture x86_64
+python3.12 -m venv .build-venv
+. .build-venv/bin/activate
+python -m pip install 'setuptools>=83' wheel 'PyYAML>=6.0.1,<7' 'cryptography>=50,<51' 'PyNaCl>=1.5,<2'
+rustup target add x86_64-unknown-linux-musl
+export CARGO_TARGET_DIR="$PWD/runner/target"
+python tools/build_native_runner.py --target x86_64-unknown-linux-musl
+python tools/stage_native_runner.py \
+  --runner "$CARGO_TARGET_DIR/x86_64-unknown-linux-musl/release/bluefire-runner" \
+  --output-root "$PWD/bluefire/native" --platform linux --architecture x86_64
 python -m pip wheel --no-build-isolation --no-deps --wheel-dir dist .
 python -m pip download --only-binary=:all: --dest wheelhouse dist/bluefire_nexus-3.0.0-py3-none-linux_x86_64.whl
 ```
 
-Use the actual versioned filename produced by your build. The download step resolves the
+The build environment includes the declared runtime dependencies because the staging helper
+imports the product's contracts. Both staging paths are absolute, as required by the helper.
+Use the actual versioned
+wheel filename produced by your build. The download step resolves the
 product's declared runtime dependencies for that Linux interpreter. Review and retain the exact
-resulting files before transferring the wheel and wheelhouse to Windows. Build tooling and
+resulting files before transferring the wheel and wheelhouse to Windows. An identical product
+wheel copied into the wheelhouse by `pip download` is accepted once; differing same-name copies
+are refused. Build tooling and
 network dependency resolution are not available inside the effects namespace. Optional Sigma
 and YARA backend installation is separate; this setup installs the product's standard runtime
 dependencies, including its built-in SQLite evaluator.

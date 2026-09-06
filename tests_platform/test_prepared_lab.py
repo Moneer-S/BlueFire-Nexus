@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import socket
 import stat
 import sys
@@ -40,6 +41,13 @@ def test_lab_requires_platform_native_wheel_and_existing_packaged_launcher(tmp_p
         lab.wheel_inputs(product, wheelhouse)
     _wheel(product)
     assert lab.wheel_inputs(product, wheelhouse) == [product]
+    duplicate = wheelhouse / product.name
+    shutil.copyfile(product, duplicate)
+    assert lab.wheel_inputs(product, wheelhouse) == [product]
+    duplicate.write_bytes(b"different package with the same name")
+    with pytest.raises(ValueError, match="differs"):
+        lab.wheel_inputs(product, wheelhouse)
+    duplicate.unlink()
     _wheel(wheelhouse / "bluefire_nexus-2.8.0-py3-none-linux_x86_64.whl")
     with pytest.raises(ValueError, match="one BlueFire"):
         lab.wheel_inputs(product, wheelhouse)
