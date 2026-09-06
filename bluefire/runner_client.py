@@ -69,6 +69,7 @@ from .runner_private_files import (
 from .runner_private_files import (
     _PrivateFileCleanupError as _PrivateFileCleanupError,
 )
+from .runner_private_files import _PrivateFileTwoLinksError
 from .runner_private_files import (
     _read_descriptor_bounded as _read_descriptor_bounded,
 )
@@ -2353,6 +2354,14 @@ class SubprocessRustRunner:
                     return
                 raise RunnerTransportError("Runner watchdog readiness is invalid")
             except FileNotFoundError:
+                time.sleep(_PROCESS_POLL_SECONDS)
+            except _PrivateFileTwoLinksError:
+                # POSIX no-replace publication links the complete staging file
+                # before unlinking its old name. Never accept that two-link
+                # state; retry the full strict read within the existing bound.
+                # A persistent alias remains unavailable and reaches the bound.
+                if os.name == "nt":
+                    raise RunnerTransportError("Runner watchdog readiness is unavailable") from None
                 time.sleep(_PROCESS_POLL_SECONDS)
             except OSError as exc:
                 windows_error = getattr(exc, "winerror", None)

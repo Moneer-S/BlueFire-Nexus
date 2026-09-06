@@ -149,6 +149,17 @@ def _read_descriptor_bounded(descriptor: int, maximum: int) -> bytes:
     return bytes(payload)
 
 
+class _PrivateFileTwoLinksError(OSError):
+    """A strict private-file read found two links; no contents were accepted."""
+
+
+def _require_single_link(details: os.stat_result) -> None:
+    if details.st_nlink == 2:
+        raise _PrivateFileTwoLinksError("private file has two links")
+    if details.st_nlink != 1:
+        raise OSError("unsafe private file link count")
+
+
 class _PrivateFileCleanupError(RunnerTransportError):
     """Retain every failure when a private handle cannot close cleanly."""
 
@@ -550,7 +561,6 @@ class _PinnedPrivateDirectory:
         descriptor_mount_identity = _descriptor_mount_identity(descriptor)
         if (
             not stat.S_ISREG(details.st_mode)
-            or details.st_nlink != 1
             or details.st_size < 0
             or details.st_size > maximum
             or (
@@ -563,6 +573,7 @@ class _PinnedPrivateDirectory:
             )
         ):
             raise OSError("unsafe private file")
+        _require_single_link(details)
         if apply_permissions:
             if os.name == "nt":
                 _owner_private_handle(descriptor, directory=False)
@@ -597,14 +608,14 @@ class _PinnedPrivateDirectory:
         if (
             linked
             or not stat.S_ISREG(current.st_mode)
-            or current.st_nlink != 1
-            or final.st_nlink != 1
             or (current.st_dev, current.st_ino) != (details.st_dev, details.st_ino)
             or (final.st_dev, final.st_ino) != (details.st_dev, details.st_ino)
             or final.st_size > maximum
             or current_mount_identity != descriptor_mount_identity
         ):
             raise OSError("private file identity changed")
+        _require_single_link(current)
+        _require_single_link(final)
         return final
 
     def read(self, name: str, *, maximum: int, apply_permissions: bool = True) -> bytes:
