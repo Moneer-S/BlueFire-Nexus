@@ -32,7 +32,10 @@ def read_frame(descriptor: int, *, deadline_ns: int) -> Mapping[str, Any]:
 def write_frame(descriptor: int, value: Mapping[str, Any]) -> None:
     payload = encode_frame(value)
     deadline_ns = time.monotonic_ns() + 5_000_000_000
-    os.set_blocking(descriptor, False)
+    set_blocking = getattr(os, "set_blocking", None)
+    if not callable(set_blocking):
+        raise ReceiverSessionError("owned receiver nonblocking channel is unavailable")
+    set_blocking(descriptor, False)
     while payload:
         remaining = (deadline_ns - time.monotonic_ns()) / 1_000_000_000
         if remaining <= 0:

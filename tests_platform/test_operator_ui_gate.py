@@ -268,7 +268,8 @@ def test_builder_exposes_resizable_panels_and_optional_graph_detail() -> None:
     assert "Show all branches and disconnected steps" in source
     assert "Show input connections" in source
     assert 'aria-label="Experiment steps"' in source
-    assert "graphView(scenario, allBranches, expandedBranches)" in source
+    assert "graphView(graph, allBranches, expandedBranches)" in source
+    assert "[scenario.steps, scenario.edges, scenario.start, scenario.layout]" in source
     assert "scenario.steps.length - shownIds.size" in source
     assert "graphSections(visibleGraph.ordered)" in source
     assert "Review run includes the whole experiment." in source

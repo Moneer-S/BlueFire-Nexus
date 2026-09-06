@@ -4,10 +4,12 @@ import base64
 import copy
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Mapping
 
 import pytest
 
+import bluefire.cross_platform_journey as journey
 from bluefire.cross_platform_artifact_validation import validate_transport_recovery_report
 from bluefire.cross_platform_journey import (
     CrossPlatformJourneyError,
@@ -85,6 +87,42 @@ def test_windows_evidence_scan_includes_derived_receiver_task_key(tmp_path: Path
     (evidence / "report.json").write_bytes(base64.urlsafe_b64encode(derived))
     with pytest.raises(CrossPlatformJourneyError, match="trust material leaked"):
         _assert_secrets_absent(evidence, materials)
+
+
+def test_receiver_assigns_job_before_resume_and_cleans_up_failed_resume(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    events = []
+    process = SimpleNamespace(pid=42)
+
+    def assign(job, child):
+        assert job == 123 and child is process
+        events.append("assigned")
+
+    def resume(child):
+        assert child is process and events == ["assigned"]
+        events.append("resume")
+        raise RuntimeError("resume refused")
+
+    def cleanup(receiver):
+        assert receiver.launcher is process and receiver.job_handle == 123
+        events.append("cleanup")
+
+    monkeypatch.setattr(journey, "os", SimpleNamespace(name="nt", fspath=os.fspath))
+    monkeypatch.setattr(journey, "_child_environment", lambda *_args: {})
+    monkeypatch.setattr(journey, "_windows_create_kill_job", lambda: 123)
+    monkeypatch.setattr(journey, "_windows_assign_process", assign)
+    monkeypatch.setattr(journey.WindowsJobContainment, "resume_suspended", resume)
+    monkeypatch.setattr(journey, "_stop_receiver_process", cleanup)
+    monkeypatch.setattr(
+        journey,
+        "subprocess",
+        SimpleNamespace(DEVNULL=-3, PIPE=-1, Popen=lambda *_args, **_kwargs: process),
+    )
+
+    with pytest.raises(RuntimeError, match="resume refused"):
+        _start_receiver(tmp_path, tmp_path)
+    assert events == ["assigned", "resume", "cleanup"]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="the packaged receiver journey is Windows-only")

@@ -199,8 +199,11 @@ def test_channel_write_is_nonblocking_and_retries_only_within_deadline(monkeypat
         output.extend(payload[:2])
         return min(2, len(payload))
 
-    monkeypatch.setattr(channel.os, "set_blocking", lambda *args: events.append(args))
-    monkeypatch.setattr(channel.os, "write", write)
+    monkeypatch.setattr(
+        channel,
+        "os",
+        SimpleNamespace(set_blocking=lambda *args: events.append(args), write=write),
+    )
     monkeypatch.setattr(channel.select, "select", lambda *_args: ([], [17], []))
     channel.write_frame(17, {"kind": "one"})
     assert events == [(17, False)]
@@ -209,3 +212,11 @@ def test_channel_write_is_nonblocking_and_retries_only_within_deadline(monkeypat
     monkeypatch.setattr(channel.time, "monotonic_ns", lambda: next(times))
     with pytest.raises(ReceiverSessionError, match="expired"):
         channel.write_frame(17, {"kind": "one"})
+
+
+def test_channel_refuses_missing_nonblocking_capability_before_writing(monkeypatch):
+    writes = []
+    monkeypatch.setattr(channel, "os", SimpleNamespace(write=lambda *args: writes.append(args)))
+    with pytest.raises(ReceiverSessionError, match="nonblocking channel is unavailable"):
+        channel.write_frame(17, {"kind": "one"})
+    assert writes == []

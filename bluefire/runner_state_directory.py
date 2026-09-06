@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from pathlib import Path
 
 from .runner_bootstrap import managed_product_root
@@ -17,7 +18,7 @@ def prepare_default_managed_root(root: Path) -> None:
     storage. Only the missing components receive private creation permissions.
     """
 
-    if os.name != "posix" or root != managed_product_root():
+    if sys.platform == "win32" or os.name != "posix" or root != managed_product_root():
         return
     if not root.is_absolute() or ".." in root.parts:
         raise OSError("invalid default state path")
@@ -54,6 +55,8 @@ def prepare_default_managed_root(root: Path) -> None:
 
 
 def _validate_creation_parent(descriptor: int) -> None:
+    if sys.platform == "win32":
+        raise OSError("POSIX state directory ownership is unavailable")
     details = os.fstat(descriptor)
     if (
         not stat.S_ISDIR(details.st_mode)

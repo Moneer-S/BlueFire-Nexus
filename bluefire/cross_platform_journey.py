@@ -42,7 +42,6 @@ from .cross_platform_wheel import build_windows_wheel_resource
 from .defense_frontier import _runtime_temp_parent
 from .receiver_auth import derive_receiver_task_key
 from .runner_bootstrap import current_platform
-from .runner_client import SubprocessRustRunner
 from .runner_lifecycle import (
     ManagedRunnerLifecycle,
     _windows_assign_process,
@@ -56,6 +55,7 @@ from .runner_lifecycle import (
     _windows_wait_job_empty,
 )
 from .runner_trust import load_local_enrollment
+from .runner_windows_containment import WindowsJobContainment
 from .service import BlueFireService
 
 WINDOWS_REPORT = "windows-packaged-execute.json"
@@ -363,7 +363,7 @@ def _start_receiver(
         except OSError:
             receiver.job_handle = None
             raise
-        SubprocessRustRunner._resume_windows_process(process)  # type: ignore[arg-type]
+        WindowsJobContainment.resume_suspended(process)  # type: ignore[arg-type]
         _require(process.stderr is not None, "the receiver readiness stream is unavailable")
         ready_line = _read_process_line(process.stderr, 15.0)
         if not ready_line:

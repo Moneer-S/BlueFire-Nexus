@@ -591,7 +591,7 @@ def test_structural_proof_rejects_disconnected_or_stale_guided_ui(tmp_path: Path
     runs_path.write_text(original_runs, encoding="utf-8")
     app_path = repository / "bluefire/ui/app.js"
     packaged_app = app_path.read_text(encoding="utf-8")
-    stale_app = packaged_app.replace("Runner ready to approved run", "Stale guided workflow", 1)
+    stale_app = packaged_app.replace("Prepare, review, and run", "Stale guided workflow", 1)
     assert stale_app != packaged_app
     app_path.write_text(stale_app, encoding="utf-8")
     report = install_gate._structural_report(repository)

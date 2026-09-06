@@ -534,7 +534,27 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
         _stop_process(receiver_process)
 
     rows = {row["step_id"]: row for row in result["steps"]}
-    assert result["objective_reached"] is True, result.get("objective_evaluation")
+    assert result["objective_reached"] is True, json.dumps(
+        {
+            "objective_evaluation": result.get("objective_evaluation"),
+            "cleanup": result.get("cleanup"),
+            "steps": [
+                {key: row.get(key) for key in ("step_id", "status", "reason")}
+                for row in result["steps"]
+            ],
+            "evidence_gaps": [
+                {
+                    "step_id": record.get("step_id"),
+                    "producer": record.get("producer"),
+                    "reason": record.get("content", {}).get("reason"),
+                }
+                for record in result["evidence"]["records"]
+                if record.get("provenance") == "unknown"
+                or record.get("content", {}).get("artifact_type") == "evidence_gap"
+            ],
+        },
+        indent=2,
+    )
     assert rows[create_step]["status"] == "success"
     assert rows[stage_step]["status"] == "success"
     assert rows["cleanup_workspace"]["status"] == "success"

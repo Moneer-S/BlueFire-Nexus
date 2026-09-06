@@ -746,11 +746,11 @@ def _structural_report(repository: Path) -> Mapping[str, Any]:
     runs = (repository / "frontend" / "src" / "pages" / "Runs.tsx").read_text(encoding="utf-8")
     packaged_app = (repository / "bluefire" / "ui" / "app.js").read_text(encoding="utf-8")
     guided_copy = (
-        "Runner ready to approved run",
-        "Verify & enroll local runner",
-        "Use seeded restricted canary",
-        "Run guided preflight",
-        "Review one-time approval",
+        "Prepare, review, and run",
+        "Make the local runner ready",
+        "Review the selected experiment",
+        "Check selected experiment",
+        "Approve this run",
         "collector.filesystem.sandbox.v1",
     )
     approval_copy = (
