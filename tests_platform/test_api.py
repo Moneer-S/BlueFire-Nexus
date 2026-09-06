@@ -53,6 +53,10 @@ class StubService:
         self.calls.append(("draft_ai_graph", request))
         return {"draft_id": "ai-draft-0123456789abcdef0123", "saved": False}
 
+    def check_ai_provider(self, request: Mapping[str, Any]):
+        self.calls.append(("check_ai_provider", request))
+        return {"connectivity": "not_tested", "attempts": 0}
+
     def settings(self):
         self.calls.append(("settings",))
         return {"settings": []}
@@ -1374,6 +1378,25 @@ def test_ai_graph_draft_route_forwards_only_to_the_service_boundary() -> None:
         assert status == 400
         assert json_body(payload)["error"]["code"] == "invalid_management_query"
         assert service.calls == [("draft_ai_graph", body)]
+
+
+def test_provider_check_route_requires_explicit_authenticated_post() -> None:
+    body = {"provider": {"id": "test-provider.v1"}, "connect": False}
+    with running_server() as (server, service):
+        status, _, payload = request(server, "POST", "/api/v1/ai/providers/check", body=body)
+        assert status == 200
+        assert json_body(payload)["connectivity"] == "not_tested"
+        assert service.calls == [("check_ai_provider", body)]
+        status, headers, _ = request(server, "GET", "/api/v1/ai/providers/check")
+        assert status == 405
+        assert headers["Allow"] == "POST"
+        status, _, _ = request(server, "POST", "/api/v1/ai/providers/check?connect=true", body=body)
+        assert status == 400
+        status, _, _ = request(
+            server, "POST", "/api/v1/ai/providers/check", body=body, authenticated=False
+        )
+        assert status in {401, 403}
+        assert service.calls == [("check_ai_provider", body)]
 
 
 def test_detection_lab_routes_dispatch_only_explicit_lifecycle_operations() -> None:

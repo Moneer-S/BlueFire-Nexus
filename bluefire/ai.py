@@ -18,6 +18,16 @@ from enum import Enum
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from .ai_record_validation import DurableProposalRecordError, validate_v3_proposal_record
+from .ai_wire import (
+    AIProviderError,
+    AIProviderTransportError,
+    AIWireError,
+    credential_value,
+    request_headers,
+    response_usage,
+    structured_output,
+    structured_request,
+)
 from .config import (
     AIConfig,
     AIProviderConfig,
@@ -27,16 +37,6 @@ from .config import (
 )
 from .execution_contracts import ExecutionContractError, reject_forbidden_execution_keys
 from .util import canonical_json_bytes, content_hash, json_clone
-
-
-class AIProviderError(ValueError):
-    """Raised when an AI provider cannot produce a trustworthy proposal."""
-
-
-class AIProviderTransportError(AIProviderError):
-    def __init__(self, message: str, *, retryable: bool) -> None:
-        super().__init__(message)
-        self.retryable = retryable
 
 
 class ProposalType(str, Enum):
@@ -808,32 +808,38 @@ class UrllibAIJSONTransport:
                 )
                 if content_type != "application/json":
                     raise AIProviderTransportError(
-                        "Responses endpoint returned a non-JSON content type",
+                        "Provider endpoint returned a non-JSON content type",
                         retryable=False,
                     )
                 raw_payload = response.read(_MAX_RESPONSE_BYTES + 1)
                 if not isinstance(raw_payload, bytes):
                     raise AIProviderTransportError(
-                        "Responses endpoint returned a non-bytes body",
+                        "Provider endpoint returned a non-bytes body",
                         retryable=False,
                     )
                 payload = raw_payload
         except urllib.error.HTTPError as exc:
             retryable = exc.code == 429 or 500 <= exc.code <= 599
             raise AIProviderTransportError(
-                f"Responses endpoint returned HTTP {exc.code}", retryable=retryable
+                f"Provider endpoint returned HTTP {exc.code}",
+                retryable=retryable,
+                code=(
+                    "authentication_failed"
+                    if exc.code in {401, 403}
+                    else "rate_limited" if exc.code == 429 else "endpoint_rejected"
+                ),
             ) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise AIProviderTransportError(
-                "Responses endpoint could not be reached", retryable=True
+                "Provider endpoint could not be reached", retryable=True
             ) from exc
         if not 200 <= status <= 299:
             raise AIProviderTransportError(
-                f"Responses endpoint returned HTTP {status}",
+                f"Provider endpoint returned HTTP {status}",
                 retryable=status == 429 or 500 <= status <= 599,
             )
         if len(payload) > _MAX_RESPONSE_BYTES:
-            raise AIProviderTransportError("Responses payload exceeded 1 MiB", retryable=False)
+            raise AIProviderTransportError("Provider payload exceeded 1 MiB", retryable=False)
         return payload
 
 
@@ -929,6 +935,8 @@ class DeterministicOfflineProvider:
 class OpenAIResponsesProvider:
     """OpenAI-compatible Responses API provider using strict Structured Outputs."""
 
+    _KIND = AIProviderKind.OPENAI_RESPONSES
+
     _INSTRUCTIONS = (
         "You are a bounded security-experiment planning assistant. Select only identifiers "
         "present in the request allowlists. Never produce commands, scripts, paths, credentials, "
@@ -945,7 +953,7 @@ class OpenAIResponsesProvider:
         transport: AIJSONTransport | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
-        if config.kind is not AIProviderKind.OPENAI_RESPONSES:
+        if config.kind is not self._KIND:
             raise AIProviderError("Responses provider requires openai_responses configuration")
         if fallback.config.kind is not AIProviderKind.DETERMINISTIC:
             raise AIProviderError("Responses provider fallback must be deterministic")
@@ -956,7 +964,7 @@ class OpenAIResponsesProvider:
         self.sleeper = sleeper
 
     def health(self) -> AIProviderHealth:
-        credential_available = bool(self._api_key())
+        credential_available = self.config.api_key is None or bool(self._api_key())
         return AIProviderHealth(
             provider_id=self.config.id,
             state=(
@@ -965,43 +973,27 @@ class OpenAIResponsesProvider:
             credential_available=credential_available,
             fallback_provider_id=self.fallback.config.id,
             message=(
-                "Responses provider is configured."
+                "Provider credentials are ready; connectivity and structured output are untested."
                 if credential_available
                 else "Credential reference is unset; deterministic fallback will be used."
             ),
         )
 
     def build_request(self, request: AIProposalRequest) -> Mapping[str, Any]:
-        return {
-            "model": self.config.model,
-            "instructions": self._INSTRUCTIONS,
-            "input": canonical_json_bytes(request.to_dict(self.config.redaction)).decode("utf-8"),
-            "max_output_tokens": self.config.max_output_tokens,
-            "store": False,
-            "parallel_tool_calls": False,
-            "tools": [],
-            "tool_choice": "none",
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "bluefire_ai_proposal",
-                    "strict": True,
-                    "schema": json_clone(PROPOSAL_JSON_SCHEMA),
-                }
-            },
-        }
+        return structured_request(
+            self.config,
+            instructions=self._INSTRUCTIONS,
+            input_text=canonical_json_bytes(request.to_dict(self.config.redaction)).decode("utf-8"),
+            name="bluefire_ai_proposal",
+            schema=PROPOSAL_JSON_SCHEMA,
+        )
 
     def propose(self, request: AIProposalRequest) -> AIProviderResult:
         api_key = self._api_key()
-        if not api_key:
+        if self.config.api_key is not None and not api_key:
             return self._fallback(request, attempts=0, reason="credential_unavailable")
         body = canonical_json_bytes(self.build_request(request))
-        headers = {
-            "Accept": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "bluefire-nexus/0.1",
-        }
+        headers = request_headers(api_key)
         attempts = 0
         last_error: AIProviderError | None = None
         for attempt in range(self.config.max_retries + 1):
@@ -1023,8 +1015,8 @@ class OpenAIResponsesProvider:
                 last_error = exc
                 break
         reason = (
-            "transport_failed"
-            if isinstance(last_error, AIProviderTransportError)
+            last_error.code
+            if isinstance(last_error, (AIProviderTransportError, AIWireError))
             else "response_invalid"
         )
         return self._fallback(request, attempts=attempts, reason=reason)
@@ -1037,17 +1029,17 @@ class OpenAIResponsesProvider:
         attempts: int,
     ) -> AIProviderResult:
         if len(payload) > _MAX_RESPONSE_BYTES:
-            raise AIProviderError("Responses payload exceeded 1 MiB")
+            raise AIProviderError("Provider payload exceeded 1 MiB")
         response = _strict_json_object(payload, "Responses payload")
-        if response.get("status") != "completed" or response.get("error") is not None:
-            raise AIProviderError("Responses request did not complete successfully")
         response_id = _nonempty_string(response.get("id"), "response.id", maximum=200)
         model = _nonempty_string(response.get("model"), "response.model", maximum=200)
-        output_text = _response_output_text(response)
+        output_text = structured_output(response, self.config.kind)
         proposal_doc = _strict_json_object(output_text.encode("utf-8"), "structured output")
         proposal = AIProposal.from_mapping(proposal_doc)
         request.validate_proposal(proposal)
-        usage = _usage(response.get("usage"), self.config.max_output_tokens)
+        usage = response_usage(
+            response.get("usage"), self.config.max_output_tokens, self.config.kind
+        )
         return AIProviderResult(
             requested_provider_id=self.config.id,
             effective_provider_id=self.config.id,
@@ -1081,19 +1073,13 @@ class OpenAIResponsesProvider:
         )
 
     def _api_key(self) -> str:
-        if self.config.api_key is None:
-            return ""
-        value = self.environ.get(self.config.api_key.env, "")
-        if not isinstance(value, str):
-            return ""
-        value = value.strip()
-        if (
-            not value
-            or len(value) > 4_096
-            or any(not 33 <= ord(character) <= 126 for character in value)
-        ):
-            return ""
-        return value
+        return credential_value(self.config, self.environ)
+
+
+class ChatCompletionsProvider(OpenAIResponsesProvider):
+    """Chat Completions messages/choices adapter with strict response_format."""
+
+    _KIND = AIProviderKind.CHAT_COMPLETIONS
 
 
 def build_ai_provider(
@@ -1108,7 +1094,12 @@ def build_ai_provider(
     if selected.kind is AIProviderKind.DETERMINISTIC:
         return DeterministicOfflineProvider(selected)
     fallback = DeterministicOfflineProvider(config.fallback)
-    return OpenAIResponsesProvider(
+    provider_type = (
+        ChatCompletionsProvider
+        if selected.kind is AIProviderKind.CHAT_COMPLETIONS
+        else OpenAIResponsesProvider
+    )
+    return provider_type(
         selected,
         fallback=fallback,
         environ=environ,
@@ -1166,53 +1157,6 @@ def _strict_json_object(payload: bytes, label: str) -> Mapping[str, Any]:
     return value
 
 
-def _response_output_text(response: Mapping[str, Any]) -> str:
-    direct = response.get("output_text")
-    direct_text = direct if isinstance(direct, str) and direct else None
-    extracted: list[str] = []
-    output = response.get("output")
-    if output is not None:
-        if not isinstance(output, list) or len(output) != 1:
-            raise AIProviderError("response.output must contain exactly one message")
-        item = output[0]
-        if not isinstance(item, Mapping) or item.get("type") != "message":
-            raise AIProviderError("response.output contains a non-message item")
-        content = item.get("content")
-        if not isinstance(content, list) or len(content) != 1:
-            raise AIProviderError("response message must contain exactly one output block")
-        block = content[0]
-        if not isinstance(block, Mapping) or block.get("type") != "output_text":
-            raise AIProviderError("response message contains a non-text output block")
-        text = block.get("text")
-        if not isinstance(text, str) or not text:
-            raise AIProviderError("response output_text block is invalid")
-        extracted.append(text)
-    if direct_text and extracted and direct_text != extracted[0]:
-        raise AIProviderError("response output_text fields disagree")
-    selected = direct_text or (extracted[0] if extracted else None)
-    if selected is None:
-        raise AIProviderError("response contains no structured output text")
-    return selected
-
-
-def _usage(value: Any, max_output_tokens: int) -> Mapping[str, int]:
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        raise AIProviderError("response.usage must be an object")
-    result: dict[str, int] = {}
-    for name in ("input_tokens", "output_tokens", "total_tokens"):
-        raw = value.get(name)
-        if raw is None:
-            continue
-        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
-            raise AIProviderError(f"response.usage.{name} must be a non-negative integer")
-        result[name] = raw
-    if result.get("output_tokens", 0) > max_output_tokens:
-        raise AIProviderError("response exceeded the configured output-token budget")
-    return result
-
-
 __all__ = [
     "AIJSONTransport",
     "AIProposal",
@@ -1222,6 +1166,7 @@ __all__ = [
     "AIProviderHealth",
     "AIProviderResult",
     "AIProviderTransportError",
+    "ChatCompletionsProvider",
     "DeterministicOfflineProvider",
     "MUTATING_PROPOSAL_TYPES",
     "OpenAIResponsesProvider",

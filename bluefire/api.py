@@ -126,6 +126,9 @@ class PlatformService(Protocol):
     def draft_ai_graph(self, request: JsonObject) -> JsonResult:
         """Return one strict, normalized, deliberately unsaved graph draft."""
 
+    def check_ai_provider(self, request: JsonObject) -> JsonResult:
+        """Check explicit provider readiness or request one bounded live probe."""
+
     def settings(self) -> JsonResult:
         """List secret-safe local product settings."""
 
@@ -550,7 +553,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             if self._management_query_free():
                 self._send(HTTPStatus.NO_CONTENT, b"", "application/json; charset=utf-8")
             return
-        if path == f"{API_PREFIX}/ai/drafts":
+        if path in {f"{API_PREFIX}/ai/drafts", f"{API_PREFIX}/ai/providers/check"}:
             if self._management_query_free():
                 self._method_not_allowed("POST")
             return
@@ -810,6 +813,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     confirm_runner_id=confirm_runner_id
                 )
             )
+            return
+        if path == f"{API_PREFIX}/ai/providers/check":
+            if self._management_query_free():
+                self._dispatch(lambda: self.platform_server.service.check_ai_provider(body))
             return
         if path == f"{API_PREFIX}/ai/drafts":
             if self._management_query_free():

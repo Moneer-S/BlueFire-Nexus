@@ -62,6 +62,7 @@ class AutonomyLevel(str, Enum):
 class AIProviderKind(str, Enum):
     DETERMINISTIC = "deterministic"
     OPENAI_RESPONSES = "openai_responses"
+    CHAT_COMPLETIONS = "chat_completions"
 
 
 def _bounded_int(value: Any, context: str, *, minimum: int, maximum: int) -> int:
@@ -226,13 +227,16 @@ class AIProviderConfig:
         kind = _enum(AIProviderKind, data["kind"], f"{context}.kind")
         endpoint: str | None = None
         api_key: EnvironmentReference | None = None
-        if kind is AIProviderKind.OPENAI_RESPONSES:
-            if data.get("endpoint") is None or data.get("api_key") is None:
-                raise ConfigError(
-                    f"{context} OpenAI Responses providers require endpoint and api_key"
-                )
+        if kind is not AIProviderKind.DETERMINISTIC:
+            if data.get("endpoint") is None:
+                raise ConfigError(f"{context} network providers require an endpoint")
             endpoint = _responses_endpoint(data["endpoint"], f"{context}.endpoint")
-            api_key = EnvironmentReference.from_mapping(data["api_key"], f"{context}.api_key")
+            if data.get("api_key") is not None:
+                api_key = EnvironmentReference.from_mapping(data["api_key"], f"{context}.api_key")
+            elif urlsplit(endpoint).hostname not in {"localhost", "127.0.0.1", "::1"}:
+                raise ConfigError(
+                    f"{context} remote providers require an api_key environment reference"
+                )
         elif data.get("endpoint") is not None or data.get("api_key") is not None:
             raise ConfigError(
                 f"{context} deterministic providers cannot declare endpoint or api_key"

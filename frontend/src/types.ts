@@ -305,6 +305,21 @@ export interface ScenarioVersion {
 
 export type ManagedResourceRoute = "actions" | "collectors" | "comparisons" | "detections" | "detection-backends" | "model-providers" | "plugins" | "research-sources" | "runners" | "runner-profiles";
 
+export interface AIProviderCheck {
+  schema_version: "bluefire.ai-provider-check.v1";
+  provider_id: string;
+  api_style: string;
+  model: string;
+  response_model?: string;
+  credential_state: "not_required" | "ready" | "unavailable";
+  connectivity: "not_tested" | "passed" | "failed";
+  structured_output: "not_tested" | "passed" | "failed";
+  attempts: number;
+  used_fallback: false;
+  code: string;
+  message: string;
+}
+
 export interface ManagedResource<T extends Record<string, unknown> = Record<string, unknown>> {
   kind: string;
   id: string;

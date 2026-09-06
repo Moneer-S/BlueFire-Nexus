@@ -1,4 +1,4 @@
-import type { ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
+import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
 
 const API_ROOT = "/api/v1";
@@ -248,6 +248,10 @@ export function buildReplayPayload(options: ReplayPayloadOptions): Record<string
 }
 
 export const api = {
+  async checkAIProvider(provider: Record<string, unknown>, connect: boolean): Promise<AIProviderCheck> {
+    if (DEMO_MODE) return { schema_version: "bluefire.ai-provider-check.v1", provider_id: String(provider.id), api_style: String(provider.kind), model: String(provider.model), credential_state: "unavailable", connectivity: "not_tested", structured_output: "not_tested", attempts: 0, used_fallback: false, code: "demo_no_network", message: "Demo mode cannot resolve server credentials or test provider connections. No request was sent." };
+    return request("/ai/providers/check", { method: "POST", body: JSON.stringify({ provider, connect }) }, 12_000);
+  },
   async aiDraft(objective: string, providerId?: string | null, maxNodes = 8, maxEdges = 16): Promise<AIGraphDraftResult> {
     if (DEMO_MODE) {
       const count = Math.max(1, Math.min(maxNodes, demoScenario.steps.length)); const steps = structuredClone(demoScenario.steps.slice(0, count)); const ids = new Set(steps.map((step) => step.id)); const edges = structuredClone(demoScenario.edges.filter((edge) => ids.has(edge.from_step) && ids.has(edge.to_step)).slice(0, maxEdges));

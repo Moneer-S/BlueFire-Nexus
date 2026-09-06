@@ -26,6 +26,14 @@ from .ai import (
     UrllibAIJSONTransport,
     redact_for_model,
 )
+from .ai_wire import (
+    AIWireError,
+    credential_value,
+    request_headers,
+    response_usage,
+    structured_output,
+    structured_request,
+)
 from .config import AIConfig, AIProviderConfig, AIProviderKind, AIRedactionPolicy
 from .contracts import (
     BehaviorDefinition,
@@ -731,6 +739,8 @@ class DeterministicOfflineDraftProvider:
 class OpenAIResponsesDraftProvider:
     """Responses structured-output adapter for untrusted graph sketches."""
 
+    _KIND = AIProviderKind.OPENAI_RESPONSES
+
     _INSTRUCTIONS = (
         "Draft an unsaved BlueFire scenario sketch for the objective. Select only behavior IDs "
         "and primitive parameter values present in allowed_behaviors. Return nodes and outcome "
@@ -749,7 +759,7 @@ class OpenAIResponsesDraftProvider:
         transport: AIJSONTransport | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
-        if config.kind is not AIProviderKind.OPENAI_RESPONSES:
+        if config.kind is not self._KIND:
             raise AIDraftError("Responses draft provider requires openai_responses configuration")
         self.config = config
         self.fallback = fallback
@@ -758,52 +768,36 @@ class OpenAIResponsesDraftProvider:
         self.sleeper = sleeper
 
     def health(self) -> AIProviderHealth:
-        ready = bool(self._api_key())
+        ready = self.config.api_key is None or bool(self._api_key())
         return AIProviderHealth(
             provider_id=self.config.id,
             state=ProviderHealthState.READY if ready else ProviderHealthState.DEGRADED,
             credential_available=ready,
             fallback_provider_id=self.fallback.config.id,
             message=(
-                "Responses graph drafting is configured."
+                "Provider credentials are ready; connectivity and structured output are untested."
                 if ready
                 else "Credential reference is unset; deterministic graph drafting will be used."
             ),
         )
 
     def build_request(self, request: AIGraphDraftRequest) -> Mapping[str, Any]:
-        return {
-            "model": self.config.model,
-            "instructions": self._INSTRUCTIONS,
-            "input": canonical_json_bytes(request.to_dict(self.config.redaction)).decode("utf-8"),
-            "max_output_tokens": self.config.max_output_tokens,
-            "store": False,
-            "parallel_tool_calls": False,
-            "tools": [],
-            "tool_choice": "none",
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "bluefire_ai_graph_draft",
-                    "strict": True,
-                    "schema": json_clone(graph_draft_json_schema(request)),
-                }
-            },
-        }
+        return structured_request(
+            self.config,
+            instructions=self._INSTRUCTIONS,
+            input_text=canonical_json_bytes(request.to_dict(self.config.redaction)).decode("utf-8"),
+            name="bluefire_ai_graph_draft",
+            schema=graph_draft_json_schema(request),
+        )
 
     def draft(self, request: AIGraphDraftRequest) -> AIDraftProviderResult:
         api_key = self._api_key()
-        if not api_key:
+        if self.config.api_key is not None and not api_key:
             return self._fallback(request, attempts=0, reason="credential_unavailable")
         body = canonical_json_bytes(self.build_request(request))
         if len(body) > _MAX_PROVIDER_REQUEST_BYTES:
             raise AIDraftError("Responses graph draft request exceeds the 1 MiB bound")
-        headers = {
-            "Accept": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json; charset=utf-8",
-            "User-Agent": "bluefire-nexus/0.1",
-        }
+        headers = request_headers(api_key)
         attempts = 0
         last_error: AIProviderError | None = None
         for attempt in range(self.config.max_retries + 1):
@@ -825,8 +819,8 @@ class OpenAIResponsesDraftProvider:
                 last_error = exc
                 break
         reason = (
-            "transport_failed"
-            if isinstance(last_error, AIProviderTransportError)
+            last_error.code
+            if isinstance(last_error, (AIProviderTransportError, AIWireError))
             else "response_invalid"
         )
         return self._fallback(request, attempts=attempts, reason=reason)
@@ -837,14 +831,14 @@ class OpenAIResponsesDraftProvider:
         if len(payload) > _MAX_RESPONSE_BYTES:
             raise AIDraftError("Responses payload exceeds the one-megabyte bound")
         response = _strict_json_object(payload, "Responses payload")
-        if response.get("status") != "completed" or response.get("error") is not None:
-            raise AIDraftError("Responses graph draft did not complete")
         response_id = _bounded_string(response.get("id"), "response.id", maximum=200)
         model = _bounded_string(response.get("model"), "response.model", maximum=200)
-        output_text = _response_output_text(response)
+        output_text = structured_output(response, self.config.kind)
         raw = _strict_json_object(output_text.encode("utf-8"), "structured graph draft")
         draft = AIGraphDraftCandidate.from_mapping(raw, request)
-        usage = _usage(response.get("usage"), self.config.max_output_tokens)
+        usage = response_usage(
+            response.get("usage"), self.config.max_output_tokens, self.config.kind
+        )
         return AIDraftProviderResult(
             requested_provider_id=self.config.id,
             effective_provider_id=self.config.id,
@@ -874,66 +868,13 @@ class OpenAIResponsesDraftProvider:
         )
 
     def _api_key(self) -> str:
-        if self.config.api_key is None:
-            return ""
-        value = self.environ.get(self.config.api_key.env, "")
-        if not isinstance(value, str):
-            return ""
-        value = value.strip()
-        if (
-            not value
-            or len(value) > 4_096
-            or any(not 33 <= ord(character) <= 126 for character in value)
-        ):
-            return ""
-        return value
+        return credential_value(self.config, self.environ)
 
 
-def _response_output_text(response: Mapping[str, Any]) -> str:
-    direct = response.get("output_text")
-    direct_text = direct if isinstance(direct, str) and direct else None
-    extracted: list[str] = []
-    output = response.get("output")
-    if output is not None:
-        if not isinstance(output, list) or len(output) != 1:
-            raise AIDraftError("response.output must contain exactly one message")
-        message = output[0]
-        if not isinstance(message, Mapping) or message.get("type") != "message":
-            raise AIDraftError("response.output contains a non-message item")
-        content = message.get("content")
-        if not isinstance(content, list) or len(content) != 1:
-            raise AIDraftError("response message must contain exactly one output block")
-        block = content[0]
-        if not isinstance(block, Mapping) or block.get("type") != "output_text":
-            raise AIDraftError("response message contains a non-text output block")
-        text = block.get("text")
-        if not isinstance(text, str) or not text:
-            raise AIDraftError("response output_text block is invalid")
-        extracted.append(text)
-    if direct_text and extracted and direct_text != extracted[0]:
-        raise AIDraftError("response output_text fields disagree")
-    selected = direct_text or (extracted[0] if extracted else None)
-    if selected is None:
-        raise AIDraftError("response contains no structured output text")
-    return selected
+class ChatCompletionsDraftProvider(OpenAIResponsesDraftProvider):
+    """Chat Completions messages/choices adapter with strict response_format."""
 
-
-def _usage(value: Any, max_output_tokens: int) -> Mapping[str, int]:
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        raise AIDraftError("response.usage must be an object")
-    result: dict[str, int] = {}
-    for name in ("input_tokens", "output_tokens", "total_tokens"):
-        raw = value.get(name)
-        if raw is None:
-            continue
-        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
-            raise AIDraftError(f"response.usage.{name} must be a non-negative integer")
-        result[name] = raw
-    if result.get("output_tokens", 0) > max_output_tokens:
-        raise AIDraftError("response exceeds the configured output-token bound")
-    return result
+    _KIND = AIProviderKind.CHAT_COMPLETIONS
 
 
 def build_ai_draft_provider(
@@ -948,7 +889,12 @@ def build_ai_draft_provider(
     if selected.kind is AIProviderKind.DETERMINISTIC:
         return DeterministicOfflineDraftProvider(selected)
     fallback = DeterministicOfflineDraftProvider(config.fallback)
-    return OpenAIResponsesDraftProvider(
+    provider_type = (
+        ChatCompletionsDraftProvider
+        if selected.kind is AIProviderKind.CHAT_COMPLETIONS
+        else OpenAIResponsesDraftProvider
+    )
+    return provider_type(
         selected,
         fallback=fallback,
         environ=environ,
@@ -1386,6 +1332,7 @@ __all__ = [
     "AIGraphDraftCandidate",
     "AIGraphDraftRequest",
     "AIGraphDraftResult",
+    "ChatCompletionsDraftProvider",
     "DeterministicOfflineDraftProvider",
     "OpenAIResponsesDraftProvider",
     "build_ai_draft_provider",

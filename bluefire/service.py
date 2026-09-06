@@ -921,6 +921,25 @@ class BlueFireService(RunnerManagementServiceMixin):
             scenarios.append(scenario.to_dict())
         return {"schema_version": "bluefire.scenario-list.v1", "scenarios": scenarios}
 
+    def check_ai_provider(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Check an explicit configuration; network testing requires connect=true."""
+
+        from .ai_probe import check_provider
+
+        if set(request) != {"provider", "connect"} or type(request.get("connect")) is not bool:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "ai_provider_check_invalid",
+                "Provider checks require provider configuration and an explicit connect boolean.",
+            )
+        try:
+            provider = AIProviderConfig.from_mapping(request["provider"])
+        except (ConfigError, ContractError) as exc:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST, "ai_provider_configuration_invalid", str(exc)
+            ) from exc
+        return check_provider(provider, connect=request["connect"])
+
     def draft_ai_graph(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Return one validated, normalized, deliberately unsaved scenario draft."""
 
