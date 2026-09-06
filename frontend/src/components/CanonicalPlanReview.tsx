@@ -62,4 +62,3 @@ function ApprovalEnvelopeReview({ envelope, binding }: { envelope: ApprovalEnvel
     </details><details><summary>Raw complete approval envelope</summary><pre>{JSON.stringify(envelope, null, 2)}</pre></details>
   </section>;
 }
-
