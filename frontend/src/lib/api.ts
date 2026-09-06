@@ -1,4 +1,5 @@
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
+import { sameJson } from "./replay-review";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
 
 const API_ROOT = "/api/v1";
@@ -223,6 +224,12 @@ export interface ReplayPreparation {
   preflight: PreflightReport;
   approval_created: false;
   effects_started: false;
+}
+
+export interface ReplayJobSubmission extends RunJobSubmission {
+  schema_version: "bluefire.replay-job-submission.v1";
+  preparation: ReplayPreparation;
+  preflight: PreflightReport;
 }
 
 export interface ReplayPayloadOptions {
@@ -520,8 +527,16 @@ export const api = {
   },
   async preflightStoredJobRequest(job: RunJob): Promise<PreflightReport> {
     if (DEMO_MODE) throw new ApiError("Demo jobs do not have restorable Execute approval envelopes.", "demo_execute_refused", undefined, 409);
-    if (job.kind !== "scenario.run" || job.state !== "awaiting_approval" || !job.request || Array.isArray(job.request)) {
+    if (!["scenario.run", "scenario.replay"].includes(job.kind) || job.state !== "awaiting_approval" || !job.request || Array.isArray(job.request)) {
       throw new ApiError("The durable job does not have a restorable approval review.", "job_preflight_unavailable", undefined, 409);
+    }
+    if (job.kind === "scenario.replay") {
+      const prepared = job.request.replay_preparation as ReplayPreparation | undefined;
+      if (prepared?.schema_version !== "bluefire.replay-preparation.v1" || prepared.binding?.source?.run_id !== job.request.source_run_id || !sameJson(prepared.replay_request, job.request.replay_request) || !sameJson(prepared.binding?.replay_request, job.request.replay_request) || !prepared.preflight?.plan || !prepared.preflight.approval_binding || !prepared.preflight.approval_envelope)
+        throw new ApiError("The replay's exact saved review is unavailable.", "job_preflight_unavailable", undefined, 409);
+      // This is the original review, not a newly compiled plan. Approval itself
+      // revalidates the bound source, configuration and live runner readiness.
+      return structuredClone(prepared.preflight);
     }
     return request("/runs/preflight", { method: "POST", body: JSON.stringify(job.request) });
   },
@@ -565,6 +580,12 @@ export const api = {
   async prepareReplay(runId: string, body: Record<string, unknown>): Promise<ReplayPreparation> {
     if (DEMO_MODE) throw new ApiError("Execute replay preparation requires a connected BlueFire service.", "demo_no_execution");
     return request(`/runs/${encodeURIComponent(runId)}/replay-preparations`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async submitReplay(runId: string, preparation: ReplayPreparation, submissionId: string): Promise<ReplayJobSubmission> {
+    return request(`/runs/${encodeURIComponent(runId)}/replay-jobs`, { method: "POST", body: JSON.stringify({
+      ...preparation.replay_request, preparation_id: preparation.preparation_id,
+      preparation_context: preparation.preparation_context, submission_id: submissionId,
+    }) });
   },
   async replay(runId: string, body: Record<string, unknown>): Promise<RunRecord> {
     if (DEMO_MODE) return { ...structuredClone(demoRuns[0]!), run_id: `demo-replay-${Date.now()}`, replay: { source_run_id: runId, ...body }, is_demo: true };

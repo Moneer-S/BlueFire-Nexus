@@ -1188,3 +1188,5 @@ pre,
 
 
 .comparison-workspace { scroll-margin-top: 72px; }
+
+.replay-form { display: contents; border: 0; margin: 0; padding: 0; min-width: 0; }

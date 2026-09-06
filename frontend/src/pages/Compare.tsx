@@ -1,9 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, GitCompareArrows, RotateCcw, Search, ShieldAlert, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { api, buildReplayPayload, type ReplayPreparation } from "../lib/api";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { api, buildReplayPayload, DEMO_MODE, type ReplayPreparation } from "../lib/api";
 import { hasMaterialDelta } from "../lib/comparison-materiality";
+import { readPendingReplay, storePendingReplay, clearPendingReplay } from "../lib/replay-submission";
+import { sameJson } from "../lib/replay-review";
 import { comparisonReport } from "../lib/comparison-report";
 import { sourceRunParam } from "../lib/run-handoffs";
 import { ReplayParameterEditor } from "../components/ReplayParameterEditor";
@@ -14,7 +16,7 @@ import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, Loadin
 
 type ReplayStrategy = "exact" | "from_node" | "swap" | "parameters" | "setup";
 const defaultParameterJson = "{}";
-interface ReplayAttempt { sourceId: string; navigationGeneration: number; payload: Record<string, unknown> }
+interface ReplayAttempt { sourceId: string; navigationGeneration: number; payload: Record<string, unknown>; preparation?: ReplayPreparation; submissionId: string; legacy: boolean; publicationStarted?: boolean }
 interface ComparisonAttempt { runIds: string[]; generation: number }
 
 
@@ -35,6 +37,9 @@ interface ReplayPreflightAttempt {
 
 export function ComparePage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const submissionRef = useRef<ReplayAttempt | undefined>(undefined);
+  const [restoredSubmission, setRestoredSubmission] = useState(readPendingReplay);
   const linkedSource = sourceRunParam(searchParams, "source");
   const linkedReplay = sourceRunParam(searchParams, "replay");
   const runsQuery = useQuery({ queryKey: ["runs"], queryFn: api.runs }); const catalogQuery = useQuery({ queryKey: ["catalog"], queryFn: api.catalog }); const client = useQueryClient();
@@ -48,6 +53,7 @@ export function ComparePage() {
   const navigationGeneration = useRef(0);
   const comparisonGeneration = useRef(0);
   const resultsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => () => { navigationGeneration.current += 1; preflightGeneration.current += 1; comparisonGeneration.current += 1; }, []);
   useEffect(() => { if (comparison) { resultsRef.current?.focus({ preventScroll: true }); resultsRef.current?.scrollIntoView({ block: "start" }); } }, [comparison]);
   const detailQuery = useQuery({ queryKey: ["run", sourceId], queryFn: () => api.runDetail(sourceId), enabled: Boolean(sourceId) });
   const compareMutation = useMutation({ mutationFn: async (attempt: ComparisonAttempt) => {
@@ -123,33 +129,61 @@ export function ComparePage() {
     } catch (error) { setLocalError(error instanceof Error ? error.message : "Replay preparation failed."); }
   };
   const replayMutation = useMutation({
-    mutationFn: (attempt: ReplayAttempt) => api.replay(attempt.sourceId, attempt.payload),
-    onSuccess: (run, attempt) => {
+    mutationFn: async (attempt: ReplayAttempt) => {
+      if (attempt.legacy) return { kind: "legacy" as const, run: await api.replay(attempt.sourceId, attempt.payload) };
+      const prepared = attempt.preparation ?? await api.prepareReplay(attempt.sourceId, attempt.payload);
+      if (prepared.schema_version !== "bluefire.replay-preparation.v1" || prepared.replay_extent !== "full" || prepared.binding?.source?.run_id !== attempt.sourceId || !sameJson(prepared.replay_request, attempt.payload) || !sameJson(prepared.binding.replay_request, attempt.payload) || prepared.effects_started !== false || prepared.approval_created !== false) throw new Error("The prepared replay does not match this submission.");
+      attempt.preparation = prepared;
+      if (!storePendingReplay({ sourceId: attempt.sourceId, payload: attempt.payload, preparation: prepared, submissionId: attempt.submissionId })) throw new Error("The replay retry receipt could not be saved. Enable browser session storage before submitting this replay.");
+      attempt.publicationStarted = true;
+      const submission = await api.submitReplay(attempt.sourceId, prepared, attempt.submissionId);
+      const expectedJobId = `job-${attempt.submissionId.replaceAll("-", "")}`;
+      if (submission.job.job_id !== expectedJobId || submission.job.kind !== "scenario.replay") throw new Error("The submitted job identity did not match this replay. Check its saved status before retrying.");
+      return { kind: "job" as const, submission };
+    },
+    onSuccess: (result, attempt) => {
       void client.invalidateQueries({ queryKey: ["runs"] });
+      void client.invalidateQueries({ queryKey: ["active-jobs"] });
+      if (result.kind === "job") {
+        clearPendingReplay(attempt.submissionId); setRestoredSubmission(undefined);
+        client.setQueryData(["job", result.submission.job.job_id], result.submission.job);
+        if (attempt.navigationGeneration === navigationGeneration.current) navigate(`/runs?job=${encodeURIComponent(result.submission.job.job_id)}`);
+        return;
+      }
+      const run = result.run;
       client.setQueryData(["run", run.run_id], run);
       if (attempt.navigationGeneration !== navigationGeneration.current) return;
       setSelected([attempt.sourceId, run.run_id]); setComparison(undefined);
       setSearchParams({ source: attempt.sourceId, replay: run.run_id });
       setLocalError(undefined); setReplayPreflight(undefined); setPreparation(undefined); setReplayConfirmed(false); setApprovedBy("");
     },
-    onError: (error, attempt) => { if (attempt.navigationGeneration === navigationGeneration.current) setLocalError(error instanceof Error ? error.message : "Replay was refused."); },
+    onError: (error, attempt) => {
+      if (attempt.navigationGeneration !== navigationGeneration.current) return;
+      setLocalError(error instanceof Error ? error.message : "Replay submission could not be confirmed.");
+      if (!attempt.publicationStarted) { clearPendingReplay(attempt.submissionId); setRestoredSubmission(undefined); setReplayPreflight(undefined); setPreparation(undefined); submissionRef.current = undefined; }
+    },
     onSettled: (_run, _error, attempt) => { if (attempt.navigationGeneration === navigationGeneration.current) { setReplayConfirmed(false); setApprovedBy(""); } },
   });
+  const uncertainSubmission = replayMutation.isError && replayMutation.variables?.publicationStarted && replayMutation.variables.navigationGeneration === navigationGeneration.current ? replayMutation.variables : restoredSubmission ? { ...restoredSubmission, navigationGeneration: navigationGeneration.current, legacy: false, publicationStarted: true } : undefined;
   const requestReplay = () => {
     try {
       if (!detailQuery.isSuccess || !source || source.run_id !== sourceId) throw new Error("Select a source run.");
       assertReplayVariant(strategy, fromStep, swapStep, swapBehavior);
       if (!variantReady || (strategy === "parameters" && !parameterDraftValidRef.current)) throw new Error("Finish the parameter change before running the replay.");
       const execute = source.mode === "execute";
-      if (execute && (!replayConfirmed || !approvedBy.trim() || !scopeRefs.length || !executeReviewReady(replayPreflight))) throw new Error("Execute replay requires the displayed prospective review and a fresh explicit approval.");
+      if (execute && (!scopeRefs.length || !executeReviewReady(replayPreflight) || (strategy === "from_node" && (!replayConfirmed || !approvedBy.trim())))) throw new Error("Execute replay requires the displayed prospective review and a fresh explicit approval.");
       const current = currentReplayPayload();
       if (execute && strategy !== "from_node" && (!preparation || preparation.binding.source.run_id !== sourceId || !sameJson(preparation.replay_request, current))) throw new Error("Prepare the exact replay before approving it.");
-      const payload = execute ? {
+      const payload = execute && strategy === "from_node" ? {
         ...(preparation ? preparation.replay_request : current),
         ...(preparation ? { preparation_id: preparation.preparation_id, preparation_context: preparation.preparation_context } : {}),
         approval: { confirmed: true, approved_by: approvedBy.trim() },
       } : current;
-      replayMutation.mutate({ sourceId, navigationGeneration: navigationGeneration.current, payload: structuredClone(payload) });
+      const previous = submissionRef.current;
+      const attempt = previous && previous.sourceId === sourceId && previous.navigationGeneration === navigationGeneration.current && sameJson(previous.payload, payload) && previous.preparation?.preparation_id === preparation?.preparation_id
+        ? previous : { sourceId, navigationGeneration: navigationGeneration.current, payload: structuredClone(payload), preparation, submissionId: crypto.randomUUID(), legacy: strategy === "from_node" || DEMO_MODE };
+      submissionRef.current = attempt;
+      replayMutation.mutate(attempt);
     } catch (error) { setLocalError(error instanceof Error ? error.message : "Replay was refused."); }
   };
   if (runsQuery.isPending || catalogQuery.isPending) return <LoadingState label="Loading replay history" />;
@@ -162,7 +196,7 @@ export function ComparePage() {
     {compareMutation.isError && compareMutation.variables?.generation === comparisonGeneration.current ? <ErrorState title="Comparison unavailable" error={compareMutation.error} /> : comparison ? <div className="comparison-workspace" ref={resultsRef} tabIndex={-1} role="region" aria-label="Comparison results"><ComparisonResult comparison={comparison} /><DetectorEvaluationComparison runIds={comparison.summaries.map((run) => run.run_id)} /></div> : null}
     <details className="compare-setup" open={!comparison}><summary>{comparison ? "Choose different runs or prepare a replay" : "Choose runs and prepare a replay"}</summary>
     <div className="compare-top-grid"><Panel className="history-panel"><PanelHeader eyebrow="Run history" title="Choose runs to compare" actions={<Badge>{selected.length} selected</Badge>} /><div className="history-search"><Search/><input aria-label="Search run history" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search run or objective"/></div><div className="run-select-list">{runs.map((run) => <label key={run.run_id}><input type="checkbox" checked={selected.includes(run.run_id)} onChange={(event) => changeSelection(run.run_id, event.target.checked)}/><span><strong>{run.scenario?.title ?? (source?.run_id === run.run_id ? source.scenario?.title : undefined) ?? run.scenario_id ?? run.objective ?? "Experiment"}</strong><code title={run.run_id}>{shortId(run.run_id)}</code><small>{formatDate(run.created_at)} · {run.steps.length} steps</small></span><span><Badge tone={run.mode === "execute" ? "warning" : "info"}>{sentence(run.mode)}</Badge><Badge tone={run.status === "completed" ? "success" : "neutral"} dot>{sentence(run.status)}</Badge></span></label>)}</div>{!runs.length ? <EmptyState title="No run records" description="Run an experiment to create your first result. Simulate is available without a lab." /> : null}<footer><Button variant="primary" onClick={() => compareMutation.mutate({ runIds: [...selected], generation: comparisonGeneration.current })} disabled={selected.length < 2 || compareMutation.isPending}><GitCompareArrows/>{compareMutation.isPending ? "Comparing" : "Compare selected"}</Button></footer></Panel>
-      <Panel className="replay-panel"><PanelHeader title="Prepare another run" detail="Keep the original result and test the same experiment with a deliberate change." /><div className="replay-body"><Field label="Source run"><select value={sourceId} onChange={(event) => setSearchParams(event.target.value ? { source: event.target.value } : {})} disabled={replayMutation.isPending}><option value="">Choose a completed run</option>{sourceId && !runsQuery.data.runs.some((run) => run.run_id === sourceId) ? <option value={sourceId}>{sourceId}</option> : null}{runsQuery.data.runs.map((run) => <option value={run.run_id} key={run.run_id}>{run.scenario?.title ?? (source?.run_id === run.run_id ? source.scenario?.title : undefined) ?? run.scenario_id ?? run.objective ?? "Experiment"} · {shortId(run.run_id)} · {sentence(run.mode)}</option>)}</select></Field>{sourceId && detailQuery.isError ? <ErrorState title="Source run unavailable" error={detailQuery.error} retry={() => detailQuery.refetch()} /> : null}{sourceId && detailQuery.isPending ? <LoadingState label="Loading the original experiment"/> : null}<Field label="What will change?"><select value={strategy} onChange={(event) => { setStrategy(event.target.value as ReplayStrategy); parameterDraftValidRef.current = true; setParameterDraftValid(true); resetReview(); }} disabled={!sourceId || replayMutation.isPending}>
+      <Panel className="replay-panel"><PanelHeader title="Prepare another run" detail="Keep the original result and test the same experiment with a deliberate change." /><div className="replay-body"><fieldset className="replay-form" disabled={Boolean(uncertainSubmission) || replayMutation.isPending}><Field label="Source run"><select value={sourceId} onChange={(event) => setSearchParams(event.target.value ? { source: event.target.value } : {})} disabled={replayMutation.isPending}><option value="">Choose a completed run</option>{sourceId && !runsQuery.data.runs.some((run) => run.run_id === sourceId) ? <option value={sourceId}>{sourceId}</option> : null}{runsQuery.data.runs.map((run) => <option value={run.run_id} key={run.run_id}>{run.scenario?.title ?? (source?.run_id === run.run_id ? source.scenario?.title : undefined) ?? run.scenario_id ?? run.objective ?? "Experiment"} · {shortId(run.run_id)} · {sentence(run.mode)}</option>)}</select></Field>{sourceId && detailQuery.isError ? <ErrorState title="Source run unavailable" error={detailQuery.error} retry={() => detailQuery.refetch()} /> : null}{sourceId && detailQuery.isPending ? <LoadingState label="Loading the original experiment"/> : null}<Field label="What will change?"><select value={strategy} onChange={(event) => { setStrategy(event.target.value as ReplayStrategy); parameterDraftValidRef.current = true; setParameterDraftValid(true); resetReview(); }} disabled={!sourceId || replayMutation.isPending}>
           <option value="exact">Nothing — repeat the original run</option><option value="swap">Try another method</option><option value="parameters">Change step parameters</option><option value="setup">Change environment or AI setup</option><option value="from_node">Resume from a step</option>
         </select></Field>
         {strategy === "from_node" ? <Field label="Restart node"><select value={fromStep} onChange={(event) => { setFromStep(event.target.value); resetReview(); }}><option value="">Choose a step</option>{sourceSteps.map((step) => <option key={step.step_id} value={step.step_id}>{catalogQuery.data.behaviors.find((item) => item.id === step.behavior_id)?.title ?? step.step_id}</option>)}</select></Field> : null}
@@ -173,8 +207,8 @@ export function ComparePage() {
           <details className="replay-settings"><summary>Advanced parameter JSON</summary><Field label="Parameter overrides JSON" hint='Object keyed by step, then parameter. All values are validated before a replay.'><textarea rows={8} value={parameterJson} onChange={(event) => { setParameterJson(event.target.value); resetReview(); }} disabled={replayMutation.isPending} spellCheck={false}/></Field></details>
           {parameterError ? <Callout tone="danger" title="Parameter changes need attention">{parameterError}</Callout> : null}
         </> : null}{strategy !== "exact" ? <details className="replay-settings"><summary>Record a defense change</summary><Field label="Declared defense change" hint="Describe a change already applied in your lab. This note does not change a defense."><textarea rows={3} maxLength={500} value={defenseChange} onChange={(event) => { setDefenseChange(event.target.value); resetReview(); }} placeholder="For example: revised the receiver policy to require redacted records"/></Field></details> : null}
-        {execute ? <><Callout tone="warning" title="Execute replay is a new effect authorization">{strategy === "from_node" ? "Resuming from a step currently uses a prospective base-plan check. The server resolves the replay lineage and restored inputs again before it accepts a fresh approval." : "Review the complete replay, including the original run, your changes, allowed effects, and cleanup. Preparing a replay does not approve it or start any effects."}</Callout><Field label="Exact target scope"><input value={targetScope} onChange={(event) => { setTargetScope(event.target.value); resetReview(); }} placeholder="sandbox.workspace"/></Field><Button variant="secondary" onClick={requestPreflight} disabled={!replayScenario || !variantReady || preflightMutation.isPending || !scopeRefs.length}><ShieldCheck/>{preflightMutation.isPending ? "Preparing review" : strategy === "from_node" ? "Run prospective base-plan check" : "Review Execute replay"}</Button>{replayPreflight ? <ReplayPreflight report={replayPreflight} preparation={preparation}/> : null}<label className="check-row"><input type="checkbox" checked={replayConfirmed} onChange={(event) => setReplayConfirmed(event.target.checked)} disabled={!reviewReady}/><span><strong>I approve this reviewed Execute replay request once</strong><small>{preparation ? "Approval applies only to this prepared replay. Changed inputs or stale readiness require a new review." : "Unchecked by default; the server derives the exact replay binding and refuses any mismatch."}</small></span></label><Field label="Fresh replay operator identity"><input value={approvedBy} onChange={(event) => setApprovedBy(event.target.value)} disabled={!reviewReady} autoComplete="off" maxLength={128}/></Field></> : null}
-        {!variantReady && sourceId ? <Callout tone="warning" title="Replay variant incomplete">{strategy === "from_node" ? "Choose a restart step." : strategy === "swap" ? "Choose a step and its replacement method." : strategy === "setup" ? "Change an environment or AI setting, or record the defense change made in your lab." : "Change at least one step parameter."}</Callout> : null}{localError ? <Callout tone="danger" title="Replay refused">{localError}</Callout> : replayMutation.isSuccess ? <Callout tone="success" title="Replay created"><code>{replayMutation.data.run_id}</code> is lineage-linked to <code>{replayMutation.variables?.sourceId}</code>.{linkedSource === replayMutation.variables?.sourceId && linkedReplay === replayMutation.data.run_id ? " The source and replay are selected for comparison." : " Your current source selection was preserved."}</Callout> : null}<Button variant="primary" className="button-full" onClick={requestReplay} disabled={!sourceId || !detailQuery.isSuccess || !variantReady || replayMutation.isPending || Boolean(execute && (!reviewReady || !replayConfirmed || !approvedBy.trim()))}>{replayMutation.isPending ? "Creating immutable replay" : execute ? "Create approved Execute replay" : "Create Simulate replay"}</Button></div></Panel>
+        {execute ? <><Callout tone="warning" title="Execute replay is a new effect authorization">{strategy === "from_node" ? "Resuming from a step currently uses a prospective base-plan check. The server resolves the replay lineage and restored inputs again before it accepts a fresh approval." : "Review the complete replay, including the original run, your changes, allowed effects, and cleanup. Preparing a replay does not approve it or start any effects."}</Callout><Field label="Exact target scope"><input value={targetScope} onChange={(event) => { setTargetScope(event.target.value); resetReview(); }} placeholder="sandbox.workspace"/></Field><Button variant="secondary" onClick={requestPreflight} disabled={!replayScenario || !variantReady || preflightMutation.isPending || !scopeRefs.length}><ShieldCheck/>{preflightMutation.isPending ? "Preparing review" : strategy === "from_node" ? "Run prospective base-plan check" : "Review Execute replay"}</Button>{replayPreflight ? <ReplayPreflight report={replayPreflight} preparation={preparation}/> : null}{strategy === "from_node" ? <><label className="check-row"><input type="checkbox" checked={replayConfirmed} onChange={(event) => setReplayConfirmed(event.target.checked)} disabled={!reviewReady}/><span><strong>I approve this reviewed Execute replay request once</strong><small>{preparation ? "Approval applies only to this prepared replay. Changed inputs or stale readiness require a new review." : "Unchecked by default; the server derives the exact replay binding and refuses any mismatch."}</small></span></label><Field label="Fresh replay operator identity"><input value={approvedBy} onChange={(event) => setApprovedBy(event.target.value)} disabled={!reviewReady} autoComplete="off" maxLength={128}/></Field></> : <p className="field-note">Continue to Runs to approve this exact review and follow the saved job. No effects start before approval.</p>}</> : null}
+        {!variantReady && sourceId ? <Callout tone="warning" title="Replay variant incomplete">{strategy === "from_node" ? "Choose a restart step." : strategy === "swap" ? "Choose a step and its replacement method." : strategy === "setup" ? "Change an environment or AI setting, or record the defense change made in your lab." : "Change at least one step parameter."}</Callout> : null}{localError ? <Callout tone="danger" title="Replay refused">{localError}</Callout> : replayMutation.isSuccess && replayMutation.data.kind === "legacy" ? <Callout tone="success" title="Replay created"><code>{replayMutation.data.run.run_id}</code> is lineage-linked to <code>{replayMutation.variables?.sourceId}</code>.{linkedSource === replayMutation.variables?.sourceId && linkedReplay === replayMutation.data.run.run_id ? " The source and replay are selected for comparison." : " Your current source selection was preserved."}</Callout> : null}<Button variant="primary" className="button-full" onClick={requestReplay} disabled={!sourceId || !detailQuery.isSuccess || !variantReady || replayMutation.isPending || Boolean(execute && (!reviewReady || (strategy === "from_node" && (!replayConfirmed || !approvedBy.trim()))))}>{replayMutation.isPending ? "Submitting replay" : execute ? strategy === "from_node" ? "Create approved Execute replay" : "Continue to approval" : "Create Simulate replay"}</Button></fieldset>{uncertainSubmission ? <Callout tone="warning" title="Check this submission before starting another replay"><p>The response for original run <code>{uncertainSubmission.sourceId}</code> could not be confirmed. Retrying uses the same saved job identity and reviewed request, including after a reload.</p><details><summary>Saved replay request</summary><pre>{JSON.stringify(uncertainSubmission.payload, null, 2)}</pre></details><Button disabled={replayMutation.isPending} onClick={() => replayMutation.mutate(uncertainSubmission)}>Retry same submission</Button><Link className="button button-secondary button-medium" to={`/runs?job=job-${uncertainSubmission.submissionId.replaceAll("-", "")}`}>View submission status</Link></Callout> : null}</div></Panel>
     </div>
     </details>
     {!comparison && <Panel><EmptyState icon={<GitCompareArrows/>} title="Select at least two runs" description="The first selected run becomes the baseline. Compare what ran, the observations, and cleanup here." /></Panel>}
@@ -367,11 +401,3 @@ function formatDurationDelta(value?: number | null) { if (value === undefined ||
 function formatMilliseconds(value: number) { return Math.abs(value) < 1_000 ? `${new Intl.NumberFormat().format(value)} ms` : `${(value / 1_000).toLocaleString(undefined, { maximumFractionDigits: 2 })} s`; }
 function runReviewPath(runId: string) { return `/runs/${encodeURIComponent(runId)}`; }
 function shortId(value: string) { return value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
-
-function sameJson(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  if (Array.isArray(left) && Array.isArray(right)) return left.length === right.length && left.every((value, index) => sameJson(value, right[index]));
-  if (!isPlainObject(left) || !isPlainObject(right)) return false;
-  const keys = Object.keys(left);
-  return keys.length === Object.keys(right).length && keys.every((key) => Object.hasOwn(right, key) && sameJson(left[key], right[key]));
-}

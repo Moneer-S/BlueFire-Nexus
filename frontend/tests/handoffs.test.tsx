@@ -9,7 +9,7 @@ import { ComparePage } from "../src/pages/Compare";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
 import { RunsPage } from "../src/pages/Runs";
 import { ProductProvider } from "../src/state/ProductContext";
-import type { DetectionCandidate, DetectionResource, RunRecord } from "../src/types";
+import type { DetectionCandidate, DetectionResource, RunRecord, RunJob } from "../src/types";
 
 const sourceId = `run-${"1".repeat(32)}`;
 const syntheticId = `run-${"2".repeat(32)}`;
@@ -48,6 +48,7 @@ const syntheticRun: RunRecord = {
 let runs: RunRecord[];
 let registry: DetectionResource[];
 let replayBarrier: Promise<void> | undefined;
+let replayJob: RunJob | undefined;
 
 function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
@@ -68,7 +69,7 @@ function LocationProbe() {
 
 function renderJourney(path: string) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[path]}><LocationProbe /><Routes><Route path="/runs/:runId" element={<RunsPage />} /><Route path="/detection-lab" element={<DetectionLabPage />} /><Route path="/compare" element={<ComparePage />} /></Routes></MemoryRouter></ProductProvider></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter initialEntries={[path]}><LocationProbe /><Routes><Route path="/runs" element={<RunsPage />} /><Route path="/runs/:runId" element={<RunsPage />} /><Route path="/detection-lab" element={<DetectionLabPage />} /><Route path="/compare" element={<ComparePage />} /></Routes></MemoryRouter></ProductProvider></QueryClientProvider>);
 }
 
 function postBody(suffix: string) {
@@ -79,7 +80,7 @@ function postBody(suffix: string) {
 beforeEach(() => {
   runs = structuredClone([observedRun, syntheticRun]);
   registry = [];
-  replayBarrier = undefined;
+  replayBarrier = undefined; replayJob = undefined;
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
     if (path.endsWith("/catalog")) return json(demoCatalog);
@@ -99,12 +100,20 @@ beforeEach(() => {
     }
     if (path.endsWith(`/detections/${savedId}/exercise-observed`)) return json({ candidate: registry.at(-1) });
     if (path.endsWith(`/detections/${savedId}/evaluations`)) return json({ evaluations: [] });
-    if (path.endsWith(`/runs/${syntheticId}/replays`)) {
+    if (path.endsWith("/replay-preparations")) {
+      const request = JSON.parse(String(init?.body));
+      return json({ schema_version: "bluefire.replay-preparation.v1", preparation_id: "prepared", preparation_context: {}, binding: { source: { run_id: syntheticId }, replay_request: request }, replay_request: request, replay_extent: "full", scenario: demoScenario, lineage: {}, preflight: { ready: true, status: "ready" }, approval_created: false, effects_started: false });
+    }
+    if (path.endsWith(`/runs/${syntheticId}/replay-jobs`)) {
       await replayBarrier;
+      const request = JSON.parse(String(init?.body));
       const replay = { ...structuredClone(syntheticRun), run_id: replayId, replay: { source_run_id: syntheticId } };
       runs.push(replay);
-      return json(replay);
+      replayJob = { schema_version: "bluefire.job.v1", job_id: `job-${request.submission_id.replaceAll("-", "")}`, kind: "scenario.replay", state: "completed", progress: {}, result_ref: replayId, request: { source_run_id: syntheticId } };
+      return json({ schema_version: "bluefire.replay-job-submission.v1", job: replayJob, preparation: {}, preflight: null }, 202);
     }
+    if (path.endsWith("/jobs")) return json({ schema_version: "bluefire.active-job-list.v1", jobs: [] });
+    if (replayJob && path.endsWith(`/jobs/${replayJob.job_id}`)) return json(replayJob);
     if (path.endsWith("/comparisons")) return json({ comparison_id: "comparison-test", baseline_run_id: syntheticId, run_ids: [syntheticId, replayId], summaries: [], deltas: [] });
     if (path.endsWith("/runs")) return json({ runs: runs.map(summary) });
     const match = path.match(/\/runs\/([^/?]+)$/);
@@ -246,19 +255,21 @@ describe("run journey handoffs", () => {
     await waitFor(() => expect(replayButton).toBeEnabled());
     expect(screen.getByRole("button", { name: "Compare selected" })).toBeDisabled();
     await user.click(replayButton);
+    await waitFor(() => expect(screen.getByLabelText("Current route")).toHaveTextContent(`/runs?job=${replayJob?.job_id}`));
+    await user.click(await screen.findByRole("link", { name: "Compare with original run" }));
     await waitFor(() => expect(screen.getByLabelText("Current route")).toHaveTextContent(comparisonLink(syntheticId, replayId)));
     expect(screen.getByText("2 selected")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Compare selected" }));
     await waitFor(() => expect(postBody("/comparisons")).toEqual({ run_ids: [syntheticId, replayId] }));
-    expect(postBody(`/runs/${syntheticId}/replays`)).not.toHaveProperty("approval");
+    expect(postBody(`/runs/${syntheticId}/replay-jobs`)).not.toHaveProperty("approval");
   });
 
   it("does not inherit Execute approval from source URL parameters", async () => {
     renderJourney(`${comparisonLink(sourceId)}&approved=true&approved_by=old-operator`);
-    const replayButton = await screen.findByRole("button", { name: "Create approved Execute replay" });
+    const replayButton = await screen.findByRole("button", { name: "Continue to approval" });
     expect(replayButton).toBeDisabled();
-    expect(screen.getByRole("checkbox", { name: /I approve this reviewed Execute replay/ })).not.toBeChecked();
-    expect(screen.getByRole("textbox", { name: "Fresh replay operator identity" })).toHaveValue("");
+    expect(screen.queryByRole("checkbox", { name: /I approve this reviewed Execute replay/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Fresh replay operator identity" })).not.toBeInTheDocument();
     expect(postBody(`/runs/${sourceId}/replays`)).toBeUndefined();
   });
 
@@ -273,7 +284,7 @@ describe("run journey handoffs", () => {
     await user.click(screen.getByRole("link", { name: "Navigate to alternate source" }));
     await waitFor(() => expect(screen.getByRole("combobox", { name: "Source run" })).toHaveValue(sourceId));
     await act(async () => { finishReplay(); });
-    expect(await screen.findByText("Replay created")).toBeInTheDocument();
+    await waitFor(() => expect(replayJob).toBeDefined());
     expect(screen.getByLabelText("Current route")).toHaveTextContent(comparisonLink(sourceId));
     expect(screen.getByRole("combobox", { name: "Source run" })).toHaveValue(sourceId);
     expect(screen.getByText("1 selected")).toBeInTheDocument();

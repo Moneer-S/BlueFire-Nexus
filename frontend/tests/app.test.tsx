@@ -687,7 +687,7 @@ describe("product application", () => {
     await user.type(targetScope, "sandbox.changed");
     resolveFirstPreflight(json(preparation(firstRequest!)));
     await waitFor(() => expect(screen.getByRole("button", { name: "Review Execute replay" })).toBeEnabled());
-    expect(screen.getByRole("checkbox", { name: /I approve this reviewed Execute replay request once/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Continue to approval" })).toBeDisabled();
 
     await waitFor(() => {
       const preflightCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/replay-preparations"));
@@ -698,7 +698,7 @@ describe("product application", () => {
       });
     });
     await user.click(screen.getByRole("button", { name: "Review Execute replay" }));
-    await waitFor(() => expect(screen.getByRole("checkbox", { name: /I approve this reviewed Execute replay request once/ })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue to approval" })).toBeEnabled());
     expect(screen.getByRole("region", { name: "Prepared Execute replay" })).toBeVisible();
     const calls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/replay-preparations"));
     expect(JSON.parse(String(calls[1]![1]?.body))).toMatchObject({ target_scope: { scope_refs: ["sandbox.changed"] } });

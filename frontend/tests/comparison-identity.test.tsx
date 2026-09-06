@@ -7,7 +7,7 @@ import { ComparePage } from "../src/pages/Compare";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
 import { api } from "../src/lib/api";
 import { registeredDetectionLink } from "../src/lib/run-handoffs";
-import { compareDemoRuns, demoCatalog, demoRuns } from "../src/lib/demo";
+import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import type { ComparisonResponse, DetectionResource } from "../src/types";
 
 function mount(path: string, page: React.ReactNode) {
@@ -25,15 +25,17 @@ afterEach(() => { vi.restoreAllMocks(); });
 it("prepares a full replay with only an AI setup change and preserves the graph", async () => {
   const user = userEvent.setup();
   baseMocks();
-  const replay = vi.spyOn(api, "replay").mockResolvedValue({ ...demoRuns[0]!, run_id: "run-20300101T000000Z-bbbbbbbbbbbbbbbb" });
+  const replay = vi.spyOn(api, "submitReplay").mockImplementation(async (_id, preparation, submissionId) => ({ schema_version: "bluefire.replay-job-submission.v1", preparation, preflight: preparation.preflight, job: { schema_version: "bluefire.job.v1", job_id: `job-${submissionId.replaceAll("-", "")}`, kind: "scenario.replay", state: "completed", progress: {} } }));
+  vi.spyOn(api, "prepareReplay").mockImplementation(async (id, request) => ({ schema_version: "bluefire.replay-preparation.v1", preparation_id: "prepared", preparation_context: {}, binding: { source: { run_id: id }, replay_request: request }, replay_request: request, replay_extent: "full", scenario: demoScenario, lineage: {}, preflight: { ready: true, status: "ready" }, approval_created: false, effects_started: false }));
   mount(`/compare?source=${encodeURIComponent(demoRuns[0]!.run_id)}`, <ComparePage />);
   await screen.findByRole("heading", { name: "Measure what changed" });
   await user.selectOptions(screen.getByRole("combobox", { name: "What will change?" }), "setup");
   expect(screen.getByRole("button", { name: "Create Simulate replay" })).toBeDisabled();
   await user.selectOptions(screen.getByRole("combobox", { name: "AI autonomy override" }), "assist");
   await user.click(screen.getByRole("button", { name: "Create Simulate replay" }));
-  expect(replay).toHaveBeenCalledWith(demoRuns[0]!.run_id, expect.objectContaining({ exact: false, autonomy: "assist", from_step_id: null, swap_step_id: null, swap_behavior_id: null, parameter_overrides: null }));
-  expect(replay.mock.calls[0]![1]).not.toHaveProperty("approval");
+  expect(api.prepareReplay).toHaveBeenCalledWith(demoRuns[0]!.run_id, expect.objectContaining({ exact: false, autonomy: "assist", from_step_id: null, swap_step_id: null, swap_behavior_id: null, parameter_overrides: null }));
+  await waitFor(() => expect(replay).toHaveBeenCalledOnce());
+  expect(replay.mock.calls[0]![1].replay_request).not.toHaveProperty("approval");
 });
 
 it.each(["selection", "navigation"])("discards a late comparison after %s changes and never exposes its detector export", async (change) => {
