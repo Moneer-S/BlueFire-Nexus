@@ -330,6 +330,7 @@
         "bluefire.approvals",
         "bluefire.collector_comparison",
         "bluefire.collector_interfaces",
+        "bluefire.collection_semantics",
         "bluefire.collectors",
         "bluefire.detection_backend_health",
         "bluefire.detection_backends",

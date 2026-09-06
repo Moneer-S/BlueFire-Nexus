@@ -401,7 +401,7 @@ test("production operator UI completes authoring, management, run, replay, and c
   const preflightReport = await (await preflightResponse).json() as JsonObject;
   expect(preflightReport.ready).toBe(true);
   await expect(page.getByText("Canonical preflight ready")).toBeVisible();
-  await expect(page.getByLabel("Canonical preflight plan")).toContainText("Resolved canonical plan");
+  await expect(page.getByLabel("Canonical preflight plan")).toContainText("What this run will do");
   completed.push("run_production_preflight");
 
   const submissionResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/runs" && response.request().method() === "POST");

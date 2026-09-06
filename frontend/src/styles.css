@@ -571,6 +571,16 @@ td .badge { margin-left: 6px; }
 .canonical-steps dl > div { min-width: 0; padding: 7px; border-radius: 7px; background: rgba(3, 8, 16, 0.32); }
 .canonical-steps dt { margin-bottom: 4px; color: var(--muted); font-size: 0.53rem; text-transform: uppercase; }
 .canonical-steps dd { margin: 0; color: var(--muted-strong); font-size: 0.58rem; overflow-wrap: anywhere; }
+.review-steps > article { grid-template-columns: 24px minmax(0, 1fr); gap: 8px 12px; padding: 13px; }
+.review-steps > article strong { font-size: 0.82rem; }
+.review-steps > article > span { padding-top: 3px; font-size: 0.7rem; }
+.review-steps p { margin: 5px 0; color: var(--muted-strong); font-size: 0.72rem; line-height: 1.5; }
+.review-steps small { color: var(--muted); font-size: 0.67rem; }
+.review-steps > article > details { grid-column: 2; min-width: 0; }
+.review-steps summary { width: fit-content; cursor: pointer; color: var(--blue-soft); font-size: 0.72rem; padding: 4px 0; }
+.review-steps dl { margin-top: 8px; }
+.review-steps dt, .review-steps dd { font-size: 0.7rem; }
+.review-steps details pre { max-height: 240px; overflow: auto; }
 .canonical-plan > details { border-top: 1px solid var(--line); }
 .canonical-plan > details summary { cursor: pointer; padding: 10px 13px; color: var(--muted); font-size: 0.61rem; }
 .canonical-plan > details pre { max-height: 280px; padding: 0 13px 13px; }

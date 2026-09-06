@@ -646,7 +646,12 @@ describe("product application", () => {
 
     await user.click(screen.getByRole("button", { name: "Run preflight" }));
     expect(await screen.findByRole("region", { name: "Complete Execute approval envelope" })).toBeVisible();
-    expect(screen.getByText("Primary and alternate behavior contracts")).toBeVisible();
+    expect(screen.getByText("What this run will do")).toBeVisible();
+    expect(screen.getByText("Review effects and alternatives")).toBeVisible();
+    const methods = screen.getByText("All permitted methods, effects and parameters");
+    expect(methods.closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("Full deterministic action contract")).not.toBeVisible();
+    await user.click(methods);
     expect(screen.getAllByText("state-digest-test").length).toBeGreaterThan(0);
     expect(screen.getAllByText("plan-digest-test").length).toBeGreaterThan(0);
     expect(screen.getAllByText("scope-digest-test").length).toBeGreaterThan(0);
