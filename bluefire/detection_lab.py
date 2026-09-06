@@ -293,6 +293,12 @@ class DetectionLabService:
         )
         return self._create_revision(candidate_id, request, revision_kind="tune")
 
+    def revise_source(self, candidate_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        self._fields(
+            request, required={"source", "reason"}, optional={"title"}, context="source revision"
+        )
+        return self._create_revision(candidate_id, request, revision_kind="source")
+
     def compare(self, candidate_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         self._fields(
             request,
@@ -564,6 +570,26 @@ class DetectionLabService:
             )
         with self._lock:
             source = self._candidate_from_resource(self._resource(candidate_id))
+            rule_source = request.get("source") if revision_kind == "source" else None
+            if revision_kind == "source":
+                if source.target_language not in {"sqlite", "sigma"}:
+                    raise APIError(
+                        HTTPStatus.BAD_REQUEST,
+                        "detection_source_language_unsupported",
+                        "Source revisions support SQLite and Sigma candidates.",
+                    )
+                if not isinstance(rule_source, str):
+                    raise APIError(
+                        HTTPStatus.BAD_REQUEST,
+                        "detection_source_invalid",
+                        "Detection source must be text.",
+                    )
+                if rule_source == source.rule_source:
+                    raise APIError(
+                        HTTPStatus.BAD_REQUEST,
+                        "detection_source_no_change",
+                        "A source revision requires different source text.",
+                    )
             title = request.get("title", source.title)
             logsource = request.get("logsource", source.logsource)
             selection = request.get("selection", source.selection)
@@ -599,7 +625,7 @@ class DetectionLabService:
                     "A tune revision must change selection or logsource semantics.",
                 )
             decisions = tuple(dict.fromkeys((*source.tuning_decisions, reason.strip())))
-            action = "revision_clone" if revision_kind == "clone" else "revision_tune"
+            action = "revision_" + revision_kind
 
             def build_document(revision: int) -> Mapping[str, Any]:
                 try:
@@ -618,6 +644,7 @@ class DetectionLabService:
                         revision_root_id=source.revision_root_id,
                         parent_candidate_id=source.candidate_id,
                         revision_kind=revision_kind,
+                        rule_source=rule_source,
                     )
                     candidate = DetectionCandidate.from_mapping(candidate.to_dict())
                 except (DetectionError, TypeError, ValueError) as exc:
@@ -627,13 +654,36 @@ class DetectionLabService:
                         "Detection revision is invalid.",
                         [str(exc)],
                     ) from exc
-                return self._record(
+                recorded = self._record(
                     None,
                     candidate,
                     action=action,
                     outcome="created",
                     request=request,
-                ).to_dict()
+                )
+                if revision_kind == "source":
+                    assert isinstance(rule_source, str)
+                    try:
+                        parse = (
+                            self.validator.parse_sqlite
+                            if source.target_language == "sqlite"
+                            else self.validator.parse_sigma
+                        )
+                        parsed = parse(recorded, rule_source)
+                    except DetectionError as exc:
+                        self._raise_detection_error(exc, action="validate source revision")
+                    if parsed.state is not DetectionState.PARSED:
+                        raise APIError(
+                            HTTPStatus.UNPROCESSABLE_ENTITY,
+                            "detection_source_validation_failed",
+                            "The edited source did not validate; no revision was saved.",
+                            [parsed.rejection_reason or "Source validation failed."],
+                        )
+                    recorded = self._record_transition(
+                        recorded, parsed, "parse", {"source": rule_source}
+                    )
+                    recorded = DetectionCandidate.from_mapping(recorded.to_dict())
+                return recorded.to_dict()
 
             try:
                 resource = self.product_store.save_detection_revision(
@@ -1248,6 +1298,16 @@ class DetectionLabService:
         elif candidate.revision_kind == "tune":
             invalid = invalid or (
                 parent.selection == candidate.selection and parent.logsource == candidate.logsource
+            )
+        elif candidate.revision_kind == "source":
+            invalid = invalid or (
+                parent.selection != candidate.selection
+                or parent.logsource != candidate.logsource
+                or parent.rule_source == candidate.rule_source
+                or parent.provenance != candidate.provenance
+                or parent.public_baselines != candidate.public_baselines
+                or parent.known_misses != candidate.known_misses
+                or parent.predicted_fields != candidate.predicted_fields
             )
         if invalid:
             raise APIError(

@@ -198,6 +198,10 @@ class StubService:
         self.calls.append(("tune_detection_candidate", candidate_id, request))
         return {"candidate": {"id": candidate_id}}
 
+    def revise_detection_source(self, candidate_id: str, request: Mapping[str, Any]):
+        self.calls.append(("revise_detection_source", candidate_id, request))
+        return {"candidate": {"id": candidate_id}}
+
     def compare_detection_candidates(self, candidate_id: str, request: Mapping[str, Any]):
         self.calls.append(("compare_detection_candidates", candidate_id, request))
         return {"candidate": {"id": candidate_id}}
@@ -1438,6 +1442,7 @@ def test_detection_lab_routes_dispatch_only_explicit_lifecycle_operations() -> N
             "evaluate-run": "evaluate_detection_run",
             "clone": "clone_detection_candidate",
             "tune": "tune_detection_candidate",
+            "revise-source": "revise_detection_source",
             "compare": "compare_detection_candidates",
             "parse": "parse_detection_candidate",
             "exercise-fixtures": "exercise_detection_fixtures",
@@ -1452,7 +1457,7 @@ def test_detection_lab_routes_dispatch_only_explicit_lifecycle_operations() -> N
                 f"/api/v1/detections/{DETECTION_ID}/{action}",
                 body=body,
             )
-            assert status == (201 if action in {"clone", "tune"} else 200)
+            assert status == (201 if action in {"clone", "tune", "revise-source"} else 200)
             assert json_body(payload)
             assert service.calls[-1] == (expected_call, DETECTION_ID, body)
 

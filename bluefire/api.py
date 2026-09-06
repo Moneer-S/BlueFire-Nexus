@@ -677,6 +677,9 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     "tune": lambda: self.platform_server.service.tune_detection_candidate(
                         candidate_id, body
                     ),
+                    "revise-source": lambda: self.platform_server.service.revise_detection_source(
+                        candidate_id, body
+                    ),
                     "compare": lambda: self.platform_server.service.compare_detection_candidates(
                         candidate_id, body
                     ),
@@ -700,7 +703,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     detection_operations[detection_action],
                     success_status=(
                         HTTPStatus.CREATED
-                        if detection_action in {"clone", "tune"}
+                        if detection_action in {"clone", "tune", "revise-source"}
                         else HTTPStatus.OK
                     ),
                 )

@@ -137,6 +137,9 @@ class PlatformService(Protocol):
     def tune_detection_candidate(self, candidate_id: str, request: JsonObject) -> JsonResult:
         """Tune one candidate into a new hypothesis revision."""
 
+    def revise_detection_source(self, candidate_id: str, request: JsonObject) -> JsonResult:
+        """Validate and atomically publish a parsed source revision."""
+
     def compare_detection_candidates(self, candidate_id: str, request: JsonObject) -> JsonResult:
         """Compare two candidates from the same revision lineage."""
 

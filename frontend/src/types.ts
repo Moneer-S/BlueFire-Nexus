@@ -550,6 +550,12 @@ export interface DetectionTuneRequest extends DetectionCloneRequest {
   logsource?: Record<string, unknown>;
 }
 
+export interface DetectionSourceRevisionRequest {
+  source: string;
+  reason: string;
+  title?: string;
+}
+
 export interface DetectionSetDelta {
   added: string[];
   removed: string[];

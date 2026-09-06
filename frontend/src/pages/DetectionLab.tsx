@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Beaker, CheckCircle2, Code2, FileCheck2, FlaskConical, Plus, Search, ShieldQuestion } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { syntheticSelectionExample } from "../lib/detection-fixtures";
@@ -13,6 +13,7 @@ import type {
   DetectionResource,
   DetectionSetDelta,
   DetectionTuneRequest,
+  DetectionSourceRevisionRequest,
   ManagedResource,
   PublicBaselineReference,
   RunRecord,
@@ -142,6 +143,7 @@ export function DetectionLabPage() {
   const [title, setTitle] = useState("Sandbox staging observation");
   const [behaviorId, setBehaviorId] = useState("sandbox.collection.stage.v1");
   const [language, setLanguage] = useState("internal");
+  const activeSelection = useRef("");
 
   useEffect(() => {
     setSelectedId(linkedSelectionId);
@@ -199,6 +201,21 @@ export function DetectionLabPage() {
     },
     onError: (error) => setNotice(error instanceof Error ? error.message : "The immutable revision was refused."),
   });
+  const sourceRevisionMutation = useMutation({
+    mutationFn: ({ id, body }: { id: string; selection: string; body: DetectionSourceRevisionRequest }) => api.reviseDetectionSource(id, body),
+    onSuccess: ({ candidate }, submitted) => {
+      client.setQueryData<{ schema_version: string; candidates: DetectionResource[] }>(["detections"], (current) => current ? { ...current, candidates: [...current.candidates.filter((item) => item.id !== candidate.id), candidate] } : current);
+      refreshDetections();
+      if (activeSelection.current !== submitted.selection) return;
+      setSelectedId(candidate.id);
+      setSearchParams({ ...(sourceRunId ? { run: sourceRunId } : {}), candidate: candidate.id, candidate_scope: "registry" });
+      setNotice(`Revision ${candidate.document.revision} validated and saved. It is parsed; evaluate actual runs to measure its results.`);
+      comparisonMutation.reset();
+    },
+    onError: (error, submitted) => {
+      if (activeSelection.current === submitted.selection) setNotice(error instanceof Error ? error.message : "Source validation failed; no revision was saved.");
+    },
+  });
   const comparisonMutation = useMutation({
     mutationFn: ({ baselineId, candidateId }: { baselineId: string; candidateId: string }) => api.compareDetections(baselineId, candidateId),
     onError: (error) => setNotice(error instanceof Error ? error.message : "The revision comparison was refused."),
@@ -227,6 +244,7 @@ export function DetectionLabPage() {
   const candidates = [...new Map([...persisted, ...linked].map((item) => [item.resolvedId, item])).values()];
   const filtered = candidates.filter((item) => `${item.resolvedId} ${item.title ?? ""} ${item.behavior_id ?? ""} ${item.target_language ?? item.language ?? ""}`.toLowerCase().includes(search.toLowerCase()));
   const selected = candidates.find((item) => item.resolvedId === selectedId) ?? (selectedId ? undefined : filtered.find((item) => item.runId === sourceRunId) ?? filtered[0]);
+  activeSelection.current = JSON.stringify([sourceRunId, selected?.resolvedId]);
   const counts = Object.fromEntries(lifecycle.map((state) => [state, candidates.filter((item) => item.state === state).length]));
   const finalizedRuns = runsQuery.data.runs.filter((run) => Boolean(run.finalized_at) || run.status === "completed");
   const rootId = selected?.revision_root_id ?? selected?.candidate_id ?? selected?.resolvedId;
@@ -280,11 +298,12 @@ export function DetectionLabPage() {
         researchSources={sources}
         researchSourcesUnavailable={researchSourcesQuery.isError}
         lifecyclePending={actionMutation.isPending}
-        revisionPending={revisionMutation.isPending}
+        revisionPending={revisionMutation.isPending || sourceRevisionMutation.isPending}
         comparisonPending={comparisonMutation.isPending}
         comparison={comparisonMutation.data}
         onAction={(action, body) => selected.resourceId && actionMutation.mutate({ id: selected.resourceId, action, body })}
         onRevision={(kind, body) => selected.resourceId && revisionMutation.mutate({ id: selected.resourceId, kind, body })}
+        onSourceRevision={(body) => selected.resourceId && sourceRevisionMutation.mutate({ id: selected.resourceId, selection: activeSelection.current, body })}
         onCompare={(candidateId) => selected.resourceId && comparisonMutation.mutate({ baselineId: selected.resourceId, candidateId })}
       /> : <Panel><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel>}
     </div>
@@ -327,6 +346,7 @@ function CandidateWorkspace({
   comparison,
   onAction,
   onRevision,
+  onSourceRevision,
   onCompare,
 }: {
   candidate: CandidateView;
@@ -345,6 +365,7 @@ function CandidateWorkspace({
   comparison?: DetectionComparisonResponse;
   onAction: (action: LifecycleAction, body: Record<string, unknown>) => void;
   onRevision: (kind: RevisionKind, body: DetectionCloneRequest | DetectionTuneRequest) => void;
+  onSourceRevision: (body: DetectionSourceRevisionRequest) => void;
   onCompare: (candidateId: string) => void;
 }) {
   const [tab, setTab] = useState<"candidate" | "revisions" | "evaluations" | "fixtures" | "observed" | "history">("candidate");
@@ -372,6 +393,8 @@ function CandidateWorkspace({
   }, [sourceRunId]);
 
   const language = candidate.target_language ?? candidate.language ?? "internal";
+  const querySource = ["sqlite", "sigma"].includes(language);
+  const sourceChanged = querySource && source !== (candidate.rule_source ?? "");
   const storedSource = candidate.rule_source ?? source;
   const code = useMemo(() => storedSource || (language === "internal" ? JSON.stringify({ logsource: candidate.logsource ?? {}, selection: candidate.selection ?? {} }, null, 2) : ""), [candidate.logsource, candidate.selection, language, storedSource]);
   const selectionSeed = JSON.stringify(candidate.selection ?? {}, null, 2);
@@ -400,13 +423,14 @@ function CandidateWorkspace({
     setCompareId(defaultCompareId);
   }, [candidate.resolvedId, defaultCompareId, lineageSeed]);
 
-  const authoritativeParsed = Boolean(backend?.authoritative && candidate.parser_backend?.name && candidate.state !== "hypothesis");
+  const authoritativeParsed = Boolean(backend?.authoritative && candidate.parser_backend?.name && candidate.state !== "hypothesis" && !sourceChanged);
   const queryValidation = candidate.validation ?? {};
   const lastExecution = queryValidation.last_execution && typeof queryValidation.last_execution === "object" && !Array.isArray(queryValidation.last_execution)
     ? queryValidation.last_execution as Record<string, unknown>
     : undefined;
   const persisted = Boolean(resource);
   const canParse = persisted && candidate.state === "hypothesis";
+  const canReviseSource = persisted && querySource && candidate.state !== "hypothesis";
   const canFixture = persisted && candidate.state === "parsed";
   const canObserved = persisted && ["internal", "sigma", "sqlite"].includes(language) && ["parsed", "fixture_exercised"].includes(candidate.state);
   const canBenign = persisted && ["fixture_exercised", "observed_exercised"].includes(candidate.state);
@@ -458,7 +482,7 @@ function CandidateWorkspace({
     }
   };
   const exportDraft = () => {
-    const payload = { schema_version: "bluefire.detection-draft.v1", candidate_id: candidate.resolvedId, state: candidate.state, language, rendered_source: code, parser_backend: candidate.parser_backend ?? null, authoritative_validation: authoritativeParsed };
+    const payload = { schema_version: "bluefire.detection-draft.v1", candidate_id: candidate.resolvedId, state: candidate.state, language, rendered_source: querySource ? source : code, parser_backend: candidate.parser_backend ?? null, authoritative_validation: authoritativeParsed };
     const url = URL.createObjectURL(new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -469,14 +493,17 @@ function CandidateWorkspace({
 
   return <Panel className="candidate-workspace">
     <PanelHeader eyebrow="Candidate workspace" title={candidate.title ?? candidate.resolvedId} detail={candidate.behavior_id ?? "Behavior not linked"} actions={<Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : "success"}>{sentence(candidate.state)}</Badge>} />
-    <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "revisions", "evaluations", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{item === "evaluations" ? "Run evaluations" : sentence(item)}</button>)}</div>
+    <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "evaluations", "revisions", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{item === "evaluations" ? "Run evaluations" : item === "candidate" && querySource ? "Rule" : sentence(item)}</button>)}</div>
     <div className="candidate-body">
       {!persisted ? <Callout title="Run-linked record">This candidate is part of an immutable run. Save its definition as a separate hypothesis to use lifecycle or revision actions.<Button size="small" onClick={onSaveLinked} disabled={saveLinkedPending || candidate.demo || !candidate.behavior_id || !candidate.selection || !candidate.logsource}>{saveLinkedPending ? "Saving hypothesis" : "Save hypothesis from run"}</Button></Callout> : null}
       {localError ? <Callout tone="danger" title="Input refused locally">{localError}</Callout> : null}
       {tab === "candidate" ? <>
-        <div className="editor-header"><span><Code2 />Candidate source</span><Badge tone={authoritativeParsed ? "success" : "warning"}>{authoritativeParsed ? "Authoritatively parsed" : "Not authoritative validation"}</Badge></div>
-        {language === "internal" ? <pre className="rule-editor">{code}</pre> : <Field label={`${sentence(language)} source`} hint="Bounded source is sent only to the explicit parser/compiler action."><textarea rows={10} value={source} onChange={(event) => setSource(event.target.value)} disabled={!canParse} /></Field>}
-        <div className="candidate-actions"><Button size="small" onClick={() => onAction("parse", language === "internal" ? {} : { source })} disabled={!canParse || lifecyclePending || (language !== "internal" && !source)}>Parse / compile honestly</Button><Button size="small" variant="ghost" onClick={exportDraft}>Export draft</Button><Button size="small" variant="danger" onClick={() => onAction("reject", { reason, notes: [] })} disabled={!canReject || lifecyclePending || !reason.trim()}>Reject</Button></div>
+        <div className="editor-header"><span><Code2 />Candidate source</span><Badge tone={authoritativeParsed ? "success" : "warning"}>{sourceChanged ? "Draft source not validated" : authoritativeParsed ? "Authoritatively parsed" : "Not authoritative validation"}</Badge></div>
+        {querySource ? <p>Edit the rule here. Validation checks the installed query backend; evaluating retained runs measures actual matches. A source edit alone does not establish an improvement.</p> : null}
+        {language === "internal" ? <pre className="rule-editor">{code}</pre> : <Field label={`${sentence(language)} source`} hint={canReviseSource ? "Saving creates a new parsed revision. The selected revision and its evaluations remain unchanged." : "Bounded source is sent only to the explicit parser/compiler action."}><textarea rows={10} value={source} onChange={(event) => setSource(event.target.value)} disabled={(!canParse && !canReviseSource) || lifecyclePending || revisionPending} /></Field>}
+        {canReviseSource ? <Field label="Reason for source revision"><input value={revisionReason} onChange={(event) => setRevisionReason(event.target.value)} maxLength={1000} disabled={revisionPending} /></Field> : null}
+        {querySource && !backend?.ready ? <Callout tone="warning" title="Query backend unavailable">Install the reviewed backend shown in Detection backend health before validating this source. No revision can be validated while it is unavailable.</Callout> : null}
+        <div className="candidate-actions">{canReviseSource ? <Button size="small" onClick={() => onSourceRevision({ source, reason: revisionReason.trim() })} disabled={!sourceChanged || !source.trim() || !revisionReason.trim() || revisionPending || lifecyclePending || !backend?.ready}>{revisionPending ? "Validating source revision" : "Validate and save new revision"}</Button> : <Button size="small" onClick={() => onAction("parse", language === "internal" ? {} : { source })} disabled={!canParse || lifecyclePending || (language !== "internal" && !source) || (querySource && !backend?.ready)}>Parse / compile honestly</Button>}{querySource ? <Button size="small" onClick={() => setTab("evaluations")} disabled={!persisted || candidate.state === "hypothesis" || candidate.state === "rejected" || revisionPending}>Evaluate actual runs</Button> : null}<Button size="small" variant="ghost" onClick={exportDraft}>Export draft</Button><Button size="small" variant="danger" onClick={() => onAction("reject", { reason, notes: [] })} disabled={!canReject || lifecyclePending || !reason.trim()}>Reject</Button></div>
         <Field label="Rejection reason" hint="Required only for explicit terminal rejection."><input value={reason} onChange={(event) => setReason(event.target.value)} maxLength={1000} disabled={!canReject} /></Field>
         <DataList items={[
           { label: "Candidate ID", value: <code>{candidate.candidate_id ?? candidate.id ?? candidate.resolvedId}</code> },
@@ -614,7 +641,7 @@ function RevisionWorkspace({
   onCompare: (candidateId: string) => void;
 }) {
   return <div className="review-stack">
-    <Callout title="Immutable revision rule">Clone preserves rule behavior for a new research branch. Tune must change selection or log source. Both receive a new candidate ID, parent link, revision number, and content-derived definition digest.</Callout>
+    <Callout title="Advanced definition revisions">Clone copies the structured definition into an unparsed hypothesis; it does not copy compiled source or results. Tune changes structured selection or log source. To edit SQLite or Sigma, use the source editor in the Rule tab. Each revision receives a new ID and parent link.</Callout>
     <div>
       <h3>Lineage</h3>
       <div className="structured-list">{lineage.length ? lineage.map((item) => <article key={item.resolvedId}><strong>Revision {item.revision ?? 1} · {sentence(item.revision_kind ?? "origin")}</strong><span><code>{item.resolvedId}</code> · {sentence(item.state)}{item.parent_candidate_id ? ` · parent ${item.parent_candidate_id}` : " · lineage origin"}</span><small title={item.definition_digest}>{item.definition_digest ? shortDigest(item.definition_digest) : "Definition digest not reported"}</small></article>) : <EmptyState title="No persisted lineage" description="Run-linked records cannot be revised in place." />}</div>

@@ -413,6 +413,7 @@ class APIRoutes:
             "evaluations",
             "clone",
             "tune",
+            "revise-source",
             "compare",
             "parse",
             "exercise-fixtures",

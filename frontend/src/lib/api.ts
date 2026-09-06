@@ -437,6 +437,10 @@ export const api = {
     if (DEMO_MODE) throw new ApiError("Demo candidates cannot create durable immutable revisions.", "demo_detection_revision_refused", undefined, 409);
     return request(`/detections/${encodeURIComponent(candidateId)}/tune`, { method: "POST", body: JSON.stringify(body) });
   },
+  async reviseDetectionSource(candidateId: string, body: { source: string; reason: string; title?: string }): Promise<DetectionResourceEnvelope> {
+    if (DEMO_MODE) throw new ApiError("Demo candidates cannot create durable immutable revisions.", "demo_detection_revision_refused", undefined, 409);
+    return request(`/detections/${encodeURIComponent(candidateId)}/revise-source`, { method: "POST", body: JSON.stringify(body) });
+  },
   async compareDetections(baselineCandidateId: string, candidateId: string): Promise<DetectionComparisonResponse> {
     if (DEMO_MODE) throw new ApiError("Demo candidates cannot produce durable revision comparisons.", "demo_detection_comparison_refused", undefined, 409);
     return request(`/detections/${encodeURIComponent(baselineCandidateId)}/compare`, { method: "POST", body: JSON.stringify({ candidate_id: candidateId }) });

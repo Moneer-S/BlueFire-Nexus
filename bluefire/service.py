@@ -745,6 +745,12 @@ class BlueFireService(RunnerManagementServiceMixin):
 
         return self.detection_lab.compare(candidate_id, request)
 
+    def revise_detection_source(
+        self, candidate_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Validate source and atomically save a parsed immutable revision."""
+        return self.detection_lab.revise_source(candidate_id, request)
+
     def parse_detection_candidate(
         self, candidate_id: str, request: Mapping[str, Any]
     ) -> Mapping[str, Any]:

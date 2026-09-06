@@ -744,6 +744,7 @@ def test_cli_detection_commands_cover_the_full_immutable_lifecycle(
         ("reject", "reject_detection_candidate"),
         ("clone", "clone_detection_candidate"),
         ("tune", "tune_detection_candidate"),
+        ("revise-source", "revise_detection_source"),
         ("compare", "compare_detection_candidates"),
     ):
         _execute(parser.parse_args(["detections", command, candidate_id, str(request)]))

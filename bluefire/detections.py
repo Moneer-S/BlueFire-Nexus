@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -429,6 +430,7 @@ def _history_rows(value: Any) -> tuple[Mapping[str, Any], ...]:
         "hypothesis_upsert",
         "revision_clone",
         "revision_tune",
+        "revision_source",
         "parse",
         "exercise_fixtures",
         "exercise_observed",
@@ -496,7 +498,8 @@ def _history_rows(value: Any) -> tuple[Mapping[str, Any], ...]:
             if (
                 from_state is not None
                 or to_state != DetectionState.HYPOTHESIS.value
-                or action_value not in {"hypothesis_upsert", "revision_clone", "revision_tune"}
+                or action_value
+                not in {"hypothesis_upsert", "revision_clone", "revision_tune", "revision_source"}
                 or outcome_value != "created"
             ):
                 raise DetectionError("lifecycle_history must begin with hypothesis creation")
@@ -539,6 +542,7 @@ def _history_rows(value: Any) -> tuple[Mapping[str, Any], ...]:
                 {None},
                 {DetectionState.HYPOTHESIS.value},
             ),
+            "revision_source": ({None}, {DetectionState.HYPOTHESIS.value}),
             "parse": (
                 {DetectionState.HYPOTHESIS.value},
                 {
@@ -637,6 +641,7 @@ def _definition_digest(
     known_misses: Sequence[str],
     provenance: Mapping[str, str],
     predicted_fields: Sequence[str],
+    rule_source: str | None = None,
 ) -> str:
     return content_hash(
         {
@@ -653,6 +658,14 @@ def _definition_digest(
             "known_misses": list(known_misses),
             "provenance": dict(provenance),
             "predicted_fields": list(predicted_fields),
+            **(
+                {
+                    "rule_source_sha256": "sha256:"
+                    + hashlib.sha256(rule_source.encode("utf-8")).hexdigest()
+                }
+                if revision_kind == "source" and rule_source is not None
+                else {}
+            ),
         }
     )
 
@@ -738,6 +751,7 @@ class DetectionCandidate:
         revision_root_id: str | None = None,
         parent_candidate_id: str | None = None,
         revision_kind: str = "origin",
+        rule_source: str | None = None,
     ) -> "DetectionCandidate":
         if target_language not in _LANGUAGES:
             raise DetectionError(f"unsupported detection language: {target_language}")
@@ -774,8 +788,18 @@ class DetectionCandidate:
             or not 1 <= revision <= 2**31 - 1
         ):
             raise DetectionError("revision must be a positive 32-bit integer")
-        if revision_kind not in {"origin", "clone", "tune"}:
+        if revision_kind not in {"origin", "clone", "tune", "source"}:
             raise DetectionError("revision_kind is invalid")
+        if revision_kind == "source":
+            rule_source = _optional_bounded_source(rule_source)
+            if (
+                not rule_source
+                or not rule_source.strip()
+                or target_language not in {"sqlite", "sigma"}
+            ):
+                raise DetectionError("source revisions require nonempty SQLite or Sigma source")
+        elif rule_source is not None:
+            raise DetectionError("only source revisions bind source at hypothesis creation")
         origin_id = _origin_candidate_id(
             behavior_id=stable_behavior_id,
             target_language=target_language,
@@ -808,6 +832,7 @@ class DetectionCandidate:
             known_misses=stable_misses,
             provenance=stable_provenance,
             predicted_fields=stable_predicted_fields,
+            rule_source=rule_source,
         )
         if stable_parent_id is not None:
             candidate_id = _revision_candidate_id(
@@ -841,6 +866,7 @@ class DetectionCandidate:
             state=DetectionState.HYPOTHESIS,
             provenance=stable_provenance,
             predicted_fields=stable_predicted_fields,
+            rule_source=rule_source,
         )
 
     @classmethod
@@ -972,7 +998,7 @@ class DetectionCandidate:
                 else _valid_candidate_id(parent_value, "parent_candidate_id")
             )
             revision_kind = _bounded_string(value.get("revision_kind"), "revision_kind", maximum=20)
-            if revision_kind not in {"origin", "clone", "tune"}:
+            if revision_kind not in {"origin", "clone", "tune", "source"}:
                 raise DetectionError("revision_kind is invalid")
             stored_definition_digest = _bounded_string(
                 value.get("definition_digest"), "definition_digest", maximum=71
@@ -985,6 +1011,10 @@ class DetectionCandidate:
             ):
                 raise DetectionError("definition_digest is invalid")
 
+        if revision_kind == "source" and (
+            not rule_source or not rule_source.strip() or target_language not in {"sqlite", "sigma"}
+        ):
+            raise DetectionError("source revisions require nonempty SQLite or Sigma source")
         definition_digest = _definition_digest(
             revision=revision,
             revision_root_id=revision_root_id,
@@ -999,6 +1029,7 @@ class DetectionCandidate:
             known_misses=known_misses,
             provenance=provenance,
             predicted_fields=predicted_fields,
+            rule_source=rule_source,
         )
         if stored_definition_digest is not None and stored_definition_digest != definition_digest:
             raise DetectionError(

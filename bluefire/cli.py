@@ -248,6 +248,7 @@ def _parser() -> argparse.ArgumentParser:
         "reject",
         "clone",
         "tune",
+        "revise-source",
         "compare",
     ):
         detection_action = detection_commands.add_parser(
@@ -649,6 +650,7 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
             "reject": service.reject_detection_candidate,
             "clone": service.clone_detection_candidate,
             "tune": service.tune_detection_candidate,
+            "revise-source": service.revise_detection_source,
             "compare": service.compare_detection_candidates,
         }
         return operations[args.detection_command](args.candidate_id, detection_request)
