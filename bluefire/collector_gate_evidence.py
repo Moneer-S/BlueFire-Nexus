@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .collectors import CollectionSession
+from .collectors import (
+    CollectionSession,
+    FilesystemCollector,
+    LoopbackReceiverCollector,
+    NativeProcessCollector,
+)
 from .evidence import EvidenceProvenance, EvidenceRecord
 
 
@@ -15,6 +20,43 @@ class CollectorGateValidationError(ValueError):
 def _require(condition: bool, message: str) -> None:
     if not condition:
         raise CollectorGateValidationError(message)
+
+
+def _replay_collector_delta_valid(
+    delta: Mapping[str, Any], baseline: CollectionSession, replay: CollectionSession
+) -> bool:
+    """Require the exact observations on the frontier and successful replay paths."""
+    filesystem = FilesystemCollector.descriptor.id
+    process = NativeProcessCollector.descriptor.id
+    network = LoopbackReceiverCollector.descriptor.id
+    for session, expected in (
+        (baseline, {filesystem: 4, process: 1}),
+        (replay, {filesystem: 3, process: 1, network: 1}),
+    ):
+        if set(session.results) != set(expected) or any(
+            len(session.results[collector_id].records) != count
+            or any(
+                record.provenance is not EvidenceProvenance.OBSERVED
+                for record in session.results[collector_id].records
+            )
+            for collector_id, count in expected.items()
+        ):
+            return False
+    collector_delta = delta.get("collector_session_delta")
+    if not isinstance(collector_delta, Mapping):
+        return False
+    # Replay adds a receiver observation but skips the baseline's fallback export.
+    # Both have five observations; exact collector membership still must change.
+    return (
+        delta.get("collector_session_changed") is True
+        and collector_delta.get("settings_changed") is True
+        and collector_delta.get("session_changed") is True
+        and collector_delta.get("collectors_enabled") == [network]
+        and collector_delta.get("collectors_disabled") == []
+        and type(collector_delta.get("observation_delta")) is int
+        and collector_delta["observation_delta"] == 0
+        and delta.get("replay_lineage_changed") is True
+    )
 
 
 def _observed(session: CollectionSession, collector_id: str) -> tuple[EvidenceRecord, ...]:

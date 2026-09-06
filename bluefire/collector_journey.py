@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .collector_comparison import summarize_collector_session
+from .collector_gate_evidence import _replay_collector_delta_valid
 from .collector_interfaces import (
     CloudIdentityAuditAdapter,
     LinuxAuditRuntimeAdapter,
@@ -665,11 +666,7 @@ def produce_collector_evidence(
             )
             delta = comparison["deltas"][0]
             _require(
-                delta["collector_session_changed"] is True
-                and delta["collector_session_delta"]["collectors_enabled"]
-                == [LoopbackReceiverCollector.descriptor.id]
-                and delta["collector_session_delta"]["observation_delta"] == 1
-                and delta["replay_lineage_changed"] is True,
+                _replay_collector_delta_valid(delta, baseline_session, replay_session),
                 "GATE-05 replay comparison omitted the collector delta",
             )
             corruption = _corruption_checks(replay_session, replay)

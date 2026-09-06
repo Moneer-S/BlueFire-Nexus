@@ -14,6 +14,7 @@ from .collector_gate_evidence import (
     _is_sha256,
     _observed,
     _one_observation,
+    _replay_collector_delta_valid,
     _require,
     _run_steps,
     _validate_collection_lineage,
@@ -995,13 +996,7 @@ def validate_persisted_collectors(
         "lineage_hash_health": health_and_hashes,
         "corruption_refusal": corruption_valid,
         "settings_toggle": settings_toggle,
-        "replay_compare_delta": (
-            delta_row.get("collector_session_changed") is True
-            and collector_delta.get("collectors_enabled")
-            == [LoopbackReceiverCollector.descriptor.id]
-            and collector_delta.get("observation_delta") == 1
-            and delta_row.get("replay_lineage_changed") is True
-        ),
+        "replay_compare_delta": _replay_collector_delta_valid(delta_row, baseline, replay),
     }
     _require(all(checks.values()), "one or more GATE-05 semantic checks failed")
     return checks, tuple(bundles)
