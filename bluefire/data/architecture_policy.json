@@ -296,6 +296,11 @@
       "patterns": [
         "bluefire.receiver",
         "bluefire.receiver_auth",
+        "bluefire.receiver_policy",
+        "bluefire.receiver_session",
+        "bluefire.receiver_session_channel",
+        "bluefire.receiver_session_contract",
+        "bluefire.receiver_session_worker",
         "bluefire.runner_adapter",
         "bluefire.runner_bootstrap",
         "bluefire.runner_client",

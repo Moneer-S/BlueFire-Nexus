@@ -69,6 +69,10 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/provider_runner_contracts.py",
     "bluefire/runner_adapter.py",
     "bluefire/runner_durable_result.py",
+    "bluefire/receiver.py",
+    "bluefire/receiver_policy.py",
+    "bluefire/receiver_session_contract.py",
+    "bluefire/receiver_session_channel.py",
     "bluefire/orchestrator.py",
     "bluefire/service.py",
     "bluefire/package_management.py",
@@ -98,6 +102,8 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/runner_parent_death.py",
     "bluefire/runner_trust.py",
     "bluefire/runner_watchdog.py",
+    "bluefire/receiver_session.py",
+    "bluefire/receiver_session_worker.py",
     "runner/src/cancellation_witness.rs",
     "runner/src/process.rs",
 )
@@ -112,6 +118,18 @@ _PROCESS_CHECKS = {
     "native_process_inventory_is_fixed": True,
 }
 _PYTHON_BOUNDARIES = {
+    "receiver_session.py": {
+        "passed": True,
+        "shell_imports": 1,
+        "process_calls": ["subprocess.Popen.__init__"],
+        "unexpected_findings": [],
+    },
+    "receiver_session_worker.py": {
+        "passed": True,
+        "shell_imports": 0,
+        "process_calls": [],
+        "unexpected_findings": [],
+    },
     "runner_client.py": {
         "passed": True,
         "shell_imports": 1,

@@ -8,6 +8,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from tools.provider_boundary_inventory import (
+    _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES,
+    _reviewed_python_process_boundary_sources,
+    _trusted_process_boundary_inventory_is_fixed,
+)
+from tools.provider_boundary_inventory import (
+    _REVIEWED_RUST_PROCESS_BOUNDARY_SOURCES as _REVIEWED_RUST_PROCESS_BOUNDARY_SOURCES,
+)
 from tools.provider_gate_common import (
     PYTHON_DYNAMIC_IMPORT_CALLS,
     PYTHON_DYNAMIC_NAMESPACE_CALLS,
@@ -19,6 +27,7 @@ from tools.provider_gate_common import (
     ProviderGateError,
     _sha256_bytes,
 )
+from tools.receiver_session_source_audit import receiver_boundary
 
 _REVIEWED_RUNNER_CLIENT_LAUNCH_SECTIONS = {
     "SubprocessRustRunner._cancel_darwin_process_slot": "sha256:dac859adb4f10a687d7d2672493ab0cc07f2ea7042856f0668dc5744df1f404b",
@@ -50,21 +59,6 @@ _REVIEWED_DARWIN_CONTAINMENT_SOURCE_SHA256 = (
 )
 _REVIEWED_PARENT_DEATH_SOURCE_SHA256 = (
     "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df"
-)
-_REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
-    "bluefire/runner_client.py": "sha256:789a988b9bfcd572c61dce5df4ff217dce97e8a187451c134c9ccddf236dc07e",
-    "bluefire/runner_bootstrap.py": "sha256:2d2ffffec138fdf76587649170b91cc04d2e5fedb6d1768d85b725c7ba809cdf",
-    "bluefire/runner_darwin_containment.py": "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c",
-    "bluefire/runner_windows_containment.py": "sha256:937456440a3c2dce94d24af695951ce19ca682b7752aa7437a5fae1f86bfb733",
-    "bluefire/runner_linux_containment.py": "sha256:7b0f3cf3cd36304ba3c400439586efba98f682d34aa4053a12f478ef02eaea3a",
-    "bluefire/runner_lifecycle.py": "sha256:8edfe6dc2af32aadc8b74c6660eb60b885a130cdd9b7e8e7fc26ad9465f3f87c",
-    "bluefire/runner_parent_death.py": "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df",
-    "bluefire/runner_trust.py": "sha256:fc8811d61e0684b480ceb0a88a1124d0b8829363d5c10caa3513febfbb697c67",
-    "bluefire/runner_watchdog.py": "sha256:9e6d4b9e4c4b3d64e17b0b138fc8a1b7910aed48a7849563f15ed8abe3fca542",
-}
-_REVIEWED_RUST_PROCESS_BOUNDARY_SOURCES = (
-    "runner/src/cancellation_witness.rs",
-    "runner/src/process.rs",
 )
 
 
@@ -1455,23 +1449,6 @@ def _native_command_source_inventory_is_fixed(repository: Path) -> bool:
     )
 
 
-def _trusted_process_boundary_inventory_is_fixed() -> bool:
-    reviewed_paths = (
-        *_REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES,
-        *_REVIEWED_RUST_PROCESS_BOUNDARY_SOURCES,
-    )
-    return (
-        len(TRUSTED_PROCESS_BOUNDARY_PATHS) == len(set(TRUSTED_PROCESS_BOUNDARY_PATHS))
-        and TRUSTED_PROCESS_BOUNDARY_PATHS == reviewed_paths
-    )
-
-
-def _reviewed_python_process_boundary_sources(texts: Mapping[str, str]) -> bool:
-    return {
-        name: _sha256_bytes(text.encode("utf-8")) for name, text in texts.items()
-    } == _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES
-
-
 def _process_boundary_report(repository: Path) -> dict[str, Any]:
     paths = {
         relative.removeprefix("bluefire/"): repository / relative
@@ -1486,6 +1463,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         "runner_linux_containment.py": [],
         "runner_lifecycle.py": ["subprocess.Popen"],
         "runner_trust.py": [],
+        "receiver_session_worker.py": [],
     }
     expected_imports = {
         "runner_client.py": 1,
@@ -1495,6 +1473,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         "runner_linux_containment.py": 1,
         "runner_lifecycle.py": 1,
         "runner_trust.py": 0,
+        "receiver_session_worker.py": 0,
     }
     python_boundaries: dict[str, Any] = {}
     for name, calls in expected_calls.items():
@@ -1519,6 +1498,10 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
             "unexpected_findings": unexpected,
         }
 
+    python_boundaries["receiver_session.py"] = receiver_boundary(
+        paths["receiver_session.py"],
+        _python_shell_findings(paths["receiver_session.py"], repository),
+    )
     parent_death_findings = _python_shell_findings(paths["runner_parent_death.py"], repository)
     python_boundaries["runner_parent_death.py"] = {
         "passed": _runner_parent_death_process_contract(
@@ -1543,6 +1526,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         and _reviewed_python_process_boundary_sources(texts)
         and all(item["passed"] is True for item in python_boundaries.values()),
         "popen_shell_disabled": _runner_client_popen_contract(paths["runner_client.py"])
+        and python_boundaries["receiver_session.py"]["passed"]
         and _runner_darwin_popen_contract(paths["runner_darwin_containment.py"])
         and _runner_lifecycle_popen_contract(paths["runner_lifecycle.py"]),
         "absolute_digest_bound_runner": all(

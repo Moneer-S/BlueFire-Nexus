@@ -15,7 +15,7 @@ import bluefire.provider_gate as provider_gate
 import tools.run_provider_gate_journey as provider_gate_helper
 from bluefire.product_acceptance import load_release_contract
 from bluefire.runner_inventory import BUILTIN_RUNNER_ACTION_IDS
-from tools import provider_gate_source_audit
+from tools import provider_boundary_inventory, provider_gate_source_audit
 from tools.provider_gate_fixture_evidence import (
     _fixture_set,
 )
@@ -83,6 +83,10 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/provider_runner_contracts.py",
         "bluefire/runner_adapter.py",
         "bluefire/runner_durable_result.py",
+        "bluefire/receiver.py",
+        "bluefire/receiver_policy.py",
+        "bluefire/receiver_session_contract.py",
+        "bluefire/receiver_session_channel.py",
         "bluefire/orchestrator.py",
         "bluefire/service.py",
         "bluefire/package_management.py",
@@ -112,6 +116,8 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/runner_parent_death.py",
         "bluefire/runner_trust.py",
         "bluefire/runner_watchdog.py",
+        "bluefire/receiver_session.py",
+        "bluefire/receiver_session_worker.py",
         "runner/src/cancellation_witness.rs",
         "runner/src/process.rs",
     )
@@ -261,6 +267,18 @@ def _structural_report() -> dict[str, Any]:
                         "native_process_inventory_is_fixed": True,
                     },
                     "python_boundaries": {
+                        "receiver_session.py": {
+                            "passed": True,
+                            "shell_imports": 1,
+                            "process_calls": ["subprocess.Popen.__init__"],
+                            "unexpected_findings": [],
+                        },
+                        "receiver_session_worker.py": {
+                            "passed": True,
+                            "shell_imports": 0,
+                            "process_calls": [],
+                            "unexpected_findings": [],
+                        },
                         "runner_client.py": {
                             "passed": True,
                             "unexpected_findings": [],
@@ -371,6 +389,10 @@ def test_containment_owner_remains_pinned_without_new_process_launches(
         "bluefire/source_intake_context.py",
         "bluefire/source_intake_workspace.py",
         "bluefire/source_intake_publication.py",
+        "bluefire/receiver.py",
+        "bluefire/receiver_policy.py",
+        "bluefire/receiver_session_contract.py",
+        "bluefire/receiver_session_channel.py",
     ],
 )
 def test_extracted_boundaries_retain_strict_process_source_auditing(
@@ -942,7 +964,7 @@ def test_gate_02_fails_closed_on_exact_structural_contract_drift(
     ):
         with monkeypatch.context() as boundary_patch:
             boundary_patch.setattr(
-                provider_gate_source_audit,
+                provider_boundary_inventory,
                 "TRUSTED_PROCESS_BOUNDARY_PATHS",
                 (
                     *provider_gate_source_audit.TRUSTED_PROCESS_BOUNDARY_PATHS,

@@ -1,8 +1,8 @@
 """Bounded loopback-only HTTP receiver for the reviewed network action.
 
-The receiver treats every request body as opaque bytes.  It never interprets,
-executes, redirects, or forwards content.  Received bytes stay in memory unless
-an operator explicitly configures a receiver-owned storage directory.
+The default receiver treats bodies as opaque bytes. An explicit owned lab
+content policy inspects only authenticated public synthetic JSONL. No mode
+executes, redirects, or forwards content. Policy sessions are memory-only.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from .receiver_auth import (
     validate_receiver_task_id,
     verify_authentication,
 )
+from .receiver_policy import ReceiverContentPolicy
 from .runner_client import RunnerTransportError, _PinnedPrivateDirectory
 from .util import canonical_json_bytes
 
@@ -73,6 +74,7 @@ class ReceiverConfig:
     idle_timeout_seconds: float = DEFAULT_IDLE_TIMEOUT_SECONDS
     storage_dir: Path | None = None
     disposable_peer: bool = False
+    content_policy: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.authentication_key) is not bytes or len(self.authentication_key) != 32:
@@ -101,6 +103,10 @@ class ReceiverConfig:
             raise ValueError("receiver idle timeout must be between 0 and 3600 seconds")
         if type(self.disposable_peer) is not bool:
             raise ValueError("receiver disposable peer mode must be a boolean")
+        if self.content_policy is not None:
+            ReceiverContentPolicy(self.content_policy)
+            if not self.disposable_peer or not 0 < self.max_body_bytes <= 1024 * 1024:
+                raise ValueError("receiver content policy requires a bounded disposable peer")
         if self.disposable_peer:
             if self.host != "127.0.0.1":
                 raise ValueError("disposable peer receiver host must be exactly 127.0.0.1")
@@ -141,6 +147,7 @@ class _RequestResult:
     accepted_artifact: bool = False
     issued_challenge: bool = False
     accepted_artifact_binding: Mapping[str, object] | None = None
+    policy_decision: Mapping[str, object] | None = None
 
 
 class _DeadlineReader:
@@ -272,6 +279,8 @@ class _LoopbackTCPServer(socketserver.TCPServer):
         self.requests_refused = 0
         self.challenges_issued = 0
         self.accepted_artifact_bindings: list[dict[str, object]] = []
+        self.policy_decisions: list[dict[str, object]] = []
+        self.policy_task_binding: tuple[str, str, int] | None = None
         self.receiver_process_id = os.getpid()
         self.lifecycle_deadline = (
             time.monotonic() + DISPOSABLE_PEER_LIFETIME_TIMEOUT_SECONDS
@@ -316,6 +325,10 @@ class _ReceiverHandler(socketserver.BaseRequestHandler):
                 raise _ProtocolRefusal(403, "peer_not_loopback")
             result = _receive_request(server, _DeadlineReader(connection, deadline))
             response = result.response
+            if result.policy_decision is not None:
+                server.policy_decisions.append(dict(result.policy_decision))
+                if result.policy_decision["decision"] != "accepted":
+                    server.requests_refused += 1
             if result.accepted_artifact:
                 server.requests_accepted += 1
                 binding = result.accepted_artifact_binding
@@ -412,6 +425,8 @@ def _issue_challenge(
     if content_length > server.config.max_body_bytes:
         raise _ProtocolRefusal(413, "body_too_large")
 
+    _check_policy_task(server, task_id, sha256, content_length)
+
     now = time.monotonic()
     for nonce, challenge in tuple(server.challenges.items()):
         if challenge.expires_at <= now:
@@ -501,6 +516,7 @@ def _receive_artifact(
         raise _ProtocolRefusal(400, "invalid_sha256_header")
 
     task_id = headers.get("x-bluefire-task-id", "")
+    _check_policy_task(server, task_id, expected_digest, content_length)
     session_id = headers.get("x-bluefire-session-id", "")
     nonce = headers.get("x-bluefire-nonce", "")
     supplied_authentication = headers.get("x-bluefire-authentication", "")
@@ -536,6 +552,23 @@ def _receive_artifact(
     actual_digest = hashlib.sha256(body).hexdigest()
     if not hmac.compare_digest(actual_digest, expected_digest):
         raise _ProtocolRefusal(422, "sha256_mismatch")
+
+    policy_decision: Mapping[str, object] | None = None
+    if server.config.content_policy is not None:
+        _check_policy_task(server, task_id, actual_digest, len(body))
+        policy_decision = {
+            **ReceiverContentPolicy(server.config.content_policy).inspect(body),
+            "schema_version": "bluefire.receiver-content-decision.v1",
+            "task_id": task_id,
+            "receiver_session_id": server.session_id,
+            "receiver_process_id": server.receiver_process_id,
+            "authenticated": True,
+        }
+        if policy_decision["decision"] != "accepted":
+            return _RequestResult(
+                _json_response(403, {"accepted": False, "error": policy_decision["decision"]}),
+                policy_decision=policy_decision,
+            )
 
     stored = False
     if server.storage is not None:
@@ -581,7 +614,20 @@ def _receive_artifact(
             "sha256": actual_digest,
             "bytes_received": len(body),
         },
+        policy_decision=policy_decision,
     )
+
+
+def _check_policy_task(server: _LoopbackTCPServer, task_id: str, digest: str, size: int) -> None:
+    if server.config.content_policy is None:
+        return
+    if (
+        server.policy_task_binding != (task_id, digest, size)
+        or server.policy_decisions
+        or server.lifecycle_deadline is None
+        or time.monotonic() >= server.lifecycle_deadline
+    ):
+        raise _ProtocolRefusal(403, "receiver_task_not_bound_or_expired")
 
 
 def _validate_host_header(server: _LoopbackTCPServer, headers: Mapping[str, str]) -> None:
@@ -753,7 +799,31 @@ class LoopbackArtifactReceiver:
 
         return tuple(dict(binding) for binding in self._server.accepted_artifact_bindings)
 
+    @property
+    def policy_decisions(self) -> tuple[Mapping[str, object], ...]:
+        return tuple(dict(decision) for decision in self._server.policy_decisions)
+
+    def bind_policy_task(self, task_id: str, digest: str, size: int, *, deadline: float) -> None:
+        """Consume the owned session once, before serving any request."""
+        validate_receiver_task_id(task_id)
+        if (
+            self._config.content_policy is None
+            or self._server.policy_task_binding is not None
+            or self._server.connections_handled
+            or self._closed
+            or not isinstance(digest, str)
+            or _SHA256.fullmatch(digest) is None
+            or type(size) is not int
+            or not 1 <= size <= self._config.max_body_bytes
+            or not time.monotonic() < deadline <= cast(float, self._server.lifecycle_deadline)
+        ):
+            raise ValueError("receiver task binding is unavailable, consumed, or expired")
+        self._server.policy_task_binding = (task_id, digest, size)
+        self._server.lifecycle_deadline = deadline
+
     def serve(self) -> Mapping[str, object]:
+        if self._config.content_policy is not None and self._server.policy_task_binding is None:
+            raise ValueError("owned receiver requires an exact task binding before serving")
         reason = "explicit_stop"
         idle_deadline = time.monotonic() + self._config.idle_timeout_seconds
         lifetime_deadline = self._server.lifecycle_deadline
@@ -762,6 +832,7 @@ class LoopbackArtifactReceiver:
                 not self._stopping.is_set()
                 and self._server.requests_accepted < self._config.max_requests
                 and self._server.connections_handled < self._config.max_connections
+                and not self._server.policy_decisions
             ):
                 now = time.monotonic()
                 remaining = idle_deadline - now
@@ -780,7 +851,9 @@ class LoopbackArtifactReceiver:
                 if self._server.connections_handled > before:
                     idle_deadline = time.monotonic() + self._config.idle_timeout_seconds
             else:
-                if self._server.requests_accepted >= self._config.max_requests:
+                if self._server.policy_decisions:
+                    reason = "content_policy_decision"
+                elif self._server.requests_accepted >= self._config.max_requests:
                     reason = "max_requests"
                 elif self._server.connections_handled >= self._config.max_connections:
                     reason = "max_connections"
