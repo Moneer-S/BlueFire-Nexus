@@ -257,12 +257,14 @@ def test_replay_compare_requires_fresh_execute_approval_and_strict_parameters() 
     assert "Run prospective base-plan check" in compare
     assert "I approve this reviewed Execute replay request once" in compare
     assert "Not the replay binding" in compare
-    assert "The source bundle never changes" in compare
+    assert "Original run and replay identity" in compare
     assert "Replay Variant" in compare
     assert "formatReplayLineage" in compare
     assert "formatTargetScope" in compare
     assert "Source run" in compare
-    assert "Replay created" in compare and "replayMutation.data.run_id" in compare
+    assert "Replay created" in compare and "replayMutation.data.run.run_id" in compare
+    assert "Continue to approval" in compare and "api.submitReplay" in compare
+    assert "/replay-jobs" in api and "submission_id: submissionId" in api
     assert "buildReplayPayload" in api
     assert "parameter_overrides" in api
     assert "target_scope" in api and "approval" in api
