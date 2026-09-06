@@ -3,6 +3,7 @@ import { Beaker, CheckCircle2, Code2, FileCheck2, FlaskConical, Plus, Search, Sh
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
+import { syntheticSelectionExample } from "../lib/detection-fixtures";
 import { DetectionRunEvaluations } from "../components/DetectionRunEvaluations";
 import { runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
@@ -343,9 +344,9 @@ function CandidateWorkspace({
 }) {
   const [tab, setTab] = useState<"candidate" | "revisions" | "evaluations" | "fixtures" | "observed" | "history">("candidate");
   const [source, setSource] = useState("");
-  const [fixtures, setFixtures] = useState('[{"fixture_id":"malicious-1","artifact_type":"file_observation","path":"staged/a.txt"}]');
-  const [benign, setBenign] = useState('[{"fixture_id":"benign-1","artifact_type":"file_observation","path":"documents/a.txt"}]');
-  const [notes, setNotes] = useState("Declared benign fixture did not match.");
+  const [fixtures, setFixtures] = useState("");
+  const [benign, setBenign] = useState("");
+  const [notes, setNotes] = useState("");
   const [runId, setRunId] = useState(sourceRunId);
   const [evidenceIds, setEvidenceIds] = useState("");
   const [reason, setReason] = useState("");
@@ -374,11 +375,12 @@ function CandidateWorkspace({
   const comparisonChoices = lineage.filter((item) => item.resourceId && item.resolvedId !== candidate.resolvedId);
   const lineageSeed = comparisonChoices.map((item) => item.resolvedId).join("|");
   const defaultCompareId = comparisonChoices[0]?.resourceId ?? "";
+  const syntheticExample = syntheticSelectionExample(language, candidate.selection);
 
   useEffect(() => {
-    const yara = language === "yara";
-    setFixtures(yara ? '[{"fixture_id":"malicious-1","data":"bounded fixture text"}]' : '[{"fixture_id":"malicious-1","artifact_type":"file_observation","path":"staged/a.txt"}]');
-    setBenign(yara ? '[{"fixture_id":"benign-1","data":"ordinary fixture text"}]' : '[{"fixture_id":"benign-1","artifact_type":"file_observation","path":"documents/a.txt"}]');
+    setFixtures(syntheticExample);
+    setBenign("");
+    setNotes("");
     setSource(candidate.rule_source ?? "");
     setRevisionKind("clone");
     setRevisionReason("");
@@ -387,7 +389,7 @@ function CandidateWorkspace({
     setLogsourceJson(logsourceSeed);
     setSelectedBaselineIds(baselineSeed ? baselineSeed.split("|") : []);
     setLocalError(undefined);
-  }, [baselineSeed, candidate.resolvedId, candidate.rule_source, candidate.title, language, logsourceSeed, selectionSeed]);
+  }, [baselineSeed, candidate.resolvedId, candidate.rule_source, candidate.title, language, logsourceSeed, selectionSeed, syntheticExample]);
 
   useEffect(() => {
     setCompareId(defaultCompareId);
@@ -415,7 +417,7 @@ function CandidateWorkspace({
   const submitFixtures = (action: "exercise-fixtures" | "evaluate-benign") => {
     try {
       const value = JSON.parse(action === "exercise-fixtures" ? fixtures : benign) as unknown;
-      if (!Array.isArray(value)) throw new Error("Fixtures must be a JSON array.");
+      if (!Array.isArray(value) || !value.length) throw new Error("Supply a nonempty JSON array of explicit synthetic examples.");
       setLocalError(undefined);
       onAction(action, action === "exercise-fixtures" ? { fixtures: value } : { fixtures: value, notes: notes.split("\n").map((item) => item.trim()).filter(Boolean) });
     } catch (error) {
@@ -531,11 +533,12 @@ function CandidateWorkspace({
         runs={finalizedRuns}
         revisions={lineage.filter((item) => item.resourceId).map((item) => ({ id: item.resourceId!, label: `Revision ${item.revision ?? 1} · ${item.resourceId}` }))}
       /> : tab === "fixtures" ? <>
-        <Field label="Malicious fixtures JSON" hint={language === "yara" ? "YARA fixtures require exactly fixture_id and bounded text data." : "Structured fixtures use fields referenced by the candidate selection."}><textarea rows={8} value={fixtures} onChange={(event) => setFixtures(event.target.value)} disabled={!canFixture} /></Field>
-        <Button size="small" onClick={() => submitFixtures("exercise-fixtures")} disabled={!canFixture || lifecyclePending}><Beaker />Exercise malicious fixtures</Button>
-        <Field label="Benign fixtures JSON"><textarea rows={8} value={benign} onChange={(event) => setBenign(event.target.value)} disabled={!canBenign} /></Field>
+        <Callout title="Synthetic fixture prerequisites">{syntheticExample ? "The positive example is generated from this internal selection. Review and edit it before exercise; a match checks the matcher, not observed behavior." : "Supply explicit bounded examples that exercise this rule source. Generic file metadata cannot predict whether arbitrary SQLite, Sigma, or YARA source will match."} Benign samples and notes must be supplied explicitly. Fixture examples never become independently observed evidence.{["sqlite", "sigma"].includes(language) ? <Button size="small" onClick={() => setTab("evaluations")}>Evaluate observed runs without fixtures</Button> : null}</Callout>
+        <Field label="Malicious fixtures JSON" hint={language === "yara" ? "Synthetic YARA examples require exactly fixture_id and bounded text data." : "Explicit synthetic examples need fixture_id and fields referenced by the candidate."}><textarea rows={8} value={fixtures} onChange={(event) => setFixtures(event.target.value)} disabled={!canFixture} /></Field>
+        <Button size="small" onClick={() => submitFixtures("exercise-fixtures")} disabled={!canFixture || lifecyclePending || !fixtures.trim()}><Beaker />Exercise malicious fixtures</Button>
+        <Field label="Benign fixtures JSON" hint="Use representative benign examples; a benign label cannot suppress a measured match."><textarea rows={8} value={benign} onChange={(event) => setBenign(event.target.value)} disabled={!canBenign} /></Field>
         <Field label="Benign evaluation notes"><textarea rows={3} value={notes} onChange={(event) => setNotes(event.target.value)} disabled={!canBenign} /></Field>
-        <Button size="small" onClick={() => submitFixtures("evaluate-benign")} disabled={!canBenign || lifecyclePending || !notes.trim()}><CheckCircle2 />Evaluate benign fixtures</Button>
+        <Button size="small" onClick={() => submitFixtures("evaluate-benign")} disabled={!canBenign || lifecyclePending || !benign.trim() || !notes.trim()}><CheckCircle2 />Evaluate benign fixtures</Button>
         <div className="fixture-grid"><article><Beaker /><strong>Malicious fixtures</strong><Badge tone={candidate.malicious_fixtures?.length ? "success" : "neutral"}>{candidate.malicious_fixtures?.length ?? 0} retained</Badge></article><article><CheckCircle2 /><strong>Benign fixtures</strong><Badge tone={candidate.benign_fixtures?.length ? "success" : "neutral"}>{candidate.benign_fixtures?.length ?? 0} retained</Badge></article></div>
       </> : tab === "observed" ? <>
         <Callout title="Immutable observed evidence only">The control plane verifies the finalized run bundle and independently observed provenance. Evidence content cannot be pasted here.{!["internal", "sigma", "sqlite"].includes(language) ? " This language has no normalized observed-JSON evaluator." : ""}</Callout>

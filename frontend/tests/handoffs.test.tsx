@@ -98,6 +98,7 @@ beforeEach(() => {
       return json({ candidate: registry.at(-1) });
     }
     if (path.endsWith(`/detections/${savedId}/exercise-observed`)) return json({ candidate: registry.at(-1) });
+    if (path.endsWith(`/detections/${savedId}/evaluations`)) return json({ evaluations: [] });
     if (path.endsWith(`/runs/${syntheticId}/replays`)) {
       await replayBarrier;
       const replay = { ...structuredClone(syntheticRun), run_id: replayId, replay: { source_run_id: syntheticId } };
@@ -172,6 +173,33 @@ describe("run journey handoffs", () => {
     expect(await screen.findByText("Source run unavailable")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save hypothesis from run" })).not.toBeInTheDocument();
     expect(postBody("/detections")).toBeUndefined();
+  });
+
+  it("uses an explicitly synthetic example matching the actual internal selection fields", async () => {
+    const selection = { artifact_type: "collector_observation", observation_kind: "filesystem" };
+    registry = [{ ...resourceMetadata, id: savedId, status: "parsed", document: { ...linkedCandidate, title: "Registered fixture candidate", candidate_id: savedId, state: "parsed", selection } }];
+    const user = userEvent.setup();
+    renderJourney(detectionLink(sourceId));
+    await user.click(await screen.findByRole("button", { name: /Registered fixture candidate/ }));
+    await user.click(await screen.findByRole("tab", { name: "Fixtures" }));
+    expect(JSON.parse(String((screen.getByRole("textbox", { name: /^Malicious fixtures JSON/ }) as HTMLTextAreaElement).value))).toEqual([{ fixture_id: "synthetic-selection-example", ...selection }]);
+    expect(screen.getByText(/positive example is generated from this internal selection/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /^Benign fixtures JSON/ })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Benign evaluation notes" })).toHaveValue("");
+  });
+
+  it("requires explicit query fixtures and offers full observed evaluation without them", async () => {
+    registry = [{ ...resourceMetadata, id: savedId, status: "parsed", document: { ...linkedCandidate, title: "Registered query candidate", candidate_id: savedId, state: "parsed", target_language: "sqlite" } }];
+    const user = userEvent.setup();
+    renderJourney(detectionLink(sourceId));
+    await user.click(await screen.findByRole("button", { name: /Registered query candidate/ }));
+    await user.click(await screen.findByRole("tab", { name: "Fixtures" }));
+    expect(screen.getByRole("textbox", { name: /^Malicious fixtures JSON/ })).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Exercise malicious fixtures" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Evaluate observed runs without fixtures" }));
+    expect(screen.getByRole("combobox", { name: "Evaluation source run" })).toHaveValue(sourceId);
+    expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeEnabled();
+    expect(postBody(`/detections/${savedId}/exercise-fixtures`)).toBeUndefined();
   });
 
   it("preselects the URL source and selects baseline plus new replay for comparison", async () => {

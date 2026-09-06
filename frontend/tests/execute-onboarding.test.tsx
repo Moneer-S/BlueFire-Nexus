@@ -22,7 +22,7 @@ const guidedProfile: RunnerProfile = {
   safety_tiers: ["safe", "restricted"],
   budgets: { max_steps: 4, max_seconds: 30, max_artifacts: 16, max_bytes: 1_048_576 },
 };
-const catalog: CatalogResponse = { ...demoCatalog, runner_profiles: [...demoCatalog.runner_profiles, guidedProfile] };
+const catalog: CatalogResponse = { ...demoCatalog, runner_profiles: [{ ...baseExecuteProfile, id: "gate11-windows-cancellation-witness.v1" }, ...demoCatalog.runner_profiles, guidedProfile] };
 const guidedScenario: Scenario = {
   ...structuredClone(demoScenario),
   id: GUIDED_EXECUTE_SCENARIO_ID,
@@ -95,6 +95,11 @@ describe("guided local Execute onboarding", () => {
     const user = userEvent.setup();
     render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><RunsPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
 
+    expect(await screen.findByRole("radio", { name: /^Simulate/ })).toBeChecked();
+    expect(screen.queryByRole("region", { name: "Guided local Execute" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Verify & enroll local runner" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("radio", { name: /Execute/ }));
+    expect(screen.getByRole("combobox", { name: "Runner profile" })).toHaveValue("sandbox-execute.v1");
     const guide = await screen.findByRole("region", { name: "Guided local Execute" });
     expect(guide).toBeVisible();
     expect(within(guide).getByRole("button", { name: "Verify & enroll local runner" })).toBeEnabled();
@@ -177,6 +182,7 @@ describe("guided local Execute onboarding", () => {
     const user = userEvent.setup();
     render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><RunsPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
 
+    await user.click(await screen.findByRole("radio", { name: /Execute/ }));
     const guide = await screen.findByRole("region", { name: "Guided local Execute" });
     await user.click(await within(guide).findByRole("button", { name: "Use seeded restricted canary" }));
     await user.click(within(guide).getByRole("button", { name: "Run guided preflight" }));
@@ -209,6 +215,7 @@ describe("guided local Execute onboarding", () => {
     const user = userEvent.setup();
     render(<QueryClientProvider client={client}><ProductProvider><MemoryRouter><RunsPage /></MemoryRouter></ProductProvider></QueryClientProvider>);
 
+    await user.click(await screen.findByRole("radio", { name: /Execute/ }));
     const guide = await screen.findByRole("region", { name: "Guided local Execute" });
     await user.click(await within(guide).findByRole("button", { name: "Use seeded restricted canary" }));
     await user.click(within(guide).getByRole("button", { name: "Run guided preflight" }));
