@@ -74,6 +74,8 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/ai_drafts.py",
     "bluefire/planner.py",
     "bluefire/api.py",
+    "bluefire/api_context.py",
+    "bluefire/api_routes.py",
     "bluefire/cli.py",
     "bluefire/job_runtime.py",
     "bluefire/runner_host.py",

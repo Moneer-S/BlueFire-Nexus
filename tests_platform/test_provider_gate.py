@@ -88,6 +88,8 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/ai_drafts.py",
         "bluefire/planner.py",
         "bluefire/api.py",
+        "bluefire/api_context.py",
+        "bluefire/api_routes.py",
         "bluefire/cli.py",
         "bluefire/job_runtime.py",
         "bluefire/runner_host.py",
@@ -305,6 +307,22 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
     checks = provider_gate._validate_structural(report)
 
     assert checks["no_model_shell"]["process_boundary"]["passed"] is True
+
+
+@pytest.mark.parametrize("relative", ["bluefire/api_context.py", "bluefire/api_routes.py"])
+def test_extracted_http_boundaries_retain_strict_process_source_auditing(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    assert relative in provider_gate_source_audit.SOURCE_AUDIT_PATHS
+    assert relative not in provider_gate_source_audit.TRUSTED_PROCESS_BOUNDARY_PATHS
+    candidate = tmp_path / relative
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    source = (REPOSITORY / relative).read_text(encoding="utf-8")
+    candidate.write_text(source, encoding="utf-8")
+    assert not provider_gate_source_audit._python_shell_findings(candidate, tmp_path)
+    candidate.write_text(source + "\nimport subprocess\n", encoding="utf-8")
+    assert provider_gate_source_audit._python_shell_findings(candidate, tmp_path)
 
 
 def _execution(version: str, run_id: str) -> dict[str, Any]:

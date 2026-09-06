@@ -21,18 +21,17 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
-from urllib.parse import parse_qsl, unquote, urlsplit
+from typing import Any, Callable, Mapping
+from urllib.parse import unquote, urlsplit
 
+from .api_context import API_PREFIX, JsonResult, PlatformService
+from .api_context import JsonObject as JsonObject
+from .api_routes import APIRoutes
 from .application_errors import APIError
-
-JsonObject = Mapping[str, Any]
-JsonResult = Mapping[str, Any] | Sequence[Any]
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_REQUEST_BODY = 1_048_576
-API_PREFIX = "/api/v1"
 _REVIEWED_T1082_INTAKE_ROUTE = f"{API_PREFIX}/research-intakes/mitre-attack-t1082-v19-2"
 
 BROWSER_BOOTSTRAP_FRAGMENT_KEY = "bluefire-session"
@@ -45,32 +44,6 @@ _BROWSER_TOKEN = re.compile(r"^[A-Za-z0-9_-]{64}$")
 _COOKIE_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 _COOKIE_VALUE = re.compile(r"^[\x21\x23-\x2B\x2D-\x3A\x3C-\x5B\x5D-\x7E]*$")
 
-_RUN_ID = re.compile(r"^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$")
-_JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
-_DETECTION_ID = re.compile(r"^detection-[0-9a-f]{20}$")
-_PROPOSAL_RECORD_ID = re.compile(r"^proposal-review-[0-9a-f]{32}$")
-_MANAGEMENT_IDENTIFIER = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
-_ACTION_PACKAGE_VERSION = re.compile(
-    r"^(0|[1-9][0-9]*)\."
-    r"(0|[1-9][0-9]*)\."
-    r"(0|[1-9][0-9]*)"
-    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
-    r"(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$"
-)
-_SEMVER_CORE_MAX = (1 << 64) - 1
-_SCENARIO_VERSION = re.compile(r"^[1-9][0-9]{0,9}$")
-_RESOURCE_ROUTE_KINDS = {
-    "actions": "action",
-    "collectors": "collector",
-    "comparisons": "comparison",
-    "detection-backends": "detection_backend",
-    "detections": "detection",
-    "model-providers": "model_provider",
-    "plugins": "plugin",
-    "research-sources": "research_source",
-    "runner-profiles": "runner_profile",
-    "runners": "runner",
-}
 _UI_ROOT = Path(__file__).with_name("ui").resolve()
 _STATIC_ROUTES = {
     "/": "index.html",
@@ -106,262 +79,6 @@ _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
-
-
-@runtime_checkable
-class PlatformService(Protocol):
-    """Application boundary consumed by both the API shell and other clients.
-
-    Every return value must be JSON serializable.  Request mappings are already
-    syntactically valid JSON objects, but domain validation belongs to the
-    service so browser, CLI, and future adapters share identical semantics.
-    """
-
-    def catalog(self) -> JsonResult:
-        """Return the neutral behavior catalog and runner-profile metadata."""
-
-    def scenarios(self) -> JsonResult:
-        """Return saved/versioned scenario summaries or documents."""
-
-    def draft_ai_graph(self, request: JsonObject) -> JsonResult:
-        """Return one strict, normalized, deliberately unsaved graph draft."""
-
-    def check_ai_provider(self, request: JsonObject) -> JsonResult:
-        """Check explicit provider readiness or request one bounded live probe."""
-
-    def settings(self) -> JsonResult:
-        """List secret-safe local product settings."""
-
-    def upsert_setting(self, key: str, request: JsonObject) -> JsonResult:
-        """Create or replace one local product setting."""
-
-    def scenario_versions(self) -> JsonResult:
-        """List active saved scenario versions."""
-
-    def save_scenario_version(self, request: JsonObject) -> JsonResult:
-        """Validate and save one content-addressed scenario version."""
-
-    def scenario_version(self, scenario_id: str, *, version: int | None = None) -> JsonResult:
-        """Get an active or exact saved scenario version."""
-
-    def resources(self, kind: str) -> JsonResult:
-        """List one allowlisted product resource kind."""
-
-    def resource(self, kind: str, resource_id: str) -> JsonResult:
-        """Get one allowlisted product resource."""
-
-    def intake_reviewed_t1082(self, request: JsonObject) -> JsonResult:
-        """Import the shipped, reviewed T1082 metadata into product-controlled state."""
-
-    def save_resource(
-        self,
-        kind: str,
-        resource_id: str,
-        request: JsonObject,
-    ) -> JsonResult:
-        """Create or replace one secret-safe product resource."""
-
-    def action_packages(self) -> JsonResult:
-        """Return the audited signed action-package inventory."""
-
-    def action_package(self, package_id: str) -> JsonResult:
-        """Return one signed action package and its immutable history."""
-
-    def install_action_package(self, request: JsonObject) -> JsonResult:
-        """Verify and install one signed action-package version."""
-
-    def activate_action_package(
-        self,
-        package_id: str,
-        version: str,
-        request: JsonObject,
-    ) -> JsonResult:
-        """Activate one exact package version against the managed runner."""
-
-    def deactivate_action_package(
-        self,
-        package_id: str,
-        version: str,
-        request: JsonObject,
-    ) -> JsonResult:
-        """Deactivate one exact active package version."""
-
-    def remove_action_package(
-        self,
-        package_id: str,
-        version: str,
-        request: JsonObject,
-    ) -> JsonResult:
-        """Remove one exact inactive package version while retaining audit bytes."""
-
-    def trust_action_package_publisher(self, request: JsonObject) -> JsonResult:
-        """Enroll one exact publisher signing key in local trust."""
-
-    def transition_action_package_publisher(
-        self,
-        publisher_id: str,
-        key_id: str,
-        action: str,
-        request: JsonObject,
-    ) -> JsonResult:
-        """Suspend or revoke one exact publisher signing key."""
-
-    def detection_health(self) -> JsonResult:
-        """Return Detection Lab persistence and backend readiness."""
-
-    def detection_candidates(self) -> JsonResult:
-        """List strict persisted detection candidates."""
-
-    def detection_candidate(self, candidate_id: str) -> JsonResult:
-        """Return one strict persisted detection candidate."""
-
-    def upsert_detection_hypothesis(self, request: JsonObject) -> JsonResult:
-        """Create one immutable candidate definition or return its exact duplicate."""
-
-    def detection_hypothesis_from_run(self, request: JsonObject) -> JsonResult:
-        """Import only a verified run candidate's definition into the registry."""
-
-    def evaluate_detection_run(self, candidate_id: str, request: JsonObject) -> JsonResult:
-        """Retain an immutable query result against a full observed run bundle."""
-
-    def detection_run_evaluations(self, candidate_id: str) -> JsonResult:
-        """Read integrity-checked immutable per-run detector results."""
-
-    def clone_detection_candidate(self, candidate_id: str, request: JsonObject) -> JsonResult:
-        """Clone one candidate into a new hypothesis revision."""
-
-    def tune_detection_candidate(self, candidate_id: str, request: JsonObject) -> JsonResult:
-        """Tune one candidate into a new hypothesis revision."""
-
-    def compare_detection_candidates(self, candidate_id: str, request: JsonObject) -> JsonResult:
-        """Compare two candidates from the same revision lineage."""
-
-    def parse_detection_candidate(self, candidate_id: str, request: JsonObject) -> JsonResult:
-        """Parse or compile one detection candidate."""
-
-    def exercise_detection_fixtures(self, candidate_id: str, request: JsonObject) -> JsonResult:
-        """Exercise one parsed candidate against malicious fixtures."""
-
-    def exercise_detection_observed(self, candidate_id: str, request: JsonObject) -> JsonResult:
-        """Exercise one candidate against immutable observed run evidence."""
-
-    def evaluate_detection_benign(self, candidate_id: str, request: JsonObject) -> JsonResult:
-        """Evaluate one exercised candidate against benign fixtures."""
-
-    def reject_detection_candidate(self, candidate_id: str, request: JsonObject) -> JsonResult:
-        """Reject one non-terminal candidate."""
-
-    def activate_resource(
-        self,
-        kind: str,
-        resource_id: str,
-        request: JsonObject,
-    ) -> JsonResult:
-        """Validate and activate one persisted runtime resource."""
-
-    def deactivate_resource(
-        self,
-        kind: str,
-        resource_id: str,
-        request: JsonObject,
-    ) -> JsonResult:
-        """Deactivate one persisted runtime resource."""
-
-    def probe_runner_profile(self, resource_id: str, request: JsonObject) -> JsonResult:
-        """Return a sanitized bounded inventory probe for one stored runner profile."""
-
-    def runner_status(self, *, profile_id: str | None = None) -> JsonResult:
-        """Return path-free managed-runner lifecycle status."""
-
-    def bootstrap_runner(
-        self,
-        *,
-        profile_id: str | None = None,
-        allow_upgrade: bool = False,
-    ) -> JsonResult:
-        """Explicitly install, verify, and enroll the packaged runner."""
-
-    def start_runner(self, *, profile_id: str | None = None) -> JsonResult:
-        """Explicitly start the authenticated runner host."""
-
-    def stop_runner(self, *, profile_id: str | None = None) -> JsonResult:
-        """Request authenticated runner shutdown."""
-
-    def revoke_runner(self) -> JsonResult:
-        """Revoke trust for a stopped runner."""
-
-    def remove_runner(self, *, confirm_runner_id: str) -> JsonResult:
-        """Remove revoked trust after exact identity confirmation."""
-
-    def validate(self, request: JsonObject) -> JsonResult:
-        """Validate a scenario graph without executing it."""
-
-    def preflight(self, request: JsonObject) -> JsonResult:
-        """Resolve capability, policy, approval, and cleanup readiness."""
-
-    def run(self, request: JsonObject) -> JsonResult:
-        """Create a Simulate or Execute run after service-side preflight."""
-
-    def submit_run(self, request: JsonObject) -> JsonResult:
-        """Create a durable background run job."""
-
-    def active_jobs(self) -> JsonResult:
-        """Return the bounded controller-owned nonterminal job inventory."""
-
-    def job(self, job_id: str) -> JsonResult:
-        """Return one durable job snapshot."""
-
-    def retry_job(self, job_id: str) -> JsonResult:
-        """Create a safe replacement for one interrupted scenario-run job."""
-
-    def approve_job(self, job_id: str, request: JsonObject) -> JsonResult:
-        """Approve one exact Execute job intent."""
-
-    def proposal_reviews(self, job_id: str) -> JsonResult:
-        """List durable AI proposal reviews for one job."""
-
-    def proposal_review(self, job_id: str, proposal_record_id: str) -> JsonResult:
-        """Return one exact AI proposal review envelope."""
-
-    def accept_proposal_review(
-        self,
-        job_id: str,
-        proposal_record_id: str,
-        request: JsonObject,
-    ) -> JsonResult:
-        """Accept a registered proposal for deterministic continuation."""
-
-    def reject_proposal_review(
-        self,
-        job_id: str,
-        proposal_record_id: str,
-        request: JsonObject,
-    ) -> JsonResult:
-        """Reject a registered proposal without graph mutation."""
-
-    def pause_job(self, job_id: str) -> JsonResult:
-        """Request cooperative pause."""
-
-    def resume_job(self, job_id: str) -> JsonResult:
-        """Resume a cooperatively paused job."""
-
-    def cancel_job(self, job_id: str) -> JsonResult:
-        """Request cooperative cancellation."""
-
-    def list(self) -> JsonResult:
-        """Return run summaries suitable for history and comparison."""
-
-    def detail(self, run_id: str) -> JsonResult:
-        """Return one run, including current node and evidence state."""
-
-    def events(self, run_id: str, *, after_sequence: int, limit: int) -> JsonResult:
-        """Return one validated page from the tamper-evident run event stream."""
-
-    def replay(self, run_id: str, request: JsonObject) -> JsonResult:
-        """Create a lineage-linked replay from an immutable prior run."""
-
-    def compare(self, request: JsonObject) -> JsonResult:
-        """Compare two or more runs from canonical records."""
 
 
 def generate_browser_bootstrap_capability() -> str:
@@ -520,24 +237,6 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON value: {value}")
 
 
-def _valid_management_identifier(value: str) -> bool:
-    return 1 <= len(value) <= 200 and _MANAGEMENT_IDENTIFIER.fullmatch(value) is not None
-
-
-def _valid_action_package_version(value: str) -> bool:
-    if not 1 <= len(value) <= 128:
-        return False
-    match = _ACTION_PACKAGE_VERSION.fullmatch(value)
-    if match is None:
-        return False
-    if any(int(match.group(index)) > _SEMVER_CORE_MAX for index in (1, 2, 3)):
-        return False
-    prerelease = match.group(4)
-    return prerelease is None or not any(
-        part.isdigit() and len(part) > 1 and part.startswith("0") for part in prerelease.split(".")
-    )
-
-
 class BlueFireRequestHandler(BaseHTTPRequestHandler):
     """Strict request adapter; domain behavior remains in ``PlatformService``."""
 
@@ -549,6 +248,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
     def platform_server(self) -> BlueFireHTTPServer:
         return self.server  # type: ignore[return-value]
 
+    @property
+    def _routes(self) -> APIRoutes:
+        return APIRoutes(self)
+
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         path = self._request_path()
         if path is None or not self._validate_host():
@@ -559,22 +262,22 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if self._is_api_path(path) and not self._require_browser_session():
             return
         if path == f"{API_PREFIX}/session":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._send(HTTPStatus.NO_CONTENT, b"", "application/json; charset=utf-8")
             return
         if path in {f"{API_PREFIX}/ai/drafts", f"{API_PREFIX}/ai/providers/check"}:
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._method_not_allowed("POST")
             return
         if path == _REVIEWED_T1082_INTAKE_ROUTE:
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._method_not_allowed("POST")
             return
         if path == f"{API_PREFIX}/settings":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.settings())
             return
-        action_package_request = self._action_package_request(path)
+        action_package_request = self._routes._action_package_request(path)
         if action_package_request is not None:
             package_id, package_version, package_action = action_package_request
             if package_id == "":
@@ -586,18 +289,18 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             else:
                 self._dispatch(lambda: self.platform_server.service.action_package(package_id))
             return
-        action_package_publisher_request = self._action_package_publisher_request(path)
+        action_package_publisher_request = self._routes._action_package_publisher_request(path)
         if action_package_publisher_request is not None:
             publisher_id, _key_id, _action = action_package_publisher_request
             if publisher_id != "":
                 self._method_not_allowed("POST")
             return
         if path == f"{API_PREFIX}/scenario-versions":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.scenario_versions())
             return
         if path == f"{API_PREFIX}/runner":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.runner_status())
             return
         if path in {
@@ -609,12 +312,12 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         }:
             self._method_not_allowed("POST")
             return
-        setting_key = self._setting_key(path)
+        setting_key = self._routes._setting_key(path)
         if setting_key is not None:
             if setting_key:
                 self._method_not_allowed("POST")
             return
-        scenario_version = self._scenario_version_request(path)
+        scenario_version = self._routes._scenario_version_request(path)
         if scenario_version is not None:
             scenario_id, version = scenario_version
             if scenario_id:
@@ -625,13 +328,13 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
             return
-        resource_action = self._resource_action_request(path)
+        resource_action = self._routes._resource_action_request(path)
         if resource_action is not None:
             kind, _resource_id, _action = resource_action
             if kind:
                 self._method_not_allowed("POST")
             return
-        resource_request = self._resource_request(path)
+        resource_request = self._routes._resource_request(path)
         if resource_request is not None:
             kind, resource_id = resource_request
             if not kind:
@@ -642,14 +345,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 self._dispatch(lambda: self.platform_server.service.resource(kind, resource_id))
             return
         if path == f"{API_PREFIX}/detection-lab/health":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.detection_health())
             return
         if path == f"{API_PREFIX}/detections/from-run":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._method_not_allowed("POST")
             return
-        detection_request = self._detection_request(path)
+        detection_request = self._routes._detection_request(path)
         if detection_request is not None:
             candidate_id, detection_action = detection_request
             if candidate_id == "":
@@ -677,10 +380,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             self._dispatch(lambda: self.platform_server.service.list())
             return
         if path == f"{API_PREFIX}/jobs":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.active_jobs())
             return
-        proposal_request = self._proposal_review_request(path)
+        proposal_request = self._routes._proposal_review_request(path)
         if proposal_request is not None:
             proposal_job_id, proposal_record_id, action = proposal_request
             if not proposal_job_id:
@@ -698,7 +401,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
             return
-        job_id = self._job_detail_id(path)
+        job_id = self._routes._job_detail_id(path)
         if job_id is not None:
             if not job_id:
                 return
@@ -711,7 +414,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         } or (path.startswith(f"{API_PREFIX}/runs/") and path.endswith("/replays")):
             self._method_not_allowed("POST")
             return
-        event_request = self._run_events_request(path)
+        event_request = self._routes._run_events_request(path)
         if event_request is not None:
             run_id, after_sequence, limit = event_request
             if not run_id:
@@ -724,7 +427,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 )
             )
             return
-        detail_run_id = self._run_detail_id(path)
+        detail_run_id = self._routes._run_detail_id(path)
         if detail_run_id is not None:
             if not detail_run_id:
                 return
@@ -742,10 +445,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if self._is_api_path(path) and not self._require_browser_session():
             return
         if path == _REVIEWED_T1082_INTAKE_ROUTE:
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._method_not_allowed("POST")
             return
-        action_package_allow = self._action_package_route_allow(path)
+        action_package_allow = self._routes._action_package_route_allow(path)
         if action_package_allow is not None:
             if action_package_allow:
                 self._method_not_allowed(action_package_allow)
@@ -765,7 +468,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if body is None:
             return
         if path == _REVIEWED_T1082_INTAKE_ROUTE:
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._dispatch(
                     lambda: self.platform_server.service.intake_reviewed_t1082(body),
                     success_status=HTTPStatus.CREATED,
@@ -832,14 +535,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             )
             return
         if path == f"{API_PREFIX}/ai/providers/check":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.check_ai_provider(body))
             return
         if path == f"{API_PREFIX}/ai/drafts":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.draft_ai_graph(body))
             return
-        action_package_request = self._action_package_request(path)
+        action_package_request = self._routes._action_package_request(path)
         if action_package_request is not None:
             package_id, package_version, package_action = action_package_request
             if package_id == "":
@@ -860,7 +563,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 package_operation = package_operations[package_action]
                 self._dispatch(lambda: package_operation(package_id, package_version, body))
             return
-        action_package_publisher_request = self._action_package_publisher_request(path)
+        action_package_publisher_request = self._routes._action_package_publisher_request(path)
         if action_package_publisher_request is not None:
             publisher_id, key_id, action = action_package_publisher_request
             if publisher_id == "":
@@ -882,23 +585,23 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 )
             return
         if path == f"{API_PREFIX}/scenario-versions":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.save_scenario_version(body))
             return
-        setting_key = self._setting_key(path)
+        setting_key = self._routes._setting_key(path)
         if setting_key is not None:
             if setting_key:
                 self._dispatch(
                     lambda: self.platform_server.service.upsert_setting(setting_key, body)
                 )
             return
-        scenario_version = self._scenario_version_request(path)
+        scenario_version = self._routes._scenario_version_request(path)
         if scenario_version is not None:
             scenario_id, _version = scenario_version
             if scenario_id:
                 self._method_not_allowed("GET")
             return
-        resource_action = self._resource_action_request(path)
+        resource_action = self._routes._resource_action_request(path)
         if resource_action is not None:
             kind, action_resource_id, action = resource_action
             if not kind:
@@ -928,7 +631,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             }
             self._dispatch(resource_operations[action])
             return
-        resource_request = self._resource_request(path)
+        resource_request = self._routes._resource_request(path)
         if resource_request is not None:
             kind, resource_id = resource_request
             if not kind:
@@ -941,17 +644,17 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 )
             return
         if path == f"{API_PREFIX}/detection-lab/health":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._method_not_allowed("GET")
             return
         if path == f"{API_PREFIX}/detections/from-run":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._dispatch(
                     lambda: self.platform_server.service.detection_hypothesis_from_run(body),
                     success_status=HTTPStatus.CREATED,
                 )
             return
-        detection_request = self._detection_request(path)
+        detection_request = self._routes._detection_request(path)
         if detection_request is not None:
             candidate_id, detection_action = detection_request
             if candidate_id == "":
@@ -1003,7 +706,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 )
             return
         if path == f"{API_PREFIX}/settings":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._method_not_allowed("GET")
             return
         if path == f"{API_PREFIX}/scenarios/validate":
@@ -1019,10 +722,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             )
             return
         if path == f"{API_PREFIX}/jobs":
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._method_not_allowed("GET")
             return
-        proposal_request = self._proposal_review_request(path)
+        proposal_request = self._routes._proposal_review_request(path)
         if proposal_request is not None:
             proposal_job_id, proposal_record_id, proposal_action = proposal_request
             if not proposal_job_id:
@@ -1043,7 +746,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 success_status=HTTPStatus.ACCEPTED,
             )
             return
-        job_action = self._job_action_request(path)
+        job_action = self._routes._job_action_request(path)
         if job_action is not None:
             job_id, action = job_action
             if not job_id:
@@ -1067,7 +770,7 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/comparisons":
             self._dispatch(lambda: self.platform_server.service.compare(body))
             return
-        run_id = self._run_replay_id(path)
+        run_id = self._routes._run_replay_id(path)
         if run_id is not None:
             if not run_id:
                 return
@@ -1085,13 +788,13 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         }:
             self._method_not_allowed("GET")
             return
-        detail_id = self._run_detail_id(path)
+        detail_id = self._routes._run_detail_id(path)
         if detail_id is not None:
             if not detail_id:
                 return
             self._method_not_allowed("GET")
             return
-        if self._run_events_request(path) is not None:
+        if self._routes._run_events_request(path) is not None:
             self._method_not_allowed("GET")
             return
         self._not_found()
@@ -1122,10 +825,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if self._is_api_path(path) and not self._require_browser_session(unread_body=True):
             return
         if path == _REVIEWED_T1082_INTAKE_ROUTE:
-            if self._management_query_free():
+            if self._routes._management_query_free():
                 self._method_not_allowed("POST")
             return
-        action_package_allow = self._action_package_route_allow(path)
+        action_package_allow = self._routes._action_package_route_allow(path)
         if action_package_allow is not None:
             if action_package_allow:
                 self._method_not_allowed(action_package_allow)
@@ -1382,467 +1085,6 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
 
         self.close_connection = True
         self._error(status, code, message, extra_headers={"Connection": "close"})
-
-    def _run_detail_id(self, path: str) -> str | None:
-        prefix = f"{API_PREFIX}/runs/"
-        if not path.startswith(prefix):
-            return None
-        run_id = path[len(prefix) :]
-        if "/" in run_id:
-            return None
-        if not _RUN_ID.fullmatch(run_id):
-            self._error(HTTPStatus.BAD_REQUEST, "invalid_run_id", "Run identifier is invalid.")
-            return ""
-        return run_id
-
-    def _job_detail_id(self, path: str) -> str | None:
-        prefix = f"{API_PREFIX}/jobs/"
-        if not path.startswith(prefix):
-            return None
-        job_id = path[len(prefix) :]
-        if "/" in job_id:
-            return None
-        if not _JOB_ID.fullmatch(job_id):
-            self._error(HTTPStatus.BAD_REQUEST, "invalid_job_id", "Job identifier is invalid.")
-            return ""
-        return job_id
-
-    def _job_action_request(self, path: str) -> tuple[str, str] | None:
-        prefix = f"{API_PREFIX}/jobs/"
-        if not path.startswith(prefix):
-            return None
-        remainder = path[len(prefix) :]
-        parts = remainder.split("/")
-        if len(parts) != 2 or parts[1] not in {
-            "approval",
-            "pause",
-            "resume",
-            "cancel",
-            "retry",
-        }:
-            return None
-        if not _JOB_ID.fullmatch(parts[0]):
-            self._error(HTTPStatus.BAD_REQUEST, "invalid_job_id", "Job identifier is invalid.")
-            return ("", parts[1])
-        return parts[0], parts[1]
-
-    def _proposal_review_request(
-        self,
-        path: str,
-    ) -> tuple[str, str | None, str | None] | None:
-        prefix = f"{API_PREFIX}/jobs/"
-        if not path.startswith(prefix):
-            return None
-        parts = path[len(prefix) :].split("/")
-        if len(parts) < 2 or parts[1] != "proposals":
-            return None
-        if len(parts) not in {2, 3, 4} or any(not part for part in parts):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_proposal_path",
-                "Proposal review path is invalid.",
-            )
-            return ("", None, None)
-        job_id = parts[0]
-        if not _JOB_ID.fullmatch(job_id):
-            self._error(HTTPStatus.BAD_REQUEST, "invalid_job_id", "Job identifier is invalid.")
-            return ("", None, None)
-        if len(parts) == 2:
-            return job_id, None, None
-        proposal_record_id = parts[2]
-        if not _PROPOSAL_RECORD_ID.fullmatch(proposal_record_id):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_proposal_id",
-                "Proposal review identifier is invalid.",
-            )
-            return ("", None, None)
-        if len(parts) == 3:
-            return job_id, proposal_record_id, None
-        action = parts[3]
-        if action not in {"accept", "reject"}:
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_proposal_action",
-                "Proposal review action must be accept or reject.",
-            )
-            return ("", None, None)
-        return job_id, proposal_record_id, action
-
-    def _management_query_free(self) -> bool:
-        parsed = urlsplit(self.path)
-        if parsed.query or parsed.fragment:
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_management_query",
-                "Management routes do not accept query parameters or fragments.",
-            )
-            return False
-        return True
-
-    def _action_package_request(
-        self,
-        path: str,
-    ) -> tuple[str | None, str | None, str | None] | None:
-        collection = f"{API_PREFIX}/action-packages"
-        if path == collection:
-            if not self._management_query_free():
-                return ("", None, None)
-            return (None, None, None)
-        prefix = collection + "/"
-        if not path.startswith(prefix):
-            return None
-        if not self._management_query_free():
-            return ("", None, None)
-        parts = path[len(prefix) :].split("/")
-        if len(parts) == 1 and parts[0]:
-            package_id = parts[0]
-            version = None
-            action = None
-        elif len(parts) == 4 and all(parts) and parts[1] == "versions":
-            package_id = parts[0]
-            version = parts[2]
-            action = parts[3]
-        else:
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_action_package_path",
-                "Action-package path is invalid.",
-            )
-            return ("", None, None)
-        if not _valid_management_identifier(package_id):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_action_package_id",
-                "Action-package ID must be a stable lowercase identifier of at most 200 characters.",
-            )
-            return ("", None, None)
-        if version is None:
-            return (package_id, None, None)
-        if not _valid_action_package_version(version):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_action_package_version",
-                "Action-package version must be canonical semantic versioning.",
-            )
-            return ("", None, None)
-        if action not in {"activate", "deactivate", "remove"}:
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_action_package_action",
-                "Action-package action must be activate, deactivate, or remove.",
-            )
-            return ("", None, None)
-        return (package_id, version, action)
-
-    def _action_package_publisher_request(
-        self,
-        path: str,
-    ) -> tuple[str | None, str | None, str | None] | None:
-        collection = f"{API_PREFIX}/action-package-publishers"
-        if path == collection:
-            if not self._management_query_free():
-                return ("", None, None)
-            return (None, None, None)
-        prefix = collection + "/"
-        if not path.startswith(prefix):
-            return None
-        if not self._management_query_free():
-            return ("", None, None)
-        parts = path[len(prefix) :].split("/")
-        if len(parts) != 4 or any(not part for part in parts) or parts[1] != "keys":
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_action_package_publisher_path",
-                "Action-package publisher path is invalid.",
-            )
-            return ("", None, None)
-        publisher_id, key_id, action = parts[0], parts[2], parts[3]
-        if not _valid_management_identifier(publisher_id):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_action_package_publisher_id",
-                "Publisher ID must be a stable lowercase identifier of at most 200 characters.",
-            )
-            return ("", None, None)
-        if not _valid_management_identifier(key_id):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_action_package_key_id",
-                "Publisher key ID must be a stable lowercase identifier of at most 200 characters.",
-            )
-            return ("", None, None)
-        if action not in {"suspend", "revoke"}:
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_action_package_publisher_action",
-                "Publisher trust action must be suspend or revoke.",
-            )
-            return ("", None, None)
-        return (publisher_id, key_id, action)
-
-    def _action_package_route_allow(self, path: str) -> str | None:
-        package_request = self._action_package_request(path)
-        if package_request is not None:
-            package_id, version, _action = package_request
-            if package_id == "":
-                return ""
-            if package_id is None:
-                return "GET, POST"
-            return "GET" if version is None else "POST"
-        publisher_request = self._action_package_publisher_request(path)
-        if publisher_request is not None:
-            publisher_id, _key_id, _action = publisher_request
-            return "" if publisher_id == "" else "POST"
-        return None
-
-    def _setting_key(self, path: str) -> str | None:
-        prefix = f"{API_PREFIX}/settings/"
-        if not path.startswith(prefix):
-            return None
-        key = path[len(prefix) :]
-        if not self._management_query_free():
-            return ""
-        if not _valid_management_identifier(key):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_setting_key",
-                "Setting key must be a stable lowercase identifier of at most 200 characters.",
-            )
-            return ""
-        return key
-
-    def _scenario_version_request(self, path: str) -> tuple[str, int | None] | None:
-        prefix = f"{API_PREFIX}/scenario-versions/"
-        if not path.startswith(prefix):
-            return None
-        if not self._management_query_free():
-            return ("", None)
-        parts = path[len(prefix) :].split("/")
-        if len(parts) == 1:
-            scenario_id, version_raw = parts[0], None
-        elif len(parts) == 3 and parts[1] == "versions":
-            scenario_id, version_raw = parts[0], parts[2]
-        else:
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_scenario_version_path",
-                "Scenario-version path is invalid.",
-            )
-            return ("", None)
-        if not _valid_management_identifier(scenario_id):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_scenario_id",
-                "Scenario ID must be a stable lowercase identifier of at most 200 characters.",
-            )
-            return ("", None)
-        if version_raw is None:
-            return scenario_id, None
-        if not _SCENARIO_VERSION.fullmatch(version_raw):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_scenario_version",
-                "Scenario version must be a positive decimal integer.",
-            )
-            return ("", None)
-        version = int(version_raw, 10)
-        if version > 2**31 - 1:
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_scenario_version",
-                "Scenario version must be a positive 32-bit integer.",
-            )
-            return ("", None)
-        return scenario_id, version
-
-    def _resource_request(self, path: str) -> tuple[str, str | None] | None:
-        prefix = f"{API_PREFIX}/resources/"
-        if not path.startswith(prefix):
-            return None
-        if not self._management_query_free():
-            return ("", None)
-        parts = path[len(prefix) :].split("/")
-        if len(parts) not in {1, 2} or any(not part for part in parts):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_resource_path",
-                "Resource path is invalid.",
-            )
-            return ("", None)
-        kind = _RESOURCE_ROUTE_KINDS.get(parts[0])
-        if kind is None:
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_resource_kind",
-                "Resource kind is not managed by this API.",
-            )
-            return ("", None)
-        if len(parts) == 1:
-            return kind, None
-        resource_id = parts[1]
-        if not _valid_management_identifier(resource_id):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_resource_id",
-                "Resource ID must be a stable lowercase identifier of at most 200 characters.",
-            )
-            return ("", None)
-        return kind, resource_id
-
-    def _detection_request(self, path: str) -> tuple[str | None, str | None] | None:
-        collection = f"{API_PREFIX}/detections"
-        if path == collection:
-            if not self._management_query_free():
-                return ("", None)
-            return (None, None)
-        prefix = collection + "/"
-        if not path.startswith(prefix):
-            return None
-        if not self._management_query_free():
-            return ("", None)
-        parts = path[len(prefix) :].split("/")
-        if len(parts) not in {1, 2} or any(not part for part in parts):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_detection_path",
-                "Detection lifecycle path is invalid.",
-            )
-            return ("", None)
-        candidate_id = parts[0]
-        if not _DETECTION_ID.fullmatch(candidate_id):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_detection_id",
-                "Detection candidate identifier is invalid.",
-            )
-            return ("", None)
-        if len(parts) == 1:
-            return (candidate_id, None)
-        action = parts[1]
-        if action not in {
-            "evaluate-run",
-            "evaluations",
-            "clone",
-            "tune",
-            "compare",
-            "parse",
-            "exercise-fixtures",
-            "exercise-observed",
-            "evaluate-benign",
-            "reject",
-        }:
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_detection_action",
-                "Detection lifecycle action is invalid.",
-            )
-            return ("", None)
-        return (candidate_id, action)
-
-    def _resource_action_request(self, path: str) -> tuple[str, str, str] | None:
-        prefix = f"{API_PREFIX}/resources/"
-        if not path.startswith(prefix):
-            return None
-        parts = path[len(prefix) :].split("/")
-        if len(parts) != 3 or parts[0] not in {
-            "model-providers",
-            "plugins",
-            "runner-profiles",
-        }:
-            return None
-        if not self._management_query_free():
-            return ("", "", "")
-        kind = _RESOURCE_ROUTE_KINDS[parts[0]]
-        resource_id = parts[1]
-        action = parts[2]
-        if not _valid_management_identifier(resource_id):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_resource_id",
-                "Resource ID must be a stable lowercase identifier of at most 200 characters.",
-            )
-            return ("", "", "")
-        allowed_actions = {"activate", "deactivate"}
-        if kind == "runner_profile":
-            allowed_actions.add("probe")
-        if action not in allowed_actions:
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_resource_action",
-                "Runtime resource action is invalid.",
-            )
-            return ("", "", "")
-        return kind, resource_id, action
-
-    def _run_replay_id(self, path: str) -> str | None:
-        prefix = f"{API_PREFIX}/runs/"
-        suffix = "/replays"
-        if not path.startswith(prefix) or not path.endswith(suffix):
-            return None
-        run_id = path[len(prefix) : -len(suffix)]
-        if not _RUN_ID.fullmatch(run_id):
-            self._error(HTTPStatus.BAD_REQUEST, "invalid_run_id", "Run identifier is invalid.")
-            return ""
-        return run_id
-
-    def _run_events_request(self, path: str) -> tuple[str, int, int] | None:
-        prefix = f"{API_PREFIX}/runs/"
-        suffix = "/events"
-        if not path.startswith(prefix) or not path.endswith(suffix):
-            return None
-        run_id = path[len(prefix) : -len(suffix)]
-        if not _RUN_ID.fullmatch(run_id):
-            self._error(HTTPStatus.BAD_REQUEST, "invalid_run_id", "Run identifier is invalid.")
-            return ("", 0, 250)
-        try:
-            pairs = parse_qsl(
-                urlsplit(self.path).query,
-                keep_blank_values=True,
-                strict_parsing=True,
-                max_num_fields=2,
-            )
-        except ValueError:
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_event_page",
-                "Event pagination query parameters are invalid.",
-            )
-            return ("", 0, 250)
-        values: dict[str, str] = {}
-        for key, value in pairs:
-            if key not in {"after_sequence", "limit"} or key in values:
-                self._error(
-                    HTTPStatus.BAD_REQUEST,
-                    "invalid_event_page",
-                    "Event pagination accepts one after_sequence and one limit value.",
-                )
-                return ("", 0, 250)
-            values[key] = value
-        after_raw = values.get("after_sequence", "0")
-        limit_raw = values.get("limit", "250")
-        if (
-            not after_raw.isascii()
-            or not after_raw.isdigit()
-            or not limit_raw.isascii()
-            or not limit_raw.isdigit()
-        ):
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_event_page",
-                "Event pagination values must be non-negative decimal integers.",
-            )
-            return ("", 0, 250)
-        after_sequence = int(after_raw, 10)
-        limit = int(limit_raw, 10)
-        if after_sequence > 2**63 - 1 or not 1 <= limit <= 1_000:
-            self._error(
-                HTTPStatus.BAD_REQUEST,
-                "invalid_event_page",
-                "Event pagination requires after_sequence <= 2^63-1 and limit between 1 and 1000.",
-            )
-            return ("", 0, 250)
-        return run_id, after_sequence, limit
 
     def _serve_asset(self, route: str, *, include_body: bool) -> None:
         filename = _STATIC_ROUTES[route]

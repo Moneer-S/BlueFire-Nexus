@@ -244,6 +244,8 @@
       "patterns": [
         "bluefire.__init__",
         "bluefire.api",
+        "bluefire.api_context",
+        "bluefire.api_routes",
         "bluefire.cli",
         "bluefire.cloud_identity_pack"
       ]
