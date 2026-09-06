@@ -178,6 +178,18 @@ class StubService:
         self.calls.append(("upsert_detection_hypothesis", request))
         return {"candidate": {"id": DETECTION_ID}}
 
+    def detection_hypothesis_from_run(self, request: Mapping[str, Any]):
+        self.calls.append(("detection_hypothesis_from_run", request))
+        return {"candidate": {"id": DETECTION_ID}, "outcome": "created"}
+
+    def evaluate_detection_run(self, candidate_id: str, request: Mapping[str, Any]):
+        self.calls.append(("evaluate_detection_run", candidate_id, request))
+        return {"evaluation": {"candidate_id": candidate_id}}
+
+    def detection_run_evaluations(self, candidate_id: str):
+        self.calls.append(("detection_run_evaluations", candidate_id))
+        return {"evaluations": []}
+
     def clone_detection_candidate(self, candidate_id: str, request: Mapping[str, Any]):
         self.calls.append(("clone_detection_candidate", candidate_id, request))
         return {"candidate": {"id": candidate_id}}
@@ -1406,6 +1418,7 @@ def test_detection_lab_routes_dispatch_only_explicit_lifecycle_operations() -> N
             ("/api/v1/detection-lab/health", "detection_health"),
             ("/api/v1/detections", "detection_candidates"),
             (f"/api/v1/detections/{DETECTION_ID}", "detection_candidate"),
+            (f"/api/v1/detections/{DETECTION_ID}/evaluations", "detection_run_evaluations"),
         ]
         for path, expected_call in get_routes:
             status, _, payload = request(server, "GET", path)
@@ -1417,7 +1430,12 @@ def test_detection_lab_routes_dispatch_only_explicit_lifecycle_operations() -> N
         assert status == 201
         assert service.calls[-1] == ("upsert_detection_hypothesis", body)
 
+        status, _, _ = request(server, "POST", "/api/v1/detections/from-run", body=body)
+        assert status == 201
+        assert service.calls[-1] == ("detection_hypothesis_from_run", body)
+
         actions = {
+            "evaluate-run": "evaluate_detection_run",
             "clone": "clone_detection_candidate",
             "tune": "tune_detection_candidate",
             "compare": "compare_detection_candidates",

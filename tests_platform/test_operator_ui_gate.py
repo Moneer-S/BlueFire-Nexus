@@ -269,7 +269,9 @@ def test_builder_exposes_resizable_panels_and_optional_graph_detail() -> None:
     assert "Show input connections" in source
     assert 'aria-label="Experiment steps"' in source
     assert "graphView(scenario, allBranches, expandedBranches)" in source
-    assert "visibleGraph.hiddenSteps" in source
+    assert "scenario.steps.length - shownIds.size" in source
+    assert "graphSections(visibleGraph.ordered)" in source
+    assert "Review run includes the whole experiment." in source
     assert 'edge.data?.kind === "artifact" && !showInputs' in source
     assert "<h3>Method</h3>" in source
     assert "<h3>Required input</h3>" in source

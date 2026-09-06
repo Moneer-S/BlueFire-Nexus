@@ -55,7 +55,7 @@ _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES = {
     "bluefire/runner_client.py": "sha256:8a0ab632cceb8438f3bcda5943a44de5b8c1557d26dafaab39628fa7e32c3b5d",
     "bluefire/runner_bootstrap.py": "sha256:2d2ffffec138fdf76587649170b91cc04d2e5fedb6d1768d85b725c7ba809cdf",
     "bluefire/runner_darwin_containment.py": "sha256:f02533a6cba3c29bc95d5aef5fbd4bfc0e30a830af4005fb6c1bf76a0b57353c",
-    "bluefire/runner_lifecycle.py": "sha256:fd5222e1e4c6814b1bdd0a69111b4ad4cc23b2f84bb76f85c34d0df60aa6275a",
+    "bluefire/runner_lifecycle.py": "sha256:8edfe6dc2af32aadc8b74c6660eb60b885a130cdd9b7e8e7fc26ad9465f3f87c",
     "bluefire/runner_parent_death.py": "sha256:7a0443b986e18025a748775e18a3fc6cc539713c2cfbb0cc04cce44e3eb277df",
     "bluefire/runner_trust.py": "sha256:fc8811d61e0684b480ceb0a88a1124d0b8829363d5c10caa3513febfbb697c67",
     "bluefire/runner_watchdog.py": "sha256:9e6d4b9e4c4b3d64e17b0b138fc8a1b7910aed48a7849563f15ed8abe3fca542",
@@ -1573,7 +1573,7 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         and all(
             token in host_text
             for token in (
-                "str(Path(sys.executable).resolve())",
+                "str(Path(sys.executable).absolute())",
                 '"-I"',
                 '"-m"',
                 '"bluefire.runner_host"',

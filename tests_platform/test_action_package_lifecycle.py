@@ -1012,7 +1012,7 @@ def test_expected_digest_shape_and_schema_constraints_are_enforced(tmp_path: Pat
         store.install_action_package(malformed, installed_by="test-operator")
 
     with sqlite3.connect(store.path) as connection:
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (7,)
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (8,)
         tables = {
             str(row[0])
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
