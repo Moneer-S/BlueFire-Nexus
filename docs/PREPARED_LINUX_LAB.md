@@ -25,6 +25,10 @@ unregisters it. Create this base explicitly once, with no personal files, creden
 shares, extra services, or user accounts. UID/GID 1000 and 1001 and the names
 `bluefire` and `bluefire-broker` must be unused.
 The clone preparation refuses an existing account rather than repurposing one.
+Preparation also removes group/world write access from the new clone's filesystem
+root before creating accounts or installing the runtime. Some WSL imports give `/`
+mode `0777`; leaving that mode would let an unprivileged target replace top-level
+runtime paths. The persistent base and existing clones are not changed.
 
 Obtain and verify an Ubuntu 24.04 x86_64 root filesystem using
 [Ubuntu's documented WSL image process](https://documentation.ubuntu.com/wsl/latest/howto/custom-ubuntu-distro/).

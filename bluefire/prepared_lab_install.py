@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import grp
 import hashlib
 import json
 import os
-import pwd
 import re
+import stat
 import subprocess  # nosec B404
 import sys
 import tarfile
@@ -34,6 +33,26 @@ TOOLS = (
 )
 
 
+def secure_clone_root() -> None:
+    """WSL imports may expose a writable filesystem root; seal this new clone."""
+    if sys.platform != "linux" or getattr(os, "getuid", lambda: -1)() != 0:
+        raise ValueError("clone root preparation requires Linux root")
+    root = Path("/")
+    before = root.lstat()
+    if not stat.S_ISDIR(before.st_mode) or before.st_uid != 0 or before.st_gid != 0:
+        raise ValueError("the new clone filesystem root is not root-owned")
+    mode = stat.S_IMODE(before.st_mode) & ~0o022
+    root.chmod(mode)
+    after = root.lstat()
+    if (
+        (after.st_dev, after.st_ino, after.st_uid, after.st_gid)
+        != (before.st_dev, before.st_ino, 0, 0)
+        or not stat.S_ISDIR(after.st_mode)
+        or stat.S_IMODE(after.st_mode) != mode
+    ):
+        raise ValueError("the new clone filesystem root could not be secured")
+
+
 def install() -> None:
     if (
         sys.platform != "linux"
@@ -41,6 +60,10 @@ def install() -> None:
         or sys.version_info[:2] != (3, 12)
     ):
         raise ValueError("clone preparation requires root and CPython 3.12")
+    import grp
+    import pwd
+
+    secure_clone_root()
     if not all(Path(path).is_file() for path in TOOLS):
         raise ValueError("base needs util-linux, mount, iproute2, and account-management tools")
     for lookup, value in (
