@@ -319,6 +319,54 @@ describe("product application", () => {
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}")).toEqual(cachedDraft));
   });
 
+  it.each([false, true])("only marks the submitted Builder snapshot saved (later edit: %s)", async (editDuringSave) => {
+    const fetchMock = vi.mocked(fetch);
+    const fallback = fetchMock.getMockImplementation()!;
+    let finishSave!: (response: Response) => void;
+    const pendingSave = new Promise<Response>((resolve) => { finishSave = resolve; });
+    let submittedTitle: string | undefined;
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/scenario-versions") && init?.method === "POST") {
+        submittedTitle = JSON.parse(String(init.body)).scenario.title;
+        return pendingSave;
+      }
+      return fallback(input, init);
+    });
+    const user = userEvent.setup();
+    renderApp("/builder");
+    const name = await screen.findByRole("textbox", { name: "Experiment name" });
+    await user.clear(name);
+    await user.type(name, "Submitted experiment");
+    await user.click(screen.getByRole("button", { name: "Save version" }));
+    await waitFor(() => expect(submittedTitle).toBe("Submitted experiment"));
+    if (editDuringSave) await user.type(name, " with newer edits");
+    await act(async () => finishSave(json({ schema_version: "bluefire.scenario-version.v1", scenario: { version: 2 } })));
+    expect(await screen.findByText(editDuringSave ? "Version 2 saved; newer changes remain unsaved." : "Version 2 saved.")).toBeVisible();
+    expect(screen.getByText(editDuringSave ? "Draft changes" : "Saved", { exact: true })).toBeVisible();
+    const leaving = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(leaving);
+    expect(leaving.defaultPrevented).toBe(editDuringSave);
+    expect(name).toHaveValue(editDuringSave ? "Submitted experiment with newer edits" : "Submitted experiment");
+  });
+
+  it("keeps the experiment name when undoing the following graph edit", async () => {
+    const user = userEvent.setup();
+    renderApp("/builder");
+    const name = await screen.findByRole("textbox", { name: "Experiment name" });
+    await user.clear(name);
+    await user.type(name, "Renamed experiment");
+    await user.click(screen.getByRole("button", { name: "Add step" }));
+    const palette = screen.getByRole("heading", { name: "Add a step" }).closest("section")!;
+    await user.click(within(palette).getAllByRole("button").find((button) => button.draggable)!);
+    await waitFor(() => expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps).toHaveLength(demoScenario.steps.length + 1));
+    await user.click(screen.getByRole("button", { name: "Undo" }));
+    expect(name).toHaveValue("Renamed experiment");
+    expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps).toHaveLength(demoScenario.steps.length);
+    await user.click(screen.getByRole("button", { name: "Redo" }));
+    expect(name).toHaveValue("Renamed experiment");
+    expect(JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1")!).steps).toHaveLength(demoScenario.steps.length + 1);
+  });
+
   it("treats serialized null parameter defaults as absent when adding a behavior", async () => {
     const fetchMock = vi.mocked(fetch);
     const fallback = fetchMock.getMockImplementation()!;

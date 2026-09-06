@@ -1,4 +1,4 @@
-import { createContext, type PropsWithChildren, useContext, useEffect, useState } from "react";
+import { createContext, type PropsWithChildren, useContext, useEffect, useRef, useState } from "react";
 import { demoScenario } from "../lib/demo";
 import { parseScenarioDocument } from "../lib/scenario";
 import type { RunConfiguration, RunRecord, Scenario } from "../types";
@@ -131,7 +131,7 @@ interface ProductState {
   scenarioIsSeededFallback: boolean;
   setScenario: (scenario: Scenario, dirty?: boolean) => void;
   dirty: boolean;
-  markSaved: () => void;
+  markSaved: (savedScenario: Scenario) => boolean;
   runConfig: RunConfiguration;
   setRunConfig: (config: RunConfiguration) => void;
   clearApproval: () => void;
@@ -145,6 +145,7 @@ export function ProductProvider({ children }: PropsWithChildren) {
   const [theme, setTheme] = useState<UiTheme>(() => readBrowserTheme());
   const [scenarioState, setScenarioState] = useState<ScenarioHydration>(() => readCachedScenario());
   const { scenario, scenarioIsSeededFallback } = scenarioState;
+  const currentScenario = useRef(scenario);
   const [runConfig, setRunConfigState] = useState<RunConfiguration>(() => {
     const preferences = readBrowserUiPreferences();
     return { ...normalizeRunConfig({ mode: preferences?.effect_mode, autonomy: preferences?.autonomy }), approved: false, approvedBy: "" };
@@ -153,7 +154,12 @@ export function ProductProvider({ children }: PropsWithChildren) {
   const [dirty, setDirty] = useState(false);
 
   const clearApproval = () => setRunConfigState((current) => ({ ...current, approved: false, approvedBy: "" }));
-  const setScenario = (next: Scenario, markDirty = true) => { const previousBehaviors = new Map(scenario.steps.map((step) => [step.id, step.behavior_id])); const nextBehaviors = new Map(next.steps.map((step) => [step.id, step.behavior_id])); setScenarioState({ scenario: next, scenarioIsSeededFallback: false }); setDirty(markDirty); setRunConfigState((current) => ({ ...current, approved: false, approvedBy: "", actionImplementations: Object.fromEntries(Object.entries(current.actionImplementations).filter(([stepId]) => previousBehaviors.get(stepId) === nextBehaviors.get(stepId))) })); };
+  const setScenario = (next: Scenario, markDirty = true) => { const previousBehaviors = new Map(currentScenario.current.steps.map((step) => [step.id, step.behavior_id])); const nextBehaviors = new Map(next.steps.map((step) => [step.id, step.behavior_id])); currentScenario.current = next; setScenarioState({ scenario: next, scenarioIsSeededFallback: false }); setDirty(markDirty); setRunConfigState((current) => ({ ...current, approved: false, approvedBy: "", actionImplementations: Object.fromEntries(Object.entries(current.actionImplementations).filter(([stepId]) => previousBehaviors.get(stepId) === nextBehaviors.get(stepId))) })); };
+  const markSaved = (savedScenario: Scenario) => {
+    if (JSON.stringify(currentScenario.current) !== JSON.stringify(savedScenario)) return false;
+    setDirty(false);
+    return true;
+  };
   const setRunConfig = (next: RunConfiguration) => setRunConfigState((current) => {
     const normalized = normalizeRunConfig(next);
     if (current.mode !== normalized.mode) normalized.actionImplementations = {};
@@ -173,7 +179,7 @@ export function ProductProvider({ children }: PropsWithChildren) {
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
-  const value = { theme, setTheme, scenario, scenarioIsSeededFallback, setScenario, dirty, markSaved: () => setDirty(false), runConfig, setRunConfig, clearApproval, activeRun, setActiveRun };
+  const value = { theme, setTheme, scenario, scenarioIsSeededFallback, setScenario, dirty, markSaved, runConfig, setRunConfig, clearApproval, activeRun, setActiveRun };
   return <ProductContext.Provider value={value}>{children}</ProductContext.Provider>;
 }
 
