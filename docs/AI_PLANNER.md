@@ -16,6 +16,13 @@ Execute never applies a runtime mutation directly, including under Auto. It paus
 
 ## Runtime decision loop
 
+The native workspaces also support two bounded operations outside the runtime decision loop:
+
+- Detection Lab Assist proposes a saved SQLite or Sigma source revision from verified observed evidence. Review the original and proposed source, then accept to save one immutable child and evaluate its development case. This operation does not deploy a rule.
+- Compare's guided method test chooses a registered alternative, prepares a full replay, evaluates the same saved detector on both runs, and retains their comparison. Assist reviews the proposed method; Auto may accept the bounded choice. Execute still stops for fresh approval. The replay uses the original scope, profile and observers with runtime AI Off. Recovery after a finalized replay performs analysis only.
+
+These operations use the configured Responses or Chat Completions structured-output adapter. They retain explicit failures rather than silently substituting a different provider or a fabricated result. See [Detection Lab](DETECTION_LAB.md) and [Replay & Compare](REPLAY_COMPARE.md) for their evidence and recovery limits.
+
 After a step completes:
 
 1. the deterministic planner selects the registered edge for the observed outcome and records a state digest;

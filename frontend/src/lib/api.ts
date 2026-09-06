@@ -1,6 +1,7 @@
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { sameJson } from "./replay-review";
 import type { DetectionAIDecision, DetectionAIRequest } from "./detection-ai";
+import type { MethodContext, MethodDecision, MethodRequest } from "./method-comparison";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
 
 const API_ROOT = "/api/v1";
@@ -623,6 +624,22 @@ export const api = {
   async compare(runIds: string[]): Promise<ComparisonResponse> {
     if (DEMO_MODE) return compareDemoRuns(runIds);
     return request("/comparisons", { method: "POST", body: JSON.stringify({ run_ids: runIds }) });
+  },
+  async methodComparisonContext(runId: string): Promise<MethodContext> {
+    if (DEMO_MODE) throw new ApiError("Use a connected run with independent observations to compare methods.", "demo_method_comparison_refused", undefined, 409);
+    return request(`/runs/${encodeURIComponent(runId)}/method-comparison-context`);
+  },
+  async suggestMethodComparison(runId: string, body: MethodRequest): Promise<{ job: RunJob }> {
+    if (DEMO_MODE) throw new ApiError("Method assistance requires the connected local service.", "demo_method_comparison_refused", undefined, 409);
+    return request(`/runs/${encodeURIComponent(runId)}/ai-method-comparison-jobs`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async decideMethodComparison(jobId: string, body: MethodDecision): Promise<{ proposal_job: RunJob; replay_job: RunJob | null; decision: MethodDecision }> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot accept a method comparison.", "demo_method_comparison_refused", undefined, 409);
+    return request(`/jobs/${encodeURIComponent(jobId)}/method-comparison-decisions`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async savedComparison(comparisonId: string): Promise<{ resource: { id: string; digest: string; document: ComparisonResponse } }> {
+    if (DEMO_MODE) throw new ApiError("Demo mode has no saved comparison receipts.", "demo_method_comparison_refused", undefined, 409);
+    return request(`/resources/comparisons/${encodeURIComponent(comparisonId)}`);
   },
 };
 

@@ -1234,3 +1234,20 @@ pre,
 @media (min-width: 1121px) { .detection-page .detection-layout { grid-template-columns: minmax(230px, .3fr) minmax(0, 1fr); gap: 24px; } }
 @media (max-width: 1120px) { .detection-page .candidate-list > div:nth-child(2) { max-height: 210px; } }
 @media (max-width: 700px) { .detection-context-controls { flex-direction: column; align-items: stretch; } }
+
+.method-comparison { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); min-width: 0; }
+.method-comparison > header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 24px; }
+.method-comparison h2 { margin: 0 0 8px; font-size: 1.15rem; }
+.method-comparison > header p { margin: 0; max-width: 680px; color: var(--muted-strong); line-height: 1.6; }
+.method-comparison > header > .button { flex: none; }
+.method-comparison-body { display: grid; gap: 20px; padding: 0 24px 24px; }
+.method-comparison-body > p, .method-comparison-body > h3 { margin: 0; line-height: 1.6; }
+.method-comparison-body > .button { justify-self: start; }
+.method-comparison-body > details { min-width: 0; }
+.method-comparison-body > details > summary { cursor: pointer; padding: 12px 0; font-weight: 600; }
+.method-comparison-body pre { max-height: 480px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.method-change { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 20px; align-items: center; padding: 20px 0; border-block: 1px solid var(--line); }
+.method-change > div { display: grid; gap: 8px; }
+.method-change span { color: var(--muted-strong); }
+.method-sequence { padding-left: 24px; margin: 0; display: grid; gap: 10px; }
+@media (max-width: 760px) { .method-comparison > header { flex-direction: column; align-items: stretch; padding: 18px; } .method-comparison-body { padding: 0 18px 18px; } .method-change { gap: 12px; } }

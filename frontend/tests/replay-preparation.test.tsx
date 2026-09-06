@@ -24,7 +24,7 @@ function prepared(request: Record<string, unknown>): ReplayPreparation {
   };
 }
 function Location() { const location = useLocation(); return <output aria-label="Current route">{location.pathname}{location.search}</output>; }
-function mount() {
+function mount(extraSearch = "") {
   vi.spyOn(api, "runs").mockResolvedValue({ schema_version: "v1", runs: [source], unavailable_run_count: 0 });
   vi.spyOn(api, "catalog").mockResolvedValue({ ...demoCatalog, behaviors: [behavior] });
   vi.spyOn(api, "runDetail").mockResolvedValue(source);
@@ -35,7 +35,7 @@ function mount() {
     job: { schema_version: "bluefire.job.v1", job_id: `job-${submissionId.replaceAll("-", "")}`, kind: "scenario.replay", state: "awaiting_approval", progress: {}, request: { source_run_id: source.run_id, replay_preparation: preparation } },
   }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/compare?source=${source.run_id}`]}><Location /><Link to="/builder">Leave comparison</Link><Link to="/compare">Clear source selection</Link><Routes><Route path="/compare" element={<ComparePage />} /><Route path="/builder" element={<h1>Experiment builder</h1>} /><Route path="/runs" element={<h1>Saved job status</h1>} /></Routes></MemoryRouter></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/compare?source=${source.run_id}${extraSearch}`]}><Location /><Link to="/builder">Leave comparison</Link><Link to="/compare">Clear source selection</Link><Routes><Route path="/compare" element={<ComparePage />} /><Route path="/builder" element={<h1>Experiment builder</h1>} /><Route path="/runs" element={<h1>Saved job status</h1>} /></Routes></MemoryRouter></QueryClientProvider>);
   return replay;
 }
 afterEach(() => vi.restoreAllMocks());
@@ -245,4 +245,19 @@ it("keeps recovery reachable across source changes and clears only its confirmed
   expect(screen.queryByText("Check this submission before starting another replay")).not.toBeInTheDocument();
   expect(sessionStorage.getItem("bluefire.replay.pending-submission.v1")).toBeNull();
   expect(api.submitReplay).toHaveBeenCalledOnce();
+});
+
+
+it("retains the active method operation when the manual replay source is cleared and restored", async () => {
+  const user = userEvent.setup();
+  const jobId = "job-0123456789ab4def8123456789abcdef";
+  vi.spyOn(api, "job").mockRejectedValue(new Error("Connection unavailable"));
+  mount(`&method_job=${jobId}`);
+  const select = await screen.findByLabelText("Source run");
+  await user.selectOptions(select, "");
+  expect(screen.getByLabelText("Current route")).toHaveTextContent(`/compare?method_job=${jobId}`);
+  await user.selectOptions(select, source.run_id);
+  const route = screen.getByLabelText("Current route").textContent ?? "";
+  expect(route).toContain(`method_job=${jobId}`);
+  expect(route).toContain(`source=${source.run_id}`);
 });

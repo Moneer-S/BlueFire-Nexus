@@ -147,6 +147,18 @@ Lineage should accompany any report or comparison built from a replay.
 
 ## Comparison
 
+### Guided method test
+
+In Compare, open **Test a different method**. Select a finalized run with independent observations, a step with a registered compatible alternative, and a saved SQLite or Sigma rule. State the question you want to test. Off sends no model request. Assist presents the proposed method for review; Auto may accept a valid bounded option. Both modes stop an Execute replay for a separate fresh approval in Runs.
+
+The operation repeats the full experiment with one method substitution. It preserves the original scope, profile and explicit observer configuration, and sets runtime AI Off so no additional adaptive method change is introduced. Review the displayed change from the original autonomy setting. The model selects only an option prepared by the service; it cannot choose a new scope, profile, command or detector.
+
+After the replay finalizes and cleanup settles, BlueFire evaluates the same saved detector against the original and replay observations and retains both reports with the run comparison. **Same detector, two methods** shows measured matches, missing evidence, query execution and cleanup separately. A synthetic replay without observations remains insufficient evidence. The source informs method selection, so this is exploratory development work; use separate benign and withheld cases before drawing a coverage conclusion.
+
+The method-test link survives reload. An uncertain submission retains its exact request identity. A saved acceptance recovers its reserved replay job, while Execute still needs its own approval. If analysis fails after a replay result exists, **Recover comparison only** verifies and evaluates the existing runs; it never repeats their effects. Stop cancels the current operation while preserving recorded results. A later explicit analysis retry cannot reopen stopped replay publication.
+
+The result view reads the retained comparison and evaluations and verifies their bound identities. **Download saved run comparison** exports that existing run report; the detector evaluation records remain available in the result's evidence details.
+
 Compare at least two unique run IDs. The first is the baseline:
 
 ```bash

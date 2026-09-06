@@ -11,14 +11,14 @@ import type { DetectionResource, JobRetryResult, RunJob, RunRecord } from "../sr
 
 const digest = `sha256:${"a".repeat(64)}`;
 const resource: DetectionResource = { id: "rule-a", kind: "detection", status: "parsed", digest, created_at: "2030-01-01", updated_at: "2030-01-01", document: { title: "Collection rule", state: "parsed", target_language: "sqlite", rule_source: "SELECT evidence_id FROM observations WHERE retained_count > 9", revision: 1 } };
-const sourceRun: RunRecord = { ...structuredClone(demoRuns[0]!), run_id: "run-observed", finalized_at: "2030-01-01", mode: "execute", is_demo: false, manifest: { schema_version: "bluefire.run-manifest.v1" }, evidence: { records: [{ evidence_id: "observation-1", run_id: "run-observed", provenance: "observed", producer: "collector", content: { retained_count: 3 } }] } };
+const sourceRun: RunRecord = { ...structuredClone(demoRuns[0]!), run_id: "run-observed", finalized_at: "2030-01-01", mode: "execute", is_demo: false, manifest: { schema_version: "bluefire.run-manifest.v1" }, evidence: { records: [1, 2].map((id) => ({ evidence_id: `observation-${id}`, run_id: "run-observed", provenance: "observed", producer: "collector", content: { retained_count: 3 } })) } };
 const provider = { provider_id: "local-model", kind: "openai_chat_completions", model: "chosen-model" };
 function receipt(): DetectionAIReceipt { return { candidateId: resource.id, request: { submission_id: "01234567-89ab-4def-8123-456789abcdef", run_id: sourceRun.run_id, parent_resource_digest: digest, question: "Find the missed collection", case_role: "attack", provider_id: provider.provider_id, autonomy: "assist" } }; }
 function readyJob(saved = receipt()): RunJob {
   const parent = { candidate_id: resource.id, resource_digest: digest, definition_digest: digest, target_language: "sqlite", source: resource.document.rule_source! };
-  const source = { run_id: sourceRun.run_id, manifest_digest: digest, evidence_digest: digest, observed_count: 1, evidence_count: 1, excluded_provenance_counts: {} };
+  const source = { run_id: sourceRun.run_id, manifest_digest: digest, evidence_digest: digest, observed_count: 2, evidence_count: 2, excluded_provenance_counts: {} };
   const proposal: DetectionAIProposal = { schema_version: "bluefire.detection-ai-proposal.v1", proposal_digest: digest, parent, source_run: source, source: "SELECT evidence_id\nFROM observations WHERE retained_count > 0", reason: "Include smaller collections.\nTest benign cases separately.", evidence_refs: ["observation-1"], limitations: ["Development evidence only"], provider: { ...provider, usage: {} }, provider_binding_digest: digest, context_digest: digest };
-  return { schema_version: "bluefire.job.v1", job_id: detectionJobId(saved.request.submission_id), kind: "detection.ai.propose", state: "completed", request: { candidate_id: saved.candidateId, submitted_request: saved.request, parent, source_run: source, observed_ids: ["observation-1"], application_submission_id: "11234567-89ab-4def-8123-456789abcdef" }, progress: { proposal } };
+  return { schema_version: "bluefire.job.v1", job_id: detectionJobId(saved.request.submission_id), kind: "detection.ai.propose", state: "completed", request: { candidate_id: saved.candidateId, submitted_request: saved.request, parent, source_run: source, observed_ids: ["observation-1", "observation-2"], application_submission_id: "11234567-89ab-4def-8123-456789abcdef" }, progress: { proposal } };
 }
 function LocationProbe() { return <><output data-testid="location">{useLocation().search}</output><Link to="/detection-lab?ai_job=job-other">Open other work</Link></>; }
 function mount(options: { jobId?: string; manualEdits?: boolean; selected?: DetectionResource; client?: QueryClient } = {}) {
@@ -42,6 +42,7 @@ it("keeps Off silent and sends one bound request only after explicit Assist sele
   expect(send.mock.calls[0]![1]).toMatchObject({ run_id: sourceRun.run_id, parent_resource_digest: digest, provider_id: provider.provider_id, autonomy: "assist" });
   expect(screen.getByLabelText("Original rule source")).toHaveTextContent("retained_count > 9");
   expect(screen.getByLabelText("Proposed rule source")).toHaveTextContent("retained_count > 0");
+  expect(screen.getByText("2 independent observations were supplied; the proposal cites 1.")).toBeVisible();
 });
 
 it("restores an uncertain request on reload and retries the exact UUID and body", async () => {
@@ -91,6 +92,11 @@ it.each(["manual edits", "changed saved revision"])("blocks acceptance for %s wi
   expect(screen.getByRole("button", { name: "Accept, save and evaluate" })).toBeDisabled();
   expect(screen.getByLabelText("Original rule source")).toBeVisible();
   expect(decide).not.toHaveBeenCalled();
+  await userEvent.setup().click(screen.getByRole("link", { name: "Open this proposal's rule and source" }));
+  const restored = new URLSearchParams(screen.getByTestId("location").textContent!);
+  expect(restored.get("candidate")).toBe(resource.id);
+  expect(restored.get("run")).toBe(sourceRun.run_id);
+  expect(restored.get("ai_job")).toBe(job.job_id);
 });
 
 it("shows draft readiness separately from accepted application and only links confirmed persisted results", async () => {
