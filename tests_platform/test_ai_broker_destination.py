@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 import ssl
 import urllib.request
+import uuid
 
 import pytest
 
@@ -98,9 +99,11 @@ def test_tls_connects_only_resolved_address_and_keeps_original_hostname_verifica
 def test_explicit_endpoint_allows_enrolled_local_tls_but_not_url_credentials(monkeypatch):
     monkeypatch.setattr(worker.socket, "getaddrinfo", lambda *_a, **_k: [address("127.0.0.1")])
     assert worker._pinned_opener("https://local-provider.example/v1/response", "explicit_endpoint")
+    # Ephemeral test-only userinfo; no stored credential is needed for this rejection.
+    userinfo = f"test-user:{uuid.uuid4().hex}"
     with pytest.raises(ValueError):
         worker._pinned_opener(
-            "https://injected:credential@local-provider.example/v1/response", "explicit_endpoint"
+            f"https://{userinfo}@local-provider.example/v1/response", "explicit_endpoint"
         )
 
 
