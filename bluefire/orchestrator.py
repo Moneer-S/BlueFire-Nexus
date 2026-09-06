@@ -43,6 +43,7 @@ from .evidence import (
     EvidenceRecord,
     SandboxObserver,
 )
+from .observation_integrity import evaluate_observation_integrity
 from .planner import (
     DeterministicPlanner,
     ExecutionDisposition,
@@ -1293,11 +1294,26 @@ class Orchestrator:
             in {StepOutcome.SUCCESS.value, StepOutcome.PARTIAL.value}
             and terminal_business.get("execution_disposition") != "counterfactual"
         )
+        configured_file_paths: Sequence[str] = ()
+        if collector_runtime_settings is not None:
+            filesystem_settings = collector_runtime_settings.collectors.get(
+                FilesystemCollector.descriptor.id
+            )
+            if filesystem_settings is not None and filesystem_settings["enabled"] is True:
+                configured_file_paths = filesystem_settings["settings"]["paths"]
+        observation_integrity = (
+            evaluate_observation_integrity(
+                evidence.records(), configured_file_paths=configured_file_paths
+            )
+            if mode is ExecutionMode.EXECUTE
+            else None
+        )
         objective_reached = (
             terminal_satisfied
             and not budget_exhausted
             and not cleanup_forced
             and (cleanup_success if cleanup_required else True)
+            and (observation_integrity is None or observation_integrity["satisfied"] is True)
         )
         replay_checkpoints: list[Mapping[str, Any]] = []
         if (
@@ -1374,6 +1390,7 @@ class Orchestrator:
                 "cleanup_required": cleanup_required,
                 "cleanup_forced": cleanup_forced,
                 "cleanup_satisfied": cleanup_success if cleanup_required else None,
+                "observation_integrity": observation_integrity,
             },
             "steps": step_rows,
             "materialization_steps": materialization_rows,
@@ -2890,6 +2907,9 @@ class Orchestrator:
                 **({"runner_task_id": runner_task_id} if runner_task_id is not None else {}),
                 "policy_digest": runner_profile["policy_digest"],
                 "runner_status": runner_status,
+                "expected_observable_paths": (
+                    [] if collector_runtime_active else list(adapted.observable_paths)
+                ),
                 "runner_evidence": runner_result.get("evidence", []),
                 "output": runner_result.get("output"),
                 "stdout": runner_result.get("stdout", {}),

@@ -1,0 +1,65 @@
+schema_version: bluefire.scenario.v1
+id: scenario.endpoint.lab-selective-collection.v1
+title: Endpoint Lab — Selected Record Collection
+purpose: Determine whether independently observed staging identifies collection of the same public synthetic workspace through selected validated records or whole-file archiving, while preserving bounded discovery, controlled material access, and verified cleanup.
+start: create_fixture
+steps:
+  - id: create_fixture
+    behavior_id: sandbox.fixture.create.v1
+    parameters: {record_count: 8}
+  - id: discover_system
+    behavior_id: endpoint.discovery.system.v1
+  - id: discover_processes
+    behavior_id: endpoint.discovery.processes.v1
+    parameters: {record_limit: 20}
+  - id: seed_lab_material
+    behavior_id: sandbox.identity-material.seed.v1
+  - id: inspect_lab_material
+    behavior_id: sandbox.identity-material.inspect.v1
+    inputs:
+      identity_material: {from_step: seed_lab_material, artifact: identity_material}
+  - id: transform_fixture
+    behavior_id: sandbox.fixture.transform.v1
+    parameters: {redact_values: true}
+    inputs:
+      workspace: {from_step: create_fixture, artifact: workspace}
+  - id: select_records
+    behavior_id: sandbox.discovery.metadata.v1
+    inputs:
+      fixture: {from_step: transform_fixture, artifact: fixture}
+  - id: stage_collection
+    behavior_id: sandbox.collection.stage.v1
+    parameters: {bundle_format: jsonl}
+    inputs:
+      records: {from_step: select_records, artifact: records}
+  - id: cleanup_workspace
+    behavior_id: sandbox.cleanup.v1
+    parameters: {verify_removal: true}
+    inputs:
+      workspace: {from_step: create_fixture, artifact: workspace}
+edges:
+  - {from_step: create_fixture, outcome: success, to_step: discover_system}
+  - {from_step: discover_system, outcome: success, to_step: discover_processes}
+  - {from_step: discover_processes, outcome: success, to_step: seed_lab_material}
+  - {from_step: discover_processes, outcome: partial, to_step: seed_lab_material}
+  - {from_step: seed_lab_material, outcome: success, to_step: inspect_lab_material}
+  - {from_step: inspect_lab_material, outcome: success, to_step: transform_fixture}
+  - {from_step: transform_fixture, outcome: success, to_step: select_records}
+  - {from_step: select_records, outcome: success, to_step: stage_collection}
+  - {from_step: stage_collection, outcome: success, to_step: cleanup_workspace}
+  - {from_step: stage_collection, outcome: partial, to_step: cleanup_workspace}
+  - {from_step: stage_collection, outcome: blocked, to_step: cleanup_workspace}
+  - {from_step: stage_collection, outcome: failed, to_step: cleanup_workspace}
+provenance:
+  source: BlueFire Nexus authored endpoint collection comparison
+  reference: scenario.endpoint.lab-selective-collection.v1
+  license: MIT
+  derived: false
+  notes: Uses existing reviewed compiled actions and the existing sandbox-execute.v1 profile; no shell, plugin payload, or caller-selected host file is introduced.
+limitations:
+  - The public lab material is seeded at one fixed runner-owned path and read by the compiled inspector; it is not a credential or a personal file.
+  - This method validates and canonicalizes exactly the transformed eight-record fixture into staged/bundle.jsonl; the archive companion retains both original and transformed whole files instead.
+  - System/process discovery and material access are executed evidence; filesystem digest observations prove resulting artifacts, not that a host audit sensor recorded those API calls or file reads.
+  - The standard filesystem collector must independently verify the declared file effects before Execute can reach its objective; unavailable telemetry leaves the objective incomplete.
+  - Detection and detector revision are separate product lifecycle evaluations against immutable observed evidence; this scenario does not claim an alert or prevention from successful execution alone.
+  - No host defense, persistence setting, remote endpoint, or external credential is changed, and all created files remain receipt-bound for cleanup.

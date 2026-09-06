@@ -1542,7 +1542,9 @@ def test_structured_runner_status_preserves_provenance_branch_and_cleanup(
     assert rows["try_loopback"]["runner_status"] == runner_status
     assert rows["export_locally"]["status"] == "success"
     assert rows["cleanup_workspace"]["status"] == "success"
-    assert result["objective_reached"] is True
+    # The transport double reports effects without creating observable files.
+    assert result["objective_reached"] is False
+    assert result["objective_evaluation"]["observation_integrity"]["satisfied"] is False
     assert result["cleanup"] == {
         "attempted": True,
         "success": True,
@@ -1619,7 +1621,9 @@ def test_profile_control_block_prevents_dispatch_but_keeps_real_fallback_and_cle
     called_actions = [call[0]["action_id"] for call in runner.calls]
     assert "sandbox.network.loopback.v1" not in called_actions
     assert called_actions[-2:] == ["sandbox.export.local.v1", "sandbox.cleanup.v1"]
-    assert result["objective_reached"] is True
+    # A real fallback route does not make the double's absent file effects observed.
+    assert result["objective_reached"] is False
+    assert result["objective_evaluation"]["observation_integrity"]["satisfied"] is False
     assert result["cleanup"]["outstanding_receipt_count"] == 0
 
     evidence = _evidence_by_step(result, "try_loopback")
