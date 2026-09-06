@@ -83,6 +83,16 @@ def test_in_flight_job_proposal_is_cancelled_and_reaped_without_fallback(
         assert len(workers) == 1 and workers[0].poll() is not None
         assert paths == ["/slow-body"]
         run = service.store.get_run(result["progress"]["run_id"])
+        assert result["result_ref"] == run["run_id"]
+        assert result["progress"]["run_status"] == "cancelled"
+        assert run["status"] == "cancelled"
+        assert run["finalized_at"] and run["manifest"]
+        assert service.store.validate_bundle(run["run_id"])["valid"]
+        assert run["steps"] and run["evidence"]["records"]
+        assert result["progress"]["completed_steps"] == len(run["steps"])
+        assert "objective_reached" not in run
+        assert run["objective_evaluation"]["status"] == "not_evaluated"
+        assert any(row["run_id"] == run["run_id"] for row in service.product_store.list_runs())
         assert not any(event["event_type"] == "ai.proposal" for event in run["events"])
         if signal == "cancel":
             # A job signal must not poison the service's other provider operations.

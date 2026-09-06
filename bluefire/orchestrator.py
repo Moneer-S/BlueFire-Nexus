@@ -9,6 +9,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, replace
+from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
@@ -54,6 +55,7 @@ from .evidence import (
     EvidenceRecord,
     SandboxObserver,
 )
+from .job_runtime import JobCancelled
 from .observation_integrity import evaluate_observation_integrity
 from .planner import (
     DeterministicPlanner,
@@ -316,6 +318,23 @@ def _workspace_id_candidates(sandbox_root: Path) -> frozenset[str]:
 
 class OrchestrationError(ValueError):
     """Raised when a requested run cannot be safely prepared."""
+
+
+class SimulationCancelled(Exception):
+    """A known Simulate run was cancelled and its partial record finalized."""
+
+    def __init__(self, run_id: str):
+        super().__init__("simulation cancelled with a finalized partial record")
+        self.run_id = run_id
+
+
+@dataclass
+class _SimulationProgress:
+    evidence: EvidenceGraph = dataclass_field(default_factory=EvidenceGraph)
+    steps: list[dict[str, Any]] = dataclass_field(default_factory=list)
+    policy: list[dict[str, Any]] = dataclass_field(default_factory=list)
+    decisions: list[dict[str, Any]] = dataclass_field(default_factory=list)
+    proposals: list[dict[str, Any]] = dataclass_field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -735,16 +754,17 @@ class Orchestrator:
             profile=profile.to_dict() if profile else None,
             replay=replay,
         )
-        if checkpoint is not None:
-            checkpoint(
-                {
-                    "phase": "running",
-                    "run_id": handle.run_id,
-                    "completed_steps": 0,
-                }
-            )
+        simulation = _SimulationProgress() if mode is ExecutionMode.SIMULATE else None
         receipt_ids: list[str] = []
         try:
+            if checkpoint is not None:
+                checkpoint(
+                    {
+                        "phase": "running",
+                        "run_id": handle.run_id,
+                        "completed_steps": 0,
+                    }
+                )
             return self._run_prepared(
                 scenario=scenario,
                 mode=mode,
@@ -774,8 +794,51 @@ class Orchestrator:
                 collection_step_id=collection_step_id,
                 collector_registry_authority=collector_registry_authority,
                 collector_sandbox_root=(Path(sandbox_root) if sandbox_root is not None else None),
+                simulation=simulation,
             )
-        except BaseException:
+        except BaseException as exc:
+            if simulation is not None and isinstance(
+                exc, (AIProviderCancelled, RunnerTaskCancelled, JobCancelled)
+            ):
+                policy = dict(self.store.read_json(handle.run_id, "policy.json"))
+                policy.update(decisions=simulation.policy, ai_proposals=simulation.proposals)
+                self.store.write_json(handle.run_id, "policy.json", policy)
+                self.store.finalize(
+                    handle.run_id,
+                    result={
+                        "schema_version": "bluefire.run-result.v1",
+                        "run_id": handle.run_id,
+                        "created_at": handle.created_at,
+                        "status": "cancelled",
+                        "mode": mode.value,
+                        "ai_enabled": plan.ai_enabled,
+                        "autonomy": plan.autonomy.value,
+                        "ai_provider": dict(plan.ai_provider),
+                        "runner_profile_id": None,
+                        "approval": None,
+                        "authorized_target_scope": dict(authorized_target_scope),
+                        "scenario_id": scenario.id,
+                        "objective": scenario.purpose,
+                        "objective_evaluation": {"status": "not_evaluated", "reason": "cancelled"},
+                        "steps": simulation.steps,
+                        "planner_decisions": simulation.decisions,
+                        "ai_proposals": simulation.proposals,
+                        "cleanup": {
+                            "attempted": False,
+                            "success": None,
+                            "outstanding_receipt_count": 0,
+                        },
+                        "replay": dict(replay) if replay else None,
+                        "limitations": [
+                            *scenario.limitations,
+                            "Simulation was cancelled. Recorded steps and evidence are partial; "
+                            "final objective and detection evaluation did not complete.",
+                        ],
+                    },
+                    evidence=(record.to_dict() for record in simulation.evidence.records()),
+                    detections=(),
+                )
+                raise SimulationCancelled(handle.run_id) from exc
             if (
                 mode is ExecutionMode.EXECUTE
                 and profile is not None
@@ -827,16 +890,17 @@ class Orchestrator:
         collection_step_id: str | None = None,
         collector_registry_authority: Mapping[str, Any] | None = None,
         collector_sandbox_root: Path | None = None,
+        simulation: _SimulationProgress | None = None,
     ) -> Mapping[str, Any]:
-        evidence = EvidenceGraph()
+        evidence = simulation.evidence if simulation is not None else EvidenceGraph()
         artifacts: dict[str, Any] = dict(seed_artifacts or {})
-        step_rows: list[dict[str, Any]] = []
+        step_rows: list[dict[str, Any]] = simulation.steps if simulation is not None else []
         materialization_rows: list[dict[str, Any]] = []
         materialization_report: Mapping[str, Any] | None = None
         checkpoint_drafts: list[Mapping[str, Any]] = []
-        policy_rows: list[dict[str, Any]] = []
-        decisions: list[dict[str, Any]] = []
-        ai_proposals: list[dict[str, Any]] = []
+        policy_rows: list[dict[str, Any]] = simulation.policy if simulation is not None else []
+        decisions: list[dict[str, Any]] = simulation.decisions if simulation is not None else []
+        ai_proposals: list[dict[str, Any]] = simulation.proposals if simulation is not None else []
         step_overrides: dict[str, PlanStep] = {}
         visited: set[str] = set()
         retries_used = self._adaptive_retry_count(replay)

@@ -187,7 +187,7 @@ export function RunsPage() {
   const liveRunId = typeof activeJob?.progress.run_id === "string" ? activeJob.progress.run_id : undefined;
   const eventCursor = liveEvents.reduce((maximum, event) => Math.max(maximum, Number(event.sequence) || 0), 0);
   const eventsQuery = useQuery({ queryKey: ["run-events", liveRunId, eventCursor, activeJob?.state], queryFn: () => api.runEvents(liveRunId!, eventCursor), enabled: Boolean(liveRunId), refetchInterval: activeJob && terminalJobStates.has(activeJob.state) ? false : 650 });
-  const resultRunId = activeJob?.state === "completed" ? activeJob.result_ref : undefined;
+  const resultRunId = activeJob && terminalJobStates.has(activeJob.state) ? activeJob.result_ref : undefined;
   const resultQuery = useQuery({ queryKey: ["run", resultRunId], queryFn: () => api.runDetail(resultRunId!), enabled: Boolean(resultRunId && activeRun?.run_id !== resultRunId) });
   useEffect(() => {
     if (!inventoryAuthoritative || activeJobIdRef.current !== activeJobId) return;
@@ -230,8 +230,9 @@ export function RunsPage() {
     if (activeJobIdRef.current !== activeJobId || !jobQuery.isFetchedAfterMount || !jobQuery.isSuccess || !jobQuery.data || jobQuery.data.job_id !== activeJobId) return;
     const receivedJob = jobQuery.data;
     const trackedJob = activeJobRef.current?.job_id === receivedJob.job_id ? activeJobRef.current : undefined;
-    if ((trackedJob || linkedJobId === receivedJob.job_id) && terminalJobStates.has(receivedJob.state)) {
+    if (terminalJobStates.has(receivedJob.state)) {
       trackActiveJob(receivedJob);
+      setNotice((current) => current === `Stored job ${receivedJob.job_id} is not present in the active controller inventory. Mutable controls remain disabled while ownership is reconciled.` ? undefined : current);
       if (receivedJob.approval_request !== undefined) setApprovalRequest(receivedJob.approval_request);
       return;
     }
@@ -241,17 +242,6 @@ export function RunsPage() {
       if (isRetryableInterruptedJob(receivedJob)) {
         trackActiveJob(receivedJob);
         if (receivedJob.approval_request !== undefined) setApprovalRequest(receivedJob.approval_request);
-        return;
-      }
-      if (terminalJobStates.has(receivedJob.state)) {
-        rememberTerminalJob(receivedJob);
-        clearStoredActiveJobId(receivedJob.job_id);
-        setActiveJobId((current) => {
-          if (current !== receivedJob.job_id) return current;
-          activeJobIdRef.current = null;
-          return null;
-        });
-        setNotice(`Stored job ${receivedJob.job_id} is terminal and has no supported replacement path.`);
         return;
       }
       setNotice(`Stored job ${receivedJob.job_id} is not present in the active controller inventory. Mutable controls remain disabled while ownership is reconciled.`);
@@ -269,7 +259,7 @@ export function RunsPage() {
   useEffect(() => { setLiveEvents([]); }, [activeJob?.job_id]);
   useEffect(() => { if (eventsQuery.data?.items.length) setLiveEvents((current) => { const merged = new Map(current.map((event) => [event.sequence, event])); for (const event of eventsQuery.data.items) merged.set(event.sequence, event); return [...merged.values()].sort((left, right) => left.sequence - right.sequence); }); }, [eventsQuery.data]);
   useEffect(() => { if (eventsQuery.error) setNotice(eventsQuery.error instanceof Error ? eventsQuery.error.message : "Live event polling failed."); }, [eventsQuery.error]);
-  useEffect(() => { if (resultQuery.data) { setActiveRun(resultQuery.data); setNotice(`Run ${resultQuery.data.run_id} completed and its canonical record is ready for review.`); queryClient.invalidateQueries({ queryKey: ["runs"] }); } }, [queryClient, resultQuery.data, setActiveRun]);
+  useEffect(() => { if (resultQuery.data && resultQuery.data.run_id === resultRunId && activeJobRef.current?.result_ref === resultRunId) { setActiveRun(resultQuery.data); setNotice(`Run ${resultQuery.data.run_id} is ${sentence(resultQuery.data.status).toLowerCase()}; its canonical record is ready for review.`); queryClient.invalidateQueries({ queryKey: ["runs"] }); } }, [queryClient, resultQuery.data, resultRunId, setActiveRun]);
   useEffect(() => { setJobApprovalConfirmed(false); setJobApprovedBy(""); }, [activeJob?.job_id, activeJob?.progress.approval_kind, activeJob?.progress.approval_request_id, activeJob?.request?.approval_request_id, approvalRequest?.approval_id, approvalRequest?.status, approvalRequest?.state_digest, approvalRequest?.plan_digest, approvalRequest?.target_scope_digest, approvalRequest?.profile_id, approvalRequest?.maximum_tier]);
   useEffect(() => { setJobApprovalConfirmed(false); setJobApprovedBy(""); }, [activeProposalReview?.execute_approval_review?.approval_request_id, activeProposalReview?.execute_approval_review?.preflight.approval_envelope?.envelope_digest]);
   const preflightMutation = useMutation({ mutationFn: async (attempt: RunPreflightAttempt) => ({ generation: attempt.generation, report: await api.preflight(attempt.scenario, attempt.config) }), onSuccess: ({ generation, report }) => { if (generation !== preflightGeneration.current) return; setPreflight(report); setNotice(report.ready ? "Preflight resolved the current policy envelope." : report.status === "approval_required" && report.approval_binding && report.approval_envelope ? "Preflight resolved the exact Execute envelope. Review it before creating an approval-gated job." : "Preflight did not authorize this intent."); }, onError: (error, attempt) => { if (attempt.generation !== preflightGeneration.current) return; setPreflight(undefined); setNotice(error instanceof Error ? error.message : "Preflight failed."); }, onSettled: (_result, _error, attempt) => { if (attempt.generation === preflightGeneration.current) clearApproval(); } });
@@ -451,12 +441,15 @@ function LiveConsole({ run, job, events, pending, config, approvalPreflight, app
   const canPause = mutableControlsEnabled && job?.state === "running";
   const canResume = mutableControlsEnabled && job?.state === "paused";
   const canCancel = Boolean(mutableControlsEnabled && job && !terminalJobStates.has(job.state));
+  const terminal = Boolean(job && terminalJobStates.has(job.state));
+  const emptyTitle = run ? `Run ${sentence(run.status).toLowerCase()}` : terminal ? `Job ${sentence(job!.state).toLowerCase()}` : "Awaiting a run";
+  const emptyDetail = run ? "The saved record contains no completed steps. Review its events and limitations for context." : terminal ? typeof job?.progress.run_id === "string" ? "This job has ended. Its recorded events remain available below, but no finalized run record is linked." : "This job ended before a run record was linked." : "Planner, policy, dispatch, evidence, detection, and cleanup events will remain separate.";
   return <Panel className="live-console"><PanelHeader eyebrow="Live orchestration" title={run ? run.run_id : job ? job.job_id : pending ? "Job submission in progress" : "No active job"} detail={run ? `${sentence(run.mode)} · ${sentence(run.status)} · ${run.is_demo ? "sanitized demo" : "canonical local record"}` : job ? `${sentence(job.kind)} · durable ${sentence(job.state)} state · ${events.length} incremental events · updated ${formatDate(job.updated_at)}` : "Complete preflight, then submit a durable local job."} actions={<div className="run-controls"><Button size="small" variant="ghost" disabled={!canPause || controlPending} onClick={() => onControl("pause")} title={canPause ? "Pause at the next cooperative checkpoint" : "Pause requires a running controller-owned job"}><Pause/>Pause</Button><Button size="small" variant="ghost" disabled={!canResume || controlPending} onClick={() => onControl("resume")} title={canResume ? "Resume the cooperatively paused job" : "Resume requires a paused controller-owned job"}><RotateCcw/>Resume</Button>{isRetryableInterruptedJob(job) ? <Button size="small" variant="secondary" disabled={!retryEnabled || controlPending} onClick={onRetry} title={retryEnabled ? "Create a replacement job with fresh preflight and approval" : "Retry requires a fresh empty active-job inventory"}><RotateCcw/>Retry as replacement</Button> : null}<Button size="small" variant="danger" disabled={!canCancel || controlPending} onClick={() => onControl("cancel")} title={canCancel ? "Request cooperative cancellation" : "Cancel requires a nonterminal controller-owned job"}><CircleStop/>Cancel</Button>{run ? <Button size="small" onClick={onReview}><FileSearch/>Review</Button> : null}</div>} />
     {DEMO_MODE ? <div className="console-banner"><Sparkles/>Demo lifecycle states are presentation fixtures only. No runner was dispatched.</div> : null}
     {job?.state === "awaiting_approval" && job.progress.approval_kind !== "ai_proposal" ? mutableControlsEnabled ? <JobApprovalGate job={job} preflight={approvalPreflight} approvalRequest={approvalRequest} proposalReview={proposalReview} confirmed={approvalConfirmed} approvedBy={approvedBy} pending={approvalPending} onConfirmed={onApprovalConfirmed} onApprovedBy={onApprovedBy} onApprove={onApprove} /> : <Callout tone="warning" title="Controller ownership unavailable">Approval remains disabled until fresh active-job inventory confirms that this controller owns the job.</Callout> : null}
-    {job && typeof job.progress.proposal_record_id === "string" ? mutableControlsEnabled ? <ProposalReviewWorkspace job={job} onDecision={onProposalDecision} onReviewLoaded={onProposalReviewLoaded}/> : <Callout tone="warning" title="Controller ownership unavailable">Proposal decisions remain disabled until fresh active-job inventory confirms that this controller owns the job.</Callout> : null}
+    {job && !terminal && typeof job.progress.proposal_record_id === "string" ? mutableControlsEnabled ? <ProposalReviewWorkspace job={job} onDecision={onProposalDecision} onReviewLoaded={onProposalReviewLoaded}/> : <Callout tone="warning" title="Controller ownership unavailable">Proposal decisions remain disabled until fresh active-job inventory confirms that this controller owns the job.</Callout> : null}
     {job?.error ? <Callout tone="danger" title={job.error.code ?? "Job failed"}>{job.error.message ?? "The durable job ended with a sanitized error record."}</Callout> : null}
-    <div className="live-path">{steps.length ? steps.map((step, index) => <article key={`${step.step_id}-${index}`} data-status={normalizeStatus(step.status)}><header><span>{String(index + 1).padStart(2, "0")}</span><Badge tone={statusTone(step.status)} dot>{sentence(normalizeStatus(step.status))}</Badge></header><strong>{step.step_id}</strong><small>{step.action_id ?? step.simulation_id ?? sentence(step.execution_disposition ?? "pending")}</small></article>) : <div className="console-empty"><Activity/><strong>Awaiting a run</strong><span>Planner, policy, dispatch, evidence, detection, and cleanup events will remain separate.</span></div>}</div>
+    <div className="live-path">{steps.length ? steps.map((step, index) => <article key={`${step.step_id}-${index}`} data-status={normalizeStatus(step.status)}><header><span>{String(index + 1).padStart(2, "0")}</span><Badge tone={statusTone(step.status)} dot>{sentence(normalizeStatus(step.status))}</Badge></header><strong>{step.step_id}</strong><small>{step.action_id ?? step.simulation_id ?? sentence(step.execution_disposition ?? "pending")}</small></article>) : <div className="console-empty"><Activity/><strong>{emptyTitle}</strong><span>{emptyDetail}</span></div>}</div>
     <div className="console-tabs" role="tablist" aria-label="Run detail views">{(["timeline", "planner", "policy", "runner", "evidence", "detections"] as const).map((item) => <button key={item} role="tab" aria-selected={tab === item} onClick={() => setTab(item)}>{sentence(item)}</button>)}</div>
     <div className="console-detail">{tab === "timeline" ? <Timeline run={run} job={job} events={events} pending={pending} /> : tab === "planner" ? <StructuredPanel value={run?.planner_decisions?.length ? run.planner_decisions : run?.plan} empty="No planner decisions are available." /> : tab === "policy" ? <StructuredPanel value={run?.policy} empty="No policy decisions are available." /> : tab === "runner" ? <RunnerDetail run={run} /> : tab === "evidence" ? <EvidenceDetail run={run} /> : <DetectionDetail run={run} />}</div>
   </Panel>;

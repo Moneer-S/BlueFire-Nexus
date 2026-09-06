@@ -96,7 +96,7 @@ from .job_runtime import (
     JobStateError,
     RunJobController,
 )
-from .orchestrator import OrchestrationError, Orchestrator
+from .orchestrator import OrchestrationError, Orchestrator, SimulationCancelled
 from .package_management import ActionPackageOperations
 from .plugins import PluginManifest, PluginManifestError, PluginTrust
 from .product_store import (
@@ -2317,6 +2317,34 @@ class BlueFireService(RunnerManagementServiceMixin):
                     checkpoint=context.checkpoint,
                     cancel_event=context.cancellation_event,
                 )
+        except SimulationCancelled as exc:
+            result = self.store.get_run(exc.run_id)
+            if result.get("mode") != "simulate" or result.get("status") != "cancelled":
+                raise ProductStoreError("cancelled simulation result is inconsistent") from exc
+            self._index_run(result)
+            # A concurrent cancel may advance running -> cancelling. Re-read the
+            # current state instead of attempting to reverse that transition.
+            for attempt in range(3):
+                job = self.product_store.get_job(context.job_id)
+                try:
+                    linked = self.product_store.transition_job(
+                        context.job_id,
+                        str(job["state"]),
+                        result_ref=exc.run_id,
+                        progress={
+                            **dict(job["progress"]),
+                            "run_id": exc.run_id,
+                            "run_status": "cancelled",
+                            "completed_steps": len(result.get("steps", [])),
+                        },
+                    )
+                    if linked.get("result_ref") != exc.run_id:
+                        raise ProductStoreError("cancelled simulation result link was not retained")
+                    break
+                except ProductStoreError:
+                    if attempt == 2:
+                        raise
+            raise JobCancelled("simulation cancellation and partial record are settled") from exc
         except AIProviderCancelled as exc:
             raise JobCancelled("job provider request cancellation was confirmed") from exc
         except RunnerTaskCancelled as exc:

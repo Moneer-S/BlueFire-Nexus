@@ -73,9 +73,7 @@ def _receiver_task_key(enrollment: RunnerEnrollment, task_id: str) -> bytes:
     ).digest()
 
 
-def process_record_authentication(
-    enrollment: RunnerEnrollment, payload: Mapping[str, Any]
-) -> str:
+def process_record_authentication(enrollment: RunnerEnrollment, payload: Mapping[str, Any]) -> str:
     """Authenticate the exact process-record payload with enrollment material."""
 
     return (
@@ -337,9 +335,7 @@ def _owner_private_open_regular(path: Path, descriptor: int) -> None:
     fchmod(descriptor, 0o600)
     checked = os.fstat(descriptor)
     getuid = getattr(os, "getuid", None)
-    if stat.S_IMODE(checked.st_mode) != 0o600 or (
-        callable(getuid) and checked.st_uid != getuid()
-    ):
+    if stat.S_IMODE(checked.st_mode) != 0o600 or (callable(getuid) and checked.st_uid != getuid()):
         raise RunnerTrustError("Runner host state permissions could not be restricted.")
 
 

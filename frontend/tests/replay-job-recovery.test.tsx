@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import { api, ApiError, type ReplayPreparation } from "../src/lib/api";
-import { demoCatalog, demoScenario } from "../src/lib/demo";
+import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import { readPendingReplay, storePendingReplay } from "../src/lib/replay-submission";
 import { RunsPage } from "../src/pages/Runs";
 import { ProductProvider } from "../src/state/ProductContext";
@@ -56,6 +56,35 @@ function receipt() {
   return value;
 }
 afterEach(() => { for (const client of clients.splice(0)) client.clear(); });
+
+it("shows a cancelled job's retained events without claiming it is awaiting a run", async () => {
+  const job = { ...replayJob(firstId, "cancelled"), request: { mode: "simulate" }, progress: { run_id: "run-partial" } };
+  inventory([]);
+  vi.spyOn(api, "job").mockResolvedValue(job);
+  vi.spyOn(api, "runEvents").mockImplementation(async (_id, cursor = 0) => ({ schema_version: "bluefire.event-page.v1", run_id: "run-partial", after_sequence: cursor, next_sequence: 3, has_more: false, items: cursor ? [] : [1, 2, 3].map((sequence) => ({ sequence, event_type: "step.completed", payload: { step_id: `partial-${sequence}` } })) }));
+  mount();
+  expect(await screen.findByText("Job cancelled")).toBeVisible();
+  expect(await screen.findByText(/3 incremental events/)).toBeVisible();
+  expect(screen.getByText(/no finalized run record is linked/)).toBeVisible();
+  expect(screen.queryByText("Awaiting a run")).not.toBeInTheDocument();
+  expect(screen.queryByText(/ownership is reconciled/)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+});
+
+it.each(["cancelled", "interrupted", "failed"] as const)("loads the linked %s record for review without claiming completion", async (state) => {
+  const run = { ...structuredClone(demoRuns[0]!), run_id: "run-retained", status: state, steps: [] };
+  const job = { ...replayJob(firstId, state), progress: {}, result_ref: run.run_id };
+  inventory([]);
+  vi.spyOn(api, "job").mockResolvedValue(job);
+  const detail = vi.spyOn(api, "runDetail").mockResolvedValue(run);
+  vi.spyOn(api, "runs").mockResolvedValue({ runs: [run], unavailable_run_count: 0 });
+  mount();
+  expect(await screen.findByText(`Run ${state}`)).toBeVisible();
+  expect(detail).toHaveBeenCalledWith(run.run_id);
+  expect(screen.getByRole("button", { name: "Review" })).toBeEnabled();
+  expect(screen.getByText(`Run ${run.run_id} is ${state}; its canonical record is ready for review.`)).toBeVisible();
+  expect(screen.queryByText(/completed and its canonical/)).not.toBeInTheDocument();
+});
 
 it("keeps the ordinary run workspace open when its restored inventory selection changes", async () => {
   const user = userEvent.setup(); const first = replayJob(); const second = replayJob(secondId);
