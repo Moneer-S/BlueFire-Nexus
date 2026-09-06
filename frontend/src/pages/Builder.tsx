@@ -13,9 +13,10 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Link } from "react-router-dom";
 import "./Builder.css";
+import { ParameterField } from "../components/ParameterField";
 import { branchLabels, GRAPH_SECTION_SIZE, graphSections, graphView, initialGraphLayout, inputLabel, inputTypeLabel } from "../lib/graph-view";
 import { api } from "../lib/api";
-import { initialParameterValue, parameterValuesEqual, shouldInitializeParameter } from "../lib/parameters";
+import { initialParameterValue, shouldInitializeParameter } from "../lib/parameters";
 import { deleteScenarioGraphElements, selectScenarioAlternative } from "../lib/scenario";
 import { useProduct } from "../state/ProductContext";
 import type { ActionDefinition, AIGraphDraftResult, Behavior, Outcome, Scenario, ScenarioEdge, ScenarioStep } from "../types";
@@ -335,23 +336,6 @@ function Inspector({ scenario, step, behavior, behaviors, actions, updateStep, u
     <section><h3>Next step</h3>{outcomes.map((outcome) => { const edge = scenario.edges.find((item) => item.from_step === step.id && item.outcome === outcome); return <Field key={outcome} label={branchLabels[outcome]}><select value={edge?.to_step ?? ""} onChange={(event) => updateScenario({ ...scenario, edges: [...scenario.edges.filter((item) => !(item.from_step === step.id && item.outcome === outcome)), ...(event.target.value ? [{ from_step: step.id, outcome, to_step: event.target.value }] : [])] })}><option value="">End path</option>{scenario.steps.filter((item) => item.id !== step.id).map((item) => <option key={item.id} value={item.id}>{behaviors.get(item.behavior_id)?.title ?? item.id}</option>)}</select></Field>; })}</section>
     <details className="step-technical-details"><summary>Technical details</summary><Field label="Step ID" hint="Changing this also updates connected steps."><input value={step.id} onChange={(event) => changeId(event.target.value)} pattern="[a-z][a-z0-9_]*" /></Field><p><code>{behavior.id}</code></p><h3>Expected observations</h3><div className="chip-list">{behavior.telemetry.map((item) => <Badge key={item} tone="info">{item}</Badge>)}</div></details>
   </div>;
-}
-
-function ParameterField({ spec, value, onChange }: { spec: Behavior["parameters"][number]; value: unknown; onChange: (value: unknown) => void }) {
-  if (spec.enum?.length) {
-    const selectedIndex = spec.enum.findIndex((item) => parameterValuesEqual(item, value));
-    return <Field label={spec.name} hint={spec.description}><select value={selectedIndex < 0 ? "" : String(selectedIndex)} onChange={(event) => { const index = Number.parseInt(event.target.value, 10); const member = spec.enum?.[index]; if (member !== undefined) onChange(structuredClone(member)); }}><option value="" disabled>Choose an allowed value</option>{spec.enum.map((item, index) => <option key={index} value={String(index)}>{Array.isArray(item) ? item.join(", ") : String(item)}</option>)}</select></Field>;
-  }
-  if (spec.type === "boolean") return <label className="check-row"><input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} /><span><strong>{spec.name}</strong><small>{spec.description ?? "Boolean parameter"}</small></span></label>;
-  return <Field label={spec.name} hint={spec.description}><input type={spec.type === "integer" || spec.type === "number" ? "number" : "text"} value={Array.isArray(value) ? value.join(", ") : String(value ?? "")} min={spec.minimum ?? undefined} max={spec.maximum ?? undefined} step={spec.type === "integer" ? 1 : spec.type === "number" ? "any" : undefined} required={spec.required} onChange={(event) => {
-    if (spec.type === "integer" || spec.type === "number") {
-      if (!event.target.value) { onChange(undefined); return; }
-      const numericValue = Number(event.target.value);
-      if (Number.isFinite(numericValue) && (spec.type !== "integer" || Number.isInteger(numericValue))) onChange(numericValue);
-      return;
-    }
-    onChange(spec.type === "string_list" ? event.target.value.split(",").map((item) => item.trim()).filter(Boolean) : event.target.value);
-  }} /></Field>;
 }
 
 function updateParameter(parameters: Record<string, unknown>, name: string, value: unknown) {
