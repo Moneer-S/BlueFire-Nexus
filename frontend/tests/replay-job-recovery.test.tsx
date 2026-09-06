@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
@@ -153,6 +153,35 @@ it("settles an exact receipt only after a matching fresh job GET, without approv
   await waitFor(() => expect(readPendingReplay()).toBeUndefined());
   expect(approval).not.toHaveBeenCalled();
   view.unmount();
+});
+
+it("keeps an incoming completed job selected when the previous job read becomes a 404", async () => {
+  inventory([]);
+  const completed = replayJob(secondId, "completed");
+  let rejectFirst!: (reason: Error) => void;
+  let resolveSecond!: (job: RunJob) => void;
+  const firstRead = new Promise<RunJob>((_resolve, reject) => { rejectFirst = reject; });
+  const secondRead = new Promise<RunJob>((resolve) => { resolveSecond = resolve; });
+  const detail = vi.spyOn(api, "job").mockImplementation((id) => id === firstId ? firstRead : secondRead);
+  const view = mount();
+  await waitFor(() => expect(detail).toHaveBeenCalledWith(firstId));
+  let navigated = false;
+  const unsubscribe = view.client.getQueryCache().subscribe((event) => {
+    if (!navigated && event.type === "updated" && event.query.queryKey[0] === "job" && event.query.queryKey[1] === firstId && event.query.state.status === "error") {
+      navigated = true;
+      // Publish the incoming URL in the same update as the old GET refusal.
+      fireEvent.click(screen.getByRole("link", { name: "Open another saved job" }));
+    }
+  });
+  try {
+    await act(async () => { rejectFirst(new ApiError("The previous job was not found", "job_not_found", undefined, 404)); });
+    await waitFor(() => expect(detail).toHaveBeenCalledWith(secondId));
+    await act(async () => { resolveSecond(completed); await secondRead; });
+    await screen.findByRole("heading", { name: secondId });
+    expect(detail).toHaveBeenCalledWith(secondId);
+    expect(screen.getByLabelText("Current route")).toHaveTextContent(`/runs?job=${secondId}`);
+    expect(screen.queryByText("The previous job was not found")).not.toBeInTheDocument();
+  } finally { unsubscribe(); }
 });
 
 it.each(["404", "job", "source", "request", "preparation", "context"])("retains the receipt when the fresh GET has a %s mismatch or refusal", async (change) => {

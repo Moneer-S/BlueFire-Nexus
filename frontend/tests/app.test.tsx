@@ -711,7 +711,8 @@ describe("product application", () => {
     expect(await screen.findByRole("heading", { name: "Detection Lab" })).toBeVisible();
     await user.click(screen.getByRole("tab", { name: "Revisions" }));
 
-    expect(screen.getByText("Immutable revision rule")).toBeVisible();
+    expect(screen.getByText("Advanced definition revisions")).toBeVisible();
+    expect(screen.getByText(/does not copy compiled source or results/)).toBeVisible();
     expect(screen.getAllByText(/Revision 1 · Origin/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Revision 2 · Tune/).length).toBeGreaterThan(0);
     expect(screen.getAllByText("MITRE ATT&CK").length).toBeGreaterThan(0);
