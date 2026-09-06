@@ -6,6 +6,7 @@ from collections import Counter
 from typing import Iterable, Mapping
 
 from .ai import ai_runtime_metadata
+from .ai_provider_access import AIProviderAccess
 from .collectors import (
     CollectionSemanticsCollector,
     FilesystemCollector,
@@ -28,6 +29,7 @@ def seed_product_metadata(
     registry: BehaviorRegistry,
     config: BlueFireConfig,
     scenarios: Iterable[ScenarioDefinition],
+    ai_provider_access: AIProviderAccess | None = None,
 ) -> Mapping[str, int]:
     """Idempotently seed content-addressed local metadata.
 
@@ -68,6 +70,7 @@ def seed_product_metadata(
             config.ai,
             autonomy=config.autonomy,
             provider_id=provider.id,
+            access=ai_provider_access,
         )
         health = runtime.get("health", {})
         state = (

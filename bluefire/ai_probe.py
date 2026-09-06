@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import replace
 from typing import Any, Mapping
 
-from .ai import AIJSONTransport, UrllibAIJSONTransport, _strict_json_object
+from .ai import AIJSONTransport, _strict_json_object
+from .ai_provider_access import AIProviderAccess, DirectAIProviderAccess
 from .ai_wire import (
     AIProviderError,
     AIProviderTransportError,
     AIWireError,
-    credential_value,
-    request_headers,
     response_usage,
     structured_output,
     structured_request,
@@ -34,34 +32,36 @@ def check_provider(
     connect: bool,
     environ: Mapping[str, str] | None = None,
     transport: AIJSONTransport | None = None,
+    access: AIProviderAccess | None = None,
 ) -> Mapping[str, Any]:
     """Resolve only this explicit reference; send a tiny synthetic request if asked.
 
     The token ceiling includes reasoning. A model unable to answer within this
     probe budget reports incomplete; we do not silently increase the budget.
     """
-    key = credential_value(config, os.environ if environ is None else environ)
-    ready = config.api_key is None or bool(key)
+    access = (
+        DirectAIProviderAccess(environ={})
+        if config.kind is AIProviderKind.DETERMINISTIC
+        else access or DirectAIProviderAccess(transport=transport, environ=environ)
+    )
+    readiness = access.readiness(config)
+    ready = readiness.available
     result: dict[str, Any] = {
         "schema_version": "bluefire.ai-provider-check.v1",
         "provider_id": config.id,
         "configuration_digest": content_hash(config.to_dict()),
         "api_style": config.kind.value,
         "model": config.model,
-        "credential_state": (
-            "not_required" if config.api_key is None else "ready" if ready else "unavailable"
-        ),
+        "credential_state": readiness.credential_state,
         "connectivity": "not_tested",
         "structured_output": "not_tested",
         "attempts": 0,
         "used_fallback": False,
-        "code": "configuration_ready" if ready else "credential_unavailable",
-        "message": (
-            "Configuration checked; no network request was made."
-            if ready
-            else "The referenced server environment variable is unset or invalid. No network request was made."
-        ),
+        "code": readiness.code,
+        "message": readiness.message,
     }
+    if readiness.source == "broker":
+        result.update(credential_owner="broker", broker_binding_digest=readiness.binding_digest)
     if not connect or not ready:
         return result
     if config.kind is AIProviderKind.DETERMINISTIC:
@@ -91,12 +91,7 @@ def check_provider(
         )
     )
     try:
-        payload = (transport or UrllibAIJSONTransport()).post(
-            str(bounded.endpoint),
-            headers=request_headers(key),
-            body=body,
-            timeout_seconds=float(bounded.timeout_seconds),
-        )
+        payload = access.post(config, body=body, timeout_seconds=float(bounded.timeout_seconds))
         if len(payload) > 1_048_576:
             raise AIWireError("response_invalid", "Probe response exceeded the byte limit.")
         result["connectivity"] = "passed"

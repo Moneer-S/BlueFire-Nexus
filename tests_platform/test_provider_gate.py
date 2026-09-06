@@ -98,6 +98,9 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/source_intake_publication.py",
         "bluefire/ai.py",
         "bluefire/ai_drafts.py",
+        "bluefire/ai_provider_access.py",
+        "bluefire/ai_broker_contract.py",
+        "bluefire/ai_broker.py",
         "bluefire/planner.py",
         "bluefire/api.py",
         "bluefire/api_context.py",
@@ -395,6 +398,9 @@ def test_containment_owner_remains_pinned_without_new_process_launches(
         "bluefire/receiver_policy.py",
         "bluefire/receiver_session_contract.py",
         "bluefire/receiver_session_channel.py",
+        "bluefire/ai_provider_access.py",
+        "bluefire/ai_broker_contract.py",
+        "bluefire/ai_broker.py",
     ],
 )
 def test_extracted_boundaries_retain_strict_process_source_auditing(

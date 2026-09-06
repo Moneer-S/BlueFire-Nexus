@@ -26,10 +26,11 @@ from .ai import (
     UrllibAIJSONTransport,
     redact_for_model,
 )
+from .ai_provider_access import AIProviderAccess, DirectAIProviderAccess
+from .ai_transport import CancellationSignal
 from .ai_wire import (
+    AIProviderCancelled,
     AIWireError,
-    credential_value,
-    request_headers,
     response_usage,
     structured_output,
     structured_request,
@@ -757,6 +758,8 @@ class OpenAIResponsesDraftProvider:
         fallback: DeterministicOfflineDraftProvider,
         environ: Mapping[str, str] | None = None,
         transport: AIJSONTransport | None = None,
+        access: AIProviderAccess | None = None,
+        cancel_event: CancellationSignal | None = None,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         if config.kind is not self._KIND:
@@ -764,20 +767,27 @@ class OpenAIResponsesDraftProvider:
         self.config = config
         self.fallback = fallback
         self.environ = os.environ if environ is None else environ
-        self.transport = transport or UrllibAIJSONTransport()
+        self.transport = transport or UrllibAIJSONTransport(cancel_event=cancel_event)
+        self.access = access or DirectAIProviderAccess(transport=self.transport, environ=environ)
+        self.cancel_event = cancel_event
         self.sleeper = sleeper
 
     def health(self) -> AIProviderHealth:
-        ready = self.config.api_key is None or bool(self._api_key())
+        readiness = self.access.readiness(self.config)
+        ready = readiness.available
         return AIProviderHealth(
             provider_id=self.config.id,
             state=ProviderHealthState.READY if ready else ProviderHealthState.DEGRADED,
             credential_available=ready,
             fallback_provider_id=self.fallback.config.id,
             message=(
-                "Provider credentials are ready; connectivity and structured output are untested."
-                if ready
-                else "Credential reference is unset; deterministic graph drafting will be used."
+                readiness.message
+                if readiness.source == "broker"
+                else (
+                    "Provider credentials are ready; connectivity and structured output are untested."
+                    if ready
+                    else "Credential reference is unset; deterministic graph drafting will be used."
+                )
             ),
         )
 
@@ -791,30 +801,42 @@ class OpenAIResponsesDraftProvider:
         )
 
     def draft(self, request: AIGraphDraftRequest) -> AIDraftProviderResult:
-        api_key = self._api_key()
-        if self.config.api_key is not None and not api_key:
-            return self._fallback(request, attempts=0, reason="credential_unavailable")
+        self._check_cancelled()
+        readiness = self.access.readiness(self.config)
+        if readiness.code == "request_cancelled":
+            raise AIProviderCancelled()
+        if not readiness.available:
+            return self._fallback(request, attempts=0, reason=readiness.code)
         body = canonical_json_bytes(self.build_request(request))
         if len(body) > _MAX_PROVIDER_REQUEST_BYTES:
             raise AIDraftError("Responses graph draft request exceeds the 1 MiB bound")
-        headers = request_headers(api_key)
         attempts = 0
         last_error: AIProviderError | None = None
         for attempt in range(self.config.max_retries + 1):
+            self._check_cancelled()
             attempts += 1
             try:
-                payload = self.transport.post(
-                    str(self.config.endpoint),
-                    headers=headers,
+                payload = self.access.post(
+                    self.config,
                     body=body,
                     timeout_seconds=float(self.config.timeout_seconds),
+                    cancel_event=self.cancel_event,
                 )
-                return self._parse_response(payload, request, attempts)
+                result = self._parse_response(payload, request, attempts)
+                self._check_cancelled()
+                return result
             except AIProviderTransportError as exc:
+                if exc.code == "request_cancelled":
+                    raise AIProviderCancelled() from None
                 last_error = exc
                 if not exc.retryable or attempt >= self.config.max_retries:
                     break
-                self.sleeper(min(0.25 * (2**attempt), 2.0))
+                delay = min(0.25 * (2**attempt), 2.0)
+                if self.cancel_event is None:
+                    self.sleeper(delay)
+                else:
+                    self.cancel_event.wait(delay)
+                    self._check_cancelled()
             except AIProviderError as exc:
                 last_error = exc
                 break
@@ -854,7 +876,9 @@ class OpenAIResponsesDraftProvider:
     def _fallback(
         self, request: AIGraphDraftRequest, *, attempts: int, reason: str
     ) -> AIDraftProviderResult:
+        self._check_cancelled()
         fallback = self.fallback.draft(request)
+        self._check_cancelled()
         return AIDraftProviderResult(
             requested_provider_id=self.config.id,
             effective_provider_id=fallback.effective_provider_id,
@@ -867,8 +891,9 @@ class OpenAIResponsesDraftProvider:
             usage=fallback.usage,
         )
 
-    def _api_key(self) -> str:
-        return credential_value(self.config, self.environ)
+    def _check_cancelled(self) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise AIProviderCancelled()
 
 
 class ChatCompletionsDraftProvider(OpenAIResponsesDraftProvider):
@@ -883,6 +908,8 @@ def build_ai_draft_provider(
     provider_id: str | None = None,
     environ: Mapping[str, str] | None = None,
     transport: AIJSONTransport | None = None,
+    access: AIProviderAccess | None = None,
+    cancel_event: CancellationSignal | None = None,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> AIDraftProvider:
     selected = config.provider(provider_id)
@@ -899,6 +926,8 @@ def build_ai_draft_provider(
         fallback=fallback,
         environ=environ,
         transport=transport,
+        access=access,
+        cancel_event=cancel_event,
         sleeper=sleeper,
     )
 

@@ -50,6 +50,11 @@ Recursive forbidden-field checks reject executable concepts such as commands, sc
 
 ## Providers
 
+The installed service normally resolves the configured environment reference and
+uses its direct HTTP transport. An explicit internal access interface also supports
+an enrolled broker channel for control-plane composition. See [AI broker access](AI_BROKER_ACCESS.md)
+for its current tested scope and the isolation work required before prepared-lab use.
+
 ### Deterministic offline
 
 `deterministic-offline.v1` is the default and test provider. It makes no network call and chooses only from request allowlists. It lets demos/tests exercise proposal records and autonomy semantics without credentials.

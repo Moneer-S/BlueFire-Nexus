@@ -40,6 +40,7 @@ from .ai_drafts import (
     build_ai_draft_provider,
     normalize_ai_graph_draft,
 )
+from .ai_provider_access import AIProviderAccess, DirectAIProviderAccess
 from .ai_transport import ManagedAIJSONTransport
 from .ai_wire import AIProviderCancelled
 from .application_errors import APIError
@@ -206,6 +207,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         collector_registry_factory: CollectorRegistryFactory | None = None,
         ai_provider_factory: AIProviderFactory | None = None,
         ai_draft_provider_factory: AIDraftProviderFactory | None = None,
+        ai_provider_access: AIProviderAccess | None = None,
     ) -> None:
         root = (
             Path(project_root) if project_root is not None else Path(__file__).resolve().parents[1]
@@ -226,6 +228,9 @@ class BlueFireService(RunnerManagementServiceMixin):
             ai_draft_provider_factory or _default_ai_draft_provider_factory
         )
         self._provider_check_transport = ManagedAIJSONTransport()
+        self._provider_access = ai_provider_access or DirectAIProviderAccess(
+            transport=self._provider_check_transport
+        )
         self._runtime_configuration_lock = threading.RLock()
         self._action_catalog_lock = threading.RLock()
         self._job_retry_lock = threading.RLock()
@@ -256,6 +261,7 @@ class BlueFireService(RunnerManagementServiceMixin):
             registry=self.registry,
             config=self.config,
             scenarios=self._scenarios,
+            ai_provider_access=self._provider_access,
         )
         self._refresh_runtime_configuration()
         self._synchronize_run_index()
@@ -373,6 +379,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                 runtime_ai,
                 autonomy=self.config.autonomy,
                 provider_id=provider.id,
+                access=self._provider_access,
             )
             providers.append(self._provider_metadata(metadata))
         return {
@@ -471,9 +478,7 @@ class BlueFireService(RunnerManagementServiceMixin):
             raise APIError(
                 HTTPStatus.BAD_REQUEST, "ai_provider_configuration_invalid", str(exc)
             ) from exc
-        return check_provider(
-            provider, connect=request["connect"], transport=self._provider_check_transport
-        )
+        return check_provider(provider, connect=request["connect"], access=self._provider_access)
 
     def draft_ai_graph(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Return one validated, normalized, deliberately unsaved scenario draft."""
@@ -519,7 +524,13 @@ class BlueFireService(RunnerManagementServiceMixin):
                 [str(exc)],
             ) from exc
         try:
-            provider = self.ai_draft_provider_factory(self._runtime_ai(), provider_id)
+            provider = (
+                build_ai_draft_provider(
+                    self._runtime_ai(), provider_id=provider_id, access=self._provider_access
+                )
+                if self.ai_draft_provider_factory is _default_ai_draft_provider_factory
+                else self.ai_draft_provider_factory(self._runtime_ai(), provider_id)
+            )
             provider_result = provider.draft(draft_request)
             if provider_result.requested_provider_id != provider_id:
                 raise AIDraftError("draft provider identity does not match the request")
@@ -3004,9 +3015,12 @@ class BlueFireService(RunnerManagementServiceMixin):
         """Cooperatively stop locally managed workers."""
 
         try:
-            self._provider_check_transport.close()
+            self._provider_access.close()
         finally:
-            self.job_controller.shutdown()
+            try:
+                self._provider_check_transport.close()
+            finally:
+                self.job_controller.shutdown()
 
     def _recover_interrupted_cleanup(self) -> Mapping[str, Any]:
         summary: dict[str, Any] = {
@@ -5651,6 +5665,7 @@ class BlueFireService(RunnerManagementServiceMixin):
             runtime_ai,
             autonomy=autonomy,
             provider_id=provider_id,
+            access=self._provider_access,
         )
         return self._provider_metadata(runtime)
 
@@ -5667,12 +5682,11 @@ class BlueFireService(RunnerManagementServiceMixin):
         if not isinstance(provider_id, str):
             raise AssertionError("validated AI provider metadata has no provider ID")
         if self.ai_provider_factory is _default_ai_provider_factory:
-            transport = self._provider_check_transport.bind(cancel_event)
             return build_ai_provider(
                 self._runtime_ai(),
                 provider_id=provider_id,
-                transport=transport,
-                cancel_event=transport.cancellation,
+                access=self._provider_access,
+                cancel_event=cancel_event,
             )
         return self.ai_provider_factory(self._runtime_ai(), provider_id)
 

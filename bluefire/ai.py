@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
+from .ai_provider_access import AIJSONTransport, AIProviderAccess, DirectAIProviderAccess
 from .ai_record_validation import DurableProposalRecordError, validate_v3_proposal_record
 from .ai_transport import CancellationSignal, UrllibAIJSONTransport
 from .ai_wire import (
@@ -22,8 +23,6 @@ from .ai_wire import (
     AIProviderError,
     AIProviderTransportError,
     AIWireError,
-    credential_value,
-    request_headers,
     response_usage,
     structured_output,
     structured_request,
@@ -761,18 +760,6 @@ class AIProvider(Protocol):
     def propose(self, request: AIProposalRequest) -> AIProviderResult: ...
 
 
-@runtime_checkable
-class AIJSONTransport(Protocol):
-    def post(
-        self,
-        url: str,
-        *,
-        headers: Mapping[str, str],
-        body: bytes,
-        timeout_seconds: float,
-    ) -> bytes: ...
-
-
 def redact_for_model(value: Any, policy: AIRedactionPolicy, *, _key: str = "") -> Any:
     """Return a detached, bounded JSON value governed by the provider data policy."""
 
@@ -881,6 +868,7 @@ class OpenAIResponsesProvider:
         fallback: AIProvider,
         environ: Mapping[str, str] | None = None,
         transport: AIJSONTransport | None = None,
+        access: AIProviderAccess | None = None,
         sleeper: Callable[[float], None] = time.sleep,
         cancel_event: CancellationSignal | None = None,
     ) -> None:
@@ -892,11 +880,13 @@ class OpenAIResponsesProvider:
         self.fallback = fallback
         self.environ = os.environ if environ is None else environ
         self.transport = transport or UrllibAIJSONTransport(cancel_event=cancel_event)
+        self.access = access or DirectAIProviderAccess(transport=self.transport, environ=environ)
         self.sleeper = sleeper
         self.cancel_event = cancel_event
 
     def health(self) -> AIProviderHealth:
-        credential_available = self.config.api_key is None or bool(self._api_key())
+        readiness = self.access.readiness(self.config)
+        credential_available = readiness.available
         return AIProviderHealth(
             provider_id=self.config.id,
             state=(
@@ -905,9 +895,13 @@ class OpenAIResponsesProvider:
             credential_available=credential_available,
             fallback_provider_id=self.fallback.config.id,
             message=(
-                "Provider credentials are ready; connectivity and structured output are untested."
-                if credential_available
-                else "Credential reference is unset; deterministic fallback will be used."
+                readiness.message
+                if readiness.source == "broker"
+                else (
+                    "Provider credentials are ready; connectivity and structured output are untested."
+                    if credential_available
+                    else "Credential reference is unset; deterministic fallback will be used."
+                )
             ),
         )
 
@@ -922,22 +916,23 @@ class OpenAIResponsesProvider:
 
     def propose(self, request: AIProposalRequest) -> AIProviderResult:
         self._check_cancelled()
-        api_key = self._api_key()
-        if self.config.api_key is not None and not api_key:
-            return self._fallback(request, attempts=0, reason="credential_unavailable")
+        readiness = self.access.readiness(self.config)
+        if readiness.code == "request_cancelled":
+            raise AIProviderCancelled()
+        if not readiness.available:
+            return self._fallback(request, attempts=0, reason=readiness.code)
         body = canonical_json_bytes(self.build_request(request))
-        headers = request_headers(api_key)
         attempts = 0
         last_error: AIProviderError | None = None
         for attempt in range(self.config.max_retries + 1):
             self._check_cancelled()
             attempts += 1
             try:
-                payload = self.transport.post(
-                    str(self.config.endpoint),
-                    headers=headers,
+                payload = self.access.post(
+                    self.config,
                     body=body,
                     timeout_seconds=float(self.config.timeout_seconds),
+                    cancel_event=self.cancel_event,
                 )
                 result = self._parse_response(payload, request, attempts=attempts)
                 self._check_cancelled()
@@ -1021,9 +1016,6 @@ class OpenAIResponsesProvider:
             usage=result.usage,
         )
 
-    def _api_key(self) -> str:
-        return credential_value(self.config, self.environ)
-
 
 class ChatCompletionsProvider(OpenAIResponsesProvider):
     """Chat Completions messages/choices adapter with strict response_format."""
@@ -1037,6 +1029,7 @@ def build_ai_provider(
     provider_id: str | None = None,
     environ: Mapping[str, str] | None = None,
     transport: AIJSONTransport | None = None,
+    access: AIProviderAccess | None = None,
     sleeper: Callable[[float], None] = time.sleep,
     cancel_event: CancellationSignal | None = None,
 ) -> AIProvider:
@@ -1054,6 +1047,7 @@ def build_ai_provider(
         fallback=fallback,
         environ=environ,
         transport=transport,
+        access=access,
         sleeper=sleeper,
         cancel_event=cancel_event,
     )
@@ -1065,8 +1059,9 @@ def ai_runtime_metadata(
     autonomy: AutonomyLevel,
     provider_id: str | None = None,
     environ: Mapping[str, str] | None = None,
+    access: AIProviderAccess | None = None,
 ) -> Mapping[str, Any]:
-    provider = build_ai_provider(config, provider_id=provider_id, environ=environ)
+    provider = build_ai_provider(config, provider_id=provider_id, environ=environ, access=access)
     application = {
         AutonomyLevel.OFF: "deterministic_only",
         AutonomyLevel.ASSIST: "operator_review_required",

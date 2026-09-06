@@ -39,7 +39,7 @@ class CancellationSignal(Protocol):
 class RequestCancellation:
     """Combine service and job lifetime without a polling helper thread."""
 
-    def __init__(self, owner: threading.Event, job: threading.Event | None) -> None:
+    def __init__(self, owner: threading.Event, job: CancellationSignal | None) -> None:
         self._owner = owner
         self._job = job
 
@@ -254,7 +254,7 @@ class ManagedAIJSONTransport:
             url, headers=headers, body=body, timeout_seconds=timeout_seconds
         )
 
-    def bind(self, cancel_event: threading.Event | None) -> BoundAIJSONTransport:
+    def bind(self, cancel_event: CancellationSignal | None) -> BoundAIJSONTransport:
         return BoundAIJSONTransport(self, RequestCancellation(self._cancel_event, cancel_event))
 
     def _post(
