@@ -381,6 +381,10 @@ class StubService:
             "job": {"kind": "scenario.replay"},
         }
 
+    def resolve_replay_submission(self, run_id: str, request: Mapping[str, Any]):
+        self.calls.append(("resolve_replay_submission", run_id, request))
+        return {"schema_version": "bluefire.replay-submission-resolution.v1", "outcome": "closed"}
+
     def replay(self, run_id: str, request: Mapping[str, Any]):
         self.calls.append(("replay", run_id, request))
         return {"run_id": RUN_ID, "parent_run_id": run_id, "status": "created"}

@@ -4281,6 +4281,65 @@ class ProductStore:
             row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
             return self._job_from_row(row), True
 
+    def close_replay_submission(
+        self,
+        source_run_id: str,
+        submitted_request: Mapping[str, Any],
+        *,
+        submission_id: str,
+        intent_digest: str,
+    ) -> Mapping[str, Any]:
+        """Reserve an unpublished replay key permanently, or return its actual job.
+
+        The terminal reservation competes with publication in the same jobs
+        primary key and write transaction. It never cancels an existing job.
+        """
+        job_id, binding = self._job_submission_binding(submission_id, intent_digest)
+        submitted = _safe_document(submitted_request, context="replay submission closure")
+        if (
+            not isinstance(source_run_id, str)
+            or not _RUN_ID.fullmatch(source_run_id)
+            or not isinstance(submitted, dict)
+            or "approval" in submitted
+            or "submission_id" in submitted
+            or content_hash({"source_run_id": source_run_id, "request": submitted}) != intent_digest
+        ):
+            raise ProductStoreError("replay submission closure binding is invalid")
+        with self._connection(write=True) as connection:
+            row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if row is not None:
+                return self._matching_job_submission(row, "scenario.replay", binding)
+            now = utc_now()
+            document = {
+                "schema_version": "bluefire.closed-replay-submission.v1",
+                "source_run_id": source_run_id,
+                "submitted_request": submitted,
+                "_submission": dict(binding),
+            }
+            connection.execute(
+                """
+                INSERT INTO jobs(
+                    job_id, kind, state, request_json, progress_json, error_json,
+                    created_at, updated_at
+                ) VALUES (?, 'scenario.replay', 'cancelled', ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    _canonical_json(document),
+                    _canonical_json({"phase": "closed_submission", "effects_started": False}),
+                    _canonical_json(
+                        {
+                            "code": "closed_submission",
+                            "message": "Replay submission closed before publication.",
+                        }
+                    ),
+                    now,
+                    now,
+                ),
+            )
+            row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            return self._job_from_row(row)
+
     def transition_job(
         self,
         job_id: str,

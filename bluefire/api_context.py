@@ -268,6 +268,8 @@ class PlatformService(Protocol):
 
     def submit_replay(self, run_id: str, request: JsonObject) -> JsonResult: ...
 
+    def resolve_replay_submission(self, run_id: str, request: JsonObject) -> JsonResult: ...
+
     def replay(self, run_id: str, request: JsonObject) -> JsonResult:
         """Create a lineage-linked replay from an immutable prior run."""
 

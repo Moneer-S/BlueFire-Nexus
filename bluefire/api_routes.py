@@ -490,6 +490,19 @@ class APIRoutes:
             return ""
         return run_id
 
+    def _run_replay_submission_resolution_id(self, path: str) -> str | None:
+        prefix = f"{API_PREFIX}/runs/"
+        suffix = "/replay-submission-resolution"
+        if not path.startswith(prefix) or not path.endswith(suffix):
+            return None
+        if not self._management_query_free():
+            return ""
+        run_id = path[len(prefix) : -len(suffix)]
+        if not _RUN_ID.fullmatch(run_id):
+            self._error(HTTPStatus.BAD_REQUEST, "invalid_run_id", "Run identifier is invalid.")
+            return ""
+        return run_id
+
     def _run_replay_id(self, path: str) -> str | None:
         prefix = f"{API_PREFIX}/runs/"
         suffix = "/replays"

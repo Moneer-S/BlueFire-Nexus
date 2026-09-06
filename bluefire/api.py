@@ -270,6 +270,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             if preparation_run_id:
                 self._method_not_allowed("POST")
             return
+        resolution_run_id = self._routes._run_replay_submission_resolution_id(path)
+        if resolution_run_id is not None:
+            if resolution_run_id:
+                self._method_not_allowed("POST")
+            return
         replay_job_run_id = self._routes._run_replay_job_id(path)
         if replay_job_run_id is not None:
             if replay_job_run_id:
@@ -788,6 +793,15 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             if preparation_run_id:
                 self._dispatch(
                     lambda: self.platform_server.service.prepare_replay(preparation_run_id, body)
+                )
+            return
+        resolution_run_id = self._routes._run_replay_submission_resolution_id(path)
+        if resolution_run_id is not None:
+            if resolution_run_id:
+                self._dispatch(
+                    lambda: self.platform_server.service.resolve_replay_submission(
+                        resolution_run_id, body
+                    )
                 )
             return
         replay_job_run_id = self._routes._run_replay_job_id(path)

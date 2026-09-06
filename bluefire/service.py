@@ -4130,6 +4130,12 @@ class BlueFireService(RunnerManagementServiceMixin):
         return prepared
 
     def _replay_job_submission_response(self, job: Mapping[str, Any]) -> Mapping[str, Any]:
+        if job.get("request", {}).get("schema_version") == "bluefire.closed-replay-submission.v1":
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "replay_submission_closed",
+                "This replay submission was closed. Prepare a new replay to continue.",
+            )
         job = self.job(str(job["job_id"]))
         request = job["request"]
         self._stored_replay_intent(request)
@@ -4159,6 +4165,46 @@ class BlueFireService(RunnerManagementServiceMixin):
         pending = self.product_store.get_approval_request(approval_id)
         if pending.get("status") in {"pending", "withdrawn"}:
             self.product_store.withdraw_pending_approval(approval_id)
+
+    def resolve_replay_submission(
+        self, run_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Close only an unpublished intent, without revalidating expired source state."""
+        try:
+            submission_id, intent_digest, submitted = replay_job_submission(run_id, request)
+            job = self.product_store.close_replay_submission(
+                run_id,
+                submitted,
+                submission_id=submission_id,
+                intent_digest=intent_digest,
+            )
+            closed = job["request"].get("schema_version") == "bluefire.closed-replay-submission.v1"
+            if closed and (
+                job["state"] != "cancelled"
+                or job.get("result_ref") is not None
+                or job["request"].get("source_run_id") != run_id
+                or job["request"].get("submitted_request") != submitted
+                or set(job["request"])
+                != {"schema_version", "source_run_id", "submitted_request", "_submission"}
+                or job.get("progress") != {"phase": "closed_submission", "effects_started": False}
+                or job.get("error", {}).get("code") != "closed_submission"
+            ):
+                raise ProductStoreError("closed replay submission record is invalid")
+            return {
+                "schema_version": "bluefire.replay-submission-resolution.v1",
+                "outcome": "closed" if closed else "existing",
+                "source_run_id": run_id,
+                "submission_id": submission_id,
+                "intent_digest": intent_digest,
+                "submitted_request": submitted,
+                "job": job,
+            }
+        except (ProductStoreError, ReplayError, ValueError) as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "replay_submission_resolution_refused",
+                "The exact replay submission could not be resolved safely.",
+            ) from exc
 
     def submit_replay(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Persist one reviewed full replay intent; approval remains a separate gate."""
