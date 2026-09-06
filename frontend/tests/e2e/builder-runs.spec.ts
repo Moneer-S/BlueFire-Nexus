@@ -167,7 +167,7 @@ test("large branched experiments keep complete data while focusing readable sect
 
 test("Execute approval cannot bypass canonical review and legacy authority is scrubbed after reload", async ({ page }) => {
   await page.goto("./#/runs");
-  await expect(page.getByRole("heading", { name: "Preflight every path. Observe every decision." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review and run" })).toBeVisible();
   await page.getByRole("radio", { name: /Execute/ }).check();
   await page.getByText("Policy, approval & budgets").click();
   const approval = page.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ });

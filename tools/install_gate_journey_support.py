@@ -284,7 +284,7 @@ def validate_runs_dom(dom: str) -> None:
 
     _require(
         'aria-label="Guided local Execute"' in dom
-        and "Preflight every path. Observe every decision." in dom
+        and "Review and run" in dom
         and "Runner ready to approved run" in dom
         and ("Verify &amp; enroll local runner" in dom or "Verify & enroll local runner" in dom)
         and "Unexpected Application Error" not in dom

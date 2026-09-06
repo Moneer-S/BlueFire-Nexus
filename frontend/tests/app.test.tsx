@@ -230,6 +230,59 @@ describe("product application", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
+  it("keeps Runs essentials visible while advanced disclosures preserve the exact request", async () => {
+    const user = userEvent.setup();
+    renderApp("/runs");
+    expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Runner profile" })).toBeVisible();
+    expect(screen.getByRole("textbox", { name: /Target scope/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Run preflight" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Submit Simulate job" })).toBeDisabled();
+    const providerDetails = screen.getByText("AI provider & environment details");
+    const draftDetails = screen.getByText("Browser draft & configuration details");
+    expect(providerDetails.closest("details")).not.toHaveAttribute("open");
+    expect(draftDetails.closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("combobox", { name: "Provider" })).not.toBeVisible();
+    await user.click(providerDetails);
+    expect(screen.getByRole("combobox", { name: "Provider" })).toBeVisible();
+    expect(screen.getByRole("link", { name: "Configure providers" })).toHaveAttribute("href", "/ai-planner");
+    const providerId = (screen.getByRole("combobox", { name: "Provider" }) as HTMLSelectElement).value;
+    await user.click(providerDetails);
+    await user.click(draftDetails);
+    expect(screen.getByText("Provider (sent)")).toBeVisible();
+    await user.click(draftDetails);
+    await user.click(screen.getByRole("radio", { name: /^Assist/ }));
+    await user.click(screen.getByRole("button", { name: "Run preflight" }));
+    await waitFor(() => {
+      const request = vi.mocked(fetch).mock.calls.find(([input]) => String(input).endsWith("/runs/preflight"));
+      expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({
+        mode: "simulate", autonomy: "assist", ai_provider_id: providerId,
+        runner_profile_id: "sandbox-simulate.v1", target_scope: { scope_refs: ["sandbox.workspace"] },
+        scenario: { id: demoScenario.id },
+      });
+    });
+    expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/runs") && init?.method === "POST")).toBe(false);
+  });
+
+  it("keeps the canonical Execute review visible outside the collapsed browser draft", async () => {
+    const user = userEvent.setup();
+    renderApp("/runs");
+    await screen.findByRole("heading", { name: "Review and run" });
+    await user.click(screen.getByRole("radio", { name: /^Execute/ }));
+    await user.click(screen.getByRole("button", { name: "Run preflight" }));
+    const canonical = await screen.findByRole("region", { name: "Canonical preflight plan" });
+    expect(within(canonical).getByText("What this run will do")).toBeVisible();
+    expect(screen.getByText("Browser draft & configuration details").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("Resolved preflight details").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ })).toBeEnabled();
+    expect(screen.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Create approval-gated job" })).toBeDisabled();
+    await user.clear(screen.getByRole("textbox", { name: /Target scope/ }));
+    await user.type(screen.getByRole("textbox", { name: /Target scope/ }), "sandbox.changed");
+    expect(screen.queryByRole("region", { name: "Canonical preflight plan" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create approval-gated job" })).toBeDisabled();
+  });
+
   it("renders mission control and routes every research source link", async () => {
     const user = userEvent.setup();
     renderApp();
@@ -495,7 +548,7 @@ describe("product application", () => {
     expect(screen.getByText(/fresh identity\/inventory\/sandbox probe/i)).toBeVisible();
 
     await user.click(screen.getByRole("link", { name: /Configure Simulate/i }));
-    expect(await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
     expect(window.scrollTo).toHaveBeenCalled();
   });
 
@@ -670,12 +723,13 @@ describe("product application", () => {
 
   it("exposes exactly two effect modes and three independent autonomy levels", async () => {
     renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
     expect(screen.getAllByRole("radio").filter((item) => item.getAttribute("name") === "run-mode")).toHaveLength(2);
     expect(screen.getAllByRole("radio").filter((item) => item.getAttribute("name") === "autonomy")).toHaveLength(3);
     expect(screen.getByText("Profile-owned enforcement")).toBeInTheDocument();
-    expect(screen.getByText("Builder handoff")).toBeVisible();
-    expect(screen.getByText("Not run for this handoff")).toBeVisible();
+    expect(screen.getByText("Browser draft & configuration details").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("Builder handoff")).not.toBeVisible();
+    expect(screen.getByText("Not run for this handoff")).not.toBeVisible();
     expect(screen.getByRole("heading", { name: "No active job" })).toBeVisible();
     expect(screen.queryByText("Job submission in progress")).not.toBeInTheDocument();
     expect(screen.queryByText("Planning request submitted")).not.toBeInTheDocument();
@@ -684,7 +738,7 @@ describe("product application", () => {
   it("locks Execute approval until the complete bound envelope is rendered", async () => {
     const user = userEvent.setup();
     renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
     await user.click(screen.getByRole("radio", { name: /Execute/ }));
     await user.click(screen.getByText("Policy, approval & budgets"));
     const approval = screen.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ });
@@ -778,7 +832,7 @@ describe("product application", () => {
     });
 
     const firstMount = renderApp("/runs");
-    await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." });
+    await screen.findByRole("heading", { name: "Review and run" });
     await waitFor(() => expect(resolveDetail).toBeTypeOf("function"));
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(interruptedJob.job_id);
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
@@ -986,7 +1040,7 @@ describe("product application", () => {
     fetchMock.mockImplementation((input, init) => String(input).endsWith("/jobs") ? pendingInventory : defaultImplementation(input, init));
 
     renderApp("/runs");
-    expect(await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
 
     resolveInventory(new Response(JSON.stringify({ error: { code: "active_job_inventory_unavailable", message: "Inventory unavailable." } }), { status: 503, headers: { "Content-Type": "application/json" } }));
@@ -1004,7 +1058,7 @@ describe("product application", () => {
     fetchMock.mockImplementation((input, init) => String(input).endsWith("/jobs") ? pendingInventory : defaultImplementation(input, init));
 
     renderApp("/runs", client);
-    expect(await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Review and run" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
 
     resolveInventory(json({ schema_version: "bluefire.active-job-list.v1", jobs: [] }));
@@ -1058,7 +1112,7 @@ describe("product application", () => {
     });
 
     renderApp("/runs");
-    await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." });
+    await screen.findByRole("heading", { name: "Review and run" });
     await waitFor(() => expect(resolveMissing).toBeTypeOf("function"));
     expect(window.localStorage.getItem(activeJobStorageKey)).toBe(staleJobId);
     expect(screen.getByRole("button", { name: "Run preflight" })).toBeDisabled();
@@ -1083,7 +1137,7 @@ describe("product application", () => {
     });
 
     renderApp("/runs", client);
-    await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." });
+    await screen.findByRole("heading", { name: "Review and run" });
     await waitFor(() => expect(resolveMissing).toBeTypeOf("function"));
     expect(screen.getByRole("heading", { name: "No active job" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "Pause" })).not.toBeEnabled();
@@ -1105,7 +1159,7 @@ describe("product application", () => {
     });
 
     renderApp("/runs");
-    await screen.findByRole("heading", { name: "Preflight every path. Observe every decision." });
+    await screen.findByRole("heading", { name: "Review and run" });
     expect(await screen.findByText(/Mutable controls remain disabled while ownership is reconciled/)).toBeVisible();
     expect(screen.getByRole("heading", { name: "No active job" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Pause" })).toBeDisabled();

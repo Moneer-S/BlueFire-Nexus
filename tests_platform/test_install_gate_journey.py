@@ -536,7 +536,7 @@ def test_runtime_dom_probe_rejects_static_or_disconnected_assets() -> None:
 
     runs = (
         '<section aria-label="Guided local Execute">'
-        "Preflight every path. Observe every decision. "
+        "Review and run "
         "Runner ready to approved run Verify &amp; enroll local runner"
         "</section>"
     )

@@ -382,7 +382,7 @@ test("production operator UI completes authoring, management, run, replay, and c
   completed.push("review_source_and_detection_surfaces");
 
   await navigation.getByRole("link", { name: "Runs" }).click();
-  await expect(page.getByRole("heading", { name: "Preflight every path. Observe every decision." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review and run" })).toBeVisible();
   await page.getByRole("radio", { name: /Execute Approved runner actions/ }).check();
   await page.getByText("Policy, approval & budgets").click();
   await expect(page.getByRole("checkbox", { name: /I reviewed this exact displayed Execute envelope/ })).toBeDisabled();

@@ -1,0 +1,16 @@
+.runs-page .run-next-step { margin: 0; padding: 14px 18px; color: var(--text); font-size: .8rem; line-height: 1.5; }
+.runs-page .run-intent-details { margin: 0 17px 14px; border: 1px solid var(--line); border-radius: 9px; }
+.runs-page .run-intent-details > summary, .runs-page .resolved-preflight-details > summary { padding: 12px; font-size: .74rem; color: var(--muted-strong); cursor: pointer; }
+.runs-page .run-intent-details > .callout { margin: 12px; }
+.runs-page .provider-details > .field-note { margin: 0; padding: 0 13px 13px; }
+.runs-page .preview-hero small { display: block; margin-top: 7px; color: var(--muted); font-size: .72rem; }
+.runs-page .run-action-bar { flex-wrap: wrap; border: 1px solid var(--line); border-radius: 10px; }
+.runs-page .run-action-bar > div { display: flex; align-items: center; gap: 10px; flex: 1 1 280px; font-size: .76rem; line-height: 1.4; }
+.runs-page .run-action-bar .button { flex-shrink: 0; }
+.runs-page .run-layout > * { min-width: 0; }
+.runs-page .primary-environment input, .runs-page .primary-environment select { min-width: 0; }
+.runs-page .provider-details .data-list dd { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .runs-page .run-action-bar > div { flex-basis: 100%; flex-wrap: wrap; }
+  .runs-page .run-action-bar .button { flex: 1 1 180px; }
+}

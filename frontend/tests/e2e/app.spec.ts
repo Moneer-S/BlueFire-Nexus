@@ -44,7 +44,7 @@ test("all major workspaces are reachable", async ({ page }) => {
   const routes = [
     ["Experiments", "Reusable security experiments"],
     ["Build", "Build your experiment"],
-    ["Runs", "Preflight every path. Observe every decision."],
+    ["Runs", "Review and run"],
     ["Compare", "Measure what changed"],
     ["Behaviors", "Neutral, typed behavior contracts"],
     ["Detection Lab", "Detection Lab"],
