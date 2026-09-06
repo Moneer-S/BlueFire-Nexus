@@ -11,9 +11,9 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Protocol
 
-from .ai_wire import AIProviderTransportError
+from .ai_wire import AIProviderCancelled, AIProviderTransportError
 
 _MAX_BYTES = 1_048_576
 _MAX_WIRE_BYTES = 2 * _MAX_BYTES
@@ -28,6 +28,32 @@ _CODES = {
     "response_too_large",
     "request_too_large",
 }
+
+
+class CancellationSignal(Protocol):
+    def is_set(self) -> bool: ...
+
+    def wait(self, timeout: float) -> bool: ...
+
+
+class RequestCancellation:
+    """Combine service and job lifetime without a polling helper thread."""
+
+    def __init__(self, owner: threading.Event, job: threading.Event | None) -> None:
+        self._owner = owner
+        self._job = job
+
+    def is_set(self) -> bool:
+        return self._owner.is_set() or (self._job is not None and self._job.is_set())
+
+    def wait(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while not self.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            self._owner.wait(min(remaining, 0.05))
+        return self.is_set()
 
 
 def _worker_environment() -> dict[str, str]:
@@ -85,7 +111,7 @@ class UrllibAIJSONTransport:
     endpoint does not currently expose browser cancellation or a durable job.
     """
 
-    def __init__(self, *, cancel_event: threading.Event | None = None) -> None:
+    def __init__(self, *, cancel_event: CancellationSignal | None = None) -> None:
         self.cancel_event = cancel_event
 
     def post(
@@ -183,9 +209,7 @@ class UrllibAIJSONTransport:
 
     def _check_deadline(self, deadline: float) -> None:
         if self.cancel_event is not None and self.cancel_event.is_set():
-            raise AIProviderTransportError(
-                "Provider request was cancelled", retryable=False, code="request_cancelled"
-            )
+            raise AIProviderCancelled()
         if time.monotonic() >= deadline:
             raise AIProviderTransportError(
                 "Provider request deadline expired", retryable=True, code="request_timed_out"
@@ -216,7 +240,7 @@ class UrllibAIJSONTransport:
 
 
 class ManagedAIJSONTransport:
-    """Own in-flight setup requests for one service and cancel them at shutdown."""
+    """Own in-flight provider requests for one service and reap them at shutdown."""
 
     def __init__(self) -> None:
         self._cancel_event = threading.Event()
@@ -226,14 +250,28 @@ class ManagedAIJSONTransport:
     def post(
         self, url: str, *, headers: Mapping[str, str], body: bytes, timeout_seconds: float
     ) -> bytes:
+        return self.bind(None).post(
+            url, headers=headers, body=body, timeout_seconds=timeout_seconds
+        )
+
+    def bind(self, cancel_event: threading.Event | None) -> BoundAIJSONTransport:
+        return BoundAIJSONTransport(self, RequestCancellation(self._cancel_event, cancel_event))
+
+    def _post(
+        self,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        body: bytes,
+        timeout_seconds: float,
+        cancellation: RequestCancellation,
+    ) -> bytes:
         with self._condition:
-            if self._cancel_event.is_set():
-                raise AIProviderTransportError(
-                    "Provider request was cancelled", retryable=False, code="request_cancelled"
-                )
+            if cancellation.is_set():
+                raise AIProviderCancelled()
             self._active_requests += 1
         try:
-            return UrllibAIJSONTransport(cancel_event=self._cancel_event).post(
+            return UrllibAIJSONTransport(cancel_event=cancellation).post(
                 url, headers=headers, body=body, timeout_seconds=timeout_seconds
             )
         finally:
@@ -250,3 +288,22 @@ class ManagedAIJSONTransport:
                 raise AIProviderTransportError(
                     "Provider requests could not be reaped", retryable=False
                 )
+
+
+class BoundAIJSONTransport:
+    """Borrow the service owner while honoring one operation's cancellation."""
+
+    def __init__(self, owner: ManagedAIJSONTransport, cancellation: RequestCancellation) -> None:
+        self._owner = owner
+        self.cancellation = cancellation
+
+    def post(
+        self, url: str, *, headers: Mapping[str, str], body: bytes, timeout_seconds: float
+    ) -> bytes:
+        return self._owner._post(
+            url,
+            headers=headers,
+            body=body,
+            timeout_seconds=timeout_seconds,
+            cancellation=self.cancellation,
+        )

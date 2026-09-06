@@ -16,8 +16,9 @@ from enum import Enum
 from typing import Any, Callable, Mapping, Protocol, Sequence, runtime_checkable
 
 from .ai_record_validation import DurableProposalRecordError, validate_v3_proposal_record
-from .ai_transport import UrllibAIJSONTransport
+from .ai_transport import CancellationSignal, UrllibAIJSONTransport
 from .ai_wire import (
+    AIProviderCancelled,
     AIProviderError,
     AIProviderTransportError,
     AIWireError,
@@ -881,6 +882,7 @@ class OpenAIResponsesProvider:
         environ: Mapping[str, str] | None = None,
         transport: AIJSONTransport | None = None,
         sleeper: Callable[[float], None] = time.sleep,
+        cancel_event: CancellationSignal | None = None,
     ) -> None:
         if config.kind is not self._KIND:
             raise AIProviderError("Responses provider requires openai_responses configuration")
@@ -889,8 +891,9 @@ class OpenAIResponsesProvider:
         self.config = config
         self.fallback = fallback
         self.environ = os.environ if environ is None else environ
-        self.transport = transport or UrllibAIJSONTransport()
+        self.transport = transport or UrllibAIJSONTransport(cancel_event=cancel_event)
         self.sleeper = sleeper
+        self.cancel_event = cancel_event
 
     def health(self) -> AIProviderHealth:
         credential_available = self.config.api_key is None or bool(self._api_key())
@@ -918,6 +921,7 @@ class OpenAIResponsesProvider:
         )
 
     def propose(self, request: AIProposalRequest) -> AIProviderResult:
+        self._check_cancelled()
         api_key = self._api_key()
         if self.config.api_key is not None and not api_key:
             return self._fallback(request, attempts=0, reason="credential_unavailable")
@@ -926,6 +930,7 @@ class OpenAIResponsesProvider:
         attempts = 0
         last_error: AIProviderError | None = None
         for attempt in range(self.config.max_retries + 1):
+            self._check_cancelled()
             attempts += 1
             try:
                 payload = self.transport.post(
@@ -934,12 +939,21 @@ class OpenAIResponsesProvider:
                     body=body,
                     timeout_seconds=float(self.config.timeout_seconds),
                 )
-                return self._parse_response(payload, request, attempts=attempts)
+                result = self._parse_response(payload, request, attempts=attempts)
+                self._check_cancelled()
+                return result
             except AIProviderTransportError as exc:
+                if exc.code == "request_cancelled":
+                    raise AIProviderCancelled() from None
                 last_error = exc
                 if not exc.retryable or attempt >= self.config.max_retries:
                     break
-                self.sleeper(min(0.25 * (2**attempt), 2.0))
+                delay = min(0.25 * (2**attempt), 2.0)
+                if self.cancel_event is None:
+                    self.sleeper(delay)
+                else:
+                    self.cancel_event.wait(delay)
+                    self._check_cancelled()
             except AIProviderError as exc:
                 last_error = exc
                 break
@@ -949,6 +963,10 @@ class OpenAIResponsesProvider:
             else "response_invalid"
         )
         return self._fallback(request, attempts=attempts, reason=reason)
+
+    def _check_cancelled(self) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise AIProviderCancelled()
 
     def _parse_response(
         self,
@@ -988,7 +1006,9 @@ class OpenAIResponsesProvider:
         attempts: int,
         reason: str,
     ) -> AIProviderResult:
+        self._check_cancelled()
         result = self.fallback.propose(request)
+        self._check_cancelled()
         return AIProviderResult(
             requested_provider_id=self.config.id,
             effective_provider_id=result.effective_provider_id,
@@ -1018,6 +1038,7 @@ def build_ai_provider(
     environ: Mapping[str, str] | None = None,
     transport: AIJSONTransport | None = None,
     sleeper: Callable[[float], None] = time.sleep,
+    cancel_event: CancellationSignal | None = None,
 ) -> AIProvider:
     selected = config.provider(provider_id)
     if selected.kind is AIProviderKind.DETERMINISTIC:
@@ -1034,6 +1055,7 @@ def build_ai_provider(
         environ=environ,
         transport=transport,
         sleeper=sleeper,
+        cancel_event=cancel_event,
     )
 
 

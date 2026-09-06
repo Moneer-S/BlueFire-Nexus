@@ -25,6 +25,15 @@ class AIProviderTransportError(AIProviderError):
         self.code = code
 
 
+class AIProviderCancelled(AIProviderTransportError):
+    """Cancellation ends the operation; it is never a fallback opportunity."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Provider request was cancelled", retryable=False, code="request_cancelled"
+        )
+
+
 class AIWireError(AIProviderError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)

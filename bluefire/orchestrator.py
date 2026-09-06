@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from .ai import AIProposalRequest, AIProvider, AIProviderError, ProposalType
+from .ai_wire import AIProviderCancelled
 from .approvals import (
     ApprovalError,
     ApprovalStore,
@@ -2054,6 +2055,10 @@ class Orchestrator:
             ):
                 raise AIProviderError("provider result identity does not match the plan")
             request.validate_proposal(result.proposal)
+        except AIProviderCancelled:
+            # Unwind through run() receipt cleanup without recording or applying
+            # a proposal and without advancing the deterministic graph.
+            raise
         except AIProviderError as exc:
             return (
                 {

@@ -56,6 +56,7 @@ from .ai_drafts import (
     normalize_ai_graph_draft,
 )
 from .ai_transport import ManagedAIJSONTransport
+from .ai_wire import AIProviderCancelled
 from .application_errors import APIError
 from .approvals import (
     execution_approval_binding,
@@ -2540,7 +2541,9 @@ class BlueFireService(RunnerManagementServiceMixin):
             self.registry,
             self.store,
             runner=runner,
-            proposal_provider=self._proposal_provider(autonomy, provider),
+            proposal_provider=self._proposal_provider(
+                autonomy, provider, cancel_event=cancel_event
+            ),
             approval_store=self.product_store,
             action_bindings=self._catalog_snapshot.action_bindings,
             provider_artifacts=self._catalog_snapshot.provider_artifacts,
@@ -2655,6 +2658,14 @@ class BlueFireService(RunnerManagementServiceMixin):
                 )
             self._index_run(result)
             return result
+        except AIProviderCancelled as exc:
+            if cancel_event is not None:
+                raise JobCancelled("job provider request cancellation was confirmed") from exc
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "provider_request_cancelled",
+                "The provider request was cancelled before a proposal could be applied.",
+            ) from exc
         except RunnerTaskCancelled as exc:
             if cancel_event is not None and cancel_event.is_set():
                 raise JobCancelled("job runner task cancellation was confirmed") from exc
@@ -3362,6 +3373,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                     checkpoint=context.checkpoint,
                     cancel_event=context.cancellation_event,
                 )
+        except AIProviderCancelled as exc:
+            raise JobCancelled("job provider request cancellation was confirmed") from exc
         except RunnerTaskCancelled as exc:
             if context.cancellation_event.is_set():
                 raise JobCancelled("job runner task cancellation was confirmed") from exc
@@ -4021,7 +4034,9 @@ class BlueFireService(RunnerManagementServiceMixin):
                 self.registry,
                 self.store,
                 runner=runner,
-                proposal_provider=self._proposal_provider(prepared.autonomy, provider),
+                proposal_provider=self._proposal_provider(
+                    prepared.autonomy, provider, cancel_event=context.cancellation_event
+                ),
                 approval_store=self.product_store,
                 action_bindings=self._catalog_snapshot.action_bindings,
                 provider_artifacts=self._catalog_snapshot.provider_artifacts,
@@ -6477,12 +6492,22 @@ class BlueFireService(RunnerManagementServiceMixin):
         self,
         autonomy: AutonomyLevel,
         metadata: Mapping[str, Any],
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> AIProvider | None:
         if autonomy is AutonomyLevel.OFF:
             return None
         provider_id = metadata.get("provider_id")
         if not isinstance(provider_id, str):
             raise AssertionError("validated AI provider metadata has no provider ID")
+        if self.ai_provider_factory is _default_ai_provider_factory:
+            transport = self._provider_check_transport.bind(cancel_event)
+            return build_ai_provider(
+                self._runtime_ai(),
+                provider_id=provider_id,
+                transport=transport,
+                cancel_event=transport.cancellation,
+            )
         return self.ai_provider_factory(self._runtime_ai(), provider_id)
 
     @staticmethod
