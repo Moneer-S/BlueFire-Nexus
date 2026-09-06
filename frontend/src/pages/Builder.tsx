@@ -58,6 +58,10 @@ function BehaviorNode({ data, selected }: NodeProps<BehaviorFlowNode>) {
 }
 
 const nodeTypes = { behavior: BehaviorNode };
+const fitViewOptions = { padding: 0.18, minZoom: 0.6, maxZoom: 1.05 };
+const deleteKeys = ["Backspace", "Delete"];
+const connectionLineStyle = { stroke: "#38a8ff", strokeWidth: 2 };
+const proOptions = { hideAttribution: true };
 
 export function BuilderPage() {
   const query = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
@@ -120,7 +124,10 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
     const index = visibleGraph.ordered.findIndex((step) => step.id === selectedId);
     if (focusedSection !== null && sections.length > 1 && index >= 0) setFocusedSection(Math.floor(index / GRAPH_SECTION_SIZE));
   }, [focusedSection, sections.length, selectedId, visibleGraph]);
-  const selectStep = (id: string) => { setSelectedId(id); setNodes((items) => items.map((node) => ({ ...node, selected: node.id === id }))); setInspectorOpen(true); setPaletteOpen(false); };
+  const selectStep = useCallback((id: string) => { setSelectedId(id); setNodes((items) => items.map((node) => ({ ...node, selected: node.id === id }))); setInspectorOpen(true); setPaletteOpen(false); }, []);
+  const onNodeClick = useCallback((_: unknown, node: BehaviorFlowNode) => selectStep(node.id), [selectStep]);
+  const onSelectionChange = useCallback(({ nodes: selection }: { nodes: BehaviorFlowNode[] }) => setSelectedId(selection.at(-1)?.id ?? ""), []);
+  const onMove = useCallback((_: unknown, viewport: { zoom: number }) => setSummaryZoom(viewport.zoom < 0.8), []);
   const togglePalette = () => { setPaletteOpen((open) => !open); setInspectorOpen(false); };
   const toggleInspector = () => { setInspectorOpen((open) => !open); setPaletteOpen(false); };
   const inspectorToggleId = useId();
@@ -170,8 +177,8 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
       setCompatibility(`${behaviorMap.get(behaviorId)!.title} selected. Inputs, parameters, and connections are preserved. Validate and review the changed run before executing.`);
     } catch (error) { setCompatibility(error instanceof Error ? error.message : "This alternative is unavailable."); }
   };
-  const onNodesChange = (changes: NodeChange<BehaviorFlowNode>[]) => setNodes((items) => applyNodeChanges(changes, items));
-  const onEdgesChange = (changes: EdgeChange<FlowEdge>[]) => setEdges((items) => applyEdgeChanges(changes, items));
+  const onNodesChange = useCallback((changes: NodeChange<BehaviorFlowNode>[]) => setNodes((items) => applyNodeChanges(changes, items)), []);
+  const onEdgesChange = useCallback((changes: EdgeChange<FlowEdge>[]) => setEdges((items) => applyEdgeChanges(changes, items)), []);
   const onNodeDragStop = (_: unknown, node: BehaviorFlowNode) => applyScenario({ ...scenario, layout: { ...scenario.layout, [node.id]: { x: Math.round(node.position.x), y: Math.round(node.position.y) } } });
   const onDelete = ({ nodes: deletedNodes, edges: deletedEdges }: { nodes: BehaviorFlowNode[]; edges: FlowEdge[] }) => {
     const deletedNodeIds = deletedNodes.map((node) => node.id);
@@ -298,7 +305,7 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
         <div className="graph-disclosure" role="status"><span>{shownIds.size} of {scenario.steps.length} steps shown{scenario.steps.length - shownIds.size ? ` · ${scenario.steps.length - shownIds.size} hidden` : ""} · {hiddenBranches} branches hidden. Review run includes the whole experiment.</span><button onClick={() => setAllBranches((value) => !value)}>{allBranches ? "Focus on success path" : "Show all branches"}</button>{selected && scenario.edges.some((edge) => edge.from_step === selected.id && edge.outcome !== "success") && !allBranches ? <button onClick={() => setExpandedBranches((previous) => { const next = new Set(previous); if (next.has(selected.id)) next.delete(selected.id); else next.add(selected.id); return next; })}>{expandedBranches.has(selected.id) ? "Collapse selected branches" : "Expand selected branches"}</button> : null}</div>
         {viewMode === "steps" ? <ol className="ordered-steps" aria-label="Experiment steps">{visibleGraph.ordered.map((step, index) => { const behavior = behaviorMap.get(step.behavior_id); return <li key={step.id}><button aria-pressed={selectedId === step.id} onClick={() => selectStep(step.id)}><span className="step-number">{index + 1}</span><span><strong>{behavior?.title ?? "Unavailable step"}</strong><small>{behavior?.purpose}</small><span className="step-routes">{scenario.edges.filter((edge) => edge.from_step === step.id).map((edge) => <em key={edge.outcome}>{branchLabels[edge.outcome]} → {behaviorMap.get(scenario.steps.find((item) => item.id === edge.to_step)?.behavior_id ?? "")?.title ?? edge.to_step}</em>)}</span></span><Badge>{behavior?.execution_state === "action" ? "Executable" : behavior?.execution_state === "simulation" ? "Simulated" : "Research"}</Badge></button></li>; })}</ol> : null}
         <div className="graph-canvas" hidden={viewMode !== "graph"} tabIndex={0} aria-label="Scenario graph canvas" onPointerDown={(event) => { const target = event.target as HTMLElement; if (!target.closest("button, input, select, textarea")) event.currentTarget.focus(); }} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-bluefire-behavior")) event.preventDefault(); }} onDrop={drop}>
-        <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={(_, node) => selectStep(node.id)} onSelectionChange={({ nodes: selection }) => setSelectedId(selection.at(-1)?.id ?? "")} onMove={(_, viewport) => setSummaryZoom(viewport.zoom < 0.8)} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} fitView fitViewOptions={{ padding: 0.18, minZoom: 0.6, maxZoom: 1.05 }} minZoom={0.4} maxZoom={1.6} deleteKeyCode={["Backspace", "Delete"]} connectionLineStyle={{ stroke: "#38a8ff", strokeWidth: 2 }} proOptions={{ hideAttribution: true }}>
+        <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} fitView fitViewOptions={fitViewOptions} minZoom={0.4} maxZoom={1.6} deleteKeyCode={deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="rgba(117,198,255,.18)"/>{allBranches && scenario.steps.length > 12 ? <MiniMap pannable zoomable nodeColor={(node) => { const behavior = behaviorMap.get((node.data as BehaviorNodeData).step.behavior_id); return behavior?.safety_tier === "restricted" ? "#ff6e79" : behavior?.safety_tier === "controlled" ? "#f7b84b" : "#38a8ff"; }} maskColor="rgba(5,9,19,.74)"/> : null}<Controls showInteractive={false}/>
         </ReactFlow>{!nodes.length ? <div className="graph-empty-overlay"><GitBranch/><strong>Start with one useful step</strong><span>Use Add step, or ask AI to draft an experiment.</span></div> : null}</div>
         <div className={`validation-bar ${validationState}`}><div><strong>{validationState === "valid" ? "Experiment validated" : validationState === "invalid" ? "Check the highlighted steps" : "Ready to review your run"}</strong><span>{validationIssues[0] ?? `${scenario.steps.length} steps · ${scenario.edges.length} branches`}</span></div>{validationIssues.length > 1 ? <details><summary>{validationIssues.length} findings</summary><ul>{validationIssues.map((item) => <li key={item}>{item}</li>)}</ul></details> : null}</div>

@@ -2,7 +2,7 @@ import * as Tooltip from "@radix-ui/react-tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactFlowProps } from "@xyflow/react";
+import type { NodeProps, ReactFlowProps } from "@xyflow/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { api } from "../src/lib/api";
@@ -10,14 +10,24 @@ import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { BuilderPage } from "../src/pages/Builder";
 import { ProductProvider, useProduct } from "../src/state/ProductContext";
 
+const nodeRenders = vi.hoisted(() => [] as string[]);
 const renderedGraphs = vi.hoisted(() => [] as Pick<ReactFlowProps, "nodes" | "edges">[]);
 vi.mock("@xyflow/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@xyflow/react")>();
+  const measuredTypes = new WeakMap<object, ReactFlowProps["nodeTypes"]>();
   return {
     ...actual,
     ReactFlow: (props: ReactFlowProps) => {
       renderedGraphs.push({ nodes: props.nodes, edges: props.edges });
-      return <actual.ReactFlow {...props} />;
+      let nodeTypes = props.nodeTypes;
+      if (nodeTypes?.behavior) {
+        if (!measuredTypes.has(nodeTypes)) {
+          const Original = nodeTypes.behavior;
+          measuredTypes.set(nodeTypes, { ...nodeTypes, behavior: (node: NodeProps) => { nodeRenders.push(node.id); return <Original {...node} />; } });
+        }
+        nodeTypes = measuredTypes.get(nodeTypes);
+      }
+      return <actual.ReactFlow {...props} nodeTypes={nodeTypes} />;
     },
   };
 });
@@ -55,12 +65,14 @@ describe("Builder metadata and graph updates", () => {
     expect(screen.getByLabelText("Approval state")).toHaveTextContent("test-reviewer");
     const original = renderedGraphs.at(-1)!;
     renderedGraphs.length = 0;
+    nodeRenders.length = 0;
 
     for (const character of " edit") {
       await user.type(name, character);
       expect(screen.getByLabelText("Draft state")).toHaveTextContent("dirty");
       expect(screen.getByLabelText("Approval state")).toHaveTextContent("none");
       expect(screen.getByLabelText("Selected methods")).toHaveTextContent("test-selected-method");
+      expect(nodeRenders).toEqual([]);
       expect(renderedGraphs.length).toBeGreaterThan(0);
       for (const graph of renderedGraphs) {
         expect(graph.nodes).toBe(original.nodes);
@@ -112,7 +124,9 @@ describe("Builder metadata and graph updates", () => {
     await user.click(screen.getByRole("button", { name: "Select method in context" }));
     await user.click(screen.getByRole("button", { name: "Approve current context" }));
     const original = renderedGraphs.at(-1)!;
+    nodeRenders.length = 0;
     await user.click(screen.getByRole("button", { name: "Change first behavior in context" }));
+    expect(nodeRenders).toContain(demoScenario.steps[0]!.id);
     expect(screen.getByLabelText("Selected methods")).toHaveTextContent("{}");
     expect(screen.getByLabelText("Approval state")).toHaveTextContent("none");
     await waitFor(() => expect(renderedGraphs.at(-1)!.nodes).not.toBe(original.nodes));
