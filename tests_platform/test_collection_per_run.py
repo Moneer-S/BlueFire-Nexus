@@ -150,6 +150,32 @@ def test_per_run_semantics_read_exact_declared_episode_and_cannot_be_replaced_by
         },
     )
     assert evaluate_observation_integrity([execution, filesystem, changed])["satisfied"] is False
+    alias_step = replace(
+        step,
+        action_id="package.reviewed-collection.v1",
+        execution_binding={
+            "runner_opcode": step.action_id,
+            "logical_behavior_id": step.behavior_id,
+            "logical_action_id": "package.reviewed-collection.v1",
+        },
+    )
+    alias_execution = replace(
+        execution,
+        action_id=alias_step.action_id,
+        content={**execution.content, "collection_method": step.action_id},
+    )
+    alias_records = orchestrator._collect_observable_paths(
+        run_id=execution.run_id,
+        step=alias_step,
+        profile=profile,
+        paths=(path,),
+        parent_evidence_id=alias_execution.evidence_id,
+        collector_ids=(SEMANTIC,),
+    )
+    assert len(alias_records) == 1
+    assert alias_records[0].action_id == alias_step.action_id
+    assert evaluate_observation_integrity([alias_execution, *alias_records])["satisfied"] is True
+    assert evaluate_observation_integrity([alias_execution, filesystem])["satisfied"] is False
     unrelated = replace(
         step, action_id="sandbox.fixture.create.v1", behavior_id="sandbox.fixture.create.v1"
     )

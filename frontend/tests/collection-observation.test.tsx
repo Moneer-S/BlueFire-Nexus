@@ -13,7 +13,7 @@ const scenario: Scenario = { ...structuredClone(demoScenario), id: "scenario.end
 function json(value: unknown) { return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } }); }
 function ChooseScenario() {
   const { setScenario } = useProduct();
-  return <button onClick={() => setScenario(scenario)}>Choose collection experiment</button>;
+  return <><button onClick={() => setScenario(scenario)}>Choose collection experiment</button><button onClick={() => setScenario({ ...scenario, steps: [{ ...scenario.steps[0]!, behavior_id: "package.reviewed-collection.v1" }] })}>Choose package collection</button></>;
 }
 afterEach(() => { vi.unstubAllGlobals(); localStorage.clear(); });
 
@@ -49,6 +49,15 @@ it("selects and visibly binds collection contents through the ordinary Execute p
   await user.click(preflight);
   await waitFor(() => expect(requests).toHaveLength(2));
   expect(requests[1]?.collectors).toEqual(["collector.filesystem.sandbox.v1"]);
+  await user.click(screen.getByRole("button", { name: "Choose package collection" }));
+  const summary = screen.getByText("Observation & detection");
+  if (!summary.closest("details")?.open) await user.click(summary);
+  expect(collector).toBeVisible();
+  expect(collector).toBeEnabled();
+  await user.click(collector);
+  await user.click(preflight);
+  await waitFor(() => expect(requests).toHaveLength(3));
+  expect(requests[2]?.collectors).toEqual(["collector.filesystem.sandbox.v1", collectionSemanticsCollector]);
 });
 
 it("shows the heldout archive path and leaves earlier behaviors outside semantic collection", () => {

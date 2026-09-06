@@ -2920,6 +2920,11 @@ class Orchestrator:
                 "policy_digest": runner_profile["policy_digest"],
                 "runner_status": runner_status,
                 "expected_observable_paths": list(adapted.observable_paths),
+                **(
+                    {"collection_method": runner_step.action_id}
+                    if runner_step.action_id in COLLECTION_METHODS
+                    else {}
+                ),
                 "runner_evidence": runner_result.get("evidence", []),
                 "output": runner_result.get("output"),
                 "stdout": runner_result.get("stdout", {}),
@@ -3051,7 +3056,7 @@ class Orchestrator:
         for collector_id in collector_ids:
             collector_request = request
             if collector_id == CollectionSemanticsCollector.descriptor.id:
-                if step.action_id not in COLLECTION_METHODS:
+                if self._runner_opcode(step) not in COLLECTION_METHODS:
                     continue
                 collector_request = replace(
                     request,

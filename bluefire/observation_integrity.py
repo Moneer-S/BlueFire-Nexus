@@ -76,7 +76,11 @@ def evaluate_observation_integrity(
     positions = {record.evidence_id: index for index, record in enumerate(records)}
     for path, execution in requirements:
         semantic_container = (
-            COLLECTION_METHODS.get(execution.action_id or "") if execution else None
+            COLLECTION_METHODS.get(
+                str(execution.content.get("collection_method", execution.action_id) or "")
+            )
+            if execution
+            else None
         )
         output = execution.content.get("output") if execution is not None else None
         expected = output if isinstance(output, Mapping) else {}
