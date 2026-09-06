@@ -11,6 +11,7 @@ from http import HTTPStatus
 from typing import Any, Mapping, NoReturn, Sequence
 
 from .application_errors import APIError
+from .detection_evaluations import evaluate_run, evaluations
 from .detection_run_import import hypothesis_from_run
 from .detections import (
     DetectionCandidate,
@@ -255,6 +256,12 @@ class DetectionLabService:
     def from_run(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         return hypothesis_from_run(self, request)
 
+    def evaluate_run(self, candidate_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return evaluate_run(self, candidate_id, request)
+
+    def run_evaluations(self, candidate_id: str) -> Mapping[str, Any]:
+        return evaluations(self, candidate_id)
+
     def clone(self, candidate_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         self._fields(
             request,
@@ -432,7 +439,6 @@ class DetectionLabService:
             drift = self.validator.field_drift(predicted_fields, observed_fields)
             after = replace(
                 after,
-                predicted_fields=predicted_fields,
                 observed_fields=observed_fields,
                 field_drift=drift,
                 validation={

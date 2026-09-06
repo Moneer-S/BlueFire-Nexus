@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Mapping, cast
 
+from . import product_store_detection_evaluations as detection_evaluation_store
 from .ai import (
     MUTATING_PROPOSAL_TYPES,
     AIProviderError,
@@ -67,7 +68,7 @@ if TYPE_CHECKING:
     from .action_packages import VerifiedActionPackage, VerifiedActionPackageActivation
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ACTION_PACKAGE_VERSION = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
@@ -923,6 +924,7 @@ class ProductStore:
                         REFERENCES action_package_activation_events(generation)
                     """)
             self._backfill_detection_revisions(connection)
+            detection_evaluation_store.initialize_schema(connection)
             if current is None or int(current) < 6:
                 self._migrate_legacy_plugin_metadata(connection)
             if current is None or int(current) < SCHEMA_VERSION:
@@ -1071,6 +1073,15 @@ class ProductStore:
             """,
             (revision_root_id, revision, candidate_id, created_at),
         )
+
+    def save_detection_evaluation(self, document: Mapping[str, Any]) -> Mapping[str, Any]:
+        payload = _safe_document(document, context="detection evaluation")
+        with self._connection(write=True) as connection:
+            return detection_evaluation_store.save_report(connection, payload)
+
+    def detection_evaluations(self, candidate_id: str) -> list[Mapping[str, Any]]:
+        with self._connection() as connection:
+            return detection_evaluation_store.list_reports(connection, candidate_id)
 
     @property
     def schema_version(self) -> int:

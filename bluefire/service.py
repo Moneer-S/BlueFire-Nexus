@@ -1882,6 +1882,18 @@ class BlueFireService(RunnerManagementServiceMixin):
 
         return self.detection_lab.from_run(request)
 
+    def evaluate_detection_run(
+        self, candidate_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Retain a bounded query result without changing the candidate lifecycle."""
+
+        return self.detection_lab.evaluate_run(candidate_id, request)
+
+    def detection_run_evaluations(self, candidate_id: str) -> Mapping[str, Any]:
+        """Read and revalidate immutable per-run query evaluation history."""
+
+        return self.detection_lab.run_evaluations(candidate_id)
+
     def clone_detection_candidate(
         self, candidate_id: str, request: Mapping[str, Any]
     ) -> Mapping[str, Any]:

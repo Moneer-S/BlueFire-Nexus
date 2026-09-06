@@ -227,6 +227,10 @@ def _parser() -> argparse.ArgumentParser:
     detection_commands.add_parser("list", help="List persisted detection candidates")
     detection_detail = detection_commands.add_parser("detail", help="Show one detection candidate")
     detection_detail.add_argument("candidate_id")
+    detection_evaluations = detection_commands.add_parser(
+        "evaluations", help="Read immutable per-run query results"
+    )
+    detection_evaluations.add_argument("candidate_id")
     detection_create = detection_commands.add_parser(
         "create", help="Create an immutable hypothesis from a JSON request"
     )
@@ -239,6 +243,7 @@ def _parser() -> argparse.ArgumentParser:
         "parse",
         "exercise-fixtures",
         "exercise-observed",
+        "evaluate-run",
         "evaluate-benign",
         "reject",
         "clone",
@@ -628,6 +633,8 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
             return service.detection_candidates()
         if args.detection_command == "detail":
             return service.detection_candidate(args.candidate_id)
+        if args.detection_command == "evaluations":
+            return service.detection_run_evaluations(args.candidate_id)
         if args.detection_command == "create":
             return service.upsert_detection_hypothesis(_json_object(args.document))
         if args.detection_command == "from-run":
@@ -637,6 +644,7 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
             "parse": service.parse_detection_candidate,
             "exercise-fixtures": service.exercise_detection_fixtures,
             "exercise-observed": service.exercise_detection_observed,
+            "evaluate-run": service.evaluate_detection_run,
             "evaluate-benign": service.evaluate_detection_benign,
             "reject": service.reject_detection_candidate,
             "clone": service.clone_detection_candidate,

@@ -1,0 +1,71 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { api } from "../lib/api";
+import type { DetectionCandidate, DetectionCaseRole, DetectionRunEvaluation, RunRecord } from "../types";
+import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, sentence } from "./Primitives";
+
+const questionSeed = "Does this detector identify bounded collection staging while avoiding observed benign activity?";
+
+export function DetectionRunEvaluations({ candidate, resourceId, sourceRunId, runs, revisions }: {
+  candidate: DetectionCandidate;
+  resourceId?: string;
+  sourceRunId: string;
+  runs: RunRecord[];
+  revisions: Array<{ id: string; label: string }>;
+}) {
+  const client = useQueryClient();
+  const [runId, setRunId] = useState(sourceRunId);
+  const [question, setQuestion] = useState(questionSeed);
+  const [role, setRole] = useState<DetectionCaseRole>("attack");
+  const [relatedId, setRelatedId] = useState("");
+  useEffect(() => { setRunId(sourceRunId); }, [sourceRunId]);
+  useEffect(() => { setRelatedId(""); }, [resourceId]);
+  const reports = useQuery({ queryKey: ["detection-evaluations", resourceId], queryFn: () => api.detectionRunEvaluations(resourceId!), enabled: Boolean(resourceId) });
+  const related = useQuery({ queryKey: ["detection-evaluations", relatedId], queryFn: () => api.detectionRunEvaluations(relatedId), enabled: Boolean(relatedId) });
+  const evaluate = useMutation({
+    mutationFn: (body: { candidateId: string; run_id: string; question: string; case_role: DetectionCaseRole }) => api.evaluateDetectionRun(body.candidateId, { run_id: body.run_id, question: body.question, case_role: body.case_role }),
+    onSuccess: (_result, body) => { void client.invalidateQueries({ queryKey: ["detection-evaluations", body.candidateId] }); },
+  });
+  const language = candidate.target_language ?? candidate.language ?? "internal";
+  const canEvaluate = resourceId && ["sqlite", "sigma"].includes(language) && ["parsed", "fixture_exercised", "observed_exercised", "benign_evaluated"].includes(candidate.state);
+  const rows = [...(reports.data?.evaluations ?? []), ...(related.data?.evaluations ?? [])];
+  const resultForSelection = evaluate.variables?.candidateId === resourceId && evaluate.variables?.run_id === runId;
+  return <>
+    <Callout title="Evaluate the full observed run">SQLite and Sigma queries execute against every independently observed record in the verified source bundle. No fixture exercise is required after parsing. Missing telemetry remains insufficient evidence. These immutable reports leave the candidate lifecycle unchanged.</Callout>
+    {!canEvaluate ? <Callout tone="warning" title="Parsed query candidate required">Save and parse a SQLite or Sigma candidate to evaluate a run. Internal matcher results retain internal semantics, and YARA cannot inspect file bytes from metadata alone.</Callout> : null}
+    <Field label="Experiment question"><textarea rows={2} maxLength={1000} value={question} onChange={(event) => setQuestion(event.target.value)} /></Field>
+    <Field label="Evaluation source run"><select value={runId} onChange={(event) => setRunId(event.target.value)}><option value="">Select immutable run</option>{runId && !runs.some((run) => run.run_id === runId) ? <option value={runId}>{runId}</option> : null}{runs.map((run) => <option key={run.run_id} value={run.run_id}>{run.run_id}</option>)}</select></Field>
+    <Field label="Operator-assigned case role" hint="This label supplies context; it cannot assert intent or determine the measured result."><select value={role} onChange={(event) => setRole(event.target.value as DetectionCaseRole)}><option value="attack">Attack case</option><option value="benign">Benign activity</option><option value="replay">Replay</option><option value="heldout">Held-out variation</option></select></Field>
+    <Button onClick={() => resourceId && evaluate.mutate({ candidateId: resourceId, run_id: runId, question: question.trim(), case_role: role })} disabled={!canEvaluate || !runId || !question.trim() || evaluate.isPending}>{evaluate.isPending ? "Evaluating immutable evidence" : "Evaluate full observed run"}</Button>
+    {resultForSelection && evaluate.isError ? <ErrorState title="Evaluation refused" error={evaluate.error} /> : null}
+    {resultForSelection && evaluate.data ? <Callout title="Evaluation retained">{sentence(evaluate.data.evaluation.result.state)} · {evaluate.data.evaluation.result.match_count === null ? "No supported match count" : `${evaluate.data.evaluation.result.match_count} matched records`}. The measured result comes from the query and source evidence.</Callout> : null}
+    {revisions.some((revision) => revision.id !== resourceId) ? <Field label="Related revision reports"><select value={relatedId} onChange={(event) => setRelatedId(event.target.value)}><option value="">Selected revision only</option>{revisions.filter((revision) => revision.id !== resourceId).map((revision) => <option key={revision.id} value={revision.id}>{revision.label}</option>)}</select></Field> : null}
+    {reports.isError ? <ErrorState title="Evaluation history unavailable" error={reports.error} retry={() => { void reports.refetch(); }} /> : null}
+    {related.isError ? <ErrorState title="Related revision history unavailable" error={related.error} retry={() => { void related.refetch(); }} /> : null}
+    {resourceId && reports.isPending ? <LoadingState label="Loading immutable evaluation reports" /> : null}
+    {rows.length ? <div className="structured-list" aria-label="Immutable run evaluations">{rows.map((report) => <EvaluationReport key={report.evaluation_id} report={report} />)}</div> : reports.isSuccess ? <EmptyState title="No retained run evaluations" description="Evaluate an immutable run to record its actual query matches, case role, and evidence limits." /> : null}
+  </>;
+}
+
+function EvaluationReport({ report }: { report: DetectionRunEvaluation }) {
+  const result = report.result;
+  return <article>
+    <strong>{report.question}</strong>
+    <div><Badge>{sentence(report.case_role)} · operator assigned</Badge><Badge tone={result.state === "insufficient_evidence" || result.state === "backend_error" ? "warning" : "info"}>{sentence(result.state)}</Badge></div>
+    {report.case_role === "benign" && result.state === "matched" ? <Callout tone="warning" title="Match in a declared benign case">This query matched observed records in an operator-assigned benign case. Review this potential false positive; the label does not suppress the measured match.</Callout> : null}
+    <DataList items={[
+      { label: "Source run", value: <Link to={`/runs/${encodeURIComponent(report.source.run_id)}`}>{report.source.run_id}</Link> },
+      { label: "Detector revision", value: <span>{report.candidate.revision} · <code>{report.candidate.candidate_id}</code></span> },
+      { label: "Observed / all records", value: `${report.source.observed_count} / ${report.source.evidence_count}` },
+      { label: "Query result", value: result.match_count === null ? "Insufficient evidence or backend unavailable" : `${result.match_count} matched records` },
+      { label: "Matched evidence", value: result.matched_evidence_ids.join(", ") || "None" },
+      { label: "Missing fields", value: result.missing_fields.join(", ") || "None reported" },
+      { label: "Evidence gaps", value: result.gap_count },
+      { label: "Diagnostics", value: result.diagnostic_codes.map(sentence).join(", ") || "None" },
+      { label: "Query backend", value: `${report.backend.name}${report.backend.version ? ` · ${report.backend.version}` : ""} · ${report.backend.executed ? "Executed" : "Not executed"}` },
+      { label: "Query digest", value: <code>{report.candidate.query_sha256}</code> },
+    ]} />
+    <details><summary>Inspect immutable evaluation record</summary><pre>{JSON.stringify(report, null, 2)}</pre></details>
+  </article>;
+}

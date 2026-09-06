@@ -3,6 +3,7 @@ import { Beaker, CheckCircle2, Code2, FileCheck2, FlaskConical, Plus, Search, Sh
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
+import { DetectionRunEvaluations } from "../components/DetectionRunEvaluations";
 import { runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
   DetectionCandidate,
@@ -340,7 +341,7 @@ function CandidateWorkspace({
   onRevision: (kind: RevisionKind, body: DetectionCloneRequest | DetectionTuneRequest) => void;
   onCompare: (candidateId: string) => void;
 }) {
-  const [tab, setTab] = useState<"candidate" | "revisions" | "fixtures" | "observed" | "history">("candidate");
+  const [tab, setTab] = useState<"candidate" | "revisions" | "evaluations" | "fixtures" | "observed" | "history">("candidate");
   const [source, setSource] = useState("");
   const [fixtures, setFixtures] = useState('[{"fixture_id":"malicious-1","artifact_type":"file_observation","path":"staged/a.txt"}]');
   const [benign, setBenign] = useState('[{"fixture_id":"benign-1","artifact_type":"file_observation","path":"documents/a.txt"}]');
@@ -461,7 +462,7 @@ function CandidateWorkspace({
 
   return <Panel className="candidate-workspace">
     <PanelHeader eyebrow="Candidate workspace" title={candidate.title ?? candidate.resolvedId} detail={candidate.behavior_id ?? "Behavior not linked"} actions={<Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : "success"}>{sentence(candidate.state)}</Badge>} />
-    <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "revisions", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{sentence(item)}</button>)}</div>
+    <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "revisions", "evaluations", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{item === "evaluations" ? "Run evaluations" : sentence(item)}</button>)}</div>
     <div className="candidate-body">
       {!persisted ? <Callout title="Run-linked record">This candidate is part of an immutable run. Save its definition as a separate hypothesis to use lifecycle or revision actions.<Button size="small" onClick={onSaveLinked} disabled={saveLinkedPending || candidate.demo || !candidate.behavior_id || !candidate.selection || !candidate.logsource}>{saveLinkedPending ? "Saving hypothesis" : "Save hypothesis from run"}</Button></Callout> : null}
       {localError ? <Callout tone="danger" title="Input refused locally">{localError}</Callout> : null}
@@ -522,6 +523,13 @@ function CandidateWorkspace({
         revisionPending={revisionPending}
         onSubmit={submitRevision}
         onCompare={onCompare}
+      /> : tab === "evaluations" ? <DetectionRunEvaluations
+        key={candidate.resolvedId}
+        candidate={candidate}
+        resourceId={resource?.id}
+        sourceRunId={sourceRunId}
+        runs={finalizedRuns}
+        revisions={lineage.filter((item) => item.resourceId).map((item) => ({ id: item.resourceId!, label: `Revision ${item.revision ?? 1} · ${item.resourceId}` }))}
       /> : tab === "fixtures" ? <>
         <Field label="Malicious fixtures JSON" hint={language === "yara" ? "YARA fixtures require exactly fixture_id and bounded text data." : "Structured fixtures use fields referenced by the candidate selection."}><textarea rows={8} value={fixtures} onChange={(event) => setFixtures(event.target.value)} disabled={!canFixture} /></Field>
         <Button size="small" onClick={() => submitFixtures("exercise-fixtures")} disabled={!canFixture || lifecyclePending}><Beaker />Exercise malicious fixtures</Button>

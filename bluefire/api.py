@@ -218,6 +218,15 @@ class PlatformService(Protocol):
     def upsert_detection_hypothesis(self, request: JsonObject) -> JsonResult:
         """Create one immutable candidate definition or return its exact duplicate."""
 
+    def detection_hypothesis_from_run(self, request: JsonObject) -> JsonResult:
+        """Import only a verified run candidate's definition into the registry."""
+
+    def evaluate_detection_run(self, candidate_id: str, request: JsonObject) -> JsonResult:
+        """Retain an immutable query result against a full observed run bundle."""
+
+    def detection_run_evaluations(self, candidate_id: str) -> JsonResult:
+        """Read integrity-checked immutable per-run detector results."""
+
     def clone_detection_candidate(self, candidate_id: str, request: JsonObject) -> JsonResult:
         """Clone one candidate into a new hypothesis revision."""
 
@@ -645,7 +654,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             candidate_id, detection_action = detection_request
             if candidate_id == "":
                 return
-            if detection_action is not None:
+            if detection_action == "evaluations" and candidate_id is not None:
+                self._dispatch(
+                    lambda: self.platform_server.service.detection_run_evaluations(candidate_id)
+                )
+            elif detection_action is not None:
                 self._method_not_allowed("POST")
             elif candidate_id is None:
                 self._dispatch(lambda: self.platform_server.service.detection_candidates())
@@ -948,10 +961,13 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     lambda: self.platform_server.service.upsert_detection_hypothesis(body),
                     success_status=HTTPStatus.CREATED,
                 )
-            elif detection_action is None:
+            elif detection_action is None or detection_action == "evaluations":
                 self._method_not_allowed("GET")
             else:
                 detection_operations = {
+                    "evaluate-run": lambda: self.platform_server.service.evaluate_detection_run(
+                        candidate_id, body
+                    ),
                     "clone": lambda: self.platform_server.service.clone_detection_candidate(
                         candidate_id, body
                     ),
@@ -1705,6 +1721,8 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return (candidate_id, None)
         action = parts[1]
         if action not in {
+            "evaluate-run",
+            "evaluations",
             "clone",
             "tune",
             "compare",

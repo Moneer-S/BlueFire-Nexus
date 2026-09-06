@@ -521,6 +521,21 @@ export interface DetectionRunImportResponse extends DetectionResourceEnvelope {
   source_candidate_id: string;
 }
 
+export type DetectionCaseRole = "attack" | "benign" | "replay" | "heldout";
+export interface DetectionRunEvaluation {
+  schema_version: string;
+  evaluation_id: string;
+  question: string;
+  case_role: DetectionCaseRole;
+  case_role_basis: "operator_declared";
+  candidate: { candidate_id: string; revision_root_id: string; revision: number; definition_digest: string; query_sha256: string; source_sha256: string; target_language: string; parser_backend: Record<string, string> };
+  source: { run_id: string; manifest_digest: string; evidence_digest: string; observed_count: number; evidence_count: number; excluded_provenance_counts: Record<string, number> };
+  result: { state: "matched" | "not_matched" | "insufficient_evidence" | "backend_error"; match_count: number | null; evaluated_evidence_ids: string[]; matched_evidence_ids: string[]; gap_count: number; gap_evidence_ids: string[]; mapped_fields: string[]; available_fields: string[]; unsupported_fields: string[]; missing_fields: string[]; diagnostic_codes: string[] };
+  backend: { name: string; executed: boolean; version?: string; query_only?: boolean; authorizer?: boolean; limits?: Record<string, number> };
+  created_at: string;
+  limitations: string[];
+}
+
 export interface DetectionCloneRequest {
   reason: string;
   title?: string;

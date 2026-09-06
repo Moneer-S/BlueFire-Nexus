@@ -1,4 +1,4 @@
-import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
+import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
 
 const API_ROOT = "/api/v1";
@@ -440,6 +440,14 @@ export const api = {
   async compareDetections(baselineCandidateId: string, candidateId: string): Promise<DetectionComparisonResponse> {
     if (DEMO_MODE) throw new ApiError("Demo candidates cannot produce durable revision comparisons.", "demo_detection_comparison_refused", undefined, 409);
     return request(`/detections/${encodeURIComponent(baselineCandidateId)}/compare`, { method: "POST", body: JSON.stringify({ candidate_id: candidateId }) });
+  },
+  async evaluateDetectionRun(candidateId: string, body: { run_id: string; question: string; case_role: DetectionCaseRole }): Promise<{ evaluation: DetectionRunEvaluation }> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot retain immutable detector evaluations.", "demo_detection_evaluation_refused", undefined, 409);
+    return request(`/detections/${encodeURIComponent(candidateId)}/evaluate-run`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async detectionRunEvaluations(candidateId: string): Promise<{ evaluations: DetectionRunEvaluation[] }> {
+    if (DEMO_MODE) return { evaluations: [] };
+    return request(`/detections/${encodeURIComponent(candidateId)}/evaluations`);
   },
   async detectionFromRun(runId: string, candidateId: string): Promise<DetectionRunImportResponse> {
     if (DEMO_MODE) throw new ApiError("Demo records cannot create durable run-linked hypotheses.", "demo_detection_import_refused", undefined, 409);

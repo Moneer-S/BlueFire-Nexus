@@ -279,7 +279,7 @@ def test_v5_plugin_metadata_is_preserved_and_active_status_is_demoted(
 
     store = ProductStore(path)
 
-    assert store.schema_version == 7
+    assert store.schema_version == 8
     assert store.list_action_packages() == []
     assert store.get_resource("plugin", str(document["id"]))["status"] == "legacy_metadata"
     assert store.list_legacy_action_package_metadata() == [

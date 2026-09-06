@@ -156,7 +156,7 @@ def test_store_migrates_and_persists_secret_safe_settings(tmp_path: Path) -> Non
     path = tmp_path / "state" / "bluefire.db"
     store = ProductStore(path)
 
-    assert store.schema_version == 7
+    assert store.schema_version == 8
     store.set_setting(
         "ai.provider",
         {"endpoint": "https://api.example.test/v1", "api_key": {"env": "BLUEFIRE_API_KEY"}},
@@ -193,11 +193,11 @@ def test_concurrent_first_open_serializes_one_idempotent_migration(tmp_path: Pat
     assert all(not thread.is_alive() for thread in threads)
     assert errors == []
     assert len(stores) == participant_count
-    assert all(store.schema_version == 7 for store in stores)
+    assert all(store.schema_version == 8 for store in stores)
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(7,)]
+        ).fetchall() == [(8,)]
 
 
 def test_scenario_versions_are_content_addressed_and_retrievable(tmp_path: Path) -> None:
@@ -398,7 +398,7 @@ def test_schema_v1_database_migrates_to_claimable_approvals(tmp_path: Path) -> N
 
     store = ProductStore(path)
 
-    assert store.schema_version == 7
+    assert store.schema_version == 8
     columns = {
         row[1] for row in sqlite3.connect(path).execute("PRAGMA table_info(approval_requests)")
     }
