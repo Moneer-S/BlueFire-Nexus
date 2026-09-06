@@ -564,3 +564,25 @@ def test_missing_recorded_collector_authority_does_not_inherit_defaults(setup, t
     with pytest.raises(APIError, match="recorded collector binding"):
         service.method_comparison_context(run_id)
     assert not access.calls
+
+
+def test_runtime_method_change_is_not_mislabeled_as_the_other_method(setup, monkeypatch):
+    service, _, source, _, _ = setup
+    run = service.store.get_run(source)
+    recorded = {
+        **run,
+        "steps": [
+            {
+                "step_id": "stage_collection",
+                "behavior_id": "sandbox.collection.archive.v1",
+                "execution_disposition": "executed",
+            }
+        ],
+    }
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("A mismatched method must be refused before replay preparation")
+
+    monkeypatch.setattr(service, "prepare_replay", forbidden)
+    with pytest.raises(APIError, match="recorded runtime method"):
+        service.method_comparison._options(recorded, "stage_collection")

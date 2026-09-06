@@ -32,6 +32,8 @@ sequence. Execute always waits for a fresh ordinary Execute approval. The replay
 planner is Off to prevent additional unreviewed adaptations; that setting and any
 change from the source are shown explicitly. Scope, profile, catalog and collector
 authority must be reconstructable without widening.
+If a recorded runtime method differs from the frozen scenario step, this bounded
+operation refuses rather than calling a repeat of that method an alternative.
 
 One reserved replay UUID is published through existing replay admission. Parent
 Stop and child publication serialize in the same jobs-table transaction. The

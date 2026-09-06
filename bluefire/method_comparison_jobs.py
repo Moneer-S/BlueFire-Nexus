@@ -127,6 +127,22 @@ class MethodComparisonJobs:
             collection_pair = {"sandbox.collection.records.v1", "sandbox.collection.archive.v1"}
             if step.behavior_id in collection_pair:
                 alternatives = tuple(sorted(collection_pair - {step.behavior_id}))
+            recorded_steps = run.get("steps", [])
+            if (
+                alternatives
+                and isinstance(recorded_steps, list)
+                and any(
+                    isinstance(row, Mapping)
+                    and row.get("step_id") == step.id
+                    and row.get("execution_disposition") != "counterfactual"
+                    and isinstance(row.get("behavior_id"), str)
+                    and row["behavior_id"] != step.behavior_id
+                    for row in recorded_steps
+                )
+            ):
+                raise _fail(
+                    "The recorded runtime method differs from the frozen scenario. Select a run whose recorded method matches its replay snapshot."
+                )
             for alternate in alternatives:
                 if alternate == step.behavior_id:
                     continue
