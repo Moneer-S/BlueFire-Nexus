@@ -265,8 +265,15 @@ class WindowsJobContainment:
 
     def _release_job(self, process_id: int) -> bool:
         with self._jobs_lock:
-            job = self._jobs.pop(process_id, None)
-        return job is None or self.close_handle(job)
+            job = self._jobs.get(process_id)
+            if job is None:
+                return True
+            # A drained tree still owns its job handle until CloseHandle succeeds.
+            # Keep lookup, close, and removal serialized so retries use that handle.
+            if not self.close_handle(job):
+                return False
+            del self._jobs[process_id]
+            return True
 
     def finish(self, process: subprocess.Popen[bytes]) -> bool:
         if sys.platform != "win32":

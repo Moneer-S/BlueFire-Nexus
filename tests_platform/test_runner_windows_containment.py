@@ -217,6 +217,44 @@ def test_failed_termination_retains_the_owned_job(kernel: FakeKernel) -> None:
     assert ("close", (job,)) not in kernel.calls
 
 
+@pytest.mark.parametrize("operation", ["finish", "terminate"])
+@pytest.mark.parametrize("close_failure", ["false", "os_error"])
+def test_failed_handle_close_keeps_exact_job_owned_for_retry(
+    kernel: FakeKernel, operation: str, close_failure: str
+) -> None:
+    owner = WindowsJobContainment(kill_on_close=True)
+    process = FakeProcess()
+    process.returncode = 0
+    job = owner.create_job()
+    owner.assign(job, process)  # type: ignore[arg-type]
+    reconcile = getattr(owner, operation)
+
+    def fail_close(handle: int) -> int:
+        assert handle == job
+        if close_failure == "os_error":
+            raise OSError("injected CloseHandle failure")
+        return 0
+
+    kernel.CloseHandle.result = fail_close
+    for attempt in range(1, 3):
+        if close_failure == "os_error":
+            with pytest.raises(OSError, match="injected CloseHandle failure"):
+                reconcile(process)
+        else:
+            assert reconcile(process) is False
+        assert owner._jobs == {process.pid: job}
+        assert kernel.calls.count(("close", (job,))) == attempt
+        assert kernel.calls.count(("terminate_job", (job, 1))) == 1
+        assert sum(name == "query" for name, _args in kernel.calls) == 1
+
+    kernel.CloseHandle.result = 1
+    assert reconcile(process) is True
+    assert owner._jobs == {}
+    assert kernel.calls.count(("close", (job,))) == 3
+    assert reconcile(process) is True
+    assert kernel.calls.count(("close", (job,))) == 3
+
+
 def test_containment_state_is_private_to_each_owner(kernel: FakeKernel) -> None:
     first = WindowsJobContainment(kill_on_close=False)
     second = WindowsJobContainment(kill_on_close=False)
