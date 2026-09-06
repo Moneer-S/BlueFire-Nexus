@@ -280,6 +280,7 @@
         "bluefire.job_runtime",
         "bluefire.orchestrator",
         "bluefire.replay",
+        "bluefire.replay_preparation",
         "bluefire.runner_management_service"
       ]
     },

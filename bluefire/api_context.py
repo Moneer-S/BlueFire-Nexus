@@ -264,6 +264,8 @@ class PlatformService(Protocol):
     def events(self, run_id: str, *, after_sequence: int, limit: int) -> JsonResult:
         """Return one validated page from the tamper-evident run event stream."""
 
+    def prepare_replay(self, run_id: str, request: JsonObject) -> JsonResult: ...
+
     def replay(self, run_id: str, request: JsonObject) -> JsonResult:
         """Create a lineage-linked replay from an immutable prior run."""
 

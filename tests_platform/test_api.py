@@ -370,6 +370,10 @@ class StubService:
             "items": [],
         }
 
+    def prepare_replay(self, run_id: str, request: Mapping[str, Any]):
+        self.calls.append(("prepare_replay", run_id, request))
+        return {"schema_version": "bluefire.replay-preparation.v1", "effects_started": False}
+
     def replay(self, run_id: str, request: Mapping[str, Any]):
         self.calls.append(("replay", run_id, request))
         return {"run_id": RUN_ID, "parent_run_id": run_id, "status": "created"}

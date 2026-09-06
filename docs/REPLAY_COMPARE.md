@@ -10,6 +10,36 @@ Replay answers “what happens if I repeat or declare one controlled change?” 
 - Execute replay still requires current runner availability, target scope, policy, and approval.
 - A defense-change note is metadata; BlueFire does not deploy the defense change.
 
+## Prepare a full replay for review
+
+`POST /api/v1/runs/{run_id}/replay-preparations` accepts the existing exact or
+variant replay options, without `approval`. It returns the actual prospective
+`scenario`, resolved `lineage`, and canonical `preflight`, including the full
+Execute approval binding and envelope when applicable. It does not create a run,
+job, approval, execution workspace, or effect. Execute preparation probes current
+runner readiness; it does not claim readiness when that probe is unavailable.
+
+The response explicitly declares `replay_extent: "full"`. Non-null
+`from_step_id` is refused by this preparation version. Checkpoint replay keeps
+its existing separate restoration review and submission path.
+
+After review, submit the returned `replay_request` unchanged to
+`POST /api/v1/runs/{run_id}/replays`, adding the returned `preparation_id` and
+`preparation_context`. Execute also requires its normal explicit operator
+`approval`. Both preparation fields must be present together. The context is
+limited to 64 KiB of ordinary public readiness metadata. It is not approval or
+a secret capability and should be passed through from the server response.
+
+Submission revalidates the source bundle and the resolved graph, plan, profile,
+provider, scope, catalog and collectors. Execute independently probes all live
+readiness identities against the reviewed snapshot and checks its freshness;
+the original snapshot is retained only when these checks succeed, preserving
+the exact displayed approval digest. Changed, expired, or invalid review state
+requires preparing and reviewing again before effects. Repeated preparation
+may refresh the readiness timestamp and therefore produce a new preparation ID.
+Legacy replay clients that omit both preparation fields retain their current
+explicit approval flow.
+
 ## Exact replay
 
 ```bash

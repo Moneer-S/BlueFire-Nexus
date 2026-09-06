@@ -105,6 +105,7 @@ STRICT_SOURCE_AUDIT_PATHS = (
     "bluefire/receiver_policy.py",
     "bluefire/receiver_session_contract.py",
     "bluefire/receiver_session_channel.py",
+    "bluefire/replay_preparation.py",
     "bluefire/orchestrator.py",
     "bluefire/service.py",
     "bluefire/package_management.py",

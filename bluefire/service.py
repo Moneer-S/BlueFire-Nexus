@@ -104,6 +104,12 @@ from .product_store import (
 from .registry import BehaviorRegistry, RegistryError, load_builtin_registry
 from .replay import ReplayError, ReplayRequest, prepare_replay
 from .replay_checkpoint import CheckpointError, build_restoration_plan
+from .replay_preparation import (
+    bind_replay_preparation,
+    replay_preparation_context,
+    replay_review_payload,
+    reviewed_replay_readiness,
+)
 from .research import ResearchSource, ResearchSourceError
 from .reviewed_source_intake import ReviewedSourceIntake
 from .run_store import RunStore, RunStoreError
@@ -3683,6 +3689,311 @@ class BlueFireService(RunnerManagementServiceMixin):
         except RunStoreError as exc:
             raise APIError(HTTPStatus.NOT_FOUND, "run_not_found", "Run was not found.") from exc
 
+    def _resolve_replay_source_locked(
+        self, run_id: str, request: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Use one source/catalog/profile/collector interpretation for review and replay."""
+        integrity = self.store.validate_bundle(run_id)
+        if not integrity.get("valid"):
+            raise ReplayError("source run bundle failed integrity validation")
+        source = self.store.get_run(run_id)
+        mode = ExecutionMode(str(source.get("mode", "simulate")))
+        raw_exact = request.get("exact", False)
+        if not isinstance(raw_exact, bool):
+            raise ReplayError("exact replay flag must be a boolean")
+        exact = raw_exact
+        collector_ids, collector_runtime = self._replay_collector_configuration(
+            request,
+            source=source,
+            mode=mode,
+            exact=exact,
+        )
+        source_runtime = self._source_collector_runtime(source)
+        source_collector_authority = self._source_collector_authority(
+            source,
+            runtime=source_runtime,
+        )
+        collector_binding = self._collector_binding(collector_ids, collector_runtime)
+        source_catalog_authority = self._run_catalog_authority(source)
+        replay_catalog, replay_catalog_authority = (
+            self._historical_action_catalog(source_catalog_authority)
+            if exact
+            else (self._catalog_snapshot, self._catalog_snapshot.to_dict())
+        )
+        if (
+            exact
+            and mode is ExecutionMode.EXECUTE
+            and source_catalog_authority is not None
+            and replay_catalog_authority != self._catalog_snapshot.to_dict()
+        ):
+            raise ReplayError(
+                "exact Execute replay requires the source package catalog to remain active"
+            )
+        replay_action_implementations = self._action_implementations(request, mode=mode)
+        prepared = prepare_replay(
+            self.store,
+            replay_catalog.registry,
+            ReplayRequest(
+                source_run_id=run_id,
+                exact=exact,
+                from_step_id=self._optional_string(request.get("from_step_id")),
+                swap_step_id=self._optional_string(request.get("swap_step_id")),
+                swap_behavior_id=self._optional_string(request.get("swap_behavior_id")),
+                parameter_overrides=self._parameter_overrides(request.get("parameter_overrides")),
+                action_implementations=(
+                    replay_action_implementations if "action_implementations" in request else None
+                ),
+                autonomy=self._optional_autonomy(request),
+                ai_provider_id=self._optional_ai_provider_id(request),
+                runner_profile_id=self._optional_string(request.get("runner_profile_id")),
+                defense_change=self._optional_string(request.get("defense_change")),
+            ),
+        )
+        profile = self._profile_for_catalog(
+            prepared.runner_profile_id,
+            mode,
+            replay_catalog,
+        )
+        autonomy = prepared.autonomy
+        provider_id = self._resolve_ai_provider_id(prepared.ai_provider_id)
+        provider = self._ai_provider_metadata(autonomy, provider_id)
+        return {
+            "source": source,
+            "mode": mode,
+            "exact": exact,
+            "collector_ids": collector_ids,
+            "collector_runtime": collector_runtime,
+            "source_collector_authority": source_collector_authority,
+            "collector_binding": collector_binding,
+            "source_catalog_authority": source_catalog_authority,
+            "replay_catalog": replay_catalog,
+            "replay_catalog_authority": replay_catalog_authority,
+            "prepared": prepared,
+            "profile": profile,
+            "autonomy": autonomy,
+            "provider_id": provider_id,
+            "provider": provider,
+        }
+
+    def _resolved_replay_lineage(
+        self,
+        resolved: Mapping[str, Any],
+        resolved_replay_actions: Mapping[str, str],
+        collector_authority: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        prepared = resolved["prepared"]
+        source_catalog_authority = resolved["source_catalog_authority"]
+        replay_catalog_authority = resolved["replay_catalog_authority"]
+        provider_id = resolved["provider_id"]
+        collector_runtime = resolved["collector_runtime"]
+        source_collector_authority = resolved["source_collector_authority"]
+        source = resolved["source"]
+        replay_record = {
+            **prepared.lineage,
+            "catalog_authority_from": source_catalog_authority,
+            "catalog_authority_to": replay_catalog_authority,
+            "catalog_authority_changed": (source_catalog_authority != replay_catalog_authority),
+            "ai_provider_to": provider_id,
+            "action_implementations_to": resolved_replay_actions,
+            "action_implementations_changed": (
+                resolved_replay_actions != prepared.lineage.get("action_implementations_from")
+            ),
+            "collector_settings_from": self._source_collector_settings_hash(source),
+            "collector_settings_to": (
+                collector_runtime.settings_hash if collector_runtime is not None else None
+            ),
+            "collector_settings_changed": (
+                self._source_collector_settings_hash(source)
+                != (collector_runtime.settings_hash if collector_runtime is not None else None)
+            ),
+            "collector_authority_from": source_collector_authority,
+            "collector_authority_to": collector_authority,
+            "collector_authority_changed": (source_collector_authority != collector_authority),
+        }
+        return replay_record
+
+    def _bind_replay_review(
+        self,
+        resolved: Mapping[str, Any],
+        request: Mapping[str, Any],
+        plan: Mapping[str, Any],
+        lineage: Mapping[str, Any],
+        target_scope: Mapping[str, Any],
+        runner_readiness: Mapping[str, Any] | None,
+        collector_authority: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        prepared = resolved["prepared"]
+        profile = resolved["profile"]
+        return bind_replay_preparation(
+            source=resolved["source"],
+            request=request,
+            resolution={
+                "scenario": prepared.scenario.to_dict(),
+                "plan": dict(plan),
+                "profile": profile.to_dict() if profile is not None else None,
+                "ai_provider": resolved["provider"],
+                "target_scope": dict(target_scope),
+                "lineage": dict(lineage),
+                "collector_binding": resolved["collector_binding"],
+                "collector_registry_authority": collector_authority,
+                "runner_readiness": runner_readiness,
+                "catalog_authority": resolved["replay_catalog_authority"],
+            },
+        )
+
+    def prepare_replay(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Resolve a full replay review without approval, persistence or effects."""
+        admission_deadline = monotonic() + _REPLAY_ADMISSION_SECONDS
+        with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
+            try:
+                if monotonic() >= admission_deadline:
+                    raise ReplayError("replay preparation admission expired")
+                payload = replay_review_payload(request)
+                self._action_catalog_boundary()
+                return self._prepare_replay_locked(run_id, payload)
+            except APIError:
+                raise
+            except (
+                ActionCatalogError,
+                ProductStoreError,
+                ReplayError,
+                RunStoreError,
+                OrchestrationError,
+                RunnerContractError,
+                RunnerTransportError,
+                CollectorError,
+                ContractError,
+                RegistryError,
+                OSError,
+                ValueError,
+            ) as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "replay_preparation_refused",
+                    "Replay could not be prepared for review.",
+                    [str(exc)],
+                ) from exc
+
+    def _prepare_replay_locked(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        resolved = self._resolve_replay_source_locked(run_id, request)
+        mode = resolved["mode"]
+        prepared = resolved["prepared"]
+        profile = resolved["profile"]
+        catalog = resolved["replay_catalog"]
+        runtime = resolved["collector_runtime"]
+        scope_problems = self._scope_problems(request, profile, mode)
+        if scope_problems:
+            raise ReplayError("; ".join(scope_problems))
+        target_scope = (
+            self._target_scope(request) if mode is ExecutionMode.EXECUTE else {"scope_refs": []}
+        )
+        runner: RunnerTransport | None = None
+        readiness: Mapping[str, Any] | None = None
+        collector_authority: Mapping[str, Any] | None = None
+        if mode is ExecutionMode.EXECUTE:
+            if profile is None:
+                raise ReplayError("Execute replay requires an explicit runner profile")
+            runner, sandbox, readiness = self._execute_readiness_boundary(profile)
+            if runtime is not None:
+                _, collector_authority = self._managed_collector_registry(sandbox, runtime)
+                if (
+                    resolved["exact"]
+                    and collector_authority != resolved["source_collector_authority"]
+                ):
+                    raise ReplayError(
+                        "exact replay requires the approved collector registry authority"
+                    )
+        orchestrator = Orchestrator(
+            catalog.registry,
+            self.store,
+            runner=runner,
+            action_bindings=catalog.action_bindings,
+            provider_artifacts=catalog.provider_artifacts,
+            catalog_authority=resolved["replay_catalog_authority"],
+        )
+        report = orchestrator.preflight(
+            prepared.scenario,
+            mode=mode,
+            profile=profile,
+            autonomy=resolved["autonomy"],
+            ai_provider=resolved["provider"],
+            approval_present=False,
+            action_implementations=prepared.action_implementations,
+            collector_runtime_settings=runtime,
+        ).to_dict()
+        actions = {
+            str(step["step_id"]): str(step["action_id"])
+            for step in report["plan"]["steps"]
+            if step.get("action_id") is not None
+        }
+        lineage = self._resolved_replay_lineage(resolved, actions, collector_authority)
+        report.update(
+            {
+                "runner_profile": profile.id if profile else None,
+                "scope": target_scope,
+                "findings": list(report["problems"]),
+                "capabilities": report["required_capabilities"],
+                "action_implementations": actions,
+                "safety_tier": self._maximum_tier(prepared.scenario, registry=catalog.registry),
+                "approval": "required" if mode is ExecutionMode.EXECUTE else "not_required",
+                "cleanup": {
+                    "policy": profile.cleanup_policy.value if profile else "simulate_only",
+                    "action_id": "sandbox.cleanup.v1",
+                },
+                "runner_readiness": readiness,
+                "collector_binding": resolved["collector_binding"],
+                "collector_registry_authority": collector_authority,
+                "collector_runtime": runtime.to_dict() if runtime is not None else None,
+                "collectors": list(
+                    self._selected_collector_ids(resolved["collector_ids"], runtime)
+                ),
+                "approval_binding": None,
+                "approval_envelope": None,
+            }
+        )
+        if mode is ExecutionMode.EXECUTE and profile is not None:
+            report["approval_binding"] = execution_approval_binding(
+                registry=catalog.registry,
+                scenario=prepared.scenario,
+                plan=report["plan"],
+                profile=profile,
+                target_scope=target_scope,
+                autonomy=resolved["autonomy"],
+                ai_provider=resolved["provider"],
+                context={
+                    "replay": lineage,
+                    "resume_from_step_id": None,
+                    "collector_binding": resolved["collector_binding"],
+                    **(
+                        {"collector_registry_authority": collector_authority}
+                        if collector_authority is not None
+                        else {}
+                    ),
+                },
+                runner_readiness=readiness,
+                catalog_authority=resolved["replay_catalog_authority"],
+            )
+            report["approval_envelope"] = execution_approval_envelope(
+                registry=catalog.registry,
+                scenario=prepared.scenario,
+                catalog_authority=resolved["replay_catalog_authority"],
+            )
+        binding = self._bind_replay_review(
+            resolved, request, report["plan"], lineage, target_scope, readiness, collector_authority
+        )
+        return {
+            "schema_version": "bluefire.replay-preparation.v1",
+            **binding,
+            "preparation_context": replay_preparation_context(readiness),
+            "replay_request": dict(request),
+            "replay_extent": "full",
+            "scenario": prepared.scenario.to_dict(),
+            "lineage": lineage,
+            "preflight": report,
+            "approval_created": False,
+            "effects_started": False,
+        }
+
     def replay(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         admission_deadline = monotonic() + _REPLAY_ADMISSION_SECONDS
         with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
@@ -3706,74 +4017,20 @@ class BlueFireService(RunnerManagementServiceMixin):
         replay_workspace: Path | None = None
         replay_profile_id: str | None = None
         try:
-            integrity = self.store.validate_bundle(run_id)
-            if not integrity.get("valid"):
-                raise ReplayError("source run bundle failed integrity validation")
-            source = self.store.get_run(run_id)
-            mode = ExecutionMode(str(source.get("mode", "simulate")))
-            raw_exact = request.get("exact", False)
-            if not isinstance(raw_exact, bool):
-                raise ReplayError("exact replay flag must be a boolean")
-            exact = raw_exact
-            collector_ids, collector_runtime = self._replay_collector_configuration(
-                request,
-                source=source,
-                mode=mode,
-                exact=exact,
-            )
-            source_runtime = self._source_collector_runtime(source)
-            source_collector_authority = self._source_collector_authority(
-                source,
-                runtime=source_runtime,
-            )
-            collector_binding = self._collector_binding(collector_ids, collector_runtime)
-            source_catalog_authority = self._run_catalog_authority(source)
-            replay_catalog, replay_catalog_authority = (
-                self._historical_action_catalog(source_catalog_authority)
-                if exact
-                else (self._catalog_snapshot, self._catalog_snapshot.to_dict())
-            )
-            if (
-                exact
-                and mode is ExecutionMode.EXECUTE
-                and source_catalog_authority is not None
-                and replay_catalog_authority != self._catalog_snapshot.to_dict()
-            ):
-                raise ReplayError(
-                    "exact Execute replay requires the source package catalog to remain active"
-                )
-            replay_action_implementations = self._action_implementations(request, mode=mode)
-            prepared = prepare_replay(
-                self.store,
-                replay_catalog.registry,
-                ReplayRequest(
-                    source_run_id=run_id,
-                    exact=exact,
-                    from_step_id=self._optional_string(request.get("from_step_id")),
-                    swap_step_id=self._optional_string(request.get("swap_step_id")),
-                    swap_behavior_id=self._optional_string(request.get("swap_behavior_id")),
-                    parameter_overrides=self._parameter_overrides(
-                        request.get("parameter_overrides")
-                    ),
-                    action_implementations=(
-                        replay_action_implementations
-                        if "action_implementations" in request
-                        else None
-                    ),
-                    autonomy=self._optional_autonomy(request),
-                    ai_provider_id=self._optional_ai_provider_id(request),
-                    runner_profile_id=self._optional_string(request.get("runner_profile_id")),
-                    defense_change=self._optional_string(request.get("defense_change")),
-                ),
-            )
-            profile = self._profile_for_catalog(
-                prepared.runner_profile_id,
-                mode,
-                replay_catalog,
-            )
-            autonomy = prepared.autonomy
-            provider_id = self._resolve_ai_provider_id(prepared.ai_provider_id)
-            provider = self._ai_provider_metadata(autonomy, provider_id)
+            reviewed_readiness = reviewed_replay_readiness(request)
+            resolved = self._resolve_replay_source_locked(run_id, request)
+            mode = resolved["mode"]
+            exact = resolved["exact"]
+            collector_ids = resolved["collector_ids"]
+            collector_runtime = resolved["collector_runtime"]
+            source_collector_authority = resolved["source_collector_authority"]
+            collector_binding = resolved["collector_binding"]
+            replay_catalog = resolved["replay_catalog"]
+            replay_catalog_authority = resolved["replay_catalog_authority"]
+            prepared = resolved["prepared"]
+            profile = resolved["profile"]
+            autonomy = resolved["autonomy"]
+            provider = resolved["provider"]
             approved_by = self._approval(request, required=mode is ExecutionMode.EXECUTE)
             scope_problems = self._scope_problems(request, profile, mode)
             if scope_problems:
@@ -3785,12 +4042,24 @@ class BlueFireService(RunnerManagementServiceMixin):
             sandbox: Path | None = None
             runner_readiness: Mapping[str, Any] | None = None
             collector_authority: Mapping[str, Any] | None = None
+            if "preparation_id" in request and (
+                (reviewed_readiness is None) != (mode is ExecutionMode.SIMULATE)
+            ):
+                raise ReplayError("replay preparation readiness does not match the replay mode")
             if mode is ExecutionMode.EXECUTE:
                 if profile is None:
                     raise ReplayError("Execute replay requires an explicit runner profile")
                 replay_profile_id = profile.id
+                if reviewed_readiness is not None:
+                    # The echoed timestamp is only freshness-checked review metadata.
+                    # Probe every live identity before retaining that exact snapshot
+                    # for the canonical approval binding and final dispatch checks.
+                    _, _, reviewed_readiness = self._execute_readiness_boundary(
+                        profile, expected=reviewed_readiness
+                    )
                 runner, sandbox, runner_readiness = self._execute_readiness_boundary(
                     profile,
+                    expected=reviewed_readiness,
                     for_dispatch=True,
                 )
                 if collector_runtime is not None:
@@ -3830,28 +4099,9 @@ class BlueFireService(RunnerManagementServiceMixin):
                 for step in resolved_replay_plan.steps
                 if step.action_id is not None
             }
-            replay_record = {
-                **prepared.lineage,
-                "catalog_authority_from": source_catalog_authority,
-                "catalog_authority_to": replay_catalog_authority,
-                "catalog_authority_changed": (source_catalog_authority != replay_catalog_authority),
-                "ai_provider_to": provider_id,
-                "action_implementations_to": resolved_replay_actions,
-                "action_implementations_changed": (
-                    resolved_replay_actions != prepared.lineage.get("action_implementations_from")
-                ),
-                "collector_settings_from": self._source_collector_settings_hash(source),
-                "collector_settings_to": (
-                    collector_runtime.settings_hash if collector_runtime is not None else None
-                ),
-                "collector_settings_changed": (
-                    self._source_collector_settings_hash(source)
-                    != (collector_runtime.settings_hash if collector_runtime is not None else None)
-                ),
-                "collector_authority_from": source_collector_authority,
-                "collector_authority_to": collector_authority,
-                "collector_authority_changed": (source_collector_authority != collector_authority),
-            }
+            replay_record = self._resolved_replay_lineage(
+                resolved, resolved_replay_actions, collector_authority
+            )
             restoration_plan: Mapping[str, Any] | None = None
             if prepared.checkpoint is not None:
                 if mode is not ExecutionMode.EXECUTE or profile is None:
@@ -3913,6 +4163,28 @@ class BlueFireService(RunnerManagementServiceMixin):
                 except CheckpointError as exc:
                     raise ReplayError(str(exc)) from exc
                 replay_record["restoration_plan_hash"] = restoration_plan["plan_hash"]
+            if "preparation_id" in request:
+                expected_preparation = request["preparation_id"]
+                if not isinstance(expected_preparation, str):
+                    raise ReplayError("replay preparation identity is invalid")
+                reviewed_payload = {
+                    key: value
+                    for key, value in request.items()
+                    if key not in {"preparation_id", "preparation_context", "approval"}
+                }
+                current_preparation = self._bind_replay_review(
+                    resolved,
+                    reviewed_payload,
+                    resolved_replay_plan.to_dict(),
+                    replay_record,
+                    target_scope,
+                    runner_readiness,
+                    collector_authority,
+                )
+                if current_preparation["preparation_id"] != expected_preparation:
+                    raise ReplayError(
+                        "replay preparation changed; prepare and review this replay again"
+                    )
             approval_record = (
                 self._bind_and_consume_approval(
                     scenario=prepared.scenario,
@@ -5453,10 +5725,13 @@ class BlueFireService(RunnerManagementServiceMixin):
             raise AssertionError("target scope references must be validated before use")
         return {"scope_refs": list(references)}
 
-    def _maximum_tier(self, scenario: ScenarioDefinition) -> str:
+    def _maximum_tier(
+        self, scenario: ScenarioDefinition, *, registry: BehaviorRegistry | None = None
+    ) -> str:
         ranks = {"safe": 1, "controlled": 2, "restricted": 3}
+        resolved_registry = registry if registry is not None else self.registry
         tiers = [
-            self.registry.get_behavior(step.behavior_id).safety_tier.value
+            resolved_registry.get_behavior(step.behavior_id).safety_tier.value
             for step in scenario.steps
         ]
         return max(tiers, key=ranks.__getitem__) if tiers else "safe"

@@ -265,6 +265,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             if self._routes._management_query_free():
                 self._send(HTTPStatus.NO_CONTENT, b"", "application/json; charset=utf-8")
             return
+        preparation_run_id = self._routes._run_replay_preparation_id(path)
+        if preparation_run_id is not None:
+            if preparation_run_id:
+                self._method_not_allowed("POST")
+            return
         if path in {f"{API_PREFIX}/ai/drafts", f"{API_PREFIX}/ai/providers/check"}:
             if self._routes._management_query_free():
                 self._method_not_allowed("POST")
@@ -772,6 +777,13 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/comparisons":
             self._dispatch(lambda: self.platform_server.service.compare(body))
+            return
+        preparation_run_id = self._routes._run_replay_preparation_id(path)
+        if preparation_run_id is not None:
+            if preparation_run_id:
+                self._dispatch(
+                    lambda: self.platform_server.service.prepare_replay(preparation_run_id, body)
+                )
             return
         run_id = self._routes._run_replay_id(path)
         if run_id is not None:
