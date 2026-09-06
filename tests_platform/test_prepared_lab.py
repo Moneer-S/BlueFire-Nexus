@@ -16,30 +16,44 @@ from bluefire import prepared_lab as lab
 from bluefire.prepared_lab_relay import Relay, remove_owned_socket, tcp_listener
 
 
-def _wheel(path: Path, *, platform: str = "linux", guest: bool = True) -> Path:
+def _wheel(
+    path: Path, *, platform: str = "linux", guest: bool = True, relocated: bool = False
+) -> Path:
     import zipfile
 
+    distribution, version = path.name.split("-", 2)[:2]
+    stem = f"{distribution}-{version}"
+    prefix = f"{stem}.data/purelib/" if relocated else ""
     with zipfile.ZipFile(path, "w") as archive:
+        # This is the actual bdist_wheel layout for our platform-tagged wheel:
+        # root_is_pure=False moves the Python package into .data/purelib.
         archive.writestr(
-            "bluefire/native/runner-manifest.json",
+            f"{stem}.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: py3-none-linux_x86_64\n",
+        )
+        archive.writestr(
+            prefix + "bluefire/native/runner-manifest.json",
             json.dumps({"artifact": {"platform": platform, "architecture": "x86_64"}}),
         )
         if guest:
-            archive.writestr("bluefire/prepared_lab_guest.py", "# packaged helper")
+            archive.writestr(prefix + "bluefire/prepared_lab_guest.py", "# packaged helper")
     return path
 
 
-def test_lab_requires_platform_native_wheel_and_existing_packaged_launcher(tmp_path: Path) -> None:
+@pytest.mark.parametrize("relocated", [False, True])
+def test_lab_requires_platform_native_wheel_and_existing_packaged_launcher(
+    tmp_path: Path, relocated: bool
+) -> None:
     wheelhouse = tmp_path / "wheelhouse"
     wheelhouse.mkdir()
     product = tmp_path / "bluefire_nexus-3.0.0-py3-none-linux_x86_64.whl"
-    _wheel(product, platform="windows")
+    _wheel(product, platform="windows", relocated=relocated)
     with pytest.raises(ValueError, match="Linux x86_64"):
         lab.wheel_inputs(product, wheelhouse)
-    _wheel(product, guest=False)
+    _wheel(product, guest=False, relocated=relocated)
     with pytest.raises(ValueError, match="predates"):
         lab.wheel_inputs(product, wheelhouse)
-    _wheel(product)
+    _wheel(product, relocated=relocated)
     assert lab.wheel_inputs(product, wheelhouse) == [product]
     duplicate = wheelhouse / product.name
     shutil.copyfile(product, duplicate)
@@ -50,6 +64,33 @@ def test_lab_requires_platform_native_wheel_and_existing_packaged_launcher(tmp_p
     duplicate.unlink()
     _wheel(wheelhouse / "bluefire_nexus-2.8.0-py3-none-linux_x86_64.whl")
     with pytest.raises(ValueError, match="one BlueFire"):
+        lab.wheel_inputs(product, wheelhouse)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "bluefire/prepared_lab_guest.py",
+        "bluefire_nexus-3.0.0.data/purelib/bluefire/prepared_lab_guest.py",
+        "bluefire_nexus-3.0.0.data/purelib/bluefire/native/runner-manifest.json",
+        "bluefire_nexus-2.8.0.data/purelib/bluefire/prepared_lab_guest.py",
+        "another_product-3.0.0.data/purelib/bluefire/prepared_lab_guest.py",
+        "bluefire_nexus-3.0.0.data/platlib/bluefire/prepared_lab_guest.py",
+    ],
+)
+def test_lab_refuses_duplicate_mixed_or_foreign_wheel_package_roots(
+    tmp_path: Path, extra: str
+) -> None:
+    import warnings
+    import zipfile
+
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    product = _wheel(tmp_path / "bluefire_nexus-3.0.0-py3-none-linux_x86_64.whl", relocated=True)
+    with warnings.catch_warnings(), zipfile.ZipFile(product, "a") as archive:
+        warnings.simplefilter("ignore", UserWarning)  # Intentional duplicate ZIP members.
+        archive.writestr(extra, "# ambiguous package member")
+    with pytest.raises(ValueError, match="duplicate or ambiguous"):
         lab.wheel_inputs(product, wheelhouse)
 
 

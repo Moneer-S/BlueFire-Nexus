@@ -175,15 +175,33 @@ def wheel_inputs(product: Path, wheelhouse: Path) -> list[Path]:
     ):
         raise ValueError("provide one BlueFire wheel and a bounded dependency wheelhouse")
     with zipfile.ZipFile(product) as archive:
-        if "bluefire/prepared_lab_guest.py" not in archive.namelist():
+        names = archive.namelist()
+        # Native wheels produced by setuptools relocate Python files to purelib.
+        # Match the selected wheel's distribution/version, never a suffix alone.
+        distribution, version = product.name.split("-", 2)[:2]
+        relocated = f"{distribution}-{version}.data/purelib/"
+        roots = [
+            prefix
+            for prefix in ("", relocated)
+            if any(name.startswith(prefix + "bluefire/") for name in names)
+        ]
+        foreign_roots = any(
+            re.match(r"[^/]+\.data/(?:purelib|platlib)/bluefire/", name)
+            and not name.startswith(relocated + "bluefire/")
+            for name in names
+        )
+        if len(names) != len(set(names)) or len(roots) > 1 or foreign_roots:
+            raise ValueError("the product wheel has duplicate or ambiguous BlueFire package paths")
+        prefix = roots[0] if roots else ""
+        if prefix + "bluefire/prepared_lab_guest.py" not in names:
             raise ValueError("the product wheel predates prepared lab support")
         manifests = [
-            name for name in archive.namelist() if name == "bluefire/native/runner-manifest.json"
+            name for name in names if name == prefix + "bluefire/native/runner-manifest.json"
         ]
         if len(manifests) != 1 or archive.getinfo(manifests[0]).file_size > 64 * 1024:
             raise ValueError("the product wheel lacks its bounded native runner manifest")
         manifest = json.loads(archive.read(manifests[0]))
-        artifact = manifest.get("artifact", {})
+        artifact = manifest.get("artifact", {}) if isinstance(manifest, dict) else None
         if (
             not isinstance(artifact, dict)
             or artifact.get("platform") != "linux"
