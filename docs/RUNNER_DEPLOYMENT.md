@@ -73,6 +73,10 @@ must match the staged manifest. The explicit tag is a packaging control, not dyn
 
 ## Cross-platform release validation
 
+For an interactive, prepared WSL2 lab using the ordinary installed UI and CLI, see
+[Prepared Linux lab](PREPARED_LINUX_LAB.md). Its setup and launch steps are separate from the
+release validation journey below.
+
 GATE-11 separates dynamic and structural claims:
 
 - Windows proof builds the wheel from the exact committed source, verifies its `RECORD` and native
