@@ -382,13 +382,16 @@ class ProductStore:
             raise ProductStoreError("product database migration failed safely") from exc
 
     @contextmanager
-    def action_package_catalog_lease(self) -> Iterator[None]:
+    def action_package_catalog_lease(
+        self, *, cancel_event: threading.Event | None = None
+    ) -> Iterator[None]:
         """Serialize every package trust/lifecycle writer with native dispatch."""
 
         try:
             with owner_private_database_lock(
                 self.path,
                 expected=self._database_identity,
+                **({"cancel_event": cancel_event} if cancel_event is not None else {}),
             ):
                 yield
         except LocalLockError as exc:

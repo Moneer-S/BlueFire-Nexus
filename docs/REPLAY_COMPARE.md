@@ -40,6 +40,41 @@ may refresh the readiness timestamp and therefore produce a new preparation ID.
 Legacy replay clients that omit both preparation fields retain their current
 explicit approval flow.
 
+### Durable replay jobs
+
+`POST /api/v1/runs/{run_id}/replay-jobs` accepts the same prepared full replay
+submission plus a canonical UUID `submission_id`. Inline `approval` is refused.
+Keep that UUID for retries of the same HTTP submission: the same bound intent
+returns the existing job; reusing it with changed source, options or preparation
+is refused. A new intended replay needs a new UUID.
+
+The endpoint returns HTTP 202 with `job`, `preflight`, `preparation`, and a
+nonce-free `approval_request`. Jobs use the existing `bluefire.job.v1` schema and
+`kind: "scenario.replay"`. Execute waits for the existing separate
+`POST /api/v1/jobs/{job_id}/approve` operation with `approved_by`; it revalidates
+the exact preparation and consumes the existing one-time approval before the
+worker can claim it. Submission and worker dispatch independently revalidate
+the preparation too.
+
+Use the existing jobs inventory and job detail, pause, resume and cancel
+operations. The immutable stored request has
+`schema_version: "bluefire.replay-job-request.v1"`, `source_run_id`, derived
+`mode`, `scenario_id`, `runner_profile_id`, `autonomy` and `ai_provider_id`,
+plus `replay_request` and `replay_preparation`. Execute also retains the exact
+`target_scope`; Simulate has no effect scope in the request wrapper. Recover the
+review display from `job.request.replay_preparation.preflight`. The server also
+stores its approval reference and submission receipt; callers cannot supply
+either as authority.
+
+`result_ref` links to the saved replay run. Check the job lifecycle and the
+saved run's finalized status before treating that reference as completion; an
+AI proposal review can pause a job with a saved intermediate run. After a
+service restart, unfinished jobs become interrupted and are never automatically
+re-executed. The existing retry operation first requires settled Execute
+workspace cleanup, then creates a fresh preparation, submission UUID and
+approval. Full replay lineage is retained. Checkpoint replay remains on its
+existing synchronous path in this version.
+
 ## Exact replay
 
 ```bash

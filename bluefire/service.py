@@ -7,7 +7,8 @@ import os
 import re
 import stat
 import threading
-from contextlib import AbstractContextManager
+import uuid
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
@@ -15,7 +16,7 @@ from importlib.resources import as_file, files
 from ipaddress import ip_address
 from pathlib import Path, PurePosixPath
 from time import monotonic
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import yaml
 
@@ -107,6 +108,7 @@ from .replay import ReplayError, ReplayRequest, prepare_replay
 from .replay_checkpoint import CheckpointError, build_restoration_plan
 from .replay_preparation import (
     bind_replay_preparation,
+    replay_job_submission,
     replay_preparation_context,
     replay_review_payload,
     reviewed_replay_readiness,
@@ -1672,7 +1674,7 @@ class BlueFireService(RunnerManagementServiceMixin):
             if (
                 job.get("schema_version") != "bluefire.job.v1"
                 or job.get("job_id") != job_id
-                or job.get("kind") != "scenario.run"
+                or job.get("kind") not in {"scenario.run", "scenario.replay"}
                 or state is None
                 or created is None
                 or created.tzinfo is None
@@ -1695,7 +1697,7 @@ class BlueFireService(RunnerManagementServiceMixin):
 
         Retry is replacement, never continuation. In particular, an Execute
         retry cannot inherit the original one-time approval capability: it is
-        preflighted again by :meth:`submit_run` and waits at a new review gate.
+        prepared again and waits at a new review gate.
         """
 
         try:
@@ -1710,8 +1712,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                 source = self.product_store.get_job(job_id)
                 if source.get("state") != "interrupted":
                     raise ProductStoreError("only an interrupted job can be retried")
-                if source.get("kind") != "scenario.run":
-                    raise ProductStoreError("only interrupted scenario.run jobs can be retried")
+                if source.get("kind") not in {"scenario.run", "scenario.replay"}:
+                    raise ProductStoreError("only interrupted scenario jobs can be retried")
                 stored_request = source.get("request")
                 if not isinstance(stored_request, Mapping):
                     raise ProductStoreError("interrupted job request is invalid")
@@ -1722,7 +1724,20 @@ class BlueFireService(RunnerManagementServiceMixin):
                     replacement_request.pop("approval", None)
                     replacement_request.pop("approval_request_id", None)
 
-                submission = self.submit_run(replacement_request)
+                if source.get("kind") == "scenario.replay":
+                    source_run_id, replay_request = self._stored_replay_intent(stored_request)
+                    fresh = self.prepare_replay(source_run_id, replay_request)
+                    submission = self.submit_replay(
+                        source_run_id,
+                        {
+                            **replay_request,
+                            "preparation_id": fresh["preparation_id"],
+                            "preparation_context": fresh["preparation_context"],
+                            "submission_id": str(uuid.uuid4()),
+                        },
+                    )
+                else:
+                    submission = self.submit_run(replacement_request)
                 replacement = submission.get("job")
                 if not isinstance(replacement, Mapping) or not isinstance(
                     replacement.get("job_id"), str
@@ -1742,7 +1757,11 @@ class BlueFireService(RunnerManagementServiceMixin):
                         "schema_version": "bluefire.job-retry-lineage.v1",
                         "retry_job_id": replacement["job_id"],
                         "mode": mode.value,
-                        "request_digest": content_hash(replacement_request),
+                        "request_digest": content_hash(
+                            replacement["request"]
+                            if source.get("kind") == "scenario.replay"
+                            else replacement_request
+                        ),
                     }
                 )
                 progress_document["retry_lineage"] = lineage[-32:]
@@ -1751,7 +1770,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "interrupted",
                     progress=progress_document,
                 )
-        except (ProductStoreError, RunnerContractError, RunnerTransportError) as exc:
+        except (ProductStoreError, ReplayError, RunnerContractError, RunnerTransportError) as exc:
             raise APIError(
                 HTTPStatus.CONFLICT,
                 "job_retry_refused",
@@ -2071,7 +2090,11 @@ class BlueFireService(RunnerManagementServiceMixin):
             approval_id = stored_request.get("approval_request_id")
             if not isinstance(approval_id, str):
                 raise ProductStoreError("job has no bound approval request")
-            preflight = self.preflight(stored_request)
+            preflight = (
+                self._review_replay_job(stored_request)["preflight"]
+                if job.get("kind") == "scenario.replay"
+                else self.preflight(stored_request)
+            )
             problems = [
                 str(item)
                 for item in preflight.get("problems", [])
@@ -2125,6 +2148,11 @@ class BlueFireService(RunnerManagementServiceMixin):
             OrchestrationError,
             RunnerContractError,
             RunnerTransportError,
+            ReplayError,
+            RunStoreError,
+            CollectorError,
+            ActionCatalogError,
+            ValueError,
         ) as exc:
             raise APIError(
                 HTTPStatus.CONFLICT,
@@ -2252,6 +2280,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                     request,
                     review,
                 )
+            elif self.product_store.get_job(context.job_id).get("kind") == "scenario.replay":
+                result = self._execute_replay_job(context, request)
             else:
                 result = self.run(
                     request,
@@ -3888,7 +3918,13 @@ class BlueFireService(RunnerManagementServiceMixin):
                     [str(exc)],
                 ) from exc
 
-    def _prepare_replay_locked(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+    def _prepare_replay_locked(
+        self,
+        run_id: str,
+        request: Mapping[str, Any],
+        *,
+        expected_readiness: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
         resolved = self._resolve_replay_source_locked(run_id, request)
         mode = resolved["mode"]
         prepared = resolved["prepared"]
@@ -3907,7 +3943,9 @@ class BlueFireService(RunnerManagementServiceMixin):
         if mode is ExecutionMode.EXECUTE:
             if profile is None:
                 raise ReplayError("Execute replay requires an explicit runner profile")
-            runner, sandbox, readiness = self._execute_readiness_boundary(profile)
+            runner, sandbox, readiness = self._execute_readiness_boundary(
+                profile, expected=expected_readiness
+            )
             if runtime is not None:
                 _, collector_authority = self._managed_collector_registry(sandbox, runtime)
                 if (
@@ -4008,6 +4046,267 @@ class BlueFireService(RunnerManagementServiceMixin):
             "effects_started": False,
         }
 
+    def _review_submitted_replay_locked(
+        self, run_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        readiness = reviewed_replay_readiness(request)
+        payload = replay_review_payload(
+            {
+                key: value
+                for key, value in request.items()
+                if key not in {"preparation_id", "preparation_context"}
+            }
+        )
+        prepared = self._prepare_replay_locked(run_id, payload, expected_readiness=readiness)
+        if (readiness is None) != (prepared["preflight"]["plan"]["mode"] == "simulate"):
+            raise ReplayError("replay preparation readiness does not match the replay mode")
+        if prepared["preparation_id"] != request.get("preparation_id"):
+            raise ReplayError("replay preparation changed; prepare and review this replay again")
+        return prepared
+
+    @staticmethod
+    def _stored_replay_intent(request: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+        source_run_id = request.get("source_run_id")
+        replay_request = request.get("replay_request")
+        prepared = request.get("replay_preparation")
+        if (
+            request.get("schema_version") != "bluefire.replay-job-request.v1"
+            or not isinstance(source_run_id, str)
+            or not isinstance(replay_request, Mapping)
+            or not isinstance(prepared, Mapping)
+            or prepared.get("replay_request") != replay_request
+        ):
+            raise ProductStoreError("stored replay job intent is invalid")
+        return source_run_id, replay_review_payload(replay_request)
+
+    @contextmanager
+    def _replay_catalog_lease(self, cancel_event: threading.Event | None = None) -> Iterator[None]:
+        while not self._action_catalog_lock.acquire(timeout=0.05):
+            if cancel_event is not None and cancel_event.is_set():
+                raise JobCancelled("replay job cancelled while awaiting catalog review")
+        entered = False
+        try:
+            if cancel_event is not None and cancel_event.is_set():
+                raise JobCancelled("replay job cancelled before catalog review")
+            with self.product_store.action_package_catalog_lease(
+                **({"cancel_event": cancel_event} if cancel_event is not None else {})
+            ):
+                entered = True
+                if cancel_event is not None and cancel_event.is_set():
+                    raise JobCancelled("replay job cancelled before catalog review")
+                yield
+        except ProductStoreError as exc:
+            if not entered and cancel_event is not None and cancel_event.is_set():
+                raise JobCancelled("replay job cancelled while awaiting catalog lease") from exc
+            raise
+        finally:
+            self._action_catalog_lock.release()
+
+    def _review_replay_job(
+        self, request: Mapping[str, Any], *, cancel_event: threading.Event | None = None
+    ) -> Mapping[str, Any]:
+        source_run_id, payload = self._stored_replay_intent(request)
+        previous = request["replay_preparation"]
+        with self._replay_catalog_lease(cancel_event):
+            self._action_catalog_boundary()
+            prepared = self._review_submitted_replay_locked(
+                source_run_id,
+                {
+                    **payload,
+                    "preparation_id": previous.get("preparation_id"),
+                    "preparation_context": previous.get("preparation_context"),
+                },
+            )
+        report = prepared["preflight"]
+        if (
+            previous != prepared
+            or request.get("mode") != report["plan"]["mode"]
+            or request.get("scenario_id") != prepared["scenario"]["id"]
+            or request.get("runner_profile_id") != report["runner_profile"]
+            or request.get("target_scope")
+            != (report["scope"] if report["plan"]["mode"] == "execute" else None)
+        ):
+            raise ProductStoreError("stored replay job metadata changed")
+        return prepared
+
+    def _replay_job_submission_response(self, job: Mapping[str, Any]) -> Mapping[str, Any]:
+        job = self.job(str(job["job_id"]))
+        request = job["request"]
+        self._stored_replay_intent(request)
+        prepared = request["replay_preparation"]
+        return {
+            "schema_version": "bluefire.replay-job-submission.v1",
+            "job": job,
+            "approval_request": job.get("approval_request"),
+            "preflight": prepared["preflight"],
+            "preparation": prepared,
+        }
+
+    def _withdraw_unpublished_replay_approval(
+        self, submission_id: str, intent_digest: str, approval_id: str
+    ) -> None:
+        published = self.product_store.get_job_submission(
+            "scenario.replay", submission_id=submission_id, intent_digest=intent_digest
+        )
+        if published is not None:
+            stored = published.get("request")
+            if (
+                isinstance(stored, Mapping)
+                and stored.get("approval_request_id") == approval_id
+                and published.get("state") not in {"failed", "cancelled", "interrupted"}
+            ):
+                return
+        pending = self.product_store.get_approval_request(approval_id)
+        if pending.get("status") in {"pending", "withdrawn"}:
+            self.product_store.withdraw_pending_approval(approval_id)
+
+    def submit_replay(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Persist one reviewed full replay intent; approval remains a separate gate."""
+        deadline = monotonic() + _REPLAY_ADMISSION_SECONDS
+        try:
+            submission_id, intent_digest, submitted = replay_job_submission(run_id, request)
+            existing = self.product_store.get_job_submission(
+                "scenario.replay", submission_id=submission_id, intent_digest=intent_digest
+            )
+            if existing is not None:
+                return self._replay_job_submission_response(existing)
+            if not self._action_catalog_lock.acquire(timeout=max(0.0, deadline - monotonic())):
+                existing = self.product_store.get_job_submission(
+                    "scenario.replay", submission_id=submission_id, intent_digest=intent_digest
+                )
+                if existing is not None:
+                    return self._replay_job_submission_response(existing)
+                raise ReplayError("replay submission admission expired")
+            try:
+                with self.product_store.action_package_catalog_lease():
+                    existing = self.product_store.get_job_submission(
+                        "scenario.replay", submission_id=submission_id, intent_digest=intent_digest
+                    )
+                    if existing is not None:
+                        return self._replay_job_submission_response(existing)
+                    if monotonic() >= deadline:
+                        raise ReplayError("replay submission admission expired")
+                    self._action_catalog_boundary()
+                    prepared = self._review_submitted_replay_locked(run_id, submitted)
+                    report = prepared["preflight"]
+                    mode = ExecutionMode(report["plan"]["mode"])
+                    problems = [
+                        str(item)
+                        for item in report.get("problems", [])
+                        if item != "Explicit operator approval is required."
+                    ]
+                    if problems:
+                        raise ReplayError("; ".join(problems))
+                    stored = {
+                        "schema_version": "bluefire.replay-job-request.v1",
+                        "source_run_id": run_id,
+                        "mode": mode.value,
+                        "scenario_id": prepared["scenario"]["id"],
+                        "runner_profile_id": report["runner_profile"],
+                        **(
+                            {"target_scope": report["scope"]}
+                            if mode is ExecutionMode.EXECUTE
+                            else {}
+                        ),
+                        "autonomy": report["plan"]["autonomy"],
+                        "ai_provider_id": prepared["lineage"]["ai_provider_to"],
+                        "replay_request": prepared["replay_request"],
+                        "replay_preparation": prepared,
+                    }
+                    pending_approval_id: str | None = None
+                    if mode is ExecutionMode.EXECUTE:
+                        binding = report.get("approval_binding")
+                        if not isinstance(binding, Mapping):
+                            raise ReplayError("replay approval binding is unavailable")
+                        pending = self.product_store.create_approval_request(
+                            run_id=execution_intent_id(binding),
+                            state_digest=str(binding["state_digest"]),
+                            plan_digest=str(binding["plan_digest"]),
+                            profile_id=str(binding["profile_id"]),
+                            target_scope_digest=str(binding["target_scope_digest"]),
+                            maximum_tier=str(binding["maximum_tier"]),
+                            expires_at=self._approval_review_expires_at(),
+                        )
+                        stored["approval_request_id"] = pending["approval_id"]
+                        pending_approval_id = str(pending["approval_id"])
+                    try:
+                        queued = self.job_controller.submit(
+                            "scenario.replay",
+                            stored,
+                            requires_approval=mode is ExecutionMode.EXECUTE,
+                            submission_id=submission_id,
+                            intent_digest=intent_digest,
+                        )
+                    finally:
+                        if pending_approval_id is not None:
+                            self._withdraw_unpublished_replay_approval(
+                                submission_id, intent_digest, pending_approval_id
+                            )
+            finally:
+                self._action_catalog_lock.release()
+            return self._replay_job_submission_response(queued)
+        except APIError:
+            raise
+        except JobQueueFull as exc:
+            raise APIError(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                "job_capacity_exhausted",
+                "The local run queue is at capacity.",
+            ) from exc
+        except (
+            ActionCatalogError,
+            ProductStoreError,
+            ReplayError,
+            RunStoreError,
+            OrchestrationError,
+            CollectorError,
+            RunnerContractError,
+            RunnerTransportError,
+            JobRuntimeError,
+            ValueError,
+        ) as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "replay_job_refused",
+                "The replay job could not be submitted safely.",
+                [str(exc)],
+            ) from exc
+
+    def _execute_replay_job(
+        self, context: JobContext, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        prepared = self._review_replay_job(request, cancel_event=context.cancellation_event)
+        source_run_id, payload = self._stored_replay_intent(request)
+        mode = ExecutionMode(prepared["preflight"]["plan"]["mode"])
+        approval = self._stored_approval(request, mode=mode)
+        if mode is ExecutionMode.EXECUTE:
+            binding = prepared["preflight"]["approval_binding"]
+            if approval is None or any(
+                approval.get(field) != binding.get(field)
+                for field in (
+                    "state_digest",
+                    "plan_digest",
+                    "profile_id",
+                    "target_scope_digest",
+                    "maximum_tier",
+                )
+            ):
+                raise ProductStoreError("replay job approval does not match its prepared intent")
+        context.checkpoint({"phase": "running", "source_run_id": source_run_id})
+        with self._replay_catalog_lease(context.cancellation_event):
+            self._action_catalog_boundary()
+            return self._replay_locked(
+                source_run_id,
+                {
+                    **payload,
+                    "preparation_id": prepared["preparation_id"],
+                    "preparation_context": prepared["preparation_context"],
+                },
+                bound_approval=approval,
+                checkpoint=context.checkpoint,
+                cancel_event=context.cancellation_event,
+            )
+
     def replay(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         admission_deadline = monotonic() + _REPLAY_ADMISSION_SECONDS
         with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
@@ -4026,7 +4325,15 @@ class BlueFireService(RunnerManagementServiceMixin):
                     [str(exc)],
                 ) from exc
 
-    def _replay_locked(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+    def _replay_locked(
+        self,
+        run_id: str,
+        request: Mapping[str, Any],
+        *,
+        bound_approval: Mapping[str, Any] | None = None,
+        checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> Mapping[str, Any]:
         replay_approval_id: str | None = None
         replay_workspace: Path | None = None
         replay_profile_id: str | None = None
@@ -4045,7 +4352,11 @@ class BlueFireService(RunnerManagementServiceMixin):
             profile = resolved["profile"]
             autonomy = resolved["autonomy"]
             provider = resolved["provider"]
-            approved_by = self._approval(request, required=mode is ExecutionMode.EXECUTE)
+            approved_by = (
+                str(bound_approval["approved_by"])
+                if bound_approval is not None
+                else self._approval(request, required=mode is ExecutionMode.EXECUTE)
+            )
             scope_problems = self._scope_problems(request, profile, mode)
             if scope_problems:
                 raise ReplayError("; ".join(scope_problems))
@@ -4089,7 +4400,9 @@ class BlueFireService(RunnerManagementServiceMixin):
                 replay_catalog.registry,
                 self.store,
                 runner=runner,
-                proposal_provider=self._proposal_provider(autonomy, provider),
+                proposal_provider=self._proposal_provider(
+                    autonomy, provider, cancel_event=cancel_event
+                ),
                 approval_store=self.product_store,
                 action_bindings=replay_catalog.action_bindings,
                 provider_artifacts=replay_catalog.provider_artifacts,
@@ -4199,7 +4512,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                     raise ReplayError(
                         "replay preparation changed; prepare and review this replay again"
                     )
-            approval_record = (
+            approval_record = bound_approval or (
                 self._bind_and_consume_approval(
                     scenario=prepared.scenario,
                     profile=profile,
@@ -4296,10 +4609,11 @@ class BlueFireService(RunnerManagementServiceMixin):
                 collector_runtime_settings=collector_runtime,
                 collector_registry_authority=collector_authority,
                 checkpoint=(
-                    self._execution_checkpoint(replay_approval_id, None)
+                    self._execution_checkpoint(replay_approval_id, checkpoint)
                     if replay_approval_id is not None
-                    else None
+                    else checkpoint
                 ),
+                cancel_event=cancel_event,
             )
             if replay_approval_id is not None and sandbox is not None:
                 self._complete_execution_workspace(
@@ -4310,6 +4624,12 @@ class BlueFireService(RunnerManagementServiceMixin):
                 )
             self._index_run(result)
             return result
+        except (AIProviderCancelled, RunnerTaskCancelled) as exc:
+            if cancel_event is not None and cancel_event.is_set():
+                raise JobCancelled("replay job cancellation was confirmed") from exc
+            raise APIError(
+                HTTPStatus.CONFLICT, "replay_refused", "Replay was cancelled.", [str(exc)]
+            ) from exc
         except APIError:
             raise
         except (

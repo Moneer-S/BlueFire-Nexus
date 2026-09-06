@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from typing import Any, Mapping, cast
 
 from .replay import ReplayError
@@ -29,6 +30,29 @@ _FIELDS = frozenset(
 )
 _CONTEXT_SCHEMA = "bluefire.replay-preparation-context.v1"
 _CONTEXT_MAX_BYTES = 64 * 1024
+
+
+def replay_job_submission(
+    source_run_id: str, request: Mapping[str, Any]
+) -> tuple[str, str, dict[str, Any]]:
+    """Validate a retryable submission identity without accepting approval."""
+    submission_id = request.get("submission_id")
+    if not isinstance(submission_id, str):
+        raise ReplayError("replay submission requires a canonical UUID submission_id")
+    try:
+        if str(uuid.UUID(submission_id)) != submission_id:
+            raise ValueError("noncanonical UUID")
+    except ValueError as exc:
+        raise ReplayError("replay submission requires a canonical UUID submission_id") from exc
+    if "approval" in request or not {"preparation_id", "preparation_context"}.issubset(request):
+        raise ReplayError("replay jobs require preparation context and separate job approval")
+    submitted = {key: value for key, value in request.items() if key != "submission_id"}
+    reviewed_replay_readiness(submitted)
+    return (
+        submission_id,
+        content_hash({"source_run_id": source_run_id, "request": submitted}),
+        submitted,
+    )
 
 
 def replay_preparation_context(readiness: Mapping[str, Any] | None) -> dict[str, Any]:

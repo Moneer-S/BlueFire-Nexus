@@ -270,6 +270,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             if preparation_run_id:
                 self._method_not_allowed("POST")
             return
+        replay_job_run_id = self._routes._run_replay_job_id(path)
+        if replay_job_run_id is not None:
+            if replay_job_run_id:
+                self._method_not_allowed("POST")
+            return
         if path in {f"{API_PREFIX}/ai/drafts", f"{API_PREFIX}/ai/providers/check"}:
             if self._routes._management_query_free():
                 self._method_not_allowed("POST")
@@ -783,6 +788,14 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             if preparation_run_id:
                 self._dispatch(
                     lambda: self.platform_server.service.prepare_replay(preparation_run_id, body)
+                )
+            return
+        replay_job_run_id = self._routes._run_replay_job_id(path)
+        if replay_job_run_id is not None:
+            if replay_job_run_id:
+                self._dispatch(
+                    lambda: self.platform_server.service.submit_replay(replay_job_run_id, body),
+                    success_status=HTTPStatus.ACCEPTED,
                 )
             return
         run_id = self._routes._run_replay_id(path)
