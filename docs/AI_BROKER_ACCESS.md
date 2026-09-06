@@ -64,7 +64,12 @@ The access owner combines job cancellation with service lifetime. Closing it
 cancels the channel and waits a bounded interval for active calls to drain. The
 fixed channel interrupts blocked reads and writes. Cancellation during a partial
 request closes the unusable channel; cancellation after a complete write sends an
-exact cancellation frame and drains its one response before reuse. The owner
+exact cancellation frame and drains its one response before reuse. A request
+timeout after a complete write follows the same bounded settlement, then reports
+a retryable timeout while retaining the channel. A late success is drained, not
+returned as success. Malformed, mismatched, closed or undrainable channels still
+fail closed. This settlement does not extend provider execution or enrollment;
+session expiry still tears down the broker and target. The owner
 retains exact process/channel objects after unsuccessful cleanup. A caller-supplied channel object is a
 trusted internal dependency, not authentication of an arbitrary external endpoint.
 

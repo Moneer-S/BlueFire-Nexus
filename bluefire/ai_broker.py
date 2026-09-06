@@ -91,7 +91,9 @@ class BrokeredAIProviderAccess:
             if cancellation.is_set():
                 raise AIProviderCancelled()
             if time.monotonic() >= deadline:
-                raise refusal("request_timed_out")
+                raise AIProviderTransportError(
+                    "Enrolled broker request timed out", retryable=True, code="request_timed_out"
+                )
             self.enrollment.require_current(config)
             if not isinstance(response, Mapping) or any(
                 response.get(key) != value
