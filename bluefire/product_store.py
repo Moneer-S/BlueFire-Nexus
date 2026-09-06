@@ -4173,6 +4173,89 @@ class ProductStore:
             )
         return self.get_job(job_id)
 
+    @staticmethod
+    def _job_submission_binding(
+        submission_id: str, intent_digest: str
+    ) -> tuple[str, Mapping[str, str]]:
+        if not isinstance(submission_id, str):
+            raise ProductStoreError("job submission ID must be a canonical UUID")
+        try:
+            identifier = uuid.UUID(submission_id)
+        except ValueError as exc:
+            raise ProductStoreError("job submission ID must be a canonical UUID") from exc
+        if str(identifier) != submission_id:
+            raise ProductStoreError("job submission ID must be a canonical UUID")
+        if not isinstance(intent_digest, str) or not _DIGEST.fullmatch(intent_digest):
+            raise ProductStoreError("job submission intent digest is invalid")
+        return "job-" + identifier.hex, {
+            "schema_version": "bluefire.job-submission.v1",
+            "submission_id": submission_id,
+            "intent_digest": intent_digest,
+        }
+
+    def _matching_job_submission(
+        self, row: sqlite3.Row, kind: str, binding: Mapping[str, str]
+    ) -> Mapping[str, Any]:
+        snapshot = self._job_from_row(row)
+        request = snapshot["request"]
+        if (
+            snapshot["kind"] != kind
+            or not isinstance(request, Mapping)
+            or request.get("_submission") != binding
+        ):
+            raise ProductStoreError("job submission ID is already bound to a different intent")
+        return snapshot
+
+    def get_job_submission(
+        self, kind: str, *, submission_id: str, intent_digest: str
+    ) -> Mapping[str, Any] | None:
+        """Find an exact durable submission without changing its state or request."""
+
+        job_kind = _identifier(kind, "job kind")
+        job_id, binding = self._job_submission_binding(submission_id, intent_digest)
+        with self._connection() as connection:
+            row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            return None if row is None else self._matching_job_submission(row, job_kind, binding)
+
+    def create_idempotent_job(
+        self,
+        kind: str,
+        request: Mapping[str, Any],
+        *,
+        submission_id: str,
+        intent_digest: str,
+    ) -> tuple[Mapping[str, Any], bool]:
+        """Atomically create a submission or return the first caller's durable job.
+
+        The caller computes the digest from its complete validated intent.  A
+        duplicate never replaces the original request or authorizes rescheduling,
+        including after interruption, failure, or completion.
+        """
+
+        job_kind = _identifier(kind, "job kind")
+        job_id, binding = self._job_submission_binding(submission_id, intent_digest)
+        document = _safe_document(request, context=f"job.{job_kind}.request")
+        if not isinstance(document, dict):
+            raise ProductStoreError("job submission request must be a JSON object")
+        if "_submission" in document and document["_submission"] != binding:
+            raise ProductStoreError("job submission metadata conflicts with its binding")
+        document["_submission"] = dict(binding)
+        with self._connection(write=True) as connection:
+            row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            if row is not None:
+                return self._matching_job_submission(row, job_kind, binding), False
+            now = utc_now()
+            connection.execute(
+                """
+                INSERT INTO jobs(
+                    job_id, kind, state, request_json, progress_json, created_at, updated_at
+                ) VALUES (?, ?, 'queued', ?, '{}', ?, ?)
+                """,
+                (job_id, job_kind, _canonical_json(document), now, now),
+            )
+            row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
+            return self._job_from_row(row), True
+
     def transition_job(
         self,
         job_id: str,
@@ -4234,6 +4317,10 @@ class ProductStore:
             row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
         if row is None:
             raise ProductStoreError("job was not found")
+        return self._job_from_row(row)
+
+    @staticmethod
+    def _job_from_row(row: sqlite3.Row) -> Mapping[str, Any]:
         return {
             "schema_version": "bluefire.job.v1",
             "job_id": row["job_id"],

@@ -48,6 +48,19 @@ class JobStore(Protocol):
 
     def create_job(self, kind: str, request: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
+    def get_job_submission(
+        self, kind: str, *, submission_id: str, intent_digest: str
+    ) -> Mapping[str, Any] | None: ...
+
+    def create_idempotent_job(
+        self,
+        kind: str,
+        request: Mapping[str, Any],
+        *,
+        submission_id: str,
+        intent_digest: str,
+    ) -> tuple[Mapping[str, Any], bool]: ...
+
     def transition_job(
         self,
         job_id: str,
@@ -254,6 +267,8 @@ class RunJobController:
         *,
         requires_approval: bool = False,
         callback: ExecutionCallback | None = None,
+        submission_id: str | None = None,
+        intent_digest: str | None = None,
     ) -> Mapping[str, Any]:
         """Persist and enqueue one callback without exceeding queue capacity."""
 
@@ -262,15 +277,42 @@ class RunJobController:
             raise JobRuntimeError("an execution callback is required")
         if not isinstance(requires_approval, bool):
             raise ValueError("requires_approval must be boolean")
+        if (submission_id is None) != (intent_digest is None):
+            raise ValueError("submission_id and intent_digest must be supplied together")
 
         with self._condition:
             if self._closed:
                 raise JobRuntimeClosed("job controller is shutting down")
+            if submission_id is not None and intent_digest is not None:
+                existing = self._store.get_job_submission(
+                    kind, submission_id=submission_id, intent_digest=intent_digest
+                )
+                if existing is not None:
+                    return existing
             if not self._capacity.acquire(blocking=False):
+                # Another controller may have committed this submission since
+                # the first lookup; a retry does not need a local worker slot.
+                if submission_id is not None and intent_digest is not None:
+                    existing = self._store.get_job_submission(
+                        kind, submission_id=submission_id, intent_digest=intent_digest
+                    )
+                    if existing is not None:
+                        return existing
                 raise JobQueueFull("background job capacity is exhausted")
             control: _JobControl | None = None
+            created_submission_id: str | None = None
+            enqueued = False
             try:
-                snapshot = self._store.create_job(kind, request)
+                if submission_id is not None and intent_digest is not None:
+                    snapshot, created = self._store.create_idempotent_job(
+                        kind, request, submission_id=submission_id, intent_digest=intent_digest
+                    )
+                    if not created:
+                        self._capacity.release()
+                        return snapshot
+                    created_submission_id = _job_id(snapshot)
+                else:
+                    snapshot = self._store.create_job(kind, request)
                 job_id = _job_id(snapshot)
                 stored_request = snapshot.get("request", request)
                 if not isinstance(stored_request, Mapping):
@@ -283,12 +325,24 @@ class RunJobController:
                 )
                 self._controls[job_id] = control
                 future = self._executor.submit(self._run_job, control)
+                enqueued = True
                 control.future = future
                 future.add_done_callback(lambda _future: self._release_control(control))
             except BaseException:
                 if control is not None:
                     self._controls.pop(control.job_id, None)
                 self._capacity.release()
+                if created_submission_id is not None and not enqueued:
+                    # An accepted key must not leave a permanently queued job
+                    # after a local scheduling failure, nor replay on a retry.
+                    self._store.transition_job(
+                        created_submission_id,
+                        JobState.FAILED.value,
+                        error={
+                            "code": "job_scheduling_failed",
+                            "message": "background job could not be scheduled",
+                        },
+                    )
                 raise
             self._condition.notify_all()
             return snapshot
