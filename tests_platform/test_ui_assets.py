@@ -202,20 +202,35 @@ def test_run_ui_separates_preview_preferences_from_canonical_preflight() -> None
     runs = (SOURCE_ROOT / "pages" / "Runs.tsx").read_text(encoding="utf-8")
     for copy in (
         "Profile-owned enforcement",
-        "Browser intent",
+        "Browser draft & configuration details",
         "Unsupported browser overrides are intentionally not shown",
         "Canonical preflight",
-        "What this run will do",
-        "All permitted methods, effects and parameters",
         "Plan digest",
-        "Expected outputs",
-        "Required capabilities",
         "sent for exact binding",
         "Builder handoff",
         "Unsaved browser draft",
         "Next required move",
     ):
         assert copy in runs
+    # The complete review is shared with continuation approval. Check its owner
+    # and the live Runs bindings, not text that moved out of the page component.
+    canonical_review = (SOURCE_ROOT / "components" / "CanonicalPlanReview.tsx").read_text(
+        encoding="utf-8"
+    )
+    for copy in (
+        "What this run will do",
+        "All permitted methods, effects and parameters",
+        "Expected outputs",
+        "Required capabilities",
+    ):
+        assert copy in canonical_review
+    assert "<CanonicalPlanReview" in runs
+    for binding in (
+        "plan={preflight.plan}",
+        "binding={preflight.approval_binding}",
+        "envelope={preflight.approval_envelope}",
+    ):
+        assert binding in runs
     api = (SOURCE_ROOT / "lib" / "api.ts").read_text(encoding="utf-8")
     for unsupported in (
         "budgets:",
@@ -280,7 +295,8 @@ def test_durable_proposal_review_and_retry_stay_separate_from_execute_approval()
         "Policy-valid Simulate choices",
         "Proposal, policy, and application trail",
         "Auto can apply only policy-valid Simulate choices from registered Behavior/Action contracts",
-        "Execute still pauses for review and a fresh one-time approval before any effect",
+        "Execute needs your review and a separate one-time approval",
+        "Execute proposals still require durable review plus a fresh one-time approval before runner effects",
     ):
         assert journey_copy in runs
     for boundary in (
