@@ -72,6 +72,9 @@
 .workbench-builder .ordered-steps > li > button[aria-pressed="true"] { border-color: var(--blue); background: rgba(56,168,255,.07); }
 .workbench-builder .ordered-steps > li > button > span:nth-child(2) { flex: 1; min-width: 0; }
 .workbench-builder .ordered-steps strong { display: block; font-size: .86rem; }
+.workbench-builder .alternative-method { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.workbench-builder .alternative-method > p { margin: 6px 0 10px; }
+.workbench-builder .alternative-method .button { white-space: normal; text-align: left; }
 .workbench-builder .ordered-steps small { display: block; color: var(--muted); margin-top: 5px; font-size: .74rem; line-height: 1.4; }
 .workbench-builder .step-number { width: 28px; height: 28px; flex-shrink: 0; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 50%; color: var(--blue-soft); font-size: .75rem; }
 .workbench-builder .step-routes { display: flex; gap: 4px; flex-direction: column; margin-top: 9px; }

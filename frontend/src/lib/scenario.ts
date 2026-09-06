@@ -1,4 +1,22 @@
-import type { Outcome, Scenario } from "../types";
+import type { Behavior, Outcome, Scenario } from "../types";
+
+/** Change a declared method without rewriting its graph or silently dropping inputs. */
+export function selectScenarioAlternative(scenario: Scenario, stepId: string, behaviorId: string, behaviors: ReadonlyMap<string, Behavior>): Scenario {
+  const step = scenario.steps.find((item) => item.id === stepId);
+  const current = behaviors.get(step?.behavior_id ?? "");
+  if (!step || !current || !behaviors.has(behaviorId) || behaviorId === current.id
+    || ![...(current.compatible_behaviors ?? []), ...step.alternates].includes(behaviorId)) {
+    throw new Error("Choose an available alternative for this step.");
+  }
+  return {
+    ...scenario,
+    steps: scenario.steps.map((item) => item.id === stepId ? {
+      ...item,
+      behavior_id: behaviorId,
+      alternates: [...new Set([current.id, ...item.alternates])].filter((id) => id !== behaviorId),
+    } : item),
+  };
+}
 
 const scenarioOutcomes = new Set(["success", "partial", "blocked", "failed"]);
 
