@@ -476,13 +476,17 @@ def _validate_replay_lineage(
     )
 
 
-def _one_observation(session: CollectionSession, collector_id: str) -> EvidenceRecord:
+def _one_observation(
+    session: CollectionSession, collector_id: str, *, path: str | None = None
+) -> EvidenceRecord:
     result = session.results.get(collector_id)
     observed = _observed(session, collector_id)
+    if path is not None:
+        observed = tuple(record for record in observed if record.content.get("path") == path)
     _require(
         result is not None
         and result.health.readiness.value == "ready"
-        and len(result.records) == 1
+        and (path is not None or len(result.records) == 1)
         and len(observed) == 1,
         f"GATE-05 collector {collector_id} did not produce one healthy observation",
     )
@@ -543,12 +547,28 @@ def _validate_filesystem_binding(
     session: CollectionSession,
     predicted_fields: Mapping[str, Any] | None = None,
 ) -> None:
-    record = _one_observation(session, FilesystemCollector.descriptor.id)
+    record = _one_observation(
+        session, FilesystemCollector.descriptor.id, path="staged/bundle.jsonl"
+    )
     records_by_id = {item.evidence_id: item for item in records}
     steps = _run_steps(run)
     _validate_collection_lineage(record, records_by_id, steps)
 
     stage = steps.get("stage_evidence")
+    export = steps.get("preserve_approved_copy")
+    export_completed = isinstance(export, Mapping) and export.get("status") == "success"
+    expected_paths: tuple[str, ...] = (
+        ("staged/bundle.jsonl", "exports/ephemeral/bundle.bin")
+        if export_completed
+        else ("staged/bundle.jsonl",)
+    )
+    all_filesystem = session.results[FilesystemCollector.descriptor.id].records
+    _require(
+        len(all_filesystem) == len(expected_paths)
+        and all(item.provenance is EvidenceProvenance.OBSERVED for item in all_filesystem)
+        and {item.content.get("path") for item in all_filesystem} == set(expected_paths),
+        "GATE-05 filesystem observations do not cover the exact staged and final file effects",
+    )
     artifacts = stage.get("artifacts") if isinstance(stage, Mapping) else None
     bundle = artifacts.get("bundle") if isinstance(artifacts, Mapping) else None
     path = bundle.get("path") if isinstance(bundle, Mapping) else None
@@ -584,7 +604,9 @@ def _validate_filesystem_binding(
             and isinstance(settings, Mapping)
             and set(settings) == {"collect_after_step", "paths"}
             and settings.get("collect_after_step") == record.step_id
-            and tuple(configured_paths) == (path,)
+            and tuple(configured_paths) == expected_paths
+            and settings.get("collect_after_step")
+            == ("preserve_approved_copy" if export_completed else "try_internal_transport")
             if isinstance(configured_paths, (list, tuple))
             else False
         ),
@@ -625,6 +647,32 @@ def _validate_filesystem_binding(
         and (predicted_fields is None or predicted == expected_fields),
         "GATE-05 filesystem observation does not match the real staged bundle",
     )
+    if export_completed:
+        exported = _one_observation(
+            session, FilesystemCollector.descriptor.id, path=expected_paths[1]
+        )
+        parent, _ = _validate_collection_lineage(exported, records_by_id, steps)
+        output = parent.content.get("output")
+        export_fields = {**expected_fields, "path": expected_paths[1]}
+        _require(
+            isinstance(output, Mapping)
+            and output.get("artifact") == expected_paths[1]
+            and output.get("source") == path
+            and output.get("sha256") == digest
+            and output.get("size") == size
+            and exported.environment == record.environment
+            and exported.content
+            == {
+                **record.content,
+                **export_fields,
+                "observed_fields": export_fields,
+                "observation_key": filesystem_observation_key(expected_paths[1]),
+                "modified_ns": exported.content.get("modified_ns"),
+            }
+            and type(exported.content.get("modified_ns")) is int
+            and exported.content["modified_ns"] > 0,
+            "GATE-05 final export observation is not bound to the actual exported bundle",
+        )
 
 
 def _validate_process_binding(

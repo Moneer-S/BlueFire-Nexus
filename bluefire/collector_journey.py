@@ -81,6 +81,8 @@ CORRUPTION_SCHEMA = "bluefire.collector-corruption-refusal.v1"
 _MAX_REPORT_BYTES = 8 * 1024 * 1024
 _COLLECT_AFTER_STEP = "try_internal_transport"
 _BUNDLE_PATH = "staged/bundle.jsonl"
+_EXPORT_PATH = "exports/ephemeral/bundle.bin"
+_EXPORT_STEP = "preserve_approved_copy"
 _DEFENSE_CHANGE = (
     "collector-gate-network-observer.v1: restore reviewed loopback transport "
     "and enable its independent receiver collector"
@@ -158,13 +160,17 @@ def _runtime_settings(
     process_id: int,
     parent_process_id: int,
     network_enabled: bool,
+    observe_export: bool = False,
 ) -> CollectorRuntimeSettings:
     schedule = {"collect_after_step": _COLLECT_AFTER_STEP}
     return CollectorRuntimeSettings(
         collectors={
             FilesystemCollector.descriptor.id: {
                 "enabled": True,
-                "settings": {**schedule, "paths": [_BUNDLE_PATH]},
+                "settings": {
+                    "collect_after_step": _EXPORT_STEP if observe_export else _COLLECT_AFTER_STEP,
+                    "paths": [_BUNDLE_PATH, _EXPORT_PATH] if observe_export else [_BUNDLE_PATH],
+                },
             },
             NativeProcessCollector.descriptor.id: {
                 "enabled": True,
@@ -238,11 +244,16 @@ def _session(run: Mapping[str, Any]) -> CollectionSession:
     return session
 
 
-def _observed(session: CollectionSession, collector_id: str) -> EvidenceRecord:
+def _observed(
+    session: CollectionSession, collector_id: str, *, path: str | None = None
+) -> EvidenceRecord:
     result = session.results.get(collector_id)
     records = (
         tuple(
-            record for record in result.records if record.provenance is EvidenceProvenance.OBSERVED
+            record
+            for record in result.records
+            if record.provenance is EvidenceProvenance.OBSERVED
+            and (path is None or record.content.get("path") == path)
         )
         if result is not None
         else ()
@@ -490,6 +501,7 @@ def produce_collector_evidence(
             process_id=child.pid,
             parent_process_id=parent_process_id,
             network_enabled=False,
+            observe_export=True,
         )
         replay_settings = _runtime_settings(
             process_id=child.pid,
@@ -586,7 +598,10 @@ def produce_collector_evidence(
                 "GATE-05 controlled replay omitted collector settings lineage",
             )
 
-            baseline_filesystem = _observed(baseline_session, FilesystemCollector.descriptor.id)
+            baseline_filesystem = _observed(
+                baseline_session, FilesystemCollector.descriptor.id, path=_BUNDLE_PATH
+            )
+            _observed(baseline_session, FilesystemCollector.descriptor.id, path=_EXPORT_PATH)
             baseline_process = _observed(baseline_session, NativeProcessCollector.descriptor.id)
             replay_filesystem = _observed(replay_session, FilesystemCollector.descriptor.id)
             replay_process = _observed(replay_session, NativeProcessCollector.descriptor.id)
