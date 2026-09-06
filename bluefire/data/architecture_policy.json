@@ -259,6 +259,7 @@
         "bluefire.cloud_identity_validation",
         "bluefire.comparison",
         "bluefire.comparison_dimensions",
+        "bluefire.comparison_materiality",
         "bluefire.detection_lab",
         "bluefire.detection_context",
         "bluefire.detection_evaluations",
