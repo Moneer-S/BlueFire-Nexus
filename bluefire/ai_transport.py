@@ -17,6 +17,7 @@ from .ai_wire import AIProviderTransportError
 
 _MAX_BYTES = 1_048_576
 _MAX_WIRE_BYTES = 2 * _MAX_BYTES
+_MAX_TIMEOUT_SECONDS = 300.0
 _WORKER = Path(__file__).with_name("_ai_transport_worker.py")
 _CODES = {
     "transport_failed",
@@ -91,7 +92,7 @@ class UrllibAIJSONTransport:
         self, url: str, *, headers: Mapping[str, str], body: bytes, timeout_seconds: float
     ) -> bytes:
         deadline = time.monotonic() + timeout_seconds
-        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        if not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= _MAX_TIMEOUT_SECONDS:
             raise AIProviderTransportError("Provider timeout is invalid", retryable=False)
         if len(body) > _MAX_BYTES:
             raise AIProviderTransportError("Provider request exceeded 1 MiB", retryable=False)
@@ -116,7 +117,13 @@ class UrllibAIJSONTransport:
             # The base interpreter avoids Windows venv redirector descendants;
             # this stdlib-only worker must remain the single supervised child.
             process = subprocess.Popen(  # nosec B603
-                [getattr(sys, "_base_executable", sys.executable), "-I", "-B", str(_WORKER)],
+                [
+                    getattr(sys, "_base_executable", sys.executable),
+                    "-I",
+                    "-B",
+                    str(_WORKER),
+                    str(deadline),
+                ],
                 stdin=read_descriptor,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -146,6 +153,10 @@ class UrllibAIJSONTransport:
                     break
                 except subprocess.TimeoutExpired:
                     continue
+            if process.returncode == 124:
+                raise AIProviderTransportError(
+                    "Provider request deadline expired", retryable=True, code="request_timed_out"
+                )
             if process.returncode != 0 or len(output) > _MAX_WIRE_BYTES:
                 raise AIProviderTransportError("Provider worker failed", retryable=False)
             return self._decode_result(output)
@@ -202,3 +213,40 @@ class UrllibAIJSONTransport:
         raise AIProviderTransportError(
             "Provider endpoint request failed", retryable=result["retryable"], code=result["code"]
         )
+
+
+class ManagedAIJSONTransport:
+    """Own in-flight setup requests for one service and cancel them at shutdown."""
+
+    def __init__(self) -> None:
+        self._cancel_event = threading.Event()
+        self._condition = threading.Condition()
+        self._active_requests = 0
+
+    def post(
+        self, url: str, *, headers: Mapping[str, str], body: bytes, timeout_seconds: float
+    ) -> bytes:
+        with self._condition:
+            if self._cancel_event.is_set():
+                raise AIProviderTransportError(
+                    "Provider request was cancelled", retryable=False, code="request_cancelled"
+                )
+            self._active_requests += 1
+        try:
+            return UrllibAIJSONTransport(cancel_event=self._cancel_event).post(
+                url, headers=headers, body=body, timeout_seconds=timeout_seconds
+            )
+        finally:
+            with self._condition:
+                self._active_requests -= 1
+                self._condition.notify_all()
+
+    def close(self) -> None:
+        self._cancel_event.set()
+        with self._condition:
+            # Transport cleanup normally finishes immediately after cancellation.
+            # Keep service shutdown bounded even if OS-level cleanup fails.
+            if not self._condition.wait_for(lambda: self._active_requests == 0, timeout=5):
+                raise AIProviderTransportError(
+                    "Provider requests could not be reaped", retryable=False
+                )

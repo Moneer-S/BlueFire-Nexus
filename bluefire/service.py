@@ -55,6 +55,7 @@ from .ai_drafts import (
     build_ai_draft_provider,
     normalize_ai_graph_draft,
 )
+from .ai_transport import ManagedAIJSONTransport
 from .application_errors import APIError
 from .approvals import (
     execution_approval_binding,
@@ -252,6 +253,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         self.ai_draft_provider_factory = (
             ai_draft_provider_factory or _default_ai_draft_provider_factory
         )
+        self._provider_check_transport = ManagedAIJSONTransport()
         self._runtime_configuration_lock = threading.RLock()
         self._action_catalog_lock = threading.RLock()
         self._job_retry_lock = threading.RLock()
@@ -940,7 +942,9 @@ class BlueFireService(RunnerManagementServiceMixin):
             raise APIError(
                 HTTPStatus.BAD_REQUEST, "ai_provider_configuration_invalid", str(exc)
             ) from exc
-        return check_provider(provider, connect=request["connect"])
+        return check_provider(
+            provider, connect=request["connect"], transport=self._provider_check_transport
+        )
 
     def draft_ai_graph(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         """Return one validated, normalized, deliberately unsaved scenario draft."""
@@ -4082,7 +4086,10 @@ class BlueFireService(RunnerManagementServiceMixin):
     def close(self) -> None:
         """Cooperatively stop locally managed workers."""
 
-        self.job_controller.shutdown()
+        try:
+            self._provider_check_transport.close()
+        finally:
+            self.job_controller.shutdown()
 
     def _recover_interrupted_cleanup(self) -> Mapping[str, Any]:
         summary: dict[str, Any] = {

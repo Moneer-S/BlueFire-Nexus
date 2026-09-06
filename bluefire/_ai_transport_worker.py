@@ -5,7 +5,11 @@ from __future__ import annotations
 import base64
 import http.client
 import json
+import math
+import os
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -24,7 +28,7 @@ def _failure(code: str = "transport_failed", *, retryable: bool = False) -> dict
 
 
 def perform_request(document: dict[str, Any]) -> dict[str, Any]:
-    """The parent owns the absolute deadline, including this worker's startup."""
+    """The supervisor and worker enforce the same absolute request deadline."""
     try:
         body = base64.b64decode(document["body"], validate=True)
         if len(body) > MAX_BYTES:
@@ -61,7 +65,33 @@ def perform_request(document: dict[str, Any]) -> dict[str, Any]:
         return _failure()
 
 
+def _enforce_deadline() -> None:
+    # The deadline is non-secret process metadata. Supplying it before stdin
+    # lets the worker bound startup/input reads as well as DNS and slow bodies,
+    # even if its parent or supervising daemon thread disappears.
+    try:
+        if len(sys.argv) != 2:
+            raise ValueError
+        deadline = float(sys.argv[1])
+        remaining = deadline - time.monotonic()
+        if not math.isfinite(deadline) or not 0 < remaining <= 300:
+            raise ValueError
+    except (ValueError, OverflowError):
+        os._exit(124)
+
+    def expire() -> None:
+        delay = deadline - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+        # This isolated process owns only this request. OS exit closes every
+        # socket and pipe without serializing request material or traceback.
+        os._exit(124)
+
+    threading.Thread(target=expire, name="bluefire-ai-worker-deadline", daemon=True).start()
+
+
 def main() -> None:
+    _enforce_deadline()
     try:
         payload = sys.stdin.buffer.read(MAX_WIRE_BYTES + 1)
         if len(payload) > MAX_WIRE_BYTES:
