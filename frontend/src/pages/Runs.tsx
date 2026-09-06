@@ -326,7 +326,18 @@ function RunHistoryPanel({ runs, pending, error, retry }: { runs?: RunRecord[]; 
 function runReviewPath(runId: string) { return `/runs/${encodeURIComponent(runId)}`; }
 function runLabel(run: Pick<RunRecord, "objective" | "scenario_id">) { return run.objective ?? run.scenario_id ?? "Completed experiment"; }
 function shortId(value: string) { return value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
-function cleanupSummary(cleanup: RunRecord["cleanup"]) { if (cleanup === true) return "Reconciled"; if (cleanup === false) return "Outstanding"; if (!cleanup) return "Not recorded"; const status = typeof cleanup.status === "string" ? sentence(cleanup.status) : "Recorded"; const outstanding = typeof cleanup.outstanding_effects === "number" ? ` · ${cleanup.outstanding_effects} outstanding effect${cleanup.outstanding_effects === 1 ? "" : "s"}` : ""; return `${status}${outstanding}`; }
+function cleanupSummary(cleanup: RunRecord["cleanup"]) {
+  if (cleanup === true) return "Complete";
+  if (cleanup === false) return "Needs attention";
+  if (!cleanup) return "Not recorded";
+  const count = cleanup.outstanding_receipt_count ?? cleanup.outstanding_effects;
+  const outstanding = typeof count === "number" ? count : undefined;
+  if (outstanding !== undefined && outstanding > 0) return `Needs attention · ${outstanding} outstanding effect${outstanding === 1 ? "" : "s"}`;
+  if (cleanup.success === false) return "Failed · cleanup needs attention";
+  if (cleanup.success === true && outstanding === 0) return "Complete · no outstanding effects";
+  if (cleanup.attempted === false) return "Not attempted";
+  return typeof cleanup.status === "string" ? sentence(cleanup.status) : "Result not reported";
+}
 
 function RunConfigurationPanel({ scenario, config, onChange, catalog, preflight }: { scenario: Scenario; config: RunConfiguration; onChange: (config: RunConfiguration) => void; catalog: CatalogResponse; preflight?: PreflightReport }) {
   const set = <K extends keyof RunConfiguration>(key: K, value: RunConfiguration[K]) => onChange({ ...config, [key]: value });

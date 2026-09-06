@@ -117,6 +117,17 @@ beforeEach(() => {
 });
 
 describe("run journey handoffs", () => {
+  it.each([
+    [{ attempted: true, success: true, outstanding_receipt_count: 0 }, "Complete · no outstanding effects"],
+    [{ attempted: true, success: true, outstanding_receipt_count: 2 }, "Needs attention · 2 outstanding effects"],
+    [{ attempted: true, success: false, outstanding_receipt_count: 0 }, "Failed · cleanup needs attention"],
+    [{ attempted: false }, "Not attempted"],
+  ])("shows the actual retained cleanup result %#", async (cleanup, label) => {
+    runs[0]!.cleanup = cleanup;
+    renderJourney(`/runs/${sourceId}`);
+    expect(await screen.findByText(label)).toBeVisible();
+  });
+
   it("opens the reviewed run's full evidence and candidate from summary-only history", async () => {
     const user = userEvent.setup();
     renderJourney(`/runs/${sourceId}`);
