@@ -24,7 +24,12 @@ from .util import canonical_json_bytes, content_hash
 MAX_BODY_BYTES = 1_048_576
 _ID = re.compile(r"[0-9a-f]{64}")
 _HASH = re.compile(r"sha256:[0-9a-f]{64}")
-_PURPOSES = {"bluefire_connection_check", "bluefire_ai_proposal", "bluefire_ai_graph_draft"}
+_PURPOSES = {
+    "bluefire_connection_check",
+    "bluefire_ai_proposal",
+    "bluefire_ai_graph_draft",
+    "bluefire_detection_source_revision",
+}
 ERROR_CODES = frozenset(
     {
         "broker_unavailable",

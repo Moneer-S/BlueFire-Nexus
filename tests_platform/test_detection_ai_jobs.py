@@ -169,16 +169,19 @@ def test_real_provider_revision_evaluation_and_idempotent_reconnect(setup, kind)
 
 
 @pytest.mark.parametrize(
-    "change", ["off", "auto", "unknown_ref", "extra_authority", "unchanged", "invalid_sql"]
+    "change",
+    ["off", "explicit_off", "auto", "unknown_ref", "extra_authority", "unchanged", "invalid_sql"],
 )
 def test_refusals_never_create_child(setup, change):
     service, access, candidate_id, body, _ = setup
     before = service.product_store.list_resources("detection")
     if change == "off":
         service._runtime_ai_config = replace(service._runtime_ai_config, autonomy=AutonomyLevel.OFF)
+    if change == "explicit_off":
+        body["autonomy"] = "off"
     if change == "auto":
         body["autonomy"] = "auto"
-    if change in {"off", "auto"}:
+    if change in {"off", "explicit_off", "auto"}:
         job = service.submit_detection_ai_revision(candidate_id, body)["job"]
         done = service.job_controller.wait(job["job_id"], timeout=15)
         assert done["state"] == "failed" and "operation_error" in done["progress"]
@@ -352,6 +355,38 @@ def test_semantic_admission_rejection_is_durable_and_same_uuid_never_restarts(se
     with pytest.raises(APIError):
         service.submit_detection_ai_revision(candidate_id, body)
     assert not access.calls
+
+
+@pytest.mark.parametrize("explicit_assist", [False, True])
+def test_retry_preserves_resolved_assist_without_changing_default(
+    setup, monkeypatch, explicit_assist
+):
+    service, access, candidate_id, body, _ = setup
+    if explicit_assist:
+        body["autonomy"] = "assist"
+        service._runtime_ai_config = replace(service._runtime_ai_config, autonomy=AutonomyLevel.OFF)
+    original = access.post
+
+    def interrupted(*args, **kwargs):
+        raise RuntimeError("unit process interruption before provider response")
+
+    monkeypatch.setattr(access, "post", interrupted)
+    started = service.submit_detection_ai_revision(candidate_id, body)["job"]
+    failed = service.job_controller.wait(started["job_id"], timeout=15)
+    assert failed["state"] == "failed" and failed["request"]["autonomy"] == "assist"
+    # Emulate the existing restart recovery state in this unit database only.
+    with service.product_store._connection(write=True) as connection:
+        connection.execute(
+            "UPDATE jobs SET state = 'interrupted' WHERE job_id = ?", (failed["job_id"],)
+        )
+    service._runtime_ai_config = replace(service._runtime_ai_config, autonomy=AutonomyLevel.OFF)
+    monkeypatch.setattr(access, "post", original)
+    retry = service.retry_job(failed["job_id"])["job"]
+    completed = service.job_controller.wait(retry["job_id"], timeout=15)
+    assert completed["state"] == "completed", completed
+    assert completed["request"]["autonomy"] == "assist"
+    assert completed["request"]["submitted_request"] == body
+    assert service._runtime_ai_config.autonomy is AutonomyLevel.OFF and len(access.calls) == 1
 
 
 def test_authenticated_http_create_review_and_method_query_guards(setup):

@@ -69,11 +69,6 @@ class DetectionAIJobs:
 
     def _provider(self, provider_id: str) -> AIProviderConfig:
         config = self.ai_config()
-        if not config.enabled:
-            raise _fail(
-                "AI is Off. Enable Assist before requesting a detection revision.",
-                code="detection_ai_off",
-            )
         try:
             provider = config.provider(provider_id)
         except ConfigError as exc:
@@ -126,7 +121,13 @@ class DetectionAIJobs:
             "submitted_request": dict(request),
         }
         try:
-            if request.get("autonomy", "assist") != "assist":
+            autonomy = request.get("autonomy", self.ai_config().autonomy.value)
+            if autonomy == "off":
+                raise _fail(
+                    "AI is Off. Select Assist before requesting a detection revision.",
+                    code="detection_ai_off",
+                )
+            if autonomy != "assist":
                 raise _fail(
                     "This detection operation supports Assist review. Auto orchestration is not yet available.",
                     code="detection_ai_autonomy_unsupported",
@@ -223,6 +224,8 @@ class DetectionAIJobs:
         if "admission_error" in request:
             error = request["admission_error"]
             raise _fail(error["message"], code=error["code"])
+        if request.get("autonomy") != "assist":
+            raise _fail("The retained detection request does not authorize Assist.")
         context.checkpoint({"operation_phase": "requesting_detection_revision"})
         provider = self._provider(request["provider_id"])
         if content_hash(provider.to_dict()) != request["provider_binding_digest"]:

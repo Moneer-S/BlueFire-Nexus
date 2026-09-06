@@ -25,8 +25,12 @@ endpoint or automatic broker discovery. The enrollment binds:
 - A random session ID and absolute expiry, with a creation lifetime of at most
   fifteen minutes. Expiry, replacement or changed configuration requires fresh
   enrollment; the access owner never silently refreshes or rebinds.
-- Exact schema digests for the connection check, runtime proposal and any supported
-  graph-draft schema. Graph schemas include catalog choices and requested bounds;
+- Exact schema digests for the connection check, runtime proposal, reviewed
+  detection-source revision and any supported graph-draft schema. Detection
+  revision enrollment uses the same bounded source/reason/evidence/limitations
+  schema as the ordinary Assist operation, for Responses and Chat Completions.
+  Other purpose names or modified schemas remain refused. Graph schemas include
+  catalog choices and requested bounds;
   an unenrolled catalog/bounds variation returns `broker_schema_unavailable`.
 - The destination policy. `public_https` rejects plaintext, localhost and literal
   non-global addresses. `explicit_endpoint` represents a separately approved exact
@@ -37,6 +41,10 @@ endpoint or automatic broker discovery. The enrollment binds:
   multicast addresses. Redirects and ambient proxies remain disabled.
 
 The service asks for readiness or sends one existing structured-request body.
+Detection revision jobs resolve autonomy from the explicit request, or the
+configured default when omitted. An explicit Assist request works with a default
+of Off without changing that default; explicit Off/Auto or omitted/default Off
+cannot call the provider. The resolved Assist choice is retained for job recovery.
 The interface accepts no caller-selected URL, headers or credentials. The broker
 owns credential resolution; the service neither resolves the key reference nor
 receives key bytes on this path. Readiness is a credential-ownership check and
