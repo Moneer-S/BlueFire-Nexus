@@ -179,6 +179,7 @@ _PREPARED_LAB_HOME = "/".join(("", "home", "bluefire"))
 _PUBLIC_SOURCE_PATHS: Mapping[str, tuple[str, ...]] = {
     "bluefire/prepared_lab.py": (_PREPARED_LAB_HOME,),
     "bluefire/prepared_lab_guest.py": (_PREPARED_LAB_HOME,),
+    "bluefire/prepared_lab_runtime.py": (_PREPARED_LAB_HOME,),
     "bluefire/prepared_lab_install.py": (_PREPARED_LAB_HOME,),
     "docs/PREPARED_LINUX_LAB.md": (_PREPARED_LAB_HOME + "/lab-isolation.json",),
 }

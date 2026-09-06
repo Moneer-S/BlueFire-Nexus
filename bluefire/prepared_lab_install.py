@@ -48,12 +48,16 @@ def install() -> None:
         (pwd.getpwnam, "bluefire"),
         (grp.getgrgid, 1000),
         (grp.getgrnam, "bluefire"),
+        (pwd.getpwuid, 1001),
+        (pwd.getpwnam, "bluefire-broker"),
+        (grp.getgrgid, 1001),
+        (grp.getgrnam, "bluefire-broker"),
     ):
         try:
             lookup(value)
         except KeyError:
             continue
-        raise ValueError("base must reserve UID/GID 1000 and the bluefire account name")
+        raise ValueError("base must reserve UID/GID 1000 and 1001 and the bluefire account names")
     ROOT.mkdir(mode=0o755)
     wheelhouse = ROOT / "wheelhouse"
     wheelhouse.mkdir(mode=0o755)
@@ -106,6 +110,24 @@ def install() -> None:
         check=True,
     )  # nosec B603
     os.chmod(HOME, 0o700)
+    subprocess.run(  # nosec B603
+        ["/usr/sbin/groupadd", "--gid", "1001", "bluefire-broker"], check=True
+    )
+    subprocess.run(  # nosec B603
+        [
+            "/usr/sbin/useradd",
+            "--create-home",
+            "--uid",
+            "1001",
+            "--gid",
+            "1001",
+            "--shell",
+            "/bin/false",
+            "bluefire-broker",
+        ],
+        check=True,
+    )
+    os.chmod(HOME.with_name("bluefire-broker"), 0o700)
     # Microsoft documents per-distribution settings here; the persistent base
     # is never altered: https://learn.microsoft.com/en-us/windows/wsl/wsl-config
     Path("/etc/wsl.conf").write_text(

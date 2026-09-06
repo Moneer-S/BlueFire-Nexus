@@ -111,8 +111,21 @@ class UrllibAIJSONTransport:
     endpoint does not currently expose browser cancellation or a durable job.
     """
 
-    def __init__(self, *, cancel_event: CancellationSignal | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        cancel_event: CancellationSignal | None = None,
+        destination_policy: str | None = None,
+    ) -> None:
         self.cancel_event = cancel_event
+        if destination_policy is not None and destination_policy not in {
+            "public_https",
+            "explicit_endpoint",
+        }:
+            raise AIProviderTransportError(
+                "Provider destination policy is invalid", retryable=False
+            )
+        self.destination_policy = destination_policy
 
     def post(
         self, url: str, *, headers: Mapping[str, str], body: bytes, timeout_seconds: float
@@ -122,13 +135,16 @@ class UrllibAIJSONTransport:
             raise AIProviderTransportError("Provider timeout is invalid", retryable=False)
         if len(body) > _MAX_BYTES:
             raise AIProviderTransportError("Provider request exceeded 1 MiB", retryable=False)
+        document = {
+            "url": url,
+            "headers": dict(headers),
+            "body": base64.b64encode(body).decode("ascii"),
+            "timeout_seconds": timeout_seconds,
+        }
+        if self.destination_policy is not None:
+            document["destination_policy"] = self.destination_policy
         payload = json.dumps(
-            {
-                "url": url,
-                "headers": dict(headers),
-                "body": base64.b64encode(body).decode("ascii"),
-                "timeout_seconds": timeout_seconds,
-            },
+            document,
             separators=(",", ":"),
         ).encode("ascii")
         if len(payload) > _MAX_WIRE_BYTES:
@@ -242,7 +258,18 @@ class UrllibAIJSONTransport:
 class ManagedAIJSONTransport:
     """Own in-flight provider requests for one service and reap them at shutdown."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, enrolled_endpoint: str | None = None, destination_policy: str | None = None
+    ) -> None:
+        if (enrolled_endpoint is None) != (destination_policy is None) or (
+            destination_policy is not None
+            and destination_policy not in {"public_https", "explicit_endpoint"}
+        ):
+            raise AIProviderTransportError(
+                "Provider destination enrollment is invalid", retryable=False
+            )
+        self._enrolled_endpoint = enrolled_endpoint
+        self._destination_policy = destination_policy
         self._cancel_event = threading.Event()
         self._condition = threading.Condition()
         self._active_requests = 0
@@ -266,14 +293,21 @@ class ManagedAIJSONTransport:
         timeout_seconds: float,
         cancellation: RequestCancellation,
     ) -> bytes:
+        if self._enrolled_endpoint is not None and url != self._enrolled_endpoint:
+            raise AIProviderTransportError("Provider destination is not enrolled", retryable=False)
         with self._condition:
             if cancellation.is_set():
                 raise AIProviderCancelled()
             self._active_requests += 1
         try:
-            return UrllibAIJSONTransport(cancel_event=cancellation).post(
-                url, headers=headers, body=body, timeout_seconds=timeout_seconds
+            transport = (
+                UrllibAIJSONTransport(cancel_event=cancellation)
+                if self._destination_policy is None
+                else UrllibAIJSONTransport(
+                    cancel_event=cancellation, destination_policy=self._destination_policy
+                )
             )
+            return transport.post(url, headers=headers, body=body, timeout_seconds=timeout_seconds)
         finally:
             with self._condition:
                 self._active_requests -= 1

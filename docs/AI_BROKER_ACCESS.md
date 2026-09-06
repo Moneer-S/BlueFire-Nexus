@@ -1,12 +1,10 @@
 # AI provider access and broker enrollment
 
-Prepared-lab provider brokerage is **not yet available**. This implementation adds
-an explicit access interface and an injected private-channel contract. It does not
-start a broker, open a socket, pass a descriptor, or change the lab's network
-namespace. Deterministic channel tests exercise the normal service check, graph
-draft and simulated proposal paths through the existing Responses and Chat
-Completions parsers. Those tests establish integration, not live-provider access
-or target isolation.
+Prepared-lab brokerage has an optional fixed Linux startup path. Its portable
+tests exercise ordinary service checks, graph drafts and simulated proposals
+through the framed broker and existing Responses/Chat Completions parsers.
+These tests do not establish live-provider access or Linux target isolation;
+the owned-lab process/descriptor proof remains a separate release prerequisite.
 
 ## Existing installations
 
@@ -32,8 +30,11 @@ endpoint or automatic broker discovery. The enrollment binds:
   an unenrolled catalog/bounds variation returns `broker_schema_unavailable`.
 - The destination policy. `public_https` rejects plaintext, localhost and literal
   non-global addresses. `explicit_endpoint` represents a separately approved exact
-  local/private provider endpoint. Neither setting asserts DNS resolution or
-  network-route isolation; these must be enforced by the future broker.
+  local/private provider endpoint. The HTTP worker resolves the enrolled host once,
+  checks every returned address before connecting, and connects only to those
+  addresses while preserving the original TLS hostname and certificate checks.
+  Public policy rejects private, loopback, reserved, link-local, unspecified and
+  multicast addresses. Redirects and ambient proxies remain disabled.
 
 The service asks for readiness or sends one existing structured-request body.
 The interface accepts no caller-selected URL, headers or credentials. The broker
@@ -61,18 +62,46 @@ never becomes fallback. No broker status grants execution authority.
 
 The access owner combines job cancellation with service lifetime. Closing it
 cancels the channel and waits a bounded interval for active calls to drain. The
-future channel must interrupt blocked I/O, enforce its deadline and retain exact
-process ownership on unsuccessful cleanup. A caller-supplied channel object is a
+fixed channel interrupts blocked reads and writes. Cancellation during a partial
+request closes the unusable channel; cancellation after a complete write sends an
+exact cancellation frame and drains its one response before reuse. The owner
+retains exact process/channel objects after unsuccessful cleanup. A caller-supplied channel object is a
 trusted internal dependency, not authentication of an arbitrary external endpoint.
 
-## Required next boundary before lab support
+## Fixed prepared-lab startup
 
-A later reviewed composition must create a fixed outer broker and authenticated
-private channel before entering the target namespace. It must pin the configured
-destination, apply explicit local endpoint approval or public-address resolution
-and connection pinning, prohibit redirects and proxy inheritance, and prevent
-credential/header disclosure in reports. Control-only descriptors must not pass to
-the runner or target; same-UID socket permissions alone are insufficient. Exact
-worker launch identity, parent-death handling, cancellation, restart refusal,
-descriptor closure and network/host isolation must be tested in the owned lab.
-This contract does not provide a general proxy or weaken existing target isolation.
+An explicit `prepared_lab start --ai-provider-definition PATH` reads one public
+`AIProviderConfig` JSON object. It resolves only that configuration's credential
+reference at the operator boundary and sends the result over owned bootstrap
+stdin. No credential value enters command arguments, target/UI environments,
+public enrollment records or the inference response channel.
+
+The freshly prepared clone reserves UID/GID 1001 for the broker and retains 1000
+for the product. The broker keeps its control-plane network while its private
+mount/IPC namespace hides host mounts and sockets. The target keeps the existing
+mount/network/PID/IPC isolation and loopback-only routes. The installed venv,
+fixed module paths and interpreter target must be root-owned and non-writable;
+the product tree is mounted read-only before untrusted work.
+
+Anonymous bootstrap sockets use kernel SCM credentials. Parent checks bind each
+exact PID and creation time. Both namespace init and the final-exec UI clear and
+verify dumpability before receiving an inference descriptor. The UI waits for
+the parent's final admission acknowledgement before entering the ordinary CLI
+UI service. Bootstrap descriptors close before target admission; only the UI
+owns its non-inheritable inference endpoint. Runner launches do not receive it.
+The broker owns the other endpoint and checks exact enrollment, schema and fresh
+request IDs. EOF/session expiry cancels outstanding requests and drains owned
+processes. Restart or expiry requires fresh enrollment; no old session is adopted.
+
+Use `--ai-destination-policy explicit_endpoint` only for an explicitly approved
+local/private provider. `public_https` is the default. The graph schema binds
+`--ai-max-nodes` (default 8), `--ai-max-edges` (default 16) and the built-in catalog.
+Changed bounds/catalog/configuration refuse until a new session is enrolled.
+Only the normal UI receives this channel in this slice; an independently launched
+interactive CLI process does not discover or borrow the UI descriptor.
+
+Before release, the owned Linux lab must independently prove SCM namespace PID
+mapping, `/proc`/descriptor denial from target UID, absent runner inheritance,
+unchanged network/host isolation, cancellation and complete teardown. No real
+account, credential or paid inference is needed for that proof: use an owned
+deterministic control-plane endpoint and a synthetic token.

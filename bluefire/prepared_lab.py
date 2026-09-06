@@ -24,7 +24,7 @@ import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Iterator, Mapping
+from typing import Any, BinaryIO, Iterator, Mapping, cast
 
 from .cross_platform_linux_distribution import (
     DisposableWslDistribution,
@@ -65,6 +65,8 @@ def identity(path: Path, *, directory: bool) -> tuple[int, int]:
 
 
 def registration(name: str) -> tuple[str, Path] | None:
+    if sys.platform != "win32":
+        raise ValueError("WSL registration requires Windows")
     import winreg
 
     matches = []
@@ -533,7 +535,7 @@ class TerminalForwarding:
             raise OSError("some owned product terminal pipes could not be closed")
 
 
-def start(state: Path, port: int) -> None:
+def start(state: Path, port: int, *, inference: Mapping[str, Any] | None = None) -> None:
     if not 1024 <= port <= 65535:
         raise ValueError("choose an unprivileged UI port between 1024 and 65535")
     with owned(state) as (lease, record):
@@ -549,7 +551,7 @@ def start(state: Path, port: int) -> None:
                     "-B",
                     "-m",
                     "bluefire.prepared_lab_guest",
-                    "launch",
+                    "launch" if inference is None else "broker-launch",
                     str(port),
                 ),
                 stdin=subprocess.PIPE,
@@ -558,6 +560,12 @@ def start(state: Path, port: int) -> None:
                 bufsize=0,
                 **options(lease),
             )  # nosec B603
+            if inference is not None:
+                from .prepared_lab_inference_input import write_definition
+
+                if inner.stdin is None:
+                    raise ValueError("the owned inference bootstrap channel is unavailable")
+                write_definition(cast(BinaryIO, inner.stdin), inference)
             terminal.attach(inner, interactive=True)
             outer = subprocess.Popen(  # nosec B603
                 guest(
@@ -651,6 +659,19 @@ def main(argv: list[str] | None = None) -> None:
     )
     launch.add_argument("--state-dir", required=True, type=Path)
     launch.add_argument("--port", default=8767, type=int)
+    launch.add_argument(
+        "--ai-provider-definition",
+        type=Path,
+        help="Explicit public provider JSON; its configured credential reference is read only by this operator boundary",
+    )
+    launch.add_argument(
+        "--ai-destination-policy",
+        choices=("public_https", "explicit_endpoint"),
+        default="public_https",
+        help="Explicit endpoint enrollment is required for an operator-approved local provider",
+    )
+    launch.add_argument("--ai-max-nodes", default=8, type=int)
+    launch.add_argument("--ai-max-edges", default=16, type=int)
     removal = commands.add_parser(
         "destroy", help="unregister only the identity-verified owned clone and remove its storage"
     )
@@ -660,7 +681,19 @@ def main(argv: list[str] | None = None) -> None:
         if args.command == "prepare":
             prepare(args.state_dir, args.wheel, args.wheelhouse)
         elif args.command == "start":
-            start(args.state_dir, args.port)
+            if args.ai_provider_definition is None:
+                start(args.state_dir, args.port)
+            else:
+                from .prepared_lab_inference_input import operator_definition
+
+                definition = operator_definition(
+                    args.ai_provider_definition,
+                    args.ai_destination_policy,
+                    args.ai_max_nodes,
+                    args.ai_max_edges,
+                    environ=os.environ,
+                )
+                start(args.state_dir, args.port, inference=definition)
         else:
             with owned(args.state_dir) as (lease, record):
                 verify(lease, record)

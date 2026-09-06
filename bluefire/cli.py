@@ -10,13 +10,14 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .ai_provider_access import AIProviderAccess
 from .api import (
     APIError,
     browser_console_url,
     generate_browser_bootstrap_capability,
     serve,
 )
-from .config import AutonomyLevel, RunnerProfile
+from .config import AutonomyLevel, BlueFireConfig, RunnerProfile
 from .contracts import ExecutionMode, load_scenario
 from .product_acceptance import AcceptanceFailure, run_release_acceptance, verify_release_result
 from .receiver import (
@@ -425,8 +426,19 @@ def _scenario_request_arguments(
         parser.add_argument("--approved-by", default="local-operator")
 
 
-def _service(args: argparse.Namespace) -> BlueFireService:
-    return BlueFireService(config_path=args.config, runs_dir=args.runs_dir)
+def _service(
+    args: argparse.Namespace,
+    *,
+    ai_provider_access: AIProviderAccess | None = None,
+    config: BlueFireConfig | None = None,
+) -> BlueFireService:
+    if config is None and ai_provider_access is None:
+        return BlueFireService(config_path=args.config, runs_dir=args.runs_dir)
+    if args.config is not None:
+        raise ValueError("An internally enrolled provider cannot replace its configuration")
+    return BlueFireService(
+        config=config, runs_dir=args.runs_dir, ai_provider_access=ai_provider_access
+    )
 
 
 def _scenario_payload(args: argparse.Namespace) -> dict[str, Any]:
@@ -472,7 +484,12 @@ def _json(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
 
 
-def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | None:
+def _execute(
+    args: argparse.Namespace,
+    *,
+    ai_provider_access: AIProviderAccess | None = None,
+    config: BlueFireConfig | None = None,
+) -> Mapping[str, Any] | Sequence[Any] | None:
     if args.command == "receiver":
         max_connections = args.max_connections
         if max_connections is None:
@@ -505,7 +522,11 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
             repository_root=args.repository_root,
             output_dir=args.output_dir,
         )
-    service = _service(args)
+    service = (
+        _service(args)
+        if config is None and ai_provider_access is None
+        else _service(args, config=config, ai_provider_access=ai_provider_access)
+    )
     if args.command == "scenario":
         if args.scenario_command == "list":
             return service.scenarios()
@@ -871,11 +892,20 @@ def _bounded_utf8_text(
         raise ValueError(f"{description} must contain UTF-8 text") from exc
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    ai_provider_access: AIProviderAccess | None = None,
+    config: BlueFireConfig | None = None,
+) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
     try:
-        result = _execute(args)
+        result = (
+            _execute(args)
+            if config is None and ai_provider_access is None
+            else _execute(args, config=config, ai_provider_access=ai_provider_access)
+        )
     except AcceptanceFailure as exc:
         _json(exc.result)
         return 1

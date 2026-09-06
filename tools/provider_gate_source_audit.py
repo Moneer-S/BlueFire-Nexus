@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from tools.prepared_lab_source_audit import BOUNDARIES as PREPARED_LAB_BOUNDARIES
+from tools.prepared_lab_source_audit import prepared_lab_boundary
 from tools.provider_boundary_inventory import (
     _REVIEWED_PYTHON_PROCESS_BOUNDARY_SOURCES,
     _reviewed_python_process_boundary_sources,
@@ -1502,6 +1504,10 @@ def _process_boundary_report(repository: Path) -> dict[str, Any]:
         paths["receiver_session.py"],
         _python_shell_findings(paths["receiver_session.py"], repository),
     )
+    for name in PREPARED_LAB_BOUNDARIES:
+        python_boundaries[name] = prepared_lab_boundary(
+            paths[name], _python_shell_findings(paths[name], repository)
+        )
     parent_death_findings = _python_shell_findings(paths["runner_parent_death.py"], repository)
     python_boundaries["runner_parent_death.py"] = {
         "passed": _runner_parent_death_process_contract(

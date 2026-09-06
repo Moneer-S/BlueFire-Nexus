@@ -20,36 +20,22 @@ import time
 from pathlib import Path
 
 from bluefire.prepared_lab_relay import Relay, private_socket, remove_owned_socket, tcp_listener
+from bluefire.prepared_lab_runtime import (
+    BRIDGE,
+    ENV,
+    HOME,
+    KINDS,
+    PRODUCT,
+    STOP_FILE,
+    gid,
+    guest_command,
+    isolate_mounts,
+    namespaces,
+    stop_child,
+    uid,
+)
 
-ROOT = Path("/opt/bluefire-lab")
-HOME = Path("/home/bluefire")
-BRIDGE = HOME / ".bluefire-lab-ui.sock"
-PYTHON = ROOT / "venv/bin/python"
-PRODUCT = [str(ROOT / "venv/bin/bluefire"), "--runs-dir", str(HOME / "experiments")]
-ENV = {
-    "HOME": str(HOME),
-    "USER": "bluefire",
-    "LOGNAME": "bluefire",
-    "PATH": "/usr/local/bin:/usr/bin:/bin",
-    "LANG": "C.UTF-8",
-    "PYTHONUNBUFFERED": "1",
-    "PYTHONNOUSERSITE": "1",
-}
 STOP = threading.Event()
-STOP_FILE = ROOT / "session-stop"
-KINDS = ("mnt", "net", "pid", "ipc")
-
-
-def uid() -> int:
-    return int(getattr(os, "getuid", lambda: -1)())
-
-
-def gid() -> int:
-    return int(getattr(os, "getgid", lambda: -1)())
-
-
-def namespaces() -> dict[str, str]:
-    return {kind: os.readlink(f"/proc/self/ns/{kind}") for kind in KINDS}
 
 
 def dropped(command: list[str]) -> list[str]:
@@ -66,71 +52,17 @@ def dropped(command: list[str]) -> list[str]:
     ]
 
 
-def guest_command(mode: str, port: int, *args: str) -> list[str]:
-    return [str(PYTHON), "-I", "-B", "-m", "bluefire.prepared_lab_guest", mode, str(port), *args]
-
-
-def enter(port: int, parent: str) -> None:
+def enter(port: int, parent: str, *bootstrap: str) -> None:
     if uid() != 0 or os.getpid() != 1 or socket.if_nameindex() != [(1, "lo")]:
         raise ValueError("setup requires a new PID and loopback-only network namespace")
     original = json.loads(parent)
     if set(original) != set(KINDS) or any(namespaces()[key] == original[key] for key in KINDS):
         raise ValueError("all four namespace identities must differ from the parent")
-    # Remove host-backed submounts within this already-private mount namespace.
-    # Merely covering their parent leaves mountinfo entries and hidden mounts.
-    host_mounts = []
-    for row in Path("/proc/self/mountinfo").read_text().splitlines():
-        before, after = row.split(" - ", 1)
-        if after.split()[0] in {"9p", "drvfs", "virtiofs"}:
-            target = before.split()[4]
-            if "\\" in target or not target.startswith(("/mnt/", "/usr/lib/wsl/")):
-                raise ValueError("an unexpected host mount cannot be safely detached")
-            host_mounts.append(target)
-    for target in sorted(host_mounts, key=lambda value: value.count("/"), reverse=True):
-        subprocess.run(  # nosec B603
-            ["/usr/bin/umount", "--", target], check=True, env=ENV
-        )  # nosec B603
-    # unshare's explicit --propagation private prevents these mounts escaping.
-    for name in (
-        "/mnt",
-        "/run",
-        "/tmp",  # nosec B108
-        "/usr/lib/wsl",
-        "/dev/shm",  # nosec B108
-    ):  # nosec B108
-        path = Path(name)
-        if not path.is_dir() or path.is_symlink():
-            raise ValueError("a required isolation mount point is absent or linked")
-        mode = "1777" if name in {"/tmp", "/dev/shm"} else "0755"  # nosec B108
-        subprocess.run(  # nosec B603
-            [
-                "/usr/bin/mount",
-                "-t",
-                "tmpfs",
-                "-o",
-                f"nodev,nosuid,noexec,mode={mode}",
-                "tmpfs",
-                name,
-            ],
-            check=True,
-            env=ENV,
-        )  # nosec B603
-    if Path("/init").is_file():
-        subprocess.run(  # nosec B603
-            ["/usr/bin/mount", "--bind", "/dev/null", "/init"], check=True, env=ENV
-        )  # nosec B603
-    subprocess.run(  # nosec B603
-        ["/usr/sbin/ip", "link", "set", "lo", "up"], check=True, env=ENV
-    )  # nosec B603
-    subprocess.run(  # nosec B603
-        ["/usr/bin/mount", "--bind", str(ROOT), str(ROOT)], check=True, env=ENV
-    )  # nosec B603
-    subprocess.run(  # nosec B603
-        ["/usr/bin/mount", "-o", "remount,bind,ro", str(ROOT)], check=True, env=ENV
-    )  # nosec B603
+    isolate_mounts()
+    subprocess.run(["/usr/sbin/ip", "link", "set", "lo", "up"], check=True, env=ENV)  # nosec B603
     os.execve(  # nosec B606
-        "/usr/bin/setpriv", dropped(guest_command("inner", port)), ENV
-    )  # nosec B606
+        "/usr/bin/setpriv", dropped(guest_command("inner", port, *bootstrap)), ENV
+    )
 
 
 def isolation_facts() -> dict[str, object]:
@@ -173,16 +105,6 @@ def isolation_facts() -> dict[str, object]:
     }
 
 
-def stop_child(process: subprocess.Popen[bytes] | None) -> None:
-    if process is not None and process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
-
-
 def stopping() -> bool:
     if STOP_FILE.exists():
         STOP.set()
@@ -220,7 +142,11 @@ def read_command(pending: bytearray, descriptor: int) -> str | None:
         raise ValueError("product command must use UTF-8") from None
 
 
-def inner(port: int) -> None:
+def inner(port: int, *bootstrap: str) -> None:
+    if bootstrap:
+        from .ai_broker_bootstrap import protect_process
+
+        protect_process(1000)
     facts = isolation_facts()
     os.umask(0o077)
     (HOME / "lab-isolation.json").write_text(json.dumps(facts, indent=2))
@@ -236,9 +162,14 @@ def inner(port: int) -> None:
         threading.Thread(
             target=relay.serve, args=(listener, ("127.0.0.1", port)), daemon=True
         ).start()
-        server = subprocess.Popen(  # nosec B603
-            PRODUCT + ["ui", "--host", "127.0.0.1", "--port", str(port)], env=ENV, cwd=HOME
-        )  # nosec B603
+        if bootstrap:
+            from .prepared_lab_ui_bootstrap import start_ui
+
+            server = start_ui(port, int(bootstrap[0]), bootstrap[1])
+        else:
+            server = subprocess.Popen(  # nosec B603
+                PRODUCT + ["ui", "--host", "127.0.0.1", "--port", str(port)], env=ENV, cwd=HOME
+            )
         print(
             "Isolated lab ready. Enter BlueFire arguments (for example: runner status --profile sandbox-execute.v1). Enter quit to stop the session.",
             flush=True,
@@ -319,7 +250,12 @@ def main() -> None:
     port = int(raw_port)
     if not 1024 <= port <= 65535:
         raise ValueError("invalid UI port")
-    if mode == "launch":
+    if mode == "broker-launch" and not args:
+        from .prepared_lab_broker import supervise
+        from .prepared_lab_inference_input import read_definition
+
+        supervise(port, read_definition(sys.stdin.fileno()), stop=STOP)
+    elif mode == "launch" and len(args) in {0, 2}:
         if uid() != 0:
             raise ValueError("namespace creation requires clone-local root")
         if STOP_FILE.exists():
@@ -346,14 +282,14 @@ def main() -> None:
                 "--propagation",
                 "private",
                 "--kill-child=TERM",
-                *guest_command("enter", port, json.dumps(namespaces())),
+                *guest_command("enter", port, json.dumps(namespaces()), *args),
             ],
             ENV,
         )  # nosec B606
-    elif mode == "enter" and len(args) == 1:
-        enter(port, args[0])
-    elif mode == "inner" and not args:
-        inner(port)
+    elif mode == "enter" and len(args) in {1, 3}:
+        enter(port, args[0], *args[1:])
+    elif mode == "inner" and len(args) in {0, 2}:
+        inner(port, *args)
     elif mode == "outer" and not args:
         outer(port)
     elif mode == "stop" and not args:

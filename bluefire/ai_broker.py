@@ -1,8 +1,8 @@
 """Service-owned enrolled broker access over an injected private channel.
 
-There is deliberately no socket/process implementation or lab auto-discovery.
-Prepared-lab inference remains unsupported until its fixed channel is implemented
-and independently validated. Tests supply a deterministic channel substitute.
+There is no lab auto-discovery or public descriptor enrollment. Prepared-lab
+startup supplies the fixed protected socket implementation explicitly; portable
+tests do not by themselves establish the Linux isolation boundary.
 """
 
 from __future__ import annotations

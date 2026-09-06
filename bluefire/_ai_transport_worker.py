@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import base64
 import http.client
+import ipaddress
 import json
 import math
 import os
+import socket
+import ssl
 import sys
 import threading
 import time
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import urlsplit
 
 MAX_BYTES = 1_048_576
 MAX_WIRE_BYTES = 2 * MAX_BYTES
@@ -21,6 +25,113 @@ MAX_WIRE_BYTES = 2 * MAX_BYTES
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args: Any, **kwargs: Any) -> None:
         return None
+
+
+def _pinned_opener(url: str, policy: str) -> urllib.request.OpenerDirector:
+    """Resolve once and connect only to those addresses; keep TLS hostname checks."""
+    parsed = urlsplit(url)
+    if (
+        policy not in {"public_https", "explicit_endpoint"}
+        or parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or (policy == "public_https" and parsed.scheme != "https")
+        or (parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"})
+    ):
+        raise ValueError("destination refused")
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    answers = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not 1 <= len(answers) <= 32:
+        raise ValueError("destination resolution refused")
+    addresses = []
+    for family, socktype, protocol, _name, address in answers:
+        if (
+            family not in {socket.AF_INET, socket.AF_INET6}
+            or socktype != socket.SOCK_STREAM
+            or protocol not in {0, socket.IPPROTO_TCP}
+        ):
+            raise ValueError("destination resolution refused")
+        literal = ipaddress.ip_address(address[0])
+        public = literal.is_global and not any(
+            (
+                literal.is_multicast,
+                literal.is_reserved,
+                literal.is_unspecified,
+                literal.is_loopback,
+                literal.is_link_local,
+            )
+        )
+        if (
+            (policy == "public_https" and not public)
+            or address[1] != port
+            or literal.version != (4 if family == socket.AF_INET else 6)
+        ):
+            raise ValueError("destination resolution refused")
+        if family == socket.AF_INET6 and (len(address) != 4 or address[3] != 0):
+            raise ValueError("destination resolution refused")
+        item = (family, socktype, protocol, address)
+        if item not in addresses:
+            addresses.append(item)
+
+    def connect(timeout: float) -> socket.socket:
+        deadline = time.monotonic() + timeout
+        for family, socktype, protocol, address in addresses:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            endpoint = socket.socket(family, socktype, protocol)
+            try:
+                endpoint.settimeout(remaining)
+                endpoint.connect(address)
+                return endpoint
+            except OSError:
+                endpoint.close()
+        raise OSError("enrolled destination unavailable")
+
+    class PinnedHTTP(http.client.HTTPConnection):
+        def connect(self) -> None:
+            if (
+                self.host != host
+                or self.port != port
+                or getattr(self, "_tunnel_host", None) is not None
+                or self.timeout is None
+            ):
+                raise ValueError("destination changed")
+            self.sock = connect(float(self.timeout))
+
+    class PinnedHTTPS(http.client.HTTPSConnection):
+        _context: ssl.SSLContext
+
+        def connect(self) -> None:
+            if (
+                self.host != host
+                or self.port != port
+                or getattr(self, "_tunnel_host", None) is not None
+                or self.timeout is None
+            ):
+                raise ValueError("destination changed")
+            endpoint = connect(float(self.timeout))
+            try:
+                self.sock = self._context.wrap_socket(endpoint, server_hostname=self.host)
+            except BaseException:
+                endpoint.close()
+                raise
+
+    class HTTPHandler(urllib.request.HTTPHandler):
+        def http_open(self, request: urllib.request.Request) -> Any:
+            return self.do_open(PinnedHTTP, request)
+
+    class HTTPSHandler(urllib.request.HTTPSHandler):
+        def https_open(self, request: urllib.request.Request) -> Any:
+            return self.do_open(PinnedHTTPS, request, context=getattr(self, "_context", None))
+
+    return urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), _NoRedirectHandler(), HTTPHandler(), HTTPSHandler()
+    )
 
 
 def _failure(code: str = "transport_failed", *, retryable: bool = False) -> dict[str, Any]:
@@ -38,7 +149,11 @@ def perform_request(document: dict[str, Any]) -> dict[str, Any]:
         )
         # Keep TLS verification defaults; never follow redirects or implicitly
         # route explicit endpoints through ambient proxy settings.
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler())
+        opener = (
+            _pinned_opener(document["url"], document["destination_policy"])
+            if "destination_policy" in document
+            else urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirectHandler())
+        )
         with opener.open(request, timeout=document["timeout_seconds"]) as response:  # nosec B310
             status = int(getattr(response, "status", 200))
             if not 200 <= status <= 299:

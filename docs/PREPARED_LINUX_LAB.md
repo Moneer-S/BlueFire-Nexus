@@ -22,7 +22,8 @@ Keep and verify your downloaded wheel hashes according to your software-distribu
 The launcher uses the existing distribution ownership manager and its dedicated base name,
 `BlueFire-Gate11-Base-v1`. It only reads/exports that base. It never modifies, terminates, or
 unregisters it. Create this base explicitly once, with no personal files, credentials, mounted
-shares, extra services, or user accounts. UID/GID 1000 and the name `bluefire` must be unused.
+shares, extra services, or user accounts. UID/GID 1000 and 1001 and the names
+`bluefire` and `bluefire-broker` must be unused.
 The clone preparation refuses an existing account rather than repurposing one.
 
 Obtain and verify an Ubuntu 24.04 x86_64 root filesystem using
@@ -36,7 +37,7 @@ $BaseStorage = Join-Path $env:LOCALAPPDATA 'BlueFire\Base-v1'
 wsl.exe --import BlueFire-Gate11-Base-v1 $BaseStorage .\ubuntu-rootfs.tar --version 2
 wsl.exe --distribution BlueFire-Gate11-Base-v1 --user root --exec /usr/bin/apt-get update
 wsl.exe --distribution BlueFire-Gate11-Base-v1 --user root --exec /usr/bin/apt-get install --yes python3.12 python3.12-venv util-linux mount iproute2 passwd
-wsl.exe --distribution BlueFire-Gate11-Base-v1 --user root --exec /usr/bin/python3 -I -c "import sys,pwd,grp; assert sys.version_info[:2] == (3,12); assert not any(p.pw_uid == 1000 or p.pw_name == 'bluefire' for p in pwd.getpwall()); assert not any(g.gr_gid == 1000 or g.gr_name == 'bluefire' for g in grp.getgrall())"
+wsl.exe --distribution BlueFire-Gate11-Base-v1 --user root --exec /usr/bin/python3 -I -c "import sys,pwd,grp; assert sys.version_info[:2] == (3,12); assert not any(p.pw_uid in (1000,1001) or p.pw_name in ('bluefire','bluefire-broker') for p in pwd.getpwall()); assert not any(g.gr_gid in (1000,1001) or g.gr_name in ('bluefire','bluefire-broker') for g in grp.getgrall())"
 wsl.exe --terminate BlueFire-Gate11-Base-v1
 ```
 
@@ -123,7 +124,33 @@ approval, run, comparison, and detector flows. Quoted CLI arguments are supporte
 redirection, shell expansion, and arbitrary executables are not. A foreground receiver can be
 started from this prompt while the UI remains usable. Review the normal
 [runner and receiver instructions](RUNNER_DEPLOYMENT.md) for its bounded options and approvals.
-The lab has no external network route, so a remote provider's live test will fail here.
+The target has no external network route. An ordinary session therefore cannot
+connect to a remote provider directly.
+
+## Optional inference broker
+
+A freshly prepared clone can enroll one explicit provider for the ordinary UI:
+
+```powershell
+python -m bluefire.prepared_lab start --state-dir .\lab-state --ai-provider-definition .\provider.json
+```
+
+`provider.json` is a public `AIProviderConfig` object. It contains an environment
+reference if authentication is required; it must not contain a credential value.
+The operator boundary resolves only that reference and transfers it privately to
+the separate UID/GID 1001 broker. The UI and runner remain UID/GID 1000 without
+credential environment variables or an external network route. The broker's
+fixed endpoint, configuration, schemas and fifteen-minute session are immutable.
+Restart with a fresh enrollment after expiry or configuration changes.
+
+The default destination policy requires public HTTPS addresses. Add
+`--ai-destination-policy explicit_endpoint` for an explicitly approved local or
+private provider. The default graph bounds are 8 nodes and 16 edges; enroll
+different bounds with `--ai-max-nodes` and `--ai-max-edges` before starting.
+Only the UI receives a protected channel; separate interactive CLI processes do
+not discover or borrow it. See [the broker boundary](AI_BROKER_ACCESS.md) for the
+portable checks and the separate owned-Linux isolation proof still required
+before release support is claimed.
 
 ## Stop, restart, and destroy
 
