@@ -419,6 +419,23 @@ def test_python_suite_uses_a_short_sibling_basetemp(
     assert len((Path(temporary.parent.name) / "t").as_posix()) <= 16
 
 
+@pytest.mark.parametrize("relative", tuple(gate_module._PUBLIC_SOURCE_PATHS))
+def test_source_privacy_classifies_only_the_exact_public_lab_contract(relative: str) -> None:
+    public = gate_module._PUBLIC_SOURCE_PATHS[relative][0]
+    assert gate_module._has_private_source_path(relative, f'path = "{public}"') is False
+    private = "/".join(("", "home", "private-operator"))
+    assert gate_module._has_private_source_path(relative, f'"{public}" "{private}"') is True
+    assert gate_module._has_private_source_path(relative, f'"{public}-personal"') is True
+    assert gate_module._has_private_source_path(relative, f'"{public}/../private-operator"') is True
+    assert gate_module._has_private_source_path("bluefire/unrelated.py", f'"{public}"') is True
+    assert (
+        gate_module._has_private_source_path(relative, public.replace("bluefire", "BlueFire"))
+        is True
+    )
+    private_windows = "C:" + "/".join(("", "Users", "private-operator"))
+    assert gate_module._has_private_source_path(relative, f'"{public}" "{private_windows}"') is True
+
+
 def test_tracked_release_tree_has_no_private_identity_literals(tmp_path: Path) -> None:
     repository = Path(__file__).resolve().parents[1]
     evidence = tmp_path / "evidence"

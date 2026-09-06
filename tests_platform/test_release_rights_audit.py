@@ -33,7 +33,7 @@ def test_release_rights_audit_covers_the_release_tree() -> None:
         "frontend_locked_packages": 391,
         "rust_release_crates": 42,
         "rust_locked_crates": 48,
-        "classified_assets": 40,
+        "classified_assets": 42,
         "project_source_files": report.project_source_files,
         "unresolved_items": [],
     }

@@ -175,6 +175,23 @@ _FORBIDDEN_TRACKED_SUFFIXES = frozenset(
     {".db", ".sqlite", ".sqlite3", ".log", ".trace", ".key", ".pem", ".p12", ".pfx"}
 )
 _PRIVATE_PATH = re.compile(r"(?i)(?:[A-Z]:[\\/]Users[\\/][^\\/\s]+|/(?:home|Users)/[^/\s]+)")
+_PREPARED_LAB_HOME = "/".join(("", "home", "bluefire"))
+_PUBLIC_SOURCE_PATHS: Mapping[str, tuple[str, ...]] = {
+    "bluefire/prepared_lab.py": (_PREPARED_LAB_HOME,),
+    "bluefire/prepared_lab_guest.py": (_PREPARED_LAB_HOME,),
+    "bluefire/prepared_lab_install.py": (_PREPARED_LAB_HOME,),
+    "docs/PREPARED_LINUX_LAB.md": (_PREPARED_LAB_HOME + "/lab-isolation.json",),
+}
+
+
+def _has_private_source_path(relative: str, text: str) -> bool:
+    """Classify exact public lab-account literals without masking other paths."""
+
+    for public_path in _PUBLIC_SOURCE_PATHS.get(relative, ()):
+        text = re.sub(re.escape(public_path) + r"(?=$|[\s\"'`])", "<public-lab-path>", text)
+    return _PRIVATE_PATH.search(text) is not None
+
+
 _PROMPT_MARKERS = (
     "anti_" + "larping_acceptance_contract",
     "bluefire_real_" + "product_completion_prompt",
@@ -370,7 +387,7 @@ def _opsec_report(
             text = payload.decode("utf-8")
         except UnicodeError:
             continue
-        if relative != allowed_path_fixture and _PRIVATE_PATH.search(text):
+        if relative != allowed_path_fixture and _has_private_source_path(relative, text):
             private_hits.append(relative + ":absolute-user-path")
         if any(marker in text for marker in _PROMPT_MARKERS):
             private_hits.append(relative + ":private-directive")

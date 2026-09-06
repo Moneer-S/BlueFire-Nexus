@@ -45,7 +45,7 @@ def test_seeded_execute_profiles_budget_the_installed_ten_step_journey() -> None
     assert all(profile.budgets.max_steps == 12 for profile in profiles.values())
     assert all(profile.budgets.max_seconds == 120 for profile in profiles.values())
     assert all(len(profile.capabilities) == 21 for profile in profiles.values())
-    assert all(len(profile.enabled_actions) == 17 for profile in profiles.values())
+    assert all(len(profile.enabled_actions) == 19 for profile in profiles.values())
     assert profiles["sandbox-execute.v1"].blocked_actions == ()
     assert profiles["sandbox-blocked-network.v1"].blocked_actions == (
         "sandbox.network.loopback.v1",

@@ -1967,6 +1967,8 @@ def test_service_enumerates_all_checkout_and_packaged_scenarios_in_stable_order(
         "scenario.detection.regression.v1",
         "scenario.endpoint.deep-behavior-lab.v1",
         "scenario.endpoint.lab-archive-collection.v1",
+        "scenario.endpoint.lab-benign-collection.v1",
+        "scenario.endpoint.lab-collection-methods.v1",
         "scenario.endpoint.lab-selective-collection.v1",
         "scenario.linux-container.validation.v1",
         "scenario.operator.representative-validation.v1",

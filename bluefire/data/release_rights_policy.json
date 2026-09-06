@@ -362,6 +362,8 @@
         "bluefire/data/detection_regression.yaml",
         "bluefire/data/endpoint_deep_behavior_lab.yaml",
         "bluefire/data/endpoint_lab_archive_collection.yaml",
+        "bluefire/data/endpoint_lab_benign_collection.yaml",
+        "bluefire/data/endpoint_lab_collection_methods.yaml",
         "bluefire/data/endpoint_lab_selective_collection.yaml",
         "bluefire/data/gate11_linux_wheelhouse.json",
         "bluefire/data/linux_container_validation.yaml",

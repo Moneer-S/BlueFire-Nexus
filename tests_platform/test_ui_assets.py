@@ -139,7 +139,7 @@ def test_management_ui_uses_durable_secret_safe_routes() -> None:
         "/resources/${kind}/${encodeURIComponent(id)}",
     ):
         assert route in api
-    assert "api.saveScenarioVersion(scenario)" in builder
+    assert "api.saveScenarioVersion(submitted)" in builder
     assert 'api.saveSetting("ui.preferences"' in settings
     assert "buildUiPreferenceDocument(theme, runConfig.mode, runConfig.autonomy)" in settings
     assert "parseUiPreferenceDocument" in settings
