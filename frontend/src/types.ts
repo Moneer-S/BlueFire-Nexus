@@ -880,6 +880,12 @@ export interface ComparisonSummary {
 }
 
 export interface ComparisonDelta {
+  material_changed?: boolean;
+  material_changes?: string[];
+  material_configuration_changed?: boolean;
+  configuration_changes?: string[];
+  catalog_authority_changed?: boolean;
+  dimensions?: Record<string, { changed?: boolean; [key: string]: unknown }>;
   from_run_id: string;
   to_run_id: string;
   first_path_divergence?: number | null;
@@ -909,6 +915,7 @@ export interface ComparisonDelta {
   target_scope_changed?: boolean;
   replay_lineage_changed?: boolean;
   replay_lineage_delta?: {
+    material_changed?: boolean;
     changed?: boolean;
     fields_changed?: string[];
     from_state?: string;

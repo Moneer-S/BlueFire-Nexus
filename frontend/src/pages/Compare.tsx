@@ -3,6 +3,7 @@ import { CheckCircle2, GitCompareArrows, RotateCcw, Search, ShieldAlert, ShieldC
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, buildReplayPayload } from "../lib/api";
+import { hasMaterialDelta } from "../lib/comparison-materiality";
 import { sourceRunParam } from "../lib/run-handoffs";
 import type { AutonomyLevel, ComparisonResponse, PreflightReport, RunConfiguration, RunRecord, Scenario } from "../types";
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, formatDate, sentence } from "../components/Primitives";
@@ -205,12 +206,6 @@ export function ComparisonResult({ comparison }: { comparison: ComparisonRespons
 }
 
 type ComparisonDeltaItem = ComparisonResponse["deltas"][number];
-
-function hasMaterialDelta(delta: ComparisonDeltaItem) {
-  if (delta.assessment) return delta.assessment !== "no_material_change";
-  const evidenceDetail = delta.evidence_detail_delta;
-  return Boolean(delta.objective_changed || delta.first_blocked_changed || delta.cleanup_changed || delta.autonomy_changed || delta.ai_provider_changed || delta.target_scope_changed || delta.replay_lineage_changed || delta.first_path_divergence !== null && delta.first_path_divergence !== undefined && delta.first_path_divergence >= 0 || Object.values(delta.evidence_delta ?? {}).some(Boolean) || evidenceDetail?.observed_artifacts_added?.length || evidenceDetail?.observed_artifacts_removed?.length || evidenceDetail?.observed_artifacts_changed?.length || evidenceDetail?.evidence_gaps_added?.length || evidenceDetail?.evidence_gaps_removed?.length || Object.values(evidenceDetail?.producer_delta ?? {}).some(Boolean) || Object.values(delta.detection_delta ?? {}).some(Boolean) || Object.values(delta.outcome_delta ?? {}).some(Boolean) || delta.detection_match_delta || delta.benign_match_delta || delta.ai_proposal_delta || delta.duration_delta_ms || delta.telemetry_added?.length || delta.telemetry_removed?.length || delta.controls_added?.length || delta.controls_removed?.length);
-}
 
 function assessmentTone(value: string): "neutral" | "success" | "warning" | "danger" {
   return value === "improved" ? "success" : value === "regressed" ? "danger" : value === "no_material_change" ? "neutral" : "warning";

@@ -189,7 +189,8 @@ def test_comparison_reports_evidence_detection_ai_and_assessment(tmp_path: Path)
     assert delta["detection_match_delta"] == 1
     assert delta["benign_match_delta"] == -1
     assert delta["autonomy_changed"] is True
-    assert delta["material_configuration_changed"] is False
+    assert delta["material_configuration_changed"] is True
+    assert delta["configuration_changes"] == ["autonomy"]
     assert delta["assessment"] == "improved"
 
 
@@ -735,7 +736,9 @@ def test_comparison_reports_sanitized_replay_variant_and_target_scope_delta(
     assert delta["target_scope_changed"] is True
     assert delta["replay_lineage_changed"] is True
     assert delta["replay_lineage_delta"]["action_implementations_changed"] is True
-    assert delta["configuration_changes"] == ["target_scope", "action_implementations"]
+    # The lineage records declarations relative to its source; this comparison
+    # reports the scope and autonomy that actually differ in the stored runs.
+    assert delta["configuration_changes"] == ["target_scope", "autonomy"]
     assert "replay_variant_changed" in delta["signals"]
     assert "target_scope_changed" in delta["signals"]
     assert "sensitive defense note" not in encoded

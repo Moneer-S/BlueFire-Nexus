@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 from .collector_comparison import collector_session_delta, summarize_collector_session
 from .collectors import CollectorError
 from .comparison_dimensions import delta_dimensions, summary_dimensions
+from .comparison_materiality import configuration_changes, material_delta_fields
 from .run_store import RunStore
 from .util import content_hash
 
@@ -346,18 +347,17 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         signals.append("catalog_authority_changed")
     if target_scope_changed:
         signals.append("target_scope_changed")
-    if replay_delta["changed"]:
-        signals.append("replay_variant_changed")
     if collector_delta["settings_changed"]:
         signals.append("collector_settings_changed")
-    assessment = _assessment(signals)
-    configuration_changes = ["catalog_authority"] if authority_delta["changed"] else []
-    if target_scope_changed:
-        configuration_changes.append("target_scope")
-    if replay_delta["action_implementations_changed"]:
-        configuration_changes.append("action_implementations")
-    if collector_delta["settings_changed"]:
-        configuration_changes.append("collectors")
+    changed_configuration = configuration_changes(
+        baseline,
+        candidate,
+        catalog_changed=authority_delta["changed"],
+        collector_settings_changed=collector_delta["settings_changed"],
+    )
+    replay_delta["material_changed"] = bool(replay_delta["changed"] and changed_configuration)
+    if replay_delta["material_changed"]:
+        signals.append("replay_variant_changed")
     delta = {
         "from_run_id": baseline["run_id"],
         "to_run_id": candidate["run_id"],
@@ -389,12 +389,12 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         "catalog_authority_delta": authority_delta,
         "collector_session_changed": collector_delta["changed"],
         "collector_session_delta": collector_delta,
-        "material_configuration_changed": bool(configuration_changes),
-        "configuration_changes": configuration_changes,
+        "material_configuration_changed": bool(changed_configuration),
+        "configuration_changes": changed_configuration,
         "duration_delta_ms": _number_delta(
             baseline.get("duration_ms"), candidate.get("duration_ms")
         ),
-        "assessment": assessment,
+        "assessment": _assessment(signals),
         "signals": signals,
     }
     delta["frontier_explanation"] = _frontier_explanation(baseline, candidate, delta)
@@ -404,6 +404,15 @@ def _delta(baseline: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[st
         delta,
         error_type=ComparisonError,
     )
+    delta["material_changes"] = material_delta_fields(baseline, candidate, delta)
+    delta["material_changed"] = bool(delta["material_changes"])
+    if not signals and delta["material_changed"]:
+        signals.extend(f"{field}_changed" for field in delta["material_changes"])
+    delta["assessment"] = _assessment(signals)
+    delta["dimensions"]["assessment"] = {
+        "classification": delta["assessment"],
+        "signals": list(signals),
+    }
     return delta
 
 
