@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import codecs
 import hashlib
+import io
 import json
 import os
 import re
@@ -21,8 +22,9 @@ import threading
 import time
 import zipfile
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, BinaryIO, Iterator, Mapping
 
 from .cross_platform_linux_distribution import (
     DisposableWslDistribution,
@@ -126,20 +128,66 @@ def guest(lease: DisposableWslDistribution, user: str, *arguments: str) -> list[
     )
 
 
-def wheel_digest(path: Path) -> bytes:
-    identity(path, directory=False)
+@dataclass(frozen=True)
+class WheelInput:
+    path: Path
+    identity: tuple[int, int]
+    size: int
+    digest: bytes
+
+
+def _wheel_snapshot(source: BinaryIO) -> tuple[int, int, int, int, int]:
+    details = os.fstat(source.fileno())
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or details.st_nlink != 1
+        or int(getattr(details, "st_file_attributes", 0)) & 0x400
+        or not 0 < details.st_size <= 128 * 1024 * 1024
+    ):
+        raise ValueError("wheel inputs require bounded ordinary, unlinked files")
+    return (
+        details.st_dev,
+        details.st_ino,
+        details.st_size,
+        details.st_mtime_ns,
+        details.st_ctime_ns,
+    )
+
+
+def _read_wheel(path: Path, *, product: bool = False) -> WheelInput:
+    expected = identity(path, directory=False)
     digest = hashlib.sha256()
     total = 0
-    with path.open("rb") as source:
+    with path.open("rb") as source, io.BytesIO() as snapshot:
+        before = _wheel_snapshot(source)
+        if before[:2] != expected:
+            raise ValueError("wheel identity changed during validation")
         while block := source.read(65536):
             total += len(block)
             if total > 128 * 1024 * 1024:
                 raise ValueError("wheel copy exceeds its byte bound")
             digest.update(block)
-    return digest.digest()
+            if product:
+                snapshot.write(block)
+        if (
+            total != before[2]
+            or _wheel_snapshot(source) != before
+            or identity(path, directory=False) != expected
+        ):
+            raise ValueError("wheel changed during validation")
+        if product:
+            # Inspect the exact bytes whose digest is retained, rather than
+            # reopening a mutable path or reparsing a concurrently changed file.
+            snapshot.seek(0)
+            _validate_product_wheel(path, snapshot)
+    return WheelInput(path, expected, total, digest.digest())
 
 
-def wheel_inputs(product: Path, wheelhouse: Path) -> list[Path]:
+def wheel_digest(path: Path) -> bytes:
+    return _read_wheel(path).digest
+
+
+def wheel_inputs(product: Path, wheelhouse: Path) -> list[WheelInput]:
     product = product.resolve(strict=True)
     wheelhouse = wheelhouse.resolve(strict=True)
     identity(wheelhouse, directory=True)
@@ -176,7 +224,19 @@ def wheel_inputs(product: Path, wheelhouse: Path) -> list[Path]:
         or sum(path.name.startswith("bluefire_nexus-") for path in paths) != 1
     ):
         raise ValueError("provide one BlueFire wheel and a bounded dependency wheelhouse")
-    with zipfile.ZipFile(product) as archive:
+    selected = []
+    size = 0
+    for path in paths:
+        wheel = _read_wheel(path, product=path == product)
+        size += wheel.size
+        if size > 512 * 1024 * 1024:
+            raise ValueError("wheel inputs exceed their total byte bound")
+        selected.append(wheel)
+    return selected
+
+
+def _validate_product_wheel(product: Path, source: BinaryIO) -> None:
+    with zipfile.ZipFile(source) as archive:
         names = archive.namelist()
         # Native wheels produced by setuptools relocate Python files to purelib.
         # Match the selected wheel's distribution/version, never a suffix alone.
@@ -210,7 +270,43 @@ def wheel_inputs(product: Path, wheelhouse: Path) -> list[Path]:
             or artifact.get("architecture") != "x86_64"
         ):
             raise ValueError("the prepared lab requires a Linux x86_64 product wheel")
-    return paths
+
+
+class _WheelCopy:
+    """Hash the bytes tarfile actually consumes from the validated open file."""
+
+    def __init__(self, source: BinaryIO) -> None:
+        self.source = source
+        self.digest = hashlib.sha256()
+        self.size = 0
+
+    def read(self, size: int = -1, /) -> bytes:
+        block = self.source.read(size)
+        self.digest.update(block)
+        self.size += len(block)
+        return block
+
+
+def _archive_wheel(archive: tarfile.TarFile, wheel: WheelInput) -> None:
+    if identity(wheel.path, directory=False) != wheel.identity:
+        raise ValueError("validated wheel identity changed before archive creation")
+    with wheel.path.open("rb") as source:
+        before = _wheel_snapshot(source)
+        if before[:2] != wheel.identity or before[2] != wheel.size:
+            raise ValueError("validated wheel changed while opening its archive input")
+        copied = _WheelCopy(source)
+        info = tarfile.TarInfo(wheel.path.name)
+        info.size = wheel.size
+        info.mode = 0o644
+        archive.addfile(info, copied)
+        if (
+            source.read(1)
+            or copied.size != wheel.size
+            or copied.digest.digest() != wheel.digest
+            or _wheel_snapshot(source) != before
+            or identity(wheel.path, directory=False) != wheel.identity
+        ):
+            raise ValueError("validated wheel bytes changed during archive creation")
 
 
 @contextmanager
@@ -249,7 +345,7 @@ def prepare(state: Path, product: Path, wheelhouse: Path) -> None:
         _prepare_locked(state, paths, executable)
 
 
-def _prepare_locked(state: Path, paths: list[Path], executable: Path) -> None:
+def _prepare_locked(state: Path, paths: list[WheelInput], executable: Path) -> None:
     lease = create_disposable_wsl_distribution(executable, state)
     record: dict[str, Any] | None = None
     try:
@@ -269,15 +365,14 @@ def _prepare_locked(state: Path, paths: list[Path], executable: Path) -> None:
         # Only reviewed fixed preparation code executes as clone-local root.
         script = Path(__file__).with_name("prepared_lab_install.py").read_text(encoding="utf-8")
         archive_path = state / "wheel-inputs.tar"
-        with archive_path.open("xb") as output, tarfile.open(fileobj=output, mode="w|") as archive:
-            for path in paths:
-                with path.open("rb") as source:
-                    info = tarfile.TarInfo(path.name)
-                    info.size = path.stat().st_size
-                    info.mode = 0o644
-                    archive.addfile(info, source)
-        verify(lease, record)
-        with archive_path.open("rb") as payload:
+        with archive_path.open("x+b") as payload:
+            with tarfile.open(fileobj=payload, mode="w|") as archive:
+                for wheel in paths:
+                    _archive_wheel(archive, wheel)
+            verify(lease, record)
+            # Keep the exact archive we just wrote through guest consumption;
+            # reopening its pathname would introduce a second replacement gap.
+            payload.seek(0)
             subprocess.run(  # nosec B603
                 guest(lease, "root", "/usr/bin/python3", "-I", "-c", script),
                 stdin=payload,

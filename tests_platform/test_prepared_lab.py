@@ -56,10 +56,10 @@ def test_lab_requires_platform_native_wheel_and_existing_packaged_launcher(
     with pytest.raises(ValueError, match="predates"):
         lab.wheel_inputs(product, wheelhouse)
     _wheel(product, relocated=relocated)
-    assert lab.wheel_inputs(product, wheelhouse) == [product]
+    assert [wheel.path for wheel in lab.wheel_inputs(product, wheelhouse)] == [product]
     duplicate = wheelhouse / product.name
     shutil.copyfile(product, duplicate)
-    assert lab.wheel_inputs(product, wheelhouse) == [product]
+    assert [wheel.path for wheel in lab.wheel_inputs(product, wheelhouse)] == [product]
     duplicate.write_bytes(b"different package with the same name")
     with pytest.raises(ValueError, match="differs"):
         lab.wheel_inputs(product, wheelhouse)
