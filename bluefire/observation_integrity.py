@@ -66,6 +66,7 @@ def evaluate_observation_integrity(
             requirements.append((path, producers[-1] if producers else None))
 
     postconditions: list[dict[str, Any]] = []
+    positions = {record.evidence_id: index for index, record in enumerate(records)}
     for path, execution in requirements:
         output = execution.content.get("output") if execution is not None else None
         expected = output if isinstance(output, Mapping) else {}
@@ -95,7 +96,19 @@ def evaluate_observation_integrity(
         matching: list[str] = []
         conflicting: list[str] = []
         if execution is not None and valid_identity:
-            for observed in records:
+            execution_index = positions[execution.evidence_id]
+            next_write_index = min(
+                (
+                    positions[writer.evidence_id]
+                    for writer in file_producers
+                    if positions[writer.evidence_id] > execution_index
+                    and path in writer.content["expected_observable_paths"]
+                ),
+                default=len(records),
+            )
+            # A later create-new episode after cleanup is a new postcondition,
+            # not contradictory evidence about the earlier file incarnation.
+            for observed in records[execution_index + 1 : next_write_index]:
                 if (
                     observed.provenance is not EvidenceProvenance.OBSERVED
                     or observed.producer not in _FILESYSTEM_PRODUCERS

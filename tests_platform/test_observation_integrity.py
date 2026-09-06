@@ -105,6 +105,23 @@ def test_conflicting_observation_is_not_masked_by_another_matching_record() -> N
     assert report["satisfied"] is False
 
 
+def test_independently_observed_file_incarnations_do_not_conflict_across_writes() -> None:
+    first = _execution()
+    second = replace(
+        first,
+        evidence_id="evidence-second-write",
+        timestamp="2026-09-06T12:00:02Z",
+        content={**first.content, "output": {"artifact": PATH, "sha256": "b" * 64, "size": 32}},
+    )
+    second_observation = replace(_observation(sha256="b" * 64), timestamp="2026-09-06T12:00:03Z")
+    report = evaluate_observation_integrity([first, _observation(), second, second_observation])
+    assert report["satisfied"] is True
+    assert report["required_file_count"] == report["verified_file_count"] == 2
+    missing_first = evaluate_observation_integrity([first, second, second_observation])
+    assert missing_first["satisfied"] is False
+    assert missing_first["file_postconditions"][0]["state"] == "observation_unavailable"
+
+
 def test_managed_schedule_requires_only_the_configured_file_postconditions() -> None:
     report = evaluate_observation_integrity(
         [
