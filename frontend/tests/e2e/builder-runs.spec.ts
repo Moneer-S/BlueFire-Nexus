@@ -4,9 +4,11 @@ test("builder supports add, undo, redo, filtering, and keyboard shortcuts", asyn
   const consoleErrors: string[] = [];
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
   await page.goto("./#/builder");
-  await expect(page.getByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
+  await page.getByRole("button", { name: "Show all branches", exact: true }).click();
   const nodes = page.locator(".react-flow__node");
   const initial = await nodes.count();
+  await page.getByRole("button", { name: "Add step", exact: true }).click();
   await page.locator(".palette-list > button").first().click();
   await expect(nodes).toHaveCount(initial + 1);
   await page.getByRole("button", { name: "Undo" }).click();
@@ -14,10 +16,12 @@ test("builder supports add, undo, redo, filtering, and keyboard shortcuts", asyn
   await page.getByRole("button", { name: "Redo" }).click();
   await expect(nodes).toHaveCount(initial + 1);
 
+  await page.getByRole("button", { name: "Add step", exact: true }).click();
   const search = page.getByRole("textbox", { name: "Search palette" });
   await search.fill("credential");
   await expect(page.locator(".palette-list > button")).toHaveCount(1);
   await search.fill("");
+  await page.getByRole("button", { name: "Add step", exact: true }).click();
   await page.locator(".react-flow__pane").click({ position: { x: 20, y: 20 } });
   await page.keyboard.press("Control+z");
   await expect(nodes).toHaveCount(initial);
@@ -26,25 +30,25 @@ test("builder supports add, undo, redo, filtering, and keyboard shortcuts", asyn
 
 test("builder workspace exposes commands, layout, focus, legend, panels, and confirmed deletion", async ({ page }) => {
   await page.goto("./#/builder");
-  await expect(page.getByLabel("Graph legend")).toContainText("Action");
-  await expect(page.getByLabel("Graph legend")).toContainText("Simulation");
-  await expect(page.getByLabel("Graph legend")).toContainText("Research");
-  await expect(page.getByLabel("Graph legend")).toContainText("Success");
-  await expect(page.getByLabel("Graph legend")).toContainText("Partial");
-  await expect(page.getByLabel("Graph legend")).toContainText("Blocked");
-  await expect(page.getByLabel("Graph legend")).toContainText("Failed");
-
-  await page.getByRole("button", { name: "Hide behavior palette" }).click();
   await expect(page.locator(".palette-panel")).toBeHidden();
-  await page.getByRole("button", { name: "Show behavior palette" }).click();
+  await expect(page.locator(".inspector-panel")).toBeHidden();
+  await expect(page.getByText(/Review run includes the whole experiment/)).toBeVisible();
+  const draftBefore = await page.evaluate(() => window.localStorage.getItem("bluefire.local.scenario.v1"));
+  await page.getByRole("button", { name: "Show all branches", exact: true }).click();
+  await page.getByText("View options", { exact: true }).click();
+  await page.getByLabel("Show input connections", { exact: true }).check();
+  await page.getByText("View options", { exact: true }).click();
+  expect(await page.evaluate(() => window.localStorage.getItem("bluefire.local.scenario.v1"))).toBe(draftBefore);
+  await page.getByRole("button", { name: "Add step", exact: true }).click();
   await expect(page.locator(".palette-panel")).toBeVisible();
+  await page.getByRole("button", { name: "Show node inspector" }).click();
+  await expect(page.locator(".palette-panel")).toBeHidden();
+  await expect(page.locator(".inspector-panel")).toBeVisible();
   await page.getByRole("button", { name: "Hide node inspector" }).click();
   await expect(page.locator(".inspector-panel")).toBeHidden();
-  await page.getByRole("button", { name: "Show node inspector" }).click();
-  await expect(page.locator(".inspector-panel")).toBeVisible();
 
   await page.getByRole("button", { name: "Auto-layout" }).click();
-  await expect(page.getByText("Graph arranged by outcome-route depth. Disconnected nodes are grouped in the final column.")).toBeVisible();
+  await expect(page.getByText("Steps arranged in reading order. Use Undo to restore your positions.")).toBeVisible();
   await page.getByRole("button", { name: "Fit graph" }).click();
   await page.getByRole("button", { name: "Fit selection" }).click();
   await expect(page.getByRole("button", { name: /Commands Ctrl\/Cmd K/ })).toBeVisible();
@@ -56,7 +60,7 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
   const commandDialog = page.getByRole("dialog", { name: "Builder commands" });
   await expect(commandDialog).toBeVisible();
   await expect(commandDialog.locator(".builder-command-list > button")).toHaveCount(9);
-  for (const action of ["Auto-layout", "Fit graph", "Fit selection", "Hide behavior palette", "Hide node inspector", "Exit graph focus mode", "Validate graph", "Undo", "Redo"]) await expect(commandDialog.getByRole("button", { name: new RegExp(`^${action}`) })).toBeVisible();
+  for (const action of ["Auto-layout", "Fit graph", "Fit selection", "Show behavior palette", "Show node inspector", "Exit graph focus mode", "Validate graph", "Undo", "Redo"]) await expect(commandDialog.getByRole("button", { name: new RegExp(`^${action}`) })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(commandDialog).toBeHidden();
   await expect(page.locator(".builder-page")).toHaveClass(/builder-focus/);
@@ -85,9 +89,52 @@ test("builder workspace exposes commands, layout, focus, legend, panels, and con
   })).toEqual({ binding: false, layout: false, route: false, start: "run_fixture", step: false });
 
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
+  await page.getByRole("button", { name: "Show all branches", exact: true }).click();
   await expect(nodes).toHaveCount(initial - 1);
   await expect(page.locator('.react-flow__node[data-id="place_fixture"]')).toHaveCount(0);
+});
+
+test("keyboard selection, copy and deletion follow the focused step", async ({ page }) => {
+  await page.goto("./#/builder");
+  await page.getByRole("button", { name: "Show all branches", exact: true }).click();
+  const first = page.locator('.react-flow__node[data-id="place_fixture"]');
+  const second = page.locator('.react-flow__node[data-id="run_fixture"]');
+  await second.focus();
+  await page.keyboard.press("Enter");
+  await expect(second).toHaveClass(/selected/);
+  await expect(first).not.toHaveClass(/selected/);
+  await page.keyboard.press("Control+c");
+  await expect(page.locator(".compatibility-banner")).toContainText("run_fixture copied");
+  page.once("dialog", (dialog) => dialog.accept());
+  await second.focus();
+  await page.keyboard.press("Delete");
+  await expect(second).toHaveCount(0);
+  await expect(first).toHaveCount(1);
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(second).toHaveCount(1);
+  await expect(first).toHaveCount(1);
+});
+
+test("laptop canvas and step details fit the viewport without losing the experiment", async ({ page }) => {
+  for (const viewport of [{ width: 1366, height: 768 }, { width: 1440, height: 900 }, { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(viewport);
+    await page.goto("./#/builder");
+    await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
+    const canvas = await page.locator(".graph-canvas").boundingBox();
+    expect(canvas?.y).toBeLessThan(360);
+    expect(canvas?.height).toBeGreaterThan(350);
+    await page.getByRole("button", { name: "Show node inspector" }).click();
+    const details = await page.locator(".inspector-panel").boundingBox();
+    expect(details).not.toBeNull();
+    expect(details!.y + details!.height).toBeLessThanOrEqual(viewport.height);
+    await page.getByRole("button", { name: "Close step details" }).click();
+  }
+  await page.setViewportSize({ width: 683, height: 384 });
+  await page.reload();
+  await expect(page.getByRole("list", { name: "Experiment steps" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Review run" })).toBeVisible();
+  await expect(page.locator(".inspector-panel")).toBeHidden();
 });
 
 test("Execute approval cannot bypass canonical review and legacy authority is scrubbed after reload", async ({ page }) => {

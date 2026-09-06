@@ -194,11 +194,13 @@ test("production operator UI completes authoring, management, run, replay, and c
 
   await page.goto(launchUrl.href, { waitUntil: "domcontentloaded" });
   const navigation = page.getByRole("navigation", { name: "Primary navigation" });
+  await navigation.getByRole("button", { name: "Show more tools" }).click();
+  await navigation.getByRole("button", { name: "Show settings tools" }).click();
   await expect(navigation).toBeVisible();
   await expect.poll(() => page.url()).not.toContain("bluefire-session=");
   completed.push("bootstrap_production_session");
 
-  await navigation.getByRole("link", { name: "Scenarios" }).click();
+  await navigation.getByRole("link", { name: "Experiments" }).click();
   await expect(page.getByRole("heading", { name: "Reusable security experiments" })).toBeVisible();
   await expect(page.locator(".scenario-card").first()).toContainText(/Working copy · saved v\d+/);
   const initialCard = page.locator(".scenario-card").first();
@@ -215,11 +217,11 @@ test("production operator UI completes authoring, management, run, replay, and c
   await page.getByRole("button", { name: "New scenario" }).click();
   await page.getByLabel("Scenario title").fill("Gate 08 authoring draft");
   await page.getByRole("button", { name: "Create draft" }).click();
-  await expect(page.getByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
-  await expect(page.getByText("Start with a registered behavior")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
+  await expect(page.getByText("Start with one useful step")).toBeVisible();
   completed.push("create_scenario_draft");
 
-  await navigation.getByRole("link", { name: "Scenarios" }).click();
+  await navigation.getByRole("link", { name: "Experiments" }).click();
   await page.getByLabel("Import scenario JSON file").setInputFiles({
     name: "gate08-exported-scenario.json",
     mimeType: "application/json",
@@ -228,9 +230,15 @@ test("production operator UI completes authoring, management, run, replay, and c
   await expect(page.getByText(`Imported ${exportedTitle} as a local draft.`)).toBeVisible();
   const importedCard = page.locator(".scenario-card").filter({ has: page.getByRole("heading", { name: exportedTitle, level: 2 }) }).first();
   await importedCard.getByRole("button", { name: "Open builder" }).click();
-  await expect(page.getByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
   completed.push("import_scenario");
 
+  await expect(page.locator(".palette-panel")).toBeHidden();
+  await expect(page.locator(".inspector-panel")).toBeHidden();
+  await page.getByRole("button", { name: "Show all branches", exact: true }).click();
+  await page.getByText("View options", { exact: true }).click();
+  await page.getByLabel("Show input connections", { exact: true }).check();
+  await page.getByText("View options", { exact: true }).click();
   const nodes = page.locator(".react-flow__node");
   const initialNodeCount = await nodes.count();
   expect(initialNodeCount).toBeGreaterThan(1);
@@ -238,13 +246,13 @@ test("production operator UI completes authoring, management, run, replay, and c
   await expect.poll(() => page.locator(".typed-handle").count()).toBeGreaterThan(0);
   const graphEdgeCount = await page.locator(".react-flow__edge").count();
   const typedHandleCount = await page.locator(".typed-handle").count();
-  const legend = page.getByLabel("Graph legend");
-  for (const label of ["Environment", "Behavior", "Evidence", "Action", "Simulation", "Research", "Success", "Partial", "Blocked", "Failed", "Typed artifact"]) {
-    await expect(legend.locator("span").filter({ hasText: new RegExp(`^${label}(?:\\s|$)`) }).first()).toBeVisible();
+  // Equivalent operator coverage now lives in contextual step details and visual-only layers.
+  await expect(page.getByText(/Review run includes the whole experiment/)).toBeVisible();
+  await page.getByRole("button", { name: "Show node inspector" }).click();
+  for (const heading of ["Method", "Required input", "Parameters", "Next step"]) {
+    await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
   }
-  for (const heading of ["Action implementation", "Typed inputs", "Parameters", "Outcome routes", "Expected observables"]) {
-    await expect(page.getByRole("heading", { name: heading })).toBeVisible();
-  }
+  await page.getByRole("button", { name: "Add step", exact: true }).click();
   await page.locator(".palette-list > button").first().click();
   await expect(nodes).toHaveCount(initialNodeCount + 1);
   await page.getByRole("button", { name: "Undo" }).click();
@@ -262,20 +270,20 @@ test("production operator UI completes authoring, management, run, replay, and c
   await expect(nodes).toHaveCount(initialNodeCount);
   completed.push("edit_graph_and_history");
 
-  const layout = page.locator(".builder-layout");
-  const columnsBefore = await layout.evaluate((element) => getComputedStyle(element).gridTemplateColumns);
+  await page.getByRole("button", { name: "Add step", exact: true }).click();
+  const viewportBefore = await page.locator(".react-flow__viewport").getAttribute("style");
+  await page.getByText("View options", { exact: true }).click();
   await page.getByLabel("Behavior palette width").fill("380");
+  await expect(page.locator(".palette-panel")).toHaveCSS("width", "380px");
+  await page.getByText("View options", { exact: true }).click();
+  await page.getByRole("button", { name: "Show node inspector" }).click();
+  await page.getByText("View options", { exact: true }).click();
   await page.getByLabel("Node inspector width").fill("420");
-  await expect(page.getByText("380px", { exact: true })).toBeVisible();
-  await expect(page.getByText("420px", { exact: true })).toBeVisible();
-  const columnsAfter = await layout.evaluate((element) => getComputedStyle(element).gridTemplateColumns);
-  expect(columnsAfter).not.toBe(columnsBefore);
-  await page.getByRole("button", { name: "Hide behavior palette" }).click();
-  await expect(page.locator(".palette-panel")).toBeHidden();
-  await page.getByRole("button", { name: "Show behavior palette" }).click();
+  await expect(page.locator(".inspector-panel")).toHaveCSS("width", "420px");
+  await page.getByText("View options", { exact: true }).click();
+  expect(await page.locator(".react-flow__viewport").getAttribute("style")).toBe(viewportBefore);
   await page.getByRole("button", { name: "Hide node inspector" }).click();
   await expect(page.locator(".inspector-panel")).toBeHidden();
-  await page.getByRole("button", { name: "Show node inspector" }).click();
   await page.getByRole("button", { name: "Enter graph focus mode" }).click();
   await expect(page.locator(".builder-page")).toHaveClass(/builder-focus/);
   await page.keyboard.press("Control+K");
@@ -286,14 +294,14 @@ test("production operator UI completes authoring, management, run, replay, and c
   completed.push("resize_collapse_and_focus_panels");
 
   const versionedTitle = `${exportedTitle} · Gate 08 operator proof`;
-  await page.getByLabel("Scenario name").fill(versionedTitle);
+  await page.getByLabel("Experiment name").fill(versionedTitle);
   const validationResponsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/scenarios/validate" && response.request().method() === "POST");
   await page.getByRole("button", { name: "Validate", exact: true }).click();
   const validationResponse = await validationResponsePromise;
   const validationEnvelope = await validationResponse.json() as JsonObject;
   expect(validationResponse.ok(), JSON.stringify(validationEnvelope)).toBe(true);
   expect(validationEnvelope.valid).toBe(true);
-  await expect(page.locator(".validation-bar")).toContainText("Deterministic validation passed");
+  await expect(page.locator(".validation-bar")).toContainText("Experiment validated");
   const scenarioVersionResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/v1/scenario-versions" && response.request().method() === "POST");
   await page.getByRole("button", { name: "Save version" }).click();
   const scenarioVersionEnvelope = await (await scenarioVersionResponse).json() as JsonObject;

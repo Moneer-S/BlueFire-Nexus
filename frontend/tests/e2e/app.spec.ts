@@ -19,7 +19,7 @@ test("primary navigation is keyboard-accessible and the overview has no serious 
 
 test("skip navigation preserves the active HashRouter workspace", async ({ page }) => {
   await page.goto("./#/builder");
-  await expect(page.getByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
   await page.keyboard.press("Tab");
   await expect(page.getByRole("link", { name: "Skip to content" })).toBeFocused();
   await page.keyboard.press("Enter");
@@ -34,16 +34,16 @@ test("system theme follows live operating-system color-scheme changes", async ({
   await page.getByRole("button", { name: /^System/ }).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
 
-  await page.getByRole("link", { name: "Scenario Builder" }).click();
-  await expect(page.getByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
+  await page.getByRole("link", { name: "Build" }).click();
+  await expect(page.getByRole("heading", { name: "Build your experiment" })).toBeVisible();
   await page.emulateMedia({ colorScheme: "light" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
 
 test("all major workspaces are reachable", async ({ page }) => {
   const routes = [
-    ["Scenarios", "Reusable security experiments"],
-    ["Scenario Builder", "Compose a typed adaptive graph"],
+    ["Experiments", "Reusable security experiments"],
+    ["Build", "Build your experiment"],
     ["Runs", "Preflight every path. Observe every decision."],
     ["Compare", "Measure what changed"],
     ["Behaviors", "Neutral, typed behavior contracts"],
@@ -59,7 +59,12 @@ test("all major workspaces are reachable", async ({ page }) => {
   ] as const;
   await page.goto("./");
   for (const [link, heading] of routes) {
-    await page.getByRole("link", { name: link, exact: true }).click();
+    const target = page.getByRole("link", { name: link, exact: true });
+    if (!await target.isVisible()) {
+      const group = ["Runner Profiles", "Runners", "Actions & Plugins", "Action Packages"].includes(link) ? "Show settings tools" : "Show more tools";
+      await page.getByRole("button", { name: group }).click();
+    }
+    await target.click();
     await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
   }
 });

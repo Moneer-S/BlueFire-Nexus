@@ -235,6 +235,7 @@ describe("product application", () => {
     renderApp();
     expect(await screen.findByRole("heading", { name: "Design the path. Observe the defense." })).toBeVisible();
     expect(await screen.findByRole("img", { name: "Local service connected" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Show more tools" }));
     await user.click(screen.getByRole("link", { name: /Research Sources/i }));
     expect(await screen.findByRole("heading", { name: "Research sources" })).toBeVisible();
     expect(screen.getByRole("heading", { name: "MITRE ATT&CK" })).toBeVisible();
@@ -254,8 +255,8 @@ describe("product application", () => {
     await user.type(title, "Gate 08 local draft");
     await user.click(screen.getByRole("button", { name: "Create draft" }));
 
-    expect(await screen.findByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
-    expect(screen.getByText("Start with a registered behavior")).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Build your experiment" })).toBeVisible();
+    expect(screen.getByText("Start with one useful step")).toBeVisible();
     expect(screen.getByDisplayValue("Gate 08 local draft")).toBeVisible();
   });
 
@@ -275,8 +276,8 @@ describe("product application", () => {
     await user.upload(input, new File([JSON.stringify({ ...demoScenario, steps: [{ ...firstStep, parameters: { record_count: { toString: null, valueOf: null } } }] })], "object-parameter.json", { type: "application/json" }));
     expect(await screen.findByText(/parameters\.record_count must be a string, finite number, boolean, or string array/)).toBeVisible();
     expect(window.localStorage.getItem("bluefire.local.scenario.v1")).toBeNull();
-    await user.click(screen.getByRole("link", { name: /^Scenario Builder$/ }));
-    expect(await screen.findByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
+    await user.click(screen.getByRole("link", { name: /^Build$/ }));
+    expect(await screen.findByRole("heading", { name: "Build your experiment" })).toBeVisible();
     expect(screen.getByDisplayValue(demoScenario.title)).toBeVisible();
   });
 
@@ -328,6 +329,7 @@ describe("product application", () => {
 
     const user = userEvent.setup();
     renderApp("/builder");
+    await user.click(await screen.findByRole("button", { name: "Add step" }));
     await user.click(await screen.findByRole("button", { name: /Typed enum review/ }));
 
     const evidenceBasis = await screen.findByRole("combobox", { name: "evidence_basis" }) as HTMLSelectElement;
@@ -362,6 +364,7 @@ describe("product application", () => {
 
     const user = userEvent.setup();
     renderApp("/builder");
+    await user.click(await screen.findByRole("button", { name: "Add step" }));
     await user.click(await screen.findByRole("button", { name: /Typed enum review/ }));
     const sampleCount = await screen.findByRole("combobox", { name: "sample_count" });
     const strictMatch = screen.getByRole("combobox", { name: "strict_match" });
@@ -390,6 +393,7 @@ describe("product application", () => {
 
     const user = userEvent.setup();
     const view = renderApp("/builder");
+    await user.click(await screen.findByRole("button", { name: "Add step" }));
     await user.click(await screen.findByRole("button", { name: /Typed enum review/ }));
     const optionalInteger = await screen.findByRole("spinbutton", { name: "zero_default" });
     const optionalNumber = screen.getByRole("spinbutton", { name: "optional_number" });
@@ -421,7 +425,7 @@ describe("product application", () => {
 
     view.unmount();
     renderApp("/builder");
-    await waitFor(() => expect(screen.getAllByText("Typed enum review")).toHaveLength(2));
+    await screen.findByDisplayValue(demoScenario.title);
     await waitFor(() => {
       const stored = JSON.parse(window.localStorage.getItem("bluefire.local.scenario.v1") ?? "{}") as { steps?: Array<{ behavior_id: string; parameters: Record<string, unknown> }> };
       const parameters = stored.steps?.find((step) => step.behavior_id === typedEnumBehavior.id)?.parameters;
@@ -1406,8 +1410,8 @@ describe("product application", () => {
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(addEventListener).toHaveBeenCalledWith("change", expect.any(Function));
     expect(colorSchemeListener).toBeDefined();
-    await user.click(screen.getByRole("link", { name: /^Scenario Builder$/ }));
-    expect(await screen.findByRole("heading", { name: "Compose a typed adaptive graph" })).toBeVisible();
+    await user.click(screen.getByRole("link", { name: /^Build$/ }));
+    expect(await screen.findByRole("heading", { name: "Build your experiment" })).toBeVisible();
     act(() => colorSchemeListener!({ matches: true } as MediaQueryListEvent));
     expect(document.documentElement.dataset.theme).toBe("light");
 
