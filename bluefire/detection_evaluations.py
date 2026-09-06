@@ -131,9 +131,15 @@ def _source_binding(
     }
 
 
-def evaluate_run(
-    service: DetectionContext, candidate_id: str, request: Mapping[str, Any]
+def build_run_evaluation(
+    service: DetectionContext,
+    candidate: DetectionCandidate,
+    resource: Mapping[str, Any],
+    request: Mapping[str, Any],
+    *,
+    development_case: bool = False,
 ) -> Mapping[str, Any]:
+    """Build the existing bounded report; its caller owns atomic persistence."""
     service._fields(
         request,
         required={"run_id", "question", "case_role"},
@@ -158,109 +164,120 @@ def evaluate_run(
             "detection_evaluation_role_invalid",
             "Case role must be attack, benign, replay, or heldout.",
         )
+    if candidate.target_language not in _LANGUAGES:
+        raise APIError(
+            HTTPStatus.CONFLICT,
+            "detection_evaluation_language_unsupported",
+            "Immutable run evaluation supports SQLite and Sigma converted to bounded SQLite. Internal matcher and YARA metadata are not executable query evidence.",
+        )
+    if candidate.state not in _EXECUTABLE_STATES or not candidate.rule_source:
+        raise APIError(
+            HTTPStatus.CONFLICT,
+            "detection_evaluation_parse_required",
+            "Parse this query candidate before evaluating a run.",
+        )
+    run, records, observed = _source(service, request.get("run_id"))
+    gaps = [
+        record.evidence_id for record in records if record.provenance is EvidenceProvenance.UNKNOWN
+    ]
+    diagnostics: list[str] = []
+    if not observed:
+        diagnostics.append("observed_evidence_unavailable")
+    if gaps:
+        diagnostics.append("source_contains_evidence_gaps")
+    if len(observed) > _MAX_OBSERVED:
+        diagnostics.append("observed_evidence_limit_exceeded")
+    objective = run.get("objective_evaluation")
+    integrity = objective.get("observation_integrity") if isinstance(objective, Mapping) else None
+    if isinstance(integrity, Mapping) and integrity.get("satisfied") is False:
+        diagnostics.append("source_file_postconditions_unobserved")
+    result: dict[str, Any] = {
+        "state": "insufficient_evidence",
+        "match_count": None,
+        "evaluated_evidence_ids": [],
+        "matched_evidence_ids": [],
+        "gap_evidence_ids": gaps[:_MAX_OBSERVED],
+        "gap_count": len(gaps),
+        "mapped_fields": _field_names(candidate.validation.get("mapped_fields")),
+        "available_fields": [],
+        "unsupported_fields": [],
+        "missing_fields": [],
+        "diagnostic_codes": diagnostics,
+    }
+    backend: dict[str, Any] = {"name": "SQLite in-memory bounded executor", "executed": False}
+    if not diagnostics:
+        try:
+            execution = service.validator._execute_candidate_query(
+                candidate,
+                [dict(record.content, fixture_id=record.evidence_id) for record in observed],
+            )
+        except DetectionError:
+            result["state"] = "backend_error"
+            diagnostics.append("bounded_query_execution_refused")
+        else:
+            mapped = _field_names(execution["mapped_fields"])
+            available = _field_names(execution["mapped_fixture_fields"])
+            missing = sorted(set(mapped) - set(available) - {"fixture_id"})
+            backend.update(
+                executed=True,
+                version=execution["sqlite_version"],
+                query_only=execution["query_only"],
+                authorizer=execution["authorizer"],
+                limits=execution["limits"],
+            )
+            result.update(
+                evaluated_evidence_ids=list(execution["fixture_ids"]),
+                mapped_fields=mapped,
+                available_fields=available,
+                unsupported_fields=_field_names(execution["unsupported_fixture_fields"]),
+                missing_fields=missing,
+            )
+            if missing:
+                diagnostics.append("required_observation_fields_unavailable")
+            else:
+                matched = list(execution["matched_fixture_ids"])
+                result.update(
+                    state="matched" if matched else "not_matched",
+                    match_count=len(matched),
+                    matched_evidence_ids=matched,
+                )
+    report = bind_report(
+        {
+            "schema_version": EVALUATION_SCHEMA,
+            "question": question.strip(),
+            "case_role": role,
+            "case_role_basis": "operator_declared",
+            **({"development_case": True} if development_case else {}),
+            "candidate": _candidate_binding(candidate, resource),
+            "source": _source_binding(run, records, observed),
+            "result": result,
+            "backend": backend,
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "limitations": [
+                "Case role is operator-declared context, not observed intent or an expected-result assertion.",
+                "Matches describe the bounded query against independently observed run metadata; they do not establish host detection deployment or prevention.",
+                "All observed records in this bundle are included; excluded provenance cannot supply missing observations.",
+                "This report does not promote, reject, or rewrite the candidate lifecycle or source run.",
+                *(
+                    [
+                        "This is a development-case evaluation on the same run used to propose the revision; it is not independent held-out validation."
+                    ]
+                    if development_case
+                    else []
+                ),
+            ],
+        }
+    )
+    return report
+
+
+def evaluate_run(
+    service: DetectionContext, candidate_id: str, request: Mapping[str, Any]
+) -> Mapping[str, Any]:
     with service._lock:
         resource = service._resource(candidate_id)
         candidate = service._candidate_from_resource(resource)
-        if candidate.target_language not in _LANGUAGES:
-            raise APIError(
-                HTTPStatus.CONFLICT,
-                "detection_evaluation_language_unsupported",
-                "Immutable run evaluation supports SQLite and Sigma converted to bounded SQLite. Internal matcher and YARA metadata are not executable query evidence.",
-            )
-        if candidate.state not in _EXECUTABLE_STATES or not candidate.rule_source:
-            raise APIError(
-                HTTPStatus.CONFLICT,
-                "detection_evaluation_parse_required",
-                "Parse this query candidate before evaluating a run.",
-            )
-        run, records, observed = _source(service, request.get("run_id"))
-        gaps = [
-            record.evidence_id
-            for record in records
-            if record.provenance is EvidenceProvenance.UNKNOWN
-        ]
-        diagnostics: list[str] = []
-        if not observed:
-            diagnostics.append("observed_evidence_unavailable")
-        if gaps:
-            diagnostics.append("source_contains_evidence_gaps")
-        if len(observed) > _MAX_OBSERVED:
-            diagnostics.append("observed_evidence_limit_exceeded")
-        objective = run.get("objective_evaluation")
-        integrity = (
-            objective.get("observation_integrity") if isinstance(objective, Mapping) else None
-        )
-        if isinstance(integrity, Mapping) and integrity.get("satisfied") is False:
-            diagnostics.append("source_file_postconditions_unobserved")
-        result: dict[str, Any] = {
-            "state": "insufficient_evidence",
-            "match_count": None,
-            "evaluated_evidence_ids": [],
-            "matched_evidence_ids": [],
-            "gap_evidence_ids": gaps[:_MAX_OBSERVED],
-            "gap_count": len(gaps),
-            "mapped_fields": _field_names(candidate.validation.get("mapped_fields")),
-            "available_fields": [],
-            "unsupported_fields": [],
-            "missing_fields": [],
-            "diagnostic_codes": diagnostics,
-        }
-        backend: dict[str, Any] = {"name": "SQLite in-memory bounded executor", "executed": False}
-        if not diagnostics:
-            try:
-                execution = service.validator._execute_candidate_query(
-                    candidate,
-                    [dict(record.content, fixture_id=record.evidence_id) for record in observed],
-                )
-            except DetectionError:
-                result["state"] = "backend_error"
-                diagnostics.append("bounded_query_execution_refused")
-            else:
-                mapped = _field_names(execution["mapped_fields"])
-                available = _field_names(execution["mapped_fixture_fields"])
-                missing = sorted(set(mapped) - set(available) - {"fixture_id"})
-                backend.update(
-                    executed=True,
-                    version=execution["sqlite_version"],
-                    query_only=execution["query_only"],
-                    authorizer=execution["authorizer"],
-                    limits=execution["limits"],
-                )
-                result.update(
-                    evaluated_evidence_ids=list(execution["fixture_ids"]),
-                    mapped_fields=mapped,
-                    available_fields=available,
-                    unsupported_fields=_field_names(execution["unsupported_fixture_fields"]),
-                    missing_fields=missing,
-                )
-                if missing:
-                    diagnostics.append("required_observation_fields_unavailable")
-                else:
-                    matched = list(execution["matched_fixture_ids"])
-                    result.update(
-                        state="matched" if matched else "not_matched",
-                        match_count=len(matched),
-                        matched_evidence_ids=matched,
-                    )
-        report = bind_report(
-            {
-                "schema_version": EVALUATION_SCHEMA,
-                "question": question.strip(),
-                "case_role": role,
-                "case_role_basis": "operator_declared",
-                "candidate": _candidate_binding(candidate, resource),
-                "source": _source_binding(run, records, observed),
-                "result": result,
-                "backend": backend,
-                "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "limitations": [
-                    "Case role is operator-declared context, not observed intent or an expected-result assertion.",
-                    "Matches describe the bounded query against independently observed run metadata; they do not establish host detection deployment or prevention.",
-                    "All observed records in this bundle are included; excluded provenance cannot supply missing observations.",
-                    "This report does not promote, reject, or rewrite the candidate lifecycle or source run.",
-                ],
-            }
-        )
+        report = build_run_evaluation(service, candidate, resource, request)
         try:
             persisted = service.product_store.save_detection_evaluation(report)
         except ProductStoreError as exc:

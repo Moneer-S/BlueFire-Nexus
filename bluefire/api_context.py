@@ -137,6 +137,12 @@ class PlatformService(Protocol):
     def tune_detection_candidate(self, candidate_id: str, request: JsonObject) -> JsonResult:
         """Tune one candidate into a new hypothesis revision."""
 
+    def submit_detection_ai_revision(self, candidate_id: str, request: JsonObject) -> JsonResult:
+        """Submit a durable, explicitly reviewed detection source suggestion."""
+
+    def decide_detection_ai_revision(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Retain one decision and recover its idempotent application job."""
+
     def revise_detection_source(self, candidate_id: str, request: JsonObject) -> JsonResult:
         """Validate and atomically publish a parsed source revision."""
 

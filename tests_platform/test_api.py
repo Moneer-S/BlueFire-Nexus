@@ -198,6 +198,14 @@ class StubService:
         self.calls.append(("tune_detection_candidate", candidate_id, request))
         return {"candidate": {"id": candidate_id}}
 
+    def submit_detection_ai_revision(self, candidate_id, request):
+        self.calls.append(("submit_detection_ai_revision", candidate_id, request))
+        return {"job": {"job_id": JOB_ID, "kind": "detection.ai.propose"}}
+
+    def decide_detection_ai_revision(self, job_id, request):
+        self.calls.append(("decide_detection_ai_revision", job_id, request))
+        return {"proposal_job": {"job_id": job_id}, "application_job": None, "decision": request}
+
     def revise_detection_source(self, candidate_id: str, request: Mapping[str, Any]):
         self.calls.append(("revise_detection_source", candidate_id, request))
         return {"candidate": {"id": candidate_id}}

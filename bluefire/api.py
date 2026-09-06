@@ -416,6 +416,12 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
             return
+        if path.endswith("/detection-revision-decisions"):
+            decision_request = self._routes._job_action_request(path)
+            if decision_request is not None:
+                if decision_request[0]:
+                    self._method_not_allowed("POST")
+                return
         job_id = self._routes._job_detail_id(path)
         if job_id is not None:
             if not job_id:
@@ -683,6 +689,9 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 self._method_not_allowed("GET")
             else:
                 detection_operations = {
+                    "ai-revision-jobs": lambda: self.platform_server.service.submit_detection_ai_revision(
+                        candidate_id, body
+                    ),
                     "evaluate-run": lambda: self.platform_server.service.evaluate_detection_run(
                         candidate_id, body
                     ),
@@ -717,9 +726,13 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 self._dispatch(
                     detection_operations[detection_action],
                     success_status=(
-                        HTTPStatus.CREATED
-                        if detection_action in {"clone", "tune", "revise-source"}
-                        else HTTPStatus.OK
+                        HTTPStatus.ACCEPTED
+                        if detection_action == "ai-revision-jobs"
+                        else (
+                            HTTPStatus.CREATED
+                            if detection_action in {"clone", "tune", "revise-source"}
+                            else HTTPStatus.OK
+                        )
                     ),
                 )
             return
@@ -777,6 +790,9 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
             job_operations = {
+                "detection-revision-decisions": lambda: self.platform_server.service.decide_detection_ai_revision(
+                    job_id, body
+                ),
                 "approval": lambda: self.platform_server.service.approve_job(job_id, body),
                 "pause": lambda: self.platform_server.service.pause_job(job_id),
                 "resume": lambda: self.platform_server.service.resume_job(job_id),

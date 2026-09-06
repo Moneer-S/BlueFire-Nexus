@@ -8,7 +8,7 @@ import threading
 from dataclasses import replace
 from datetime import datetime, timezone
 from http import HTTPStatus
-from typing import Any, Mapping, NoReturn, Sequence
+from typing import Any, Callable, Mapping, NoReturn, Sequence
 
 from .application_errors import APIError
 from .detection_evaluations import evaluate_run, evaluations
@@ -555,6 +555,7 @@ class DetectionLabService:
         request: Mapping[str, Any],
         *,
         revision_kind: str,
+        application_commit: Callable[..., Mapping[str, Any]] | None = None,
     ) -> Mapping[str, Any]:
         reason = request.get("reason")
         if (
@@ -686,7 +687,8 @@ class DetectionLabService:
                 return recorded.to_dict()
 
             try:
-                resource = self.product_store.save_detection_revision(
+                persist = application_commit or self.product_store.save_detection_revision
+                resource = persist(
                     source.revision_root_id,
                     build_document,
                     max_revisions=_MAX_REVISIONS,

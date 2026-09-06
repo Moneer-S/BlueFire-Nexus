@@ -107,10 +107,13 @@ class APIRoutes:
             "resume",
             "cancel",
             "retry",
+            "detection-revision-decisions",
         }:
             return None
         if not _JOB_ID.fullmatch(parts[0]):
             self._error(HTTPStatus.BAD_REQUEST, "invalid_job_id", "Job identifier is invalid.")
+            return ("", parts[1])
+        if parts[1] == "detection-revision-decisions" and not self._management_query_free():
             return ("", parts[1])
         return parts[0], parts[1]
 
@@ -414,6 +417,7 @@ class APIRoutes:
             "clone",
             "tune",
             "revise-source",
+            "ai-revision-jobs",
             "compare",
             "parse",
             "exercise-fixtures",

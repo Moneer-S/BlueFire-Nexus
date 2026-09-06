@@ -82,6 +82,7 @@ from .contracts import (
     ScenarioDefinition,
     load_scenario,
 )
+from .detection_ai_jobs import DetectionAIJobs
 from .detection_lab import DetectionLabService
 from .job_runtime import (
     TERMINAL_JOB_STATES,
@@ -256,6 +257,12 @@ class BlueFireService(RunnerManagementServiceMixin):
             max_workers=2,
             max_pending_jobs=8,
             recover_on_start=False,
+        )
+        self.detection_ai = DetectionAIJobs(
+            lab=self.detection_lab,
+            controller=self.job_controller,
+            ai_config=self._runtime_ai,
+            access=self._provider_access,
         )
         self.cleanup_recovery = self._recover_interrupted_cleanup()
         self.seed_counts = seed_product_metadata(
@@ -737,6 +744,16 @@ class BlueFireService(RunnerManagementServiceMixin):
         """Retain a bounded query result without changing the candidate lifecycle."""
 
         return self.detection_lab.evaluate_run(candidate_id, request)
+
+    def submit_detection_ai_revision(
+        self, candidate_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return self.detection_ai.submit(candidate_id, request)
+
+    def decide_detection_ai_revision(
+        self, job_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return self.detection_ai.decision(job_id, request)
 
     def detection_run_evaluations(self, candidate_id: str) -> Mapping[str, Any]:
         """Read and revalidate immutable per-run query evaluation history."""
@@ -1674,7 +1691,13 @@ class BlueFireService(RunnerManagementServiceMixin):
             if (
                 job.get("schema_version") != "bluefire.job.v1"
                 or job.get("job_id") != job_id
-                or job.get("kind") not in {"scenario.run", "scenario.replay"}
+                or job.get("kind")
+                not in {
+                    "scenario.run",
+                    "scenario.replay",
+                    "detection.ai.propose",
+                    "detection.ai.apply",
+                }
                 or state is None
                 or created is None
                 or created.tzinfo is None
@@ -1684,7 +1707,10 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "active_job_inventory_invalid",
                     "The active job inventory is invalid.",
                 )
-            if state not in TERMINAL_JOB_STATES:
+            if state not in TERMINAL_JOB_STATES and job.get("kind") in {
+                "scenario.run",
+                "scenario.replay",
+            }:
                 jobs.append(job)
         jobs.sort(key=lambda job: (str(job.get("created_at", "")), str(job["job_id"])))
         return {
@@ -1704,6 +1730,9 @@ class BlueFireService(RunnerManagementServiceMixin):
             source = self.product_store.get_job(job_id)
         except ProductStoreError as exc:
             raise APIError(HTTPStatus.NOT_FOUND, "job_not_found", "Job was not found.") from exc
+
+        if source.get("kind") in {"detection.ai.propose", "detection.ai.apply"}:
+            return self.detection_ai.retry(job_id)
 
         try:
             with self._job_retry_lock:

@@ -1403,7 +1403,23 @@ class ProductStore:
         max_revisions: int,
     ) -> Mapping[str, Any]:
         """Allocate and persist one immutable revision in a single write transaction."""
+        with self._connection(write=True) as connection:
+            return self._save_detection_revision_in_transaction(
+                connection, revision_root_id, build_document, max_revisions=max_revisions
+            )
 
+    def _save_detection_revision_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        revision_root_id: str,
+        build_document: Callable[[int], Mapping[str, Any]],
+        *,
+        max_revisions: int,
+    ) -> Mapping[str, Any]:
+        """Allocate and persist one immutable revision in a single write transaction."""
+
+        if not connection.in_transaction:
+            raise DetectionRevisionIntegrityError("detection revision requires a write transaction")
         stable_root_id = _identifier(revision_root_id, "detection revision root ID")
         if not callable(build_document):
             raise DetectionRevisionIntegrityError("detection revision builder must be callable")
@@ -1414,90 +1430,85 @@ class ProductStore:
         ):
             raise DetectionRevisionIntegrityError("detection revision bound is invalid")
 
-        with self._connection(write=True) as connection:
-            lineage = connection.execute(
-                """
-                SELECT COUNT(*) AS count, COALESCE(MAX(revision), 0) AS maximum
-                FROM detection_revisions WHERE revision_root_id = ?
-                """,
-                (stable_root_id,),
-            ).fetchone()
-            count = int(lineage["count"])
-            maximum = int(lineage["maximum"])
-            if count == 0:
-                raise DetectionRevisionIntegrityError(
-                    "detection revision root is not durably indexed"
-                )
-            if count >= max_revisions or maximum >= max_revisions:
-                raise DetectionRevisionLimitError(
-                    f"detection revision lineage is limited to {max_revisions} definitions"
-                )
+        lineage = connection.execute(
+            """
+            SELECT COUNT(*) AS count, COALESCE(MAX(revision), 0) AS maximum
+            FROM detection_revisions WHERE revision_root_id = ?
+            """,
+            (stable_root_id,),
+        ).fetchone()
+        count = int(lineage["count"])
+        maximum = int(lineage["maximum"])
+        if count == 0:
+            raise DetectionRevisionIntegrityError("detection revision root is not durably indexed")
+        if count >= max_revisions or maximum >= max_revisions:
+            raise DetectionRevisionLimitError(
+                f"detection revision lineage is limited to {max_revisions} definitions"
+            )
 
-            revision = maximum + 1
-            document = build_document(revision)
-            payload = _safe_document(
-                document,
-                context=f"detection revision {stable_root_id}.{revision}",
+        revision = maximum + 1
+        document = build_document(revision)
+        payload = _safe_document(
+            document,
+            context=f"detection revision {stable_root_id}.{revision}",
+        )
+        if not isinstance(payload, Mapping):
+            raise DetectionRevisionIntegrityError(
+                "detection revision builder must return a JSON object"
             )
-            if not isinstance(payload, Mapping):
-                raise DetectionRevisionIntegrityError(
-                    "detection revision builder must return a JSON object"
-                )
-            candidate_id, document_revision, document_root_id = cast(
-                tuple[str, int, str],
-                _detection_revision_identity(payload, strict=True),
+        candidate_id, document_revision, document_root_id = cast(
+            tuple[str, int, str],
+            _detection_revision_identity(payload, strict=True),
+        )
+        if document_revision != revision or document_root_id != stable_root_id:
+            raise DetectionRevisionIntegrityError(
+                "allocated detection revision does not match its document identity"
             )
-            if document_revision != revision or document_root_id != stable_root_id:
-                raise DetectionRevisionIntegrityError(
-                    "allocated detection revision does not match its document identity"
-                )
-            if connection.execute(
-                "SELECT 1 FROM resources WHERE kind = 'detection' AND resource_id = ?",
-                (candidate_id,),
-            ).fetchone():
-                raise DetectionRevisionIntegrityError(
-                    "allocated detection candidate identity already exists"
-                )
+        if connection.execute(
+            "SELECT 1 FROM resources WHERE kind = 'detection' AND resource_id = ?",
+            (candidate_id,),
+        ).fetchone():
+            raise DetectionRevisionIntegrityError(
+                "allocated detection candidate identity already exists"
+            )
 
-            status = payload.get("state")
-            if not isinstance(status, str) or not status:
-                raise DetectionRevisionIntegrityError(
-                    "detection revision document has no persisted lifecycle state"
-                )
-            document_json = _canonical_json(payload)
-            digest = content_hash(payload)
-            created_at = utc_now()
-            connection.execute(
-                """
-                INSERT INTO resources(
-                    kind, resource_id, document_json, digest, status, created_at, updated_at
-                ) VALUES ('detection', ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    candidate_id,
-                    document_json,
-                    digest,
-                    status,
-                    created_at,
-                    created_at,
-                ),
+        status = payload.get("state")
+        if not isinstance(status, str) or not status:
+            raise DetectionRevisionIntegrityError(
+                "detection revision document has no persisted lifecycle state"
             )
-            self._register_detection_revision(
-                connection,
-                candidate_id=candidate_id,
-                revision=revision,
-                revision_root_id=stable_root_id,
-                created_at=created_at,
-            )
-            row = connection.execute(
-                "SELECT * FROM resources WHERE kind = 'detection' AND resource_id = ?",
-                (candidate_id,),
-            ).fetchone()
-            if row is None:
-                raise DetectionRevisionIntegrityError(
-                    "allocated detection revision was not persisted"
-                )
-            return self._resource_row(row)
+        document_json = _canonical_json(payload)
+        digest = content_hash(payload)
+        created_at = utc_now()
+        connection.execute(
+            """
+            INSERT INTO resources(
+                kind, resource_id, document_json, digest, status, created_at, updated_at
+            ) VALUES ('detection', ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                candidate_id,
+                document_json,
+                digest,
+                status,
+                created_at,
+                created_at,
+            ),
+        )
+        self._register_detection_revision(
+            connection,
+            candidate_id=candidate_id,
+            revision=revision,
+            revision_root_id=stable_root_id,
+            created_at=created_at,
+        )
+        row = connection.execute(
+            "SELECT * FROM resources WHERE kind = 'detection' AND resource_id = ?",
+            (candidate_id,),
+        ).fetchone()
+        if row is None:
+            raise DetectionRevisionIntegrityError("allocated detection revision was not persisted")
+        return self._resource_row(row)
 
     def get_resource(self, kind: str, resource_id: str) -> Mapping[str, Any]:
         stable_id = _identifier(resource_id, f"{kind} ID")
