@@ -1036,7 +1036,7 @@ fn collection_methods_share_exact_source_and_cleanup_both_retained_and_redacted_
                 );
                 let payload = if method == "archive" {
                     assert_eq!(&bytes[257..263], b"ustar\0");
-                    assert_eq!(&bytes[..26], b"fixtures/transformed.jsonl\0");
+                    assert_eq!(&bytes[..27], b"fixtures/transformed.jsonl\0");
                     assert_eq!(&bytes[512..512 + source.len()], source.as_slice());
                     &bytes[512..512 + source.len()]
                 } else {
