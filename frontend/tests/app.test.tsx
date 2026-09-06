@@ -1606,6 +1606,51 @@ describe("product application", () => {
     expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/approval") && init?.method === "POST")).toBe(false);
   });
 
+  it.each(["success", "failure"])("keeps a deferred continuation approval %s bound to the submitted planner job", async (outcome) => {
+    const accepted = acceptedProposalFixture();
+    currentProposal = accepted.proposal;
+    currentProposalJob = accepted.job;
+    const secondJob: RunJob = { ...accepted.job, job_id: "job-other-planner-review", state: "completed", result_ref: "run-other-planner-review", progress: { phase: "completed" }, approval_request: null };
+    const fetchMock = vi.mocked(fetch);
+    const fallback = fetchMock.getMockImplementation()!;
+    let resolveApproval!: (response: Response) => void;
+    fetchMock.mockImplementation((input, init) => {
+      const path = String(input);
+      if (path.endsWith(`/jobs/${accepted.job.job_id}/approval`) && init?.method === "POST") return new Promise<Response>((resolve) => { resolveApproval = resolve; });
+      if (path.endsWith(`/jobs/${secondJob.job_id}`)) return Promise.resolve(json(secondJob));
+      if (path.endsWith(`/jobs/${secondJob.job_id}/proposals`)) return Promise.resolve(json({ schema_version: "bluefire.ai-proposal-review-list.v1", job_id: secondJob.job_id, proposals: [] }));
+      return fallback(input, init);
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const user = userEvent.setup();
+    renderApp("/ai-planner", client);
+    const lookup = await screen.findByRole("textbox", { name: "Job ID" });
+    await user.type(lookup, accepted.job.job_id);
+    await screen.findByRole("region", { name: "Canonical preflight plan" });
+    await user.click(screen.getByRole("checkbox", { name: /I approve this exact proposal-continuation envelope once/ }));
+    await user.type(screen.getByRole("textbox", { name: /Operator identity/ }), "submitted-reviewer");
+    await user.click(screen.getByRole("button", { name: "Approve and release continuation" }));
+    await waitFor(() => expect(resolveApproval).toBeTypeOf("function"));
+    const submitted = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith(`/jobs/${accepted.job.job_id}/approval`) && init?.method === "POST");
+    expect(JSON.parse(String(submitted?.[1]?.body))).toMatchObject({ approved_by: "submitted-reviewer" });
+    await user.clear(lookup);
+    await user.type(lookup, secondJob.job_id);
+    expect(await screen.findByText(secondJob.result_ref!)).toBeVisible();
+    const releasedJob: RunJob = { ...accepted.job, state: "running", progress: { phase: "running" }, approval_request: { ...accepted.approval_request, status: "consumed" } };
+    await act(async () => {
+      resolveApproval(outcome === "success"
+        ? json({ schema_version: "bluefire.job-approval.v1", job: releasedJob, approval_request: releasedJob.approval_request })
+        : new Response(JSON.stringify({ error: { message: "Late refusal for the submitted job" } }), { status: 409, headers: { "Content-Type": "application/json" } }));
+    });
+    expect(lookup).toHaveValue(secondJob.job_id);
+    expect(screen.getByText(secondJob.result_ref!)).toBeVisible();
+    expect(client.getQueryData(["job", "planner-review", secondJob.job_id])).toEqual(secondJob);
+    if (outcome === "success") expect(client.getQueryData(["job", "planner-review", accepted.job.job_id])).toEqual(releasedJob);
+    expect(screen.queryByText(/was approved once and released/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Late refusal for the submitted job")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve and release continuation" })).not.toBeInTheDocument();
+  });
+
   it("keeps proposal acceptance separate from a fresh unchecked Execute approval", async () => {
     const user = userEvent.setup();
     renderApp("/ai-planner");
