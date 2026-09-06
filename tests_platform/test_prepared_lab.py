@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import socket
 import stat
+import subprocess
 import sys
 import threading
 from contextlib import contextmanager
@@ -346,8 +348,12 @@ def test_start_stops_owned_clients_even_when_distribution_identity_changes(
     class Client:
         returncode = None
         stopped = False
+        stdin = stdout = stderr = None
 
         def __init__(self, *_args, **_kwargs):
+            assert _kwargs["stdout"] == _kwargs["stderr"] == subprocess.PIPE
+            assert _kwargs["stdin"] == (subprocess.PIPE if not processes else subprocess.DEVNULL)
+            assert _kwargs["bufsize"] == 0
             processes.append(self)
 
         def poll(self):
@@ -370,6 +376,7 @@ def test_start_stops_owned_clients_even_when_distribution_identity_changes(
     monkeypatch.setattr(lab, "owned", owned)
     monkeypatch.setattr(lab, "verify", refuse)
     monkeypatch.setattr(lab.subprocess, "Popen", Client)
+    monkeypatch.setattr(lab.TerminalForwarding, "attach", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         lab.subprocess, "run", lambda command, **_kwargs: management.append(command)
     )
@@ -377,3 +384,149 @@ def test_start_stops_owned_clients_even_when_distribution_identity_changes(
         lab.start(tmp_path, 8767)
     assert len(processes) == 2 and all(process.stopped for process in processes)
     assert not management
+
+
+def test_terminal_pipes_forward_prompt_output_and_multiple_commands() -> None:
+    program = (
+        "import sys\n"
+        "print('public startup prompt', flush=True)\n"
+        "print('public diagnostic', file=sys.stderr, flush=True)\n"
+        "for line in sys.stdin:\n"
+        " print('received:' + line.strip(), flush=True)\n"
+        " if line.strip() == 'quit': break\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-I", "-c", program],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    terminal = lab.TerminalForwarding()
+    output, error = io.StringIO(), io.StringIO()
+    workers = [
+        threading.Thread(target=terminal.output, args=(process.stdout, output)),
+        threading.Thread(target=terminal.output, args=(process.stderr, error)),
+    ]
+    for worker in workers:
+        worker.start()
+    try:
+        terminal.commands(io.StringIO("--help\nquit\n"), process.stdin)
+        assert process.wait(timeout=5) == 0
+        for worker in workers:
+            worker.join(timeout=5)
+        assert not any(worker.is_alive() for worker in workers)
+        assert not terminal.failed.is_set()
+        assert output.getvalue().splitlines() == [
+            "public startup prompt",
+            "received:--help",
+            "received:quit",
+        ]
+        assert error.getvalue().splitlines() == ["public diagnostic"]
+    finally:
+        lab.stop_client(process)
+        terminal.finish(process)
+
+
+def test_start_attempts_both_client_stops_and_pipe_cleanup_after_a_stop_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lease = lab.DisposableWslDistribution(
+        Path(sys.executable),
+        tmp_path,
+        "BlueFire-Gate11-Run-" + "1" * 16,
+        tmp_path / "install",
+        (1, 2),
+    )
+    processes = []
+    stopped = []
+    finished = []
+
+    @contextmanager
+    def owned(_state):
+        yield lease, {}
+
+    def spawn(*_args, **_kwargs):
+        process = SimpleNamespace(poll=lambda: 0)
+        processes.append(process)
+        return process
+
+    def stop(process):
+        stopped.append(process)
+        if len(stopped) == 1:
+            raise OSError("first owned client could not stop")
+
+    monkeypatch.setattr(lab, "owned", owned)
+    monkeypatch.setattr(lab, "verify", lambda *_args: None)
+    monkeypatch.setattr(lab.subprocess, "Popen", spawn)
+    monkeypatch.setattr(lab.subprocess, "run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(lab.TerminalForwarding, "attach", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        lab.TerminalForwarding, "finish", lambda _self, *items: finished.extend(items)
+    )
+    monkeypatch.setattr(lab, "stop_client", stop)
+    with pytest.raises(OSError, match="first owned client"):
+        lab.start(tmp_path, 8767)
+    assert stopped == list(reversed(processes))
+    assert finished == processes
+
+
+def test_terminal_refuses_oversized_input_without_forwarding_a_partial_command() -> None:
+    terminal = lab.TerminalForwarding()
+    target = io.BytesIO()
+    terminal.commands(io.StringIO("x" * 8193 + "\n"), target)
+    assert terminal.failed.is_set()
+    assert target.closed
+
+
+def test_terminal_attempts_every_owned_pipe_close_after_one_fails() -> None:
+    closed = []
+
+    def pipe(index):
+        def close():
+            closed.append(index)
+            if index == 0:
+                raise OSError("private underlying error is not reported")
+
+        return SimpleNamespace(close=close)
+
+    process = SimpleNamespace(stdin=pipe(0), stdout=pipe(1), stderr=pipe(2))
+    with pytest.raises(OSError, match="some owned product terminal pipes"):
+        lab.TerminalForwarding().finish(process)
+    assert closed == [0, 1, 2]
+
+
+def test_guest_reads_queued_commands_before_waiting_on_the_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from bluefire import prepared_lab_guest as guest
+
+    blocks = [b"--help\nquit\n", b""]
+    reads = []
+    monkeypatch.setattr(guest.select, "select", lambda *_args: ([7], [], []))
+
+    def read(descriptor, count):
+        reads.append((descriptor, count))
+        return blocks.pop(0)
+
+    monkeypatch.setattr(guest.os, "read", read)
+    pending = bytearray()
+    assert guest.read_command(pending, 7) == "--help\n"
+    assert guest.read_command(pending, 7) == "quit\n"
+    assert len(reads) == 1
+    assert guest.read_command(pending, 7) == ""
+
+
+@pytest.mark.parametrize("data", [b"x" * 8193, b"\xff\n"])
+def test_guest_refuses_oversized_or_invalid_utf8_command(
+    monkeypatch: pytest.MonkeyPatch,
+    data: bytes,
+) -> None:
+    from bluefire import prepared_lab_guest as guest
+
+    monkeypatch.setattr(guest.select, "select", lambda *_args: ([7], [], []))
+    monkeypatch.setattr(guest.os, "read", lambda *_args: data)
+    with pytest.raises(ValueError, match="input bound|UTF-8"):
+        guest.read_command(bytearray(), 7)

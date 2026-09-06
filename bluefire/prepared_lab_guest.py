@@ -189,6 +189,37 @@ def stopping() -> bool:
     return STOP.is_set()
 
 
+def read_command(pending: bytearray, descriptor: int) -> str | None:
+    """Read bounded UTF-8 lines without TextIO read-ahead hiding queued input."""
+    newline = pending.find(b"\n")
+    if newline < 0:
+        ready, _, _ = select.select([descriptor], [], [], 0.5)
+        if not ready:
+            return None
+        block = os.read(descriptor, 8193 - len(pending))
+        if not block:
+            line = bytes(pending)
+            pending.clear()
+        else:
+            pending.extend(block)
+            newline = pending.find(b"\n")
+            if newline < 0:
+                if len(pending) > 8192:
+                    raise ValueError("product command exceeds its input bound")
+                return None
+            line = bytes(pending[: newline + 1])
+            del pending[: newline + 1]
+    else:
+        line = bytes(pending[: newline + 1])
+        del pending[: newline + 1]
+    if len(line) > 8192:
+        raise ValueError("product command exceeds its input bound")
+    try:
+        return line.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("product command must use UTF-8") from None
+
+
 def inner(port: int) -> None:
     facts = isolation_facts()
     os.umask(0o077)
@@ -212,11 +243,11 @@ def inner(port: int) -> None:
             "Isolated lab ready. Enter BlueFire arguments (for example: runner status --profile sandbox-execute.v1). Enter quit to stop the session.",
             flush=True,
         )
+        pending = bytearray()
         while server.poll() is None and not stopping():
-            ready, _, _ = select.select([sys.stdin], [], [], 0.5)
-            if not ready:
+            line = read_command(pending, sys.stdin.fileno())
+            if line is None:
                 continue
-            line = sys.stdin.readline(8193)
             if not line or line.strip() == "quit":
                 break
             if len(line) > 8192:

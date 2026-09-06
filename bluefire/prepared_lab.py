@@ -8,6 +8,7 @@ installation and interactive effects are separate explicit commands.
 from __future__ import annotations
 
 import argparse
+import codecs
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ import stat
 import subprocess  # nosec B404
 import sys
 import tarfile
+import threading
 import time
 import zipfile
 from contextlib import contextmanager
@@ -363,11 +365,85 @@ def stop_client(process: subprocess.Popen[bytes] | None) -> None:
             process.wait(timeout=5)
 
 
+class TerminalForwarding:
+    """Stream only owned child pipes; retain no command or product output history."""
+
+    def __init__(self) -> None:
+        self.failed = threading.Event()
+        self.outputs: list[threading.Thread] = []
+        self.lock = threading.Lock()
+
+    def output(self, source: Any, target: Any) -> None:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        try:
+            while block := source.read(65536):
+                with self.lock:
+                    binary = getattr(target, "buffer", None)
+                    if binary is None:
+                        target.write(decoder.decode(block))
+                    else:
+                        binary.write(block)
+                    target.flush()
+            with self.lock:
+                if getattr(target, "buffer", None) is None:
+                    target.write(decoder.decode(b"", final=True))
+                    target.flush()
+        except (OSError, ValueError):
+            self.failed.set()
+
+    def commands(self, source: Any, target: Any) -> None:
+        try:
+            while line := source.readline(8193):
+                data = line.encode("utf-8")
+                if len(data) > 8192:
+                    raise ValueError("product command exceeds its input bound")
+                remaining = memoryview(data)
+                while remaining:
+                    written = target.write(remaining)
+                    if not written:
+                        raise OSError("product input pipe closed")
+                    remaining = remaining[written:]
+                target.flush()
+        except (OSError, ValueError, UnicodeError):
+            self.failed.set()
+        finally:
+            target.close()
+
+    def attach(self, process: subprocess.Popen[bytes], *, interactive: bool = False) -> None:
+        # Explicit pipes prevent WSL from choosing a detached, invisible PTY.
+        for source, target in ((process.stdout, sys.stdout), (process.stderr, sys.stderr)):
+            worker = threading.Thread(target=self.output, args=(source, target), daemon=True)
+            self.outputs.append(worker)
+            worker.start()
+        if interactive:
+            threading.Thread(
+                target=self.commands, args=(sys.stdin, process.stdin), daemon=True
+            ).start()
+
+    def finish(self, *processes: subprocess.Popen[bytes] | None) -> None:
+        # The caller stops its exact processes first, releasing pipe reads.
+        deadline = time.monotonic() + 5
+        for worker in self.outputs:
+            worker.join(timeout=max(0, deadline - time.monotonic()))
+        close_failed = False
+        for process in processes:
+            if process is not None:
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        try:
+                            stream.close()
+                        except (OSError, ValueError):
+                            close_failed = True
+        if close_failed:
+            raise OSError("some owned product terminal pipes could not be closed")
+
+
 def start(state: Path, port: int) -> None:
     if not 1024 <= port <= 65535:
         raise ValueError("choose an unprivileged UI port between 1024 and 65535")
     with owned(state) as (lease, record):
         inner = outer = None
+        terminal = TerminalForwarding()
         try:
             inner = subprocess.Popen(  # nosec B603
                 guest(
@@ -381,8 +457,13 @@ def start(state: Path, port: int) -> None:
                     "launch",
                     str(port),
                 ),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0,
                 **options(lease),
             )  # nosec B603
+            terminal.attach(inner, interactive=True)
             outer = subprocess.Popen(  # nosec B603
                 guest(
                     lease,
@@ -404,10 +485,16 @@ def start(state: Path, port: int) -> None:
                     str(port),
                 ),
                 stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0,
                 **options(lease),
             )  # nosec B603
-            while inner.poll() is None and outer.poll() is None:
+            terminal.attach(outer)
+            while inner.poll() is None and outer.poll() is None and not terminal.failed.is_set():
                 time.sleep(0.2)
+            if terminal.failed.is_set():
+                raise ValueError("the product terminal input or output could not be forwarded")
             if inner.poll() not in (None, 0) or outer.poll() not in (None, 0):
                 raise ValueError("the isolated product session or UI relay failed")
         except KeyboardInterrupt:
@@ -445,8 +532,13 @@ def start(state: Path, port: int) -> None:
                     )
             finally:
                 # These handles remain ours even if registration ownership changes.
-                stop_client(outer)
-                stop_client(inner)
+                try:
+                    stop_client(outer)
+                finally:
+                    try:
+                        stop_client(inner)
+                    finally:
+                        terminal.finish(inner, outer)
     print("Lab session stopped. Data remains in the owned clone; use destroy when finished.")
 
 
