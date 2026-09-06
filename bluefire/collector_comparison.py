@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from .collector_schedule import FILESYSTEM_ID, produced_paths, producer_settings, scheduled_settings
 from .collectors import CollectionSession, CollectorError
 from .evidence import EvidenceError, EvidenceGraph, EvidenceRecord
 from .util import content_hash
@@ -57,8 +58,6 @@ def summarize_collector_session(
     session_ids = {
         record.evidence_id for result in session.results.values() for record in result.records
     }
-    if not session_ids:
-        raise CollectorError("collector session contains no attributable evidence")
     persisted_session_ids = {
         record.evidence_id for record in records if record.producer in session.results
     }
@@ -66,17 +65,55 @@ def summarize_collector_session(
         raise CollectorError("collector session omits or invents persisted collector evidence")
     scheduled_step = _scheduled_step_id(session)
     memberships = _step_evidence_memberships(run_steps)
-    for result in session.results.values():
+    per_producer = producer_settings(session.settings)
+    if per_producer is not None:
+        producer_config = per_producer.collectors[FILESYSTEM_ID]["settings"]
+        paths = producer_config.get("paths")
+        if (
+            set(producer_config) != {"schedule", "paths"}
+            or not isinstance(paths, (list, tuple))
+            or not 1 <= len(paths) <= 1000
+            or any(not isinstance(path, str) or not 1 <= len(path) <= 500 for path in paths)
+            or len(set(paths)) != len(paths)
+        ):
+            raise CollectorError("producer collector settings are invalid")
+    for collector_id, result in session.results.items():
+        if not result.records:
+            eligible = (
+                any(produced_paths(session.settings, record) for record in records)
+                if collector_id == FILESYSTEM_ID and per_producer is not None
+                else any(record.step_id == scheduled_step for record in records)
+            )
+            if (
+                per_producer is None
+                or eligible
+                or result.health.details.get("schedule_state") != "not_triggered"
+                or type(result.health.details.get("observation_count")) is not int
+                or result.health.details["observation_count"] != 0
+                or result.elapsed_ms != 0
+            ):
+                raise CollectorError("collector session contains no attributable evidence")
         for record in result.records:
             if record.run_id != expected_run_id or persisted.get(record.evidence_id) != record:
                 raise CollectorError("collector session evidence is absent from the run bundle")
-            _validate_record_lineage(
+            is_producer = collector_id == FILESYSTEM_ID and per_producer is not None
+            parent = _validate_record_lineage(
                 record,
-                scheduled_step=scheduled_step,
+                scheduled_step=record.step_id if is_producer else scheduled_step,
                 persisted=persisted,
                 memberships=memberships,
                 configured_ids=configured_ids,
             )
+            if is_producer:
+                observed_path = (
+                    record.content.get("path")
+                    if record.provenance.value == "observed"
+                    else record.content.get("requested_artifact")
+                )
+                if observed_path not in produced_paths(session.settings, parent):
+                    raise CollectorError(
+                        "collector observation is outside its declared producer paths"
+                    )
     health = {
         collector_id: {
             "readiness": result.health.readiness.value,
@@ -92,7 +129,7 @@ def summarize_collector_session(
         for collector_id, result in session.results.items()
     }
     return {
-        "state": "verified",
+        "state": "verified" if session_ids else "not_triggered",
         "settings_hash": document["settings_hash"],
         "session_hash": document["session_hash"],
         "enabled_collectors": list(document["enabled_collectors"]),
@@ -107,12 +144,16 @@ def summarize_collector_session(
     }
 
 
-def _scheduled_step_id(session: CollectionSession) -> str:
+def _scheduled_step_id(session: CollectionSession) -> str | None:
+    settings = scheduled_settings(session.settings)
+    assert settings is not None
     scheduled = {
         row["settings"].get("collect_after_step")
-        for row in session.settings.collectors.values()
+        for row in settings.collectors.values()
         if row["enabled"] is True
     }
+    if not scheduled and producer_settings(session.settings) is not None:
+        return None
     if len(scheduled) != 1:
         raise CollectorError("collector session has no exact scheduled step")
     step_id = next(iter(scheduled))
@@ -153,11 +194,11 @@ def _step_evidence_memberships(
 def _validate_record_lineage(
     record: EvidenceRecord,
     *,
-    scheduled_step: str,
+    scheduled_step: str | None,
     persisted: Mapping[str, EvidenceRecord],
     memberships: Mapping[str, tuple[tuple[Mapping[str, Any], tuple[str, ...]], ...]],
     configured_ids: set[str],
-) -> None:
+) -> EvidenceRecord:
     if record.step_id != scheduled_step:
         raise CollectorError("collector evidence does not match its scheduled step")
     owning_rows = memberships.get(record.evidence_id, ())
@@ -206,6 +247,7 @@ def _validate_record_lineage(
         )
     ):
         raise CollectorError("collector evidence does not match its persisted parent lineage")
+    return parent
 
 
 def collector_session_delta(

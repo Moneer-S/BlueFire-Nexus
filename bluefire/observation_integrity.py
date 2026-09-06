@@ -26,6 +26,7 @@ def evaluate_observation_integrity(
     records: Sequence[EvidenceRecord],
     *,
     configured_file_paths: Sequence[str] | None = None,
+    producer_file_paths: Sequence[str] = (),
 ) -> Mapping[str, Any]:
     """Reconcile required file effects and preserve every unavailable observation.
 
@@ -71,6 +72,13 @@ def evaluate_observation_integrity(
                 and record.content["output"].get("artifact") == path
             ]
             requirements.append((path, producers[-1] if producers else None))
+        # Per-producer paths are an eligibility allowlist, not a demand to read
+        # files belonging to an unreached branch. Every reached episode remains
+        # an independent requirement, even when another write reuses its path.
+        for produced_execution in executions:
+            for path in produced_execution.content.get("expected_observable_paths", ()):
+                if path in producer_file_paths and (path, produced_execution) not in requirements:
+                    requirements.append((path, produced_execution))
 
     postconditions: list[dict[str, Any]] = []
     positions = {record.evidence_id: index for index, record in enumerate(records)}
@@ -210,7 +218,11 @@ def evaluate_observation_integrity(
         "requirement_scope": (
             "all_declared_file_effects"
             if configured_file_paths is None
-            else "selected_paths_and_final_file_effect"
+            else (
+                "scheduled_paths_selected_producer_episodes_and_final_file_effect"
+                if producer_file_paths
+                else "selected_paths_and_final_file_effect"
+            )
         ),
         "final_file_effect_paths": final_file_paths,
         "state": (
@@ -225,7 +237,8 @@ def evaluate_observation_integrity(
         "limitations": [
             "File postconditions establish independent metadata and digest observation; "
             "they do not establish host audit events or that a detector fired.",
-            "Managed collection verifies selected paths and the final produced file effect; "
+            "Managed collection verifies scheduled paths, selected reached producer episodes, "
+            "and the final produced file effect; "
             "unselected intermediate effects are not independently established by this report.",
         ],
     }

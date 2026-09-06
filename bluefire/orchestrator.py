@@ -23,6 +23,14 @@ from .approvals import (
     validate_claimed_approval,
 )
 from .collection_methods import COLLECTION_METHODS
+from .collector_schedule import (
+    collect_produced_files,
+    combine_sessions,
+    produced_paths,
+    producer_settings,
+    scheduled_settings,
+    uses_producer_schedule,
+)
 from .collectors import (
     CollectionRequest,
     CollectionResult,
@@ -547,6 +555,13 @@ class Orchestrator:
             raise OrchestrationError(
                 "checkpoint replay requires both a checkpoint and restoration plan"
             )
+        if (
+            replay_checkpoint is not None
+            and producer_settings(collector_runtime_settings) is not None
+        ):
+            raise OrchestrationError(
+                "after_each_producer requires full replay; checkpoint-prefix collection is not supported"
+            )
         if replay_checkpoint is not None and mode is not ExecutionMode.EXECUTE:
             raise OrchestrationError("materialized checkpoint replay requires Execute mode")
         if replay_checkpoint is not None and resume_from_step_id is None:
@@ -842,6 +857,8 @@ class Orchestrator:
         budget_exhausted = False
         collector_elapsed_seconds = 0.0
         collection_session: CollectionSession | None = None
+        producer_session: CollectionSession | None = None
+        scheduled_runtime = scheduled_settings(collector_runtime_settings)
         proposal_resolution = replay.get("proposal_resolution") if replay is not None else None
         proposal_resolution_applied = False
         if replay_checkpoint is not None:
@@ -1028,6 +1045,45 @@ class Orchestrator:
                     if row["status"] == StepOutcome.SUCCESS.value:
                         receipt_ids.clear()
 
+                if records and produced_paths(collector_runtime_settings, records[0]):
+                    if (
+                        self.collector_registry is None
+                        or collector_runtime_settings is None
+                        or collector_sandbox_root is None
+                        or collector_registry_authority is None
+                    ):
+                        raise OrchestrationError("producer collector runtime is incomplete")
+                    remaining = max(
+                        (deadline or (time.monotonic() + 5.0)) - time.monotonic() - cleanup_reserve,
+                        0.0,
+                    )
+                    if remaining <= 0:
+                        raise OrchestrationError(
+                            "producer observation has no remaining execution budget"
+                        )
+                    started = time.monotonic()
+                    try:
+                        produced_session = collect_produced_files(
+                            self.collector_registry,
+                            collector_runtime_settings,
+                            records[0],
+                            sandbox=collector_sandbox_root,
+                            authority=collector_registry_authority,
+                            timeout_seconds=min(5.0, remaining),
+                        )
+                    except CollectorError as exc:
+                        raise OrchestrationError(str(exc)) from exc
+                    collector_elapsed_seconds += time.monotonic() - started
+                    assert produced_session is not None
+                    records = (*records, *self._collection_session_records(produced_session))
+                    producer_session = self._merge_collection_sessions(
+                        producer_session, produced_session
+                    )
+                    row = {**row, "evidence_ids": [record.evidence_id for record in records]}
+                    if deadline is not None and time.monotonic() > deadline - cleanup_reserve:
+                        budget_exhausted = True
+                        step_budget_exhausted = True
+
                 if current_step_id == collection_step_id:
                     if collector_runtime_settings is None:
                         raise OrchestrationError(
@@ -1070,6 +1126,7 @@ class Orchestrator:
                         expected_authority=collector_registry_authority,
                         sandbox_root=collector_sandbox_root,
                         source_free_gaps=source_free_gaps,
+                        invocation_settings=scheduled_runtime,
                     )
                     collector_elapsed_seconds += time.monotonic() - collection_started
                     if deadline is not None and time.monotonic() > deadline - cleanup_reserve:
@@ -1271,11 +1328,28 @@ class Orchestrator:
         ):
             raise OrchestrationError("approved proposal lineage was not reached during the replay")
         if (
-            collector_runtime_settings is not None
+            scheduled_runtime is not None
+            and any(row["enabled"] for row in scheduled_runtime.collectors.values())
             and collection_session is None
             and approval_pause is None
         ):
             raise OrchestrationError("configured collector schedule was not reached")
+        if (
+            collector_runtime_settings is not None
+            and producer_settings(collector_runtime_settings) is not None
+        ):
+            if self.collector_registry is None:
+                raise OrchestrationError("producer collector registry is unavailable")
+            try:
+                collection_session = combine_sessions(
+                    collector_runtime_settings,
+                    collection_session,
+                    producer_session,
+                    self.collector_registry,
+                    allow_partial=approval_pause is not None,
+                )
+            except CollectorError as exc:
+                raise OrchestrationError(str(exc)) from exc
 
         detections = self._build_detections(evidence.records())
         cleanup_success = any(
@@ -1310,13 +1384,24 @@ class Orchestrator:
                     for filesystem_settings in (
                         collector_runtime_settings.collectors.get(collector_id),
                     )
-                    if filesystem_settings is not None and filesystem_settings["enabled"] is True
+                    if filesystem_settings is not None
+                    and filesystem_settings["enabled"] is True
+                    and not uses_producer_schedule(filesystem_settings["settings"])
                     for path in filesystem_settings["settings"]["paths"]
                 )
             )
+        producer_runtime = producer_settings(collector_runtime_settings)
         observation_integrity = (
             evaluate_observation_integrity(
-                evidence.records(), configured_file_paths=configured_file_paths
+                evidence.records(),
+                configured_file_paths=configured_file_paths,
+                producer_file_paths=(
+                    producer_runtime.collectors[FilesystemCollector.descriptor.id]["settings"][
+                        "paths"
+                    ]
+                    if producer_runtime is not None
+                    else ()
+                ),
             )
             if mode is ExecutionMode.EXECUTE
             else None
@@ -3083,10 +3168,15 @@ class Orchestrator:
     ) -> str | None:
         if settings is None:
             return None
+        has_producer_schedule = producer_settings(settings) is not None
+        settings = scheduled_settings(settings)
+        assert settings is not None
         enabled_settings = [
             row["settings"] for row in settings.collectors.values() if row["enabled"] is True
         ]
         if not enabled_settings:
+            if has_producer_schedule:
+                return None
             raise OrchestrationError("collector runtime settings enable no collectors")
         schedule = {
             row.get("collect_after_step") for row in enabled_settings if isinstance(row, Mapping)
@@ -3154,6 +3244,7 @@ class Orchestrator:
         expected_authority: Mapping[str, Any] | None,
         sandbox_root: Path | None,
         source_free_gaps: Mapping[str, str] | None = None,
+        invocation_settings: CollectorRuntimeSettings | None = None,
     ) -> CollectionSession:
         if self.collector_registry is None or settings is None:
             raise OrchestrationError("Execute collector runtime is incomplete")
@@ -3168,6 +3259,10 @@ class Orchestrator:
             raise OrchestrationError(str(exc)) from exc
         if current_authority != expected_authority:
             raise OrchestrationError("collector registry authority changed before collection")
+        if invocation_settings is not None:
+            if invocation_settings != scheduled_settings(settings):
+                raise OrchestrationError("collector invocation settings changed")
+            settings = invocation_settings
         receiver_settings = settings.collectors.get(LoopbackReceiverCollector.descriptor.id)
         receiver_is_gapped = bool(
             source_free_gaps and LoopbackReceiverCollector.descriptor.id in source_free_gaps

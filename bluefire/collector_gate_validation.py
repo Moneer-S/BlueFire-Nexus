@@ -7,6 +7,18 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from .collector_gate_evidence import (
+    CollectorGateValidationError as CollectorGateValidationError,
+)
+from .collector_gate_evidence import (
+    _is_sha256,
+    _observed,
+    _one_observation,
+    _require,
+    _run_steps,
+    _validate_collection_lineage,
+)
+from .collector_gate_filesystem import _validate_filesystem_binding as _validate_filesystem_binding
 from .collector_interfaces import (
     CloudIdentityAuditAdapter,
     LinuxAuditRuntimeAdapter,
@@ -28,12 +40,11 @@ from .collectors import (
     FilesystemCollector,
     LoopbackReceiverCollector,
     NativeProcessCollector,
-    filesystem_observation_key,
     optional_collector_descriptors,
     reconcile_observations,
 )
 from .comparison import compare_runs
-from .evidence import EvidenceGraph, EvidenceProvenance, EvidenceRecord
+from .evidence import EvidenceGraph, EvidenceRecord
 from .run_store import RunStore
 from .util import content_hash
 
@@ -103,15 +114,6 @@ _EXPECTED_DEFENSE_CHANGE = (
 )
 
 
-class CollectorGateValidationError(ValueError):
-    pass
-
-
-def _require(condition: bool, message: str) -> None:
-    if not condition:
-        raise CollectorGateValidationError(message)
-
-
 def _read_json(path: Path) -> Mapping[str, Any]:
     _require(path.is_file() and not path.is_symlink(), "GATE-05 report is absent or unsafe")
     _require(path.stat().st_size <= _MAX_REPORT_BYTES, "GATE-05 report exceeds its byte bound")
@@ -128,40 +130,6 @@ def _session(value: Any) -> CollectionSession:
     if not isinstance(value, Mapping):
         raise CollectorGateValidationError("GATE-05 collection session is absent")
     return CollectionSession.from_mapping(value)
-
-
-def _observed(session: CollectionSession, collector_id: str) -> tuple[EvidenceRecord, ...]:
-    result = session.results.get(collector_id)
-    if result is None:
-        raise CollectorGateValidationError(f"GATE-05 result is absent for {collector_id}")
-    return tuple(
-        record for record in result.records if record.provenance is EvidenceProvenance.OBSERVED
-    )
-
-
-def _is_sha256(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
-def _run_steps(run: Mapping[str, Any]) -> Mapping[str, Mapping[str, Any]]:
-    raw_steps = run.get("steps")
-    if not isinstance(raw_steps, list):
-        raise CollectorGateValidationError("GATE-05 run steps are absent")
-    valid_steps = [
-        step
-        for step in raw_steps
-        if isinstance(step, Mapping) and isinstance(step.get("step_id"), str)
-    ]
-    steps = {str(step["step_id"]): step for step in valid_steps}
-    _require(
-        len(valid_steps) == len(raw_steps) == len(steps),
-        "GATE-05 run steps are invalid or duplicated",
-    )
-    return steps
 
 
 def _validate_session_descriptors(session: CollectionSession) -> None:
@@ -196,12 +164,6 @@ def _authority_source(
 ) -> Mapping[str, Any]:
     result = session.results.get(collector_id)
     records = _observed(session, collector_id)
-    _require(
-        result is not None and len(result.records) == 1 and len(records) == 1,
-        f"GATE-05 authority has no unique observation for {collector_id}",
-    )
-    record = records[0]
-    observed = record.content.get("observed_fields")
     settings_row = session.settings.collectors.get(collector_id)
     settings = settings_row.get("settings") if isinstance(settings_row, Mapping) else None
     if collector_id == FilesystemCollector.descriptor.id:
@@ -216,6 +178,12 @@ def _authority_source(
             "read_timeout_seconds": 5.0,
             "path_policy": "handle-pinned-contained-no-follow",
         }
+    _require(
+        result is not None and len(result.records) == 1 and len(records) == 1,
+        f"GATE-05 authority has no unique observation for {collector_id}",
+    )
+    record = records[0]
+    observed = record.content.get("observed_fields")
     if collector_id == NativeProcessCollector.descriptor.id:
         _require(
             isinstance(settings, Mapping)
@@ -474,205 +442,6 @@ def _validate_replay_lineage(
         and lineage.get("collector_authority_changed") is True,
         "GATE-05 replay lineage is not bound to its exact source and collector settings",
     )
-
-
-def _one_observation(
-    session: CollectionSession, collector_id: str, *, path: str | None = None
-) -> EvidenceRecord:
-    result = session.results.get(collector_id)
-    observed = _observed(session, collector_id)
-    if path is not None:
-        observed = tuple(record for record in observed if record.content.get("path") == path)
-    _require(
-        result is not None
-        and result.health.readiness.value == "ready"
-        and (path is not None or len(result.records) == 1)
-        and len(observed) == 1,
-        f"GATE-05 collector {collector_id} did not produce one healthy observation",
-    )
-    return observed[0]
-
-
-def _validate_collection_lineage(
-    record: EvidenceRecord,
-    records_by_id: Mapping[str, EvidenceRecord],
-    steps: Mapping[str, Mapping[str, Any]],
-    *,
-    require_executed: bool = False,
-) -> tuple[EvidenceRecord, Mapping[str, Any]]:
-    parent = (
-        records_by_id.get(record.parent_evidence_ids[0])
-        if len(record.parent_evidence_ids) == 1
-        else None
-    )
-    step = steps.get(record.step_id)
-    step_evidence_ids = step.get("evidence_ids") if isinstance(step, Mapping) else None
-    _require(
-        parent is not None
-        and (
-            (
-                parent.producer == "bluefire-rust-runner"
-                and parent.provenance is EvidenceProvenance.EXECUTED
-            )
-            or (
-                not require_executed
-                and parent.producer == "policy-engine.v1"
-                and parent.provenance is EvidenceProvenance.CONTROL_BLOCKED
-            )
-        )
-        and parent.run_id == record.run_id
-        and parent.step_id == record.step_id
-        and parent.behavior_id == record.behavior_id
-        and parent.action_id == record.action_id
-        and parent.runner_profile_id == record.runner_profile_id
-        and parent.target_scope_ref == record.target_scope_ref
-        and isinstance(step, Mapping)
-        and step.get("behavior_id") == record.behavior_id
-        and step.get("action_id") == record.action_id
-        and isinstance(step_evidence_ids, list)
-        and all(isinstance(item, str) for item in step_evidence_ids)
-        and len(step_evidence_ids) == len(set(step_evidence_ids))
-        and parent.evidence_id in step_evidence_ids
-        and record.evidence_id in step_evidence_ids,
-        "GATE-05 collector observation is not bound to its scheduled action evidence",
-    )
-    assert parent is not None
-    assert isinstance(step, Mapping)
-    return parent, step
-
-
-def _validate_filesystem_binding(
-    run: Mapping[str, Any],
-    records: tuple[EvidenceRecord, ...],
-    session: CollectionSession,
-    predicted_fields: Mapping[str, Any] | None = None,
-) -> None:
-    record = _one_observation(
-        session, FilesystemCollector.descriptor.id, path="staged/bundle.jsonl"
-    )
-    records_by_id = {item.evidence_id: item for item in records}
-    steps = _run_steps(run)
-    _validate_collection_lineage(record, records_by_id, steps)
-
-    stage = steps.get("stage_evidence")
-    export = steps.get("preserve_approved_copy")
-    export_completed = isinstance(export, Mapping) and export.get("status") == "success"
-    expected_paths: tuple[str, ...] = (
-        ("staged/bundle.jsonl", "exports/ephemeral/bundle.bin")
-        if export_completed
-        else ("staged/bundle.jsonl",)
-    )
-    all_filesystem = session.results[FilesystemCollector.descriptor.id].records
-    _require(
-        len(all_filesystem) == len(expected_paths)
-        and all(item.provenance is EvidenceProvenance.OBSERVED for item in all_filesystem)
-        and {item.content.get("path") for item in all_filesystem} == set(expected_paths),
-        "GATE-05 filesystem observations do not cover the exact staged and final file effects",
-    )
-    artifacts = stage.get("artifacts") if isinstance(stage, Mapping) else None
-    bundle = artifacts.get("bundle") if isinstance(artifacts, Mapping) else None
-    path = bundle.get("path") if isinstance(bundle, Mapping) else None
-    digest = bundle.get("sha256") if isinstance(bundle, Mapping) else None
-    size = bundle.get("size") if isinstance(bundle, Mapping) else None
-    observed_fields = record.content.get("observed_fields")
-    expected_fields = {"path": path, "size_bytes": size, "sha256": digest}
-    observation_key = filesystem_observation_key(path) if isinstance(path, str) else None
-    settings_row = session.settings.collectors.get(FilesystemCollector.descriptor.id)
-    settings = settings_row.get("settings") if isinstance(settings_row, Mapping) else None
-    configured_paths = settings.get("paths") if isinstance(settings, Mapping) else None
-    predicted = (
-        predicted_fields.get(observation_key)
-        if isinstance(predicted_fields, Mapping) and isinstance(observation_key, str)
-        else None
-    )
-    _require(
-        (
-            isinstance(stage, Mapping)
-            and stage.get("status") == "success"
-            and stage.get("runner_status") == "success"
-            and isinstance(bundle, Mapping)
-            and bundle.get("type") == "artifact.sandbox.bundle.v1"
-            and bundle.get("format") == "jsonl"
-            and isinstance(path, str)
-            and path == "staged/bundle.jsonl"
-            and _is_sha256(digest)
-            and isinstance(size, int)
-            and not isinstance(size, bool)
-            and size > 0
-            and isinstance(settings_row, Mapping)
-            and settings_row.get("enabled") is True
-            and isinstance(settings, Mapping)
-            and set(settings) == {"collect_after_step", "paths"}
-            and settings.get("collect_after_step") == record.step_id
-            and tuple(configured_paths) == expected_paths
-            and settings.get("collect_after_step")
-            == ("preserve_approved_copy" if export_completed else "try_internal_transport")
-            if isinstance(configured_paths, (list, tuple))
-            else False
-        ),
-        "GATE-05 filesystem runtime is not bound to the real staged bundle",
-    )
-    _require(
-        record.content.get("artifact_type") == "collector_observation"
-        and record.content.get("observation_kind") == "filesystem"
-        and record.content.get("observation_key") == observation_key
-        and record.content.get("collector_id") == FilesystemCollector.descriptor.id
-        and record.content.get("mechanism") == "independent-file-handle-read"
-        and observed_fields == expected_fields
-        and record.content.get("path") == path
-        and record.content.get("size_bytes") == size
-        and record.content.get("sha256") == digest
-        and isinstance(record.content.get("modified_ns"), int)
-        and not isinstance(record.content.get("modified_ns"), bool)
-        and int(record.content["modified_ns"]) > 0
-        and set(record.content)
-        == {
-            "artifact_type",
-            "collector_id",
-            "mechanism",
-            "modified_ns",
-            "observation_key",
-            "observation_kind",
-            "observed_fields",
-            "path",
-            "sha256",
-            "size_bytes",
-        }
-        and record.environment
-        == {
-            "environment_type": "disposable",
-            "collector_id": FilesystemCollector.descriptor.id,
-            "collector_version": FilesystemCollector.descriptor.version,
-        }
-        and (predicted_fields is None or predicted == expected_fields),
-        "GATE-05 filesystem observation does not match the real staged bundle",
-    )
-    if export_completed:
-        exported = _one_observation(
-            session, FilesystemCollector.descriptor.id, path=expected_paths[1]
-        )
-        parent, _ = _validate_collection_lineage(exported, records_by_id, steps)
-        output = parent.content.get("output")
-        export_fields = {**expected_fields, "path": expected_paths[1]}
-        _require(
-            isinstance(output, Mapping)
-            and output.get("artifact") == expected_paths[1]
-            and output.get("source") == path
-            and output.get("sha256") == digest
-            and output.get("size") == size
-            and exported.environment == record.environment
-            and exported.content
-            == {
-                **record.content,
-                **export_fields,
-                "observed_fields": export_fields,
-                "observation_key": filesystem_observation_key(expected_paths[1]),
-                "modified_ns": exported.content.get("modified_ns"),
-            }
-            and type(exported.content.get("modified_ns")) is int
-            and exported.content["modified_ns"] > 0,
-            "GATE-05 final export observation is not bound to the actual exported bundle",
-        )
 
 
 def _validate_process_binding(
@@ -1214,7 +983,7 @@ def validate_persisted_collectors(
     )
     checks = {
         "process_collector": len(process_records) == 1,
-        "filesystem_collector": len(filesystem_records) == 1,
+        "filesystem_collector": len(filesystem_records) == 3,
         "network_collector": len(network_records) == 1,
         "platform_interfaces": platform_valid,
         "native_when_supported": (

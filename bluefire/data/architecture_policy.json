@@ -159,6 +159,8 @@
       "layer": "acceptance",
       "patterns": [
         "bluefire.collector_gate",
+        "bluefire.collector_gate_evidence",
+        "bluefire.collector_gate_filesystem",
         "bluefire.collector_gate_validation",
         "bluefire.collector_journey",
         "bluefire.prepared_lab",
@@ -335,6 +337,7 @@
         "bluefire._ai_transport_worker",
         "bluefire.approvals",
         "bluefire.collector_comparison",
+        "bluefire.collector_schedule",
         "bluefire.collector_interfaces",
         "bluefire.collection_semantics",
         "bluefire.collection_methods",

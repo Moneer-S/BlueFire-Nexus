@@ -66,6 +66,7 @@ from .approvals import (
 )
 from .bootstrap import seed_product_metadata
 from .collector_comparison import summarize_collector_session
+from .collector_schedule import producer_settings, uses_producer_schedule
 from .collectors import (
     CollectionSemanticsCollector,
     CollectionSession,
@@ -6797,7 +6798,7 @@ class BlueFireService(RunnerManagementServiceMixin):
     def _validate_managed_collector_settings(runtime: CollectorRuntimeSettings) -> None:
         allowed_fields = {
             CollectionSemanticsCollector.descriptor.id: {"collect_after_step", "paths"},
-            FilesystemCollector.descriptor.id: {"collect_after_step", "paths"},
+            FilesystemCollector.descriptor.id: {"collect_after_step", "schedule", "paths"},
             NativeProcessCollector.descriptor.id: {
                 "collect_after_step",
                 "process_id",
@@ -6817,8 +6818,20 @@ class BlueFireService(RunnerManagementServiceMixin):
                 )
             if row["enabled"] is not True:
                 continue
+            per_producer = (
+                collector_id == FilesystemCollector.descriptor.id
+                and uses_producer_schedule(settings)
+            )
+            if "schedule" in settings and (not per_producer or "collect_after_step" in settings):
+                raise APIError(
+                    HTTPStatus.BAD_REQUEST,
+                    "collector_runtime_invalid",
+                    "Filesystem schedule must be after_each_producer without collect_after_step.",
+                )
             step_id = settings.get("collect_after_step")
-            if not isinstance(step_id, str) or _STEP_IMPLEMENTATION_ID.fullmatch(step_id) is None:
+            if not per_producer and (
+                not isinstance(step_id, str) or _STEP_IMPLEMENTATION_ID.fullmatch(step_id) is None
+            ):
                 raise APIError(
                     HTTPStatus.BAD_REQUEST,
                     "collector_runtime_invalid",
@@ -6920,6 +6933,14 @@ class BlueFireService(RunnerManagementServiceMixin):
             )
         ):
             raise ReplayError("exact replay cannot change collector runtime settings")
+        if (
+            mode is ExecutionMode.EXECUTE
+            and producer_settings(runtime) is not None
+            and self._optional_string(request.get("from_step_id")) is not None
+        ):
+            raise ReplayError(
+                "after_each_producer requires full replay; checkpoint-prefix collection is not supported"
+            )
         return collector_ids, runtime
 
     @staticmethod
@@ -7096,42 +7117,71 @@ class BlueFireService(RunnerManagementServiceMixin):
                 NativeProcessCollector.descriptor.id,
                 LoopbackReceiverCollector.descriptor.id,
             }:
-                observed = [
-                    record
-                    for record in session.results[collector_id].records
-                    if record.provenance.value == "observed"
-                ]
-                fields = observed[0].content.get("observed_fields") if len(observed) == 1 else None
-                if not isinstance(fields, Mapping):
-                    raise ReplayError(
-                        "source collector registry authority has no unique observation"
-                    )
-                if collector_id == NativeProcessCollector.descriptor.id:
-                    authorized = source_authority.get("authorized_processes")
-                    matching = (
-                        [
-                            row
-                            for row in authorized
-                            if isinstance(row, Mapping)
-                            and row.get("process_id") == fields.get("process_id")
-                        ]
-                        if isinstance(authorized, list)
-                        else []
-                    )
-                    if matching != [
-                        {
-                            "process_id": fields.get("process_id"),
-                            "parent_process_id": fields.get("parent_process_id"),
-                            "creation_identity": fields.get("creation_identity"),
-                        }
-                    ]:
+                result = session.results[collector_id]
+                if (
+                    not result.records
+                    and result.health.details.get("schedule_state") == "not_triggered"
+                ):
+                    if source.get("status") != "awaiting_approval":
                         raise ReplayError(
-                            "source process authority does not match its native observation"
+                            "untriggered collector authority requires an approval-paused source"
                         )
-                elif source_authority.get("session_id") != fields.get("receiver_session_id"):
-                    raise ReplayError(
-                        "source receiver authority does not match its authenticated session"
+                    source_evidence = source.get("evidence")
+                    try:
+                        summarize_collector_session(
+                            session.to_dict(),
+                            (
+                                source_evidence.get("records")
+                                if isinstance(source_evidence, Mapping)
+                                else None
+                            ),
+                            source.get("run_id"),
+                            source.get("steps"),
+                        )
+                    except CollectorError as exc:
+                        raise ReplayError("source untriggered collector state is invalid") from exc
+                    # The source's approved backend authority remains bound.
+                    # No observation is claimed for a phase the paused run did
+                    # not reach; replay must revalidate that authority normally.
+                else:
+                    observed = [
+                        record
+                        for record in session.results[collector_id].records
+                        if record.provenance.value == "observed"
+                    ]
+                    fields = (
+                        observed[0].content.get("observed_fields") if len(observed) == 1 else None
                     )
+                    if not isinstance(fields, Mapping):
+                        raise ReplayError(
+                            "source collector registry authority has no unique observation"
+                        )
+                    if collector_id == NativeProcessCollector.descriptor.id:
+                        authorized = source_authority.get("authorized_processes")
+                        matching = (
+                            [
+                                row
+                                for row in authorized
+                                if isinstance(row, Mapping)
+                                and row.get("process_id") == fields.get("process_id")
+                            ]
+                            if isinstance(authorized, list)
+                            else []
+                        )
+                        if matching != [
+                            {
+                                "process_id": fields.get("process_id"),
+                                "parent_process_id": fields.get("parent_process_id"),
+                                "creation_identity": fields.get("creation_identity"),
+                            }
+                        ]:
+                            raise ReplayError(
+                                "source process authority does not match its native observation"
+                            )
+                    elif source_authority.get("session_id") != fields.get("receiver_session_id"):
+                        raise ReplayError(
+                            "source receiver authority does not match its authenticated session"
+                        )
             normalized_backends.append(
                 {
                     "collector_id": collector_id,

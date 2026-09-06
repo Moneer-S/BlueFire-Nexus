@@ -24,22 +24,21 @@ STAGE = "staged/bundle.jsonl"
 EXPORT = "exports/ephemeral/bundle.bin"
 
 
-def test_frontier_collector_observes_the_later_export_without_widening_replay(
+def test_frontier_collector_observes_conditional_export_under_shared_eligible_paths(
     tmp_path: Path,
 ) -> None:
-    baseline = _runtime_settings(
-        process_id=10, parent_process_id=9, network_enabled=False, observe_export=True
-    )
+    baseline = _runtime_settings(process_id=10, parent_process_id=9, network_enabled=False)
     replay = _runtime_settings(process_id=10, parent_process_id=9, network_enabled=True)
     collector_id = FilesystemCollector.descriptor.id
     row = baseline.to_dict()["collectors"][collector_id]
-    assert row["settings"]["collect_after_step"] == "preserve_approved_copy"
-    assert tuple(row["settings"]["paths"]) == (STAGE, EXPORT)
-    assert tuple(replay.collectors[collector_id]["settings"]["paths"]) == (STAGE,)
-    assert (
-        replay.collectors[collector_id]["settings"]["collect_after_step"]
-        == "try_internal_transport"
+    assert row["settings"]["schedule"] == "after_each_producer"
+    assert tuple(row["settings"]["paths"]) == (
+        "fixtures/input.jsonl",
+        "fixtures/transformed.jsonl",
+        STAGE,
+        EXPORT,
     )
+    assert replay.collectors[collector_id] == baseline.collectors[collector_id]
     assert baseline.settings_hash != replay.settings_hash
     payload = b"public collector regression bytes\n"
     digest = hashlib.sha256(payload).hexdigest()
@@ -73,7 +72,19 @@ def test_frontier_collector_observes_the_later_export_without_widening_replay(
 
     staged = execution("stage_evidence", "sandbox.collection.stage.v1", STAGE)
     exported = execution("preserve_approved_copy", "sandbox.export.local.v1", EXPORT)
-    collected = FilesystemCollector(tmp_path).collect(
+    stage_collected = FilesystemCollector(tmp_path).collect(
+        CollectionRequest(
+            run_id=staged.run_id,
+            step_id=staged.step_id,
+            behavior_id=staged.behavior_id,
+            action_id=staged.action_id,
+            runner_profile_id=staged.runner_profile_id,
+            target_scope_ref=staged.target_scope_ref,
+            parent_evidence_ids=(staged.evidence_id,),
+            settings={"paths": [STAGE]},
+        )
+    )
+    export_collected = FilesystemCollector(tmp_path).collect(
         CollectionRequest(
             run_id=exported.run_id,
             step_id=exported.step_id,
@@ -82,13 +93,16 @@ def test_frontier_collector_observes_the_later_export_without_widening_replay(
             runner_profile_id=exported.runner_profile_id,
             target_scope_ref=exported.target_scope_ref,
             parent_evidence_ids=(exported.evidence_id,),
-            settings=row["settings"],
+            settings={"paths": [EXPORT]},
         )
+    )
+    collected = replace(
+        export_collected, records=(*stage_collected.records, *export_collected.records)
     )
     session = CollectionSession(
         CollectorRuntimeSettings(collectors={collector_id: row}), {collector_id: collected}
     )
-    records = (staged, exported, *collected.records)
+    records = (staged, *stage_collected.records, exported, *export_collected.records)
     run = {
         "steps": [
             {
@@ -97,7 +111,10 @@ def test_frontier_collector_observes_the_later_export_without_widening_replay(
                 "action_id": staged.action_id,
                 "status": "success",
                 "runner_status": "success",
-                "evidence_ids": [staged.evidence_id],
+                "evidence_ids": [
+                    staged.evidence_id,
+                    *(item.evidence_id for item in stage_collected.records),
+                ],
                 "artifacts": {
                     "bundle": {
                         "type": "artifact.sandbox.bundle.v1",
@@ -116,7 +133,7 @@ def test_frontier_collector_observes_the_later_export_without_widening_replay(
                 "runner_status": "success",
                 "evidence_ids": [
                     exported.evidence_id,
-                    *(item.evidence_id for item in collected.records),
+                    *(item.evidence_id for item in export_collected.records),
                 ],
             },
         ]
