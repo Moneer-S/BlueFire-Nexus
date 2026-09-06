@@ -3052,7 +3052,9 @@ class BlueFireService(RunnerManagementServiceMixin):
             finally:
                 self.job_controller.shutdown()
 
-    def _recover_interrupted_cleanup(self) -> Mapping[str, Any]:
+    def _recover_interrupted_cleanup(
+        self, *, requested_approval_id: str | None = None
+    ) -> Mapping[str, Any]:
         summary: dict[str, Any] = {
             "examined": 0,
             "completed": 0,
@@ -3062,6 +3064,10 @@ class BlueFireService(RunnerManagementServiceMixin):
             "remaining": 0,
         }
         candidates = self.product_store.list_execution_workspaces(states={"active", "deferred"})
+        if requested_approval_id is not None:
+            candidates = [
+                item for item in candidates if item["approval_id"] == requested_approval_id
+            ]
         summary["remaining"] = max(len(candidates) - 16, 0)
         for workspace_binding in candidates[:16]:
             summary["examined"] += 1
@@ -3197,6 +3203,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                         scenario=scenario,
                         profile=profile,
                         autonomy=autonomy,
+                        after_restart=requested_approval_id is None,
                     )
                     outcome = self._cleanup_recovery_outcome(recovery)
                     self.product_store.transition_execution_workspace(
@@ -3205,7 +3212,11 @@ class BlueFireService(RunnerManagementServiceMixin):
                         run_id=recovery_run_id,
                         outcome=outcome,
                     )
-                    self._update_interrupted_job_cleanup(approval_id, outcome)
+                    self._update_interrupted_job_cleanup(
+                        approval_id,
+                        outcome,
+                        result_ref=recovery_run_id if requested_approval_id is not None else None,
+                    )
                     summary["no_outstanding_receipts"] += 1
                     continue
 
@@ -3291,6 +3302,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                     scenario=scenario,
                     profile=profile,
                     autonomy=autonomy,
+                    after_restart=requested_approval_id is None,
                 )
                 outcome = self._cleanup_recovery_outcome(recovery)
                 self.product_store.transition_execution_workspace(
@@ -3299,7 +3311,11 @@ class BlueFireService(RunnerManagementServiceMixin):
                     run_id=recovery_run_id,
                     outcome=outcome,
                 )
-                self._update_interrupted_job_cleanup(approval_id, outcome)
+                self._update_interrupted_job_cleanup(
+                    approval_id,
+                    outcome,
+                    result_ref=recovery_run_id if requested_approval_id is not None else None,
+                )
                 summary["completed"] += 1
             except (
                 APIError,
@@ -3332,6 +3348,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                 self._update_interrupted_job_cleanup(approval_id, outcome)
                 summary["deferred"] += 1
 
+        if requested_approval_id is not None:
+            return summary
         bound_ids = {
             str(item["approval_id"]) for item in self.product_store.list_execution_workspaces()
         }
@@ -3608,6 +3626,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         scenario: ScenarioDefinition,
         profile: RunnerProfile,
         autonomy: AutonomyLevel,
+        after_restart: bool = True,
     ) -> None:
         manifest_path = self.store.root / run_id / "manifest.json"
         if manifest_path.is_file():
@@ -3653,7 +3672,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         result.setdefault("autonomy", autonomy.value)
         result.setdefault("runner_profile_id", profile.id)
         if result.get("status") == "created":
-            result["status"] = "interrupted"
+            result["status"] = "interrupted" if after_restart else "cancelled"
         result["cleanup_recovery"] = dict(recovery)
         cleanup = result.get("cleanup")
         cleanup_record = dict(cleanup) if isinstance(cleanup, Mapping) else {}
@@ -3661,8 +3680,10 @@ class BlueFireService(RunnerManagementServiceMixin):
             {
                 "attempted": bool(attempts),
                 "succeeded": True,
-                "recovered_after_restart": True,
+                "success": True,
+                "recovered_after_restart": after_restart,
                 "outstanding_receipts": 0,
+                "outstanding_receipt_count": 0,
             }
         )
         result["cleanup"] = cleanup_record
@@ -3670,6 +3691,8 @@ class BlueFireService(RunnerManagementServiceMixin):
         limitation_rows = list(limitations) if isinstance(limitations, list) else []
         recovery_limitation = (
             "The original Execute run was interrupted; cleanup was reconciled during restart."
+            if after_restart
+            else "The Execute replay was cancelled; cleanup was reconciled before cancellation completed."
         )
         if recovery_limitation not in limitation_rows:
             limitation_rows.append(recovery_limitation)
@@ -3688,6 +3711,8 @@ class BlueFireService(RunnerManagementServiceMixin):
         self,
         approval_id: str,
         outcome: Mapping[str, Any],
+        *,
+        result_ref: str | None = None,
     ) -> None:
         for job in self.product_store.list_jobs():
             request = job.get("request")
@@ -3696,17 +3721,32 @@ class BlueFireService(RunnerManagementServiceMixin):
                 or request.get("approval_request_id") != approval_id
             ):
                 continue
-            progress = job.get("progress")
-            progress_document = dict(progress) if isinstance(progress, Mapping) else {}
-            progress_document["cleanup_recovery"] = dict(outcome)
-            try:
-                self.product_store.transition_job(
-                    str(job["job_id"]),
-                    str(job["state"]),
-                    progress=progress_document,
+            for attempt in range(3 if result_ref is not None else 1):
+                # Cancellation can change running to cancelling while recovery
+                # finalizes the bundle. Re-read rather than restore a stale state.
+                current = (
+                    self.product_store.get_job(str(job["job_id"]))
+                    if result_ref is not None
+                    else job
                 )
-            except ProductStoreError:
-                continue
+                progress = current.get("progress")
+                progress_document = dict(progress) if isinstance(progress, Mapping) else {}
+                progress_document["cleanup_recovery"] = dict(outcome)
+                try:
+                    linked = self.product_store.transition_job(
+                        str(current["job_id"]),
+                        str(current["state"]),
+                        progress=progress_document,
+                        result_ref=result_ref,
+                    )
+                    if result_ref is not None and linked.get("result_ref") != result_ref:
+                        raise ProductStoreError("recovered replay result link was not persisted")
+                    break
+                except ProductStoreError:
+                    if result_ref is not None:
+                        if attempt < 2:
+                            continue
+                        raise
 
     def list(self) -> Mapping[str, Any]:
         return {"schema_version": "bluefire.run-list.v1", "runs": self.store.list_runs()}
@@ -4088,9 +4128,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         try:
             if cancel_event is not None and cancel_event.is_set():
                 raise JobCancelled("replay job cancelled before catalog review")
-            with self.product_store.action_package_catalog_lease(
-                **({"cancel_event": cancel_event} if cancel_event is not None else {})
-            ):
+            with self.product_store.action_package_catalog_lease(cancel_event=cancel_event):
                 entered = True
                 if cancel_event is not None and cancel_event.is_set():
                     raise JobCancelled("replay job cancelled before catalog review")
@@ -4224,7 +4262,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                     return self._replay_job_submission_response(existing)
                 raise ReplayError("replay submission admission expired")
             try:
-                with self.product_store.action_package_catalog_lease():
+                with self.product_store.action_package_catalog_lease(deadline=deadline):
                     existing = self.product_store.get_job_submission(
                         "scenario.replay", submission_id=submission_id, intent_digest=intent_digest
                     )
@@ -4670,7 +4708,22 @@ class BlueFireService(RunnerManagementServiceMixin):
                 )
             self._index_run(result)
             return result
-        except (AIProviderCancelled, RunnerTaskCancelled) as exc:
+        except (AIProviderCancelled, RunnerTaskCancelled, JobCancelled) as exc:
+            if replay_approval_id is not None and replay_workspace is not None:
+                recovery = self._recover_interrupted_cleanup(
+                    requested_approval_id=replay_approval_id
+                )
+                settled = self.product_store.get_execution_workspace(replay_approval_id)
+                if recovery["deferred"] or settled["state"] not in {
+                    "completed",
+                    "recovered",
+                    "not_required",
+                }:
+                    raise APIError(
+                        HTTPStatus.CONFLICT,
+                        "replay_cleanup_deferred",
+                        "Replay stopped, but its cleanup could not be reconciled.",
+                    ) from exc
             if cancel_event is not None and cancel_event.is_set():
                 raise JobCancelled("replay job cancellation was confirmed") from exc
             raise APIError(

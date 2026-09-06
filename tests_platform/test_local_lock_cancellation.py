@@ -96,11 +96,12 @@ class LockHarness:
         assert length == 1
         self.flock(descriptor, operation)
 
-    def lease(self, cancel_event=None):
+    def lease(self, cancel_event=None, *, deadline=None):
         return locks.owner_private_database_lock(
             self.path,
             expected=self.identity,
             cancel_event=cancel_event,
+            deadline=deadline,
         )
 
     def assert_released(self):
@@ -272,4 +273,43 @@ def test_identity_refusal_after_acquisition_still_unlocks_and_closes(monkeypatch
         with harness.lease(threading.Event()):
             pytest.fail("changed identity entered protected operation")
     assert harness.calls[-1][1] == 8
+    harness.assert_released()
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+@pytest.mark.parametrize("acquired", [False, True])
+def test_deadline_bounds_os_contention_and_rejects_late_acquisition(
+    monkeypatch, tmp_path, platform, acquired
+):
+    harness = LockHarness(monkeypatch, tmp_path, platform)
+    now = [0.0]
+    monkeypatch.setattr(locks.time, "monotonic", lambda: now[0])
+
+    def expired():
+        now[0] = 2.0
+        if not acquired:
+            raise OSError(errno.EAGAIN, "other process owns lock")
+
+    harness.on_lock = expired
+    with pytest.raises(locks.LocalLockError, match="admission expired"):
+        with harness.lease(deadline=1.0):
+            pytest.fail("expired admission entered the protected operation")
+    assert harness.calls[0][1] == (2 if platform == "win32" else 6)
+    assert [call[1] for call in harness.calls[1:]] == ([8] if acquired else [])
+    assert harness.verified == []
+    harness.assert_released()
+
+
+def test_expired_nested_admission_preserves_the_current_outer_owner(monkeypatch, tmp_path):
+    harness = LockHarness(monkeypatch, tmp_path)
+    now = [0.0]
+    monkeypatch.setattr(locks.time, "monotonic", lambda: now[0])
+    with harness.lease():
+        descriptor = harness.state.descriptor
+        harness.on_validate = lambda: now.__setitem__(0, 2.0)
+        with pytest.raises(locks.LocalLockError, match="admission expired"):
+            with harness.lease(deadline=1.0):
+                pytest.fail("expired nested admission entered")
+        assert harness.state.depth == 1 and harness.state.descriptor == descriptor
+        assert harness.calls == [(descriptor, 2)]
     harness.assert_released()
