@@ -55,6 +55,7 @@ function EvaluationReport({ report }: { report: DetectionRunEvaluation }) {
   const result = report.result;
   return <article>
     <strong>{report.question}</strong>
+    {report.development_case ? <Callout title="Development evidence">AI used this run while proposing the rule. Evaluate separate benign and withheld cases before judging improvement.</Callout> : null}
     <div><Badge>{sentence(report.case_role)} · operator assigned</Badge><Badge tone={result.state === "insufficient_evidence" || result.state === "backend_error" ? "warning" : "info"}>{sentence(result.state)}</Badge></div>
     {report.case_role === "benign" && result.state === "matched" ? <Callout tone="warning" title="Match in a declared benign case">This query matched observed records in an operator-assigned benign case. Review this potential false positive; the label does not suppress the measured match.</Callout> : null}
     <DataList items={[

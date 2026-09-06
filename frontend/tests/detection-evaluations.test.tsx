@@ -74,6 +74,16 @@ it("retains a telemetry gap as insufficient without presenting a zero-match resu
   expect(retained[0]?.case_role).toBe("heldout");
 });
 
+it("keeps AI development evidence visible even when its original case was withheld", async () => {
+  retained.push({ ...report(candidateId, runId, "heldout"), development_case: true });
+  retained.push(report(parentId, runId, "heldout"));
+  mount();
+  expect(await screen.findByText("Development evidence")).toBeVisible();
+  expect(screen.getByText(/AI used this run while proposing the rule/)).toBeVisible();
+  await userEvent.setup().selectOptions(screen.getByRole("combobox", { name: "Related revision reports" }), parentId);
+  expect(await screen.findByText("Includes development evidence used to propose this rule")).toBeVisible();
+});
+
 it("shows immutable baseline and revision results together and preserves each source", async () => {
   resultState = "not_matched";
   retained.push(report(parentId, runId, "attack"));

@@ -19,9 +19,10 @@ function LocationWitness() {
   return <output data-testid="location">{useLocation().search}</output>;
 }
 
-function setup(ready = true) {
+function setup(ready = true, aiJob = false, draft = false) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const candidates = [structuredClone(parent), { ...structuredClone(parent), id: otherId, document: { ...structuredClone(parent.document), candidate_id: otherId, revision_root_id: otherId, title: "Other SQL" } }];
+  if (draft) { candidates[0]!.document.state = "hypothesis"; candidates[0]!.document.rule_source = ""; }
   vi.spyOn(api, "detections").mockImplementation(async () => ({ schema_version: "v1", candidates }));
   vi.spyOn(api, "runs").mockResolvedValue({ schema_version: "v1", unavailable_run_count: 0, runs: demoRuns });
   vi.spyOn(api, "runDetail").mockResolvedValue(demoRuns[0]!);
@@ -29,7 +30,8 @@ function setup(ready = true) {
   vi.spyOn(api, "resources").mockResolvedValue({ schema_version: "v1", kind: "research-sources", resources: [] });
   vi.spyOn(api, "detectionHealth").mockResolvedValue({ schema_version: "v1", ready, persistence_ready: true, candidate_resources: 2, invalid_candidate_resources: 0, languages: { sqlite: { ready, authoritative: true, backend: "SQLite bounded executor" } }, limits: { source_bytes: 262144, fixture_bytes: 1048576, fixtures_per_action: 128, evidence_per_action: 256, notes_per_action: 64 } });
   vi.spyOn(api, "detectionRunEvaluations").mockResolvedValue({ evaluations: [] });
-  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/detection-lab?run=${demoRuns[0]!.run_id}&candidate=${id}&candidate_scope=registry`]}><DetectionLabPage /><LocationWitness /></MemoryRouter></QueryClientProvider>);
+  if (aiJob) vi.spyOn(api, "job").mockResolvedValue({ schema_version: "bluefire.job.v1", job_id: "job-review-retained", kind: "detection.ai.propose", state: "failed", request: {}, progress: {} });
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/detection-lab?run=${demoRuns[0]!.run_id}&candidate=${id}&candidate_scope=registry${aiJob ? "&ai_job=job-review-retained" : ""}`]}><DetectionLabPage /><LocationWitness /></MemoryRouter></QueryClientProvider>);
   return { user: userEvent.setup(), candidates };
 }
 
@@ -43,7 +45,7 @@ async function edit(user: ReturnType<typeof userEvent.setup>) {
 }
 
 it("edits SQL directly, saves a parsed child and opens the selected run without fixture or metadata input", async () => {
-  const { user, candidates } = setup();
+  const { user, candidates } = setup(true, true);
   const revise = vi.spyOn(api, "reviseDetectionSource").mockImplementation(async () => { candidates.push(child); return { schema_version: "v1", candidate: child }; });
   const action = vi.spyOn(api, "detectionAction");
   await edit(user);
@@ -55,6 +57,7 @@ it("edits SQL directly, saves a parsed child and opens the selected run without 
   const savedLink = new URLSearchParams(screen.getByTestId("location").textContent!);
   expect(savedLink.get("candidate_scope")).toBe("registry");
   expect(savedLink.get("run")).toBe(demoRuns[0]!.run_id);
+  expect(savedLink.get("ai_job")).toBe("job-review-retained");
   expect(revise).toHaveBeenCalledWith(id, { source: edited, reason: "Inspect contents observations" });
   expect(candidates[0]).toEqual(parent);
   expect(action).not.toHaveBeenCalled();
@@ -64,6 +67,42 @@ it("edits SQL directly, saves a parsed child and opens the selected run without 
   await user.click(screen.getByRole("tab", { name: "Revisions" }));
   expect(screen.getByText(/Revision 2 · Source/, { selector: "strong" })).toBeVisible();
   expect(screen.getByText(/Clone copies the structured definition into an unparsed hypothesis/)).toBeVisible();
+});
+
+it("preserves the detection job when changing the selected source run", async () => {
+  const { user } = setup(true, true);
+  await screen.findByRole("heading", { name: "Baseline SQL" });
+  await user.selectOptions(screen.getByRole("combobox", { name: /Detection source run/ }), "");
+  const query = new URLSearchParams(screen.getByTestId("location").textContent!);
+  expect(query.get("ai_job")).toBe("job-review-retained");
+  expect(query.has("run")).toBe(false);
+  expect(await screen.findByRole("region", { name: "Detection assistance" })).toBeVisible();
+});
+
+it("keeps the selected registry rule and unsaved source when choosing different evidence", async () => {
+  const { user } = setup(true, true);
+  await user.click(await screen.findByRole("button", { name: /Other SQL/ }));
+  await edit(user);
+  await user.selectOptions(screen.getByRole("combobox", { name: /Detection source run/ }), "");
+  expect(screen.getByRole("heading", { name: "Other SQL" })).toBeVisible();
+  expect(screen.getByRole("textbox", { name: /sqlite source/i })).toHaveValue(edited);
+  const query = new URLSearchParams(screen.getByTestId("location").textContent!);
+  expect(query.get("candidate")).toBe(otherId);
+  expect(query.get("candidate_scope")).toBe("registry");
+  expect(query.get("ai_job")).toBe("job-review-retained");
+});
+
+it("offers an editable SQLite starter without claiming validation or sending it automatically", async () => {
+  const { user } = setup(true, false, true);
+  const action = vi.spyOn(api, "detectionAction");
+  const editor = await screen.findByRole("textbox", { name: /sqlite source/i });
+  expect(editor).toHaveValue("");
+  expect(screen.getByText(/example has not been validated or evaluated/)).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Insert SQLite starter" }));
+  expect(editor).toHaveValue("SELECT fixture_id FROM logs\nWHERE artifact_type = 'file_observation'\n  AND path LIKE '%staged/%'");
+  expect(screen.getByText("Draft source not validated")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Parse / compile honestly" })).toBeEnabled();
+  expect(action).not.toHaveBeenCalled();
 });
 
 it.each(["success", "error"])("does not replace another selected detector when a pending source save returns %s", async (outcome) => {

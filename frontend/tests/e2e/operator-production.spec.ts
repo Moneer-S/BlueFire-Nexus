@@ -375,6 +375,8 @@ test("production operator UI completes authoring, management, run, replay, and c
   await expect(page.getByText(/MITRE ATT&CK/i).first()).toBeVisible();
   await navigation.getByRole("link", { name: "Detection Lab" }).click();
   await expect(page.getByRole("heading", { name: "Detection Lab", level: 1 })).toBeVisible();
+  const newRule = page.locator("details").filter({ has: page.locator("summary", { hasText: /^New rule$/ }) });
+  if (await newRule.getAttribute("open") === null) await page.getByText("New rule", { exact: true }).click();
   await page.getByLabel("Title", { exact: true }).fill(DETECTION_TITLE);
   await page.getByLabel("Target language").selectOption("internal");
   await page.getByRole("button", { name: "Save strict hypothesis" }).click();

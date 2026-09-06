@@ -5,7 +5,11 @@ test("Detection Lab creates an honest hypothesis without simulating validation",
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
   await page.goto("./#/detection-lab");
   await expect(page.getByRole("heading", { name: "Detection Lab" })).toBeVisible();
+  await page.getByText("Validation stages", { exact: true }).click();
   await expect(page.getByText("Rendered text is not validation.")).toBeVisible();
+  await page.getByText("Validation stages", { exact: true }).click();
+  const newRule = page.locator("details").filter({ has: page.locator("summary", { hasText: /^New rule$/ }) });
+  if (await newRule.getAttribute("open") === null) await page.getByText("New rule", { exact: true }).click();
 
   await page.getByRole("button", { name: "Save strict hypothesis" }).click();
   await expect(page.getByText(/saved as a strict hypothesis\. It has not been parsed or exercised\./)).toBeVisible();

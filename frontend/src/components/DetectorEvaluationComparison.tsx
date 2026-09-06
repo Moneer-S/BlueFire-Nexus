@@ -36,6 +36,7 @@ function EvaluationCell({ reports }: { reports: DetectionRunEvaluation[] }) {
   if (!reports.length) return <span>Not evaluated</span>;
   const labels = [...new Set(reports.map(evaluationLabel))];
   return <><strong>{labels.length === 1 ? labels[0] : "Mixed results"}</strong><small>{reports.length} retained evaluation{reports.length === 1 ? "" : "s"}</small>
+    {reports.some((report) => report.development_case) ? <small>Includes development evidence used to propose this rule</small> : null}
     <details><summary>Evidence and engine</summary>{reports.map((report) => <article key={report.evaluation_id}>
       <Badge tone={evaluationLabel(report).includes("evidence") || report.result.state === "backend_error" ? "warning" : "info"}>{evaluationLabel(report)}</Badge>
       <p>{report.question}</p><p>{report.source.observed_count} independently observed events · {report.source.evidence_count} total records</p>

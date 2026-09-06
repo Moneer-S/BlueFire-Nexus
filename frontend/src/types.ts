@@ -524,6 +524,7 @@ export interface DetectionRunImportResponse extends DetectionResourceEnvelope {
 export type DetectionCaseRole = "attack" | "benign" | "replay" | "heldout";
 export interface DetectionRunEvaluation {
   schema_version: string;
+  development_case?: boolean;
   evaluation_id: string;
   question: string;
   case_role: DetectionCaseRole;

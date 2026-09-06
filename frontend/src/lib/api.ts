@@ -1,5 +1,6 @@
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { sameJson } from "./replay-review";
+import type { DetectionAIDecision, DetectionAIRequest } from "./detection-ai";
 import { compareDemoRuns, demoCatalog, demoRuns, demoScenario } from "./demo";
 
 const API_ROOT = "/api/v1";
@@ -487,6 +488,14 @@ export const api = {
   async detectionRunEvaluations(candidateId: string): Promise<{ evaluations: DetectionRunEvaluation[] }> {
     if (DEMO_MODE) return { evaluations: [] };
     return request(`/detections/${encodeURIComponent(candidateId)}/evaluations`);
+  },
+  async suggestDetectionRevision(candidateId: string, body: DetectionAIRequest): Promise<{ job: RunJob }> {
+    if (DEMO_MODE) throw new ApiError("Detection assistance requires the connected local service.", "demo_detection_ai_refused", undefined, 409);
+    return request(`/detections/${encodeURIComponent(candidateId)}/ai-revision-jobs`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async decideDetectionRevision(jobId: string, body: DetectionAIDecision): Promise<{ proposal_job: RunJob; application_job: RunJob | null; decision: DetectionAIDecision }> {
+    if (DEMO_MODE) throw new ApiError("Demo mode cannot accept detection changes.", "demo_detection_ai_refused", undefined, 409);
+    return request(`/jobs/${encodeURIComponent(jobId)}/detection-revision-decisions`, { method: "POST", body: JSON.stringify(body) });
   },
   async detectionFromRun(runId: string, candidateId: string): Promise<DetectionRunImportResponse> {
     if (DEMO_MODE) throw new ApiError("Demo records cannot create durable run-linked hypotheses.", "demo_detection_import_refused", undefined, 409);

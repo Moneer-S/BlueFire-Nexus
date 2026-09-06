@@ -4,10 +4,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { syntheticSelectionExample } from "../lib/detection-fixtures";
+import { runLabel } from "../lib/run-presentation";
 import { DetectionRunEvaluations } from "../components/DetectionRunEvaluations";
+import { DetectionAIRevision } from "../components/DetectionAIRevision";
 import { runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
   DetectionCandidate,
+  CatalogResponse,
   DetectionCloneRequest,
   DetectionComparisonResponse,
   DetectionResource,
@@ -208,7 +211,7 @@ export function DetectionLabPage() {
       refreshDetections();
       if (activeSelection.current !== submitted.selection) return;
       setSelectedId(candidate.id);
-      setSearchParams({ ...(sourceRunId ? { run: sourceRunId } : {}), candidate: candidate.id, candidate_scope: "registry" });
+      setSearchParams((old) => { const next = new URLSearchParams(old); next.set("candidate", candidate.id); next.set("candidate_scope", "registry"); return next; });
       setNotice(`Revision ${candidate.document.revision} validated and saved. It is parsed; evaluate actual runs to measure its results.`);
       comparisonMutation.reset();
     },
@@ -254,32 +257,41 @@ export function DetectionLabPage() {
   const sources = researchSourcesQuery.data?.resources ?? [];
 
   return <div className="page detection-page">
-    <PageHeader eyebrow="Detection research" title="Detection Lab" description="Persist strict behavior-linked hypotheses, preserve immutable revision lineage, and advance only through parser, fixture, observed-evidence, benign, or rejection stages the control plane actually completed." />
-    {notice ? <Callout title="Detection control plane">{notice}</Callout> : null}
-    <Panel>
-      <PanelHeader eyebrow="Run handoff" title="Source run and evidence" actions={sourceRun ? <Link className="button button-secondary" to={`/runs/${encodeURIComponent(sourceRun.run_id)}`}>Review source run</Link> : undefined} />
-      <div className="detail-body">
-        <Field label="Detection source run" hint="Loads the full immutable run record, including its candidates and evidence."><select value={sourceRunId} onChange={(event) => setSearchParams(event.target.value ? { run: event.target.value } : {})}><option value="">Select source run</option>{sourceRunId && !runsQuery.data.runs.some((run) => run.run_id === sourceRunId) ? <option value={sourceRunId}>{sourceRunId}</option> : null}{runsQuery.data.runs.map((run) => <option key={run.run_id} value={run.run_id}>{run.run_id}</option>)}</select></Field>
-        {sourceRunId && sourceQuery.isPending ? <LoadingState label="Loading source run evidence" /> : sourceQuery.isError ? <ErrorState title="Source run unavailable" error={sourceQuery.error} retry={() => { void sourceQuery.refetch(); }} /> : sourceRun ? <SourceRunEvidence run={sourceRun} /> : <p>Select a run to inspect its linked candidates or create a hypothesis below.</p>}
+    <PageHeader title="Detection Lab" description="Write a rule, test it against observed behavior, and compare revisions." />
+    {notice ? <Callout title="Detection update">{notice}</Callout> : null}
+    <section className="detection-context" aria-label="Source run and evidence">
+      <div className="detection-context-controls">
+        <Field label="Detection source run"><select value={sourceRunId} onChange={(event) => { const run = event.target.value; setSearchParams((old) => { const next = new URLSearchParams(old); if (selected?.resourceId) { next.set("candidate", selected.resourceId); next.set("candidate_scope", "registry"); } else { next.delete("candidate"); next.delete("candidate_scope"); } if (run) next.set("run", run); else next.delete("run"); return next; }); }}><option value="">Choose a run to bring in its evidence</option>{sourceRunId && !runsQuery.data.runs.some((run) => run.run_id === sourceRunId) ? <option value={sourceRunId}>{sourceRunId}</option> : null}{runsQuery.data.runs.map((run) => <option key={run.run_id} value={run.run_id}>{runLabel(run)} · {sentence(run.mode)} · {run.created_at ? new Date(run.created_at).toLocaleString() : run.run_id}</option>)}</select></Field>
+        {sourceRun ? <Link className="button button-secondary" to={`/runs/${encodeURIComponent(sourceRun.run_id)}`}>Review source run</Link> : null}
       </div>
-    </Panel>
-    <div className="two-column">
-      <Panel>
-        <PanelHeader eyebrow="New hypothesis" title="Behavior-linked candidate" />
+      {sourceRunId && sourceQuery.isPending ? <LoadingState label="Loading source run evidence" /> : sourceQuery.isError ? <ErrorState title="Source run unavailable" error={sourceQuery.error} retry={() => { void sourceQuery.refetch(); }} /> : sourceRun ? <details className="detection-source-details"><summary>{sourceObservedRecords(sourceRun).length} independent observations · inspect source evidence</summary><SourceRunEvidence run={sourceRun} /></details> : null}
+    </section>
+    <div className="detection-tools">
+      <details open={!candidates.length}>
+        <summary>New rule</summary>
+        <Panel>
+        <PanelHeader title="Start a rule draft" detail="Choose the behavior and query language, then edit and validate its source." />
         <div className="detail-body">
           <Field label="Title"><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={200} /></Field>
           <Field label="Registered behavior"><select value={behaviorId} onChange={(event) => setBehaviorId(event.target.value)}>{catalogQuery.data.behaviors.map((behavior) => <option key={behavior.id} value={behavior.id}>{behavior.title}</option>)}</select></Field>
           <Field label="Target language"><select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="internal">Internal structured matcher</option><option value="sigma">Sigma converted to bounded SQLite</option><option value="sqlite">SQLite query (bounded executor)</option><option value="yara">YARA</option><option value="spl">SPL structural check</option></select></Field>
           <Button variant="primary" onClick={() => createMutation.mutate()} disabled={createMutation.isPending || !title || !behaviorId}><Plus />Save strict hypothesis</Button>
         </div>
-      </Panel>
-      <Panel>
-        <PanelHeader eyebrow="Backend readiness" title="Honest parser health" actions={<Badge tone={healthQuery.data.ready ? "success" : "warning"} dot>{healthQuery.data.ready ? "Persistence ready" : "Degraded"}</Badge>} />
+        </Panel>
+      </details>
+      <details>
+        <summary>Detection backends</summary>
+        <Panel>
+        <PanelHeader title="Available validation and query engines" />
         <div className="detail-body">{Object.entries(healthQuery.data.languages).map(([id, backend]) => <article className="secret-row" key={id}><span><Code2 /></span><div><strong>{sentence(id)}</strong><small>{backend.backend} · {backend.version ?? "Version unavailable"}</small></div><div className="row-badges"><Badge tone={backend.ready ? "success" : "warning"}>{backend.ready ? "Ready" : "Unavailable"}</Badge><Badge tone={backend.authoritative ? "info" : "neutral"}>{backend.authoritative ? "Authoritative" : "Structural only"}</Badge></div></article>)}</div>
-      </Panel>
+        </Panel>
+      </details>
+      <details>
+        <summary>Validation stages</summary>
+        <Callout title="What validation establishes">Rendered text is not validation. Sigma is converted through pySigma and SQLite is inspected locally; neither advances beyond parsed until its bounded query really executes. SPL structural success remains a hypothesis. Observed exercise accepts only verified, immutable, independently observed evidence records. Clone and tune preserve their parent.</Callout>
+        <div className="lifecycle-strip" aria-label="Detection lifecycle counts">{lifecycle.map((state, index) => <div key={state} className={state === "rejected" ? "rejected" : ""}><span>{index + 1}</span><strong>{sentence(state)}</strong><em>{counts[state]}</em></div>)}</div>
+      </details>
     </div>
-    <Callout title="Lifecycle semantics">Rendered text is not validation. Sigma is converted through pySigma and SQLite is inspected locally; neither advances beyond parsed until its bounded query really executes. SPL structural success remains a hypothesis. Observed exercise accepts only verified, immutable, independently observed evidence records. Clone and tune create new content-addressed candidates; they never rewrite their parent.</Callout>
-    <div className="lifecycle-strip" aria-label="Detection lifecycle counts">{lifecycle.map((state, index) => <div key={state} className={state === "rejected" ? "rejected" : ""}><span>{index + 1}</span><strong>{sentence(state)}</strong><em>{counts[state]}</em></div>)}</div>
     <div className="detection-layout">
       <Panel className="candidate-list">
         <div className="history-search"><Search /><input aria-label="Search detection candidates" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search candidate, behavior, language" /></div>
@@ -292,6 +304,8 @@ export function DetectionLabPage() {
         backend={healthQuery.data.languages[selected.target_language ?? selected.language ?? "internal"]}
         finalizedRuns={finalizedRuns}
         sourceRunId={sourceRunId}
+        sourceRun={sourceRun}
+        ai={catalogQuery.data.ai}
         saveLinkedPending={saveLinkedMutation.isPending}
         onSaveLinked={() => sourceRun && selected.runId === sourceRun.run_id && saveLinkedMutation.mutate({ candidate: selected, run: sourceRun })}
         lineage={lineage}
@@ -305,7 +319,7 @@ export function DetectionLabPage() {
         onRevision={(kind, body) => selected.resourceId && revisionMutation.mutate({ id: selected.resourceId, kind, body })}
         onSourceRevision={(body) => selected.resourceId && sourceRevisionMutation.mutate({ id: selected.resourceId, selection: activeSelection.current, body })}
         onCompare={(candidateId) => selected.resourceId && comparisonMutation.mutate({ baselineId: selected.resourceId, candidateId })}
-      /> : <Panel><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel>}
+      /> : <Panel><DetectionAIRevision sourceRun={sourceRun} providers={catalogQuery.data.ai.providers ?? []} defaultProvider={catalogQuery.data.ai.active_provider} manualEdits={false} /><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel>}
     </div>
   </div>;
 }
@@ -335,6 +349,8 @@ function CandidateWorkspace({
   backend,
   finalizedRuns,
   sourceRunId,
+  sourceRun,
+  ai,
   saveLinkedPending,
   onSaveLinked,
   lineage,
@@ -354,6 +370,8 @@ function CandidateWorkspace({
   backend?: { ready: boolean; authoritative: boolean; backend: string; version?: string | null };
   finalizedRuns: RunRecord[];
   sourceRunId: string;
+  sourceRun?: RunRecord;
+  ai: CatalogResponse["ai"];
   saveLinkedPending: boolean;
   onSaveLinked: () => void;
   lineage: CandidateView[];
@@ -492,14 +510,16 @@ function CandidateWorkspace({
   };
 
   return <Panel className="candidate-workspace">
-    <PanelHeader eyebrow="Candidate workspace" title={candidate.title ?? candidate.resolvedId} detail={candidate.behavior_id ?? "Behavior not linked"} actions={<Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : "success"}>{sentence(candidate.state)}</Badge>} />
+    <PanelHeader title={candidate.title ?? candidate.resolvedId} detail={`${sentence(language)} · Revision ${candidate.revision ?? 1}`} actions={<Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : "success"}>{sentence(candidate.state)}</Badge>} />
     <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "evaluations", "revisions", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{item === "evaluations" ? "Run evaluations" : item === "candidate" && querySource ? "Rule" : sentence(item)}</button>)}</div>
     <div className="candidate-body">
+      <DetectionAIRevision resource={resource} sourceRun={sourceRun} providers={ai.providers ?? []} defaultProvider={ai.active_provider} manualEdits={sourceChanged} />
       {!persisted ? <Callout title="Run-linked record">This candidate is part of an immutable run. Save its definition as a separate hypothesis to use lifecycle or revision actions.<Button size="small" onClick={onSaveLinked} disabled={saveLinkedPending || candidate.demo || !candidate.behavior_id || !candidate.selection || !candidate.logsource}>{saveLinkedPending ? "Saving hypothesis" : "Save hypothesis from run"}</Button></Callout> : null}
       {localError ? <Callout tone="danger" title="Input refused locally">{localError}</Callout> : null}
       {tab === "candidate" ? <>
         <div className="editor-header"><span><Code2 />Candidate source</span><Badge tone={authoritativeParsed ? "success" : "warning"}>{sourceChanged ? "Draft source not validated" : authoritativeParsed ? "Authoritatively parsed" : "Not authoritative validation"}</Badge></div>
-        {querySource ? <p>Edit the rule here. Validation checks the installed query backend; evaluating retained runs measures actual matches. A source edit alone does not establish an improvement.</p> : null}
+        {querySource ? <p>Validate the source, then evaluate the saved rule against run evidence to measure its matches.</p> : null}
+        {language === "sqlite" && !source.trim() && canParse ? <div className="query-starter"><p>SQLite queries read normalized evidence from <code>logs</code>; <code>fixture_id</code> identifies each record. Start with a staged-file example, then adjust its fields to the evidence in your source run. The example has not been validated or evaluated.</p><Button size="small" disabled={lifecyclePending} onClick={() => setSource("SELECT fixture_id FROM logs\nWHERE artifact_type = 'file_observation'\n  AND path LIKE '%staged/%'")}>Insert SQLite starter</Button></div> : null}
         {language === "internal" ? <pre className="rule-editor">{code}</pre> : <Field label={`${sentence(language)} source`} hint={canReviseSource ? "Saving creates a new parsed revision. The selected revision and its evaluations remain unchanged." : "Bounded source is sent only to the explicit parser/compiler action."}><textarea rows={10} value={source} onChange={(event) => setSource(event.target.value)} disabled={(!canParse && !canReviseSource) || lifecyclePending || revisionPending} /></Field>}
         {canReviseSource ? <Field label="Reason for source revision"><input value={revisionReason} onChange={(event) => setRevisionReason(event.target.value)} maxLength={1000} disabled={revisionPending} /></Field> : null}
         {querySource && !backend?.ready ? <Callout tone="warning" title="Query backend unavailable">Install the reviewed backend shown in Detection backend health before validating this source. No revision can be validated while it is unavailable.</Callout> : null}

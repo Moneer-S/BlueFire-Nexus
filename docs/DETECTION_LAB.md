@@ -2,6 +2,22 @@
 
 BlueFire's detection model is evidence-driven. A rendered rule is a hypothesis until an appropriate parser/compiler and explicit fixtures or observations support a stronger state.
 
+## Revise a rule with observed evidence
+
+Open a completed run and choose **Open Detection Lab**. Select a saved, validated SQLite or Sigma rule and keep the source run selected. In the rule workspace, open **Improve this rule with AI**, select **Assist** and a configured model provider, and describe the miss or false positive to investigate. **Off** sends no model requests. Save or restore any manual source edits before requesting or accepting an AI change.
+
+The service verifies the saved rule and finalized run before sending a bounded context. Only independently observed records qualify; synthetic and runner-reported records cannot substitute. Provider configuration determines whether the request includes field metadata or a bounded, redacted projection of permitted content. More than 128 observations is refused instead of silently truncating the case. An unavailable provider, unsupported source, parser error or stale rule remains a visible failed job.
+
+Review the original and proposed source together, the model's explanation, referenced observations and limitations. **Accept, save and evaluate** records your decision, creates an immutable child revision and runs the installed query backend on this source run. The child, evaluation and job receipts are persisted together. **Reject proposed change** preserves the review without applying the source. This operation does not deploy a detector or change an execution target.
+
+A ready proposal is not an applied revision. The workspace reports saving, cancellation, interruption and failure separately, and links to the child only when a persisted application receipt is available. Reload restores the job from its link. An uncertain submission retains its original request for retry; interrupted work uses an explicit retry and follows its recorded successor. Changing the selected run or editing a rule keeps the proposal reachable while preventing acceptance against stale context.
+
+The source evaluation is **development evidence** because the model used it to propose the change, even if the run was previously withheld. Evaluate the saved revision on separate attack, benign and withheld cases, then on a replay. Use **Run evaluations** and **Compare** to inspect measured matches, missing telemetry and backend limitations. A match on the development case alone does not establish an improvement.
+
+Detection assistance currently supports reviewed source revision and evaluation in Assist. Automatic multi-operation experiment orchestration is not provided by this operation. The configured Responses or Chat Completions adapter is used as selected; no offline draft or alternate model is silently substituted.
+
+The API uses the same services: `POST /api/v1/detections/{candidate_id}/ai-revision-jobs` accepts a UUID `submission_id`, `run_id`, `parent_resource_digest`, `question`, operator-assigned `case_role`, `provider_id`, and optional `autonomy: "assist"`. Read its durable job through `GET /api/v1/jobs/{job_id}`. Submit review through `POST /api/v1/jobs/{job_id}/detection-revision-decisions` with `proposal_digest`, `parent_resource_digest`, `decision` (`accept` or `reject`), and `reviewed_by`. Repeated matching submissions and decisions recover the same operation; they do not allocate another revision. A conflicting decision is refused.
+
 ## Candidate contract
 
 A newly created `bluefire.detection.v2` candidate records (`v1` is accepted only when reading legacy origins):
@@ -130,6 +146,8 @@ The current revision comparison reports changes to registered public-baseline me
 BlueFire's built-in research registry references MITRE ATT&CK, Sigma specification, pySigma, the pinned pySigma SQLite backend, and yara-python. It does not synchronize SigmaHQ, Elastic, Splunk, or commercial rule corpora.
 
 ## UI behavior
+
+The selected rule is the main workspace. Open **New rule** to create a draft; **Detection backends** and **Validation stages** contain setup and lifecycle details. An empty SQLite draft offers an editable staged-file query for the `logs` table. Inserting it performs no validation or evaluation. Choose evidence fields appropriate to the source run, validate the rule, and measure actual matches. Changing the source run keeps a selected registry rule and its current source edits in place.
 
 Detection Lab clients can inspect persisted candidates, create local hypotheses, show lifecycle counts, and organize candidate/fixture/field/baseline views. Local draft source and disabled backend buttons do not indicate that a parser ran. Trust only the service response's backend metadata, resource status, lifecycle state, and ordered history.
 

@@ -153,11 +153,14 @@ test("production Detection Lab executes and persists a native SQLite candidate",
 
   await navigation.getByRole("link", { name: "Detection Lab" }).click();
   await expect(page.getByRole("heading", { name: "Detection Lab", level: 1 })).toBeVisible();
+  await page.getByText("Validation stages", { exact: true }).click();
   await expect(page.getByText("Rendered text is not validation.")).toBeVisible();
+  await page.getByText("Validation stages", { exact: true }).click();
   await expect(page.getByText(/Demo mode previews|Seeded review|Demo candidates do not run/)).toHaveCount(0);
   completedOperations.push("open_detection_lab");
   monitoring.assertClean();
 
+  await page.getByText("Detection backends", { exact: true }).click();
   const sqliteHealth = page.locator("article.secret-row").filter({
     has: page.getByText("Sqlite", { exact: true }),
   }).first();
@@ -168,6 +171,11 @@ test("production Detection Lab executes and persists a native SQLite candidate",
   completedOperations.push("verify_sqlite_backend");
   monitoring.assertClean();
 
+  await page.getByText("Detection backends", { exact: true }).click();
+  const newRule = page.locator("details").filter({ has: page.locator("summary", { hasText: /^New rule$/ }) });
+  if (await newRule.getAttribute("open") === null) {
+    await page.getByText("New rule", { exact: true }).click();
+  }
   await page.getByLabel("Title", { exact: true }).fill(title);
   await page.getByLabel("Target language").selectOption("sqlite");
   await page.getByRole("button", { name: "Save strict hypothesis" }).click();
@@ -207,7 +215,7 @@ test("production Detection Lab executes and persists a native SQLite candidate",
   await page.getByLabel("Search detection candidates").fill(title);
   await expect(page.locator("section.candidate-workspace").getByRole("heading", { name: title })).toBeVisible();
   const persistedWorkspace = page.locator("section.candidate-workspace");
-  await persistedWorkspace.getByRole("tab", { name: "Candidate" }).click();
+  await persistedWorkspace.getByRole("tab", { name: "Rule" }).click();
   await expect(dataValue(persistedWorkspace, "Candidate ID")).toHaveText(candidateId);
   const visibleState = normalizedState(await persistedWorkspace.locator(".panel-header .badge").innerText());
   expect(visibleState).toBe("fixture_exercised");
