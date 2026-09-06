@@ -3,20 +3,16 @@
 from __future__ import annotations
 
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import Any, Mapping
 
 from .application_errors import APIError
+from .detection_context import DetectionContext
 from .detections import DetectionCandidate, DetectionError
 from .product_store import ProductStoreError
 from .run_store import RUN_ID_RE, RunStoreError
 
-if TYPE_CHECKING:
-    from .detection_lab import DetectionLabService
 
-
-def hypothesis_from_run(
-    service: DetectionLabService, request: Mapping[str, Any]
-) -> Mapping[str, Any]:
+def hypothesis_from_run(service: DetectionContext, request: Mapping[str, Any]) -> Mapping[str, Any]:
     service._fields(
         request, required={"run_id", "candidate_id"}, optional=set(), context="run hypothesis"
     )

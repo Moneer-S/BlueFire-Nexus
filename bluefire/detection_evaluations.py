@@ -5,18 +5,16 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timezone
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import Any, Mapping
 
 from .application_errors import APIError
+from .detection_context import DetectionContext
 from .detections import DetectionCandidate, DetectionError, DetectionState
 from .evidence import EvidenceError, EvidenceProvenance, EvidenceRecord
 from .product_store_detection_evaluations import EVALUATION_SCHEMA, bind_report
 from .product_store_errors import ProductStoreError
 from .run_store import RUN_ID_RE, RunStoreError
 from .util import content_hash
-
-if TYPE_CHECKING:
-    from .detection_lab import DetectionLabService
 
 _ROLES = {"attack", "benign", "replay", "heldout"}
 _MAX_SOURCE_RECORDS = 10_000
@@ -31,7 +29,7 @@ _EXECUTABLE_STATES = {
 
 
 def _source(
-    service: DetectionLabService, run_id: object
+    service: DetectionContext, run_id: object
 ) -> tuple[Mapping[str, Any], list[EvidenceRecord], list[EvidenceRecord]]:
     if not isinstance(run_id, str) or not RUN_ID_RE.fullmatch(run_id):
         raise APIError(
@@ -134,7 +132,7 @@ def _source_binding(
 
 
 def evaluate_run(
-    service: DetectionLabService, candidate_id: str, request: Mapping[str, Any]
+    service: DetectionContext, candidate_id: str, request: Mapping[str, Any]
 ) -> Mapping[str, Any]:
     service._fields(
         request,
@@ -277,7 +275,7 @@ def evaluate_run(
     }
 
 
-def evaluations(service: DetectionLabService, candidate_id: str) -> Mapping[str, Any]:
+def evaluations(service: DetectionContext, candidate_id: str) -> Mapping[str, Any]:
     with service._lock:
         resource = service._resource(candidate_id)
         candidate = service._candidate_from_resource(resource)
