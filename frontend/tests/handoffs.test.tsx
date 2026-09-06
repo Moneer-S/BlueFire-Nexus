@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
-import { comparisonLink, detectionLink, sourceObservedRecords, sourceRunParam } from "../src/lib/run-handoffs";
+import { comparisonLink, detectionLink, registeredDetectionLink, sourceObservedRecords, sourceRunParam } from "../src/lib/run-handoffs";
 import { ComparePage } from "../src/pages/Compare";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
 import { RunsPage } from "../src/pages/Runs";
@@ -177,6 +177,31 @@ describe("run journey handoffs", () => {
     expect(await screen.findByText("No eligible observed evidence")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Exercise observed evidence" })).toBeDisabled();
     expect(postBody(`/detections/${savedId}/exercise-observed`)).toBeUndefined();
+  });
+
+  it("keeps same-ID registry and run candidates separately selectable", async () => {
+    registry = [{ ...resourceMetadata, id: candidateId, status: "hypothesis", document: { ...linkedCandidate, title: "Registered candidate with the same ID", state: "hypothesis" } }];
+    const user = userEvent.setup();
+    renderJourney(registeredDetectionLink(sourceId, candidateId));
+    expect(await screen.findByRole("heading", { name: "Registered candidate with the same ID" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save hypothesis from run" })).not.toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: /Run staging candidate/ }));
+    expect(screen.getByRole("button", { name: "Save hypothesis from run" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: /Registered candidate with the same ID/ }));
+    expect(screen.queryByRole("button", { name: "Save hypothesis from run" })).not.toBeInTheDocument();
+    expect(postBody("/detections/from-run")).toBeUndefined();
+  });
+
+  it.each(["run", "registry"])("does not substitute the opposite scope for an absent %s candidate", async (scope) => {
+    if (scope === "run") {
+      runs[0]!.detections = { candidates: [] };
+      registry = [{ ...resourceMetadata, id: candidateId, status: "hypothesis", document: { ...linkedCandidate, state: "hypothesis" } }];
+    }
+    renderJourney(scope === "registry" ? registeredDetectionLink(sourceId, candidateId) : detectionLink(sourceId, candidateId));
+    expect(await screen.findByText("Detector unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save hypothesis from run" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Parse / compile honestly" })).not.toBeInTheDocument();
+    expect(postBody("/detections/from-run")).toBeUndefined();
   });
 
   it("shows a missing source failure without substituting summary candidates", async () => {

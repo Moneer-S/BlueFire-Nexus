@@ -17,6 +17,11 @@ export function detectionLink(runId: string, candidateId?: string): string {
   return `/detection-lab?${params}`;
 }
 
+export function registeredDetectionLink(runId: string, candidateId: string): string {
+  const params = new URLSearchParams({ run: runId, candidate: candidateId, candidate_scope: "registry" });
+  return `/detection-lab?${params}`;
+}
+
 export function runCandidateKey(runId: string, candidateId: string): string {
   return `run:${runId}:${candidateId}`;
 }

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { registeredDetectionLink } from "../lib/run-handoffs";
 import { api } from "../lib/api";
 import { compareDetectorEvaluations, evaluationLabel } from "../lib/detection-results";
 import type { DetectionResource, DetectionRunEvaluation } from "../types";
@@ -41,7 +42,7 @@ function EvaluationCell({ reports }: { reports: DetectionRunEvaluation[] }) {
       <p>{report.backend.name} {report.backend.version ?? ""} · {report.backend.executed ? "Executed" : "Not executed"}</p>
       <p>Matched evidence: {report.result.matched_evidence_ids.join(", ") || "None"}</p>
       <p>Evidence gaps: {report.result.gap_count}. Missing fields: {report.result.missing_fields.join(", ") || "None reported"}.</p>
-      <Link to={`/detection-lab?run=${encodeURIComponent(report.source.run_id)}&candidate=${encodeURIComponent(report.candidate.candidate_id)}`}>Open detector and run</Link>
+      <Link to={registeredDetectionLink(report.source.run_id, report.candidate.candidate_id)}>Open detector and run</Link>
       <details><summary>Full evaluation record</summary><pre>{JSON.stringify(report, null, 2)}</pre></details>
     </article>)}</details></>;
 }

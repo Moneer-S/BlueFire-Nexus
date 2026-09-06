@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { ComparePage } from "../src/pages/Compare";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
 import { api } from "../src/lib/api";
+import { registeredDetectionLink } from "../src/lib/run-handoffs";
 import { compareDemoRuns, demoCatalog, demoRuns } from "../src/lib/demo";
 import type { ComparisonResponse, DetectionResource } from "../src/types";
 
@@ -63,10 +64,14 @@ it.each(["available", "missing"])("resolves an explicit %s detector link without
   vi.spyOn(api, "detectionHealth").mockResolvedValue({ schema_version: "v1", ready: true, persistence_ready: true, candidate_resources: 1, invalid_candidate_resources: 0, languages: { sqlite: { ready: true, authoritative: true, backend: "SQLite", version: "3.45.1" } }, limits: { source_bytes: 32768, fixture_bytes: 1048576, fixtures_per_action: 128, evidence_per_action: 128, notes_per_action: 128 } });
   vi.spyOn(api, "resources").mockResolvedValue({ schema_version: "v1", kind: "research-sources", resources: [] });
   const requested = state === "available" ? candidateId : "detection-bbbbbbbbbbbbbbbbbbbb";
-  mount(`/detection-lab?run=${demoRuns[0]!.run_id}&candidate=${requested}`, <DetectionLabPage />);
+  // The evaluated registry revision and source-run candidate are separate records,
+  // even when the source contains the exact ID requested by the comparison link.
+  vi.mocked(api.runDetail).mockResolvedValue({ ...demoRuns[0]!, detections: { candidates: [{ candidate_id: requested, title: "Run-linked query", state: "hypothesis", target_language: "sqlite" }] } });
+  mount(registeredDetectionLink(demoRuns[0]!.run_id, requested), <DetectionLabPage />);
   if (state === "available") expect(await screen.findByRole("heading", { name: "Saved query revision" })).toBeInTheDocument();
   else {
     expect(await screen.findByText("Detector unavailable")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Saved query revision" })).not.toBeInTheDocument();
   }
+  expect(screen.queryByRole("heading", { name: "Run-linked query" })).not.toBeInTheDocument();
 });

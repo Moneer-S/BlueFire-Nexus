@@ -121,6 +121,11 @@ export function DetectionLabPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const sourceRunId = sourceRunParam(searchParams, "run");
   const linkedCandidateId = sourceRunParam(searchParams, "candidate");
+  const registryCandidate = searchParams.get("candidate_scope") === "registry";
+  // Run handoffs and saved revisions can share an ID without sharing authority.
+  const linkedSelectionId = linkedCandidateId
+    ? sourceRunId && !registryCandidate ? runCandidateKey(sourceRunId, linkedCandidateId) : linkedCandidateId
+    : undefined;
   const sourceQuery = useQuery({ queryKey: ["run", sourceRunId], queryFn: () => api.runDetail(sourceRunId), enabled: Boolean(sourceRunId) });
   const runsQuery = useQuery({ queryKey: ["runs"], queryFn: api.runs });
   const catalogQuery = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
@@ -139,9 +144,9 @@ export function DetectionLabPage() {
   const [language, setLanguage] = useState("internal");
 
   useEffect(() => {
-    setSelectedId(linkedCandidateId || undefined);
+    setSelectedId(linkedSelectionId);
     setSearch("");
-  }, [sourceRunId, linkedCandidateId]);
+  }, [sourceRunId, linkedSelectionId]);
 
   const refreshDetections = () => {
     void client.invalidateQueries({ queryKey: ["detections"] });
@@ -221,7 +226,7 @@ export function DetectionLabPage() {
   })) : [];
   const candidates = [...new Map([...persisted, ...linked].map((item) => [item.resolvedId, item])).values()];
   const filtered = candidates.filter((item) => `${item.resolvedId} ${item.title ?? ""} ${item.behavior_id ?? ""} ${item.target_language ?? item.language ?? ""}`.toLowerCase().includes(search.toLowerCase()));
-  const selected = candidates.find((item) => item.resolvedId === selectedId) ?? candidates.find((item) => sourceRunId && selectedId && item.resolvedId === runCandidateKey(sourceRunId, selectedId)) ?? (selectedId ? undefined : filtered.find((item) => item.runId === sourceRunId) ?? filtered[0]);
+  const selected = candidates.find((item) => item.resolvedId === selectedId) ?? (selectedId ? undefined : filtered.find((item) => item.runId === sourceRunId) ?? filtered[0]);
   const counts = Object.fromEntries(lifecycle.map((state) => [state, candidates.filter((item) => item.state === state).length]));
   const finalizedRuns = runsQuery.data.runs.filter((run) => Boolean(run.finalized_at) || run.status === "completed");
   const rootId = selected?.revision_root_id ?? selected?.candidate_id ?? selected?.resolvedId;

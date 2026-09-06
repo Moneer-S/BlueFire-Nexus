@@ -80,6 +80,14 @@ it("loads only the chosen revision family and exposes missing held-out evaluatio
   expect(screen.getAllByText("Not evaluated")).toHaveLength(2);
   expect(fetchReports).toHaveBeenCalledWith("original");
   expect(fetchReports).toHaveBeenCalledWith("revised");
+  const evaluationLinks = screen.getAllByRole("link", { name: "Open detector and run" });
+  expect(evaluationLinks.map((link) => {
+    const params = new URL(link.getAttribute("href")!, "http://localhost").searchParams;
+    return { run: params.get("run"), candidate: params.get("candidate"), scope: params.get("candidate_scope") };
+  })).toEqual([
+    { run: "attack", candidate: "original", scope: "registry" },
+    { run: "attack", candidate: "revised", scope: "registry" },
+  ]);
   await user.selectOptions(screen.getByRole("combobox", { name: "Original detector" }), "unrelated");
   expect(screen.getByRole("combobox", { name: "Revised detector" })).toHaveValue("");
   expect(screen.queryByText("New match")).not.toBeInTheDocument();
