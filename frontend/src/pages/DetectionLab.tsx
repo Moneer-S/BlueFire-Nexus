@@ -3,7 +3,7 @@ import { Beaker, CheckCircle2, Code2, FileCheck2, FlaskConical, Plus, Search, Sh
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
-import { hypothesisFromRun, runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
+import { runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
   DetectionCandidate,
   DetectionCloneRequest,
@@ -164,10 +164,10 @@ export function DetectionLabPage() {
     onError: (error) => setNotice(error instanceof Error ? error.message : "The hypothesis could not be saved."),
   });
   const saveLinkedMutation = useMutation({
-    mutationFn: ({ candidate, run }: { candidate: DetectionCandidate; run: RunRecord }) => api.upsertDetection(hypothesisFromRun(candidate, run)),
-    onSuccess: ({ candidate }) => {
+    mutationFn: ({ candidate, run }: { candidate: DetectionCandidate; run: RunRecord }) => api.detectionFromRun(run.run_id, candidate.candidate_id ?? candidate.id ?? ""),
+    onSuccess: ({ candidate, operation }) => {
       setSelectedId(candidate.id);
-      setNotice(`${candidate.id} saved in the registry as ${sentence(candidate.status)}. The source run's lifecycle and match results were not copied.`);
+      setNotice(operation === "reused" ? `${candidate.id} already exists and was reused at its earned ${sentence(candidate.status)} state. Its lifecycle was not reset.` : `${candidate.id} ${operation === "cloned" ? "cloned as a new immutable revision" : "created"} in hypothesis state. The source run's lifecycle and match results were not copied.`);
       refreshDetections();
     },
     onError: (error) => setNotice(error instanceof Error ? error.message : "The run-linked definition could not be saved."),
@@ -463,7 +463,7 @@ function CandidateWorkspace({
     <PanelHeader eyebrow="Candidate workspace" title={candidate.title ?? candidate.resolvedId} detail={candidate.behavior_id ?? "Behavior not linked"} actions={<Badge tone={candidate.state === "rejected" ? "danger" : candidate.state === "hypothesis" ? "neutral" : "success"}>{sentence(candidate.state)}</Badge>} />
     <div className="workspace-tabs" role="tablist" aria-label="Detection candidate details">{(["candidate", "revisions", "fixtures", "observed", "history"] as const).map((item) => <button role="tab" aria-selected={tab === item} onClick={() => setTab(item)} key={item}>{sentence(item)}</button>)}</div>
     <div className="candidate-body">
-      {!persisted ? <Callout title="Run-linked record">This candidate is part of an immutable run. Save its definition as a separate hypothesis to use lifecycle or revision actions.<Button size="small" onClick={onSaveLinked} disabled={saveLinkedPending || !candidate.behavior_id || !candidate.selection || !candidate.logsource}>{saveLinkedPending ? "Saving hypothesis" : "Save as new hypothesis"}</Button></Callout> : null}
+      {!persisted ? <Callout title="Run-linked record">This candidate is part of an immutable run. Save its definition as a separate hypothesis to use lifecycle or revision actions.<Button size="small" onClick={onSaveLinked} disabled={saveLinkedPending || candidate.demo || !candidate.behavior_id || !candidate.selection || !candidate.logsource}>{saveLinkedPending ? "Saving hypothesis" : "Save hypothesis from run"}</Button></Callout> : null}
       {localError ? <Callout tone="danger" title="Input refused locally">{localError}</Callout> : null}
       {tab === "candidate" ? <>
         <div className="editor-header"><span><Code2 />Candidate source</span><Badge tone={authoritativeParsed ? "success" : "warning"}>{authoritativeParsed ? "Authoritatively parsed" : "Not authoritative validation"}</Badge></div>

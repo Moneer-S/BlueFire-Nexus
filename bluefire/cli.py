@@ -231,6 +231,10 @@ def _parser() -> argparse.ArgumentParser:
         "create", help="Create an immutable hypothesis from a JSON request"
     )
     detection_create.add_argument("document", type=Path)
+    detection_from_run = detection_commands.add_parser(
+        "from-run", help="Import a verified run-linked definition as a hypothesis"
+    )
+    detection_from_run.add_argument("document", type=Path)
     for operation in (
         "parse",
         "exercise-fixtures",
@@ -626,6 +630,8 @@ def _execute(args: argparse.Namespace) -> Mapping[str, Any] | Sequence[Any] | No
             return service.detection_candidate(args.candidate_id)
         if args.detection_command == "create":
             return service.upsert_detection_hypothesis(_json_object(args.document))
+        if args.detection_command == "from-run":
+            return service.detection_hypothesis_from_run(_json_object(args.document))
         detection_request = _json_object(args.document) if args.document is not None else {}
         operations = {
             "parse": service.parse_detection_candidate,

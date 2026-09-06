@@ -515,6 +515,12 @@ export interface DetectionResourceEnvelope {
   candidate: DetectionResource;
 }
 
+export interface DetectionRunImportResponse extends DetectionResourceEnvelope {
+  operation: "created" | "reused" | "cloned";
+  source_run_id: string;
+  source_candidate_id: string;
+}
+
 export interface DetectionCloneRequest {
   reason: string;
   title?: string;

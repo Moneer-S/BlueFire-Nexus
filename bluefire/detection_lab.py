@@ -11,6 +11,7 @@ from http import HTTPStatus
 from typing import Any, Mapping, NoReturn, Sequence
 
 from .application_errors import APIError
+from .detection_run_import import hypothesis_from_run
 from .detections import (
     DetectionCandidate,
     DetectionError,
@@ -250,6 +251,9 @@ class DetectionLabService:
                 request=request,
             )
             return self._envelope(self._save(recorded))
+
+    def from_run(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return hypothesis_from_run(self, request)
 
     def clone(self, candidate_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
         self._fields(

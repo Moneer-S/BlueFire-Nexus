@@ -636,6 +636,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             if self._management_query_free():
                 self._dispatch(lambda: self.platform_server.service.detection_health())
             return
+        if path == f"{API_PREFIX}/detections/from-run":
+            if self._management_query_free():
+                self._method_not_allowed("POST")
+            return
         detection_request = self._detection_request(path)
         if detection_request is not None:
             candidate_id, detection_action = detection_request
@@ -926,6 +930,13 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/detection-lab/health":
             if self._management_query_free():
                 self._method_not_allowed("GET")
+            return
+        if path == f"{API_PREFIX}/detections/from-run":
+            if self._management_query_free():
+                self._dispatch(
+                    lambda: self.platform_server.service.detection_hypothesis_from_run(body),
+                    success_status=HTTPStatus.CREATED,
+                )
             return
         detection_request = self._detection_request(path)
         if detection_request is not None:

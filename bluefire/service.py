@@ -1877,6 +1877,11 @@ class BlueFireService(RunnerManagementServiceMixin):
 
         return self.detection_lab.upsert_hypothesis(request)
 
+    def detection_hypothesis_from_run(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Resolve and import one immutable run-linked definition honestly."""
+
+        return self.detection_lab.from_run(request)
+
     def clone_detection_candidate(
         self, candidate_id: str, request: Mapping[str, Any]
     ) -> Mapping[str, Any]:

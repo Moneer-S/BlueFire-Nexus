@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
-import { comparisonLink, detectionLink, hypothesisFromRun, sourceObservedRecords, sourceRunParam } from "../src/lib/run-handoffs";
+import { comparisonLink, detectionLink, sourceObservedRecords, sourceRunParam } from "../src/lib/run-handoffs";
 import { ComparePage } from "../src/pages/Compare";
 import { DetectionLabPage } from "../src/pages/DetectionLab";
 import { RunsPage } from "../src/pages/Runs";
@@ -14,8 +14,8 @@ import type { DetectionCandidate, DetectionResource, RunRecord } from "../src/ty
 const sourceId = `run-${"1".repeat(32)}`;
 const syntheticId = `run-${"2".repeat(32)}`;
 const replayId = `run-${"3".repeat(32)}`;
-const candidateId = `detection-${"4".repeat(24)}`;
-const savedId = `detection-${"5".repeat(24)}`;
+const candidateId = `detection-${"4".repeat(20)}`;
+const savedId = `detection-${"5".repeat(20)}`;
 const resourceMetadata = { kind: "detection", digest: `sha256:${"b".repeat(64)}`, created_at: "2030-01-01T00:00:00Z", updated_at: "2030-01-01T00:00:00Z" };
 const linkedCandidate: DetectionCandidate = {
   candidate_id: candidateId,
@@ -88,13 +88,11 @@ beforeEach(() => {
     if (path.endsWith("/runners/status")) return json({});
     if (path.endsWith("/detection-lab/health")) return json({ ready: true, languages: { internal: { ready: true, authoritative: true, backend: "structured-matcher", version: "1.0" } } });
     if (path.endsWith("/resources/research-sources")) return json({ resources: [] });
-    if (path.endsWith("/detections")) {
-      if (init?.method === "POST") {
-        registry.push({ ...resourceMetadata, id: savedId, status: "hypothesis", document: { ...JSON.parse(String(init.body)), candidate_id: savedId, state: "hypothesis" } });
-        return json({ candidate: registry.at(-1) });
-      }
-      return json({ candidates: registry });
+    if (path.endsWith("/detections/from-run")) {
+      registry.push({ ...resourceMetadata, id: savedId, status: "hypothesis", document: { ...linkedCandidate, candidate_id: savedId, state: "hypothesis", parser_backend: {}, validation: {}, match_count: 0, observed_evidence_ids: [] } });
+      return json({ candidate: registry.at(-1), operation: "cloned", source_run_id: sourceId, source_candidate_id: candidateId });
     }
+    if (path.endsWith("/detections") && init?.method !== "POST") return json({ candidates: registry });
     if (path.endsWith(`/detections/${savedId}/parse`)) {
       registry = registry.map((resource) => ({ ...resource, status: "parsed", document: { ...resource.document, state: "parsed" } }));
       return json({ candidate: registry.at(-1) });
@@ -133,20 +131,21 @@ describe("run journey handoffs", () => {
     expect(screen.getByText(/Internal structured matcher results retain internal semantics/)).toBeInTheDocument();
   });
 
-  it("saves only a definition, then carries the source into the real observed-action request", async () => {
+  it("requests server-side source import, then carries the source into observed action", async () => {
     const user = userEvent.setup();
     // Identical candidate IDs in immutable runs and the registry must not hide either record.
     registry = [{ ...resourceMetadata, id: candidateId, status: "hypothesis", document: { ...linkedCandidate, title: "Already registered candidate", state: "hypothesis" } }];
     renderJourney(detectionLink(sourceId, candidateId));
-    await user.click(await screen.findByRole("button", { name: "Save as new hypothesis" }));
+    await user.click(await screen.findByRole("button", { name: "Save hypothesis from run" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Parse / compile honestly" })).toBeEnabled());
-    const body = postBody("/detections")!;
-    expect(body).toEqual(hypothesisFromRun(linkedCandidate, observedRun));
+    const body = postBody("/detections/from-run")!;
+    expect(body).toEqual({ run_id: sourceId, candidate_id: candidateId });
+    expect(postBody("/detections")).toBeUndefined();
     expect(body).not.toHaveProperty("state");
     expect(body).not.toHaveProperty("validation");
     expect(body).not.toHaveProperty("match_count");
     expect(body).not.toHaveProperty("observed_evidence_ids");
-    expect(body.target_language).toBe("internal");
+    expect(registry.at(-1)?.document.target_language).toBe("internal");
     await user.click(screen.getByRole("button", { name: "Parse / compile honestly" }));
     await waitFor(() => expect(postBody(`/detections/${savedId}/parse`)).toEqual({}));
     await user.click(screen.getByRole("tab", { name: "Observed" }));
@@ -171,7 +170,7 @@ describe("run journey handoffs", () => {
   it("shows a missing source failure without substituting summary candidates", async () => {
     renderJourney(detectionLink("run-missing"));
     expect(await screen.findByText("Source run unavailable")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Save as new hypothesis" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save hypothesis from run" })).not.toBeInTheDocument();
     expect(postBody("/detections")).toBeUndefined();
   });
 
