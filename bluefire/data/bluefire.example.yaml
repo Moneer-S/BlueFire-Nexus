@@ -134,6 +134,8 @@ runner_profiles:
       - endpoint.discovery.processes.v1
       - sandbox.discovery.recursive.v1
       - sandbox.collection.stage.v1
+      - sandbox.collection.records.v1
+      - sandbox.collection.archive.v1
       - sandbox.archive.tar.v1
       - sandbox.network.loopback.v1
       - sandbox.peer.handoff.v1

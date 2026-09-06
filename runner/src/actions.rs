@@ -411,6 +411,20 @@ fn collection_stage_schema() -> Value {
     })
 }
 
+fn collection_method_schema() -> Value {
+    json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["input", "expected_sha256", "stage_variant"],
+        "properties": {
+            "input": {"type": "string", "const": "fixtures/transformed.jsonl"},
+            "expected_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "stage_variant": {"type": "string", "enum": ["primary", "heldout"]}
+        }
+    })
+}
+
 fn network_loopback_schema() -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -2009,7 +2023,7 @@ struct ArchiveTarParams {
     destination: String,
 }
 
-struct ArchiveTarPrepared(ArchiveTarParams);
+struct ArchiveTarPrepared(ArchiveTarParams, Option<String>);
 
 fn write_tar_octal(field: &mut [u8], value: u64) -> Result<(), String> {
     let width = field
@@ -2073,6 +2087,7 @@ impl PreparedAction for ArchiveTarPrepared {
         self: Box<Self>,
         context: &ActionContext<'_>,
     ) -> Result<ActionOutcome, ActionFailure> {
+        let artifact_limit = collection_artifact_limit(context, &self.1);
         if self.0.inputs.is_empty() || self.0.inputs.len() > context.manifest.limits.max_files {
             return Err(ActionFailure::blocked(
                 "file_count_limit_blocked",
@@ -2107,17 +2122,14 @@ impl PreparedAction for ArchiveTarPrepared {
                 .root
                 .resolve_existing(&input)
                 .map_err(|error| ActionFailure::blocked("path_rejected", error))?;
-            let remaining = context
-                .manifest
-                .limits
-                .max_artifact_bytes
-                .saturating_sub(input_total);
+            let remaining = artifact_limit.saturating_sub(input_total);
             let bytes = read_file_bounded(&path, remaining)
                 .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
+            verify_collection_input(&bytes, &self.1)?;
             input_total = input_total.saturating_add(bytes.len() as u64);
             files.push((input, bytes));
         }
-        let archive = build_deterministic_tar(&files, context.manifest.limits.max_artifact_bytes)
+        let archive = build_deterministic_tar(&files, artifact_limit)
             .map_err(|error| ActionFailure::blocked("artifact_limit_blocked", error))?;
         let target = context
             .root
@@ -2173,7 +2185,7 @@ impl Action for ArchiveTarAction {
     }
 
     fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
-        Ok(Box::new(ArchiveTarPrepared(parse_params(params)?)))
+        Ok(Box::new(ArchiveTarPrepared(parse_params(params)?, None)))
     }
 }
 
@@ -2211,13 +2223,14 @@ struct CollectionStageParams {
     bundle_format: BundleFormat,
 }
 
-struct CollectionStagePrepared(CollectionStageParams);
+struct CollectionStagePrepared(CollectionStageParams, Option<String>);
 
 impl PreparedAction for CollectionStagePrepared {
     fn execute(
         self: Box<Self>,
         context: &ActionContext<'_>,
     ) -> Result<ActionOutcome, ActionFailure> {
+        let artifact_limit = collection_artifact_limit(context, &self.1);
         let started = Instant::now();
         let deadline = Duration::from_millis(context.manifest.limits.timeout_ms);
         if self.0.inputs.len() != 1 || self.0.inputs.len() > context.manifest.limits.max_files {
@@ -2251,13 +2264,10 @@ impl PreparedAction for CollectionStagePrepared {
                 .root
                 .resolve_existing(&normalized)
                 .map_err(|error| ActionFailure::failed("collection_input_failed", error))?;
-            let remaining = context
-                .manifest
-                .limits
-                .max_artifact_bytes
-                .saturating_sub(input_bytes);
+            let remaining = artifact_limit.saturating_sub(input_bytes);
             let bytes = read_file_bounded(&source, remaining)
                 .map_err(|error| ActionFailure::failed("collection_input_failed", error))?;
+            verify_collection_input(&bytes, &self.1)?;
             input_bytes = input_bytes.saturating_add(bytes.len() as u64);
             let text = std::str::from_utf8(&bytes).map_err(|_| {
                 ActionFailure::failed(
@@ -2337,7 +2347,7 @@ impl PreparedAction for CollectionStagePrepared {
                     let encoded = crate::contract::canonical_json(record);
                     bundle_bytes.extend_from_slice(encoded.as_bytes());
                     bundle_bytes.push(b'\n');
-                    if bundle_bytes.len() as u64 > context.manifest.limits.max_artifact_bytes {
+                    if bundle_bytes.len() as u64 > artifact_limit {
                         return Err(ActionFailure::blocked(
                             "artifact_limit_blocked",
                             "deterministic staging bundle exceeds the manifest artifact limit",
@@ -2359,7 +2369,7 @@ impl PreparedAction for CollectionStagePrepared {
                     }
                     let encoded = crate::contract::canonical_json(record);
                     bundle_bytes.extend_from_slice(encoded.as_bytes());
-                    if bundle_bytes.len() as u64 > context.manifest.limits.max_artifact_bytes {
+                    if bundle_bytes.len() as u64 > artifact_limit {
                         return Err(ActionFailure::blocked(
                             "artifact_limit_blocked",
                             "deterministic staging bundle exceeds the manifest artifact limit",
@@ -2371,7 +2381,7 @@ impl PreparedAction for CollectionStagePrepared {
                 bundle_bytes.push(b'\n');
             }
         }
-        if bundle_bytes.len() as u64 > context.manifest.limits.max_artifact_bytes {
+        if bundle_bytes.len() as u64 > artifact_limit {
             return Err(ActionFailure::blocked(
                 "artifact_limit_blocked",
                 "deterministic staging bundle exceeds the manifest artifact limit",
@@ -2449,7 +2459,164 @@ impl Action for CollectionStageAction {
         &COLLECTION_STAGE_DESCRIPTOR
     }
     fn prepare(&self, params: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
-        Ok(Box::new(CollectionStagePrepared(parse_params(params)?)))
+        Ok(Box::new(CollectionStagePrepared(
+            parse_params(params)?,
+            None,
+        )))
+    }
+}
+
+// Compatible collection methods bind the identical transformed input digest.
+// Legacy action IDs keep their original parameter and result contracts.
+fn collection_artifact_limit(context: &ActionContext<'_>, expected: &Option<String>) -> u64 {
+    context
+        .manifest
+        .limits
+        .max_artifact_bytes
+        .min(if expected.is_some() {
+            1_048_576
+        } else {
+            u64::MAX
+        })
+}
+
+fn verify_collection_input(bytes: &[u8], expected: &Option<String>) -> Result<(), ActionFailure> {
+    if expected
+        .as_ref()
+        .is_some_and(|digest| crate::contract::sha256_hex(bytes) != *digest)
+    {
+        return Err(ActionFailure::blocked(
+            "collection_input_identity_mismatch",
+            "the independently read collection input differs from the bound discovery artifact",
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum CollectionStageVariant {
+    Primary,
+    Heldout,
+}
+
+impl CollectionStageVariant {
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Primary => "staged/collection",
+            Self::Heldout => "staged/variation",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CollectionMethodParams {
+    input: String,
+    expected_sha256: String,
+    stage_variant: CollectionStageVariant,
+}
+
+struct CollectionMethodPrepared {
+    params: CollectionMethodParams,
+    archive: bool,
+}
+
+impl PreparedAction for CollectionMethodPrepared {
+    fn execute(
+        self: Box<Self>,
+        context: &ActionContext<'_>,
+    ) -> Result<ActionOutcome, ActionFailure> {
+        let params = self.params;
+        let directory = params.stage_variant.directory();
+        let expected = Some(params.expected_sha256.clone());
+        let (mut outcome, container) = if self.archive {
+            (
+                Box::new(ArchiveTarPrepared(
+                    ArchiveTarParams {
+                        inputs: vec![params.input],
+                        destination: format!("{directory}/bundle.tar"),
+                    },
+                    expected,
+                ))
+                .execute(context)?,
+                "ustar",
+            )
+        } else {
+            (
+                Box::new(CollectionStagePrepared(
+                    CollectionStageParams {
+                        inputs: vec![params.input],
+                        destination_directory: directory.to_string(),
+                        bundle_format: BundleFormat::Jsonl,
+                    },
+                    expected,
+                ))
+                .execute(context)?,
+                "jsonl",
+            )
+        };
+        outcome.output = json!({
+            "artifact": outcome.output["artifact"], "container": container,
+            "input_count": 1, "source_sha256": params.expected_sha256,
+            "size": outcome.output["size"], "sha256": outcome.output["sha256"],
+        });
+        Ok(outcome)
+    }
+}
+
+struct CollectionMethodAction {
+    archive: bool,
+}
+
+static COLLECTION_RECORDS_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    ..reviewed_descriptor! {
+        id: "sandbox.collection.records.v1", version: "1.0.0",
+        behavior_ids: &["sandbox.collection.records.v1"],
+        summary: "Validate and canonicalize the bound transformed fixture into a staged JSONL collection.",
+        schema: collection_method_schema,
+        capabilities: &[Capability::FilesystemRead, Capability::FilesystemWrite],
+        tier: SafetyTier::Controlled, readiness: ActionReadiness::Ready, targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "file_create" }],
+        cleanup: Some("sandbox.cleanup.v1"), limits: TASK_LIMITS,
+        effects: (true, false, false), receipt: true,
+    }
+};
+static COLLECTION_ARCHIVE_DESCRIPTOR: ActionDescriptor = ActionDescriptor {
+    ..reviewed_descriptor! {
+        id: "sandbox.collection.archive.v1", version: "1.0.0",
+        behavior_ids: &["sandbox.collection.archive.v1"],
+        summary: "Archive the identical bound transformed fixture as one deterministic ustar member.",
+        schema: collection_method_schema,
+        capabilities: &[Capability::FilesystemRead, Capability::FilesystemWrite],
+        tier: SafetyTier::Controlled, readiness: ActionReadiness::Ready, targets: &["sandbox"],
+        hints: &[ObservationHint { source: "filesystem", signal: "archive_create" }],
+        cleanup: Some("sandbox.cleanup.v1"), limits: TASK_LIMITS,
+        effects: (true, false, false), receipt: true,
+    }
+};
+impl Action for CollectionMethodAction {
+    fn descriptor(&self) -> &'static ActionDescriptor {
+        if self.archive {
+            &COLLECTION_ARCHIVE_DESCRIPTOR
+        } else {
+            &COLLECTION_RECORDS_DESCRIPTOR
+        }
+    }
+    fn prepare(&self, value: Value) -> Result<Box<dyn PreparedAction>, ActionFailure> {
+        let params: CollectionMethodParams = parse_params(value)?;
+        if params.input != "fixtures/transformed.jsonl"
+            || !valid_lower_hex_32(&params.expected_sha256)
+        {
+            return Err(ActionFailure::refused(
+                "invalid_action_params",
+                "collection requires the exact transformed fixture and a SHA-256 binding",
+            ));
+        }
+        Ok(Box::new(CollectionMethodPrepared {
+            params,
+            archive: self.archive,
+        }))
     }
 }
 
@@ -4255,6 +4422,8 @@ static PROCESS_DISCOVERY: ProcessDiscoveryAction = ProcessDiscoveryAction;
 static RECURSIVE_DISCOVERY: RecursiveDiscoveryAction = RecursiveDiscoveryAction;
 static ARCHIVE_TAR: ArchiveTarAction = ArchiveTarAction;
 static COLLECTION_STAGE: CollectionStageAction = CollectionStageAction;
+static COLLECTION_RECORDS: CollectionMethodAction = CollectionMethodAction { archive: false };
+static COLLECTION_ARCHIVE: CollectionMethodAction = CollectionMethodAction { archive: true };
 static NETWORK_LOOPBACK: NetworkLoopbackAction = NetworkLoopbackAction;
 static PEER_HANDOFF: PeerHandoffAction = PeerHandoffAction;
 static OBSERVABILITY_VARIANT: ObservabilityVariantAction = ObservabilityVariantAction;
@@ -4263,7 +4432,7 @@ static RESTRICTED_PERSISTENCE_MARKER: RestrictedPersistenceMarkerAction =
     RestrictedPersistenceMarkerAction;
 static CLEANUP: CleanupAction = CleanupAction;
 
-static REGISTRY: [&'static dyn Action; 20] = [
+static REGISTRY: [&'static dyn Action; 22] = [
     &NATIVE_CANARY,
     &PROCESS_TREE_CANCELLATION_WITNESS,
     &IDENTITY_MATERIAL_SEED,
@@ -4278,6 +4447,8 @@ static REGISTRY: [&'static dyn Action; 20] = [
     &RECURSIVE_DISCOVERY,
     &ARCHIVE_TAR,
     &COLLECTION_STAGE,
+    &COLLECTION_RECORDS,
+    &COLLECTION_ARCHIVE,
     &NETWORK_LOOPBACK,
     &PEER_HANDOFF,
     &OBSERVABILITY_VARIANT,
@@ -4331,6 +4502,8 @@ mod tests {
             "sandbox.discovery.recursive.v1",
             "sandbox.archive.tar.v1",
             "sandbox.collection.stage.v1",
+            "sandbox.collection.records.v1",
+            "sandbox.collection.archive.v1",
             "sandbox.network.loopback.v1",
             "sandbox.peer.handoff.v1",
             "sandbox.observability.variant.v1",

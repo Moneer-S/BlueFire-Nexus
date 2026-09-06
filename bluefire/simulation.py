@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from .collection_methods import COLLECTION_METHODS, CollectionMethodError, simulate_collection
 from .contracts import StepOutcome
 from .planner import PlanStep
 from .util import canonical_json_bytes, content_hash
@@ -111,6 +112,8 @@ class SimulationRegistry:
             "simulation.sandbox.discovery.recursive.v1",
             "simulation.sandbox.archive.tar.v1",
             "simulation.sandbox.collection.stage.v1",
+            "simulation.sandbox.collection.records.v1",
+            "simulation.sandbox.collection.archive.v1",
             "simulation.sandbox.execution.native-canary.v1",
             "simulation.sandbox.execution.process-tree-cancellation-witness.v1",
             "simulation.sandbox.identity-material.seed.v1",
@@ -369,6 +372,16 @@ class SimulationRegistry:
                 }
             }
             telemetry = ("sandbox.archive.created",)
+        elif simulation_id.removeprefix("simulation.") in COLLECTION_METHODS:
+            try:
+                artifacts = dict(
+                    simulate_collection(
+                        simulation_id.removeprefix("simulation."), step.parameters, bound_inputs
+                    )
+                )
+            except CollectionMethodError as exc:
+                raise SimulationError(str(exc)) from exc
+            telemetry = ("sandbox.collection.material_staged",)
         elif simulation_id == "simulation.sandbox.collection.stage.v1":
             collection_records = bound_inputs.get("records")
             if not isinstance(collection_records, list) or len(collection_records) != 1:

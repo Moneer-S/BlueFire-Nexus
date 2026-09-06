@@ -24,6 +24,7 @@ from .approvals import (
 from .collectors import (
     CollectionRequest,
     CollectionResult,
+    CollectionSemanticsCollector,
     CollectionSession,
     CollectorError,
     CollectorReadiness,
@@ -683,6 +684,7 @@ class Orchestrator:
                 self.collector_registry = CollectorRegistry(
                     (
                         FilesystemCollector(sandbox_root),
+                        CollectionSemanticsCollector(sandbox_root),
                         JsonLinesFixtureCollector(sandbox_root),
                     )
                 )
@@ -1296,12 +1298,20 @@ class Orchestrator:
         )
         configured_file_paths: Sequence[str] | None = None
         if collector_runtime_settings is not None:
-            configured_file_paths = ()
-            filesystem_settings = collector_runtime_settings.collectors.get(
-                FilesystemCollector.descriptor.id
+            configured_file_paths = tuple(
+                dict.fromkeys(
+                    path
+                    for collector_id in (
+                        FilesystemCollector.descriptor.id,
+                        CollectionSemanticsCollector.descriptor.id,
+                    )
+                    for filesystem_settings in (
+                        collector_runtime_settings.collectors.get(collector_id),
+                    )
+                    if filesystem_settings is not None and filesystem_settings["enabled"] is True
+                    for path in filesystem_settings["settings"]["paths"]
+                )
             )
-            if filesystem_settings is not None and filesystem_settings["enabled"] is True:
-                configured_file_paths = filesystem_settings["settings"]["paths"]
         observation_integrity = (
             evaluate_observation_integrity(
                 evidence.records(), configured_file_paths=configured_file_paths
@@ -3570,6 +3580,8 @@ class Orchestrator:
             "sandbox.discovery.recursive.v1": ("fixtures",),
             "sandbox.archive.tar.v1": ("fixtures", "staged"),
             "sandbox.collection.stage.v1": ("fixtures", "staged"),
+            "sandbox.collection.records.v1": ("fixtures", "staged"),
+            "sandbox.collection.archive.v1": ("fixtures", "staged"),
             "sandbox.network.loopback.v1": ("staged",),
             "sandbox.peer.handoff.v1": ("staged",),
             "sandbox.observability.variant.v1": ("staged", "observability"),

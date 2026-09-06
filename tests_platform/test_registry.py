@@ -28,6 +28,8 @@ EXPECTED_ACTION_IDS = {
     "sandbox.discovery.recursive.v1",
     "sandbox.archive.tar.v1",
     "sandbox.collection.stage.v1",
+    "sandbox.collection.records.v1",
+    "sandbox.collection.archive.v1",
     "sandbox.execution.process-tree-cancellation-witness.v1",
     "sandbox.network.loopback.v1",
     "sandbox.export.local.v1",

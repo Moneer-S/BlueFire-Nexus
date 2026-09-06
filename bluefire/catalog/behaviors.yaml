@@ -251,6 +251,64 @@ items:
     limitations: [Accepts exactly one bound regular-file fixture record and never leaves a partial bundle after input failure.]
 
   - schema_version: bluefire.behavior.v1
+    id: sandbox.collection.records.v1
+    title: Canonical record collection
+    purpose: Validate and canonicalize the exact bound transformed fixture into a staged JSONL collection.
+    execution_state: action
+    safety_tier: controlled
+    capabilities: [sandbox.collection, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    techniques: [T1074.001]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.collection.v1
+    parameters:
+      - name: stage_variant
+        type: string
+        default: primary
+        enum: [primary, heldout]
+        description: Choose one of two fixed runner-owned staging directories.
+    simulation_id: simulation.sandbox.collection.records.v1
+    action_ids: [sandbox.collection.records.v1]
+    telemetry: [sandbox.collection.material_staged]
+    detection_hints: [Independently inspect staged bytes to distinguish retained and redacted public lab values.]
+    provenance: *authored
+    limitations: [Exactly one digest-bound transformed fixture is collected within 1 MiB; record counts and retained values require independent semantic observation.]
+
+  - schema_version: bluefire.behavior.v1
+    id: sandbox.collection.archive.v1
+    title: Whole-file collection
+    purpose: Preserve the identical bound transformed fixture as one deterministic uncompressed ustar member.
+    execution_state: action
+    safety_tier: controlled
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    techniques: [T1074.001]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.collection.v1
+    parameters:
+      - name: stage_variant
+        type: string
+        default: primary
+        enum: [primary, heldout]
+        description: Choose one of two fixed runner-owned staging directories.
+    simulation_id: simulation.sandbox.collection.archive.v1
+    action_ids: [sandbox.collection.archive.v1]
+    telemetry: [sandbox.collection.material_staged]
+    detection_hints: [Independently inspect staged bytes to distinguish retained and redacted public lab values.]
+    provenance: *authored
+    limitations: [Exactly one digest-bound transformed fixture is collected within 1 MiB; record counts and retained values require independent semantic observation.]
+
+  - schema_version: bluefire.behavior.v1
     id: sandbox.network.loopback.v1
     title: Exercise loopback transport
     purpose: Send a synthetic bundle only to a runner-enforced loopback sink.

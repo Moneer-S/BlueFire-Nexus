@@ -7,6 +7,12 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Mapping, Sequence
 
+from .collection_methods import (
+    COLLECTION_METHODS,
+    CollectionMethodError,
+    collection_artifacts,
+    collection_request,
+)
 from .planner import PlanStep
 from .provider_runner_contracts import PROVIDER_BINDING_SCHEMA
 from .runner_client import reject_forbidden_execution_keys
@@ -301,6 +307,7 @@ class RunnerActionAdapter:
 
     action_ids = frozenset(
         {
+            *COLLECTION_METHODS,
             "sandbox.fixture.create.v1",
             "sandbox.fixture.transform.v1",
             "sandbox.discovery.list.v1",
@@ -346,7 +353,17 @@ class RunnerActionAdapter:
         if action_id not in self.action_ids:
             raise RunnerAdapterError(f"unreviewed or missing runner action: {action_id}")
 
-        if action_id == "sandbox.execution.native-canary.v1":
+        if action_id in COLLECTION_METHODS:
+            try:
+                params, scope, observed = collection_request(
+                    action_id, step.parameters, bound_inputs
+                )
+            except CollectionMethodError as exc:
+                raise RunnerAdapterError(str(exc)) from exc
+            adapted = AdaptedAction(
+                params=params, filesystem_scope=scope, observable_paths=observed
+            )
+        elif action_id == "sandbox.execution.native-canary.v1":
             _exact_parameter_keys(
                 step.parameters,
                 allowed=frozenset({"rounds"}),
@@ -985,6 +1002,13 @@ class RunnerActionAdapter:
                     "receipt_ids": list(receipt_ids),
                 }
             }
+        if action_id in COLLECTION_METHODS:
+            try:
+                return collection_artifacts(
+                    action_id, step.parameters, bound_inputs, runner_output, receipt_ids
+                )
+            except CollectionMethodError as exc:
+                raise RunnerAdapterError(str(exc)) from exc
         if action_id == "sandbox.collection.stage.v1":
             if set(runner_output) != {
                 "artifact",

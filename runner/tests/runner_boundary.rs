@@ -995,6 +995,122 @@ fn receipt_cleanup_is_idempotent_and_refuses_tampered_files() {
 }
 
 #[test]
+fn collection_methods_share_exact_source_and_cleanup_both_retained_and_redacted_bytes() {
+    for redacted in [false, true] {
+        let root = TempDir::new().unwrap();
+        let profile = profile(&root, Vec::new());
+        let created = runner().execute(manifest(&profile, "sandbox.fixture.create.v1", json!({
+            "path": "fixtures/input.jsonl", "content_template": "telemetry-seed", "record_count": 8
+        })), profile.clone());
+        assert_eq!(created.status, TaskStatus::Success, "{created:#?}");
+        let transformed = runner().execute(manifest(&profile, "sandbox.fixture.transform.v1", json!({
+            "input": "fixtures/input.jsonl", "output": "fixtures/transformed.jsonl", "redact_values": redacted
+        })), profile.clone());
+        assert_eq!(transformed.status, TaskStatus::Success, "{transformed:#?}");
+        let source = fs::read(root.path().join("fixtures/transformed.jsonl")).unwrap();
+        let digest = sha256_hex(&source);
+        let mut receipts = created.receipt_ids;
+        receipts.extend(transformed.receipt_ids);
+        for variant in ["primary", "heldout"] {
+            for (method, container, extension) in
+                [("records", "jsonl", "jsonl"), ("archive", "ustar", "tar")]
+            {
+                let action = format!("sandbox.collection.{method}.v1");
+                let result = runner().execute(manifest(&profile, &action, json!({
+                    "input": "fixtures/transformed.jsonl", "expected_sha256": digest, "stage_variant": variant
+                })), profile.clone());
+                assert_eq!(result.status, TaskStatus::Success, "{result:#?}");
+                let directory = if variant == "primary" {
+                    "collection"
+                } else {
+                    "variation"
+                };
+                let relative = format!("staged/{directory}/bundle.{extension}");
+                let bytes = fs::read(root.path().join(&relative)).unwrap();
+                assert_eq!(
+                    result.output,
+                    json!({
+                        "artifact": relative, "container": container, "input_count": 1,
+                        "source_sha256": digest, "size": bytes.len(), "sha256": sha256_hex(&bytes)
+                    })
+                );
+                let payload = if method == "archive" {
+                    assert_eq!(&bytes[257..263], b"ustar\0");
+                    assert_eq!(&bytes[..26], b"fixtures/transformed.jsonl\0");
+                    assert_eq!(&bytes[512..512 + source.len()], source.as_slice());
+                    &bytes[512..512 + source.len()]
+                } else {
+                    bytes.as_slice()
+                };
+                let records: Vec<Value> = std::str::from_utf8(payload)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                assert_eq!(records.len(), 8);
+                for (index, record) in records.iter().enumerate() {
+                    assert_eq!(
+                        record["value"],
+                        if redacted {
+                            "synthetic-redacted".to_string()
+                        } else {
+                            format!("telemetry-value-{:03}", index + 1)
+                        }
+                    );
+                }
+                assert_eq!(result.receipt_ids.len(), 1);
+                receipts.extend(result.receipt_ids);
+            }
+        }
+        let cleaned = runner().execute(
+            manifest(
+                &profile,
+                "sandbox.cleanup.v1",
+                json!({"receipt_ids": receipts}),
+            ),
+            profile,
+        );
+        assert_eq!(cleaned.status, TaskStatus::Success, "{cleaned:#?}");
+        assert!(!root.path().join("fixtures/transformed.jsonl").exists());
+        for directory in ["collection", "variation"] {
+            for extension in ["jsonl", "tar"] {
+                assert!(!root
+                    .path()
+                    .join(format!("staged/{directory}/bundle.{extension}"))
+                    .exists());
+            }
+        }
+    }
+}
+
+#[test]
+fn collection_methods_refuse_changed_source_and_unreviewed_paths_before_writing() {
+    for method in ["records", "archive"] {
+        let root = TempDir::new().unwrap();
+        let profile = profile(&root, Vec::new());
+        let created = create_fixture(&root, &profile, "fixtures/transformed.jsonl");
+        assert_eq!(created.status, TaskStatus::Success);
+        let action = format!("sandbox.collection.{method}.v1");
+        for params in [
+            json!({"input": "fixtures/transformed.jsonl", "expected_sha256": "0".repeat(64), "stage_variant": "primary"}),
+            json!({"input": "fixtures/other.jsonl", "expected_sha256": created.output["sha256"], "stage_variant": "primary"}),
+            json!({"input": "fixtures/transformed.jsonl", "expected_sha256": created.output["sha256"], "stage_variant": "elsewhere"}),
+        ] {
+            let result = runner().execute(manifest(&profile, &action, params), profile.clone());
+            assert!(
+                matches!(
+                    result.status,
+                    TaskStatus::ControlBlocked | TaskStatus::Refused
+                ),
+                "{result:#?}"
+            );
+            assert!(result.receipt_ids.is_empty());
+            assert!(!root.path().join("staged").exists());
+        }
+    }
+}
+
+#[test]
 fn cleanup_refuses_a_receipt_whose_owned_path_metadata_was_rewritten() {
     let root = TempDir::new().unwrap();
     let profile = profile(&root, Vec::new());

@@ -217,6 +217,54 @@ items:
     provenance: *authored
 
   - schema_version: bluefire.action.v1
+    id: sandbox.collection.records.v1
+    title: Canonical record collection
+    purpose: Validate and canonicalize the exact bound transformed fixture into a staged JSONL collection.
+    safety_tier: controlled
+    capabilities: [sandbox.collection, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.collection.v1
+    parameters:
+      - name: stage_variant
+        type: string
+        default: primary
+        enum: [primary, heldout]
+        description: Choose one of two fixed runner-owned staging directories.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
+    id: sandbox.collection.archive.v1
+    title: Whole-file collection
+    purpose: Preserve the identical bound transformed fixture as one deterministic uncompressed ustar member.
+    safety_tier: controlled
+    capabilities: [sandbox.archive, filesystem.read, filesystem.write]
+    platforms: [windows, linux, macos]
+    inputs:
+      - name: records
+        type: artifact.sandbox.discovery.records.v1
+        multiple: true
+    outputs:
+      - name: bundle
+        type: artifact.sandbox.collection.v1
+    parameters:
+      - name: stage_variant
+        type: string
+        default: primary
+        enum: [primary, heldout]
+        description: Choose one of two fixed runner-owned staging directories.
+    mutates: true
+    cleanup_action_id: sandbox.cleanup.v1
+    provenance: *authored
+
+  - schema_version: bluefire.action.v1
     id: sandbox.network.loopback.v1
     title: Send bundle to loopback sink
     purpose: Exercise an explicitly loopback-only transport boundary.
