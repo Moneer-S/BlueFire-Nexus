@@ -91,8 +91,14 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
   const sectionIndex = Math.min(focusedSection ?? 0, sections.length - 1);
   const shownSteps = viewMode === "graph" && focusedSection !== null ? sections[sectionIndex]!.steps : visibleGraph.ordered;
   const shownIds = useMemo(() => new Set(shownSteps.map((step) => step.id)), [shownSteps]);
-  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, hidden: !shownIds.has(node.id), data: { ...node.data, method: runConfig.mode === "execute" ? actionMap.get(runConfig.actionImplementations?.[node.id] ?? "")?.title : undefined } })), [actionMap, nodes, runConfig.actionImplementations, runConfig.mode, shownIds]);
-  const displayEdges = useMemo(() => edges.map((edge) => ({ ...edge, hidden: !shownIds.has(edge.source) || !shownIds.has(edge.target) || (edge.data?.kind === "artifact" && !showInputs) || (edge.data?.kind === "route" && edge.data.outcome !== "success" && !allBranches && !expandedBranches.has(edge.source)), label: edge.data?.kind === "artifact" || edge.source === selectedId || edge.data?.outcome !== "success" ? edge.label : undefined })), [allBranches, edges, expandedBranches, selectedId, showInputs, shownIds]);
+  const displayNodes = useMemo(() => nodes.map((node) => ({ ...node, hidden: !shownIds.has(node.id), selected: node.selected && shownIds.has(node.id), data: { ...node.data, method: runConfig.mode === "execute" ? actionMap.get(runConfig.actionImplementations?.[node.id] ?? "")?.title : undefined } })), [actionMap, nodes, runConfig.actionImplementations, runConfig.mode, shownIds]);
+  const edgeIsShown = useCallback((edge: FlowEdge) => shownIds.has(edge.source) && shownIds.has(edge.target) && (edge.data?.kind !== "artifact" || showInputs) && (edge.data?.kind !== "route" || edge.data.outcome === "success" || allBranches || expandedBranches.has(edge.source)), [allBranches, expandedBranches, showInputs, shownIds]);
+  const displayEdges = useMemo(() => edges.map((edge) => ({ ...edge, hidden: !edgeIsShown(edge), selected: edge.selected && edgeIsShown(edge), label: edge.data?.kind === "artifact" || edge.source === selectedId || edge.data?.outcome !== "success" ? edge.label : undefined })), [edgeIsShown, edges, selectedId]);
+  useEffect(() => {
+    setSelectedId((current) => shownIds.has(current) ? current : "");
+    setNodes((current) => current.some((node) => node.selected && !shownIds.has(node.id)) ? current.map((node) => ({ ...node, selected: node.selected && shownIds.has(node.id) })) : current);
+    setEdges((current) => current.some((edge) => edge.selected && !edgeIsShown(edge)) ? current.map((edge) => ({ ...edge, selected: edge.selected && edgeIsShown(edge) })) : current);
+  }, [edgeIsShown, shownIds]);
   const hiddenBranches = displayEdges.filter((edge) => edge.hidden && edge.data?.kind === "route").length;
   useEffect(() => {
     const index = visibleGraph.ordered.findIndex((step) => step.id === selectedId);
@@ -153,9 +159,12 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
     if (deletedNodeIds.includes(selectedId)) setSelectedId(next.steps[0]?.id ?? "");
   };
   const confirmDelete = useCallback(async ({ nodes: requestedNodes, edges: requestedEdges }: { nodes: BehaviorFlowNode[]; edges: FlowEdge[] }) => {
-    const parts = [requestedNodes.length ? `${requestedNodes.length} node${requestedNodes.length === 1 ? "" : "s"}` : "", requestedEdges.length ? `${requestedEdges.length} edge${requestedEdges.length === 1 ? "" : "s"}` : ""].filter(Boolean);
-    return window.confirm(`Delete ${parts.join(" and ")} from this scenario?\n\nConnections to the deleted steps will also be removed. You can undo the confirmed change.`);
-  }, []);
+    const visibleNodes = requestedNodes.filter((node) => shownIds.has(node.id));
+    const visibleEdges = requestedEdges.filter(edgeIsShown);
+    if (!visibleNodes.length && !visibleEdges.length) return false;
+    const parts = [visibleNodes.length ? `${visibleNodes.length} node${visibleNodes.length === 1 ? "" : "s"}` : "", visibleEdges.length ? `${visibleEdges.length} edge${visibleEdges.length === 1 ? "" : "s"}` : ""].filter(Boolean);
+    return window.confirm(`Delete ${parts.join(" and ")} from this scenario?\n\nConnections to the deleted steps will also be removed. You can undo the confirmed change.`) ? { nodes: visibleNodes, edges: visibleEdges } : false;
+  }, [edgeIsShown, shownIds]);
 
   const onConnect = (connection: Connection) => {
     const source = scenario.steps.find((item) => item.id === connection.source); const target = scenario.steps.find((item) => item.id === connection.target);
@@ -173,9 +182,9 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
     }
   };
 
-  const copySelected = () => { const selected = scenario.steps.find((step) => step.id === selectedId); if (selected) { clipboard.current = structuredClone(selected); setCompatibility(`${selected.id} copied.`); } };
+  const copySelected = () => { const selected = scenario.steps.find((step) => step.id === selectedId && shownIds.has(step.id)); if (!selected) return false; clipboard.current = structuredClone(selected); setCompatibility(`${selected.id} copied.`); return true; };
   const paste = () => { if (!clipboard.current) return; const source = clipboard.current; const behavior = behaviorMap.get(source.behavior_id); if (!behavior) return; const id = uniqueId(`${source.id} copy`); const step = { ...structuredClone(source), id, inputs: {} }; const origin = scenario.layout?.[source.id] ?? { x: 60, y: 60 }; applyScenario({ ...scenario, steps: [...scenario.steps, step], layout: { ...scenario.layout, [id]: { x: origin.x + 36, y: origin.y + 36 } } }); setAllBranches(true); selectStep(id); };
-  const duplicateSelected = () => { copySelected(); window.setTimeout(paste, 0); };
+  const duplicateSelected = () => { if (copySelected()) window.setTimeout(paste, 0); };
   const keyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
     if (event.defaultPrevented || commandPaletteOpen || target.closest("input, select, textarea, [contenteditable]:not([contenteditable='false'])")) return;
@@ -193,7 +202,7 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
   const validateMutation = useMutation({ mutationFn: () => api.validate(scenario), onSuccess: (result) => { const issues = (result.issues ?? []).map((item) => typeof item === "string" ? item : JSON.stringify(item)); setValidationIssues(issues); setValidationState(result.valid ? "valid" : "invalid"); setInvalidNodes(new Set(scenario.steps.filter((step) => issues.some((issue) => issue.includes(step.id))).map((step) => step.id))); }, onError: (error) => { const message = error instanceof Error ? error.message : "Validation failed."; setValidationIssues([message]); setValidationState("invalid"); } });
   const saveMutation = useMutation({ mutationFn: (submitted: Scenario) => api.saveScenarioVersion(submitted), onSuccess: ({ scenario: saved }, submitted) => { const currentSaved = markSaved(submitted); setCompatibility(`Version ${saved.version} saved${currentSaved ? "." : "; newer changes remain unsaved."}`); }, onError: (error) => setCompatibility(`Save refused: ${error instanceof Error ? error.message : "The scenario version could not be saved."}`) });
   const serverDraftMutation = useMutation({ mutationFn: () => api.aiDraft(objective.trim(), runConfig.provider || null, 8, 16), onSuccess: (result) => { setDraftResult(result); setCompatibility(`${result.draft_id} is an unsaved preview. Review its audit before importing it.`); }, onError: (error) => setCompatibility(`Draft refused: ${error instanceof Error ? error.message : "The control-plane draft was unavailable."}`) });
-  const selected = scenario.steps.find((step) => step.id === selectedId); const selectedBehavior = behaviorMap.get(selected?.behavior_id ?? "");
+  const selected = scenario.steps.find((step) => step.id === selectedId && shownIds.has(step.id)); const selectedBehavior = behaviorMap.get(selected?.behavior_id ?? "");
   const filtered = behaviors.filter((behavior) => { const haystack = `${behavior.title} ${behavior.purpose} ${behavior.capabilities.join(" ")}`.toLowerCase(); return (!search || haystack.includes(search.toLowerCase())) && (platform === "all" || behavior.platforms.includes(platform)) && (tier === "all" || behavior.safety_tier === tier); });
   const platforms = [...new Set(behaviors.flatMap((item) => item.platforms))].sort();
 
@@ -242,7 +251,7 @@ function GraphWorkspace({ behaviors, actions }: { behaviors: Behavior[]; actions
             <label className="panel-width-control"><span>Inspector width</span><input aria-label="Node inspector width" type="range" min="260" max="480" step="10" value={inspectorWidth} disabled={!inspectorOpen} onChange={(event) => setInspectorWidth(Number(event.target.value))}/><output>{inspectorWidth}px</output></label></div></details>
             {focusMode ? <span className="focus-hint">Esc to exit</span> : null}
           </div>
-          <div className="graph-edit-actions"><IconButton label="Copy selected node" onClick={copySelected}><Copy/></IconButton><IconButton label="Paste node" onClick={paste} disabled={!clipboard.current}><Clipboard/></IconButton><IconButton label="Duplicate selected node" onClick={duplicateSelected} disabled={!selected}><RotateCcw/></IconButton><IconButton label="Delete selected node" onClick={() => { if (selected) void flow.deleteElements({ nodes: [{ id: selected.id }] }); }} disabled={!selected}><Trash2/></IconButton></div>
+          <div className="graph-edit-actions"><IconButton label="Copy selected node" onClick={copySelected} disabled={!selected}><Copy/></IconButton><IconButton label="Paste node" onClick={paste} disabled={!clipboard.current}><Clipboard/></IconButton><IconButton label="Duplicate selected node" onClick={duplicateSelected} disabled={!selected}><RotateCcw/></IconButton><IconButton label="Delete selected node" onClick={() => { if (selected) void flow.deleteElements({ nodes: [{ id: selected.id }] }); }} disabled={!selected}><Trash2/></IconButton></div>
         </div>
         {viewMode === "graph" && sections.length > 1 ? <nav className="graph-sections" aria-label="Experiment sections"><Button size="small" variant="ghost" disabled={focusedSection === null || sectionIndex === 0} onClick={() => showSection(String(sectionIndex - 1))}>Previous section</Button><label>Path section<select value={focusedSection === null ? "all" : sectionIndex} onChange={(event) => showSection(event.target.value)}>{sections.map((section, index) => <option key={index} value={index}>{section.title}</option>)}<option value="all">All sections</option></select></label><Button size="small" variant="ghost" disabled={focusedSection === null || sectionIndex === sections.length - 1} onClick={() => showSection(String(sectionIndex + 1))}>Next section</Button><small>Focus a section to read and edit it. All sections shows their connections.</small></nav> : null}
         <div className="graph-disclosure" role="status"><span>{shownIds.size} of {scenario.steps.length} steps shown{scenario.steps.length - shownIds.size ? ` · ${scenario.steps.length - shownIds.size} hidden` : ""} · {hiddenBranches} branches hidden. Review run includes the whole experiment.</span><button onClick={() => setAllBranches((value) => !value)}>{allBranches ? "Focus on success path" : "Show all branches"}</button>{selected && scenario.edges.some((edge) => edge.from_step === selected.id && edge.outcome !== "success") && !allBranches ? <button onClick={() => setExpandedBranches((previous) => { const next = new Set(previous); if (next.has(selected.id)) next.delete(selected.id); else next.add(selected.id); return next; })}>{expandedBranches.has(selected.id) ? "Collapse selected branches" : "Expand selected branches"}</button> : null}</div>
