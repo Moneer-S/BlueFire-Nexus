@@ -7,6 +7,7 @@ from typing import Iterable, Mapping
 
 from .ai import ai_runtime_metadata
 from .collectors import (
+    CollectionSemanticsCollector,
     FilesystemCollector,
     JsonLinesFixtureCollector,
     LoopbackReceiverCollector,
@@ -86,6 +87,7 @@ def seed_product_metadata(
         counts["model_provider"] += 1
 
     collector_descriptors = (
+        CollectionSemanticsCollector.descriptor,
         FilesystemCollector.descriptor,
         JsonLinesFixtureCollector.descriptor,
         NativeProcessCollector.descriptor,
@@ -94,6 +96,7 @@ def seed_product_metadata(
     )
     for descriptor in collector_descriptors:
         status = {
+            CollectionSemanticsCollector.descriptor.id: "available_per_run",
             FilesystemCollector.descriptor.id: "available_per_run",
             JsonLinesFixtureCollector.descriptor.id: "available_per_run",
             NativeProcessCollector.descriptor.id: "available_native_session",

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from .util import content_hash, json_clone
 
@@ -400,6 +400,7 @@ class SandboxObserver:
         runner_profile_id: str,
         parent_evidence_ids: Iterable[str] = (),
         deadline_monotonic: float | None = None,
+        _content_analyzer: Callable[[bytes], Mapping[str, Any]] | None = None,
     ) -> EvidenceRecord:
         if deadline_monotonic is not None and (
             isinstance(deadline_monotonic, bool) or not isinstance(deadline_monotonic, (int, float))
@@ -416,6 +417,7 @@ class SandboxObserver:
             if before.st_size > self.max_file_bytes:
                 raise EvidenceError("observed file exceeds the configured byte limit")
             digest = hashlib.sha256()
+            captured = bytearray() if _content_analyzer is not None else None
             size = 0
             deadline = time.monotonic() + self.read_timeout_seconds
             if deadline_monotonic is not None:
@@ -428,6 +430,8 @@ class SandboxObserver:
                     if time.monotonic() > deadline:
                         raise EvidenceError("observed file read exceeded the configured time limit")
                     digest.update(chunk)
+                    if captured is not None:
+                        captured.extend(chunk)
             after = os.fstat(descriptor)
             self._assert_root_identity()
         finally:
@@ -440,6 +444,13 @@ class SandboxObserver:
             or size != after.st_size
         ):
             raise EvidenceError("observed file changed while it was being collected")
+        # Both the digest and these aggregate facts come from this exact handle
+        # read. Never reopen the path to derive semantics from different bytes.
+        semantic_fields = (
+            dict(_content_analyzer(bytes(captured)))
+            if _content_analyzer is not None and captured is not None
+            else {}
+        )
         return EvidenceRecord.create(
             run_id=run_id,
             step_id=step_id,
@@ -451,6 +462,7 @@ class SandboxObserver:
             environment={"environment_type": "disposable"},
             parent_evidence_ids=parent_evidence_ids,
             content={
+                **semantic_fields,
                 "artifact_type": "file_observation",
                 "path": PurePosixPath(relative_path).as_posix(),
                 "size_bytes": size,

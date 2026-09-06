@@ -65,6 +65,7 @@ from .approvals import (
 from .bootstrap import seed_product_metadata
 from .collector_comparison import summarize_collector_session
 from .collectors import (
+    CollectionSemanticsCollector,
     CollectionSession,
     CollectorError,
     CollectorRegistry,
@@ -177,6 +178,7 @@ _REPLAY_ADMISSION_SECONDS = 5.0
 _AVAILABLE_PER_RUN_COLLECTORS = frozenset({"collector.filesystem.sandbox.v1"})
 _AVAILABLE_RUNTIME_COLLECTORS = frozenset(
     {
+        CollectionSemanticsCollector.descriptor.id,
         FilesystemCollector.descriptor.id,
         NativeProcessCollector.descriptor.id,
         LoopbackReceiverCollector.descriptor.id,
@@ -211,7 +213,7 @@ def _default_ai_draft_provider_factory(config: AIConfig, provider_id: str) -> AI
 def _default_collector_registry_factory(sandbox: Path) -> CollectorRegistry:
     """Ship the source-free filesystem runtime in the default product composition."""
 
-    return CollectorRegistry((FilesystemCollector(sandbox),))
+    return CollectorRegistry((FilesystemCollector(sandbox), CollectionSemanticsCollector(sandbox)))
 
 
 class BlueFireService(RunnerManagementServiceMixin):
@@ -6760,6 +6762,7 @@ class BlueFireService(RunnerManagementServiceMixin):
     @staticmethod
     def _validate_managed_collector_settings(runtime: CollectorRuntimeSettings) -> None:
         allowed_fields = {
+            CollectionSemanticsCollector.descriptor.id: {"collect_after_step", "paths"},
             FilesystemCollector.descriptor.id: {"collect_after_step", "paths"},
             NativeProcessCollector.descriptor.id: {
                 "collect_after_step",
@@ -6788,11 +6791,17 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "Every managed collector requires a bounded collect_after_step.",
                     [collector_id],
                 )
-            if collector_id == FilesystemCollector.descriptor.id:
+            if collector_id in {
+                FilesystemCollector.descriptor.id,
+                CollectionSemanticsCollector.descriptor.id,
+            }:
                 paths = settings.get("paths")
+                maximum_paths = (
+                    16 if collector_id == CollectionSemanticsCollector.descriptor.id else 1_000
+                )
                 if not (
                     isinstance(paths, (list, tuple))
-                    and 1 <= len(paths) <= 1_000
+                    and 1 <= len(paths) <= maximum_paths
                     and all(BlueFireService._valid_collector_path(path) for path in paths)
                     and len(set(paths)) == len(paths)
                 ):
@@ -6994,6 +7003,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         ):
             raise ReplayError("source collector registry authority failed integrity validation")
         canonical_types: dict[str, type[Any]] = {
+            CollectionSemanticsCollector.descriptor.id: CollectionSemanticsCollector,
             FilesystemCollector.descriptor.id: FilesystemCollector,
             NativeProcessCollector.descriptor.id: NativeProcessCollector,
             LoopbackReceiverCollector.descriptor.id: LoopbackReceiverCollector,
@@ -7115,7 +7125,10 @@ class BlueFireService(RunnerManagementServiceMixin):
         value: Mapping[str, Any],
         runtime: CollectorRuntimeSettings,
     ) -> bool:
-        if collector_id == FilesystemCollector.descriptor.id:
+        if collector_id in {
+            FilesystemCollector.descriptor.id,
+            CollectionSemanticsCollector.descriptor.id,
+        }:
             maximum = value.get("max_file_bytes")
             timeout = value.get("read_timeout_seconds")
             return bool(
@@ -7131,6 +7144,10 @@ class BlueFireService(RunnerManagementServiceMixin):
                 and value.get("sandbox_binding") == "exact-factory-argument"
                 and type(maximum) is int
                 and maximum > 0
+                and (
+                    collector_id != CollectionSemanticsCollector.descriptor.id
+                    or maximum <= 1024 * 1024
+                )
                 and type(timeout) is float
                 and math.isfinite(timeout)
                 and timeout == 5.0

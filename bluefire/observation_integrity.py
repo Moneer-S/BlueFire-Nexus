@@ -12,7 +12,13 @@ from typing import Any, Mapping, Sequence
 from .evidence import EvidenceProvenance, EvidenceRecord
 from .util import parse_iso8601_datetime
 
-_FILESYSTEM_PRODUCERS = frozenset({"sandbox-observer.v1", "collector.filesystem.sandbox.v1"})
+_FILESYSTEM_PRODUCERS = frozenset(
+    {
+        "sandbox-observer.v1",
+        "collector.filesystem.sandbox.v1",
+        "collector.collection-semantics.sandbox.v1",
+    }
+)
 
 
 def evaluate_observation_integrity(
@@ -121,7 +127,10 @@ def evaluate_observation_integrity(
                     continue
                 content = observed.content
                 if content.get("artifact_type") == "collector_observation":
-                    if content.get("observation_kind") != "filesystem":
+                    if content.get("observation_kind") not in {
+                        "filesystem",
+                        "collection_semantics",
+                    }:
                         continue
                     fields = content.get("observed_fields")
                 elif content.get("artifact_type") == "file_observation":

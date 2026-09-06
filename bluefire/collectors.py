@@ -17,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
+from .collection_semantics import MAX_COLLECTION_BYTES, parse_collection_semantics
 from .evidence import (
     EvidenceError,
     EvidenceProvenance,
@@ -427,9 +428,18 @@ class CollectorRegistry:
             self._assert_descriptor_snapshot(collector_id)
             descriptor = self._descriptor_snapshots[collector_id].to_dict()
             implementation_id = f"{type(collector).__module__}.{type(collector).__qualname__}"
-            if collector_id == FilesystemCollector.descriptor.id:
-                if type(collector) is not FilesystemCollector:
+            if collector_id in {
+                FilesystemCollector.descriptor.id,
+                CollectionSemanticsCollector.descriptor.id,
+            }:
+                expected_type = (
+                    FilesystemCollector
+                    if collector_id == FilesystemCollector.descriptor.id
+                    else CollectionSemanticsCollector
+                )
+                if type(collector) is not expected_type:
                     raise CollectorError("filesystem collector implementation is not canonical")
+                assert isinstance(collector, FilesystemCollector)
                 if collector._observer.root != expected_root:
                     raise CollectorError(
                         "filesystem collector is not bound to the expected sandbox"
@@ -656,6 +666,10 @@ class FilesystemCollector:
         capabilities=("file_metadata", "sha256"),
         independent_observation=True,
     )
+    _observation_kind: str = "filesystem"
+    _field_names: tuple[str, ...] = ("path", "size_bytes", "sha256")
+    _limitations: tuple[str, ...] = ("independent filesystem metadata and digest observation only",)
+    _result_limitations: tuple[str, ...] = ("filesystem metadata and content hash only",)
 
     def __init__(
         self,
@@ -675,6 +689,20 @@ class FilesystemCollector:
             CollectorReadiness.READY,
             "Sandbox root is readable",
             {"mode": "read_only", "root_name": self._observer.root.name},
+        )
+
+    def _observe(
+        self, request: CollectionRequest, relative_path: str, deadline: float
+    ) -> EvidenceRecord:
+        return self._observer.observe_file(
+            relative_path=relative_path,
+            run_id=request.run_id,
+            step_id=request.step_id,
+            behavior_id=request.behavior_id,
+            action_id=request.action_id or "collector.filesystem.observe.v1",
+            runner_profile_id=request.runner_profile_id,
+            parent_evidence_ids=request.parent_evidence_ids,
+            deadline_monotonic=deadline,
         )
 
     def collect(self, request: CollectionRequest) -> CollectionResult:
@@ -699,16 +727,7 @@ class FilesystemCollector:
                     )
                 break
             try:
-                observed = self._observer.observe_file(
-                    relative_path=relative_path,
-                    run_id=request.run_id,
-                    step_id=request.step_id,
-                    behavior_id=request.behavior_id,
-                    action_id=request.action_id or "collector.filesystem.observe.v1",
-                    runner_profile_id=request.runner_profile_id,
-                    parent_evidence_ids=request.parent_evidence_ids,
-                    deadline_monotonic=deadline,
-                )
+                observed = self._observe(request, relative_path, deadline)
                 if time.monotonic() > deadline:
                     raise EvidenceError("observed file read exceeded the collector time limit")
                 records.append(
@@ -730,20 +749,18 @@ class FilesystemCollector:
                         content={
                             **observed.content,
                             "artifact_type": "collector_observation",
-                            "observation_key": filesystem_observation_key(relative_path),
-                            "observation_kind": "filesystem",
+                            "observation_key": filesystem_observation_key(relative_path).replace(
+                                "filesystem/", f"{self._observation_kind}/", 1
+                            ),
+                            "observation_kind": self._observation_kind,
                             "observed_fields": {
-                                "path": observed.content["path"],
-                                "size_bytes": observed.content["size_bytes"],
-                                "sha256": observed.content["sha256"],
+                                field: observed.content[field] for field in self._field_names
                             },
                             "collector_id": self.descriptor.id,
                             "mechanism": "independent-file-handle-read",
                         },
                         confidence=observed.confidence,
-                        limitations=(
-                            "independent filesystem metadata and digest observation only",
-                        ),
+                        limitations=self._limitations,
                         target_scope_ref=observed.target_scope_ref,
                     )
                 )
@@ -766,8 +783,77 @@ class FilesystemCollector:
             health=_health(self.descriptor.id, state, summary, {"gap_count": gaps}),
             records=tuple(records),
             elapsed_ms=_elapsed_ms(started),
-            limitations=("filesystem metadata and content hash only",),
+            limitations=self._result_limitations,
         )
+
+
+class CollectionSemanticsCollector(FilesystemCollector):
+    """Observe aggregate synthetic JSONL/USTAR semantics from the hashed handle."""
+
+    descriptor = CollectorDescriptor(
+        id="collector.collection-semantics.sandbox.v1",
+        name="Sandbox collection semantics observer",
+        version="1.0.0",
+        kind="collection_semantics",
+        capabilities=("file_metadata", "sha256", "synthetic_record_counts", "jsonl", "ustar"),
+        independent_observation=True,
+    )
+    _observation_kind = "collection_semantics"
+    _field_names = (
+        "path",
+        "size_bytes",
+        "sha256",
+        "container",
+        "record_count",
+        "redacted_record_count",
+        "retained_record_count",
+        "empty_record_count",
+    )
+    _limitations = (
+        "aggregate counts of reviewed synthetic fixture values only; no record values retained",
+        "one bounded JSONL stream or deterministic single-member USTAR; no general archive extraction",
+    )
+    _result_limitations = _limitations
+
+    def __init__(
+        self, sandbox_root: str | Path, *, max_file_bytes: int = MAX_COLLECTION_BYTES
+    ) -> None:
+        if type(max_file_bytes) is not int or not 1 <= max_file_bytes <= MAX_COLLECTION_BYTES:
+            raise CollectorError("collection semantics byte limit is invalid")
+        super().__init__(sandbox_root, max_file_bytes=max_file_bytes)
+
+    def _observe(
+        self, request: CollectionRequest, relative_path: str, deadline: float
+    ) -> EvidenceRecord:
+        return self._observer.observe_file(
+            relative_path=relative_path,
+            run_id=request.run_id,
+            step_id=request.step_id,
+            behavior_id=request.behavior_id,
+            action_id=request.action_id or "collector.collection-semantics.observe.v1",
+            runner_profile_id=request.runner_profile_id,
+            parent_evidence_ids=request.parent_evidence_ids,
+            deadline_monotonic=deadline,
+            _content_analyzer=parse_collection_semantics,
+        )
+
+    def collect(self, request: CollectionRequest) -> CollectionResult:
+        settings = dict(request.settings or {})
+        paths = settings.get("paths")
+        if (
+            set(settings) != {"paths", "collect_after_step"}
+            or not isinstance(settings["collect_after_step"], str)
+            or re.fullmatch(r"[a-z][a-z0-9_]{0,127}", settings["collect_after_step"]) is None
+            or settings["collect_after_step"] != request.step_id
+            or not isinstance(paths, (list, tuple))
+            or not 1 <= len(paths) <= 16
+            or not all(isinstance(path, str) for path in paths)
+            or len(set(paths)) != len(paths)
+        ):
+            raise CollectorError(
+                "collection semantics requires explicit bounded paths and matching collect_after_step"
+            )
+        return super().collect(request)
 
 
 class NativeProcessCollector:
@@ -1324,6 +1410,7 @@ class UnavailableCollector:
 _CANONICAL_BUILTIN_TYPES: Mapping[type[Any], CollectorDescriptor] = MappingProxyType(
     {
         FilesystemCollector: FilesystemCollector.descriptor,
+        CollectionSemanticsCollector: CollectionSemanticsCollector.descriptor,
         NativeProcessCollector: NativeProcessCollector.descriptor,
         LoopbackReceiverCollector: LoopbackReceiverCollector.descriptor,
         JsonLinesFixtureCollector: JsonLinesFixtureCollector.descriptor,
@@ -1672,6 +1759,7 @@ __all__ = [
     "CollectorRegistry",
     "CollectorRuntimeSettings",
     "FilesystemCollector",
+    "CollectionSemanticsCollector",
     "JsonLinesFixtureCollector",
     "LoopbackReceiverCollector",
     "NativeProcessCollector",
