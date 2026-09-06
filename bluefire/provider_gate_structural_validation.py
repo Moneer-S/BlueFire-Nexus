@@ -70,6 +70,8 @@ _SOURCE_AUDIT_PATHS = (
     "bluefire/runner_adapter.py",
     "bluefire/orchestrator.py",
     "bluefire/service.py",
+    "bluefire/package_management.py",
+    "bluefire/package_management_context.py",
     "bluefire/reviewed_source_intake.py",
     "bluefire/source_intake_context.py",
     "bluefire/source_intake_workspace.py",

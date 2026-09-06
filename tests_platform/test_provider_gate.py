@@ -84,6 +84,8 @@ def _structural_report() -> dict[str, Any]:
         "bluefire/runner_adapter.py",
         "bluefire/orchestrator.py",
         "bluefire/service.py",
+        "bluefire/package_management.py",
+        "bluefire/package_management_context.py",
         "bluefire/reviewed_source_intake.py",
         "bluefire/source_intake_context.py",
         "bluefire/source_intake_workspace.py",
@@ -318,6 +320,8 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
     [
         "bluefire/api_context.py",
         "bluefire/api_routes.py",
+        "bluefire/package_management.py",
+        "bluefire/package_management_context.py",
         "bluefire/reviewed_source_intake.py",
         "bluefire/source_intake_context.py",
         "bluefire/source_intake_workspace.py",

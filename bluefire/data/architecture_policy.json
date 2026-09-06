@@ -260,6 +260,8 @@
       "layer": "application",
       "patterns": [
         "bluefire.application_errors",
+        "bluefire.package_management",
+        "bluefire.package_management_context",
         "bluefire.reviewed_source_intake",
         "bluefire.source_intake_context",
         "bluefire.source_intake_workspace",
