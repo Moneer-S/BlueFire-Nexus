@@ -509,6 +509,7 @@ def test_provider_metadata_projection_never_sends_raw_logs_even_when_content_ena
         provider, redaction=replace(provider.redaction, include_evidence_content=True)
     )
     record = records[0]
+    credential_value = uuid.uuid4().hex
     altered = EvidenceRecord.create(
         run_id=record.run_id,
         step_id=record.step_id,
@@ -519,7 +520,7 @@ def test_provider_metadata_projection_never_sends_raw_logs_even_when_content_ena
             **record.content,
             "stdout": "private-process-output",
             "command": "private-command",
-            "password": "private-value",
+            "password": credential_value,
         },
         target_scope_ref=record.target_scope_ref,
     )
@@ -528,7 +529,7 @@ def test_provider_metadata_projection_never_sends_raw_logs_even_when_content_ena
     assert (
         "private-process-output" not in encoded
         and "private-command" not in encoded
-        and "private-value" not in encoded
+        and credential_value not in encoded
     )
     assert sent[0]["evidence_metadata"]["artifact_type"] == record.content["artifact_type"]
 
