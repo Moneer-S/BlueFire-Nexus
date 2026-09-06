@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
-import { ApiError, api, type ReplayPreparation } from "../src/lib/api";
+import { ApiError, api, replaySubmittedRequest, type ReplayPreparation, type ReplaySubmissionResolution } from "../src/lib/api";
 import { demoBehaviors, demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import { ComparePage } from "../src/pages/Compare";
 
@@ -35,10 +35,89 @@ function mount() {
     job: { schema_version: "bluefire.job.v1", job_id: `job-${submissionId.replaceAll("-", "")}`, kind: "scenario.replay", state: "awaiting_approval", progress: {}, request: { source_run_id: source.run_id, replay_preparation: preparation } },
   }));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/compare?source=${source.run_id}`]}><Location /><Link to="/builder">Leave comparison</Link><Routes><Route path="/compare" element={<ComparePage />} /><Route path="/builder" element={<h1>Experiment builder</h1>} /><Route path="/runs" element={<h1>Saved job status</h1>} /></Routes></MemoryRouter></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/compare?source=${source.run_id}`]}><Location /><Link to="/builder">Leave comparison</Link><Link to="/compare">Clear source selection</Link><Routes><Route path="/compare" element={<ComparePage />} /><Route path="/builder" element={<h1>Experiment builder</h1>} /><Route path="/runs" element={<h1>Saved job status</h1>} /></Routes></MemoryRouter></QueryClientProvider>);
   return replay;
 }
 afterEach(() => vi.restoreAllMocks());
+
+function closedSubmission(id: string, preparation: ReplayPreparation, submissionId: string): ReplaySubmissionResolution {
+  const submitted = replaySubmittedRequest(preparation);
+  const digest = `sha256:${"a".repeat(64)}`;
+  return { schema_version: "bluefire.replay-submission-resolution.v1", outcome: "closed", source_run_id: id, submission_id: submissionId, intent_digest: digest, submitted_request: submitted,
+    job: { schema_version: "bluefire.job.v1", job_id: `job-${submissionId.replaceAll("-", "")}`, kind: "scenario.replay", state: "cancelled", progress: { phase: "closed_submission", effects_started: false }, result_ref: null, error: { code: "closed_submission" },
+      request: { schema_version: "bluefire.closed-replay-submission.v1", source_run_id: id, submitted_request: submitted, _submission: { schema_version: "bluefire.job-submission.v1", submission_id: submissionId, intent_digest: digest } } },
+  };
+}
+
+async function rejectedSubmission() {
+  const user = userEvent.setup();
+  vi.spyOn(api, "prepareReplay").mockImplementation(async (_id, request) => prepared(request));
+  mount();
+  vi.mocked(api.submitReplay).mockRejectedValueOnce(new ApiError("Preparation has expired", "replay_job_refused", undefined, 409));
+  await user.click(await screen.findByRole("button", { name: "Review Execute replay" }));
+  await user.click(await screen.findByRole("button", { name: "Continue to approval" }));
+  await screen.findByText("Check this submission before starting another replay");
+  return user;
+}
+
+it("closes a rejected submission only after server confirmation, then requires a fresh review", async () => {
+  const resolve = vi.spyOn(api, "resolveReplaySubmission").mockImplementation(async (...args) => closedSubmission(...args));
+  const user = await rejectedSubmission();
+  const original = vi.mocked(api.submitReplay).mock.calls[0]!;
+  await user.click(screen.getByRole("button", { name: "Close request and start again" }));
+  expect(await screen.findByText("Submission closed")).toBeVisible();
+  expect(resolve).toHaveBeenCalledWith(...original);
+  expect(screen.getByRole("combobox", { name: "What will change?" })).toBeEnabled();
+  expect(screen.getByRole("combobox", { name: "What will change?" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: "Continue to approval" })).toBeDisabled();
+  expect(sessionStorage.getItem("bluefire.replay.pending-submission.v1")).toBeNull();
+  expect(api.submitReplay).toHaveBeenCalledOnce();
+  await user.click(screen.getByRole("button", { name: "Review Execute replay" }));
+  await user.click(await screen.findByRole("button", { name: "Continue to approval" }));
+  await screen.findByRole("heading", { name: "Saved job status" });
+  expect(vi.mocked(api.submitReplay).mock.calls[1]![2]).not.toBe(original[2]);
+});
+
+it("opens a previously published job instead of cancelling it or starting another replay", async () => {
+  vi.spyOn(api, "resolveReplaySubmission").mockImplementation(async (id, preparation, submissionId) => {
+    const result = closedSubmission(id, preparation, submissionId);
+    return { ...result, outcome: "existing", job: { ...result.job, state: "awaiting_approval", error: null, progress: {}, request: { source_run_id: id, replay_request: preparation.replay_request, replay_preparation: preparation } } };
+  });
+  const user = await rejectedSubmission();
+  const original = vi.mocked(api.submitReplay).mock.calls[0]!;
+  await user.click(screen.getByRole("button", { name: "Close request and start again" }));
+  await screen.findByRole("heading", { name: "Saved job status" });
+  expect(screen.getByLabelText("Current route")).toHaveTextContent(`/runs?job=job-${original[2].replaceAll("-", "")}`);
+  expect(api.submitReplay).toHaveBeenCalledOnce();
+  expect(sessionStorage.getItem("bluefire.replay.pending-submission.v1")).toBeNull();
+});
+
+it.each(["response lost", "mismatch"])("retains the request if closure cannot be confirmed: %s", async (failure) => {
+  vi.spyOn(api, "resolveReplaySubmission").mockImplementation(async (...args) => {
+    if (failure === "response lost") throw new Error("Closure response lost");
+    return { ...closedSubmission(...args), submission_id: crypto.randomUUID() };
+  });
+  const user = await rejectedSubmission();
+  const receipt = sessionStorage.getItem("bluefire.replay.pending-submission.v1");
+  await user.click(screen.getByRole("button", { name: "Close request and start again" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Close request and start again" })).toBeEnabled());
+  expect(sessionStorage.getItem("bluefire.replay.pending-submission.v1")).toBe(receipt);
+  expect(screen.getByRole("combobox", { name: "What will change?" })).toBeDisabled();
+  expect(api.submitReplay).toHaveBeenCalledOnce();
+});
+
+it("preserves later navigation when a pending closure completes", async () => {
+  let resolve!: (value: ReplaySubmissionResolution) => void;
+  vi.spyOn(api, "resolveReplaySubmission").mockImplementation(() => new Promise((done) => { resolve = done; }));
+  const user = await rejectedSubmission();
+  const original = vi.mocked(api.submitReplay).mock.calls[0]!;
+  await user.click(screen.getByRole("button", { name: "Close request and start again" }));
+  await user.click(screen.getByRole("link", { name: "Leave comparison" }));
+  await act(async () => { resolve(closedSubmission(...original)); });
+  expect(screen.getByRole("heading", { name: "Experiment builder" })).toBeVisible();
+  expect(screen.getByLabelText("Current route")).toHaveTextContent("/builder");
+  expect(sessionStorage.getItem("bluefire.replay.pending-submission.v1")).toBeNull();
+});
 
 it("submits the exact preparation as a durable job without approving it and opens its saved status", async () => {
   const user = userEvent.setup();
@@ -150,4 +229,20 @@ it("does not take over navigation when a submission finishes after leaving Compa
   await act(async () => { resolve({ schema_version: "bluefire.replay-job-submission.v1", preparation, preflight: preparation.preflight, job: { schema_version: "bluefire.job.v1", job_id: `job-${submissionId.replaceAll("-", "")}`, kind: "scenario.replay", state: "awaiting_approval", request: {}, progress: {} } }); });
   expect(screen.getByLabelText("Current route")).toHaveTextContent("/builder");
   expect(screen.getByRole("heading", { name: "Experiment builder" })).toBeVisible();
+});
+
+it("keeps recovery reachable across source changes and clears only its confirmed closure", async () => {
+  let resolve!: (value: ReplaySubmissionResolution) => void;
+  vi.spyOn(api, "resolveReplaySubmission").mockImplementation(() => new Promise((done) => { resolve = done; }));
+  const user = await rejectedSubmission();
+  const original = vi.mocked(api.submitReplay).mock.calls[0]!;
+  await user.click(screen.getByRole("link", { name: "Clear source selection" }));
+  expect(screen.getByText("Check this submission before starting another replay")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "Close request and start again" }));
+  await act(async () => { resolve(closedSubmission(...original)); });
+  await screen.findByText("Submission closed");
+  expect(screen.getByLabelText("Current route").textContent).toBe("/compare");
+  expect(screen.queryByText("Check this submission before starting another replay")).not.toBeInTheDocument();
+  expect(sessionStorage.getItem("bluefire.replay.pending-submission.v1")).toBeNull();
+  expect(api.submitReplay).toHaveBeenCalledOnce();
 });

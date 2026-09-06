@@ -232,6 +232,20 @@ export interface ReplayJobSubmission extends RunJobSubmission {
   preflight: PreflightReport;
 }
 
+export interface ReplaySubmissionResolution {
+  schema_version: "bluefire.replay-submission-resolution.v1";
+  outcome: "closed" | "existing";
+  source_run_id: string;
+  submission_id: string;
+  intent_digest: string;
+  submitted_request: Record<string, unknown>;
+  job: RunJob;
+}
+
+export function replaySubmittedRequest(preparation: ReplayPreparation): Record<string, unknown> {
+  return { ...preparation.replay_request, preparation_id: preparation.preparation_id, preparation_context: preparation.preparation_context };
+}
+
 export interface ReplayPayloadOptions {
   strategy: "exact" | "from_node" | "swap" | "parameters" | "setup";
   fromStep?: string;
@@ -583,8 +597,12 @@ export const api = {
   },
   async submitReplay(runId: string, preparation: ReplayPreparation, submissionId: string): Promise<ReplayJobSubmission> {
     return request(`/runs/${encodeURIComponent(runId)}/replay-jobs`, { method: "POST", body: JSON.stringify({
-      ...preparation.replay_request, preparation_id: preparation.preparation_id,
-      preparation_context: preparation.preparation_context, submission_id: submissionId,
+      ...replaySubmittedRequest(preparation), submission_id: submissionId,
+    }) });
+  },
+  async resolveReplaySubmission(runId: string, preparation: ReplayPreparation, submissionId: string): Promise<ReplaySubmissionResolution> {
+    return request(`/runs/${encodeURIComponent(runId)}/replay-submission-resolution`, { method: "POST", body: JSON.stringify({
+      ...replaySubmittedRequest(preparation), submission_id: submissionId,
     }) });
   },
   async replay(runId: string, body: Record<string, unknown>): Promise<RunRecord> {

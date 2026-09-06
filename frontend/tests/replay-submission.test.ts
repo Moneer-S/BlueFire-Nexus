@@ -1,10 +1,18 @@
 import { expect, it, vi } from "vitest";
-import { api, type ReplayPreparation } from "../src/lib/api";
+import { api, replaySubmittedRequest, type ReplayPreparation, type ReplaySubmissionResolution } from "../src/lib/api";
 import { demoScenario } from "../src/lib/demo";
-import { clearPendingReplay, readPendingReplay, settlePendingReplay, storePendingReplay } from "../src/lib/replay-submission";
+import { clearPendingReplay, readPendingReplay, settlePendingReplay, settleReplayResolution, storePendingReplay } from "../src/lib/replay-submission";
 import type { RunJob } from "../src/types";
 
 const key = "bluefire.replay.pending-submission.v1";
+function closedResolution(original: ReturnType<typeof receipt>): ReplaySubmissionResolution {
+  const submitted = replaySubmittedRequest(original.preparation);
+  const digest = `sha256:${"a".repeat(64)}`;
+  return { schema_version: "bluefire.replay-submission-resolution.v1", outcome: "closed", source_run_id: original.sourceId, submission_id: original.submissionId, intent_digest: digest, submitted_request: submitted,
+    job: { schema_version: "bluefire.job.v1", job_id: `job-${original.submissionId.replaceAll("-", "")}`, kind: "scenario.replay", state: "cancelled", result_ref: null, progress: { phase: "closed_submission", effects_started: false }, error: { code: "closed_submission" },
+      request: { schema_version: "bluefire.closed-replay-submission.v1", source_run_id: original.sourceId, submitted_request: submitted, _submission: { schema_version: "bluefire.job-submission.v1", submission_id: original.submissionId, intent_digest: digest } } },
+  };
+}
 function receipt() {
   const payload = { mode: "simulate", strategy: "exact" };
   const preparation: ReplayPreparation = {
@@ -66,6 +74,41 @@ it("posts the reviewed preparation and submission UUID without an inline approva
   expect(path).toBe("/api/v1/runs/run-source/replay-jobs");
   expect(options?.method).toBe("POST");
   expect(JSON.parse(String(options?.body))).toEqual({ ...original.payload, preparation_id: original.preparation.preparation_id, preparation_context: original.preparation.preparation_context, submission_id: original.submissionId });
+});
+
+it("settles only the matching terminal closure and checks storage removal", () => {
+  const original = receipt();
+  storePendingReplay(original);
+  const result = closedResolution(original);
+  expect(settleReplayResolution(original, { ...result, source_run_id: "different" })).toBe(false);
+  expect(settleReplayResolution(original, { ...result, submitted_request: {} })).toBe(false);
+  expect(settleReplayResolution(original, { ...result, job: { ...result.job, state: "queued" } })).toBe(false);
+  expect(settleReplayResolution(original, { ...result, job: { ...result.job, request: { ...result.job.request, source_run_id: "other" } } })).toBe(false);
+  const remove = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {});
+  expect(settleReplayResolution(original, result)).toBe(false);
+  expect(readPendingReplay()).toEqual(original);
+  remove.mockRestore();
+  expect(settleReplayResolution(original, result)).toBe(true);
+  expect(sessionStorage.getItem(key)).toBeNull();
+});
+
+it("does not close a receipt replaced by a different pending submission", () => {
+  const original = receipt();
+  const newer = { ...original, submissionId: crypto.randomUUID() };
+  storePendingReplay(newer);
+  expect(settleReplayResolution(original, closedResolution(original))).toBe(false);
+  expect(readPendingReplay()).toEqual(newer);
+});
+
+it("resolves the exact saved request through the server without approving or cancelling a published job", async () => {
+  const original = receipt();
+  const result = closedResolution(original);
+  const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify(result), { status: 200, headers: { "Content-Type": "application/json" } }));
+  await api.resolveReplaySubmission(original.sourceId, original.preparation, original.submissionId);
+  const [path, options] = fetchMock.mock.calls[0]!;
+  expect(path).toBe("/api/v1/runs/run-source/replay-submission-resolution");
+  expect(JSON.parse(String(options?.body))).toEqual({ ...replaySubmittedRequest(original.preparation), submission_id: original.submissionId });
+  expect(fetchMock).toHaveBeenCalledOnce();
 });
 
 it("restores the saved replay review without recompiling a different plan", async () => {

@@ -1,4 +1,4 @@
-import type { ReplayPreparation } from "./api";
+import { replaySubmittedRequest, type ReplayPreparation, type ReplaySubmissionResolution } from "./api";
 import type { RunJob } from "../types";
 import { sameJson } from "./replay-review";
 
@@ -47,11 +47,27 @@ export function settlePendingReplay(job: RunJob): boolean {
   if (!receipt || job.job_id !== `job-${receipt.submissionId.replaceAll("-", "")}` || job.kind !== "scenario.replay" ||
     job.request?.source_run_id !== receipt.sourceId || !sameJson(job.request.replay_request, receipt.payload) ||
     !sameJson(job.request.replay_preparation, receipt.preparation)) return false;
-  clearPendingReplay(receipt.submissionId);
-  return readPendingReplay() === undefined;
+  return clearPendingReplay(receipt.submissionId);
 }
 
-export function clearPendingReplay(submissionId: string): void {
-  try { if (readPendingReplay()?.submissionId === submissionId) sessionStorage.removeItem(storageKey); }
-  catch { /* The live submission still retains its identity when storage is unavailable. */ }
+export function settleReplayResolution(receipt: PendingReplaySubmission, result: ReplaySubmissionResolution): boolean {
+  if (!sameJson(readPendingReplay(), receipt) || result?.schema_version !== "bluefire.replay-submission-resolution.v1" ||
+    result.source_run_id !== receipt.sourceId || result.submission_id !== receipt.submissionId ||
+    !/^sha256:[0-9a-f]{64}$/.test(result.intent_digest) || !sameJson(result.submitted_request, replaySubmittedRequest(receipt.preparation)) ||
+    result.job?.job_id !== `job-${receipt.submissionId.replaceAll("-", "")}` || result.job.kind !== "scenario.replay") return false;
+  if (result.outcome === "existing") return settlePendingReplay(result.job);
+  const request = result.job.request;
+  if (result.outcome !== "closed" || result.job.state !== "cancelled" || result.job.result_ref !== null ||
+    result.job.error?.code !== "closed_submission" || result.job.progress?.phase !== "closed_submission" || result.job.progress?.effects_started !== false || result.job.approval_request != null ||
+    !sameJson(request, { schema_version: "bluefire.closed-replay-submission.v1", source_run_id: receipt.sourceId,
+      submitted_request: result.submitted_request, _submission: { schema_version: "bluefire.job-submission.v1", submission_id: receipt.submissionId, intent_digest: result.intent_digest } })) return false;
+  return clearPendingReplay(receipt.submissionId);
+}
+
+export function clearPendingReplay(submissionId: string): boolean {
+  try {
+    if (readPendingReplay()?.submissionId !== submissionId) return false;
+    sessionStorage.removeItem(storageKey);
+    return sessionStorage.getItem(storageKey) === null;
+  } catch { return false; }
 }
