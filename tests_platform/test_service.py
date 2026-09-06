@@ -478,7 +478,7 @@ def test_service_seeds_durable_product_state_and_indexes_completed_runs(
     )
 
     assert service.product_store.path == database.resolve()
-    assert service.seed_counts["scenario"] == 8
+    assert service.seed_counts["scenario"] == 10
     assert service.seed_counts["action"] == 20
     assert len(service.product_store.list_resources("collector")) == 10
 
@@ -1964,6 +1964,8 @@ def test_service_enumerates_all_checkout_and_packaged_scenarios_in_stable_order(
         "scenario.ai-adaptive.safe-chain.v1",
         "scenario.detection.regression.v1",
         "scenario.endpoint.deep-behavior-lab.v1",
+        "scenario.endpoint.lab-archive-collection.v1",
+        "scenario.endpoint.lab-selective-collection.v1",
         "scenario.linux-container.validation.v1",
         "scenario.operator.representative-validation.v1",
         "scenario.restricted.persistence-canary.v1",

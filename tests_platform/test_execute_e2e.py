@@ -534,7 +534,7 @@ def test_real_execute_chain_uses_rust_runner_observes_and_cleans(
         _stop_process(receiver_process)
 
     rows = {row["step_id"]: row for row in result["steps"]}
-    assert result["objective_reached"] is True
+    assert result["objective_reached"] is True, result.get("objective_evaluation")
     assert rows[create_step]["status"] == "success"
     assert rows[stage_step]["status"] == "success"
     assert rows["cleanup_workspace"]["status"] == "success"

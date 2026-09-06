@@ -260,14 +260,20 @@ def test_production_browser_harness_is_separate_and_fail_closed() -> None:
     ) in spec
 
 
-def test_builder_exposes_resizable_panels_and_three_semantic_layers() -> None:
+def test_builder_exposes_resizable_panels_and_optional_graph_detail() -> None:
     source = (ROOT / "frontend" / "src" / "pages" / "Builder.tsx").read_text(encoding="utf-8")
 
     assert 'aria-label="Behavior palette width"' in source
     assert 'aria-label="Node inspector width"' in source
-    assert "Environment <em>profile + scope</em>" in source
-    assert "Behavior <em>typed intent</em>" in source
-    assert "Evidence <em>artifacts + telemetry</em>" in source
+    assert "Show all branches and disconnected steps" in source
+    assert "Show input connections" in source
+    assert 'aria-label="Experiment steps"' in source
+    assert "graphView(scenario, allBranches, expandedBranches)" in source
+    assert "visibleGraph.hiddenSteps" in source
+    assert 'edge.data?.kind === "artifact" && !showInputs' in source
+    assert "<h3>Method</h3>" in source
+    assert "<h3>Required input</h3>" in source
+    assert "<h3>Next step</h3>" in source
 
 
 def test_gate08_frontend_environment_scrubs_secrets_and_isolates_home(

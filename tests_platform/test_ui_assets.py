@@ -188,12 +188,14 @@ def test_graph_editor_exposes_typed_contract_controls(source: str) -> None:
         "undo",
         "redo",
         "Validate",
-        "Action implementation",
+        "How this step runs",
     ):
         assert capability in builder
     for outcome in ("success", "partial", "blocked", "failed"):
         assert outcome in builder
-    assert "Incompatible artifact contract" in builder
+    assert "This step requires" in builder
+    assert "output.type !== input.type" in builder
+    assert "Boolean(output.multiple) !== Boolean(input.multiple)" in builder
 
 
 def test_run_ui_separates_preview_preferences_from_canonical_preflight() -> None:
@@ -225,9 +227,11 @@ def test_run_ui_separates_preview_preferences_from_canonical_preflight() -> None
     assert "collectors:" in api
     assert "[...config.collectors]" in api
     assert "action_implementations" in api
-    assert "Simulate ignores and clears action selections" in (
-        SOURCE_ROOT / "pages" / "Builder.tsx"
-    ).read_text(encoding="utf-8")
+    builder = (SOURCE_ROOT / "pages" / "Builder.tsx").read_text(encoding="utf-8")
+    assert "Simulate previews this step without running it" in builder
+    assert 'selectedAction={runConfig.mode === "execute" ?' in builder
+    assert "disabled={!executeMode || !behavior.action_ids.length}" in builder
+    assert 'executeMode={runConfig.mode === "execute"}' in builder
 
 
 def test_replay_compare_requires_fresh_execute_approval_and_strict_parameters() -> None:
