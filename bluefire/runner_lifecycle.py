@@ -43,6 +43,7 @@ from .runner_host import (
     default_host_command,
     read_process_record,
 )
+from .runner_state_directory import prepare_default_managed_root
 from .runner_transport import (
     AuthenticatedRunnerClient,
     AuthenticatedRunnerTransportError,
@@ -1150,6 +1151,8 @@ class ManagedRunnerLifecycle:
             if not adopt:
                 raise RunnerLifecycleError("Managed runner lifecycle is not bootstrapped.")
             try:
+                if not self.root.parent.exists():
+                    prepare_default_managed_root(self.root)
                 parent = self.root.parent.resolve(strict=True)
                 if (
                     not parent.is_dir()
