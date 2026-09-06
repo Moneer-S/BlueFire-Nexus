@@ -467,7 +467,33 @@ def pinned_regular_file_identity(
     return identity
 
 
-def _lock_database_descriptor(descriptor: int) -> None:
+def _check_lock_cancellation(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise LocalLockError("Local database lock wait was cancelled.")
+
+
+@contextmanager
+def _database_guard(
+    state: _DatabaseLockState, cancel_event: threading.Event | None
+) -> Iterator[None]:
+    if cancel_event is None:
+        with state.guard:
+            yield
+        return
+    _check_lock_cancellation(cancel_event)
+    while not state.guard.acquire(timeout=0.025):
+        _check_lock_cancellation(cancel_event)
+    try:
+        _check_lock_cancellation(cancel_event)
+        yield
+    finally:
+        state.guard.release()
+
+
+def _lock_database_descriptor(
+    descriptor: int, *, cancel_event: threading.Event | None = None
+) -> None:
+    _check_lock_cancellation(cancel_event)
     if sys.platform == "win32":
         import msvcrt
 
@@ -478,17 +504,32 @@ def _lock_database_descriptor(descriptor: int) -> None:
             getattr(errno, "EDEADLK", errno.EACCES),
         }
         while True:
+            _check_lock_cancellation(cancel_event)
             try:
                 msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
                 return
             except OSError as exc:
                 if exc.errno not in retry_errors:
                     raise
-                time.sleep(0.025)
+                if cancel_event is None:
+                    time.sleep(0.025)
+                else:
+                    cancel_event.wait(0.025)
     else:
         import fcntl
 
-        fcntl.flock(descriptor, fcntl.LOCK_EX)  # type: ignore[attr-defined]
+        if cancel_event is None:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)  # type: ignore[attr-defined]
+            return
+        while True:
+            _check_lock_cancellation(cancel_event)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+                return
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                    raise
+                cancel_event.wait(0.025)
 
 
 def _unlock_database_descriptor(descriptor: int) -> None:
@@ -544,9 +585,15 @@ def owner_private_database_lock(
     path: str | Path,
     *,
     expected: DatabaseIdentity,
+    cancel_event: threading.Event | None = None,
 ) -> Iterator[None]:
-    """Hold the exact database identity lock across a catalog transition/effect."""
+    """Hold the exact database identity lock across a catalog transition/effect.
 
+    Optional cancellation interrupts contention before entering the body. It does
+    not revoke an acquired lease or interrupt the caller's protected operation.
+    """
+
+    _check_lock_cancellation(cancel_event)
     canonical = _canonical_database_path(path)
     database_descriptor: int | None = None
     database_registration: _DatabaseDescriptorRegistration | None = None
@@ -564,7 +611,7 @@ def owner_private_database_lock(
         except (MemoryError, OSError, RunnerTrustError):
             raise LocalLockError("Local database lock is unavailable or unsafe.") from None
         state = _state_for(identity)
-        with state.guard:
+        with _database_guard(state, cancel_event):
             process_id = os.getpid()
             thread_id = threading.get_ident()
             if state.owner_thread == thread_id:
@@ -581,6 +628,7 @@ def owner_private_database_lock(
                 database_registration = None
                 state.depth += 1
                 try:
+                    _check_lock_cancellation(cancel_event)
                     yield
                 finally:
                     state.depth -= 1
@@ -607,8 +655,12 @@ def owner_private_database_lock(
                         identity
                     )
 
-                _lock_database_descriptor(descriptor)
+                if cancel_event is None:
+                    _lock_database_descriptor(descriptor)
+                else:
+                    _lock_database_descriptor(descriptor, cancel_event=cancel_event)
                 locked = True
+                _check_lock_cancellation(cancel_event)
                 _validate_locked_database(canonical, descriptor, expected)
             except LocalLockError:
                 raise
@@ -619,6 +671,7 @@ def owner_private_database_lock(
             state.depth = 1
             state.descriptor = descriptor
             try:
+                _check_lock_cancellation(cancel_event)
                 yield
             finally:
                 state.depth = 0
