@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { graphView, initialGraphLayout } from "../src/lib/graph-view";
+import { graphSections, graphView, initialGraphLayout } from "../src/lib/graph-view";
 import { deleteScenarioGraphElements } from "../src/lib/scenario";
 import { demoScenario } from "../src/lib/demo";
 import type { Scenario, ScenarioStep } from "../src/types";
@@ -15,6 +15,17 @@ function branchedScenario(): Scenario {
 }
 
 describe("experiment presentation", () => {
+  it("groups a large path without losing step identity or cross-section bindings", () => {
+    const steps = Array.from({ length: 25 }, (_, index): ScenarioStep => ({ ...structuredClone(demoScenario.steps[0]!), id: `step_${index}`, inputs: index ? { files: { from_step: `step_${index - 1}`, artifact: "files" } } : {} }));
+    const serialized = JSON.stringify(steps);
+    const sections = graphSections(steps);
+    expect(sections.map((section) => section.title)).toEqual(["Steps 1–8", "Steps 9–16", "Steps 17–24", "Steps 25–25"]);
+    expect(sections.flatMap((section) => section.steps)).toEqual(steps);
+    expect(sections[1]?.steps[0]).toBe(steps[8]);
+    expect(sections[1]?.steps[0]?.inputs.files).toEqual({ from_step: "step_7", artifact: "files" });
+    expect(JSON.stringify(steps)).toBe(serialized);
+    expect(graphSections(steps.slice(0, 12))).toHaveLength(1);
+  });
   it("focuses the success path while retaining hidden inputs, branches, and saved positions", () => {
     const scenario = branchedScenario(); const serialized = JSON.stringify(scenario);
     const view = graphView(scenario, false);

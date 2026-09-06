@@ -1,4 +1,15 @@
-import type { Outcome, Scenario } from "../types";
+import type { Outcome, Scenario, ScenarioStep } from "../types";
+
+export const GRAPH_SECTION_SIZE = 8;
+
+/** Reading-order groups are a view, never scenario nodes or execution phases. */
+export function graphSections(steps: readonly ScenarioStep[]) {
+  if (steps.length <= 12) return [{ title: "All steps", steps: [...steps] }];
+  return Array.from({ length: Math.ceil(steps.length / GRAPH_SECTION_SIZE) }, (_, index) => ({
+    title: `Steps ${index * GRAPH_SECTION_SIZE + 1}–${Math.min((index + 1) * GRAPH_SECTION_SIZE, steps.length)}`,
+    steps: steps.slice(index * GRAPH_SECTION_SIZE, (index + 1) * GRAPH_SECTION_SIZE),
+  }));
+}
 
 export const branchLabels: Record<Outcome, string> = {
   success: "On success", partial: "When partly complete", blocked: "When blocked", failed: "On failure",

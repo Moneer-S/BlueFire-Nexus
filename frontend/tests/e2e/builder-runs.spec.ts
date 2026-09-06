@@ -137,6 +137,34 @@ test("laptop canvas and step details fit the viewport without losing the experim
   await expect(page.locator(".inspector-panel")).toBeHidden();
 });
 
+test("large branched experiments keep complete data while focusing readable sections", async ({ page }) => {
+  await page.goto("./#/builder");
+  for (let index = 0; index < 18; index += 1) {
+    await page.getByRole("button", { name: "Add step", exact: true }).click();
+    await page.locator(".palette-list > button").first().click();
+  }
+  const section = page.getByRole("combobox", { name: "Path section", exact: true });
+  await expect(section).toBeVisible();
+  const serialized = await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"));
+  const complete = JSON.parse(serialized!);
+  expect(complete.steps.length).toBeGreaterThanOrEqual(25);
+  expect(complete.edges.some((edge: { outcome: string }) => edge.outcome === "blocked")).toBe(true);
+  await section.selectOption("0");
+  await expect(page.locator(".react-flow__node")).toHaveCount(8);
+  await page.getByRole("button", { name: "Next section", exact: true }).click();
+  await expect(section).toHaveValue("1");
+  await expect(page.locator(".react-flow__node")).toHaveCount(8);
+  await section.selectOption("all");
+  await expect(page.locator(".react-flow__node")).toHaveCount(complete.steps.length);
+  await page.getByRole("button", { name: "Steps", exact: true }).click();
+  await expect(page.getByRole("list", { name: "Experiment steps" }).locator(":scope > li")).toHaveCount(complete.steps.length);
+  expect(await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"))).toBe(serialized);
+  await page.reload();
+  await expect(section).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem("bluefire.local.scenario.v1"))).toBe(serialized);
+  expect(await page.locator(".react-flow__node").count()).toBeLessThanOrEqual(8);
+});
+
 test("Execute approval cannot bypass canonical review and legacy authority is scrubbed after reload", async ({ page }) => {
   await page.goto("./#/runs");
   await expect(page.getByRole("heading", { name: "Preflight every path. Observe every decision." })).toBeVisible();
