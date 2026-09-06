@@ -1654,6 +1654,9 @@ describe("product application", () => {
     const submitted = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith(`/jobs/${accepted.job.job_id}/approval`) && init?.method === "POST");
     expect(JSON.parse(String(submitted?.[1]?.body))).toMatchObject({ approved_by: "submitted-reviewer" });
     await user.clear(lookup);
+    expect(screen.queryByRole("region", { name: "Canonical preflight plan" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve and release continuation" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /Operator identity/ })).not.toBeInTheDocument();
     await user.type(lookup, secondJob.job_id);
     expect(await screen.findByText(secondJob.result_ref!)).toBeVisible();
     const releasedJob: RunJob = { ...accepted.job, state: "running", progress: { phase: "running" }, approval_request: { ...accepted.approval_request, status: "consumed" } };
