@@ -222,6 +222,9 @@ def _summarize(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "run_id": snapshot.get("run_id"),
         "mode": snapshot.get("mode"),
         "profile_id": snapshot.get("runner_profile_id"),
+        "profile_digest": (
+            _safe_content_hash(snapshot["profile"]) if snapshot.get("profile") is not None else None
+        ),
         "target_scope": _target_scope_summary(target_scope),
         "scenario_digest": scenario_digest,
         "replay_lineage": _replay_lineage_summary(snapshot.get("replay")),

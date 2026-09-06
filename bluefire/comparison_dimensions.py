@@ -220,6 +220,7 @@ def _implementation_dimension(
     authority_digest = _digest_or_none(authority.get("authority_record_digest"))
     identity = {
         "profile_id": profile_id,
+        "profile_digest": _digest_or_none(summary.get("profile_digest")),
         "catalog_authority_digest": authority_digest,
         "steps": steps,
     }
@@ -299,9 +300,12 @@ def _implementation_dimension_delta(
         "changed": baseline.get("implementation_digest") != candidate.get("implementation_digest"),
         "from_digest": _digest_or_none(baseline.get("implementation_digest")),
         "to_digest": _digest_or_none(candidate.get("implementation_digest")),
-        "profile_changed": baseline.get("profile_id") != candidate.get("profile_id"),
+        "profile_changed": baseline.get("profile_id") != candidate.get("profile_id")
+        or baseline.get("profile_digest") != candidate.get("profile_digest"),
         "from_profile_id": _safe_dimension_text(baseline.get("profile_id")),
         "to_profile_id": _safe_dimension_text(candidate.get("profile_id")),
+        "from_profile_digest": _digest_or_none(baseline.get("profile_digest")),
+        "to_profile_digest": _digest_or_none(candidate.get("profile_digest")),
         "steps_added": [step_id for step_id in step_ids if step_id not in before],
         "steps_removed": [step_id for step_id in step_ids if step_id not in after],
         "steps_changed": [

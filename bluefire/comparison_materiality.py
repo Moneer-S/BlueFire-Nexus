@@ -26,7 +26,8 @@ def configuration_changes(
         "action_implementations": before.get("steps") != after.get("steps"),
         "collectors": collector_settings_changed,
         "scenario": baseline.get("scenario_digest") != candidate.get("scenario_digest"),
-        "profile": baseline.get("profile_id") != candidate.get("profile_id"),
+        "profile": baseline.get("profile_id") != candidate.get("profile_id")
+        or baseline.get("profile_digest") != candidate.get("profile_digest"),
         "mode": baseline.get("mode") != candidate.get("mode"),
         "autonomy": baseline.get("autonomy") != candidate.get("autonomy"),
         "ai_provider": baseline.get("ai_provider_id") != candidate.get("ai_provider_id"),

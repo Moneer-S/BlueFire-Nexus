@@ -8,8 +8,10 @@ from typing import Any
 
 import pytest
 
-from bluefire.comparison import _delta, _summarize
+from bluefire.comparison import _delta, _summarize, compare_runs
+from bluefire.run_store import RunStore
 from bluefire.service import BlueFireService
+from bluefire.util import content_hash
 
 
 def test_exact_simulate_replay_is_neutral_and_parameter_variant_remains_material(
@@ -135,3 +137,66 @@ def test_replay_label_cannot_hide_effective_configuration_or_security_changes(
     assert material_field in delta["material_changes"]
     assert delta["assessment"] != "no_material_change"
     assert delta["dimensions"]["assessment"]["classification"] == delta["assessment"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("budgets", {"max_seconds": 60, "max_bytes": 1024}),
+        ("cleanup_policy", "on_failure"),
+        ("capabilities", ["filesystem.read", "filesystem.write"]),
+    ],
+)
+def test_persisted_profile_revision_is_material_with_unchanged_id_and_outcomes(
+    tmp_path: Path, field: str, value: Any
+) -> None:
+    store = RunStore(tmp_path / "runs")
+    profile = {
+        "id": "profile.comparison.v1",
+        "budgets": {"max_seconds": 30, "max_bytes": 1024},
+        "cleanup_policy": "always",
+        "capabilities": ["filesystem.read"],
+    }
+    revised = {**profile, field: value}
+    run_ids = []
+    for document in (profile, revised, dict(reversed(list(revised.items())))):
+        handle = store.create_run(
+            scenario={"id": "scenario.comparison.v1"}, plan={}, policy={}, profile=document
+        )
+        result = _snapshot()
+        result.pop("run_id")
+        result.pop("created_at")
+        result.pop("finalized_at")
+        result["runner_profile_id"] = profile["id"]
+        if run_ids:
+            result["replay"] = {"exact": True, "source_run_id": run_ids[-1]}
+        store.finalize(handle.run_id, result=result, evidence=[], detections=[])
+        run_ids.append(handle.run_id)
+    comparison = compare_runs(store, run_ids[:2])
+    summaries = comparison["summaries"]
+    assert [row["profile_id"] for row in summaries] == [profile["id"]] * 2
+    assert [row["profile_digest"] for row in summaries] == [
+        content_hash(profile),
+        content_hash(revised),
+    ]
+    delta = comparison["deltas"][0]
+    assert delta["configuration_changes"] == ["profile"]
+    assert delta["material_changed"] is True
+    assert delta["assessment"] != "no_material_change"
+    implementation = delta["dimensions"]["implementation"]
+    assert implementation["profile_changed"] is True
+    assert implementation["from_profile_digest"] == content_hash(profile)
+    assert implementation["to_profile_digest"] == content_hash(revised)
+    # A reordered but identical persisted profile is neutral across exact replay.
+    repeated = compare_runs(store, run_ids[1:])["deltas"][0]
+    assert repeated["material_changed"] is False
+    assert repeated["assessment"] == "no_material_change"
+
+
+def test_missing_profile_contents_are_distinct_from_recorded_contents() -> None:
+    before = _snapshot()
+    after = {**before, "profile": {"id": before["runner_profile_id"]}}
+    delta = _delta(_summarize(before), _summarize(after))
+    assert delta["configuration_changes"] == ["profile"]
+    assert delta["dimensions"]["implementation"]["from_profile_digest"] is None
+    assert delta["material_changed"] is True
