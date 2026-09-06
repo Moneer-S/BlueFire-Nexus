@@ -2,6 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
+import { DetectorEvaluationTable } from "./DetectorEvaluationComparison";
+import { evaluationLabel } from "../lib/detection-results";
 import type { DetectionCandidate, DetectionCaseRole, DetectionRunEvaluation, RunRecord } from "../types";
 import { Badge, Button, Callout, DataList, EmptyState, ErrorState, Field, LoadingState, sentence } from "./Primitives";
 
@@ -32,19 +34,20 @@ export function DetectionRunEvaluations({ candidate, resourceId, sourceRunId, ru
   const rows = [...(reports.data?.evaluations ?? []), ...(related.data?.evaluations ?? [])];
   const resultForSelection = evaluate.variables?.candidateId === resourceId && evaluate.variables?.run_id === runId;
   return <>
-    <Callout title="Evaluate the full observed run">SQLite and Sigma queries execute against every independently observed record in the verified source bundle. No fixture exercise is required after parsing. Missing telemetry remains insufficient evidence. These immutable reports leave the candidate lifecycle unchanged.</Callout>
+    <p>Test this rule on the selected run's independently observed events, then repeat on separate benign activity and a replay. Missing telemetry stays visible as not enough evidence.</p>
     {!canEvaluate ? <Callout tone="warning" title="Parsed query candidate required">Save and parse a SQLite or Sigma candidate to evaluate a run. Internal matcher results retain internal semantics, and YARA cannot inspect file bytes from metadata alone.</Callout> : null}
     <Field label="Experiment question"><textarea rows={2} maxLength={1000} value={question} onChange={(event) => setQuestion(event.target.value)} /></Field>
     <Field label="Evaluation source run"><select value={runId} onChange={(event) => setRunId(event.target.value)}><option value="">Select immutable run</option>{runId && !runs.some((run) => run.run_id === runId) ? <option value={runId}>{runId}</option> : null}{runs.map((run) => <option key={run.run_id} value={run.run_id}>{run.run_id}</option>)}</select></Field>
     <Field label="Operator-assigned case role" hint="This label supplies context; it cannot assert intent or determine the measured result."><select value={role} onChange={(event) => setRole(event.target.value as DetectionCaseRole)}><option value="attack">Attack case</option><option value="benign">Benign activity</option><option value="replay">Replay</option><option value="heldout">Held-out variation</option></select></Field>
     <Button onClick={() => resourceId && evaluate.mutate({ candidateId: resourceId, run_id: runId, question: question.trim(), case_role: role })} disabled={!canEvaluate || !runId || !question.trim() || evaluate.isPending}>{evaluate.isPending ? "Evaluating immutable evidence" : "Evaluate full observed run"}</Button>
     {resultForSelection && evaluate.isError ? <ErrorState title="Evaluation refused" error={evaluate.error} /> : null}
-    {resultForSelection && evaluate.data ? <Callout title="Evaluation retained">{sentence(evaluate.data.evaluation.result.state)} · {evaluate.data.evaluation.result.match_count === null ? "No supported match count" : `${evaluate.data.evaluation.result.match_count} matched records`}. The measured result comes from the query and source evidence.</Callout> : null}
+    {resultForSelection && evaluate.data ? <Callout title="Evaluation retained">{evaluationLabel(evaluate.data.evaluation)}. The measured result comes from the query and source evidence.</Callout> : null}
     {revisions.some((revision) => revision.id !== resourceId) ? <Field label="Related revision reports"><select value={relatedId} onChange={(event) => setRelatedId(event.target.value)}><option value="">Selected revision only</option>{revisions.filter((revision) => revision.id !== resourceId).map((revision) => <option key={revision.id} value={revision.id}>{revision.label}</option>)}</select></Field> : null}
     {reports.isError ? <ErrorState title="Evaluation history unavailable" error={reports.error} retry={() => { void reports.refetch(); }} /> : null}
     {related.isError ? <ErrorState title="Related revision history unavailable" error={related.error} retry={() => { void related.refetch(); }} /> : null}
     {resourceId && reports.isPending ? <LoadingState label="Loading immutable evaluation reports" /> : null}
-    {rows.length ? <div className="structured-list" aria-label="Immutable run evaluations">{rows.map((report) => <EvaluationReport key={report.evaluation_id} report={report} />)}</div> : reports.isSuccess ? <EmptyState title="No retained run evaluations" description="Evaluate an immutable run to record its actual query matches, case role, and evidence limits." /> : null}
+    {relatedId && reports.isSuccess && related.isSuccess ? <DetectorEvaluationTable baseline={related.data.evaluations} revised={reports.data.evaluations} baselineLabel={revisions.find((revision) => revision.id === relatedId)?.label ?? "Related revision"} revisedLabel={`Selected · revision ${candidate.revision ?? 1}`} /> : null}
+    {rows.length ? <details className="evaluation-history" open={!relatedId}><summary>All retained evaluation records ({rows.length})</summary><div className="structured-list" aria-label="Immutable run evaluations">{rows.map((report) => <EvaluationReport key={report.evaluation_id} report={report} />)}</div></details> : reports.isSuccess ? <EmptyState title="No retained run evaluations" description="Evaluate an immutable run to record its actual query matches, case role, and evidence limits." /> : null}
   </>;
 }
 

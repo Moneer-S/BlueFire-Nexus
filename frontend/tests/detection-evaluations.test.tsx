@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -58,7 +58,8 @@ it("submits source identity and case context only, and exposes a measured benign
   expect(JSON.parse(String(post[1]!.body))).toEqual({ run_id: runId, question: expect.any(String), case_role: "benign" });
   expect(candidate.state).toBe("parsed");
   expect(screen.getByText("evidence-observed")).toBeInTheDocument();
-  expect(screen.getByText(/No fixture exercise is required after parsing/)).toBeInTheDocument();
+  // A parsed query can evaluate observed evidence directly, without a fixture step.
+  expect(screen.getByRole("button", { name: "Evaluate full observed run" })).toBeEnabled();
 });
 
 it("retains a telemetry gap as insufficient without presenting a zero-match result", async () => {
@@ -83,8 +84,9 @@ it("shows immutable baseline and revision results together and preserves each so
   await user.selectOptions(screen.getByRole("combobox", { name: "Related revision reports" }), parentId);
   await waitFor(() => expect(screen.getByText("Not matched")).toBeInTheDocument());
   expect(screen.getByText("Matched")).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: runId })).toHaveAttribute("href", `/runs/${runId}`);
-  expect(screen.getByRole("link", { name: otherRunId })).toHaveAttribute("href", `/runs/${otherRunId}`);
+  const table = within(screen.getByRole("region", { name: "Measured detector comparison" }));
+  expect(table.getByRole("link", { name: runId })).toHaveAttribute("href", `/runs/${runId}`);
+  expect(table.getByRole("link", { name: otherRunId })).toHaveAttribute("href", `/runs/${otherRunId}`);
   expect(screen.getByText(candidateId)).toBeInTheDocument();
   expect(screen.getByText(parentId)).toBeInTheDocument();
 });

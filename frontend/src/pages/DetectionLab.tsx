@@ -139,7 +139,7 @@ export function DetectionLabPage() {
   const [language, setLanguage] = useState("internal");
 
   useEffect(() => {
-    setSelectedId(sourceRunId && linkedCandidateId ? runCandidateKey(sourceRunId, linkedCandidateId) : undefined);
+    setSelectedId(linkedCandidateId || undefined);
     setSearch("");
   }, [sourceRunId, linkedCandidateId]);
 
@@ -221,7 +221,7 @@ export function DetectionLabPage() {
   })) : [];
   const candidates = [...new Map([...persisted, ...linked].map((item) => [item.resolvedId, item])).values()];
   const filtered = candidates.filter((item) => `${item.resolvedId} ${item.title ?? ""} ${item.behavior_id ?? ""} ${item.target_language ?? item.language ?? ""}`.toLowerCase().includes(search.toLowerCase()));
-  const selected = filtered.find((item) => item.resolvedId === selectedId) ?? filtered.find((item) => item.runId === sourceRunId) ?? filtered[0];
+  const selected = candidates.find((item) => item.resolvedId === selectedId) ?? candidates.find((item) => sourceRunId && selectedId && item.resolvedId === runCandidateKey(sourceRunId, selectedId)) ?? (selectedId ? undefined : filtered.find((item) => item.runId === sourceRunId) ?? filtered[0]);
   const counts = Object.fromEntries(lifecycle.map((state) => [state, candidates.filter((item) => item.state === state).length]));
   const finalizedRuns = runsQuery.data.runs.filter((run) => Boolean(run.finalized_at) || run.status === "completed");
   const rootId = selected?.revision_root_id ?? selected?.candidate_id ?? selected?.resolvedId;
@@ -281,7 +281,7 @@ export function DetectionLabPage() {
         onAction={(action, body) => selected.resourceId && actionMutation.mutate({ id: selected.resourceId, action, body })}
         onRevision={(kind, body) => selected.resourceId && revisionMutation.mutate({ id: selected.resourceId, kind, body })}
         onCompare={(candidateId) => selected.resourceId && comparisonMutation.mutate({ baselineId: selected.resourceId, candidateId })}
-      /> : <Panel><EmptyState icon={<FlaskConical />} title="Select a candidate" description="Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines." /></Panel>}
+      /> : <Panel><EmptyState icon={<FlaskConical />} title={selectedId ? "Detector unavailable" : "Select a candidate"} description={selectedId ? "The requested detector is not available in this registry or source run. Select an available detector from the list." : "Inspect lifecycle evidence, fixtures, fields, immutable revisions, and reviewed public baselines."} /></Panel>}
     </div>
   </div>;
 }
