@@ -186,6 +186,33 @@ class APIRoutes:
             return False
         return True
 
+    def _runner_status_query(self) -> tuple[bool, str | None]:
+        """Select one canonical profile without changing lifecycle authority."""
+        try:
+            parsed = urlsplit(self.path)
+            if parsed.fragment:
+                raise ValueError
+            pairs = parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+                strict_parsing=True,
+                max_num_fields=1,
+                errors="strict",
+            )
+            if not pairs:
+                return True, None
+            key, value = pairs[0]
+            if key != "profile_id" or not _valid_management_identifier(value):
+                raise ValueError
+            return True, value
+        except ValueError:
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_runner_status_query",
+                "Runner status accepts one optional canonical profile_id.",
+            )
+            return False, None
+
     def _action_package_request(
         self,
         path: str,

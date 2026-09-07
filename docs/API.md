@@ -34,7 +34,7 @@ Do not expose this API through a reverse proxy, tunnel, port forward, or contain
 | POST | `/api/v1/resources/runner-profiles/{resource_id}/activate` | Validate and activate a stored runner profile |
 | POST | `/api/v1/resources/runner-profiles/{resource_id}/deactivate` | Persistently withdraw a runner profile |
 | POST | `/api/v1/resources/runner-profiles/{resource_id}/probe` | Bounded, sanitized runner inventory/health probe |
-| GET | `/api/v1/runner` | Inert path-free managed-runner lifecycle status |
+| GET | `/api/v1/runner?profile_id={profile_id}` | Inert path-free status for one optional selected runner profile |
 | POST | `/api/v1/runner/bootstrap` | Explicitly verify/install the native artifact and create or safely upgrade local enrollment |
 | POST | `/api/v1/runner/start` | Start the separately hosted authenticated local runner |
 | POST | `/api/v1/runner/stop` | Request authenticated shutdown or reconcile an exact stale process record |
@@ -433,7 +433,7 @@ POST /api/v1/runner/revoke     {}
 POST /api/v1/runner/remove     {"confirm_runner_id":"bluefire-rust-runner.v1"}
 ```
 
-`profile_id` may be omitted only when the configured Execute-profile choice is unambiguous. Bootstrap is explicit and verifies platform, architecture, artifact digest, inventory compatibility, private storage, and local trust. `allow_upgrade: true` is accepted only for a stopped, clean lifecycle and never bypasses task, receipt, trust, or artifact checks. Status is inert. Stop is the recovery path for a stale process record and may refuse while authenticated tasks are still draining. Revocation requires a stopped host and reconciled receipt/watchdog state. Removal requires the exact status-reported runner ID and refuses live or orphaned transport state. Responses never disclose managed paths, private keys, unlock material, task HMAC material, or raw process errors.
+`profile_id` may be omitted only when the configured Execute-profile choice is unambiguous. Bootstrap is explicit and verifies platform, architecture, artifact digest, inventory compatibility, private storage, and local trust. `allow_upgrade: true` is accepted only for a stopped, clean lifecycle and never bypasses task, receipt, trust, or artifact checks. Status is inert. `GET /runner` retains its existing default-profile behavior; its optional `profile_id` query selects one canonical configured profile and checks that profile against the existing enrollment before authenticated readiness. Empty, duplicate, malformed or extra query fields are refused; an unknown configured profile returns 404 and an unenrolled profile cannot borrow another profile's ready state. Stop is the recovery path for a stale process record and may refuse while authenticated tasks are still draining. Revocation requires a stopped host and reconciled receipt/watchdog state. Removal requires the exact status-reported runner ID and refuses live or orphaned transport state. Responses never disclose managed paths, private keys, unlock material, task HMAC material, or raw process errors.
 
 ### Compare
 

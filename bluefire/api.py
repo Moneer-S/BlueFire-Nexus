@@ -315,8 +315,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 self._dispatch(lambda: self.platform_server.service.scenario_versions())
             return
         if path == f"{API_PREFIX}/runner":
-            if self._routes._management_query_free():
-                self._dispatch(lambda: self.platform_server.service.runner_status())
+            valid, profile_id = self._routes._runner_status_query()
+            if valid:
+                self._dispatch(
+                    lambda: self.platform_server.service.runner_status(profile_id=profile_id)
+                )
             return
         if path in {
             f"{API_PREFIX}/runner/bootstrap",
