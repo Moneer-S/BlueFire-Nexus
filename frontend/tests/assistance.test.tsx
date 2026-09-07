@@ -19,7 +19,7 @@ const context: AssistanceContext = { schema_version: "bluefire.assistance-contex
 function request(): AssistanceRequest { return { submission_id: "01234567-89ab-4def-8123-456789abcdef", context_digest: digest, run_id: selection.runId, candidate_id: selection.candidateId, candidate_resource_digest: digest, message: "Improve this rule, evaluate it, then try another method.", case_role: "attack", autonomy: "assist", provider_id: provider.provider_id }; }
 function envelope(body = request(), status: AssistanceEnvelope["turn"]["status"] = "awaiting_review"): AssistanceEnvelope {
   return { job: { schema_version: "bluefire.job.v1", kind: "assistance.turn", job_id: assistanceJobId(body.submission_id), state: "completed", request: { submitted_request: body }, progress: {} },
-    turn: { schema_version: "bluefire.assistance-turn.v1", status, message: "Review the rule revision before it is saved and evaluated.", context_digest: body.context_digest,
+    turn: { schema_version: "bluefire.assistance-turn.v1", status, can_start_new_turn: ["completed", "off", "cancelled"].includes(status), message: "Review the rule revision before it is saved and evaluated.", context_digest: body.context_digest,
       selected: { run_id: body.run_id, candidate_id: body.candidate_id, candidate_resource_digest: body.candidate_resource_digest },
       plan: [{ step_id: "revise", capability_id: "detection.revise_and_evaluate", title: "Improve and evaluate the rule", detector_ref: "selected", reason: "Check smaller observed collections." }, { step_id: "compare", capability_id: "method.compare_same_detector", title: "Try another collection method", detector_ref: "revised", reason: "Keep the revised detector fixed for comparison." }],
       active_child: { job_id: "job-rule", kind: "detection.ai.propose", state: "completed", step_id: "revise", native_path: "/detection-lab?candidate=saved-rule&run=run-observed&ai_job=job-rule" },
@@ -207,4 +207,16 @@ it("requires a fresh settled snapshot before replacing a retained operation", as
   await screen.findByRole("heading", { name: "Execute approval is needed" });
   expect(readAssistanceReceipt()).toEqual(request());
   expect(screen.queryByRole("button", { name: "Start work" })).not.toBeInTheDocument();
+});
+
+it("does not infer settlement from an integrity-blocked view with no visible child", async () => {
+  storeAssistanceReceipt(request());
+  const value = envelope(request(), "blocked"); value.turn.active_child = null; value.turn.next_action = null;
+  value.turn.can_start_new_turn = false;
+  vi.spyOn(api, "assistanceTurn").mockResolvedValue(value);
+  mount(); await open();
+  await screen.findByRole("heading", { name: "Work needs attention" });
+  expect(screen.queryByRole("button", { name: "Start another request" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Stop this operation" })).toBeEnabled();
+  expect(readAssistanceReceipt()).toEqual(request());
 });

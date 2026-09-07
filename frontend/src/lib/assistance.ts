@@ -23,6 +23,7 @@ export interface AssistanceEnvelope {
   job: RunJob;
   turn: {
     schema_version: "bluefire.assistance-turn.v1"; status: AssistanceStatus; message: string; context_digest: string;
+    can_start_new_turn: boolean;
     selected: Pick<AssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
     plan: Array<{ step_id: string; capability_id: AssistanceCapability; title: string; detector_ref: "selected" | "revised"; reason: string }>;
     active_child: null | { job_id: string; kind: string; state: string; step_id: string; native_path: string };

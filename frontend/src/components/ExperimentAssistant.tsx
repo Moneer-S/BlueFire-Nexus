@@ -42,7 +42,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
     return value;
   };
   const operation = useQuery({ queryKey: key, queryFn: async () => validate(await api.assistanceTurn(jobId), receipt!), enabled: Boolean(receipt) && !DEMO_MODE, retry: false,
-    refetchInterval: (query) => query.state.data && (assistanceActive(query.state.data.turn.status) || (query.state.data.turn.status === "blocked" && query.state.data.turn.active_child)) && !query.state.error ? 1500 : false });
+    refetchInterval: (query) => query.state.data && (assistanceActive(query.state.data.turn.status) || (query.state.data.turn.status === "blocked" && query.state.data.turn.can_start_new_turn !== true)) && !query.state.error ? 1500 : false });
   useEffect(() => {
     if (open && jobId) void client.invalidateQueries({ queryKey: ["assistance-turn", jobId] });
   }, [open, jobId, client]);
@@ -64,7 +64,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
     if (recovery && recovery.job_id === jobId && continuation?.submission_id === recovery.submission_id && continuation.context_digest === recovery.context_digest
       && ["completed", "failed", "cancelled", "interrupted"].includes(continuation.state) && clearAssistanceRecovery(recovery)) setRecovery(undefined);
   }, [recovery, jobId, continuation]);
-  const active = turn ? assistanceActive(turn.status) || Boolean(turn.status === "blocked" && turn.active_child) : Boolean(receipt);
+  const active = turn ? turn.can_start_new_turn !== true : Boolean(receipt);
   const models = providers.filter((item) => item.kind !== "deterministic");
   const selectedProvider = models.find((item) => item.provider_id === runConfig.provider);
   const selected = context.data?.selected;
@@ -92,7 +92,7 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
     if (!receipt || active || operation.isFetching) return;
     const latest = await operation.refetch();
     if (latest.error || !latest.data) { setLocalError(new Error("Check the saved operation before starting another request.")); return; }
-    if (assistanceActive(latest.data.turn.status) || (latest.data.turn.status === "blocked" && latest.data.turn.active_child)) { setLocalError(new Error("This operation has work to settle. Open its native view or stop it before replacing the request.")); return; }
+    if (latest.data.turn.can_start_new_turn !== true) { setLocalError(new Error("This operation has work to settle. Open its native view or stop it before replacing the request.")); return; }
     if (!clearAssistanceReceipt(receipt)) { setLocalError(new Error("The saved receipt could not be cleared. Check browser session storage before starting another request.")); return; }
     if (recovery && clearAssistanceRecovery(recovery)) setRecovery(undefined);
     setReceipt(undefined); setLocalError(undefined); submit.reset(); recover.reset(); cancel.reset();
