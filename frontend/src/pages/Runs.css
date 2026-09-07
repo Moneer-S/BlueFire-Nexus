@@ -1,4 +1,13 @@
 .runs-page .run-next-step { margin: 0; padding: 14px 18px; color: var(--text); font-size: .8rem; line-height: 1.5; }
+.assisted-run-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(240px, .8fr); gap: 32px; align-items: start; }
+.assisted-run-layout > * { min-width: 0; }
+.assisted-run-overview { padding: 20px 0; border-top: 1px solid var(--line-strong); }
+.assisted-run-overview h2 { margin: 0 0 18px; font-size: 1rem; }
+.assisted-run-overview ol { padding-left: 24px; font-size: .85rem; line-height: 1.6; }
+.assisted-run-overview li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.assisted-run-overview > a { display: inline-flex; align-items: center; gap: 8px; margin-top: 14px; }
+.assisted-run-overview svg { width: 16px; height: 16px; }
+@media (max-width: 900px) { .assisted-run-layout { grid-template-columns: minmax(0, 1fr); gap: 20px; } }
 .runs-page .run-intent-details { margin: 0 17px 14px; border: 1px solid var(--line); border-radius: 9px; }
 .runs-page .run-intent-details > summary, .runs-page .resolved-preflight-details > summary { padding: 12px; font-size: .74rem; color: var(--muted-strong); cursor: pointer; }
 .runs-page .run-intent-details > .callout { margin: 12px; }
@@ -103,3 +112,10 @@
 
 .runs-page .envelope-binding-note { display: block; overflow-wrap: anywhere; }
 .runs-page .envelope-binding-note > svg { display: inline-block; vertical-align: middle; margin-right: 7px; }
+
+.assisted-review-context { display: grid; grid-template-columns: 1fr 2fr 1fr; gap: 20px; margin: 0; padding: 18px 0; border-block: 1px solid var(--line); }
+.assisted-review-context dt { color: var(--muted); font-size: .75rem; margin-bottom: 7px; }
+.assisted-review-context dd { margin: 0; font-size: .85rem; overflow-wrap: anywhere; }
+.assisted-run-decision { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.assisted-run-decision > p { flex-basis: 100%; margin-bottom: 0; }
+@media (max-width: 600px) { .assisted-review-context { grid-template-columns: 1fr; gap: 14px; } }

@@ -1,3 +1,4 @@
+import type { SavedGraphSelection } from "../src/lib/run-assistance";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -5,8 +6,8 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { ExperimentAssistant } from "../src/components/ExperimentAssistant";
 import { api } from "../src/lib/api";
-import { assistanceJobId, assistancePath, readAssistanceReceipt, readAssistanceRecovery, storeAssistanceReceipt, isGraphRequest, type AssistanceContext, type AssistanceEnvelope, type AssistanceRequest } from "../src/lib/assistance";
-import { AssistanceProvider, useAssistancePanel, usePublishGraphAssistanceSelection, usePublishAssistanceSelection, type AssistanceSelection } from "../src/state/AssistanceContext";
+import { assistanceJobId, assistancePath, readAssistanceReceipt, readAssistanceRecovery, storeAssistanceReceipt, type AssistanceContext, type AssistanceEnvelope, type AssistanceRequest } from "../src/lib/assistance";
+import { AssistanceProvider, useAssistancePanel, usePublishGraphAssistanceSelection, usePublishAssistanceSelection, usePublishSavedGraphSelection, type AssistanceSelection } from "../src/state/AssistanceContext";
 import { ProductProvider } from "../src/state/ProductContext";
 
 const digest = `sha256:${"a".repeat(64)}`;
@@ -20,7 +21,7 @@ function request(): AssistanceRequest { return { submission_id: "01234567-89ab-4
 function envelope(body = request(), status: AssistanceEnvelope["turn"]["status"] = "awaiting_review"): AssistanceEnvelope {
   return { job: { schema_version: "bluefire.job.v1", kind: "assistance.turn", job_id: assistanceJobId(body.submission_id), state: "completed", request: { submitted_request: body }, progress: {} },
     turn: { schema_version: "bluefire.assistance-turn.v1", status, can_start_new_turn: ["completed", "off", "cancelled"].includes(status), message: "Review the rule revision before it is saved and evaluated.", context_digest: body.context_digest,
-      selected: isGraphRequest(body) ? body.selection : { run_id: body.run_id, candidate_id: body.candidate_id, candidate_resource_digest: body.candidate_resource_digest },
+      selected: "selection" in body ? body.selection : { run_id: body.run_id, candidate_id: body.candidate_id, candidate_resource_digest: body.candidate_resource_digest },
       plan: [{ step_id: "revise", capability_id: "detection.revise_and_evaluate", title: "Improve and evaluate the rule", detector_ref: "selected", reason: "Check smaller observed collections." }, { step_id: "compare", capability_id: "method.compare_same_detector", title: "Try another collection method", detector_ref: "revised", reason: "Keep the revised detector fixed for comparison." }],
       active_child: { job_id: "job-rule", kind: "detection.ai.propose", state: "completed", step_id: "revise", native_path: "/detection-lab?candidate=saved-rule&run=run-observed&ai_job=job-rule" },
       next_action: { kind: "review_detection", label: "Review rule revision", native_path: "/detection-lab?candidate=saved-rule&run=run-observed&ai_job=job-rule" }, results: [], continuation: null, limitations: ["Execute requires fresh approval."] } };
@@ -349,4 +350,57 @@ it("updates a closed badge from running to recovery through read-only polling", 
   expect(get.mock.calls.length).toBeGreaterThanOrEqual(2);
   expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   expect(recover).not.toHaveBeenCalled();
+});
+
+const savedGraph: SavedGraphSelection = { kind: "saved_graph", proposal_job_id: `job-${"a".repeat(32)}`,
+  application: { proposal_job_id: `job-${"a".repeat(32)}`, proposal_digest: digest, reviewed_digest: digest, operator_modified: true, scenario_id: "saved.experiment.v1", version: 2, digest },
+  run_intent: { mode: "execute", autonomy: "off", ai_provider_id: null, runner_profile_id: "sandbox-execute.v1", target_scope: { scope_refs: ["owned.selected.scope"] }, collectors: ["collector.filesystem.sandbox.v1"] } };
+function SavedRunSelection() { usePublishSavedGraphSelection(savedGraph, "Reviewed experiment"); return null; }
+it("retains the saved graph and exact runtime settings independently of Assistant choices", async () => {
+  const context: AssistanceContext = { ...graphContext, selected: savedGraph, capabilities: [{ id: "run.saved_graph_and_inspect", title: "Run and inspect", available: true, supported_autonomy: ["assist", "auto"], reason: "", native_path: "/runs" }] };
+  vi.spyOn(api, "assistanceRunContext").mockResolvedValue(context);
+  const result = (body: AssistanceRequest): AssistanceEnvelope => ({ ...envelope(body), turn: { ...envelope(body).turn, plan: [{ step_id: "run", capability_id: "run.saved_graph_and_inspect", title: "Run and inspect", detector_ref: "none", reason: "Use the selected settings" }], active_child: null, next_action: { kind: "review_run", label: "Review this run", native_path: "/runs?assistance_job=job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" } } });
+  const submit = vi.spyOn(api, "submitAssistance").mockImplementation(async (body) => result(body));
+  vi.spyOn(api, "assistanceTurn").mockImplementation(async () => result(readAssistanceReceipt()!));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider><SavedRunSelection /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>);
+  const user = userEvent.setup(); await open();
+  await user.selectOptions(screen.getByLabelText("Assistant mode"), "assist");
+  await user.selectOptions(screen.getByLabelText("Assistant provider"), provider.provider_id);
+  await user.type(screen.getByLabelText("What would you like to do?"), "Run this version and inspect its observations.");
+  await user.click(screen.getByRole("button", { name: "Start work" }));
+  expect(await screen.findByRole("link", { name: "Review this run" })).toHaveAttribute("href", "/runs?assistance_job=job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+  expect(submit).toHaveBeenCalledTimes(1);
+  const submitted = submit.mock.calls[0]![0];
+  expect(submitted).toMatchObject({ autonomy: "assist", provider_id: provider.provider_id, selection: savedGraph });
+  expect(submitted).not.toHaveProperty("run_id");
+  expect(readAssistanceReceipt()).toEqual(submitted);
+  await user.click(screen.getByText("Submitted run settings"));
+  expect(screen.getByText("owned.selected.scope")).toBeVisible();
+  expect(screen.getByText("Off · No provider")).toBeVisible();
+});
+
+function OpenBoundOperation({ jobId }: { jobId: string }) { const panel = useAssistancePanel(); return <button onClick={() => panel?.openJob(jobId)}>Open run's Assistant work</button>; }
+it("restores a directly linked parent from its saved request without submitting work", async () => {
+  const body = request();
+  vi.spyOn(api, "assistanceTurn").mockResolvedValue(envelope(body));
+  const submit = vi.spyOn(api, "submitAssistance");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider><OpenBoundOperation jobId={assistanceJobId(body.submission_id)} /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Open run's Assistant work" }));
+  expect(await screen.findByRole("link", { name: "Review rule revision" })).toBeVisible();
+  expect(readAssistanceReceipt()).toEqual(body);
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it("does not replace an existing saved operation when another run's parent is opened", async () => {
+  const body = request(); storeAssistanceReceipt(body);
+  const lookup = vi.spyOn(api, "assistanceTurn").mockResolvedValue(envelope(body));
+  const other = `job-${"f".repeat(32)}`;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  render(<QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider><OpenBoundOperation jobId={other} /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Open run's Assistant work" }));
+  expect(await screen.findByText(/Another saved operation is open/)).toBeVisible();
+  expect(readAssistanceReceipt()).toEqual(body);
+  expect(lookup).not.toHaveBeenCalledWith(other);
 });

@@ -1,3 +1,4 @@
+import type { AssistanceRunEnvelope, RunPreparationDecision, SavedGraphSelection } from "./run-assistance";
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { sameJson } from "./replay-review";
 import type { DetectionAIDecision, DetectionAIRequest } from "./detection-ai";
@@ -287,6 +288,18 @@ export function buildReplayPayload(options: ReplayPayloadOptions): Record<string
 }
 
 export const api = {
+  async assistanceRunContext(selection: SavedGraphSelection): Promise<AssistanceContext> {
+    if (DEMO_MODE) throw new ApiError("Run assistance requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request("/assistance/run-context", { method: "POST", body: JSON.stringify({ selection }) });
+  },
+  async assistanceRun(jobId: string): Promise<AssistanceRunEnvelope> {
+    if (DEMO_MODE) throw new ApiError("Run assistance requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request(`/assistance/run-jobs/${encodeURIComponent(jobId)}`);
+  },
+  async reviewAssistanceRun(jobId: string, body: RunPreparationDecision & { decision: "accept" | "reject" }): Promise<AssistanceRunEnvelope> {
+    if (DEMO_MODE) throw new ApiError("Run review requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request(`/assistance/run-jobs/${encodeURIComponent(jobId)}/review`, { method: "POST", body: JSON.stringify(body) });
+  },
   async assistanceGraphContext(base: GraphSelection["base_scenario"]): Promise<AssistanceContext> {
     if (DEMO_MODE) throw new ApiError("Graph assistance requires the connected local service.", "demo_assistance_refused", undefined, 409);
     const query = base ? `?${new URLSearchParams({ scenario_id: base.scenario_id, version: String(base.version), digest: base.digest })}` : "";

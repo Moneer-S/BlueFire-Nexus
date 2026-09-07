@@ -1,13 +1,14 @@
+import { validSavedGraphSelection, type SavedGraphSelection, type RunInspectedResult } from "./run-assistance";
 import type { DetectionCaseRole, RunJob } from "../types";
 import type { MethodSource } from "./method-comparison";
 import { sameJson } from "./replay-review";
 
-export type AssistanceCapability = "detection.revise_and_evaluate" | "method.compare_same_detector" | "graph.propose_and_validate";
+export type AssistanceCapability = "detection.revise_and_evaluate" | "method.compare_same_detector" | "graph.propose_and_validate" | "run.saved_graph_and_inspect";
 export interface GraphSelection { kind: "graph"; base_scenario: null | { scenario_id: string; version: number; digest: string } }
 export interface AssistanceContext {
   schema_version: "bluefire.assistance-context.v1";
   context_digest: string;
-  selected: GraphSelection | {
+  selected: GraphSelection | SavedGraphSelection | {
     run_id: string; candidate_id: string; candidate_resource_digest: string;
     title: string; definition_digest: string; target_language: string; source_binding: MethodSource;
   };
@@ -23,7 +24,10 @@ export interface GraphAssistanceRequest {
   submission_id: string; context_digest: string; selection: GraphSelection; message: string;
   autonomy: "off" | "assist" | "auto"; provider_id?: string;
 }
-export type AssistanceRequest = DetectionAssistanceRequest | GraphAssistanceRequest;
+export interface SavedGraphAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: SavedGraphSelection }
+export type AssistanceRequest = DetectionAssistanceRequest | GraphAssistanceRequest | SavedGraphAssistanceRequest;
+export const isSavedGraphRequest = (value: AssistanceRequest): value is SavedGraphAssistanceRequest => "selection" in value && value.selection?.kind === "saved_graph";
+export const isSavedGraphSelection = (value: AssistanceContext["selected"]): value is SavedGraphSelection => "kind" in value && value.kind === "saved_graph";
 export const isGraphRequest = (value: AssistanceRequest): value is GraphAssistanceRequest => "selection" in value && value.selection?.kind === "graph";
 export const isGraphSelection = (value: AssistanceContext["selected"]): value is GraphSelection => "kind" in value && value.kind === "graph";
 export type AssistanceStatus = "planning" | "off" | "working" | "awaiting_review" | "awaiting_execute_approval" | "ready_to_continue" | "completed" | "blocked" | "cancelling" | "cancelled";
@@ -32,11 +36,11 @@ export interface AssistanceEnvelope {
   turn: {
     schema_version: "bluefire.assistance-turn.v1"; status: AssistanceStatus; message: string; context_digest: string;
     can_start_new_turn: boolean;
-    selected: GraphSelection | Pick<DetectionAssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
+    selected: GraphSelection | SavedGraphSelection | Pick<DetectionAssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
     plan: Array<{ step_id: string; capability_id: AssistanceCapability; title: string; detector_ref: "selected" | "revised" | "none"; reason: string }>;
     active_child: null | { job_id: string; kind: string; state: string; step_id: string; native_path: string };
-    next_action: null | { kind: "review_graph" | "review_detection" | "review_method" | "review_execute" | "continue" | "new_turn"; label: string; native_path: string | null };
-    results: Array<{ kind: "detection_revision" | "method_comparison"; step_id: string; candidate_id: string; evaluation_ids: string[]; run_ids: string[]; comparison_id: string | null; native_path: string } | { kind: "graph_saved"; step_id: string; proposal_job_id: string; scenario_id: string; version: number; digest: string; operator_modified: boolean; native_path: string; execution_state: "not_run" }>;
+    next_action: null | { kind: "review_run" | "review_graph" | "review_detection" | "review_method" | "review_execute" | "continue" | "new_turn"; label: string; native_path: string | null };
+    results: Array<RunInspectedResult | { kind: "detection_revision" | "method_comparison"; step_id: string; candidate_id: string; evaluation_ids: string[]; run_ids: string[]; comparison_id: string | null; native_path: string } | { kind: "graph_saved"; step_id: string; proposal_job_id: string; scenario_id: string; version: number; digest: string; operator_modified: boolean; native_path: string; execution_state: "not_run" }>;
     continuation: null | { job_id: string; submission_id: string; state: string; context_digest: string };
     recovery?: null | {
       code: "runner_readiness_required" | "native_review_required" | "detection_review_required" | "source_review_required";
@@ -66,7 +70,9 @@ export function readAssistanceReceipt(): AssistanceRequest | undefined {
     if (!value || !uuid.test(value.submission_id) || !digest.test(value.context_digest) || !bounded(value.message, 1000)
       || !["off", "assist", "auto"].includes(value.autonomy)
       || (value.provider_id !== undefined && !bounded(value.provider_id))) return;
-    if (isGraphRequest(value)) {
+    if (isSavedGraphRequest(value)) {
+      if (!validSavedGraphSelection(value.selection)) return;
+    } else if (isGraphRequest(value)) {
       const base = value.selection.base_scenario;
       if (base !== null && (!base || !bounded(base.scenario_id) || !Number.isSafeInteger(base.version) || base.version < 1 || !digest.test(base.digest))) return;
     } else if ("selection" in value || !digest.test(value.candidate_resource_digest) || !bounded(value.run_id) || !bounded(value.candidate_id)
@@ -91,7 +97,7 @@ export function clearAssistanceReceipt(value: AssistanceRequest): boolean {
 export function matchesAssistanceReceipt(value: AssistanceEnvelope, receipt: AssistanceRequest): boolean {
   return value.job?.kind === "assistance.turn" && value.job.job_id === assistanceJobId(receipt.submission_id)
     && sameJson(value.job.request?.submitted_request, receipt) && value.turn?.schema_version === "bluefire.assistance-turn.v1"
-    && value.turn.context_digest === receipt.context_digest && sameJson(value.turn.selected, isGraphRequest(receipt) ? receipt.selection
+    && value.turn.context_digest === receipt.context_digest && sameJson(value.turn.selected, "selection" in receipt ? receipt.selection
       : { run_id: receipt.run_id, candidate_id: receipt.candidate_id, candidate_resource_digest: receipt.candidate_resource_digest });
 }
 

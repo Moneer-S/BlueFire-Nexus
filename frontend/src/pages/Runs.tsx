@@ -1,3 +1,4 @@
+import { AssistedRunReview, SavedGraphRunSetup } from "./AssistedRun";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, AlertTriangle, CircleStop, Clock3, FileSearch, Gauge, ListTree, Pause, Play, RotateCcw, ShieldCheck, Sparkles, TerminalSquare } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -93,6 +94,15 @@ interface RunPreflightAttempt {
 }
 
 export function RunsPage() {
+  const [params] = useSearchParams();
+  const { runId } = useParams<{ runId?: string }>();
+  const assistanceJob = params.get("assistance_job"), graphJob = params.get("graph_job");
+  if (!runId && !params.has("job") && assistanceJob !== null) return <AssistedRunReview key={assistanceJob} jobId={assistanceJob} />;
+  if (!runId && !params.has("job") && graphJob !== null) return <SavedGraphRunSetup key={graphJob} jobId={graphJob} />;
+  return <NativeRunsPage />;
+}
+
+function NativeRunsPage() {
   const { runId } = useParams<{ runId?: string }>();
   const location = useLocation();
   const navigate = useNavigate();

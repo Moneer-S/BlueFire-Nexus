@@ -1,0 +1,162 @@
+import { useEffect, useRef } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
+import { expect, it, vi } from "vitest";
+import { api } from "../src/lib/api";
+import { demoCatalog, demoScenario } from "../src/lib/demo";
+import type { GraphEnvelope } from "../src/lib/graph-assistance";
+import { checkedAssistanceRun, readRunDecision, type AssistanceRunEnvelope, type SavedGraphSelection } from "../src/lib/run-assistance";
+import { AssistedRunReview, SavedGraphRunSetup } from "../src/pages/AssistedRun";
+import { AssistanceProvider, useAssistanceSelection } from "../src/state/AssistanceContext";
+import { ProductProvider, useProduct } from "../src/state/ProductContext";
+
+const graphJob = `job-${"a".repeat(32)}`, preparationJob = `job-${"b".repeat(32)}`;
+const digest = `sha256:${"c".repeat(64)}`;
+const document = { ...demoScenario, id: "scenario.reviewed.v1", title: "Reviewed experiment" };
+const application = { proposal_job_id: graphJob, proposal_digest: digest, reviewed_digest: digest, operator_modified: true, scenario_id: document.id, version: 2, digest };
+const selection: SavedGraphSelection = { kind: "saved_graph", proposal_job_id: graphJob, application,
+  run_intent: { mode: "simulate", autonomy: "off", ai_provider_id: null, runner_profile_id: "sandbox-simulate.v1", target_scope: { scope_refs: ["sandbox.workspace"] } } };
+function graph(): GraphEnvelope {
+  return { job: { schema_version: "bluefire.job.v1", job_id: graphJob, kind: "graph.ai.propose", state: "completed", progress: {} }, application, review_ready: false,
+    proposal: { schema_version: "bluefire.graph-ai-proposal.v1", proposal_job_id: graphJob, proposal_digest: digest, context_digest: digest, catalog_digest: digest, base_scenario: null,
+      scenario: document, validation: { valid: true }, rationale: "Bounded local test", assumptions: [], limitations: [], provider: { effective_provider_id: "test-model", model: "test-model", used_fallback: false, attempts: 1 } } };
+}
+function ready(): AssistanceRunEnvelope {
+  const preparation = { schema_version: "bluefire.assistance-run-preparation.v1" as const, preparation_digest: digest, context_digest: digest, selection,
+    scenario: document, run_request: { ...document, ...selection.run_intent }, preflight: { ready: true, status: "ready", plan: { steps: [], edges: [], mode: "simulate" } }, approval_created: false as const, effects_started: false as const };
+  return { job: { schema_version: "bluefire.job.v1", job_id: preparationJob, kind: "run.assistance.prepare", state: "completed", request: {}, progress: { preparation } }, preparation,
+    decision: null, run_job: null, inspection_job: null, inspection: null, result: null, review_ready: true };
+}
+function Witness() {
+  const selected = useAssistanceSelection();
+  const { scenario, runConfig, setRunConfig } = useProduct();
+  return <><button onClick={() => setRunConfig({ ...runConfig, autonomy: "auto" })}>Change Assistant mode in test</button><output aria-label="Published selection">{JSON.stringify(selected)}</output><output aria-label="Active draft">{JSON.stringify(scenario)}</output><output aria-label="Global run settings">{JSON.stringify(runConfig)}</output></>;
+}
+function OverrideSeed() {
+  const { runConfig, setRunConfig } = useProduct();
+  const seeded = useRef(false);
+  useEffect(() => { if (!seeded.current) { seeded.current = true; setRunConfig({ ...runConfig, mode: "execute", profileId: "sandbox-execute.v1", actionImplementations: { [demoScenario.steps[0]!.id]: "unrelated-method.v1" } }); } }, [runConfig, setRunConfig]);
+  return null;
+}
+function mount(review = false, seedOverrides = false) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const view = render(<QueryClientProvider client={client}><ProductProvider><AssistanceProvider><MemoryRouter>{seedOverrides ? <OverrideSeed /> : null}<Witness />{review ? <AssistedRunReview jobId={preparationJob} /> : <SavedGraphRunSetup jobId={graphJob} />}</MemoryRouter></AssistanceProvider></ProductProvider></QueryClientProvider>);
+  return { ...view, user: userEvent.setup() };
+}
+function stubGraph() {
+  vi.spyOn(api, "catalog").mockResolvedValue(demoCatalog);
+  vi.spyOn(api, "graphProposal").mockResolvedValue(graph());
+  vi.spyOn(api, "immutableScenarioVersion").mockResolvedValue({ schema_version: "bluefire.scenario-version.v1", scenario: { scenario_id: document.id, title: document.title, version: 2, digest, document, created_at: "2030-01-01" } });
+}
+
+it("retains separate settings across remount without replacing the active graph or runtime preferences", async () => {
+  stubGraph();
+  localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(demoScenario));
+  const first = mount();
+  const scope = await screen.findByLabelText(/^Target scope/);
+  const globalBefore = screen.getByLabelText("Global run settings").textContent;
+  await first.user.clear(scope); await first.user.type(scope, "owned.reviewed.scope");
+  expect(JSON.parse(screen.getByLabelText("Published selection").textContent!).selected.run_intent.target_scope.scope_refs).toEqual(["owned.reviewed.scope"]);
+  expect(JSON.parse(screen.getByLabelText("Active draft").textContent!)).toEqual(demoScenario);
+  expect(screen.getByLabelText("Global run settings").textContent).toBe(globalBefore);
+  first.unmount(); mount();
+  expect(await screen.findByLabelText(/^Target scope/)).toHaveValue("owned.reviewed.scope");
+  expect(screen.getByText("AI during the run")).toBeVisible();
+});
+
+it("does not inherit action overrides from the active experiment", async () => {
+  stubGraph();
+  localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(demoScenario));
+  localStorage.setItem("bluefire.local.run-config.v1", JSON.stringify({ schema_version: "bluefire.ui-preferences.v1", theme: "dark", effect_mode: "execute", autonomy: "off" }));
+  mount(false, true); await screen.findByLabelText(/^Target scope/);
+  const selected = JSON.parse(screen.getByLabelText("Published selection").textContent!).selected;
+  expect(selected.run_intent.mode).toBe("execute");
+  expect(JSON.parse(screen.getByLabelText("Global run settings").textContent!).actionImplementations).toHaveProperty(demoScenario.steps[0]!.id);
+  expect(selected.run_intent.action_implementations).toBeUndefined();
+});
+
+it("refuses a saved version whose digest no longer matches its accepted application", async () => {
+  stubGraph();
+  vi.mocked(api.immutableScenarioVersion).mockResolvedValue({ schema_version: "bluefire.scenario-version.v1", scenario: { scenario_id: document.id, title: document.title, version: 2, digest: `sha256:${"d".repeat(64)}`, document, created_at: "2030-01-01" } });
+  mount();
+  expect(await screen.findByText("The experiment does not match its saved review. Check the original proposal before continuing.")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Run with Assistant" })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Published selection")).toHaveTextContent("");
+});
+
+it("retains an uncertain acceptance across remount and retries exactly that decision", async () => {
+  vi.spyOn(api, "assistanceRun").mockResolvedValue(ready());
+  const accepted = { ...ready(), decision: { decision: "accept" as const, preparation_digest: digest }, review_ready: false };
+  const post = vi.spyOn(api, "reviewAssistanceRun").mockRejectedValueOnce(new Error("Response lost")).mockResolvedValueOnce(accepted);
+  const first = mount(true);
+  await first.user.click(await screen.findByRole("button", { name: "Accept and prepare run" }));
+  await screen.findByText("Response lost");
+  expect(readRunDecision(preparationJob)).toEqual({ decision: "accept", preparation_digest: digest });
+  first.unmount(); const second = mount(true);
+  await second.user.click(await screen.findByRole("button", { name: "Retry acceptance" }));
+  await screen.findByText("Your review is saved.");
+  expect(post).toHaveBeenCalledTimes(2);
+  expect(post.mock.calls[0]).toEqual(post.mock.calls[1]);
+  expect(screen.queryByRole("button", { name: "Decline this run" })).not.toBeInTheDocument();
+});
+
+it("sends no review when browser persistence fails", async () => {
+  vi.spyOn(api, "assistanceRun").mockResolvedValue(ready());
+  const post = vi.spyOn(api, "reviewAssistanceRun");
+  const view = mount(true);
+  await screen.findByRole("button", { name: "Accept and prepare run" });
+  const original = Storage.prototype.setItem;
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) { if (key.startsWith("bluefire.assistance-run-review.")) throw new Error("Full"); original.call(this, key, value); });
+  await view.user.click(screen.getByRole("button", { name: "Accept and prepare run" }));
+  expect(await screen.findByText(/Enable browser session storage before reviewing/)).toBeVisible();
+  expect(post).not.toHaveBeenCalled();
+});
+
+it("shows interrupted preparation and recovery rather than an endless checking message", async () => {
+  vi.spyOn(api, "assistanceRun").mockResolvedValue({ ...ready(), preparation: null, review_ready: false, job: { ...ready().job, state: "interrupted" } });
+  mount(true);
+  expect(await screen.findByText(/Preparation did not finish/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Open Assistant work" })).toBeEnabled();
+  expect(screen.queryByRole("button", { name: "Accept and prepare run" })).not.toBeInTheDocument();
+});
+
+it("checks the submitted payload and parent binding while allowing server approval metadata", async () => {
+  const value = ready();
+  value.run_job = { schema_version: "bluefire.job.v1", job_id: `job-${"e".repeat(32)}`, kind: "scenario.run", state: "awaiting_approval", progress: {}, request: {
+    _run_submission_request: value.preparation!.run_request, assistance_run: { operation_job_id: preparationJob, preparation_digest: digest }, approval_request_id: "server-only" } };
+  expect(checkedAssistanceRun(value, preparationJob)).toBe(value);
+  value.run_job.request!.assistance_run = { operation_job_id: graphJob, preparation_digest: digest };
+  expect(() => checkedAssistanceRun(value, preparationJob)).toThrow("The run does not match");
+});
+
+it("retains the untouched runtime snapshot when Assistant mode changes before remount", async () => {
+  stubGraph();
+  const first = mount();
+  await screen.findByLabelText(/^Target scope/);
+  await first.user.click(screen.getByRole("button", { name: "Change Assistant mode in test" }));
+  expect(JSON.parse(screen.getByLabelText("Global run settings").textContent!).autonomy).toBe("auto");
+  first.unmount(); mount();
+  await screen.findByLabelText(/^Target scope/);
+  expect(JSON.parse(screen.getByLabelText("Published selection").textContent!).selected.run_intent.autonomy).toBe("off");
+  expect(JSON.parse(screen.getByLabelText("Global run settings").textContent!).autonomy).toBe("auto");
+});
+
+it("follows the accepted run through inspection even when preparation was interrupted", async () => {
+  const initial = { ...ready(), job: { ...ready().job, state: "interrupted" as const } };
+  const accepted = { ...initial, decision: { decision: "accept" as const, preparation_digest: digest }, review_ready: false,
+    run_job: { schema_version: "bluefire.job.v1" as const, job_id: `job-${"e".repeat(32)}`, kind: "scenario.run", state: "queued" as const, progress: {}, request: {
+      _run_submission_request: initial.preparation!.run_request, assistance_run: { operation_job_id: preparationJob, preparation_digest: digest } } } };
+  const completed: AssistanceRunEnvelope = { ...accepted,
+    run_job: { ...accepted.run_job, state: "completed" },
+    inspection: { schema_version: "bluefire.run-evidence-inspection.v1", run_id: "run-reviewed", run_digest: digest, summary: "Simulation completed without independent observations.", findings: [], limitations: ["Synthetic only"], observed_records: 0, total_records: 7, status: "insufficient", provider: null },
+    result: { kind: "run_inspected", step_id: "inspect", run_id: "run-reviewed", run_job_id: accepted.run_job.job_id, inspection_job_id: `job-${"f".repeat(32)}`, scenario_id: document.id, version: 2, digest, mode: "simulate", objective_reached: null, cleanup_state: "complete", observed_records: 0, total_records: 7, inspection_status: "insufficient", native_path: "/runs/run-reviewed" } };
+  const get = vi.spyOn(api, "assistanceRun").mockResolvedValueOnce(initial).mockResolvedValue(completed);
+  vi.spyOn(api, "reviewAssistanceRun").mockResolvedValue(accepted);
+  const view = mount(true);
+  await view.user.click(await screen.findByRole("button", { name: "Accept and prepare run" }));
+  expect(await screen.findByText("Simulation completed without independent observations.", {}, { timeout: 4000 })).toBeVisible();
+  expect(get.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(screen.getByRole("heading", { name: "Not enough evidence" })).toBeVisible();
+});
