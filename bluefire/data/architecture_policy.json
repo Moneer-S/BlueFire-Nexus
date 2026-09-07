@@ -267,6 +267,9 @@
       "layer": "application",
       "patterns": [
         "bluefire.application_errors",
+        "bluefire.assistance_context",
+        "bluefire.assistance_results",
+        "bluefire.assistance_turns",
         "bluefire.package_management",
         "bluefire.package_management_context",
         "bluefire.reviewed_source_intake",
@@ -357,6 +360,7 @@
         "bluefire.ai_drafts",
         "bluefire.ai_detection_revision",
         "bluefire.ai_method_comparison",
+        "bluefire.ai_assistance",
         "bluefire.ai_probe",
         "bluefire.ai_wire",
         "bluefire.ai_transport",

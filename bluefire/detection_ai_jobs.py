@@ -66,6 +66,7 @@ class DetectionAIJobs:
     ) -> None:
         self.lab, self.controller, self.ai_config, self.access = lab, controller, ai_config, access
         self.store = lab.product_store
+        self.on_application: Callable[[Mapping[str, Any]], None] | None = None
 
     def _provider(self, provider_id: str) -> AIProviderConfig:
         config = self.ai_config()
@@ -80,7 +81,13 @@ class DetectionAIJobs:
             )
         return provider
 
-    def submit(self, candidate_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+    def submit(
+        self,
+        candidate_id: str,
+        request: Mapping[str, Any],
+        *,
+        _assistance_turn: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
         self.lab._fields(
             request,
             required={
@@ -120,6 +127,8 @@ class DetectionAIJobs:
             "candidate_id": candidate_id,
             "submitted_request": dict(request),
         }
+        if _assistance_turn is not None:
+            document["assistance_turn"] = dict(_assistance_turn)
         try:
             autonomy = request.get("autonomy", self.ai_config().autonomy.value)
             if autonomy == "off":
@@ -304,6 +313,8 @@ class DetectionAIJobs:
                     "proposal_job_id": job_id,
                     "proposal_digest": reviewed["proposal_digest"],
                 }
+                if "assistance_turn" in job["request"]:
+                    application_request["assistance_turn"] = job["request"]["assistance_turn"]
                 application = self.controller.submit(
                     APPLY_KIND,
                     application_request,
@@ -417,6 +428,8 @@ class DetectionAIJobs:
             revision_kind="source",
             application_commit=commit,
         )
+        if self.on_application is not None and "assistance_turn" in stored:
+            self.on_application(self.store.get_job(str(proposal_job["job_id"])))
         return JobResult(
             result_ref=committed["resource"]["id"],
             progress={"operation_phase": "revision_applied", "application": committed["receipt"]},

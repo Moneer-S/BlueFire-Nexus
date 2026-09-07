@@ -498,6 +498,49 @@ class APIRoutes:
             return ""
         return run_id
 
+    def _assistance_context_request(self, path: str) -> tuple[str, str] | None:
+        if path != f"{API_PREFIX}/assistance/context":
+            return None
+        try:
+            pairs = parse_qsl(
+                urlsplit(self.path).query,
+                keep_blank_values=True,
+                strict_parsing=True,
+                max_num_fields=2,
+            )
+            values = dict(pairs)
+            if (
+                len(pairs) != 2
+                or set(values) != {"run_id", "candidate_id"}
+                or not _RUN_ID.fullmatch(values["run_id"])
+                or not _DETECTION_ID.fullmatch(values["candidate_id"])
+            ):
+                raise ValueError
+        except ValueError:
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "assistance_context_invalid",
+                "Select one immutable run and saved detector.",
+            )
+            return "", ""
+        return values["run_id"], values["candidate_id"]
+
+    def _assistance_turn_request(self, path: str) -> tuple[str, bool] | None:
+        prefix = f"{API_PREFIX}/assistance/turns/"
+        if not path.startswith(prefix):
+            return None
+        if not self._management_query_free():
+            return "", False
+        remainder = path[len(prefix) :]
+        continuing = remainder.endswith("/continue")
+        job_id = remainder[: -len("/continue")] if continuing else remainder
+        if not _JOB_ID.fullmatch(job_id):
+            self._error(
+                HTTPStatus.BAD_REQUEST, "invalid_job_id", "Assistance job identifier is invalid."
+            )
+            return "", False
+        return job_id, continuing
+
     def _run_replay_job_id(self, path: str) -> str | None:
         prefix = f"{API_PREFIX}/runs/"
         suffix = "/replay-jobs"

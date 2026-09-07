@@ -224,7 +224,13 @@ class MethodComparisonJobs:
             "replay_autonomy": "off",
         }
 
-    def submit(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+    def submit(
+        self,
+        run_id: str,
+        request: Mapping[str, Any],
+        *,
+        _assistance_turn: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
         self.lab._fields(
             request,
             required={
@@ -272,6 +278,8 @@ class MethodComparisonJobs:
                 uuid.uuid5(uuid.UUID(request["submission_id"]), "method-comparison")
             ),
         }
+        if _assistance_turn is not None:
+            document["assistance_turn"] = dict(_assistance_turn)
         try:
             autonomy = request.get("autonomy", self.service._runtime_ai().autonomy.value)
             if autonomy not in {"assist", "auto"}:

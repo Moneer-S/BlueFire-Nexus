@@ -51,6 +51,7 @@ from .approvals import (
     execution_intent_id,
     public_approval_record,
 )
+from .assistance_turns import ExperimentAssistance
 from .bootstrap import seed_product_metadata
 from .collector_comparison import summarize_collector_session
 from .collector_schedule import producer_settings, uses_producer_schedule
@@ -266,6 +267,8 @@ class BlueFireService(RunnerManagementServiceMixin):
             access=self._provider_access,
         )
         self.method_comparison = MethodComparisonJobs(self)
+        self.assistance = ExperimentAssistance(self)
+        self.detection_ai.on_application = self.assistance.application_committed
         self.cleanup_recovery = self._recover_interrupted_cleanup()
         self.seed_counts = seed_product_metadata(
             self.product_store,
@@ -754,6 +757,20 @@ class BlueFireService(RunnerManagementServiceMixin):
 
     def method_comparison_context(self, run_id: str) -> Mapping[str, Any]:
         return self.method_comparison.context(run_id)
+
+    def assistance_context(self, run_id: str, candidate_id: str) -> Mapping[str, Any]:
+        return self.assistance.context(run_id, candidate_id)
+
+    def submit_assistance_turn(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self.assistance.submit(request)
+
+    def assistance_turn(self, job_id: str) -> Mapping[str, Any]:
+        return self.assistance.read(job_id)
+
+    def continue_assistance_turn(
+        self, job_id: str, request: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        return self.assistance.continue_turn(job_id, request)
 
     def submit_method_comparison(
         self, run_id: str, request: Mapping[str, Any]
@@ -1714,6 +1731,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "detection.ai.apply",
                     "replay.ai.propose",
                     "replay.comparison.recover",
+                    "assistance.turn",
+                    "assistance.continue",
                 }
                 or state is None
                 or created is None
@@ -2309,6 +2328,8 @@ class BlueFireService(RunnerManagementServiceMixin):
             return self._signal_job(job_id, "cancel")
         if job.get("kind") == "replay.ai.propose":
             return self.method_comparison.cancel(job_id)
+        if job.get("kind") == "assistance.turn":
+            return dict(self.assistance.cancel(job_id)["job"])
         return self._signal_job(job_id, "cancel")
 
     def _signal_job(self, job_id: str, signal: str) -> Mapping[str, Any]:

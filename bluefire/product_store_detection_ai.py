@@ -76,6 +76,10 @@ def decide(store: ProductStore, job_id: str, request: Mapping[str, Any]) -> Mapp
     with store._connection(write=True) as connection:
         job = _job(store, connection, job_id)
         proposal = proposal_from_job(job)
+        if request["decision"] == "accept":
+            from .product_store_assistance import require_active
+
+            require_active(store, connection, job)
         if (
             request["proposal_digest"] != proposal["proposal_digest"]
             or request["parent_resource_digest"] != proposal["parent"]["resource_digest"]
@@ -180,6 +184,9 @@ def apply_revision(
                 result_ref=str(resource["id"]),
             )
             return resource, report, receipt
+        from .product_store_assistance import require_active
+
+        require_active(store, connection, proposal_job)
         check_cancelled()
         if application_job["state"] != "running":
             raise ProductStoreError("Detection application is no longer running.")

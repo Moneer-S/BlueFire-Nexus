@@ -416,6 +416,28 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
             return
+        assistance_context = self._routes._assistance_context_request(path)
+        if assistance_context is not None:
+            if assistance_context[0]:
+                self._dispatch(
+                    lambda: self.platform_server.service.assistance_context(*assistance_context)
+                )
+            return
+        if path == f"{API_PREFIX}/assistance/turns":
+            if self._routes._management_query_free():
+                self._method_not_allowed("POST")
+            return
+        assistance_turn = self._routes._assistance_turn_request(path)
+        if assistance_turn is not None:
+            assistance_id, continuing = assistance_turn
+            if assistance_id:
+                if continuing:
+                    self._method_not_allowed("POST")
+                else:
+                    self._dispatch(
+                        lambda: self.platform_server.service.assistance_turn(assistance_id)
+                    )
+            return
         method_context_id = self._routes._run_method_comparison_id(path, context=True)
         if method_context_id is not None:
             if method_context_id:
@@ -820,6 +842,30 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/comparisons":
             self._dispatch(lambda: self.platform_server.service.compare(body))
+            return
+        if path == f"{API_PREFIX}/assistance/turns":
+            if self._routes._management_query_free():
+                self._dispatch(
+                    lambda: self.platform_server.service.submit_assistance_turn(body),
+                    success_status=HTTPStatus.ACCEPTED,
+                )
+            return
+        if path == f"{API_PREFIX}/assistance/context":
+            self._method_not_allowed("GET")
+            return
+        assistance_turn = self._routes._assistance_turn_request(path)
+        if assistance_turn is not None:
+            assistance_id, continuing = assistance_turn
+            if assistance_id:
+                if continuing:
+                    self._dispatch(
+                        lambda: self.platform_server.service.continue_assistance_turn(
+                            assistance_id, body
+                        ),
+                        success_status=HTTPStatus.ACCEPTED,
+                    )
+                else:
+                    self._method_not_allowed("GET")
             return
         method_run_id = self._routes._run_method_comparison_id(path)
         if method_run_id is not None:

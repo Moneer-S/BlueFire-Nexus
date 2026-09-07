@@ -143,6 +143,18 @@ class PlatformService(Protocol):
     def method_comparison_context(self, run_id: str) -> JsonResult:
         """Read compatible methods in the recorded authority."""
 
+    def assistance_context(self, run_id: str, candidate_id: str) -> JsonResult:
+        """Read authoritative saved-object capability context."""
+
+    def submit_assistance_turn(self, request: JsonObject) -> JsonResult:
+        """Submit one idempotent contextual assistance turn."""
+
+    def assistance_turn(self, job_id: str) -> JsonResult:
+        """Read a contextual turn and its actual native child receipts."""
+
+    def continue_assistance_turn(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Recover a retained handoff without repeating completed operations."""
+
     def submit_method_comparison(self, run_id: str, request: JsonObject) -> JsonResult:
         """Propose one connected method replay and detector comparison."""
 

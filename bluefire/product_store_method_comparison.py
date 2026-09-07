@@ -74,6 +74,10 @@ def decide(
     with store._connection(write=True) as connection:
         job = job_at(store, connection, job_id)
         proposal = proposal_at(job)
+        if request["decision"] == "accept":
+            from .product_store_assistance import require_active
+
+            require_active(store, connection, job)
         if proposal["proposal_digest"] != request["proposal_digest"]:
             raise ProductStoreError("Method proposal changed before review.")
         previous = job["progress"].get("decision")
@@ -116,6 +120,9 @@ def publication_guard(
     binding = document["method_comparison"]
     job = job_at(store, connection, binding["proposal_job_id"])
     proposal = proposal_at(job)
+    from .product_store_assistance import require_active
+
+    require_active(store, connection, job)
     if (
         job["progress"].get("stopped")
         or job["progress"].get("decision", {}).get("decision") != "accept"

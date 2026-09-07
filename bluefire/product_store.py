@@ -4281,6 +4281,10 @@ class ProductStore:
             row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
             if row is not None:
                 return self._matching_job_submission(row, job_kind, binding), False
+            if "assistance_turn" in document:
+                from .product_store_assistance import publication_guard as assistance_guard
+
+                assistance_guard(self, connection, job_kind, document)
             if "method_comparison" in document:
                 from .product_store_method_comparison import publication_guard
 
