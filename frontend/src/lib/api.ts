@@ -465,9 +465,9 @@ export const api = {
     if (DEMO_MODE) return { schema_version: "bluefire.runner-probe.v1", profile_id: id, version: null, platform: null, actions: [], health: { state: "unavailable", message: "Demo mode never probes a local runner." } };
     return request(`/resources/runner-profiles/${encodeURIComponent(id)}/probe`, { method: "POST", body: JSON.stringify({}) });
   },
-  async runnerStatus(): Promise<RunnerLifecycleStatus> {
+  async runnerStatus(profileId?: string): Promise<RunnerLifecycleStatus> {
     if (DEMO_MODE) return { schema_version: "bluefire.runner-lifecycle-status.v1", state: "unavailable", runner_id: "bluefire-rust-runner.v1", profile_id: null, loopback_only: true, enrollment: "absent", process: "absent", runner: null, health: null };
-    return request("/runner");
+    return request(`/runner${profileId ? `?profile_id=${encodeURIComponent(profileId)}` : ""}`);
   },
   async bootstrapRunner(profileId?: string, allowUpgrade = false): Promise<RunnerLifecycleStatus> {
     if (DEMO_MODE) throw new ApiError("Demo mode cannot bootstrap a local runner.", "demo_runner_lifecycle_refused", undefined, 409);

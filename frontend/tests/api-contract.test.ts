@@ -210,6 +210,13 @@ describe("control-plane request contracts", () => {
     timeoutSpy.mockRestore();
   });
 
+  it("requests readiness for the explicitly selected profile", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => { void _input; return new Response(JSON.stringify({ state: "unavailable" }), { status: 200, headers: { "Content-Type": "application/json" } }); });
+    vi.stubGlobal("fetch", fetchMock);
+    await api.runnerStatus("new-execute.v1");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/v1/runner?profile_id=new-execute.v1");
+  });
+
   it("persists secret-safe settings, versioned scenarios, and allowlisted resources", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       void _init;

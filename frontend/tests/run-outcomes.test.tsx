@@ -2,13 +2,32 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it } from "vitest";
 import { RunReview } from "../src/pages/Runs";
-import { demoCatalog, demoRuns } from "../src/lib/demo";
+import { demoCatalog, demoRuns, demoScenario } from "../src/lib/demo";
 import { runLabel } from "../src/lib/run-presentation";
 import type { RunRecord } from "../src/types";
 
 function run(overrides: Partial<RunRecord>): RunRecord {
   return { ...structuredClone(demoRuns[0]!), is_demo: false, mode: "execute", ...overrides };
 }
+
+it("separates original scenario notes from a partial run's unresolved limitations", () => {
+  const sourceNote = "Draft only; run setup and approval are separate.";
+  const runtimeNote = "Cancellation left partial observations.";
+  render(<RunReview run={run({ status: "cancelled", scenario: { ...demoScenario, limitations: [sourceNote] }, limitations: [sourceNote, runtimeNote] })} catalog={demoCatalog}/>);
+  const source = within(screen.getByRole("region", { name: "Scenario assumptions and source notes" }));
+  const actual = within(screen.getByRole("region", { name: "Run limitations" }));
+  expect(source.getByText(sourceNote)).toBeVisible();
+  expect(source.getByText(/Recorded when the saved experiment was authored/)).toBeVisible();
+  expect(actual.getByText(runtimeNote)).toBeVisible();
+  expect(actual.queryByText(sourceNote)).not.toBeInTheDocument();
+});
+
+it("does not infer source provenance from a limitation's wording", () => {
+  const note = "Unsaved AI-assisted draft";
+  render(<RunReview run={run({ scenario: undefined, limitations: [note] })} catalog={demoCatalog}/>);
+  expect(within(screen.getByRole("region", { name: "Recorded limitations" })).getByText(note)).toBeVisible();
+  expect(screen.queryByRole("region", { name: "Scenario assumptions and source notes" })).not.toBeInTheDocument();
+});
 
 it.each([
   [{ authorized_target_scope: { scope_refs: ["canonical.workspace", "canonical.loopback"] }, policy: { authorized_target_scope: { scope_refs: ["policy.workspace"] } }, target_scope: { scope_refs: ["legacy.workspace"] } }, "canonical.workspace, canonical.loopback"],

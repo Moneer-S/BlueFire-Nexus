@@ -19,7 +19,7 @@ import { CanonicalPlanReview } from "../components/CanonicalPlanReview";
 import { continuationApprovalPreflight, hasUsableStoredApprovalReview } from "../lib/approvalReview";
 import { settlePendingReplay } from "../lib/replay-submission";
 
-import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, stepOutcomeLabel } from "../lib/run-presentation";
+import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, runLimitationGroups, stepOutcomeLabel } from "../lib/run-presentation";
 
 import { RunExports } from "../components/RunExports";
 
@@ -113,7 +113,7 @@ function NativeRunsPage() {
   const catalog = useQuery({ queryKey: ["catalog"], queryFn: api.catalog });
   const runsQuery = useQuery({ queryKey: ["runs"], queryFn: api.runs });
   const scenariosQuery = useQuery({ queryKey: ["scenarios"], queryFn: api.scenarios });
-  const runnerLifecycleQuery = useQuery({ queryKey: ["runner-lifecycle"], queryFn: api.runnerStatus });
+  const runnerLifecycleQuery = useQuery({ queryKey: ["runner-lifecycle"], queryFn: () => api.runnerStatus() });
   const historicalRunQuery = useQuery({ queryKey: ["run", runId], queryFn: () => api.runDetail(runId!), enabled: Boolean(runId) });
   const { scenario, setScenario, dirty, runConfig, setRunConfig, clearApproval, activeRun, setActiveRun } = useProduct();
   const queryClient = useQueryClient();
@@ -555,7 +555,7 @@ export function RunReview({ run, catalog }: { run: RunRecord; catalog: CatalogRe
     <details className="run-review-details"><summary>Inspect evidence records{evidence ? ` (${evidence.length})` : " · not reported"}</summary><EvidenceDetail run={run}/></details>
     <details className="run-review-details"><summary>Inspect detection candidates{detections ? ` (${detections.length})` : " · not reported"}</summary><DetectionDetail run={run}/></details>
     {aiProposals.length ? <details className="run-review-details"><summary>AI decisions ({aiProposals.length})</summary><AIProposalTrail proposals={aiProposals}/></details> : <p className="run-ai-note">No runtime AI proposal records are attached.</p>}
-    <section className="run-limitations"><h2>Limitations</h2>{run.limitations?.length ? <ul>{run.limitations.map((item) => <li key={item}>{item}</li>)}</ul> : <p>No limitations were attached. This is incomplete metadata, not proof that there are none.</p>}</section>
+    {runLimitationGroups(run).map((group) => <section className="run-limitations" aria-label={group.title} key={group.title}><h2>{group.title}</h2>{group.description ? <p>{group.description}</p> : null}{group.items.length ? <ul>{group.items.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p>No limitations were attached. This is incomplete metadata, not proof that there are none.</p>}</section>)}
     <details className="run-review-details"><summary>Run identity, environment and technical record</summary><DataList items={[{ label: "Run ID", value: <code>{run.run_id}</code> }, { label: "Mode", value: sentence(run.mode) }, { label: "AI mode", value: sentence(run.autonomy ?? run.autonomy_level ?? (run.ai_enabled ? "assist" : "off")) }, { label: "Profile", value: run.runner_profile_id ?? "Not recorded" }, { label: "Targets", value: recordedTargetScope(run) }, { label: "Started", value: formatDate(run.created_at) }, { label: "Finalized", value: formatDate(run.finalized_at) }, { label: "Replay lineage", value: run.replay ? "Replay-linked" : "Original run" }]} /><details><summary>Raw reproducibility metadata</summary><div className="raw-columns"><StructuredPanel value={run.manifest ?? { schema_version: run.schema_version, scenario_id: run.scenario_id, profile_id: run.runner_profile_id }} empty="No manifest metadata."/><pre aria-label="Canonical run technical record">{JSON.stringify({ run_id: run.run_id, schema_version: run.schema_version, scenario_id: run.scenario_id, runner_profile_id: run.runner_profile_id, cleanup: run.cleanup ?? null, replay: run.replay ?? null }, null, 2)}</pre></div></details></details>
   </div>;
 }

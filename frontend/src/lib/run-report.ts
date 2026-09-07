@@ -1,5 +1,5 @@
 import type { RunRecord } from "../types";
-import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, stepOutcomeLabel } from "./run-presentation";
+import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, runLimitationGroups, stepOutcomeLabel } from "./run-presentation";
 
 // Escape record text, including HTML, so saved metadata cannot become report markup.
 const text = (value: unknown) => String(value ?? "Not recorded").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/[\\`*_{}[\]()#+.!|~-]/g, "\\$&").replace(/\r?\n/g, " ");
@@ -32,8 +32,8 @@ export function runReport(run: RunRecord): string {
     "", "Runner output and synthetic or counterfactual evidence are not independent observations. BlueFire policy stops do not prove a target defense worked.",
     "", `Detection candidates: ${run.detections ? run.detections.candidates.length : "Not reported"}. Candidates alone do not establish a detection fired or passed evaluation.`,
     "", "Detector revisions and Detection Lab evaluations are separate records outside this run bundle.",
-    "", "## Limitations", "",
-    ...(run.limitations?.length ? run.limitations.map((item) => `- ${text(item)}`) : ["No limitations were attached. This is incomplete metadata, not proof that there are none."]),
+    ...runLimitationGroups(run).flatMap((group) => ["", `## ${group.title}`, "", ...(group.description ? [group.description, ""] : []),
+      ...(group.items.length ? group.items.map((item) => `- ${text(item)}`) : ["No limitations were attached. This is incomplete metadata, not proof that there are none."])]),
     "", "## Reproducibility", "",
     `Manifest bundle hash: ${text(run.manifest?.bundle_hash)}`,
     "", "This readable report summarizes the displayed saved run. It is not the full evidence archive. Download the run bundle for exact original files, all event bytes, and independently hashed recovery records. No event-page truncation is applied to that archive.", "",

@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useState } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -15,7 +16,7 @@ function mount(profileId: string | undefined = "selected-execute.v1") {
 }
 
 it("prepares then starts only the selected profile through explicit actions", async () => {
-  const status = vi.spyOn(api, "runnerStatus").mockResolvedValue({ ...stopped, state: "unbootstrapped", enrollment: "absent" });
+  const status = vi.spyOn(api, "runnerStatus").mockResolvedValue({ ...stopped, state: "unbootstrapped", enrollment: "absent", profile_id: null });
   const bootstrap = vi.spyOn(api, "bootstrapRunner").mockImplementation(async () => { status.mockResolvedValue(stopped); return stopped; });
   const start = vi.spyOn(api, "startRunner").mockImplementation(async () => { status.mockResolvedValue(ready); return ready; });
   const submit = vi.spyOn(api, "submitRun");
@@ -52,10 +53,36 @@ it("does not call a runner ready without authenticated accepting health", async 
 });
 
 it("requires a selected profile and never silently starts the default", async () => {
-  vi.spyOn(api, "runnerStatus").mockResolvedValue(stopped);
+  const status = vi.spyOn(api, "runnerStatus").mockResolvedValue(stopped);
   const start = vi.spyOn(api, "startRunner");
   mount("");
-  expect(await screen.findByRole("button", { name: "Start runner" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Start runner" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Check runner status" })).toBeDisabled();
   expect(screen.getByText("Choose an Execute profile below to prepare its runner.")).toBeVisible();
   expect(start).not.toHaveBeenCalled();
+  expect(status).not.toHaveBeenCalled();
+});
+
+it("isolates selected profile status from default cache and late setup responses", async () => {
+  const status = vi.spyOn(api, "runnerStatus").mockImplementation(async (profile) => profile === "selected-execute.v1" ? stopped : { ...stopped, profile_id: profile!, state: "unavailable", enrollment: "revoked" });
+  let finish!: (value: RunnerLifecycleStatus) => void;
+  const start = vi.spyOn(api, "startRunner").mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  client.setQueryData(["runner-lifecycle"], ready);
+  function Selection() {
+    const [profile, setProfile] = useState("selected-execute.v1");
+    return <><button onClick={() => setProfile("new-execute.v1")}>Choose another profile</button><ExecuteRunnerReadiness profileId={profile} /></>;
+  }
+  render(<QueryClientProvider client={client}><MemoryRouter><Selection /></MemoryRouter></QueryClientProvider>);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Start runner" }));
+  await user.click(screen.getByRole("button", { name: "Choose another profile" }));
+  expect(await screen.findByText("Finishing runner setup for the previous profile…")).toBeVisible();
+  expect(status).toHaveBeenCalledWith("new-execute.v1");
+  finish(ready);
+  await waitFor(() => expect(screen.queryByText("Finishing runner setup for the previous profile…")).not.toBeInTheDocument());
+  expect(screen.getByRole("link", { name: "Open runner diagnostics" })).toBeVisible();
+  expect(screen.queryByText("Ready for preflight")).not.toBeInTheDocument();
+  expect(start).toHaveBeenCalledExactlyOnceWith("selected-execute.v1");
+  expect(client.getQueryData<RunnerLifecycleStatus>(["runner-lifecycle", "new-execute.v1"])?.enrollment).toBe("revoked");
 });

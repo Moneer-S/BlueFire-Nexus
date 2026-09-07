@@ -4,9 +4,24 @@ import { afterEach, expect, it, vi } from "vitest";
 import { RunExports } from "../src/components/RunExports";
 import { api } from "../src/lib/api";
 import { runReport } from "../src/lib/run-report";
+import { demoScenario } from "../src/lib/demo";
 import type { RunRecord } from "../src/types";
 
 const run: RunRecord = { run_id: "run-20260906T120000Z-0123456789abcdef", mode: "simulate", status: "cancelled", finalized_at: "2026-09-06T12:00:00Z", scenario_title: "Frozen experiment", steps: [{ step_id: "collect", behavior_id: "collection.original", simulation_id: "sim.collection", status: "success" }, { step_id: "policy_stop", status: "blocked", policy: { allowed: false } }] };
+
+it("exports source notes separately while retaining additional run limitations", () => {
+  const source = "No approval is supplied by this graph";
+  const runtime = "Partial observations after cancellation";
+  const record = { ...run, scenario: { ...demoScenario, limitations: [source] }, limitations: [source, runtime] };
+  const before = structuredClone(record);
+  const report = runReport(record);
+  expect(report).toContain(`## Run limitations\n\n- ${runtime}`);
+  expect(report).toContain("## Scenario assumptions and source notes");
+  expect(report).toContain("Recorded when the saved experiment was authored");
+  expect(report).toContain(`- ${source}`);
+  expect(record).toEqual(before);
+  expect(runReport({ ...record, scenario: undefined })).toContain("## Recorded limitations");
+});
 
 function downloads() {
   const create = vi.fn<(blob: Blob) => string>(() => "blob:saved-run");

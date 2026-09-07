@@ -52,6 +52,26 @@ function stubGraph() {
   vi.spyOn(api, "immutableScenarioVersion").mockResolvedValue({ schema_version: "bluefire.scenario-version.v1", scenario: { scenario_id: document.id, title: document.title, version: 2, digest, document, created_at: "2030-01-01" } });
 }
 
+it.each(["completed", "awaiting_approval"] as const)("keeps original approval findings historical after accepting a preparation (%s)", async (state) => {
+  const value = ready();
+  value.preparation!.preflight.findings = ["Explicit operator approval is required."];
+  value.decision = { decision: "accept", preparation_digest: digest };
+  value.review_ready = false;
+  value.run_job = { schema_version: "bluefire.job.v1", job_id: `job-${"e".repeat(32)}`, kind: "scenario.run", state, progress: {}, request: {
+    _run_submission_request: value.preparation!.run_request, assistance_run: { operation_job_id: preparationJob, preparation_digest: digest } } };
+  vi.spyOn(api, "assistanceRun").mockResolvedValue(value);
+  const view = mount(true);
+  const summary = await screen.findByText("Reviewed preparation");
+  const finding = screen.getByText("Explicit operator approval is required.");
+  expect(finding.closest("details")).toBe(summary.closest("details"));
+  expect(finding).not.toBeVisible();
+  if (state === "awaiting_approval") expect(screen.getByRole("link", { name: "Review Execute approval" })).toBeVisible();
+  else expect(screen.queryByRole("link", { name: "Review Execute approval" })).not.toBeInTheDocument();
+  await view.user.click(summary);
+  expect(finding).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Findings when this plan was prepared" })).toBeVisible();
+});
+
 it("starts the saved experiment runner without changing its selection or active draft", async () => {
   stubGraph();
   localStorage.setItem("bluefire.local.scenario.v1", JSON.stringify(demoScenario));
