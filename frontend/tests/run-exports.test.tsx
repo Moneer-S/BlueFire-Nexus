@@ -23,6 +23,26 @@ it("exports source notes separately while retaining additional run limitations",
   expect(runReport({ ...record, scenario: undefined })).toContain("## Recorded limitations");
 });
 
+it.each([
+  ["cancelled", ["Partial observations", "Source caveat", "Partial observations"]],
+  ["interrupted", undefined],
+  ["cancelled", []],
+] as const)("exports complete source notes even when %s result copies are incomplete (%j)", (status, resultNotes) => {
+  const sourceNotes = ["Source caveat", "Unobserved behavior remains unverified", "Source caveat"];
+  const record = { ...run, status, scenario: { ...demoScenario, limitations: sourceNotes }, limitations: resultNotes ? [...resultNotes] : undefined };
+  const before = structuredClone(record);
+  const report = runReport(record);
+  const sourceSection = report.split("## Scenario assumptions and source notes\n")[1]?.split("\n## ")[0];
+  expect(sourceSection?.split("\n").filter((line) => line.startsWith("- "))).toEqual(sourceNotes.map((note) => `- ${note}`));
+  if (resultNotes?.length) {
+    const runtimeSection = report.split("## Run limitations\n")[1]?.split("\n## ")[0];
+    expect(runtimeSection?.split("\n").filter((line) => line.startsWith("- "))).toEqual(["- Partial observations", "- Partial observations"]);
+  } else {
+    expect(report).not.toContain("No limitations were attached");
+  }
+  expect(record).toEqual(before);
+});
+
 function downloads() {
   const create = vi.fn<(blob: Blob) => string>(() => "blob:saved-run");
   vi.stubGlobal("URL", class extends URL { static createObjectURL = create; static revokeObjectURL = vi.fn(); });

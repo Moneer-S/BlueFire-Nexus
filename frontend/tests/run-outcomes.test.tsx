@@ -30,6 +30,26 @@ it("does not infer source provenance from a limitation's wording", () => {
 });
 
 it.each([
+  ["cancelled", ["Partial observations", "Source caveat", "Partial observations"]],
+  ["interrupted", undefined],
+  ["cancelled", []],
+] as const)("retains every immutable scenario note independently of %s result copies (%j)", (status, resultNotes) => {
+  const sourceNotes = ["Source caveat", "Unobserved behavior remains unverified", "Source caveat"];
+  const record = run({ status, scenario: { ...demoScenario, limitations: sourceNotes }, limitations: resultNotes ? [...resultNotes] : undefined });
+  const before = structuredClone(record);
+  render(<RunReview run={record} catalog={demoCatalog}/>);
+  const source = within(screen.getByRole("region", { name: "Scenario assumptions and source notes" }));
+  expect(source.getAllByRole("listitem").map((item) => item.textContent)).toEqual(sourceNotes);
+  if (resultNotes?.length) {
+    const actual = within(screen.getByRole("region", { name: "Run limitations" }));
+    expect(actual.getAllByRole("listitem").map((item) => item.textContent)).toEqual(["Partial observations", "Partial observations"]);
+  } else {
+    expect(screen.queryByText(/No limitations were attached/)).not.toBeInTheDocument();
+  }
+  expect(record).toEqual(before);
+});
+
+it.each([
   [{ authorized_target_scope: { scope_refs: ["canonical.workspace", "canonical.loopback"] }, policy: { authorized_target_scope: { scope_refs: ["policy.workspace"] } }, target_scope: { scope_refs: ["legacy.workspace"] } }, "canonical.workspace, canonical.loopback"],
   [{ authorized_target_scope: null, policy: { authorized_target_scope: { scope_refs: ["policy.workspace"] } }, target_scope: { scope_refs: ["legacy.workspace"] } }, "policy.workspace"],
   [{ policy: { authorized_target_scope: null }, target_scope: { scope_refs: ["legacy.workspace"] } }, "legacy.workspace"],

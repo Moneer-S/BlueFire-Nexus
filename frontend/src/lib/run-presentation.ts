@@ -45,10 +45,11 @@ export function recordedTargetScope(run: RunRecord & { authorized_target_scope?:
 export function runLimitationGroups(run: Pick<RunRecord, "scenario" | "limitations">) {
   const notes = run.limitations ?? [];
   const source = run.scenario?.limitations;
-  if (!Array.isArray(source) || !notes.length) return [{ title: "Recorded limitations", description: "", items: notes }];
+  if (!Array.isArray(source) || (!source.length && !notes.length)) return [{ title: "Recorded limitations", description: "", items: notes }];
   // Only exact immutable scenario provenance classifies a note. Never guess from
   // its wording or treat source constraints as satisfied by a completed run.
-  const sourceNotes = notes.filter((note) => source.includes(note));
+  // Source notes stand independently even when a partial result omits its copies.
+  const sourceNotes = [...source];
   const runNotes = notes.filter((note) => !source.includes(note));
   return [
     ...(runNotes.length ? [{ title: "Run limitations", description: "", items: runNotes }] : []),
