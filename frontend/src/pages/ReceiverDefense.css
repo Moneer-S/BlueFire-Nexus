@@ -40,3 +40,7 @@
   .receiver-actions { align-items: stretch; }
   .receiver-actions > * { flex: 1 1 220px; justify-content: center; }
 }
+
+.receiver-assistant-entry { margin-block: 20px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.receiver-assistant-entry h3 { margin: 0 0 8px; }
+.receiver-assistant-entry p { max-width: 76ch; }

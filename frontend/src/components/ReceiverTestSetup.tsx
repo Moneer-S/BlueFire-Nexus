@@ -7,6 +7,8 @@ import { runIntent } from "../lib/run-assistance";
 import { sameJson } from "../lib/replay-review";
 import { readReceiverConfiguration, readReceiverSelection, rememberReceiverConfiguration, rememberReceiverSelection } from "../lib/receiver-setup";
 import type { ReceiverContextRequest } from "../lib/receiver-defense-types";
+import { useAssistancePanel, usePublishReceiverSelection } from "../state/AssistanceContext";
+import { validReceiverAssistanceSelection, type ReceiverAssistanceSelection } from "../lib/receiver-assistance";
 import { useProduct } from "../state/ProductContext";
 import type { CatalogResponse, RunConfiguration, ScenarioVersion } from "../types";
 import { RunConfigurationPanel } from "./RunConfiguration";
@@ -41,6 +43,9 @@ function ReceiverConfiguration({ saved, catalog, disabled, onStart }: { saved: S
   const [storageError, setStorageError] = useState<unknown>();
   useEffect(() => { try { rememberReceiverConfiguration(setupKey, config); setStorageError(undefined); } catch (error) { setStorageError(error); } }, [setupKey, config]);
   const request = useMemo<ReceiverContextRequest>(() => ({ selection: { kind: "saved_scenario", scenario_id: saved.scenario_id, version: saved.version, digest: saved.digest }, run_intent: runIntent(config) }), [saved, config]);
+  const assistant = useAssistancePanel();
+  const assistantSelection = useMemo<ReceiverAssistanceSelection | undefined>(() => { const value = { kind: "receiver_scenario" as const, ...request }; return validReceiverAssistanceSelection(value) ? value : undefined; }, [request]);
+  usePublishReceiverSelection(disabled ? undefined : assistantSelection, saved.title);
   const context = useQuery({ queryKey: ["receiver-context", request], queryFn: async () => checkedReceiverContext(await api.receiverContext(request), request), retry: false });
   const ready = context.data?.eligible && context.data.availability.supported && context.data.availability.ready;
   return <>
@@ -56,6 +61,7 @@ function ReceiverConfiguration({ saved, catalog, disabled, onStart }: { saved: S
         if (!context.data || !sameJson(context.data.selection, request.selection) || !sameJson(context.data.run_intent, request.run_intent)) return;
         onStart({ ...request, submission_id: crypto.randomUUID(), context_digest: context.data.context_digest });
       }}>Save control test</Button>
+      {assistant ? <div className="receiver-assistant-entry"><h3>Let Assistant coordinate the test</h3><p>Keep these exact settings and get an evidence interpretation after each phase. You still prepare each receiver and approve every run in the native review.</p><Button disabled={disabled || !assistantSelection || !context.data.eligible || context.isFetching} onClick={() => assistant.setOpen(true)}>Coordinate with Assistant</Button></div> : null}
     </> : null}
   </>;
 }

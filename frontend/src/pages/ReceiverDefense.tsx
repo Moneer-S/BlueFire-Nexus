@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { useAssistancePanel, usePublishReceiverSelection } from "../state/AssistanceContext";
+import type { ReceiverAssistanceSelection } from "../lib/receiver-assistance";
 import { api } from "../lib/api";
 import { checkedReceiverTest, clearReceiverPending, readReceiverPending, receiverJobId, receiverJobValid, receiverRequestConfirmed, storeReceiverPending, type ReceiverPending } from "../lib/receiver-defense";
 import { Button, Callout, ErrorState, LoadingState, PageHeader } from "../components/Primitives";
@@ -37,6 +39,13 @@ export function ReceiverDefensePage() {
   const query = useQuery({ queryKey: ["receiver-test", id], queryFn: async () => checkedReceiverTest(await api.receiverTest(id), id), enabled: receiverJobValid(id) && !write.isPending, retry: false,
     refetchInterval: (state) => state.state.data && ["active", "stopping"].includes(state.state.data.status) ? 1200 : false });
   const envelope = query.data;
+  const assistant = useAssistancePanel();
+  const assistantSelection = useMemo<ReceiverAssistanceSelection | undefined>(() => envelope?.admission.accepted && envelope.context && envelope.phases.some((phase) => phase.result)
+    ? { kind: "receiver_test", receiver_job_id: envelope.job.job_id, receiver_context_digest: envelope.context.context_digest } : undefined, [envelope]);
+  usePublishReceiverSelection(assistantSelection, envelope?.context?.scenario_title);
+  const assistantOwner = envelope?.job.request?.assistance_turn as { parent_job_id?: string } | undefined;
+  const assistantParentId = assistantOwner?.parent_job_id ?? "";
+
   const stop = useMutation({ mutationFn: async (ownerId: string) => {
     stopRequestedRef.current.add(ownerId); setStopsRequested((old) => [...new Set([...old, ownerId])]);
     await client.cancelQueries({ queryKey: ["receiver-test", ownerId], exact: true });
@@ -85,6 +94,11 @@ export function ReceiverDefensePage() {
         <p>{envelope.admission.problem?.message ?? "BlueFire is checking the saved experiment and settings before any receiver can be prepared."}</p>
         {envelope.admission.problem ? <><p>This request did not authorize a receiver or run. Start a separate test to review the current state; the original request stays in history.</p><details><summary>Original request and current unreviewed context</summary><pre>{JSON.stringify({ submitted_request: envelope.job.request?.submitted_request, unreviewed_context: envelope.context }, null, 2)}</pre></details></> : null}
       </Callout> : null}
+      {assistant && (receiverJobValid(assistantParentId) || assistantSelection) ? <div className="receiver-assistant-entry">
+        <h3>{receiverJobValid(assistantParentId) ? "This test has saved Assistant work" : "Understand the receiver evidence"}</h3>
+        <p>{receiverJobValid(assistantParentId) ? "Return to the operation that coordinates this test and its phase analyses. Its submitted mode and provider stay bound." : "Ask for an interpretation of the verified phases. Analysis does not take ownership of this test or start another phase."}</p>
+        <Button onClick={() => { if (receiverJobValid(assistantParentId)) assistant.openJob(assistantParentId, id); else assistant.setOpen(true); }}>{receiverJobValid(assistantParentId) ? "Open saved Assistant work" : "Analyse with Assistant"}</Button>
+      </div> : null}
       {envelope?.admission.accepted && envelope.context ? <ReceiverTestProgress key={id} envelope={{ ...envelope, context: envelope.context }} disabled={Boolean(pending) || write.isPending || stopRequested || Boolean(query.error)}
         onPrepare={(body) => submit({ kind: "prepare", id, body })} onReview={(body) => submit({ kind: "review", id, body })} /> : null}
       {envelope && envelope.status !== "completed" && envelope.status !== "stopped" ? <div className="receiver-stop"><Button variant="danger" disabled={stop.isPending} onClick={() => stop.mutate(id)}>{stop.isPending ? "Requesting stop" : "Stop control test"}</Button><p>Stop requests cancellation and receiver cleanup. The test stays open until shutdown is confirmed.</p></div> : null}

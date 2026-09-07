@@ -337,6 +337,10 @@ export const api = {
     void _kind;
     return request("/assistance/detection-context", { method: "POST", body: JSON.stringify(body) });
   },
+  async assistanceReceiverContext(selection: import("./receiver-assistance").ReceiverAssistanceSelection): Promise<import("./receiver-assistance").ReceiverAssistanceContext> {
+    if (DEMO_MODE) throw new ApiError("Receiver assistance requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request("/assistance/receiver-context", { method: "POST", body: JSON.stringify({ selection }) });
+  },
   async assistanceRunContext(selection: SavedGraphSelection): Promise<AssistanceContext> {
     if (DEMO_MODE) throw new ApiError("Run assistance requires the connected local service.", "demo_assistance_refused", undefined, 409);
     return request("/assistance/run-context", { method: "POST", body: JSON.stringify({ selection }) });

@@ -59,3 +59,16 @@
 
 .assistant-send-row > .button { flex-shrink: 0; white-space: nowrap; }
 .assistant-send-row > p { min-width: 0; font-size: .8rem; line-height: 1.5; }
+
+.assistant-receiver { margin-block: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
+.assistant-receiver-phases { padding: 0; list-style: none; display: grid; gap: 10px; }
+.assistant-receiver-phases li { display: grid; gap: 5px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.assistant-receiver-analysis { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+.assistant-model-label, .assistant-receiver small { color: var(--muted-strong); font-size: 12px; overflow-wrap: anywhere; }
+.assistant-receiver-analysis ul { padding-left: 18px; }
+.assistant-receiver-facts { margin-top: 12px; }
+.assistant-receiver-facts dl { display: grid; gap: 4px; font-size: 12px; }
+.assistant-receiver-facts dt { color: var(--muted-strong); margin-top: 7px; }
+.assistant-receiver-facts dd { margin: 0; overflow-wrap: anywhere; }
+
+.assistant-receiver-analysis > summary { cursor: pointer; padding-block: 7px; font-weight: 650; }
