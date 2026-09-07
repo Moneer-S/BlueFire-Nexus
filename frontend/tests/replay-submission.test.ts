@@ -114,11 +114,13 @@ it("resolves the exact saved request through the server without approving or can
 it("restores the saved replay review without recompiling a different plan", async () => {
   const original = receipt();
   original.preparation.preflight = { ready: false, status: "approval_required", plan: { mode: "execute" }, approval_binding: { state_digest: "reviewed-state", plan_digest: "reviewed-plan", target_scope_digest: "reviewed-scope", profile_id: "lab", maximum_tier: "controlled" }, approval_envelope: { schema_version: "bluefire.approval-envelope.v1", envelope_digest: "reviewed-envelope", scenario_id: demoScenario.id, steps: [] } };
-  const job: RunJob = { schema_version: "bluefire.job.v1", job_id: "job-test", kind: "scenario.replay", state: "awaiting_approval", progress: {}, request: { source_run_id: original.sourceId, replay_request: original.payload, replay_preparation: original.preparation } };
+  const job: RunJob = { schema_version: "bluefire.job.v1", job_id: "job-test", kind: "scenario.replay", state: "awaiting_approval", progress: {}, approval_request: { ...original.preparation.preflight.approval_binding, approval_id: "approval-reviewed", status: "pending", expires_at: "2099-01-01T00:00:00Z" }, request: { approval_request_id: "approval-reviewed", source_run_id: original.sourceId, replay_request: original.payload, replay_preparation: original.preparation } };
   const fetchMock = vi.spyOn(globalThis, "fetch");
   const review = await api.preflightStoredJobRequest(job);
   expect(review).toEqual(original.preparation.preflight);
   expect(review).not.toBe(original.preparation.preflight);
+  await expect(api.preflightStoredJobRequest({ ...job, approval_request: null })).rejects.toMatchObject({ code: "job_preflight_unavailable" });
+  await expect(api.preflightStoredJobRequest({ ...job, approval_request: null }, { forDisplayOnly: true })).resolves.toEqual(original.preparation.preflight);
   await expect(api.preflightStoredJobRequest({ ...job, request: { ...job.request, source_run_id: "changed-source" } })).rejects.toMatchObject({ code: "job_preflight_unavailable" });
   await expect(api.preflightStoredJobRequest({ ...job, request: { ...job.request, replay_request: { changed: true } } })).rejects.toMatchObject({ code: "job_preflight_unavailable" });
   expect(fetchMock).not.toHaveBeenCalled();
