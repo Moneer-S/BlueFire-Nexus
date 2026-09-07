@@ -17,6 +17,7 @@ def close_refused(
     assistance_run: Mapping[str, Any] | None,
     refusal: Mapping[str, Any],
     report: Mapping[str, Any] | None,
+    receiver_defense: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     job_id, binding = store._job_submission_binding(submission_id, intent)
     with store._connection(write=True) as connection:
@@ -31,6 +32,8 @@ def close_refused(
         }
         if assistance_run is not None:
             request["assistance_run"] = dict(assistance_run)
+        if receiver_defense is not None:
+            request["receiver_defense"] = dict(receiver_defense)
         connection.execute(
             "INSERT INTO jobs(job_id,kind,state,request_json,progress_json,error_json,created_at,updated_at) "
             "VALUES(?,'scenario.run','failed',?,?,?,?,?)",

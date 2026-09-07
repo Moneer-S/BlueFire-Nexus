@@ -20,6 +20,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 
 import yaml
 
+from . import receiver_defense_native
 from .action_catalog import (
     ActionCatalogError,
     ActionCatalogSnapshot,
@@ -109,6 +110,8 @@ from .product_store import (
     ProductStoreError,
     ResearchSourceIntegrityError,
 )
+from .receiver_defense_jobs import ReceiverDefenseJobs
+from .receiver_defense_service import ReceiverDefenseServiceMixin
 from .registry import BehaviorRegistry, RegistryError, load_builtin_registry
 from .replay import ReplayError, ReplayRequest, prepare_replay
 from .replay_checkpoint import CheckpointError, build_restoration_plan
@@ -199,7 +202,7 @@ def _default_collector_registry_factory(sandbox: Path) -> CollectorRegistry:
     return CollectorRegistry((FilesystemCollector(sandbox), CollectionSemanticsCollector(sandbox)))
 
 
-class BlueFireService(RunnerManagementServiceMixin):
+class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin):
     """Synchronous, JSON-only product boundary used by every frontend."""
 
     def __init__(
@@ -288,6 +291,7 @@ class BlueFireService(RunnerManagementServiceMixin):
             configuration_lock=self._runtime_configuration_lock,
         )
         self.assistance_runs = AssistanceRunJobs(self)
+        self.receiver_defense = ReceiverDefenseJobs(self)
         self.assistance = ExperimentAssistance(self)
         self.detection_ai.on_application = self.assistance.application_committed
         self.graph_ai.on_application = self.assistance.application_committed
@@ -1281,7 +1285,7 @@ class BlueFireService(RunnerManagementServiceMixin):
             },
         }
 
-    def preflight(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+    def preflight(self, request: Mapping[str, Any], *, _receiver_defense=None) -> Mapping[str, Any]:
         with self._action_catalog_lock:
             expected = request.get(_ACTION_CATALOG_AUTHORITY_KEY)
             if expected is not None and not isinstance(expected, Mapping):
@@ -1291,9 +1295,11 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "The action-package catalog binding is invalid.",
                 )
             self._action_catalog_boundary(expected)
-            return self._preflight_locked(request)
+            return self._preflight_locked(request, _receiver_defense=_receiver_defense)
 
-    def _preflight_locked(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+    def _preflight_locked(
+        self, request: Mapping[str, Any], *, _receiver_defense=None
+    ) -> Mapping[str, Any]:
         scenario = self._scenario_or_api_error(request)
         mode = self._mode(request)
         profile = self._profile(request.get("runner_profile_id"), mode)
@@ -1420,6 +1426,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                 autonomy=autonomy,
                 ai_provider=provider,
                 context={
+                    **receiver_defense_native.authority(self, _receiver_defense),
                     "collector_binding": collector_binding,
                     **(
                         {"collector_registry_authority": collector_authority}
@@ -1446,6 +1453,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         *,
         checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
         cancel_event: threading.Event | None = None,
+        _receiver_defense=None,
     ) -> Mapping[str, Any]:
         with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
             expected = request.get(_ACTION_CATALOG_AUTHORITY_KEY)
@@ -1460,6 +1468,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                 request,
                 checkpoint=checkpoint,
                 cancel_event=cancel_event,
+                _receiver_defense=_receiver_defense,
             )
 
     def _run_locked(
@@ -1468,6 +1477,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         *,
         checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
         cancel_event: threading.Event | None = None,
+        _receiver_defense=None,
     ) -> Mapping[str, Any]:
         scenario = self._scenario_or_api_error(request)
         mode = self._mode(request)
@@ -1548,8 +1558,11 @@ class BlueFireService(RunnerManagementServiceMixin):
             action_bindings=self._catalog_snapshot.action_bindings,
             provider_artifacts=self._catalog_snapshot.provider_artifacts,
             catalog_authority=self._catalog_snapshot.to_dict(),
+            receiver_authority=receiver_defense_native.authority(self, _receiver_defense),
+            before_receiver_task=receiver_defense_native.task_hook(self, _receiver_defense),
         )
         run_approval_context = {
+            **receiver_defense_native.authority(self, _receiver_defense),
             "collector_binding": collector_binding,
             **(
                 {"collector_registry_authority": collector_authority}
@@ -1695,14 +1708,26 @@ class BlueFireService(RunnerManagementServiceMixin):
             ) from exc
 
     def submit_run(
-        self, request: Mapping[str, Any], *, _assistance_run: Mapping[str, Any] | None = None
+        self,
+        request: Mapping[str, Any],
+        *,
+        _assistance_run: Mapping[str, Any] | None = None,
+        _receiver_defense=None,
     ) -> Mapping[str, Any]:
         """Create a durable background job; Execute waits on a bound review gate."""
 
+        if "receiver_defense" in request:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "run_submission_invalid",
+                "Public run requests cannot supply receiver ownership.",
+            )
         if "submission_id" in request or _assistance_run is not None:
             from .run_submissions import submit
 
-            return submit(self, request, assistance_run=_assistance_run)
+            return submit(
+                self, request, assistance_run=_assistance_run, receiver_defense=_receiver_defense
+            )
         mode = self._mode(request)
         stored_request = dict(request)
         # Browser confirmation is deliberately not accepted as a capability.  The
@@ -1849,6 +1874,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "run.evidence.inspect",
                     "assistance.turn",
                     "assistance.continue",
+                    "receiver.defense",
+                    "receiver.defense.prepare",
                 }
                 or state is None
                 or created is None
@@ -1883,6 +1910,14 @@ class BlueFireService(RunnerManagementServiceMixin):
         except ProductStoreError as exc:
             raise APIError(HTTPStatus.NOT_FOUND, "job_not_found", "Job was not found.") from exc
 
+        if source.get("kind") in {"receiver.defense", "receiver.defense.prepare"} or source.get(
+            "request", {}
+        ).get("receiver_defense"):
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "receiver_retry_refused",
+                "Reopen the receiver comparison. Uncertain receiver effects cannot be repeated; an expired unused session requires explicit preparation and fresh approval.",
+            )
         if source.get("kind") == "run.assistance.prepare" or source.get("request", {}).get(
             "assistance_run"
         ):
@@ -2307,7 +2342,13 @@ class BlueFireService(RunnerManagementServiceMixin):
             preflight = (
                 self._review_replay_job(stored_request)["preflight"]
                 if job.get("kind") == "scenario.replay"
-                else self.preflight(stored_request)
+                else (
+                    self.preflight(
+                        stored_request, _receiver_defense=stored_request["receiver_defense"]
+                    )
+                    if stored_request.get("receiver_defense")
+                    else self.preflight(stored_request)
+                )
             )
             problems = [
                 str(item)
@@ -2344,7 +2385,11 @@ class BlueFireService(RunnerManagementServiceMixin):
                 expected_state_digest=str(binding["state_digest"]),
                 expected_plan_digest=str(binding["plan_digest"]),
                 expected_target_scope_digest=str(binding["target_scope_digest"]),
-                expires_at=self._approval_execution_expires_at(profile),
+                expires_at=receiver_defense_native.expiry(
+                    self,
+                    stored_request.get("receiver_defense"),
+                    ordinary=self._approval_execution_expires_at(profile),
+                ),
             )
             consumed = self.product_store.consume_approval(
                 approval_id,
@@ -2463,6 +2508,14 @@ class BlueFireService(RunnerManagementServiceMixin):
             job = self.product_store.get_job(job_id)
         except ProductStoreError:
             return self._signal_job(job_id, "cancel")
+        if job["kind"] == "receiver.defense" or job["request"].get("receiver_defense"):
+            parent_id = (
+                job_id
+                if job["kind"] == "receiver.defense"
+                else job["request"]["receiver_defense"]["parent_job_id"]
+            )
+            self.receiver_defense.cancel(parent_id)
+            return self.product_store.get_job(job_id)
         if job.get("kind") == "replay.ai.propose":
             return self.method_comparison.cancel(job_id)
         if job.get("kind") in {"detection.ai.create", "detection.ai.create.apply"}:
@@ -2509,6 +2562,25 @@ class BlueFireService(RunnerManagementServiceMixin):
             ) from exc
 
     def _execute_job(self, context: JobContext, request: Mapping[str, Any]) -> JobResult:
+        marker = request.get("receiver_defense")
+        if marker is None:
+            return self._execute_job_inner(context, request)
+        result = None
+        try:
+            self.receiver_defense.before_execute(request)
+            result = self._execute_job_inner(context, request)
+            return result
+        finally:
+            receiver_run_id = (
+                result.result_ref
+                if result is not None
+                else self.product_store.get_job(context.job_id).get("result_ref")
+            )
+            receiver_defense_native.settle(
+                self.receiver_defense, context.job_id, marker, receiver_run_id
+            )
+
+    def _execute_job_inner(self, context: JobContext, request: Mapping[str, Any]) -> JobResult:
         progress = context.progress_snapshot()
         proposal_record_id = progress.get("proposal_record_id")
         context.checkpoint({"phase": "running", "completed_steps": 0})
@@ -2533,6 +2605,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                     request,
                     checkpoint=context.checkpoint,
                     cancel_event=context.cancellation_event,
+                    _receiver_defense=request.get("receiver_defense"),
                 )
         except SimulationCancelled as exc:
             result = self.store.get_run(exc.run_id)
@@ -3340,7 +3413,13 @@ class BlueFireService(RunnerManagementServiceMixin):
             try:
                 self._provider_check_transport.close()
             finally:
-                self.job_controller.shutdown()
+                try:
+                    self.job_controller.shutdown()
+                finally:
+                    if not self.receiver_defense.owners.close_all():
+                        raise ProductStoreError(
+                            "One or more owned receivers lack verified cleanup after shutdown."
+                        )
 
     def _recover_interrupted_cleanup(
         self, *, requested_approval_id: str | None = None
@@ -4206,6 +4285,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         target_scope: Mapping[str, Any],
         runner_readiness: Mapping[str, Any] | None,
         collector_authority: Mapping[str, Any] | None,
+        _receiver_defense=None,
     ) -> dict[str, Any]:
         prepared = resolved["prepared"]
         profile = resolved["profile"]
@@ -4213,6 +4293,7 @@ class BlueFireService(RunnerManagementServiceMixin):
             source=resolved["source"],
             request=request,
             resolution={
+                **receiver_defense_native.authority(self, _receiver_defense),
                 "scenario": prepared.scenario.to_dict(),
                 "plan": dict(plan),
                 "profile": profile.to_dict() if profile is not None else None,
@@ -4226,7 +4307,9 @@ class BlueFireService(RunnerManagementServiceMixin):
             },
         )
 
-    def prepare_replay(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+    def prepare_replay(
+        self, run_id: str, request: Mapping[str, Any], *, _receiver_defense=None
+    ) -> Mapping[str, Any]:
         """Resolve a full replay review without approval, persistence or effects."""
         admission_deadline = monotonic() + _REPLAY_ADMISSION_SECONDS
         with self._action_catalog_lock, self.product_store.action_package_catalog_lease():
@@ -4235,7 +4318,9 @@ class BlueFireService(RunnerManagementServiceMixin):
                     raise ReplayError("replay preparation admission expired")
                 payload = replay_review_payload(request)
                 self._action_catalog_boundary()
-                return self._prepare_replay_locked(run_id, payload)
+                return self._prepare_replay_locked(
+                    run_id, payload, _receiver_defense=_receiver_defense
+                )
             except APIError:
                 raise
             except RunnerReadinessError as exc:
@@ -4272,6 +4357,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         request: Mapping[str, Any],
         *,
         expected_readiness: Mapping[str, Any] | None = None,
+        _receiver_defense=None,
     ) -> Mapping[str, Any]:
         resolved = self._resolve_replay_source_locked(run_id, request)
         mode = resolved["mode"]
@@ -4361,6 +4447,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                 autonomy=resolved["autonomy"],
                 ai_provider=resolved["provider"],
                 context={
+                    **receiver_defense_native.authority(self, _receiver_defense),
                     "replay": lineage,
                     "resume_from_step_id": None,
                     "collector_binding": resolved["collector_binding"],
@@ -4386,6 +4473,7 @@ class BlueFireService(RunnerManagementServiceMixin):
             target_scope,
             readiness,
             collector_authority,
+            _receiver_defense=_receiver_defense,
         )
         return {
             "schema_version": "bluefire.replay-preparation.v1",
@@ -4401,7 +4489,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         }
 
     def _review_submitted_replay_locked(
-        self, run_id: str, request: Mapping[str, Any]
+        self, run_id: str, request: Mapping[str, Any], *, _receiver_defense=None
     ) -> Mapping[str, Any]:
         readiness = reviewed_replay_readiness(request)
         payload = replay_review_payload(
@@ -4411,7 +4499,9 @@ class BlueFireService(RunnerManagementServiceMixin):
                 if key not in {"preparation_id", "preparation_context"}
             }
         )
-        prepared = self._prepare_replay_locked(run_id, payload, expected_readiness=readiness)
+        prepared = self._prepare_replay_locked(
+            run_id, payload, expected_readiness=readiness, _receiver_defense=_receiver_defense
+        )
         if (readiness is None) != (prepared["preflight"]["plan"]["mode"] == "simulate"):
             raise ReplayError("replay preparation readiness does not match the replay mode")
         if prepared["preparation_id"] != request.get("preparation_id"):
@@ -4468,6 +4558,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "preparation_id": previous.get("preparation_id"),
                     "preparation_context": previous.get("preparation_context"),
                 },
+                _receiver_defense=request.get("receiver_defense"),
             )
         report = prepared["preflight"]
         if (
@@ -4564,6 +4655,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         request: Mapping[str, Any],
         *,
         _method_comparison: Mapping[str, Any] | None = None,
+        _receiver_defense=None,
     ) -> Mapping[str, Any]:
         """Persist one reviewed full replay intent; approval remains a separate gate."""
         deadline = monotonic() + _REPLAY_ADMISSION_SECONDS
@@ -4572,6 +4664,10 @@ class BlueFireService(RunnerManagementServiceMixin):
             if _method_comparison is not None:
                 intent_digest = content_hash(
                     {"replay_intent": intent_digest, "method_comparison": _method_comparison}
+                )
+            if _receiver_defense is not None:
+                intent_digest = content_hash(
+                    {"replay_intent": intent_digest, "receiver_defense": _receiver_defense}
                 )
             existing = self.product_store.get_job_submission(
                 "scenario.replay", submission_id=submission_id, intent_digest=intent_digest
@@ -4595,7 +4691,9 @@ class BlueFireService(RunnerManagementServiceMixin):
                     if monotonic() >= deadline:
                         raise ReplayError("replay submission admission expired")
                     self._action_catalog_boundary()
-                    prepared = self._review_submitted_replay_locked(run_id, submitted)
+                    prepared = self._review_submitted_replay_locked(
+                        run_id, submitted, _receiver_defense=_receiver_defense
+                    )
                     report = prepared["preflight"]
                     mode = ExecutionMode(report["plan"]["mode"])
                     problems = [
@@ -4625,6 +4723,11 @@ class BlueFireService(RunnerManagementServiceMixin):
                         "ai_provider_id": prepared["lineage"]["ai_provider_to"],
                         "replay_request": prepared["replay_request"],
                         "replay_preparation": prepared,
+                        **(
+                            {"receiver_defense": dict(_receiver_defense)}
+                            if _receiver_defense is not None
+                            else {}
+                        ),
                     }
                     pending_approval_id: str | None = None
                     if mode is ExecutionMode.EXECUTE:
@@ -4638,7 +4741,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                             profile_id=str(binding["profile_id"]),
                             target_scope_digest=str(binding["target_scope_digest"]),
                             maximum_tier=str(binding["maximum_tier"]),
-                            expires_at=self._approval_review_expires_at(),
+                            expires_at=receiver_defense_native.expiry(self, _receiver_defense),
                         )
                         stored["approval_request_id"] = pending["approval_id"]
                         pending_approval_id = str(pending["approval_id"])
@@ -4718,6 +4821,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                 bound_approval=approval,
                 checkpoint=context.checkpoint,
                 cancel_event=context.cancellation_event,
+                _receiver_defense=request.get("receiver_defense"),
             )
 
     def replay(self, run_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -4746,6 +4850,7 @@ class BlueFireService(RunnerManagementServiceMixin):
         bound_approval: Mapping[str, Any] | None = None,
         checkpoint: Callable[[Mapping[str, Any]], None] | None = None,
         cancel_event: threading.Event | None = None,
+        _receiver_defense=None,
     ) -> Mapping[str, Any]:
         replay_approval_id: str | None = None
         replay_workspace: Path | None = None
@@ -4820,6 +4925,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                 action_bindings=replay_catalog.action_bindings,
                 provider_artifacts=replay_catalog.provider_artifacts,
                 catalog_authority=replay_catalog_authority,
+                receiver_authority=receiver_defense_native.authority(self, _receiver_defense),
+                before_receiver_task=receiver_defense_native.task_hook(self, _receiver_defense),
             )
             resolved_replay_plan = orchestrator.planner.compile(
                 prepared.scenario,
@@ -4920,6 +5027,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                     target_scope,
                     runner_readiness,
                     collector_authority,
+                    _receiver_defense=_receiver_defense,
                 )
                 if current_preparation["preparation_id"] != expected_preparation:
                     raise ReplayError(
@@ -4935,6 +5043,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                     approved_by=approved_by,
                     orchestrator=orchestrator,
                     context={
+                        **receiver_defense_native.authority(self, _receiver_defense),
                         "replay": replay_record,
                         "resume_from_step_id": prepared.resume_from_step_id,
                         "collector_binding": collector_binding,
@@ -4962,6 +5071,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                 if runner is None or profile is None:
                     raise ReplayError("Execute replay runner binding is incomplete")
                 replay_approval_context = {
+                    **receiver_defense_native.authority(self, _receiver_defense),
                     "replay": replay_record,
                     "resume_from_step_id": prepared.resume_from_step_id,
                     "collector_binding": collector_binding,

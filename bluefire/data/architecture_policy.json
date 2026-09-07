@@ -306,7 +306,14 @@
         "bluefire.orchestrator",
         "bluefire.replay",
         "bluefire.replay_preparation",
-        "bluefire.runner_management_service"
+        "bluefire.runner_management_service",
+        "bluefire.receiver_defense_context",
+        "bluefire.receiver_defense_jobs",
+        "bluefire.receiver_defense_native",
+        "bluefire.receiver_defense_ownership",
+        "bluefire.receiver_defense_result",
+        "bluefire.receiver_defense_service",
+        "bluefire.receiver_defense_view"
       ]
     },
     {
@@ -368,6 +375,7 @@
     {
       "layer": "domain",
       "patterns": [
+        "bluefire.receiver_defense_contract",
         "bluefire.action_*",
         "bluefire.ai",
         "bluefire.ai_record_validation",

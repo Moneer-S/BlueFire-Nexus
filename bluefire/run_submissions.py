@@ -16,6 +16,7 @@ from .contracts import ExecutionMode
 from .job_runtime import JobRuntimeError
 from .product_store_errors import ProductStoreError
 from .product_store_run_submissions import close_refused
+from .receiver_defense_native import expiry as receiver_approval_expiry
 from .util import content_hash
 
 _ACTION_CATALOG_AUTHORITY_KEY = "_action_catalog_authority"
@@ -83,6 +84,7 @@ def submit(
     request: Mapping[str, Any],
     *,
     assistance_run: Mapping[str, Any] | None = None,
+    receiver_defense: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     supplied = dict(request)
     submission_id = supplied.pop("submission_id", None)
@@ -98,7 +100,13 @@ def submit(
             "run_submission_invalid",
             "Run submission requires a canonical UUID.",
         ) from exc
-    forbidden = {"approval", "approval_request_id", "assistance_turn", "assistance_run"}
+    forbidden = {
+        "approval",
+        "approval_request_id",
+        "assistance_turn",
+        "assistance_run",
+        "receiver_defense",
+    }
     if any(key.startswith("_") or key in forbidden for key in supplied):
         raise APIError(
             HTTPStatus.BAD_REQUEST,
@@ -115,7 +123,13 @@ def submit(
             "run_submission_invalid",
             "Run submission contains unsupported metadata.",
         ) from exc
-    intent = content_hash({"request": supplied, "assistance_run": assistance_run})
+    intent = content_hash(
+        {
+            "request": supplied,
+            "assistance_run": assistance_run,
+            **({"receiver_defense": receiver_defense} if receiver_defense is not None else {}),
+        }
+    )
     try:
         existing = service.product_store.get_job_submission(
             "scenario.run", submission_id=submission_id, intent_digest=intent
@@ -159,7 +173,28 @@ def submit(
                     reviewed_request[_ACTION_CATALOG_AUTHORITY_KEY] = prepared["preflight"][
                         "catalog_authority"
                     ]
-            report = service.preflight(reviewed_request)
+            if receiver_defense is not None:
+                from .product_store_receiver_defense import preparation as receiver_preparation
+
+                receiver_job = service.product_store.get_job(receiver_defense["receiver_job_id"])
+                prepared_receiver = receiver_preparation(receiver_job)
+                if prepared_receiver is None or prepared_receiver["run_request"] != supplied:
+                    raise ProductStoreError(
+                        "Receiver baseline request differs from its native review."
+                    )
+                reviewed_request[_EXECUTE_READINESS_KEY] = prepared_receiver["preflight"][
+                    "runner_readiness"
+                ]
+                reviewed_request[_ACTION_CATALOG_AUTHORITY_KEY] = prepared_receiver["preflight"][
+                    "catalog_authority"
+                ]
+                report = service.preflight(reviewed_request, _receiver_defense=receiver_defense)
+                if report != prepared_receiver["preflight"]:
+                    raise ProductStoreError(
+                        "Receiver baseline preflight changed after native review."
+                    )
+            else:
+                report = service.preflight(reviewed_request)
             problems = [
                 item
                 for item in report.get("problems", [])
@@ -177,6 +212,8 @@ def submit(
             stored = {**supplied, ORIGINAL: supplied, PREFLIGHT: report}
             if assistance_run is not None:
                 stored["assistance_run"] = dict(assistance_run)
+            if receiver_defense is not None:
+                stored["receiver_defense"] = dict(receiver_defense)
             if mode is ExecutionMode.EXECUTE:
                 binding, readiness, authority = (
                     report.get(key)
@@ -206,7 +243,7 @@ def submit(
                             "maximum_tier",
                         )
                     },
-                    "expires_at": service._approval_review_expires_at(),
+                    "expires_at": receiver_approval_expiry(service, receiver_defense),
                 }
             if assistance_run is not None:
                 service.assistance_runs._fresh(
@@ -231,5 +268,6 @@ def submit(
             assistance_run=assistance_run,
             refusal=problem(exc, report),
             report=report,
+            receiver_defense=receiver_defense,
         )
         return response(service, closed)

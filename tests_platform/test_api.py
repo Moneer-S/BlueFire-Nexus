@@ -45,6 +45,30 @@ class StubService:
         self.calls.append(("catalog",))
         return {"behaviors": [{"id": "observe.host.v1"}], "runner_profiles": []}
 
+    def receiver_defense_context(self, request):
+        self.calls.append(("receiver_defense_context", request))
+        return {"eligible": False}
+
+    def submit_receiver_defense(self, request):
+        self.calls.append(("submit_receiver_defense", request))
+        return {"job": {"job_id": JOB_ID}}
+
+    def receiver_defense_job(self, job_id):
+        self.calls.append(("receiver_defense_job", job_id))
+        return {"job": {"job_id": job_id}}
+
+    def receiver_defense_jobs(self, *, cursor=None):
+        self.calls.append(("receiver_defense_jobs", cursor))
+        return {"jobs": [], "truncated": False, "next_cursor": None}
+
+    def prepare_receiver_defense(self, job_id, request):
+        self.calls.append(("prepare_receiver_defense", job_id, request))
+        return {"job": {"job_id": job_id}}
+
+    def review_receiver_defense(self, job_id, request):
+        self.calls.append(("review_receiver_defense", job_id, request))
+        return {"job": {"job_id": job_id}}
+
     def scenarios(self):
         self.calls.append(("scenarios",))
         return {"scenarios": []}

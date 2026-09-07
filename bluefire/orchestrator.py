@@ -394,12 +394,16 @@ class Orchestrator:
         provider_artifacts: Mapping[str, Mapping[str, Any]] | None = None,
         catalog_authority: Mapping[str, Any] | None = None,
         collector_registry: CollectorRegistry | None = None,
+        receiver_authority: Mapping[str, Any] | None = None,
+        before_receiver_task: Callable[..., None] | None = None,
     ) -> None:
         self.registry = registry
         self.store = store
         self.runner = runner
         self.proposal_provider = proposal_provider
         self.approval_store = approval_store
+        self.receiver_authority = dict(receiver_authority or {})
+        self.before_receiver_task = before_receiver_task
         self.catalog_authority = dict(catalog_authority) if catalog_authority is not None else None
         self.action_bindings = {
             (str(behavior_id), str(action_id)): dict(binding)
@@ -622,7 +626,7 @@ class Orchestrator:
         authorized_target_scope: Mapping[str, Any] = {"scope_refs": []}
         validated_approval: Mapping[str, Any] | None = None
         approval_binding: Mapping[str, str] | None = None
-        approval_context: dict[str, Any] = {}
+        approval_context: dict[str, Any] = dict(self.receiver_authority)
         if mode is ExecutionMode.EXECUTE:
             if profile is None or sandbox_root is None or self.runner is None:
                 raise OrchestrationError(
@@ -2945,6 +2949,12 @@ class Orchestrator:
                     runner_profile,
                 )
                 runner_task_id = task_id
+                if self.before_receiver_task is not None:
+                    self.before_receiver_task(step, bound_inputs, manifest, task_id)
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RunnerTransportError(
+                            "Receiver-bound execution was cancelled before dispatch."
+                        )
                 runner_result = execute_task(
                     manifest,
                     runner_profile,
@@ -2955,6 +2965,10 @@ class Orchestrator:
                     ),
                 )
             else:
+                if self.before_receiver_task is not None:
+                    raise RunnerTransportError(
+                        "Receiver-bound execution requires the native single-task transport."
+                    )
                 runner_result = self.runner.execute(manifest, runner_profile)
             self._validate_runner_result(manifest, runner_profile, runner_result)
             returned_receipts = self._validated_receipt_ids(runner_result.get("receipt_ids", []))

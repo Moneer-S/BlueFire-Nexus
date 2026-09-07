@@ -97,10 +97,20 @@ class OwnedReceiverSession:
         self._monitor_thread: threading.Thread | None = None
 
     @classmethod
-    def prepare(cls, policy_id: str, *, port: int = 4317) -> OwnedReceiverSession:
+    def prepare(
+        cls,
+        policy_id: str,
+        *,
+        port: int = 4317,
+        _owner_sink: list[OwnedReceiverSession] | None = None,
+    ) -> OwnedReceiverSession:
+        if _owner_sink:
+            raise ReceiverSessionError("owned receiver attempt sink is already occupied")
         if not sys.platform.startswith("linux") or not LinuxPrivateProcessContainment.available():
             raise ReceiverSessionError("owned receiver sessions require Linux pidfd containment")
         session = cls()
+        if _owner_sink is not None:
+            _owner_sink.append(session)  # Exact attempt retained before any possible launch.
         spawned: list[subprocess.Popen[bytes]] = []
         prepared = prepare_frame(
             launch_id=session._launch_id,
@@ -158,6 +168,24 @@ class OwnedReceiverSession:
             import copy
 
             return copy.deepcopy(self._binding)
+
+    def require_current(self, review_digest: str) -> None:
+        """Check retained live ownership; persisted process metadata grants no authority."""
+        with self._process_lock:
+            with self._changed:
+                binding, process = self._binding, self._process
+                if (
+                    binding is None
+                    or binding["review_digest"] != review_digest
+                    or time.monotonic_ns() >= binding["deadline_ns"]
+                    or self._finished
+                    or self._failure is not None
+                    or process is None
+                    or not self._containment.contains(process)
+                    or process.poll() is not None
+                    or worker_generation() != binding["worker_generation"]
+                ):
+                    raise ReceiverSessionError("owned receiver review is no longer current")
 
     def bind_task(self, task_id: str, *, digest: str, size: int, review_digest: str) -> None:
         try:

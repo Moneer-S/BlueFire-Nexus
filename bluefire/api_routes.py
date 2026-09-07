@@ -637,6 +637,54 @@ class APIRoutes:
             return ("", False)
         return parts[0], len(parts) == 2
 
+    def _receiver_defense_request(
+        self, path: str, *, listing: bool = False
+    ) -> tuple[str, str] | None:
+        prefix = f"{API_PREFIX}/receiver-defense/"
+        if not path.startswith(prefix):
+            return None
+        if listing and path == prefix + "jobs":
+            parsed = urlsplit(self.path)
+            try:
+                pairs = (
+                    parse_qsl(
+                        parsed.query, keep_blank_values=True, strict_parsing=True, max_num_fields=1
+                    )
+                    if parsed.query
+                    else []
+                )
+                if parsed.fragment or (
+                    pairs
+                    and (
+                        len(pairs) != 1
+                        or pairs[0][0] != "cursor"
+                        or not _JOB_ID.fullmatch(pairs[0][1])
+                    )
+                ):
+                    raise ValueError
+            except ValueError:
+                self._error(
+                    HTTPStatus.BAD_REQUEST,
+                    "receiver_cursor_invalid",
+                    "Select a canonical saved receiver cursor.",
+                )
+                return ("", "")
+            return ("jobs", pairs[0][1] if pairs else "")
+        if not self._management_query_free():
+            return ("", "")
+        suffix = path[len(prefix) :]
+        if suffix in {"context", "jobs"}:
+            return (suffix, "")
+        match = re.fullmatch(r"jobs/(job-[0-9a-f]{32})(?:/(prepare|review))?", suffix)
+        if match is None:
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "receiver_defense_invalid",
+                "Select a canonical receiver comparison operation.",
+            )
+            return ("", "")
+        return (match.group(2) or "read", match.group(1))
+
     def _assistance_context_request(self, path: str) -> tuple[str, str] | None:
         if path != f"{API_PREFIX}/assistance/context":
             return None

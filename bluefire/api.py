@@ -419,6 +419,21 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
             return
+        receiver = self._routes._receiver_defense_request(path, listing=True)
+        if receiver is not None:
+            if receiver[0] == "read":
+                self._dispatch(
+                    lambda: self.platform_server.service.receiver_defense_job(receiver[1])
+                )
+            elif receiver[0] == "jobs":
+                self._dispatch(
+                    lambda: self.platform_server.service.receiver_defense_jobs(
+                        cursor=receiver[1] or None
+                    )
+                )
+            elif receiver[0]:
+                self._method_not_allowed("POST")
+            return
         graph_context = self._routes._graph_context_request(path)
         if graph_context is not None:
             if graph_context[0]:
@@ -903,6 +918,23 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/comparisons":
             self._dispatch(lambda: self.platform_server.service.compare(body))
+            return
+        receiver = self._routes._receiver_defense_request(path)
+        if receiver is not None:
+            operations = {
+                "context": lambda: self.platform_server.service.receiver_defense_context(body),
+                "jobs": lambda: self.platform_server.service.submit_receiver_defense(body),
+                "prepare": lambda: self.platform_server.service.prepare_receiver_defense(
+                    receiver[1], body
+                ),
+                "review": lambda: self.platform_server.service.review_receiver_defense(
+                    receiver[1], body
+                ),
+            }
+            if receiver[0] in operations:
+                self._dispatch(operations[receiver[0]])
+            elif receiver[0]:
+                self._method_not_allowed("GET")
             return
         if path == f"{API_PREFIX}/assistance/graph-context":
             self._method_not_allowed("GET")

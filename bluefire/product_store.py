@@ -49,6 +49,7 @@ from .product_store_contracts import (
 from .product_store_contracts import (
     package_actor as _package_actor,
 )
+from .product_store_contracts import safe_document as _safe_document
 from .product_store_contracts import (
     stable_identifier as _identifier,
 )
@@ -83,31 +84,6 @@ _EMPTY_ACTION_PACKAGE_CATALOG_DIGEST = content_hash(
 )
 _PROPOSAL_RECORD_ID = re.compile(r"^proposal-review-[0-9a-f]{32}$")
 _SOURCE_PROPOSAL_ID = re.compile(r"^proposal-[0-9a-f]{20}$")
-_ENVIRONMENT_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
-_SECRET_FIELDS = {
-    "auth",
-    "authorization",
-    "bearer",
-    "cookie",
-    "api_key",
-    "apikey",
-    "credential",
-    "credentials",
-    "password",
-    "private_key",
-    "secret",
-    "secrets",
-    "token",
-}
-_CREDENTIAL_VALUE_PATTERNS = (
-    re.compile(r"\A(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}\Z"),
-    re.compile(r"\Ask-[A-Za-z0-9_-]{20,}\Z"),
-    re.compile(r"\Axox[baprs]-[A-Za-z0-9-]{10,}\Z"),
-    re.compile(r"\AAKIA[0-9A-Z]{16}\Z"),
-    re.compile(r"\AeyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\Z"),
-    re.compile(r"-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----"),
-    re.compile(r"\A[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@"),
-)
 _RESOURCE_KINDS = {
     "action",
     "collector",
@@ -208,81 +184,6 @@ def _package_trust_reason(value: Any) -> str:
             "than 512 characters"
         )
     return value
-
-
-def _safe_document(value: Any, *, context: str = "document") -> Any:
-    """Clone JSON data and reject persisted plaintext secrets.
-
-    A secret-shaped field may be null or an exact ``{"env": "NAME"}``
-    reference.  This keeps configuration exportable without making the local
-    database a credential store.
-    """
-
-    try:
-        cloned = json_clone(value)
-    except (TypeError, ValueError) as exc:
-        raise ProductStoreError(f"{context} must contain only JSON values") from exc
-
-    def inspect(item: Any, path: str) -> None:
-        if isinstance(item, str):
-            if any(pattern.search(item) for pattern in _CREDENTIAL_VALUE_PATTERNS):
-                raise ProductStoreError(
-                    f"{path} contains a credential-shaped plaintext value; "
-                    "use an environment-variable reference"
-                )
-            return
-        if isinstance(item, list):
-            for index, child in enumerate(item):
-                inspect(child, f"{path}[{index}]")
-            return
-        if not isinstance(item, dict):
-            return
-        for raw_key, child in item.items():
-            if not isinstance(raw_key, str):
-                raise ProductStoreError(f"{path} contains a non-string key")
-            key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", raw_key).lower().replace("-", "_")
-            segments = tuple(part for part in re.split(r"[^a-z0-9]+", key) if part)
-            secret_shaped = key in _SECRET_FIELDS or any(
-                segment in _SECRET_FIELDS for segment in segments
-            )
-            if secret_shaped:
-                if child is None:
-                    continue
-                if key.endswith(("_available", "_configured", "_present")) and isinstance(
-                    child, bool
-                ):
-                    continue
-                if (
-                    key.endswith(("_reference", "_env"))
-                    and isinstance(child, str)
-                    and _ENVIRONMENT_NAME.fullmatch(child)
-                ):
-                    continue
-                if (
-                    key in {"credentials", "secrets"}
-                    and isinstance(child, dict)
-                    and all(
-                        isinstance(reference, dict)
-                        and set(reference) == {"env"}
-                        and isinstance(reference["env"], str)
-                        and _ENVIRONMENT_NAME.fullmatch(reference["env"])
-                        for reference in child.values()
-                    )
-                ):
-                    continue
-                if (
-                    not isinstance(child, dict)
-                    or set(child) != {"env"}
-                    or not isinstance(child["env"], str)
-                    or not _ENVIRONMENT_NAME.fullmatch(child["env"])
-                ):
-                    raise ProductStoreError(
-                        f"{path}.{raw_key} must be null or an environment-variable reference"
-                    )
-            inspect(child, f"{path}.{raw_key}")
-
-    inspect(cloned, context)
-    return cloned
 
 
 def _detection_revision_identity(
@@ -4319,6 +4220,10 @@ class ProductStore:
                 from .product_store_assistance_run import publication_guard as run_guard
 
                 run_guard(self, connection, job_kind, document)
+            if "receiver_defense" in document:
+                from .product_store_receiver_defense import guard as receiver_guard
+
+                receiver_guard(self, connection, job_kind, document)
             if "method_comparison" in document:
                 from .product_store_method_comparison import publication_guard
 
@@ -4337,13 +4242,25 @@ class ProductStore:
                 )
                 document["approval_request_id"] = approval["approval_id"]
             now = utc_now()
+            initial_progress = (
+                {"admission": {"accepted": False, "problem": None}}
+                if job_kind == "receiver.defense"
+                else {}
+            )
             connection.execute(
                 """
                 INSERT INTO jobs(
                     job_id, kind, state, request_json, progress_json, created_at, updated_at
-                ) VALUES (?, ?, 'queued', ?, '{}', ?, ?)
+                ) VALUES (?, ?, 'queued', ?, ?, ?, ?)
                 """,
-                (job_id, job_kind, _canonical_json(document), now, now),
+                (
+                    job_id,
+                    job_kind,
+                    _canonical_json(document),
+                    _canonical_json(initial_progress),
+                    now,
+                    now,
+                ),
             )
             row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
             return self._job_from_row(row), True
@@ -4432,6 +4349,10 @@ class ProductStore:
                     from .product_store_assistance_run import publication_guard as run_guard
 
                     run_guard(self, connection, row["kind"], stored_request)
+                if stored_request.get("receiver_defense"):
+                    from .product_store_receiver_defense import guard as receiver_guard
+
+                    receiver_guard(self, connection, row["kind"], stored_request)
             if state != current and state not in _JOB_TRANSITIONS[current]:
                 raise ProductStoreError(f"job cannot transition from {current} to {state}")
             if current == "cancelling" and state == "completed" and not completion_confirmed:

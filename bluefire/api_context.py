@@ -110,6 +110,24 @@ class PlatformService(Protocol):
     ) -> JsonResult:
         """Suspend or revoke one exact publisher signing key."""
 
+    def receiver_defense_context(self, request: JsonObject) -> JsonResult:
+        """Read saved-graph eligibility without preparing a receiver."""
+
+    def submit_receiver_defense(self, request: JsonObject) -> JsonResult:
+        """Retain one explicit receiver comparison intent."""
+
+    def receiver_defense_job(self, job_id: str) -> JsonResult:
+        """Read retained phases and cleanup without renewing a session."""
+
+    def receiver_defense_jobs(self, *, cursor: str | None = None) -> JsonResult:
+        """Page saved comparisons, unfinished owners before settled history."""
+
+    def prepare_receiver_defense(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Explicitly prepare one owned fixed-policy receiver."""
+
+    def review_receiver_defense(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Retain native review before a separate Execute approval."""
+
     def detection_health(self) -> JsonResult:
         """Return Detection Lab persistence and backend readiness."""
 
