@@ -87,6 +87,11 @@ The included offline provider makes planner behavior reproducible without a live
 configured OpenAI-compatible provider remains only a proposal boundary: schema validation,
 allowlists, policy, runner enforcement, and approval still apply. See [AI Planner](docs/AI_PLANNER.md).
 
+For reviewed experiment planning, open **Build > Plan with Assistant**. Describe an objective,
+review and edit its proposed graph in Builder, then save and open the separate experiment.
+[Graph assistance](docs/contextual-graph-assistance.md) explains saving, recovery, and current
+Assist/Auto limits. Run Review provides [readable reports and verified run bundles](docs/RUN_EXPORTS.md).
+
 ## A concrete defense-frontier workflow
 
 The bounded defense-frontier journey exercises the full product loop against disposable,

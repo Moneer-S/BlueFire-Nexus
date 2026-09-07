@@ -4,6 +4,18 @@ The contextual Assistant can select `graph.propose_and_validate` from an authori
 
 Off makes no model request. Assist and the explicitly advertised bounded Auto capability generate, validate and retain proposals only. Both require explicit native Builder review before saving. The selected model provider is retained by content digest; provider failure never falls back to offline drafting on this path. The older synchronous drafting API retains its existing behavior.
 
+## In the workbench
+
+1. Open **Build > Plan with Assistant**, choose a configured provider, and select **Assist**. Describe a new experiment using up to eight registered steps.
+2. Choose **Start work**, then **Review experiment** when the proposal is ready. The proposal opens in a separate Builder workspace; the current experiment is kept in place.
+3. Edit steps, methods, inputs, routes, or the experiment name using the normal canvas and step list. Open **Plan, assumptions, and your changes** to inspect the rationale and changes before saving.
+4. Choose **Save experiment**. The service validates the reviewed graph and saves an immutable version. If the connection is lost, reopen Assistant or the review link and retry the retained decision; it does not create another model request or duplicate the saved version.
+5. Choose **Open saved experiment** to make that version active, then use **Review run** for environment setup and authorization. Saving a graph has not run it. Opening checks for current manual edits before replacing the active graph.
+
+The review retains local edits across reload in this browser session and keeps the original proposal available. Saved results reopen the exact accepted version. You can decline from the plan review or stop the operation in Assistant. Readonly results still support step inspection, zoom, and panning.
+
+**Auto** currently supports the same bounded proposal and validation work for graph creation; saving still waits for native review. **Off** makes no model requests. **Offline draft** is a separate, explicitly selected local keyword draft. The Builder's Assistant currently creates a new experiment; it does not claim to edit an unsaved active graph or automatically execute the entire workflow.
+
 ## Selected context and submission
 
 `GET /api/v1/assistance/graph-context` selects a new graph with no reference. An optional exact saved reference requires all three query parameters `scenario_id`, `version` and `digest`. The reference must match its current saved head. The response preserves the existing context envelope with:
