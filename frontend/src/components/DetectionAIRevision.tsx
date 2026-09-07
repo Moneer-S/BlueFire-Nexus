@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { detectionApplication, detectionJobActive, detectionJobId, detectionProposal, matchesDetectionAIReceipt, matchesDetectionRetry, proposalIsCurrent, readDetectionAIReceipt, settleDetectionAIReceipt, storeDetectionAIReceipt, type DetectionAIDecision, type DetectionAIReceipt } from "../lib/detection-ai";
 import { sourceObservedRecords } from "../lib/run-handoffs";
@@ -18,9 +18,15 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
   usePublishAssistanceSelection(resource && sourceRun ? { runId: sourceRun.run_id, candidateId: resource.id, resourceDigest: resource.digest, title: resource.document.title ?? resource.id, manualEdits } : undefined);
   const client = useQueryClient();
   const [params, setParams] = useSearchParams();
+  const location = useLocation();
   const [receipt, setReceipt] = useState(readDetectionAIReceipt);
-  const jobId = params.get("ai_job") ?? (receipt ? detectionJobId(receipt.request.submission_id) : "");
-  const [expanded, setExpanded] = useState(Boolean(jobId));
+  const linkedJobId = params.get("ai_job");
+  const jobId = linkedJobId ?? (receipt ? detectionJobId(receipt.request.submission_id) : "");
+  const relatedReceipt = receipt?.candidateId === resource?.id && receipt?.request.run_id === sourceRun?.run_id && receipt?.request.parent_resource_digest === resource?.digest;
+  const restoredArrival = Boolean(linkedJobId && location.state && typeof location.state === "object" && location.state.detectionAIReceiptJobId === linkedJobId);
+  const [expanded, setExpanded] = useState(Boolean((linkedJobId && !restoredArrival) || (relatedReceipt && jobId)));
+  const focusJob = useRef<string | undefined>((!restoredArrival && linkedJobId) || (relatedReceipt ? jobId : undefined));
+  const assistanceHeading = useRef<HTMLHeadingElement>(null);
   const [autonomy, setAutonomy] = useState("off");
   const [provider, setProvider] = useState(defaultProvider ?? "");
   const [question, setQuestion] = useState("");
@@ -53,15 +59,30 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
   const viewJob = (id: string) => setParams((old) => { const next = new URLSearchParams(old); next.set("ai_job", id); return next; });
 
   useEffect(() => {
-    if (jobId && !params.get("ai_job")) setParams((old) => { const next = new URLSearchParams(old); next.set("ai_job", jobId); return next; }, { replace: true });
-  }, [jobId, params, setParams]);
+    if (jobId && !linkedJobId) {
+      setParams((old) => { const next = new URLSearchParams(old); next.set("ai_job", jobId); return next; }, {
+        replace: true, state: { ...(location.state && typeof location.state === "object" ? location.state : {}), detectionAIReceiptJobId: jobId },
+      });
+    }
+  }, [jobId, linkedJobId, location.state, setParams]);
+  useEffect(() => {
+    // A new explicit arrival also reopens the same job after a manual close.
+    // Publishing a recovery pointer is not an explicit request to open its panel.
+    if (!linkedJobId || restoredArrival) return;
+    focusJob.current = linkedJobId;
+    setExpanded(true);
+  }, [linkedJobId, location.key, restoredArrival]);
   useEffect(() => {
     if (job.data && settleDetectionAIReceipt(job.data)) setReceipt(undefined);
   }, [job.data]);
   useEffect(() => { setReviewer(""); }, [jobId]);
   useEffect(() => {
-    if (proposal?.proposal_digest) heading.current?.focus();
-  }, [proposal?.proposal_digest]);
+    if (!expanded || job.isPending || focusJob.current !== jobId) return;
+    // An in-flight local submission can race its first not-found lookup.
+    if (!proposal && receipt && detectionJobId(receipt.request.submission_id) === jobId) return;
+    (heading.current ?? assistanceHeading.current)?.focus();
+    focusJob.current = undefined;
+  }, [expanded, job.isPending, jobId, location.key, proposal, receipt]);
   useEffect(() => {
     if (!applied?.candidate_id) return;
     void client.invalidateQueries({ queryKey: ["detections"] });
@@ -91,6 +112,7 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
       question: question.trim(), case_role: role, provider_id: provider, autonomy: "assist" } };
     if (!storeDetectionAIReceipt(saved)) { setError(new Error("The original request could not be saved for recovery. Check browser storage before sending a model request.")); return; }
     setReceipt(saved);
+    focusJob.current = detectionJobId(saved.request.submission_id);
     viewJob(detectionJobId(saved.request.submission_id));
     submit.mutate(saved);
   };
@@ -101,7 +123,7 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
   const canStart = resource && ["sqlite", "sigma"].includes(resource.document.target_language ?? "") && resource.document.rule_source && sourceRun?.finalized_at && sourceCount > 0 && !sourceRun.is_demo && !manualEdits && autonomy === "assist" && models.some((item) => item.provider_id === provider) && question.trim() && !/[\r\n]/.test(question) && !receipt;
   const boundLink = proposal ? `/detection-lab?candidate=${encodeURIComponent(proposal.parent.candidate_id)}&candidate_scope=registry&run=${encodeURIComponent(proposal.source_run.run_id)}&ai_job=${encodeURIComponent(jobId)}` : undefined;
   return <section className={`detection-assistance${expanded ? " is-open" : ""}`} aria-label="Detection assistance">
-    <div className="detection-assistance-heading"><div><h3>Improve this rule with AI</h3><p>Propose a change from the selected evidence, review it here, then test the saved revision.</p></div><Button aria-expanded={expanded} aria-controls="detection-assistance-content" onClick={() => setExpanded(!expanded)}>{expanded ? "Hide assistance" : jobId ? "Resume AI work" : "Open assistance"}</Button></div>
+    <div className="detection-assistance-heading"><div><h3 ref={assistanceHeading} tabIndex={-1}>Improve this rule with AI</h3><p>Propose a change from the selected evidence, review it here, then test the saved revision.</p></div><Button aria-expanded={expanded} aria-controls="detection-assistance-content" onClick={() => { focusJob.current = expanded ? undefined : jobId || undefined; setExpanded(!expanded); }}>{expanded ? "Hide assistance" : jobId ? "Resume AI work" : "Open assistance"}</Button></div>
     {expanded ? <div id="detection-assistance-content">
       {receipt && jobId !== detectionJobId(receipt.request.submission_id) ? <Callout title="Another request still needs confirmation">Your earlier request is retained. Resolve it before starting another model request.<Button onClick={() => viewJob(detectionJobId(receipt.request.submission_id))}>Resume pending request</Button></Callout> : null}
       {!jobId ? <>

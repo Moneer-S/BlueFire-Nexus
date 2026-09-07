@@ -20,7 +20,7 @@ function readyJob(saved = receipt()): RunJob {
   const proposal: DetectionAIProposal = { schema_version: "bluefire.detection-ai-proposal.v1", proposal_digest: digest, parent, source_run: source, source: "SELECT evidence_id\nFROM observations WHERE retained_count > 0", reason: "Include smaller collections.\nTest benign cases separately.", evidence_refs: ["observation-1"], limitations: ["Development evidence only"], provider: { ...provider, usage: {} }, provider_binding_digest: digest, context_digest: digest };
   return { schema_version: "bluefire.job.v1", job_id: detectionJobId(saved.request.submission_id), kind: "detection.ai.propose", state: "completed", request: { candidate_id: saved.candidateId, submitted_request: saved.request, parent, source_run: source, observed_ids: ["observation-1", "observation-2"], application_submission_id: "11234567-89ab-4def-8123-456789abcdef" }, progress: { proposal } };
 }
-function LocationProbe() { return <><output data-testid="location">{useLocation().search}</output><Link to="/detection-lab?ai_job=job-other">Open other work</Link></>; }
+function LocationProbe() { return <><label>Unrelated notes<input /></label><Link to={`/detection-lab?candidate=${resource.id}&candidate_scope=registry&run=${sourceRun.run_id}&ai_job=${readyJob().job_id}`}>Review rule revision</Link><output data-testid="location">{useLocation().search}</output><Link to="/detection-lab?ai_job=job-other">Open other work</Link></>; }
 function mount(options: { jobId?: string; manualEdits?: boolean; selected?: DetectionResource; client?: QueryClient } = {}) {
   const client = options.client ?? new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[`/detection-lab${options.jobId ? `?ai_job=${options.jobId}` : ""}`]}><LocationProbe /><DetectionAIRevision resource={options.selected ?? resource} sourceRun={sourceRun} providers={[provider]} defaultProvider={provider.provider_id} manualEdits={options.manualEdits ?? false} /></MemoryRouter></QueryClientProvider>);
@@ -165,4 +165,64 @@ it("does not let a late retry response replace the user's newer job navigation",
   await screen.findByRole("heading", { name: "Review the proposed rule" });
   await act(async () => resolve({ schema_version: "bluefire.job-retry.v1", retry_of_job_id: original.job_id, source_job: original, job: { ...original, job_id: "job-retry", state: "running", request: { ...original.request, retry_of_job_id: original.job_id } } }));
   expect(screen.getByTestId("location")).toHaveTextContent("ai_job=job-other");
+});
+
+it("opens and focuses an explicit AI review handoff in the already mounted lab", async () => {
+  const job = readyJob();
+  vi.spyOn(api, "job").mockResolvedValue(job);
+  const send = vi.spyOn(api, "suggestDetectionRevision");
+  const decide = vi.spyOn(api, "decideDetectionRevision");
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  mount({ client, manualEdits: true });
+  const user = userEvent.setup();
+  expect(screen.getByRole("button", { name: "Open assistance" })).toHaveAttribute("aria-expanded", "false");
+  await user.click(screen.getByRole("link", { name: "Review rule revision" }));
+  const heading = await screen.findByRole("heading", { name: "Review the proposed rule" });
+  expect(heading).toBeVisible();
+  expect(heading).toHaveFocus();
+  await user.type(screen.getByRole("textbox", { name: "Unrelated notes" }), "Keep my draft");
+  await user.click(screen.getByRole("link", { name: "Review rule revision" }));
+  expect(heading).toHaveFocus();
+  expect(screen.getByText(/There are unsaved manual edits/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Accept, save and evaluate" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Hide assistance" }));
+  await user.type(screen.getByRole("textbox", { name: "Unrelated notes" }), "Keep my focus");
+  await act(async () => { await client.refetchQueries({ queryKey: ["job", job.job_id], exact: true }); });
+  expect(screen.getByRole("button", { name: "Resume AI work" })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByRole("textbox", { name: "Unrelated notes" })).toHaveFocus();
+  await user.click(screen.getByRole("link", { name: "Review rule revision" }));
+  expect(await screen.findByRole("heading", { name: "Review the proposed rule" })).toHaveFocus();
+  expect(screen.getByRole("button", { name: "Accept, save and evaluate" })).toBeDisabled();
+  expect(send).not.toHaveBeenCalled();
+  expect(decide).not.toHaveBeenCalled();
+});
+
+it("keeps unrelated receipt restoration closed and does not focus its background proposal", async () => {
+  storeDetectionAIReceipt(receipt());
+  let resolve!: (job: RunJob) => void;
+  vi.spyOn(api, "job").mockImplementation(() => new Promise(done => { resolve = done; }));
+  mount({ selected: { ...resource, id: "another-rule" } });
+  const user = userEvent.setup();
+  await user.type(screen.getByRole("textbox", { name: "Unrelated notes" }), "Other rule edits");
+  await waitFor(() => expect(resolve).toBeTypeOf("function"));
+  await act(async () => { resolve(readyJob()); });
+  expect(screen.getByRole("button", { name: "Resume AI work" })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByRole("heading", { name: "Review the proposed rule" })).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Unrelated notes" })).toHaveFocus();
+  await user.click(screen.getByRole("link", { name: "Review rule revision" }));
+  expect(await screen.findByRole("heading", { name: "Review the proposed rule" })).toHaveFocus();
+});
+
+it("preserves a manual close while an explicit linked proposal is still loading", async () => {
+  let resolve!: (job: RunJob) => void;
+  vi.spyOn(api, "job").mockImplementation(() => new Promise(done => { resolve = done; }));
+  mount();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("link", { name: "Review rule revision" }));
+  await user.click(await screen.findByRole("button", { name: "Hide assistance" }));
+  await user.type(screen.getByRole("textbox", { name: "Unrelated notes" }), "Still editing");
+  await act(async () => { resolve(readyJob()); });
+  expect(screen.getByRole("button", { name: "Resume AI work" })).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByRole("heading", { name: "Review the proposed rule" })).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Unrelated notes" })).toHaveFocus();
 });
