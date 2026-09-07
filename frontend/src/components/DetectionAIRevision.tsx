@@ -77,6 +77,13 @@ export function DetectionAIRevision({ resource, sourceRun, providers, defaultPro
   }, [job.data]);
   useEffect(() => { setReviewer(""); }, [jobId]);
   useEffect(() => {
+    // A delayed handoff must yield when the operator focuses another control.
+    // A later explicit arrival or Resume action can request focus again.
+    const releaseFocus = () => { focusJob.current = undefined; };
+    document.addEventListener("focusin", releaseFocus);
+    return () => document.removeEventListener("focusin", releaseFocus);
+  }, []);
+  useEffect(() => {
     if (!expanded || job.isPending || focusJob.current !== jobId) return;
     // An in-flight local submission can race its first not-found lookup.
     if (!proposal && receipt && detectionJobId(receipt.request.submission_id) === jobId) return;

@@ -197,6 +197,24 @@ it("opens and focuses an explicit AI review handoff in the already mounted lab",
   expect(decide).not.toHaveBeenCalled();
 });
 
+it.each(["completed", "failed"] as const)("keeps operator focus when a delayed linked job becomes %s", async (state) => {
+  let resolve!: (job: RunJob) => void;
+  vi.spyOn(api, "job").mockImplementation(() => new Promise(done => { resolve = done; }));
+  mount();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("link", { name: "Review rule revision" }));
+  await waitFor(() => expect(resolve).toBeTypeOf("function"));
+  const notes = screen.getByRole("textbox", { name: "Unrelated notes" });
+  await user.type(notes, "My ongoing edit");
+  await act(async () => { resolve({ ...readyJob(), state, ...(state === "failed" ? { progress: {} } : {}) }); });
+  expect(notes).toHaveFocus();
+  await user.paste(" continues");
+  expect(notes).toHaveValue("My ongoing edit continues");
+  expect(screen.getByRole("button", { name: "Hide assistance" })).toHaveAttribute("aria-expanded", "true");
+  await user.click(screen.getByRole("link", { name: "Review rule revision" }));
+  expect(screen.getByRole("heading", { name: state === "completed" ? "Review the proposed rule" : "Improve this rule with AI" })).toHaveFocus();
+});
+
 it("keeps unrelated receipt restoration closed and does not focus its background proposal", async () => {
   storeDetectionAIReceipt(receipt());
   let resolve!: (job: RunJob) => void;
