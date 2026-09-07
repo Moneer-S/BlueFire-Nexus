@@ -17,6 +17,10 @@ TERMINAL = {"completed", "cancelled", "failed", "interrupted"}
 
 
 def child_path(child: Mapping[str, Any]) -> str:
+    if child["kind"] == "receiver.defense":
+        return f"/compare?receiver_job={child['job_id']}"
+    if child["kind"] == "receiver.defense.inspect":
+        return f"/compare?receiver_job={child['request']['submitted_request']['owner_job_id']}"
     if child["kind"] == "run.assistance.prepare":
         return "/runs?" + urlencode({"assistance_job": child["job_id"]})
     if child["kind"] == "detection.ai.create":

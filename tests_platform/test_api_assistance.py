@@ -19,6 +19,7 @@ CANDIDATE = "detection-" + "a" * 20
             200,
         ),
         ("POST", "/assistance/turns", ("submit_assistance_turn", {}), 202),
+        ("POST", "/assistance/receiver-context", ("assistance_receiver_context", {}), 200),
         ("GET", "/assistance/graph-context", ("assistance_graph_context", None), 200),
         ("GET", "/assistance/graph-context?", ("assistance_graph_context", None), 200),
         ("GET", f"/ai/graph-jobs/{JOB_ID}", ("graph_ai_job", JOB_ID), 200),
@@ -52,6 +53,24 @@ def test_turn_submission_guards(violation, status):
             server,
             "GET" if violation == "method" else "POST",
             "/api/v1/assistance/turns" + ("?autonomy=auto" if violation == "query" else ""),
+            body=None if violation == "method" else [] if violation == "body" else {},
+            authenticated=violation != "session",
+            origin="https://untrusted.example" if violation == "origin" else "same",
+        )
+        assert actual == status and not service.calls
+
+
+@pytest.mark.parametrize(
+    "violation,status",
+    [("method", 405), ("query", 400), ("session", 401), ("origin", 403), ("body", 400)],
+)
+def test_receiver_context_keeps_native_http_guards(violation, status):
+    with running_server() as (server, service):
+        actual, _, _ = request(
+            server,
+            "GET" if violation == "method" else "POST",
+            "/api/v1/assistance/receiver-context"
+            + ("?prepare=true" if violation == "query" else ""),
             body=None if violation == "method" else [] if violation == "body" else {},
             authenticated=violation != "session",
             origin="https://untrusted.example" if violation == "origin" else "same",

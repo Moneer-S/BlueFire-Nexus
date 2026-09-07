@@ -85,6 +85,10 @@ class StubService:
         self.calls.append(("assistance_graph_context", base_scenario))
         return {"selected": {"kind": "graph", "base_scenario": base_scenario}}
 
+    def assistance_receiver_context(self, request):
+        self.calls.append(("assistance_receiver_context", request))
+        return {"context_digest": "sha256:" + "a" * 64}
+
     def assistance_run_context(self, request):
         self.calls.append(("assistance_run_context", request))
         return {"context_digest": "sha256:" + "a" * 64}

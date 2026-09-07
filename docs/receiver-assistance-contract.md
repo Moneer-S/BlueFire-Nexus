@@ -1,0 +1,21 @@
+# Receiver assistance lifecycle
+
+The existing ExperimentAssistance and RunJobController coordinate the native receiver comparison. This adapter creates no receiver, performs no run, changes no policy and grants no approval. It uses the existing `receiver.defense` owner and explicit native phase controls.
+
+`POST /api/v1/assistance/receiver-context` takes `{selection}`. A `receiver_scenario` selection contains an immutable `saved_scenario` reference and the existing native `run_intent`. The intent must remain Execute with runtime AI Off and no runtime provider. The context reports ineligible host, graph or native settings before model admission. Its `receiver_context` excludes volatile readiness; Compare checks current readiness when the operator prepares a receiver.
+
+A `receiver_test` selection contains `receiver_job_id` and `receiver_context_digest`. The server verifies the admitted owner, finalized bundles, exact task/session/policy receipts and a nonempty ordered phase prefix. The model receives only bounded decision/count/cleanup facts and exact supplied references. Historical inspection freezes those facts; later phases append without rewriting the earlier interpretation.
+
+The existing turn submission, GET, continuation and cancellation APIs are unchanged. Off makes no provider request or child. Assist and Auto may select exactly one supplied receiver capability. Auto is coordination and analysis authority only: every Prepare receiver action, native review and fresh Execute approval remains explicit.
+
+For `receiver.test_and_compare`, the Assistant reserves one deterministic `receiver.defense` child. A completed owner job means admission completed, not that the three phases ran. The parent stays active across baseline reviewed-records, protected redacted-only and restored reviewed-records. Stop is checked through the retained Assistant ancestor at native preparation, review, publication and dispatch. Cancelling an owned native operation stops the creating turn, including its analysis jobs.
+
+For `receiver.inspect_and_plan_next`, the Assistant owns only a `receiver.defense.inspect` child for its selected prefix. It does not adopt or cancel the selected receiver owner. Completing that one analysis completes this turn, while the native comparison may remain active. Model suggestions are advisory; the current native next action always determines whether a phase can be prepared.
+
+After a creating owner's phase receipt is retained, the existing native completion hook reserves a deterministic prefix analysis through the same controller. No scheduler or second workflow engine is introduced. GET verifies and displays receipts only. If the process stops before this handoff, reopening exposes recovery through the existing idempotent `POST /continue`. A failed or interrupted analysis is never automatically repeated: explicit recovery permits at most three analysis attempts per prefix and nine per turn. Analysis recovery never repeats native effects or renews a receiver session. Without a running service callback or an explicit continuation, unattended recovery remains pending.
+
+Analysis requests, model output and progress use the existing secret-safe persistence boundary. The server rechecks exact provider configuration and source prefix before the request and under the configuration lock before result retention; the writer transaction checks Stop and the reserved lineage. A lost submission response resolves the same UUID. A retained interpretation survives callback interruption without another request. Native run results and cleanup remain independently authoritative if analysis fails.
+
+`turn.receiver_test` exposes owner identity/context digest, lifecycle ownership, native phases/current action and retained analysis jobs. `receiver_phase` result refs bind actual run IDs and native result digests; `receiver_inspection` refs bind exact analysis jobs and prefix digests. A successful model interpretation cannot turn transport failure or missing receiver evidence into prevention. Restoration means a fresh baseline-policy receiver; it is not host rollback, deployment or independent held-out defense validation.
+
+Portable tests use provider and receiver/native protocol doubles. They establish lifecycle and binding behavior, not installed process isolation or model quality.

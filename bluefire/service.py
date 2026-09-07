@@ -52,6 +52,7 @@ from .approvals import (
     execution_intent_id,
     public_approval_record,
 )
+from .assistance_receiver import ReceiverAssistance
 from .assistance_runs import AssistanceRunJobs
 from .assistance_turns import ExperimentAssistance
 from .bootstrap import seed_product_metadata
@@ -293,6 +294,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         self.assistance_runs = AssistanceRunJobs(self)
         self.receiver_defense = ReceiverDefenseJobs(self)
         self.assistance = ExperimentAssistance(self)
+        self.assistance_receiver = ReceiverAssistance(self)
         self.detection_ai.on_application = self.assistance.application_committed
         self.graph_ai.on_application = self.assistance.application_committed
         self.detection_create.on_application = self.assistance.application_committed
@@ -792,6 +794,22 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         self, base_scenario: Mapping[str, Any] | None = None
     ) -> Mapping[str, Any]:
         return self.graph_ai.context({"kind": "graph", "base_scenario": base_scenario})
+
+    def assistance_receiver_context(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        if set(request) != {"selection"}:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "receiver_assistance_context_invalid",
+                "Select an exact receiver context.",
+            )
+        try:
+            return dict(self.assistance_receiver.context(request["selection"]))
+        except (ProductStoreError, ConfigError) as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "receiver_assistance_context_invalid",
+                "The selected receiver graph, settings or verified phase evidence is unavailable.",
+            ) from exc
 
     def assistance_run_context(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         if set(request) != {"selection"}:
@@ -1876,6 +1894,7 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
                     "assistance.continue",
                     "receiver.defense",
                     "receiver.defense.prepare",
+                    "receiver.defense.inspect",
                 }
                 or state is None
                 or created is None
@@ -1910,6 +1929,12 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
         except ProductStoreError as exc:
             raise APIError(HTTPStatus.NOT_FOUND, "job_not_found", "Job was not found.") from exc
 
+        if source.get("kind") == "receiver.defense.inspect":
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "receiver_analysis_retry_native_turn",
+                "Reopen the exact Assistant turn to recover bounded analysis; receiver effects are never retried.",
+            )
         if source.get("kind") in {"receiver.defense", "receiver.defense.prepare"} or source.get(
             "request", {}
         ).get("receiver_defense"):
@@ -2508,13 +2533,18 @@ class BlueFireService(RunnerManagementServiceMixin, ReceiverDefenseServiceMixin)
             job = self.product_store.get_job(job_id)
         except ProductStoreError:
             return self._signal_job(job_id, "cancel")
+        if job["kind"] == "receiver.defense.inspect":
+            self.assistance.cancel(self.assistance_receiver.cancellation_parent(job))
+            return self.product_store.get_job(job_id)
         if job["kind"] == "receiver.defense" or job["request"].get("receiver_defense"):
-            parent_id = (
-                job_id
-                if job["kind"] == "receiver.defense"
-                else job["request"]["receiver_defense"]["parent_job_id"]
-            )
-            self.receiver_defense.cancel(parent_id)
+            from .product_store_receiver_defense import cancellation_owner
+
+            owner = cancellation_owner(self.product_store, job_id)
+            parent_id = owner["job_id"]
+            if owner["request"].get("assistance_turn"):
+                self.assistance.cancel(self.assistance_receiver.cancellation_parent(owner))
+            else:
+                self.receiver_defense.cancel(parent_id)
             return self.product_store.get_job(job_id)
         if job.get("kind") == "replay.ai.propose":
             return self.method_comparison.cancel(job_id)

@@ -441,6 +441,9 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     lambda: self.platform_server.service.assistance_graph_context(graph_context[1])
                 )
             return
+        if path == f"{API_PREFIX}/assistance/receiver-context":
+            self._method_not_allowed("POST")
+            return
         if path == f"{API_PREFIX}/assistance/run-context":
             if self._routes._management_query_free():
                 self._method_not_allowed("POST")
@@ -938,6 +941,12 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/assistance/graph-context":
             self._method_not_allowed("GET")
+            return
+        if path == f"{API_PREFIX}/assistance/receiver-context":
+            if self._routes._management_query_free():
+                self._dispatch(
+                    lambda: self.platform_server.service.assistance_receiver_context(body)
+                )
             return
         if path == f"{API_PREFIX}/assistance/run-context":
             if self._routes._management_query_free():

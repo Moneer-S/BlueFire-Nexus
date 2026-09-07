@@ -220,7 +220,7 @@ def publication_guard(
         raise ProductStoreError("Assistance child differs from its reserved intent.")
     identity = (
         document.get("context_digest")
-        if kind in {"graph.ai.propose", "run.assistance.prepare", "detection.ai.create"}
+        if kind in {"graph.ai.propose", "run.assistance.prepare", "detection.ai.create", "receiver.defense", "receiver.defense.inspect"}
         else (
             document.get("candidate_id")
             if kind == "detection.ai.propose"

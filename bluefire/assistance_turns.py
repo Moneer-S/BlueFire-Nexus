@@ -13,6 +13,8 @@ from .ai_wire import AIProviderCancelled, AIProviderError
 from .application_errors import APIError
 from .assistance_context import LIMITATIONS, AssistanceContext
 from .assistance_context import context as selected_context
+from .assistance_receiver_context import KINDS as RECEIVER_KINDS
+from .assistance_receiver_context import selection as receiver_selection
 from .assistance_results import TERMINAL, active, child_job, child_path, result
 from .assistance_run_context import CAPABILITY as RUN
 from .assistance_run_context import selection as run_selection
@@ -35,7 +37,12 @@ def fail(message: str) -> APIError:
 def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
     """Normalize additive selection syntax without changing the durable wire request."""
     chosen = request.get("selection")
-    if chosen is None or chosen.get("kind") in {"graph", "saved_graph", "run_detection"}:
+    if chosen is None or chosen.get("kind") in {
+        "graph",
+        "saved_graph",
+        "run_detection",
+        *RECEIVER_KINDS,
+    }:
         return request
     return {
         **{key: value for key, value in request.items() if key != "selection"},
@@ -45,8 +52,13 @@ def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def is_graph(request: Mapping[str, Any]) -> bool:
     return bool(
-        request.get("selection", {}).get("kind") in {"graph", "saved_graph", "run_detection"}
+        request.get("selection", {}).get("kind")
+        in {"graph", "saved_graph", "run_detection", *RECEIVER_KINDS}
     )
+
+
+def is_receiver(request):
+    return request.get("selection", {}).get("kind") in RECEIVER_KINDS
 
 
 def is_creation(request: Mapping[str, Any]) -> bool:
@@ -80,6 +92,8 @@ class ExperimentAssistance:
     def _fresh(self, job: Mapping[str, Any]) -> Mapping[str, Any]:
         request = job["request"]["submitted_request"]
         request = submitted(request)
+        if is_receiver(request):
+            return dict(self.service.assistance_receiver.fresh(job))
         current = (
             (
                 self.service.assistance_runs.context(request["selection"])
@@ -121,13 +135,19 @@ class ExperimentAssistance:
             chosen = request["selection"]
             if not isinstance(chosen, Mapping):
                 raise fail("Select a typed graph or detector context.")
-            if chosen.get("kind") in {"graph", "saved_graph", "run_detection"}:
+            if chosen.get("kind") in {"graph", "saved_graph", "run_detection", *RECEIVER_KINDS}:
                 try:
                     (
-                        graph_selection
-                        if chosen["kind"] == "graph"
+                        receiver_selection
+                        if chosen["kind"] in RECEIVER_KINDS
                         else (
-                            create_selection if chosen["kind"] == "run_detection" else run_selection
+                            graph_selection
+                            if chosen["kind"] == "graph"
+                            else (
+                                create_selection
+                                if chosen["kind"] == "run_detection"
+                                else run_selection
+                            )
                         )
                     )(chosen)
                 except ProductStoreError as exc:
@@ -212,17 +232,21 @@ class ExperimentAssistance:
             }
             try:
                 context = (
-                    (
-                        self.service.assistance_runs.context(request["selection"])
-                        if is_saved_run(request)
-                        else (
-                            self.service.detection_create.context(request["selection"])
-                            if is_creation(request)
-                            else self.service.graph_ai.context(request["selection"])
+                    self.service.assistance_receiver.context(request["selection"])
+                    if is_receiver(request)
+                    else (
+                        (
+                            self.service.assistance_runs.context(request["selection"])
+                            if is_saved_run(request)
+                            else (
+                                self.service.detection_create.context(request["selection"])
+                                if is_creation(request)
+                                else self.service.graph_ai.context(request["selection"])
+                            )
                         )
+                        if is_graph(request)
+                        else self.context(request["run_id"], request["candidate_id"])
                     )
-                    if is_graph(request)
-                    else self.context(request["run_id"], request["candidate_id"])
                 )
                 if request["context_digest"] != context["context_digest"] or (
                     not is_graph(request)
@@ -231,7 +255,9 @@ class ExperimentAssistance:
                 ):
                     raise fail("The selected objects changed after the message was prepared.")
                 document["context"] = context
-                if is_creation(request) and not context["capabilities"][0]["available"]:
+                if (is_creation(request) or is_receiver(request)) and not context["capabilities"][
+                    0
+                ]["available"]:
                     raise fail(context["capabilities"][0]["reason"])
                 if request["autonomy"] == "assist" or (
                     is_graph(request) and request["autonomy"] == "auto"
@@ -317,6 +343,9 @@ class ExperimentAssistance:
         self._fresh(parent)
         self._provider(parent)
         selected_request = submitted(parent["request"]["submitted_request"])
+        if is_receiver(selected_request):
+            self.service.assistance_receiver.advance(parent, recovery=recovery)
+            return
         if is_graph(selected_request):
             self._advance_graph(parent, selected_request, recovery=recovery)
             return
@@ -467,6 +496,19 @@ class ExperimentAssistance:
                     "label": "Review run setup",
                     "native_path": "/runs?graph_job=" + chosen["selection"]["proposal_job_id"],
                 },
+            }
+        if is_receiver(chosen):
+            path = "/compare"
+            plan = parent["progress"].get("plan", [])
+            if plan:
+                owner_id, _ = self.service.assistance_receiver._owner(parent, plan[0])
+                if owner_id:
+                    path += "?receiver_job=" + owner_id
+            return {
+                "code": "receiver_review_required",
+                "message": "Review the retained receiver test and analysis. Recovery cannot repeat effects or renew a receiver session.",
+                "profile_id": None,
+                "action": {"label": "Review receiver test", "native_path": path},
             }
         if is_graph(chosen):
             return {
@@ -688,6 +730,8 @@ class ExperimentAssistance:
                 return False
             if any(job["state"] not in TERMINAL for job in self._continuations(parent)):
                 return False
+            if is_receiver(parent["request"]["submitted_request"]):
+                return bool(self.service.assistance_receiver.settled(parent))
             for step in parent["progress"].get("plan", []):
                 child = child_job(self.service, parent, step)
                 if child is not None and active(self.service, child, step)["state"] not in TERMINAL:
@@ -704,7 +748,10 @@ class ExperimentAssistance:
                     self.controller.cancel(continuation["job_id"])
                 except JobRuntimeError:
                     pass
-        for step in parent["progress"].get("plan", []):
+        receiver = is_receiver(parent["request"]["submitted_request"])
+        if receiver:
+            self.service.assistance_receiver.cancel(parent)
+        for step in ([] if receiver else parent["progress"].get("plan", [])):
             child = child_job(self.service, parent, step)
             if child is None:
                 continue
@@ -799,6 +846,10 @@ class ExperimentAssistance:
             else:
                 view["status"] = "completed"
                 for step in progress["plan"]:
+                    if is_receiver(
+                        request["submitted_request"]
+                    ) and self.service.assistance_receiver.apply_view(parent, step, view):
+                        break
                     child = child_job(self.service, parent, step)
                     if child is None:
                         view.update(

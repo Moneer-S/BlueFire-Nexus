@@ -101,6 +101,10 @@ class ReceiverDefenseJobs:
         }
 
     def _fresh(self, parent):
+        from .product_store_assistance import require_active
+
+        with self.store._connection() as connection:
+            require_active(self.store, connection, parent)
         request = parent["request"]["submitted_request"]
         current = self.context({key: request[key] for key in ("selection", "run_intent")})
         if (
@@ -114,7 +118,7 @@ class ReceiverDefenseJobs:
             raise ProductStoreError("This receiver comparison was stopped.")
         return current
 
-    def submit(self, request):
+    def submit(self, request, *, _assistance_turn=None):
         fields(request, {"submission_id", "selection", "run_intent", "context_digest"})
         digest = content_hash(request)
         previous = self.store.get_job_submission(
@@ -135,6 +139,8 @@ class ReceiverDefenseJobs:
             "context": current,
             "context_digest": request["context_digest"],
         }
+        if _assistance_turn is not None:
+            document["assistance_turn"] = dict(_assistance_turn)
         if (
             current is None
             or current["context_digest"] != request["context_digest"]

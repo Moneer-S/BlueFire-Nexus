@@ -26,6 +26,10 @@ def refuse_admission(store, document, submission_id, intent):
         row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (identifier,)).fetchone()
         if row is not None:
             return store._matching_job_submission(row, OWNER_KIND, binding)
+        if "assistance_turn" in safe:
+            from .product_store_assistance import publication_guard
+
+            publication_guard(store, connection, OWNER_KIND, safe)
         now = utc_now()
         progress = {
             "admission": {"accepted": False, "problem": ADMISSION_PROBLEM},
@@ -54,6 +58,10 @@ def safe_patch(connection, job, values):
 
 def owner_at(store, connection, job_id, *, active=False):
     job = job_at(store, connection, job_id)
+    if active:
+        from .product_store_assistance import require_active
+
+        require_active(store, connection, job)
     if job["kind"] != OWNER_KIND or (
         active
         and (
@@ -64,6 +72,65 @@ def owner_at(store, connection, job_id, *, active=False):
     ):
         raise ProductStoreError("The receiver comparison is unavailable or stopped.")
     return job
+
+
+def cancellation_owner(store, job_id):
+    """Resolve reciprocal ownership only; damaged evidence must not prevent Stop."""
+    with store._connection() as connection:
+        job = job_at(store, connection, job_id)
+        if job["kind"] == OWNER_KIND:
+            return job
+        marker = job["request"].get("receiver_defense")
+        if (
+            not isinstance(marker, dict)
+            or set(marker) != {"parent_job_id", "receiver_job_id", "phase"}
+            or marker["phase"] not in PHASES
+        ):
+            raise ProductStoreError("Receiver cancellation lineage is invalid.")
+        owner = owner_at(store, connection, marker["parent_job_id"])
+        candidates = [
+            {"phase": phase, **value}
+            for phase, value in owner["progress"].get("phases", {}).items()
+        ] + owner["progress"].get("attempt_history", [])
+        matches = [
+            row
+            for row in candidates
+            if row["receiver_job_id"] == marker["receiver_job_id"]
+            and row["phase"] == marker["phase"]
+        ]
+        if len(matches) != 1:
+            raise ProductStoreError("Receiver cancellation lacks its exact reserved phase.")
+        receiver = job_at(store, connection, marker["receiver_job_id"])
+        submitted = matches[0]["prepare_request"]
+        identifier = submitted["submission_id"]
+        if (
+            receiver["kind"] != PREPARE_KIND
+            or receiver["request"].get("receiver_defense") != marker
+            or receiver["request"].get("submitted_request") != submitted
+            or receiver["job_id"] != "job-" + uuid.UUID(identifier).hex
+            or receiver["request"]["_submission"]
+            != {
+                "schema_version": "bluefire.job-submission.v1",
+                "submission_id": identifier,
+                "intent_digest": content_hash({"parent_job_id": owner["job_id"], **submitted}),
+            }
+        ):
+            raise ProductStoreError("Receiver cancellation preparation binding is invalid.")
+        if job["kind"] == PREPARE_KIND:
+            if job["job_id"] != receiver["job_id"]:
+                raise ProductStoreError("Receiver cancellation names another preparation.")
+        else:
+            execution = str(uuid.uuid5(uuid.UUID(identifier), "receiver-execution"))
+            if (
+                job["kind"]
+                != ("scenario.run" if marker["phase"] == "baseline" else "scenario.replay")
+                or job["job_id"] != "job-" + uuid.UUID(execution).hex
+                or receiver["progress"].get("execution_job_id") != job["job_id"]
+                or receiver["progress"].get("execution_submission_id") != execution
+                or job["request"].get("_submission", {}).get("submission_id") != execution
+            ):
+                raise ProductStoreError("Receiver cancellation names an unreserved execution.")
+        return owner
 
 
 def reserve(store, parent_id, request):

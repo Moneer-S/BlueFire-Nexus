@@ -3,3 +3,4 @@
 PHASES = ("baseline", "protected", "restored")
 OWNER_KIND = "receiver.defense"
 PREPARE_KIND = "receiver.defense.prepare"
+INSPECT_KIND = "receiver.defense.inspect"

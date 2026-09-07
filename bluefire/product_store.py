@@ -4216,6 +4216,12 @@ class ProductStore:
                 from .product_store_assistance import publication_guard as assistance_guard
 
                 assistance_guard(self, connection, job_kind, document)
+            if "assistance_receiver" in document:
+                from .product_store_assistance_receiver import (
+                    publication_guard as receiver_analysis_guard,
+                )
+
+                receiver_analysis_guard(self, connection, job_kind, document)
             if "assistance_run" in document:
                 from .product_store_assistance_run import publication_guard as run_guard
 

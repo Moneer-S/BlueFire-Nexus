@@ -30,6 +30,8 @@ class AssistanceContext(Protocol):
     detection_create: DetectionCreateJobs
     graph_ai: GraphAIJobs
     assistance_runs: AssistanceRunJobs
+    assistance_receiver: Any
+    receiver_defense: Any
     method_comparison: MethodComparisonJobs
     product_store: ProductStore
     registry: BehaviorRegistry

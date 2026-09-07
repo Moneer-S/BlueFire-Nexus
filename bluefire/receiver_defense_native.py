@@ -156,3 +156,6 @@ def settle(coordinator, job_id, marker, run_id):
                 },
             },
         )
+
+    if coordinator.store.get_job(marker["receiver_job_id"])["progress"].get("result"):
+        coordinator.service.assistance_receiver.phase_committed(marker["parent_job_id"])
