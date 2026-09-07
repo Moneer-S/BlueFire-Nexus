@@ -30,6 +30,7 @@ export interface RunInspectedResult {
   scenario_id: string; version: number; digest: string; mode: RunIntent["mode"];
   objective_reached: boolean | null; cleanup_state: string; observed_records: number; total_records: number;
   inspection_status: "supported" | "insufficient"; native_path: string;
+  runtime_modified: boolean; runtime_proposal_record_ids: string[]; actual_scenario_digest: string;
 }
 export interface AssistanceRunEnvelope {
   job: RunJob; preparation: RunPreparation | null; decision: RunPreparationDecision | null;

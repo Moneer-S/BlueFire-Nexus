@@ -65,7 +65,7 @@ const bounded = (value: unknown, limit = 200): value is string => typeof value =
 export function readAssistanceReceipt(): AssistanceRequest | undefined {
   try {
     const raw = sessionStorage.getItem(storageKey);
-    if (!raw || raw.length > 9000) return;
+    if (!raw || raw.length > 16384) return;
     const value = JSON.parse(raw) as AssistanceRequest;
     if (!value || !uuid.test(value.submission_id) || !digest.test(value.context_digest) || !bounded(value.message, 1000)
       || !["off", "assist", "auto"].includes(value.autonomy)

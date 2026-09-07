@@ -143,7 +143,7 @@ it("retains the untouched runtime snapshot when Assistant mode changes before re
   expect(JSON.parse(screen.getByLabelText("Global run settings").textContent!).autonomy).toBe("auto");
 });
 
-it("follows the accepted run through inspection even when preparation was interrupted", async () => {
+it.each([false, true])("follows an interrupted preparation through inspection and preserves runtime changes (%s)", async (runtimeModified) => {
   const initial = { ...ready(), job: { ...ready().job, state: "interrupted" as const } };
   const accepted = { ...initial, decision: { decision: "accept" as const, preparation_digest: digest }, review_ready: false,
     run_job: { schema_version: "bluefire.job.v1" as const, job_id: `job-${"e".repeat(32)}`, kind: "scenario.run", state: "queued" as const, progress: {}, request: {
@@ -152,7 +152,7 @@ it("follows the accepted run through inspection even when preparation was interr
     run_job: { ...accepted.run_job, state: "completed", result_ref: "run-reviewed" },
     inspection_job: { schema_version: "bluefire.job.v1", job_id: `job-${"f".repeat(32)}`, kind: "run.evidence.inspect", state: "completed", progress: {}, request: { run_id: "run-reviewed", run_digest: digest, assistance_run: { operation_job_id: preparationJob, preparation_digest: digest } } },
     inspection: { schema_version: "bluefire.run-evidence-inspection.v1", run_id: "run-reviewed", run_digest: digest, summary: "Simulation completed without independent observations.", findings: [], limitations: ["Synthetic only"], observed_records: 0, total_records: 7, status: "insufficient", provider: null, model_interpretation: false },
-    result: { kind: "run_inspected", run_id: "run-reviewed", run_job_id: accepted.run_job.job_id, inspection_job_id: `job-${"f".repeat(32)}`, scenario_id: document.id, version: 2, digest, mode: "simulate", objective_reached: null, cleanup_state: "complete", observed_records: 0, total_records: 7, inspection_status: "insufficient", native_path: "/runs/run-reviewed" } };
+    result: { kind: "run_inspected", run_id: "run-reviewed", run_job_id: accepted.run_job.job_id, inspection_job_id: `job-${"f".repeat(32)}`, scenario_id: document.id, version: 2, digest, mode: "simulate", objective_reached: null, cleanup_state: "complete", observed_records: 0, total_records: 7, inspection_status: "insufficient", native_path: "/runs/run-reviewed", runtime_modified: runtimeModified, runtime_proposal_record_ids: runtimeModified ? ["proposal-reviewed"] : [], actual_scenario_digest: runtimeModified ? `sha256:${"d".repeat(64)}` : digest } };
   expect(() => checkedAssistanceRun({ ...completed, inspection: { ...completed.inspection!, run_id: "unrelated-run" } }, preparationJob)).toThrow("does not match its saved inspection");
   const get = vi.spyOn(api, "assistanceRun").mockResolvedValueOnce(initial).mockResolvedValue(completed);
   vi.spyOn(api, "reviewAssistanceRun").mockResolvedValue(accepted);
@@ -161,6 +161,14 @@ it("follows the accepted run through inspection even when preparation was interr
   expect(await screen.findByText("Simulation completed without independent observations.", {}, { timeout: 4000 })).toBeVisible();
   expect(get.mock.calls.length).toBeGreaterThanOrEqual(2);
   expect(screen.getByRole("heading", { name: "Not enough evidence" })).toBeVisible();
+  if (runtimeModified) {
+    expect(screen.getByText("Reviewed runtime changes applied")).toBeVisible();
+    expect(screen.getByText("Original preparation before reviewed runtime changes").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("link", { name: "Review run evidence and export" })).toHaveAttribute("href", "/runs/run-reviewed");
+  } else {
+    expect(screen.queryByText("Reviewed runtime changes applied")).not.toBeInTheDocument();
+    expect(screen.getByText("Reviewed preparation").closest("details")).not.toHaveAttribute("open");
+  }
 });
 
 it("labels runtime proposal review separately from Execute authorization", async () => {
