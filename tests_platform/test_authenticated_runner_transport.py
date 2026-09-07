@@ -10,8 +10,9 @@ import sqlite3
 import ssl
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 import pytest
 
@@ -1572,6 +1573,50 @@ def test_pre_effect_cancellation_during_slow_inventory_prevents_launch(
     assert recovered["state"] == "cancelled"
 
 
+@contextmanager
+def _saturated_execute_workers(
+    runner: SaturatingBlockingRunner,
+    server: AuthenticatedRunnerServer,
+    client: AuthenticatedRunnerClient,
+    manifests: list[Mapping[str, Any]],
+    profile: Mapping[str, Any],
+) -> Iterator[tuple[list[threading.Thread], list[Mapping[str, Any]], list[BaseException]]]:
+    results: list[Mapping[str, Any]] = []
+    errors: list[BaseException] = []
+
+    def execute(current: Mapping[str, Any]) -> None:
+        try:
+            results.append(client.execute(current, profile))
+        except BaseException as exc:
+            errors.append(exc)
+
+    workers: list[threading.Thread] = []
+    try:
+        server.start()
+        for current in manifests:
+            worker = threading.Thread(target=execute, args=(current,), daemon=True)
+            worker.start()
+            workers.append(worker)
+        assert runner.wait_for_started(len(manifests)), (
+            f"Execute workers did not start: {runner.started_count}/{len(manifests)}; "
+            f"errors={[type(error).__name__ for error in errors]}"
+        )
+        yield workers, results, errors
+    finally:
+        # A failed responsiveness assertion must still release the fake runner,
+        # drain its exact clients/server and relinquish the ledger owner.
+        runner.release.set()
+        try:
+            for worker in workers:
+                worker.join(timeout=5)
+        finally:
+            server.shutdown()
+        assert all(not worker.is_alive() for worker in workers)
+        assert server._serve_thread is None or not server._serve_thread.is_alive()
+        with server._workers_lock:
+            assert not server._workers
+
+
 def test_saturated_execute_workers_leave_control_responsive_and_shutdown_drains(
     enrollment_root: Path,
     secret_provider: InMemorySecretProvider,
@@ -1587,7 +1632,7 @@ def test_saturated_execute_workers_leave_control_responsive_and_shutdown_drains(
         max_workers=3,
         control_worker_reserve=1,
         secret_provider=secret_provider,
-    ).start()
+    )
     client = _client(enrollment_root, server, secret_provider, timeout_seconds=30)
     manifests = [
         {
@@ -1599,49 +1644,81 @@ def test_saturated_execute_workers_leave_control_responsive_and_shutdown_drains(
         }
         for index in range(3)
     ]
-    results: list[Mapping[str, Any]] = []
-    errors: list[BaseException] = []
+    with _saturated_execute_workers(runner, server, client, manifests[:2], profile) as (
+        workers,
+        results,
+        errors,
+    ):
+        timings: dict[str, float] = {}
+        started = time.monotonic()
+        health = client.health()
+        timings["health"] = time.monotonic() - started
+        first_identity = client.execution_identity(manifests[0], profile)
+        cancellation = client.cancel(*first_identity)
+        timings["cancel"] = time.monotonic() - started
+        with pytest.raises(RunnerRemoteError) as shutdown_error:
+            client.shutdown()
+        timings["shutdown_refusal"] = time.monotonic() - started
+        with pytest.raises(RunnerRemoteError) as draining_error:
+            client.execute(manifests[2], profile)
+        timings["draining_refusal"] = time.monotonic() - started
+        assert time.monotonic() - started < 5, f"Cumulative control timings: {timings}"
+        assert health["status"] == "ready"
+        assert cancellation["state"] == "cancellation_requested"
+        assert shutdown_error.value.code == "active_tasks"
+        assert draining_error.value.code == "runner_draining"
+        assert client.health()["ledger"]["accepting_execute"] is False
 
-    def execute(current: Mapping[str, Any]) -> None:
-        try:
-            results.append(client.execute(current, profile))
-        except BaseException as exc:
-            errors.append(exc)
-
-    workers = [
-        threading.Thread(target=execute, args=(current,), daemon=True) for current in manifests[:2]
-    ]
-    for worker in workers:
-        worker.start()
-    assert runner.wait_for_started(2)
-
-    started = time.monotonic()
-    health = client.health()
-    first_identity = client.execution_identity(manifests[0], profile)
-    cancellation = client.cancel(*first_identity)
-    with pytest.raises(RunnerRemoteError) as shutdown_error:
-        client.shutdown()
-    with pytest.raises(RunnerRemoteError) as draining_error:
-        client.execute(manifests[2], profile)
-    assert time.monotonic() - started < 5
-    assert health["status"] == "ready"
-    assert cancellation["state"] == "cancellation_requested"
-    assert shutdown_error.value.code == "active_tasks"
-    assert draining_error.value.code == "runner_draining"
-    assert client.health()["ledger"]["accepting_execute"] is False
-
-    runner.release.set()
-    for worker in workers:
-        worker.join(timeout=5)
-    acknowledgement = client.shutdown()
-    if server._serve_thread is not None:
-        server._serve_thread.join(timeout=5)
-    server.shutdown()
+        runner.release.set()
+        for worker in workers:
+            worker.join(timeout=5)
+        acknowledgement = client.shutdown()
+        if server._serve_thread is not None:
+            server._serve_thread.join(timeout=5)
 
     assert all(not worker.is_alive() for worker in workers)
     assert errors == []
     assert len(results) == 2
     assert acknowledgement["status"] == "shutdown_acknowledged"
+
+
+def test_saturated_control_failure_still_drains_and_releases_ledger(
+    enrollment_root: Path,
+    secret_provider: InMemorySecretProvider,
+    tmp_path: Path,
+    manifest: Mapping[str, Any],
+    profile: Mapping[str, Any],
+) -> None:
+    runner = SaturatingBlockingRunner()
+    state_path = tmp_path / "transport.sqlite3"
+    server = AuthenticatedRunnerServer(
+        enrollment_root,
+        runner,
+        state_path,
+        max_workers=3,
+        control_worker_reserve=1,
+        secret_provider=secret_provider,
+    )
+    client = _client(enrollment_root, server, secret_provider, timeout_seconds=30)
+    second = {**dict(manifest), "request_id": "second", "step_id": "second"}
+    with pytest.raises(AssertionError, match="injected control assertion failure"):
+        with _saturated_execute_workers(runner, server, client, [manifest, second], profile) as (
+            workers,
+            results,
+            errors,
+        ):
+            assert not runner.release.is_set()
+            assert len(workers) == 2 and all(worker.is_alive() for worker in workers)
+            raise AssertionError("injected control assertion failure")
+
+    assert errors == []
+    assert len(results) == 2
+    assert all(not worker.is_alive() for worker in workers)
+    # Normal re-opening proves the previous server released its ledger lock.
+    with AuthenticatedRunnerServer(
+        enrollment_root, RecordingRunner(), state_path, secret_provider=secret_provider
+    ) as reopened:
+        assert _client(enrollment_root, reopened, secret_provider).health()["status"] == "ready"
 
 
 def test_task_aware_cancellation_is_true_only_after_confirmed_runner_transition(
