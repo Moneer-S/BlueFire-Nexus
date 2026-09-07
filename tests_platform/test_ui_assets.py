@@ -284,6 +284,9 @@ def test_durable_proposal_review_and_retry_stay_separate_from_execute_approval()
     assert "Separate fresh one-time capability" in review
     assert "Fresh Execute approval after proposal acceptance" in runs
     assert "Retry as replacement" in runs
+    onboarding = (SOURCE_ROOT / "components" / "ExecuteOnboarding.tsx").read_text(encoding="utf-8")
+    assert "creating a durable request still does not approve execution" in onboarding
+    assert "Separate one-time approval releases that request" in onboarding
     for capability in (
         "exact observed next edge",
         "compatible registered behavior",
@@ -297,7 +300,7 @@ def test_durable_proposal_review_and_retry_stay_separate_from_execute_approval()
         "Policy-valid Simulate choices",
         "Proposal, policy, and application trail",
         "Auto can apply only policy-valid Simulate choices from registered Behavior/Action contracts",
-        "Execute needs your review and a separate one-time approval",
+        "Explicit one-time Execute approval",
         "Execute proposals still require durable review plus a fresh one-time approval before runner effects",
     ):
         assert journey_copy in runs
