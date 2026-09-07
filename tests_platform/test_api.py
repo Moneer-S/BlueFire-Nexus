@@ -53,6 +53,38 @@ class StubService:
         self.calls.append(("draft_ai_graph", request))
         return {"draft_id": "ai-draft-0123456789abcdef0123", "saved": False}
 
+    def assistance_context(self, run_id: str, candidate_id: str):
+        self.calls.append(("assistance_context", run_id, candidate_id))
+        return {"selected": {"run_id": run_id, "candidate_id": candidate_id}}
+
+    def assistance_graph_context(self, base_scenario: Mapping[str, Any] | None = None):
+        self.calls.append(("assistance_graph_context", base_scenario))
+        return {"selected": {"kind": "graph", "base_scenario": base_scenario}}
+
+    def graph_ai_job(self, job_id: str):
+        self.calls.append(("graph_ai_job", job_id))
+        return {"job": {"job_id": job_id, "kind": "graph.ai.propose"}}
+
+    def validate_graph_ai(self, job_id: str, request: Mapping[str, Any]):
+        self.calls.append(("validate_graph_ai", job_id, request))
+        return {"scenario": request.get("scenario", {}), "validation": {"valid": True}}
+
+    def review_graph_ai(self, job_id: str, request: Mapping[str, Any]):
+        self.calls.append(("review_graph_ai", job_id, request))
+        return {"job": {"job_id": job_id, "progress": {"decision": request}}}
+
+    def submit_assistance_turn(self, request: Mapping[str, Any]):
+        self.calls.append(("submit_assistance_turn", request))
+        return {"job": {"job_id": JOB_ID, "kind": "assistance.turn", "state": "queued"}}
+
+    def assistance_turn(self, job_id: str):
+        self.calls.append(("assistance_turn", job_id))
+        return {"job": {"job_id": job_id, "kind": "assistance.turn"}}
+
+    def continue_assistance_turn(self, job_id: str, request: Mapping[str, Any]):
+        self.calls.append(("continue_assistance_turn", job_id, request))
+        return {"job": {"job_id": job_id, "kind": "assistance.turn"}}
+
     def check_ai_provider(self, request: Mapping[str, Any]):
         self.calls.append(("check_ai_provider", request))
         return {"connectivity": "not_tested", "attempts": 0}
@@ -380,6 +412,10 @@ class StubService:
             raise APIError(404, "run_not_found", "Run was not found.")
         return {"run_id": run_id, "status": "created"}
 
+    def run_bundle(self, run_id: str) -> bytes:
+        self.calls.append(("run_bundle", run_id))
+        return b"stub-run-bundle"
+
     def events(self, run_id: str, *, after_sequence: int, limit: int):
         self.calls.append(("events", run_id, after_sequence, limit))
         return {
@@ -513,6 +549,16 @@ def test_browser_console_url_refuses_an_unresolved_ephemeral_port() -> None:
 
 def test_stub_implements_the_complete_platform_service_protocol() -> None:
     assert isinstance(StubService(), PlatformService)
+
+
+def test_run_bundle_route_forwards_to_the_service_binary_boundary() -> None:
+    with running_server() as (server, service):
+        status, headers, payload = request(server, "GET", f"/api/v1/runs/{RUN_ID}/bundle")
+
+    assert status == 200
+    assert headers["Content-Type"] == "application/zip"
+    assert payload == b"stub-run-bundle"
+    assert service.calls == [("run_bundle", RUN_ID)]
 
 
 def test_serve_closes_owned_service_workers(monkeypatch: pytest.MonkeyPatch) -> None:

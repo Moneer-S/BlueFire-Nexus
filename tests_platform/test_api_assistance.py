@@ -10,36 +10,35 @@ CANDIDATE = "detection-" + "a" * 20
 
 
 @pytest.mark.parametrize(
-    "method,path,operation,status",
+    "method,path,expected_call,status",
     [
         (
             "GET",
             f"/assistance/context?run_id={RUN_ID}&candidate_id={CANDIDATE}",
-            "assistance_context",
+            ("assistance_context", RUN_ID, CANDIDATE),
             200,
         ),
-        ("POST", "/assistance/turns", "submit_assistance_turn", 202),
-        ("GET", "/assistance/graph-context", "assistance_graph_context", 200),
-        ("GET", f"/ai/graph-jobs/{JOB_ID}", "graph_ai_job", 200),
-        ("POST", f"/ai/graph-jobs/{JOB_ID}/review", "review_graph_ai", 200),
-        ("POST", f"/ai/graph-jobs/{JOB_ID}/validate", "validate_graph_ai", 200),
-        ("GET", f"/assistance/turns/{JOB_ID}", "assistance_turn", 200),
-        ("POST", f"/assistance/turns/{JOB_ID}/continue", "continue_assistance_turn", 202),
+        ("POST", "/assistance/turns", ("submit_assistance_turn", {}), 202),
+        ("GET", "/assistance/graph-context", ("assistance_graph_context", None), 200),
+        ("GET", f"/ai/graph-jobs/{JOB_ID}", ("graph_ai_job", JOB_ID), 200),
+        ("POST", f"/ai/graph-jobs/{JOB_ID}/review", ("review_graph_ai", JOB_ID, {}), 200),
+        ("POST", f"/ai/graph-jobs/{JOB_ID}/validate", ("validate_graph_ai", JOB_ID, {}), 200),
+        ("GET", f"/assistance/turns/{JOB_ID}", ("assistance_turn", JOB_ID), 200),
+        (
+            "POST",
+            f"/assistance/turns/{JOB_ID}/continue",
+            ("continue_assistance_turn", JOB_ID, {}),
+            202,
+        ),
     ],
 )
-def test_dispatch(method, path, operation, status, monkeypatch):
+def test_dispatch(method, path, expected_call, status):
     with running_server() as (server, service):
-
-        def handle(*args):
-            service.calls.append((operation, *args))
-            return {"job": {"job_id": JOB_ID}}
-
-        monkeypatch.setattr(service, operation, handle, raising=False)
         actual, _, body = request(
             server, method, "/api/v1" + path, body={} if method == "POST" else None
         )
         assert actual == status and isinstance(json.loads(body), dict)
-        assert len(service.calls) == 1 and service.calls[0][0] == operation
+        assert service.calls == [expected_call]
 
 
 @pytest.mark.parametrize(
