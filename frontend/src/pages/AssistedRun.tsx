@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { checkedGraphEnvelope, validGraphJob } from "../lib/graph-assistance";
-import { checkedAssistanceRun, runIntent, validSavedGraphSelection, type RunPreparationDecision, readRunDecision, storeRunDecision, type SavedGraphSelection } from "../lib/run-assistance";
+import { checkedAssistanceRun, runIntent, runPreparationRefusal, validSavedGraphSelection, type RunPreparationDecision, readRunDecision, storeRunDecision, type SavedGraphSelection } from "../lib/run-assistance";
 import { sameJson } from "../lib/replay-review";
 import { useProduct } from "../state/ProductContext";
 import { useAssistancePanel, usePublishSavedGraphSelection } from "../state/AssistanceContext";
@@ -86,6 +86,10 @@ export function AssistedRunReview({ jobId }: { jobId: string }) {
   }, onSuccess: (result) => { client.setQueryData(["assistance-run", jobId], result); void client.invalidateQueries({ queryKey: ["assistance-turn"] }); } });
   const envelope = work.data;
   const preparation = envelope?.preparation;
+  const submitted = envelope?.job.request?.submitted_request;
+  const requestedSelection = submitted && typeof submitted === "object" && "selection" in submitted && validSavedGraphSelection(submitted.selection) ? submitted.selection : undefined;
+  const preparationFailed = !preparation && envelope?.job.state === "failed";
+  const refusal = runPreparationRefusal(envelope);
   const parentBinding = envelope?.job.request?.assistance_turn;
   const parentId = parentBinding && typeof parentBinding === "object" && "parent_job_id" in parentBinding && typeof parentBinding.parent_job_id === "string" && validGraphJob(parentBinding.parent_job_id) ? parentBinding.parent_job_id : undefined;
   const choose = (decision: "accept" | "reject") => {
@@ -96,7 +100,9 @@ export function AssistedRunReview({ jobId }: { jobId: string }) {
   };
   if (!validGraphJob(jobId)) return <div className="page"><ErrorState error={new Error("This run-review link is incomplete. Open the saved work from Assistant.")} /></div>;
   return <div className="page runs-page">
-    <PageHeader eyebrow="Assistant run review" title={preparation?.scenario.title ?? "Preparing the experiment"} description="Review the saved version, selected settings, and complete plan." />
+    <PageHeader eyebrow="Assistant run review" title={preparation?.scenario.title ?? (preparationFailed ? "Experiment could not be prepared" : "Preparing the experiment")} description="Review the saved version, selected settings, and complete plan." />
+    {refusal || envelope?.job.error ? <Callout tone="danger" title="Preparation needs attention">{refusal?.message ?? envelope?.job.error?.message ?? "Preparation stopped without a usable plan. Review the saved operation before starting another request."}{refusal?.preflight?.findings?.length ? <ul>{refusal.preflight.findings.map((finding, index) => <li key={index}>{typeof finding === "string" ? finding : finding.message ?? finding.code}</li>)}</ul> : null}</Callout> : null}
+    {preparationFailed && requestedSelection ? <Link className="button button-primary button-medium" to={`/runs?graph_job=${encodeURIComponent(requestedSelection.proposal_job_id)}`}>Review run settings<ArrowRight /></Link> : null}
     {work.error ? <ErrorState title="Saved run preparation is unavailable" error={work.error} retry={() => { void work.refetch(); }} /> : null}
     {!envelope && !work.error ? <LoadingState label="Checking saved run preparation" /> : null}
     {preparation ? <>

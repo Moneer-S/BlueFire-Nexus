@@ -171,6 +171,26 @@ it.each([false, true])("follows an interrupted preparation through inspection an
   }
 });
 
+it.each([false, true])("explains a preparation failure and retains preflight findings when available (%s)", async (hasReport) => {
+  const value = ready();
+  vi.spyOn(api, "assistanceRun").mockResolvedValue({ ...value, preparation: null, review_ready: false,
+    job: { ...value.job, state: "failed", request: { submitted_request: { selection } },
+      progress: hasReport ? { preflight_refusal: { code: "run_preflight_refused", message: "Review the selected runner and run settings.", preflight: { ready: false, status: "refused", findings: ["Runner inventory is unavailable."] } } } : {},
+      error: { code: "assistance_run_refused", message: "The selected runner is unavailable. Check the lab and review its run settings." } } });
+  const post = vi.spyOn(api, "reviewAssistanceRun");
+  mount(true);
+  expect(await screen.findByRole("heading", { name: "Experiment could not be prepared" })).toBeVisible();
+  if (hasReport) {
+    expect(screen.getByText("Review the selected runner and run settings.")).toBeVisible();
+    expect(screen.getByText("Runner inventory is unavailable.")).toBeVisible();
+  } else {
+    expect(screen.getByText("The selected runner is unavailable. Check the lab and review its run settings.")).toBeVisible();
+  }
+  expect(screen.getByRole("link", { name: "Review run settings" })).toHaveAttribute("href", `/runs?graph_job=${graphJob}`);
+  expect(screen.queryByRole("button", { name: "Accept and prepare run" })).not.toBeInTheDocument();
+  expect(post).not.toHaveBeenCalled();
+});
+
 it("labels runtime proposal review separately from Execute authorization", async () => {
   const value = ready();
   value.decision = { decision: "accept", preparation_digest: digest };

@@ -37,6 +37,15 @@ export interface AssistanceRunEnvelope {
   run_job: RunJob | null; inspection_job: RunJob | null; inspection: RunInspection | null;
   result: Omit<RunInspectedResult, "step_id"> | null; review_ready: boolean;
 }
+export interface RunPreparationRefusal {
+  code: string; message: string; preflight?: PreflightReport | null;
+}
+export function runPreparationRefusal(envelope?: AssistanceRunEnvelope): RunPreparationRefusal | undefined {
+  const value = envelope?.job.progress.preflight_refusal;
+  if (!value || typeof value !== "object" || !("code" in value) || !("message" in value)
+    || typeof value.code !== "string" || typeof value.message !== "string") return;
+  return value as RunPreparationRefusal;
+}
 export function runIntent(config: RunConfiguration): RunIntent {
   return { mode: config.mode, autonomy: config.autonomy, ai_provider_id: config.provider || null,
     runner_profile_id: config.profileId || null, target_scope: { scope_refs: [...config.scopeRefs] },
