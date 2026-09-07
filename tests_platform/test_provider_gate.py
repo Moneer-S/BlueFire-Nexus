@@ -463,6 +463,30 @@ def test_live_source_audit_round_trips_locked_structural_validator() -> None:
     assert checks["no_model_shell"]["process_boundary"]["passed"] is True
 
 
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "bluefire/ai_run_inspection.py",
+        "bluefire/assistance_runs.py",
+        "bluefire/assistance_run_context.py",
+        "bluefire/assistance_run_inspection.py",
+        "bluefire/assistance_run_protocol.py",
+        "bluefire/assistance_run_view.py",
+        "bluefire/run_submissions.py",
+        "bluefire/product_store_assistance_run.py",
+        "bluefire/product_store_run_submissions.py",
+    ],
+)
+def test_structural_validator_requires_each_saved_run_source(relative: str) -> None:
+    report = _structural_report()
+    provider_gate._validate_structural(report)
+    shell = report["checks"]["no_model_shell"]
+    shell["source_files"] = [row for row in shell["source_files"] if row["path"] != relative]
+
+    with pytest.raises(ValueError, match="no-model-shell evidence is invalid"):
+        provider_gate._validate_structural(report)
+
+
 @pytest.mark.parametrize("platform", ["windows", "linux"])
 def test_containment_owner_remains_pinned_without_new_process_launches(
     tmp_path: Path,

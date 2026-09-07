@@ -142,7 +142,15 @@ def test_detection_enrollment_does_not_admit_modified_schema_or_arbitrary_operat
                 cancel_event=threading.Event(),
             )
         assert transport.requests == [] and worker.is_alive()
-        assert len(enrollment.schemas) == 6
+        assert tuple(name for name, _digest in enrollment.schemas) == (
+            "bluefire_ai_graph_draft",
+            "bluefire_ai_proposal",
+            "bluefire_connection_check",
+            "bluefire_detection_source_revision",
+            "bluefire_experiment_assistance",
+            "bluefire_method_comparison",
+            "bluefire_run_evidence_inspection",
+        )
     finally:
         access.close()
         worker.join(3)
