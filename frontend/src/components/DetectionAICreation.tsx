@@ -93,7 +93,7 @@ function CreationReview({ jobId, selectedRunId }: { jobId: string; selectedRunId
 }
 
 function CreationEditor({ jobId, envelope, proposal, cache, refreshing, lookupError }: { jobId: string; envelope: DetectionCreationEnvelope; proposal: DetectionCreationProposal; cache: (value: DetectionCreationEnvelope) => void; refreshing: boolean; lookupError: boolean }) {
-  const [initial] = useState(() => { try { return { draft: readCreationDraft(jobId, proposal) ?? { proposal_digest: proposal.proposal_digest, title: proposal.title, source: proposal.source } }; } catch { return { error: new Error("Your retained edits could not be read. They have not been replaced. Restore access to browser storage and reopen this draft.") }; } });
+  const [initial] = useState(() => { try { const retained = readCreationDraft(jobId, proposal); return { retained: Boolean(retained), draft: retained ?? { proposal_digest: proposal.proposal_digest, title: proposal.title, source: proposal.source } }; } catch { return { error: new Error("Your retained edits could not be read. They have not been replaced. Restore access to browser storage and reopen this draft.") }; } });
   const [draft, setDraft] = useState(initial.draft);
   const [localError, setLocalError] = useState<Error | undefined>(initial.error);
   const [reviewer, setReviewer] = useState("");
@@ -137,7 +137,8 @@ function CreationEditor({ jobId, envelope, proposal, cache, refreshing, lookupEr
   const visibleDraft = decision?.decision === "accept" ? decision : draft;
   const edited = visibleDraft && (visibleDraft.source !== proposal.source || visibleDraft.title !== proposal.title);
   const differentDecision = Boolean(envelope.decision && draft?.decision && !sameJson(envelope.decision, draft.decision));
-  const differentLocalDraft = decision?.decision === "accept" && draft && (decision.title !== draft.title || decision.source !== draft.source);
+  const hasLocalEdits = draft && (initial.retained || draft.title !== proposal.title || draft.source !== proposal.source);
+  const differentLocalDraft = decision?.decision === "accept" && draft && hasLocalEdits && (decision.title !== draft.title || decision.source !== draft.source);
   const application = envelope.application;
   const stopped = envelope.job.progress.stopped === true;
   const download = (kind: "source" | "evaluation") => {

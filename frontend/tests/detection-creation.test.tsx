@@ -271,3 +271,14 @@ it("does not steal focus from other work when an accepted save finishes", async 
     expect(outside).toHaveFocus();
   } finally { outside.remove(); }
 });
+
+it("does not call untouched generated source a local draft in a fresh browser", async () => {
+  const value=completed();
+  value.proposal!.source="SELECT fixture_id FROM logs";
+  vi.spyOn(api,"detectionCreation").mockResolvedValue(value);
+  mount(true);
+  await screen.findByRole("heading",{name:"Rule saved and evaluated"});
+  expect(screen.queryByText("Your earlier local draft")).not.toBeInTheDocument();
+  expect(screen.getByText("Generated source and evidence references")).toBeVisible();
+  expect(screen.getByLabelText(/Rule source/)).toHaveValue(generated);
+});
