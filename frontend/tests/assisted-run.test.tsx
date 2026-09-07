@@ -171,6 +171,21 @@ it.each([false, true])("follows an interrupted preparation through inspection an
   }
 });
 
+it("keeps Off independent of an unavailable default provider and requires an explicit runtime choice", async () => {
+  stubGraph();
+  vi.mocked(api.catalog).mockResolvedValue({ ...demoCatalog, ai: { ...demoCatalog.ai, providers: [{ provider_id: "configured-test.v1", kind: "chat_completions", model: "configured-test", health: { state: "ready" } }] } });
+  const view = mount();
+  await screen.findByLabelText(/^Target scope/);
+  expect(JSON.parse(screen.getByLabelText("Published selection").textContent!).selected.run_intent.ai_provider_id).toBeNull();
+  await view.user.click(screen.getByText("AI provider & environment details"));
+  const provider = screen.getByLabelText(/^Runtime provider/);
+  expect(provider).toHaveValue("");
+  expect(screen.getByText("No configured provider selected")).toBeVisible();
+  await view.user.click(screen.getByRole("radio", { name: /Assist\s*Review proposal/ }));
+  await view.user.selectOptions(provider, "configured-test.v1");
+  expect(JSON.parse(screen.getByLabelText("Published selection").textContent!).selected.run_intent.ai_provider_id).toBe("configured-test.v1");
+});
+
 it.each([false, true])("explains a preparation failure and retains preflight findings when available (%s)", async (hasReport) => {
   const value = ready();
   vi.spyOn(api, "assistanceRun").mockResolvedValue({ ...value, preparation: null, review_ready: false,
