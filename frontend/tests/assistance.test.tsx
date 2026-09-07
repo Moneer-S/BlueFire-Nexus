@@ -174,6 +174,52 @@ it("retrying an uncertain submission sends its original request, even after navi
   expect(submit).toHaveBeenCalledWith(request());
 });
 
+it("waits for publication before reading a newly retained request, then keeps polling", async () => {
+  vi.spyOn(api, "assistanceContext").mockResolvedValue(context);
+  let publish!: (value: AssistanceEnvelope) => void;
+  const submit = vi.spyOn(api, "submitAssistance").mockImplementation(() => new Promise((resolve) => { publish = resolve; }));
+  const get = vi.spyOn(api, "assistanceTurn").mockImplementation(async () => envelope(readAssistanceReceipt()!));
+  mount(); const user = await compose();
+  await user.click(screen.getByRole("button", { name: "Start work" }));
+  await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+  const saved = readAssistanceReceipt()!;
+  expect(saved).toEqual(submit.mock.calls[0]![0]);
+  expect(get).not.toHaveBeenCalled();
+  await act(async () => { publish(envelope(saved, "planning")); });
+  await screen.findByRole("heading", { name: "Your review is needed" });
+  expect(get).toHaveBeenCalledWith(assistanceJobId(saved.submission_id));
+  expect(screen.queryByText("Saved work could not be checked")).not.toBeInTheDocument();
+  expect(readAssistanceReceipt()).toEqual(saved);
+  expect(submit).toHaveBeenCalledTimes(1);
+});
+
+it("discards a delayed pre-publication 404 after an explicit exact-request retry succeeds", async () => {
+  const body = request(); storeAssistanceReceipt(body);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const key = ["assistance-turn", assistanceJobId(body.submission_id)];
+  client.setQueryData(key, envelope(body, "planning"));
+  const get = vi.spyOn(api, "assistanceTurn").mockRejectedValue(new Error("Assistance turn was not found (404)"));
+  let publish!: (value: AssistanceEnvelope) => void;
+  const submit = vi.spyOn(api, "submitAssistance").mockImplementation(() => new Promise((resolve) => { publish = resolve; }));
+  mount(selection, client); await open();
+  await screen.findByText("Saved work could not be checked");
+  expect(submit).not.toHaveBeenCalled();
+  let rejectOldRead!: (reason: Error) => void;
+  get.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectOldRead = reject; })).mockResolvedValue(envelope(body));
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(rejectOldRead).toBeTypeOf("function"));
+  await user.click(screen.getByRole("button", { name: "Retry original request" }));
+  await waitFor(() => expect(submit).toHaveBeenCalledWith(body));
+  await act(async () => { publish(envelope(body, "planning")); });
+  await act(async () => { rejectOldRead(new Error("Delayed pre-publication 404")); });
+  await waitFor(() => expect(screen.getByRole("heading", { name: "Your review is needed" })).toBeInTheDocument(), { timeout: 3500 });
+  expect(client.getQueryState(key)?.error).toBeNull();
+  expect(screen.queryByText("Saved work could not be checked")).not.toBeInTheDocument();
+  expect(submit).toHaveBeenCalledTimes(1);
+  expect(readAssistanceReceipt()).toEqual(body);
+});
+
 it("stopping requests cancellation without claiming cleanup has finished", async () => {
   storeAssistanceReceipt(request());
   const get = vi.spyOn(api, "assistanceTurn").mockResolvedValue(envelope());

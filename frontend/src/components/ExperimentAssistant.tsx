@@ -72,11 +72,6 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
     if (!matchesAssistanceReceipt(value, original)) throw new Error("The saved work does not match this request. Its receipt is retained; no new operation was started.");
     return value;
   };
-  const operation = useQuery({ queryKey: key, queryFn: async () => validate(await api.assistanceTurn(jobId), receipt!), enabled: Boolean(receipt) && !DEMO_MODE, retry: false,
-    refetchInterval: (query) => query.state.data && (assistanceActive(query.state.data.turn.status) || (query.state.data.turn.status === "blocked" && query.state.data.turn.can_start_new_turn !== true)) && !query.state.error ? 1500 : false });
-  useEffect(() => {
-    if (open && jobId) void client.invalidateQueries({ queryKey: ["assistance-turn", jobId] });
-  }, [open, jobId, client]);
   const cache = (value: AssistanceEnvelope) => {
     client.setQueryData(["assistance-turn", value.job.job_id], value);
     if (value.turn.results.length) {
@@ -86,7 +81,18 @@ export function ExperimentAssistant({ providers }: { providers: NonNullable<Cata
     }
   };
   const submit = useMutation({ mutationFn: async (body: AssistanceRequest) => validate(await api.submitAssistance(body), body),
-    onSuccess: cache, onSettled: () => { submissionLock.current = false; } });
+    // A retained UUID can precede publication. Retire earlier reads before retrying
+    // or caching a confirmed publication, even when their transport cannot abort.
+    onMutate: (body) => client.cancelQueries({ queryKey: ["assistance-turn", assistanceJobId(body.submission_id)], exact: true }),
+    onSuccess: async (value) => {
+      await client.cancelQueries({ queryKey: ["assistance-turn", value.job.job_id], exact: true });
+      cache(value);
+    }, onSettled: () => { submissionLock.current = false; } });
+  const operation = useQuery({ queryKey: key, queryFn: async () => validate(await api.assistanceTurn(jobId), receipt!), enabled: Boolean(receipt) && !submit.isPending && !DEMO_MODE, retry: false,
+    refetchInterval: (query) => query.state.data && (assistanceActive(query.state.data.turn.status) || (query.state.data.turn.status === "blocked" && query.state.data.turn.can_start_new_turn !== true)) && !query.state.error ? 1500 : false });
+  useEffect(() => {
+    if (open && jobId && !submit.isPending) void client.invalidateQueries({ queryKey: ["assistance-turn", jobId] });
+  }, [open, jobId, client, submit.isPending]);
   const recover = useMutation({ mutationFn: async (body: { submission_id: string; context_digest: string }) => validate(await api.continueAssistance(jobId, body), receipt!),
     onSuccess: cache });
   const cancel = useMutation({ mutationFn: () => api.controlJob(jobId, "cancel"), onSuccess: () => { void operation.refetch(); } });
