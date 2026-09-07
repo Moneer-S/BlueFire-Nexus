@@ -544,3 +544,59 @@ def test_integrity_block_keeps_live_child_until_verified_cancellation(setup, mon
         assert settled["results"] == []
     finally:
         release.set()
+
+
+def test_comparison_only_recovery_remains_active_until_cancel_settles(setup, monkeypatch):
+    import bluefire.method_comparison_jobs as jobs
+
+    service, access, _ = setup
+    parent, proposal = planned(setup)
+    apply(service, proposal)
+    latest = service.product_store.get_job(parent["job_id"])
+    method = service.job_controller.wait(
+        latest["progress"]["children"]["step-2"]["job_id"], timeout=15
+    )
+    original_build = jobs.build_run_evaluation
+
+    def failed_build(*args, **kwargs):
+        raise APIError(
+            409, "unit_analysis_unavailable", "Unit analysis failure after Simulate replay"
+        )
+
+    monkeypatch.setattr(jobs, "build_run_evaluation", failed_build)
+    approved = service.decide_method_comparison(
+        method["job_id"],
+        {
+            "proposal_digest": method["progress"]["proposal"]["proposal_digest"],
+            "decision": "accept",
+            "reviewed_by": "fixture-operator",
+        },
+    )
+    failed = service.job_controller.wait(approved["replay_job"]["job_id"], timeout=15)
+    assert failed["state"] == "failed"
+    monkeypatch.setattr(jobs, "build_run_evaluation", original_build)
+    entered, release = threading.Event(), threading.Event()
+    original_recover = service.method_comparison._recover
+
+    def held(context, request):
+        entered.set()
+        assert release.wait(10)
+        return original_recover(context, request)
+
+    monkeypatch.setattr(service.method_comparison, "_recover", held)
+    try:
+        recovery = service.retry_job(failed["job_id"])["job"]
+        assert entered.wait(10)
+        view = service.assistance_turn(parent["job_id"])["turn"]
+        assert view["status"] == "working" and not view["can_start_new_turn"]
+        assert view["active_child"]["job_id"] == recovery["job_id"]
+        service.cancel_job(parent["job_id"])
+        assert service.assistance_turn(parent["job_id"])["turn"]["status"] == "cancelling"
+        release.set()
+        assert service.job_controller.wait(recovery["job_id"], timeout=15)["state"] == "cancelled"
+        settled = service.assistance_turn(parent["job_id"])["turn"]
+        assert settled["status"] == "cancelled" and settled["can_start_new_turn"]
+        assert len(service.store.list_runs()) == 2
+        assert len(access.calls) == 3
+    finally:
+        release.set()

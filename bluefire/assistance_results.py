@@ -182,6 +182,16 @@ def active(
             )
         except ProductStoreError:
             pass
+    recovery_id = child["progress"].get("comparison_recovery_job_id")
+    if child["kind"] == "replay.ai.propose" and recovery_id:
+        recovery = service.product_store.get_job(recovery_id)
+        if (
+            recovery["kind"] != "replay.comparison.recover"
+            or recovery["request"].get("proposal_job_id") != child["job_id"]
+        ):
+            raise ProductStoreError("Method recovery has a different native proposal binding.")
+        if actual["state"] in TERMINAL:
+            actual = recovery
     return {
         "job_id": actual["job_id"],
         "kind": actual["kind"],
