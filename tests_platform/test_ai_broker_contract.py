@@ -104,6 +104,7 @@ def test_expired_enrollment_never_refreshes_or_delivers_success(monkeypatch, aft
         monkeypatch.setattr("bluefire.ai_broker_contract.time.time_ns", lambda: 61_000_000_000)
     result = access.readiness(config)
     assert not result.available and result.code == "broker_session_expired"
+    assert result.lab_session_expires_at_ms == binding.expires_at_ms
     assert len(channel.requests) == int(after_response)
     assert access.enrollment is binding
     access.close()

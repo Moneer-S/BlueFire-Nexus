@@ -9,6 +9,7 @@ import subprocess  # nosec B404
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, cast
 
@@ -25,6 +26,7 @@ from .ai_broker_channel import FramedSocket
 from .ai_broker_contract import refusal
 from .ai_broker_worker import serve_broker
 from .ai_transport import ManagedAIJSONTransport
+from .ai_wire import AIProviderTransportError
 from .config import AIProviderConfig
 from .prepared_lab_enrollment import enroll, enrollment_document, read_enrollment
 from .prepared_lab_installation import verify_installation
@@ -196,6 +198,14 @@ def supervise(port: int, definition: Mapping[str, Any], *, stop: threading.Event
         max_edges=definition["max_edges"],
     )
     public = enrollment_document(enrollment)
+    expires = datetime.fromtimestamp(enrollment.expires_at_ms / 1000, timezone.utc)
+    print(
+        f"This enrolled lab session expires at {expires:%Y-%m-%d %H:%M:%S UTC}. "
+        "Saved run records remain in the lab; "
+        "finish or stop active work before then. Restart the same prepared-lab start command "
+        "for a fresh session.",
+        flush=True,
+    )
     owner = OwnedProcesses()
     try:
         worker_parent, worker_child = bootstrap_pair()
@@ -241,8 +251,20 @@ def supervise(port: int, definition: Mapping[str, Any], *, stop: threading.Event
             if owner.containment.exited_without_reap(
                 target
             ) or owner.containment.exited_without_reap(worker):
+                # A worker can cross its deadline after the first check and exit.
+                # Classify that boundary before treating its exit as an ordinary stop.
+                enrollment.require_current(config)
                 break
             time.sleep(0.1)
+    except AIProviderTransportError as exc:
+        if exc.code != "broker_session_expired":
+            raise
+        print(
+            "The provider enrollment expired. Stopping this isolated lab session. "
+            "Restart the same prepared-lab start command, then review saved jobs and any "
+            "interrupted cleanup before resuming. No work is restarted automatically.",
+            flush=True,
+        )
     finally:
         if not owner.close():
             raise refusal("broker_unavailable")

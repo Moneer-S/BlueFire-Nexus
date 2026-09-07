@@ -140,6 +140,9 @@ def test_normal_setup_graph_and_proposal_service_paths_keep_real_identity_withou
 ):
     provider, service, access, channel = setup(tmp_path, kind)
     try:
+        health = service.catalog()["ai"]["providers"]
+        enrolled_health = next(row["health"] for row in health if row["provider_id"] == provider.id)
+        assert enrolled_health["lab_session_expires_at_ms"] == access.enrollment.expires_at_ms
         checked = service.check_ai_provider({"provider": provider.to_dict(), "connect": False})
         assert checked["credential_owner"] == "broker"
         assert checked["credential_state"] == "ready" and checked["attempts"] == 0

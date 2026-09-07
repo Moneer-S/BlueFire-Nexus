@@ -11,6 +11,7 @@ import { demoScenario } from "../lib/demo";
 import { useProduct } from "../state/ProductContext";
 import { AssistanceProvider } from "../state/AssistanceContext";
 import { ExperimentAssistant } from "./ExperimentAssistant";
+import { LabSessionNotice } from "./LabSessionNotice";
 import { Badge, IconButton } from "./Primitives";
 import "./AppShell.css";
 
@@ -144,7 +145,7 @@ function WorkspaceShell() {
       </aside>
       <div className="workspace-shell" inert={mobileOpen}>
         <header className="workspace-topbar"><div><strong>{current}</strong></div><div className="topbar-actions"><ExperimentAssistant providers={catalog.data?.ai.providers ?? []} /><Badge tone={catalog.isSuccess ? "success" : catalog.isError ? "danger" : "warning"} dot>{catalog.isSuccess ? "Connected" : catalog.isError ? "Offline" : "Connecting"}</Badge>{DEMO_MODE && <Badge tone="violet">Demo</Badge>}</div></header>
-        <main id="main-content" tabIndex={-1}><Outlet /></main>
+        <main id="main-content" tabIndex={-1}><LabSessionNotice providers={catalog.data?.ai.providers} /><Outlet /></main>
       </div>
     </div>
     </Tooltip.Provider>

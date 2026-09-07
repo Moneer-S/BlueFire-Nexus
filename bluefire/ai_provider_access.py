@@ -31,6 +31,7 @@ class ProviderReadiness:
     message: str
     source: str = "direct"
     binding_digest: str | None = None
+    lab_session_expires_at_ms: int | None = None
 
 
 class AIProviderAccess(Protocol):

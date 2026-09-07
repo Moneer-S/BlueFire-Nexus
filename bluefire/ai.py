@@ -714,6 +714,7 @@ class AIProviderHealth:
     credential_available: bool
     fallback_provider_id: str | None
     message: str
+    lab_session_expires_at_ms: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -722,6 +723,11 @@ class AIProviderHealth:
             "credential_available": self.credential_available,
             "fallback_provider_id": self.fallback_provider_id,
             "message": self.message,
+            **(
+                {"lab_session_expires_at_ms": self.lab_session_expires_at_ms}
+                if self.lab_session_expires_at_ms is not None
+                else {}
+            ),
         }
 
 
@@ -893,6 +899,7 @@ class OpenAIResponsesProvider:
                 ProviderHealthState.READY if credential_available else ProviderHealthState.DEGRADED
             ),
             credential_available=credential_available,
+            lab_session_expires_at_ms=readiness.lab_session_expires_at_ms,
             fallback_provider_id=self.fallback.config.id,
             message=(
                 readiness.message

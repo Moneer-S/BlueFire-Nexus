@@ -155,6 +155,7 @@ class BrokeredAIProviderAccess:
                 "Enrolled broker credential ownership checked; provider connectivity is untested.",
                 "broker",
                 self.enrollment.digest,
+                self.enrollment.expires_at_ms,
             )
         except AIProviderTransportError as exc:
             return ProviderReadiness(
@@ -164,6 +165,7 @@ class BrokeredAIProviderAccess:
                 "The exact enrolled broker binding is unavailable; no provider request was made.",
                 "broker",
                 self.enrollment.digest,
+                self.enrollment.expires_at_ms,
             )
 
     def post(

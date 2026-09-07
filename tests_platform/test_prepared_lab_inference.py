@@ -31,6 +31,72 @@ class Endpoint:
     def close(self):
         self.closed = True
 
+    def set_inheritable(self, value):
+        assert value is False
+
+
+@pytest.mark.parametrize(
+    ("code", "cleanup_ok"),
+    [
+        ("broker_session_expired", True),
+        ("broker_session_expired", False),
+        ("broker_unavailable", True),
+        ("expiry_exit_race", True),
+    ],
+)
+def test_expected_session_expiry_explains_restart_but_still_requires_cleanup(
+    monkeypatch, binding, capsys, code, cleanup_ok
+):
+    closed = []
+    owner = SimpleNamespace(
+        channels=[],
+        spawn=lambda *_args: SimpleNamespace(pid=17),
+        close=lambda: (closed.append(True) or cleanup_ok),
+        containment=SimpleNamespace(exited_without_reap=lambda _process: True),
+    )
+    monkeypatch.setattr(broker, "_RETAINED", [])
+    monkeypatch.setattr(broker, "verify_installation", lambda: None)
+    monkeypatch.setattr(broker, "uid", lambda: 0)
+    monkeypatch.setattr(broker, "enroll", lambda *_args, **_kwargs: binding)
+    monkeypatch.setattr(broker, "OwnedProcesses", lambda: owner)
+    monkeypatch.setattr(broker, "bootstrap_pair", lambda: (Endpoint(), Endpoint()))
+    monkeypatch.setattr(broker.socket, "socketpair", lambda *_args: (Endpoint(), Endpoint()))
+    monkeypatch.setattr(broker, "_grant", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(broker, "_target_child", lambda *_args: 18)
+    monkeypatch.setattr(broker, "STOP_FILE", SimpleNamespace(exists=lambda: False))
+
+    checks = []
+    expiry = code in {"broker_session_expired", "expiry_exit_race"}
+
+    def expired(*_args):
+        checks.append(True)
+        if code == "expiry_exit_race" and len(checks) == 1:
+            return
+        raise AIProviderTransportError(
+            "private diagnostic", retryable=False, code="broker_session_expired" if expiry else code
+        )
+
+    monkeypatch.setattr(type(binding), "require_current", expired)
+    definition = {
+        "configuration": binding.config.to_dict(),
+        "credential": "synthetic",
+        "destination_policy": "explicit_endpoint",
+        "max_nodes": 8,
+        "max_edges": 16,
+    }
+    if expiry and cleanup_ok:
+        broker.supervise(8777, definition, stop=threading.Event())
+    else:
+        with pytest.raises(AIProviderTransportError) as caught:
+            broker.supervise(8777, definition, stop=threading.Event())
+        assert caught.value.code == "broker_unavailable"
+    assert closed == [True]
+    output = capsys.readouterr().out
+    assert "private diagnostic" not in output
+    assert "session expires at" in output
+    assert ("No work is restarted automatically" in output) == expiry
+    assert len(checks) == (2 if code == "expiry_exit_race" else 1)
+
 
 @pytest.mark.parametrize("boundary", ["broker", "ui"])
 def test_failed_cleanup_owner_refuses_restart_before_resources_are_adopted(monkeypatch, boundary):

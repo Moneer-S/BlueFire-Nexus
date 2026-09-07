@@ -104,7 +104,7 @@ export interface CatalogResponse {
       max_retries?: number;
       max_output_tokens?: number;
       credential_reference?: string | null;
-      health?: { state?: string; message?: string; credential_available?: boolean; fallback_provider_id?: string | null };
+      health?: { state?: string; message?: string; credential_available?: boolean; fallback_provider_id?: string | null; lab_session_expires_at_ms?: number };
       proposal_application?: string;
     }>;
     /** Legacy compatibility for older catalog payloads. */
