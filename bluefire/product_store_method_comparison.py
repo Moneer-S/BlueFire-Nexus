@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import Any, Callable, Mapping
+from contextlib import AbstractContextManager
+from typing import Any, Callable, Mapping, Protocol
 
 from .ai_method_comparison import PROPOSAL_SCHEMA
-from .product_store import ProductStore
 from .product_store_detection_evaluations import _read_row, save_report
 from .product_store_errors import ProductStoreError
 from .product_store_serialization import canonical_json, utc_now
@@ -17,7 +17,18 @@ PROPOSE_KIND = "replay.ai.propose"
 RECOVER_KIND = "replay.comparison.recover"
 
 
-def job_at(store: ProductStore, connection: sqlite3.Connection, job_id: str) -> Mapping[str, Any]:
+class MethodComparisonStore(Protocol):
+    """Caller-owned transaction and durable-job decoding for comparison receipts."""
+
+    def _connection(self, *, write: bool = False) -> AbstractContextManager[sqlite3.Connection]: ...
+
+    @staticmethod
+    def _job_from_row(row: sqlite3.Row) -> Mapping[str, Any]: ...
+
+
+def job_at(
+    store: MethodComparisonStore, connection: sqlite3.Connection, job_id: str
+) -> Mapping[str, Any]:
     row = connection.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,)).fetchone()
     if row is None:
         raise ProductStoreError("Method operation job was not found.")
@@ -69,7 +80,11 @@ def patch(
 
 
 def decide(
-    store: ProductStore, job_id: str, request: Mapping[str, Any], *, automatic: bool = False
+    store: MethodComparisonStore,
+    job_id: str,
+    request: Mapping[str, Any],
+    *,
+    automatic: bool = False,
 ) -> Mapping[str, Any]:
     with store._connection(write=True) as connection:
         job = job_at(store, connection, job_id)
@@ -114,7 +129,7 @@ def decide(
 
 
 def publication_guard(
-    store: ProductStore, connection: sqlite3.Connection, document: Mapping[str, Any]
+    store: MethodComparisonStore, connection: sqlite3.Connection, document: Mapping[str, Any]
 ) -> None:
     """Called inside the same writer transaction that inserts the replay job."""
     binding = document["method_comparison"]
@@ -141,7 +156,7 @@ def publication_guard(
         raise ProductStoreError("The reviewed detector changed before publication.")
 
 
-def stop(store: ProductStore, job_id: str) -> Mapping[str, Any]:
+def stop(store: MethodComparisonStore, job_id: str) -> Mapping[str, Any]:
     with store._connection(write=True) as connection:
         job = job_at(store, connection, job_id)
         if job["kind"] != PROPOSE_KIND:
@@ -155,7 +170,7 @@ def stop(store: ProductStore, job_id: str) -> Mapping[str, Any]:
 
 
 def recovery_guard(
-    store: ProductStore, connection: sqlite3.Connection, document: Mapping[str, Any]
+    store: MethodComparisonStore, connection: sqlite3.Connection, document: Mapping[str, Any]
 ) -> None:
     parent = job_at(store, connection, document["proposal_job_id"])
     proposal_at(parent)
@@ -168,7 +183,11 @@ def recovery_guard(
 
 
 def retain_run(
-    store: ProductStore, *, proposal_job_id: str, replay_job_id: str, run_binding: Mapping[str, Any]
+    store: MethodComparisonStore,
+    *,
+    proposal_job_id: str,
+    replay_job_id: str,
+    run_binding: Mapping[str, Any],
 ) -> None:
     with store._connection(write=True) as connection:
         parent = job_at(store, connection, proposal_job_id)
@@ -184,7 +203,7 @@ def retain_run(
 
 
 def commit_comparison(
-    store: ProductStore,
+    store: MethodComparisonStore,
     *,
     proposal_job_id: str,
     application_job_id: str,

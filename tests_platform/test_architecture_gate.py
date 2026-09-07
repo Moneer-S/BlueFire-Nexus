@@ -125,6 +125,7 @@ def test_repository_audit_emits_machine_readable_concrete_blockers() -> None:
     }
 
     dependencies = report["dependencies"]
+    assert report["checks"]["import_cycles"] == {"passed": True, "findings": []}
     assert isinstance(dependencies["python"]["edges"], list)
     assert isinstance(dependencies["rust"]["edges"], list)
     assert isinstance(dependencies["python"]["cycles"], list)
