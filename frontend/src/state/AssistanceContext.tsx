@@ -1,4 +1,5 @@
 import type { SavedGraphSelection } from "../lib/run-assistance";
+import type { RunDetectionSelection } from "../lib/detection-creation";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type PropsWithChildren } from "react";
 import type { GraphSelection } from "../lib/assistance";
 
@@ -10,8 +11,8 @@ export interface AssistanceSelection {
   manualEdits: boolean;
 }
 interface SelectionContext {
-  selection?: AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection;
-  publish: (owner: symbol, value?: AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection) => void;
+  selection?: WorkspaceSelection;
+  publish: (owner: symbol, value?: WorkspaceSelection) => void;
   requestedJobId?: string;
   openJob: (jobId: string) => void;
   finishOpenJob: () => void;
@@ -20,6 +21,8 @@ interface SelectionContext {
 }
 export interface SavedGraphWorkspaceSelection { kind: "saved_graph"; selected: SavedGraphSelection; title: string; manualEdits: false }
 export interface GraphWorkspaceSelection { kind: "graph"; baseScenario: GraphSelection["base_scenario"]; title: string; manualEdits: boolean }
+export interface RunDetectionWorkspaceSelection { kind: "run_detection"; selected: RunDetectionSelection; title: string; manualEdits: false }
+type WorkspaceSelection = AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection | RunDetectionWorkspaceSelection;
 const Context = createContext<SelectionContext | null>(null);
 
 export function AssistanceProvider({ children }: PropsWithChildren) {
@@ -27,8 +30,8 @@ export function AssistanceProvider({ children }: PropsWithChildren) {
   const [requestedJobId, setRequestedJobId] = useState<string>();
   const openJob = useCallback((jobId: string) => { setRequestedJobId(jobId); setOpen(true); }, []);
   const finishOpenJob = useCallback(() => setRequestedJobId(undefined), []);
-  const [current, setCurrent] = useState<{ owner: symbol; value: AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection }>();
-  const publish = useCallback((owner: symbol, value?: AssistanceSelection | GraphWorkspaceSelection | SavedGraphWorkspaceSelection) => {
+  const [current, setCurrent] = useState<{ owner: symbol; value: WorkspaceSelection }>();
+  const publish = useCallback((owner: symbol, value?: WorkspaceSelection) => {
     setCurrent((previous) => value ? { owner, value } : previous?.owner === owner ? undefined : previous);
   }, []);
   const value = useMemo(() => ({ selection: current?.value, publish, open, setOpen, requestedJobId, openJob, finishOpenJob }), [current, publish, open, requestedJobId, openJob, finishOpenJob]);
@@ -66,6 +69,16 @@ export function usePublishSavedGraphSelection(selection?: SavedGraphSelection, t
     if (!publish || !selection) return;
     const owner = Symbol("saved-graph-run");
     publish(owner, { kind: "saved_graph", selected: selection, title: title ?? selection.application.scenario_id, manualEdits: false });
+    return () => publish(owner);
+  }, [publish, selection, title]);
+}
+
+export function usePublishRunDetectionSelection(selection?: RunDetectionSelection, title?: string) {
+  const publish = useContext(Context)?.publish;
+  useEffect(() => {
+    if (!publish || !selection) return;
+    const owner = Symbol("run-detection-creation");
+    publish(owner, { kind: "run_detection", selected: selection, title: title ?? "Create a detection", manualEdits: false });
     return () => publish(owner);
   }, [publish, selection, title]);
 }

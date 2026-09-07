@@ -7,6 +7,8 @@ import { syntheticSelectionExample } from "../lib/detection-fixtures";
 import { runLabel } from "../lib/run-presentation";
 import { DetectionRunEvaluations } from "../components/DetectionRunEvaluations";
 import { DetectionAIRevision } from "../components/DetectionAIRevision";
+import { DetectionAICreation } from "../components/DetectionAICreation";
+import { detectionCreationPath } from "../lib/detection-creation";
 import { runCandidateKey, sourceObservedRecords, sourceRunParam } from "../lib/run-handoffs";
 import type {
   DetectionCandidate,
@@ -122,6 +124,28 @@ function stringList(value: unknown) {
 }
 
 export function DetectionLabPage() {
+  const [params] = useSearchParams();
+  return params.get("create") === "1" || params.has("create_job") ? <DetectionCreationPage /> : <DetectionRegistryPage />;
+}
+
+function DetectionCreationPage() {
+  const [params, setParams] = useSearchParams();
+  const runId = sourceRunParam(params, "run");
+  const jobId = params.has("create_job") ? params.get("create_job")! : undefined;
+  const runs = useQuery({ queryKey: ["runs"], queryFn: api.runs });
+  const source = useQuery({ queryKey: ["run", runId], queryFn: () => api.runDetail(runId), enabled: Boolean(runId), retry: false });
+  return <div className="page detection-page">
+    <PageHeader title="Detection Lab" description="Create a rule from a run, then test and improve it." />
+    <section className="detection-context" aria-label="Source run and evidence">
+      {jobId === undefined ? <Field label="Detection source run"><select value={runId} onChange={(event) => setParams((old) => { const next = new URLSearchParams(old); if (event.target.value) next.set("run", event.target.value); else next.delete("run"); return next; })}><option value="">Choose a run to bring in its evidence</option>{runId && !runs.data?.runs.some((run) => run.run_id === runId) ? <option value={runId}>{source.data ? runLabel(source.data) : "Selected source run"}</option> : null}{runs.data?.runs.map((run) => <option key={run.run_id} value={run.run_id}>{runLabel(run)}</option>)}</select></Field> : <p>{source.data ? runLabel(source.data) : "The saved proposal retains its original source run."}</p>}
+      {runs.error && jobId === undefined ? <ErrorState title="Run list unavailable" error={runs.error} retry={() => { void runs.refetch(); }} /> : null}
+      {source.error ? <ErrorState title="Source evidence unavailable" error={source.error} retry={() => { void source.refetch(); }} /> : source.data ? <><Link to={`/runs/${encodeURIComponent(runId)}`}>Review source run</Link><details className="detection-source-details"><summary>{sourceObservedRecords(source.data).length} independent observations · inspect source evidence</summary><SourceRunEvidence run={source.data} /></details></> : null}
+    </section>
+    <DetectionAICreation runId={runId} jobId={jobId} />
+  </div>;
+}
+
+function DetectionRegistryPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const sourceRunId = sourceRunParam(searchParams, "run");
   const linkedCandidateId = sourceRunParam(searchParams, "candidate");
@@ -257,7 +281,7 @@ export function DetectionLabPage() {
   const sources = researchSourcesQuery.data?.resources ?? [];
 
   return <div className="page detection-page">
-    <PageHeader title="Detection Lab" description="Write a rule, test it against observed behavior, and compare revisions." />
+    <PageHeader title="Detection Lab" description="Write a rule, test it against observed behavior, and compare revisions." actions={<Link className="button button-secondary button-medium" to={detectionCreationPath(sourceRunId)}>Create from run evidence</Link>} />
     {notice ? <Callout title="Detection update">{notice}</Callout> : null}
     <section className="detection-context" aria-label="Source run and evidence">
       <div className="detection-context-controls">

@@ -1,14 +1,15 @@
 import { validSavedGraphSelection, type SavedGraphSelection, type RunInspectedResult } from "./run-assistance";
+import { validRunDetectionSelection, type RunDetectionSelection, type DetectionCreatedResult } from "./detection-creation";
 import type { DetectionCaseRole, RunJob } from "../types";
 import type { MethodSource } from "./method-comparison";
 import { sameJson } from "./replay-review";
 
-export type AssistanceCapability = "detection.revise_and_evaluate" | "method.compare_same_detector" | "graph.propose_and_validate" | "run.saved_graph_and_inspect";
+export type AssistanceCapability = "detection.create_and_evaluate" | "detection.revise_and_evaluate" | "method.compare_same_detector" | "graph.propose_and_validate" | "run.saved_graph_and_inspect";
 export interface GraphSelection { kind: "graph"; base_scenario: null | { scenario_id: string; version: number; digest: string } }
 export interface AssistanceContext {
   schema_version: "bluefire.assistance-context.v1";
   context_digest: string;
-  selected: GraphSelection | SavedGraphSelection | {
+  selected: GraphSelection | SavedGraphSelection | RunDetectionSelection | {
     run_id: string; candidate_id: string; candidate_resource_digest: string;
     title: string; definition_digest: string; target_language: string; source_binding: MethodSource;
   };
@@ -25,7 +26,10 @@ export interface GraphAssistanceRequest {
   autonomy: "off" | "assist" | "auto"; provider_id?: string;
 }
 export interface SavedGraphAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: SavedGraphSelection }
-export type AssistanceRequest = DetectionAssistanceRequest | GraphAssistanceRequest | SavedGraphAssistanceRequest;
+export interface RunDetectionAssistanceRequest extends Omit<GraphAssistanceRequest, "selection"> { selection: RunDetectionSelection }
+export type AssistanceRequest = DetectionAssistanceRequest | GraphAssistanceRequest | SavedGraphAssistanceRequest | RunDetectionAssistanceRequest;
+export const isRunDetectionRequest = (value: AssistanceRequest): value is RunDetectionAssistanceRequest => "selection" in value && value.selection?.kind === "run_detection";
+export const isRunDetectionSelection = (value: AssistanceContext["selected"]): value is RunDetectionSelection => "kind" in value && value.kind === "run_detection";
 export const isSavedGraphRequest = (value: AssistanceRequest): value is SavedGraphAssistanceRequest => "selection" in value && value.selection?.kind === "saved_graph";
 export const isSavedGraphSelection = (value: AssistanceContext["selected"]): value is SavedGraphSelection => "kind" in value && value.kind === "saved_graph";
 export const isGraphRequest = (value: AssistanceRequest): value is GraphAssistanceRequest => "selection" in value && value.selection?.kind === "graph";
@@ -36,11 +40,11 @@ export interface AssistanceEnvelope {
   turn: {
     schema_version: "bluefire.assistance-turn.v1"; status: AssistanceStatus; message: string; context_digest: string;
     can_start_new_turn: boolean;
-    selected: GraphSelection | SavedGraphSelection | Pick<DetectionAssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
+    selected: GraphSelection | SavedGraphSelection | RunDetectionSelection | Pick<DetectionAssistanceRequest, "run_id" | "candidate_id" | "candidate_resource_digest">;
     plan: Array<{ step_id: string; capability_id: AssistanceCapability; title: string; detector_ref: "selected" | "revised" | "none"; reason: string }>;
     active_child: null | { job_id: string; kind: string; state: string; step_id: string; native_path: string };
-    next_action: null | { kind: "review_run" | "review_graph" | "review_detection" | "review_method" | "review_execute" | "continue" | "new_turn"; label: string; native_path: string | null };
-    results: Array<RunInspectedResult | { kind: "detection_revision" | "method_comparison"; step_id: string; candidate_id: string; evaluation_ids: string[]; run_ids: string[]; comparison_id: string | null; native_path: string } | { kind: "graph_saved"; step_id: string; proposal_job_id: string; scenario_id: string; version: number; digest: string; operator_modified: boolean; native_path: string; execution_state: "not_run" }>;
+    next_action: null | { kind: "review_run" | "review_graph" | "review_detection" | "review_detection_create" | "review_method" | "review_execute" | "continue" | "new_turn"; label: string; native_path: string | null };
+    results: Array<RunInspectedResult | DetectionCreatedResult | { kind: "detection_revision" | "method_comparison"; step_id: string; candidate_id: string; evaluation_ids: string[]; run_ids: string[]; comparison_id: string | null; native_path: string } | { kind: "graph_saved"; step_id: string; proposal_job_id: string; scenario_id: string; version: number; digest: string; operator_modified: boolean; native_path: string; execution_state: "not_run" }>;
     continuation: null | { job_id: string; submission_id: string; state: string; context_digest: string };
     recovery?: null | {
       code: "runner_readiness_required" | "native_review_required" | "detection_review_required" | "source_review_required";
@@ -70,7 +74,9 @@ export function readAssistanceReceipt(): AssistanceRequest | undefined {
     if (!value || !uuid.test(value.submission_id) || !digest.test(value.context_digest) || !bounded(value.message, 1000)
       || !["off", "assist", "auto"].includes(value.autonomy)
       || (value.provider_id !== undefined && !bounded(value.provider_id))) return;
-    if (isSavedGraphRequest(value)) {
+    if (isRunDetectionRequest(value)) {
+      if (!validRunDetectionSelection(value.selection)) return;
+    } else if (isSavedGraphRequest(value)) {
       if (!validSavedGraphSelection(value.selection)) return;
     } else if (isGraphRequest(value)) {
       const base = value.selection.base_scenario;

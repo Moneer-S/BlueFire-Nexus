@@ -51,7 +51,7 @@ export function DetectionRunEvaluations({ candidate, resourceId, sourceRunId, ru
   </>;
 }
 
-function EvaluationReport({ report }: { report: DetectionRunEvaluation }) {
+export function EvaluationReport({ report }: { report: DetectionRunEvaluation }) {
   const result = report.result;
   return <article>
     <strong>{report.question}</strong>

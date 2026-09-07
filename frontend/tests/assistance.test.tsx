@@ -1,3 +1,4 @@
+import type { RunDetectionSelection } from "../src/lib/detection-creation";
 import type { SavedGraphSelection } from "../src/lib/run-assistance";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
@@ -7,7 +8,7 @@ import { expect, it, vi } from "vitest";
 import { ExperimentAssistant } from "../src/components/ExperimentAssistant";
 import { api } from "../src/lib/api";
 import { assistanceJobId, assistancePath, readAssistanceReceipt, readAssistanceRecovery, storeAssistanceReceipt, type AssistanceContext, type AssistanceEnvelope, type AssistanceRequest } from "../src/lib/assistance";
-import { AssistanceProvider, useAssistancePanel, usePublishGraphAssistanceSelection, usePublishAssistanceSelection, usePublishSavedGraphSelection, type AssistanceSelection } from "../src/state/AssistanceContext";
+import { AssistanceProvider, useAssistancePanel, usePublishGraphAssistanceSelection, usePublishAssistanceSelection, usePublishSavedGraphSelection, usePublishRunDetectionSelection, type AssistanceSelection } from "../src/state/AssistanceContext";
 import { ProductProvider } from "../src/state/ProductContext";
 
 const digest = `sha256:${"a".repeat(64)}`;
@@ -403,4 +404,41 @@ it("does not replace an existing saved operation when another run's parent is op
   expect(await screen.findByText(/Another saved operation is open/)).toBeVisible();
   expect(readAssistanceReceipt()).toEqual(body);
   expect(lookup).not.toHaveBeenCalledWith(other);
+});
+
+const createSelection: RunDetectionSelection = { kind: "run_detection", run_id: "run-20300101T000000Z-1234567890abcdef", source_binding_digest: digest, behavior_id: "sandbox.collection.records.v1", target_language: "sqlite", case_role: "benign" };
+function CreationSelection() { usePublishRunDetectionSelection(createSelection, "Collection observations"); return null; }
+function mountCreation() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  return render(<QueryClientProvider client={client}><MemoryRouter><ProductProvider><AssistanceProvider><CreationSelection /><ExperimentAssistant providers={[provider]} /></AssistanceProvider></ProductProvider></MemoryRouter></QueryClientProvider>);
+}
+function creationContext(): AssistanceContext { return { ...graphContext, selected: createSelection, capabilities: [{ id: "detection.create_and_evaluate", title: "Create and evaluate a rule", available: true, supported_autonomy: ["assist", "auto"], reason: "Review source before saving.", native_path: "/detection-lab?create=1" }] }; }
+it("carries the selected run, language, behavior and development case into initial rule creation without an existing candidate", async () => {
+  const get = vi.spyOn(api, "assistanceDetectionContext").mockResolvedValue(creationContext());
+  const old = vi.spyOn(api, "assistanceContext");
+  const submit = vi.spyOn(api, "submitAssistance").mockImplementation(async (body) => ({ ...graphEnvelope(body), turn: { ...graphEnvelope(body).turn, selected: createSelection } }));
+  vi.spyOn(api, "assistanceTurn").mockImplementation(async () => graphEnvelope(readAssistanceReceipt()!));
+  mountCreation();
+  const user = await compose();
+  expect(get).toHaveBeenCalledWith(createSelection);
+  expect(old).not.toHaveBeenCalled();
+  expect(screen.queryByLabelText("Evidence case")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Start work" }));
+  await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+  expect(submit.mock.calls[0]![0]).toMatchObject({ selection: createSelection, autonomy: "assist", provider_id: provider.provider_id });
+  expect(submit.mock.calls[0]![0]).not.toHaveProperty("candidate_id");
+  expect(readAssistanceReceipt()).toEqual(submit.mock.calls[0]![0]);
+});
+it("keeps initial detection creation in Off without submitting model work", async () => {
+  vi.spyOn(api, "assistanceDetectionContext").mockResolvedValue(creationContext());
+  const submit = vi.spyOn(api, "submitAssistance");
+  mountCreation(); await open();
+  expect(await screen.findByText("Collection observations")).toBeVisible();
+  expect(screen.getByRole("button", { name: "Start work" })).toBeDisabled();
+  expect(submit).not.toHaveBeenCalled();
+});
+it("does not restore a creation request whose evidence case is relabeled as held-out", () => {
+  const body = { ...request(), selection: { ...createSelection, case_role: "heldout" } };
+  sessionStorage.setItem("bluefire.assistance.receipt.v1", JSON.stringify(body));
+  expect(readAssistanceReceipt()).toBeUndefined();
 });

@@ -1,4 +1,5 @@
 import type { AssistanceRunEnvelope, RunPreparationDecision, SavedGraphSelection } from "./run-assistance";
+import type { RunDetectionSelection, DetectionCreationSource, DetectionCreationEnvelope, DetectionCreationDecision, DetectionCreationValidation } from "./detection-creation";
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
 import { sameJson } from "./replay-review";
 import type { DetectionAIDecision, DetectionAIRequest } from "./detection-ai";
@@ -288,6 +289,28 @@ export function buildReplayPayload(options: ReplayPayloadOptions): Record<string
 }
 
 export const api = {
+  async detectionCreationSource(runId: string): Promise<DetectionCreationSource> {
+    if (DEMO_MODE) throw new ApiError("Detection creation requires a saved run in the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request("/assistance/detection-source", { method: "POST", body: JSON.stringify({ run_id: runId }) });
+  },
+  async detectionCreation(jobId: string): Promise<DetectionCreationEnvelope> {
+    if (DEMO_MODE) throw new ApiError("Saved detection work requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request(`/ai/detection-create-jobs/${encodeURIComponent(jobId)}`);
+  },
+  async validateDetectionCreation(jobId: string, body: { proposal_digest: string; title: string; source: string }): Promise<DetectionCreationValidation> {
+    if (DEMO_MODE) throw new ApiError("Source validation requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request(`/ai/detection-create-jobs/${encodeURIComponent(jobId)}/validate`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async reviewDetectionCreation(jobId: string, body: DetectionCreationDecision): Promise<DetectionCreationEnvelope> {
+    if (DEMO_MODE) throw new ApiError("Rule review requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    return request(`/ai/detection-create-jobs/${encodeURIComponent(jobId)}/review`, { method: "POST", body: JSON.stringify(body) });
+  },
+  async assistanceDetectionContext(selection: RunDetectionSelection): Promise<AssistanceContext> {
+    if (DEMO_MODE) throw new ApiError("Detection creation requires the connected local service.", "demo_assistance_refused", undefined, 409);
+    const { kind: _kind, ...body } = selection;
+    void _kind;
+    return request("/assistance/detection-context", { method: "POST", body: JSON.stringify(body) });
+  },
   async assistanceRunContext(selection: SavedGraphSelection): Promise<AssistanceContext> {
     if (DEMO_MODE) throw new ApiError("Run assistance requires the connected local service.", "demo_assistance_refused", undefined, 409);
     return request("/assistance/run-context", { method: "POST", body: JSON.stringify({ selection }) });
