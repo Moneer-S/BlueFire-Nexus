@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { checkedCreationEnvelope, checkedCreationSource, creationDigest, creationJobId, creationWorkActive, detectionCreationPath, readCreationDraft, storeCreationDraft, validCreationText,
   type DetectionCreationDecision, type DetectionCreationDraft, type DetectionCreationEnvelope, type DetectionCreationLanguage, type DetectionCreationProposal, type DetectionCreationRole, type DetectionCreationValidation, type RunDetectionSelection } from "../lib/detection-creation";
 import { sameJson } from "../lib/replay-review";
+import { downloadArtifact } from "../lib/download";
 import { useAssistancePanel, usePublishRunDetectionSelection } from "../state/AssistanceContext";
 import { EvaluationReport } from "./DetectionRunEvaluations";
 import { Button, Callout, ErrorState, Field, LoadingState, sentence } from "./Primitives";
@@ -88,6 +89,7 @@ function CreationEditor({ jobId, envelope, proposal, cache, refreshing, lookupEr
   const [localError, setLocalError] = useState<Error | undefined>(initial.error);
   const [reviewer, setReviewer] = useState("");
   const [validation, setValidation] = useState<DetectionCreationValidation>();
+  const [downloadError, setDownloadError] = useState<Error>();
   const lock = useRef(false);
   const currentDraft = useRef(draft); currentDraft.current = draft;
   const decision = envelope.decision ?? draft?.decision;
@@ -129,6 +131,14 @@ function CreationEditor({ jobId, envelope, proposal, cache, refreshing, lookupEr
   const differentLocalDraft = decision?.decision === "accept" && draft && (decision.title !== draft.title || decision.source !== draft.source);
   const application = envelope.application;
   const stopped = envelope.job.progress.stopped === true;
+  const download = (kind: "source" | "evaluation") => {
+    if (!application || envelope.decision?.decision !== "accept") return;
+    setDownloadError(undefined);
+    try {
+      if (kind === "source") downloadArtifact(new Blob([envelope.decision.source], { type: "text/plain;charset=utf-8" }), `${application.candidate_id}.${proposal.selected.target_language === "sqlite" ? "sql" : "yml"}`);
+      else if (envelope.evaluation) downloadArtifact(new Blob([`${JSON.stringify(envelope.evaluation, null, 2)}\n`], { type: "application/json;charset=utf-8" }), `${application.candidate_id}-evaluation.json`);
+    } catch (error) { setDownloadError(error instanceof Error ? error : new Error("The artifact could not be downloaded.")); }
+  };
   if (!draft) return <ErrorState title="Retained draft unavailable" error={initial.error} />;
   return <>
     <p>{sentence(proposal.selected.target_language)} · {sentence(proposal.selected.case_role)} development case · {edited ? "Includes your edits" : "Generated source"}</p>
@@ -136,7 +146,8 @@ function CreationEditor({ jobId, envelope, proposal, cache, refreshing, lookupEr
     {!decision && !envelope.review_ready ? <Callout title={stopped ? "Operation stopped" : "This draft is not ready to save"}>{stopped ? "Your draft is retained. Stopping prevents it from creating a rule." : "Open Assistant to check the saved operation and its recovery options before reviewing this source."}</Callout> : stopped && !application ? <Callout title="Operation stopped">The decision is retained, but this operation cannot start further work. Open Assistant to inspect the final status.</Callout> : null}
     {application ? <>
       {envelope.evaluation ? <div className="creation-evaluation"><EvaluationReport report={envelope.evaluation} /></div> : <Callout title="Evaluation record unavailable">The save receipt is retained. Refresh this review to retrieve the actual evaluation before judging its result.</Callout>}
-      <Link className="button button-primary button-medium" to={`/detection-lab?${new URLSearchParams({ run: application.run_id, candidate: application.candidate_id, candidate_scope: "registry" })}`}>Open saved rule</Link>
+      <div className="candidate-actions"><Link className="button button-primary button-medium" to={`/detection-lab?${new URLSearchParams({ run: application.run_id, candidate: application.candidate_id, candidate_scope: "registry" })}`}>Open saved rule</Link><Button onClick={() => download("source")}>Download rule source</Button><Button disabled={!envelope.evaluation} onClick={() => download("evaluation")}>Download evaluation</Button></div>
+      {downloadError ? <ErrorState title="Download unavailable" error={downloadError} /> : null}
     </> : null}
     <div className="creation-source-editor">
       <Field label="Rule title"><input maxLength={200} value={visibleDraft!.title} readOnly={Boolean(decision)} disabled={busy} onChange={(event) => { setValidation(undefined); validate.reset(); review.reset(); persist({ ...draft, title: event.target.value }); }} /></Field>

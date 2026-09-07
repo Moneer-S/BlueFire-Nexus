@@ -218,3 +218,20 @@ it("keeps stopped accepted work visible without offering to restart its applicat
   expect(await screen.findByText("Operation stopped")).toBeVisible();
   expect(screen.queryByRole("button",{name:"Recover saved decision"})).not.toBeInTheDocument();
 });
+
+it("exports the exact accepted source and its evaluation instead of an earlier local draft", async () => {
+  const value=completed();
+  storeCreationDraft(jobId,value.proposal!,{proposal_digest:digest,title:"Unsubmitted local draft",source:"SELECT fixture_id FROM logs LIMIT 9"});
+  vi.spyOn(api,"detectionCreation").mockResolvedValue(value);
+  const blobs=vi.fn<(blob:Blob)=>string>(()=>"blob:creation-artifact");
+  vi.stubGlobal("URL",class extends URL { static createObjectURL=blobs; static revokeObjectURL=vi.fn(); });
+  const names:string[]=[];
+  vi.spyOn(HTMLAnchorElement.prototype,"click").mockImplementation(function(this:HTMLAnchorElement){names.push(this.download);});
+  const {user}=mount(true);
+  await user.click(await screen.findByRole("button",{name:"Download rule source"}));
+  await user.click(screen.getByRole("button",{name:"Download evaluation"}));
+  const text=(blob:Blob)=>new Promise((resolve)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.readAsText(blob);});
+  expect(names).toEqual([`${value.application!.candidate_id}.sql`,`${value.application!.candidate_id}-evaluation.json`]);
+  expect(await text(blobs.mock.calls[0]![0])).toBe(generated);
+  expect(await text(blobs.mock.calls[1]![0])).toBe(`${JSON.stringify(value.evaluation,null,2)}\n`);
+});
