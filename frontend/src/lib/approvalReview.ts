@@ -15,6 +15,26 @@ export function hasUsableStoredApprovalReview(report?: PreflightReport): boolean
   );
 }
 
+/** Restore the review published with this ordinary job, never a new intent. */
+export function storedRunApprovalPreflight(job: RunJob): PreflightReport | undefined {
+  const report = job.request?._run_submission_preflight as PreflightReport | undefined;
+  const request = job.approval_request;
+  const binding = report?.approval_binding;
+  const approvalId = request?.approval_id;
+  if (
+    job.kind !== "scenario.run" || job.state !== "awaiting_approval"
+    || ["ai_proposal", "ai_proposal_execute"].includes(String(job.progress.approval_kind ?? ""))
+    || request?.status !== "pending" || typeof approvalId !== "string" || !approvalId
+    || job.request?.approval_request_id !== approvalId
+    || (job.progress.approval_request_id !== undefined && job.progress.approval_request_id !== approvalId)
+    || !hasUsableStoredApprovalReview(report) || !binding
+    || report?.plan?.mode !== "execute" || !Array.isArray(report.plan.steps) || !report.plan.steps.length
+    || !report.approval_envelope?.steps.length
+    || !approvalBindingFields.every((field) => request[field] === binding[field])
+  ) return undefined;
+  return report;
+}
+
 export function continuationApprovalPreflight(job: RunJob, review?: AIProposalReview, request?: Record<string, unknown> | null): PreflightReport | undefined {
   const canonical = review?.execute_approval_review;
   const report = canonical?.preflight;

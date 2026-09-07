@@ -2,6 +2,7 @@ import type { AssistanceRunEnvelope, RunPreparationDecision, SavedGraphSelection
 import type { ReceiverContext, ReceiverContextRequest, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
 import type { RunDetectionSelection, DetectionCreationSource, DetectionCreationEnvelope, DetectionCreationDecision, DetectionCreationValidation } from "./detection-creation";
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
+import { storedRunApprovalPreflight } from "./approvalReview";
 import { sameJson } from "./replay-review";
 import type { DetectionAIDecision, DetectionAIRequest } from "./detection-ai";
 import type { MethodContext, MethodDecision, MethodRequest } from "./method-comparison";
@@ -688,6 +689,14 @@ export const api = {
       // This is the original review, not a newly compiled plan. Approval itself
       // revalidates the bound source, configuration and live runner readiness.
       return structuredClone(prepared.preflight);
+    }
+    if (["_run_submission_preflight", "_run_submission_request", "_submission", "receiver_defense", "assistance_run"].some((key) => Object.hasOwn(job.request!, key))) {
+      const report = storedRunApprovalPreflight(job);
+      if (!report) throw new ApiError("The run's exact saved review is unavailable or does not match its pending approval. Keep this job open to inspect or cancel it.", "job_preflight_unavailable", undefined, 409);
+      // Native receiver authority is deliberately unavailable to a posted public
+      // preflight request. Restore its original review; approveJob revalidates the
+      // owned receiver, live readiness and all five immutable binding fields.
+      return structuredClone(report);
     }
     return request("/runs/preflight", { method: "POST", body: JSON.stringify(job.request) });
   },
