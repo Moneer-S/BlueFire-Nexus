@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import { api } from "../src/lib/api";
+import { storedRunApprovalPreflight } from "../src/lib/approvalReview";
 import { demoCatalog, demoScenario } from "../src/lib/demo";
 import { RunsPage } from "../src/pages/Runs";
 import { ProductProvider } from "../src/state/ProductContext";
@@ -48,7 +49,7 @@ it.each(mutations)("does not fall back to a newly compiled review after %s", asy
 });
 
 const clients: QueryClient[] = [];
-afterEach(() => { for (const client of clients.splice(0)) client.clear(); });
+afterEach(() => { for (const client of clients.splice(0)) client.clear(); vi.useRealTimers(); });
 function mount(job: RunJob) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
   clients.push(client);
@@ -83,4 +84,82 @@ it("keeps the native job cancellable when the retained state does not match appr
   expect(screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+});
+
+it.each([undefined, null, "not-a-deadline", "2099", "2000-01-01T00:00:00Z"])("keeps an invalid or expired approval read-only (%s)", async (expiresAt) => {
+  const { job, preflight } = fixture(); job.approval_request!.expires_at = expiresAt;
+  const approve = vi.spyOn(api, "approveJob");
+  const fetch = vi.spyOn(globalThis, "fetch");
+  expect(storedRunApprovalPreflight(job)).toBeUndefined();
+  await expect(api.preflightStoredJobRequest(job)).rejects.toMatchObject({ code: "job_preflight_unavailable" });
+  expect(fetch).not.toHaveBeenCalled();
+  expect(storedRunApprovalPreflight(job, { forDisplayOnly: true })).toEqual(preflight);
+  await expect(api.preflightStoredJobRequest(job, { forDisplayOnly: true })).resolves.toEqual(preflight);
+  expect(fetch).not.toHaveBeenCalled();
+  mount(job);
+  await screen.findByText(expiresAt === "2000-01-01T00:00:00Z" ? "Approval review expired" : "Approval deadline unavailable");
+  await waitFor(() => expect(screen.getAllByText("reviewed-plan").length).toBeGreaterThan(0));
+  expect(screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).toBeDisabled();
+  expect(screen.getByRole("textbox", { name: "Operator identity for this job" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+  expect(approve).not.toHaveBeenCalled();
+});
+
+async function openTimedApproval() {
+  const now = new Date("2026-09-07T12:00:00Z");
+  vi.useFakeTimers(); vi.setSystemTime(now);
+  const { job } = fixture(); job.approval_request!.expires_at = new Date(now.getTime() + 10_000).toISOString();
+  const approve = vi.spyOn(api, "approveJob");
+  const mounted = mount(job);
+  // Each query's notification commits before the next dependent query starts.
+  for (let turn = 0; turn < 5; turn += 1) await act(async () => { await vi.advanceTimersByTimeAsync(5); });
+  const checkbox = screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ });
+  expect(checkbox).toBeEnabled();
+  fireEvent.click(checkbox);
+  fireEvent.change(screen.getByRole("textbox", { name: "Operator identity for this job" }), { target: { value: "Reviewer" } });
+  expect(screen.getByRole("button", { name: "Approve and release job" })).toBeEnabled();
+  return { ...mounted, approve, now };
+}
+
+it("disables an already-open confirmed approval exactly at its deadline without releasing it", async () => {
+  const opened = await openTimedApproval();
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(9_974); });
+    expect(screen.getByRole("button", { name: "Approve and release job" })).toBeEnabled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(screen.getByText("Approval review expired")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /I approve this exact immutable job envelope once/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(screen.getAllByText("reviewed-plan").length).toBeGreaterThan(0);
+    expect(opened.approve).not.toHaveBeenCalled();
+  } finally { opened.unmount(); vi.useRealTimers(); }
+});
+
+it.each(["focus", "pageshow", "visibilitychange"])("rechecks expiry on foreground %s without waiting for a delayed timer", async (event) => {
+  const opened = await openTimedApproval();
+  try {
+    vi.setSystemTime(opened.now.getTime() + 20_000);
+    fireEvent(event === "visibilitychange" ? document : window, new Event(event));
+    expect(screen.getByText("Approval review expired")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(opened.approve).not.toHaveBeenCalled();
+    vi.setSystemTime(opened.now);
+    fireEvent(window, new Event("focus"));
+    expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled();
+  } finally { opened.unmount(); vi.useRealTimers(); }
+});
+
+it("refuses a click after a clock jump even before the deadline timer resumes", async () => {
+  const opened = await openTimedApproval();
+  try {
+    vi.setSystemTime(opened.now.getTime() + 20_000);
+    fireEvent.click(screen.getByRole("button", { name: "Approve and release job" }));
+    expect(screen.getByText("Approval review expired")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve and release job" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled();
+    expect(opened.approve).not.toHaveBeenCalled();
+  } finally { opened.unmount(); vi.useRealTimers(); }
 });

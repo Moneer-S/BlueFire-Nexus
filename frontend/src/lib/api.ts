@@ -2,7 +2,7 @@ import type { AssistanceRunEnvelope, RunPreparationDecision, SavedGraphSelection
 import type { ReceiverContext, ReceiverContextRequest, ReceiverDecision, ReceiverDefenseEnvelope, ReceiverPhase, ReceiverTestList } from "./receiver-defense-types";
 import type { RunDetectionSelection, DetectionCreationSource, DetectionCreationEnvelope, DetectionCreationDecision, DetectionCreationValidation } from "./detection-creation";
 import type { AIProviderCheck, ActiveJobList, AIGraphDraftResult, AIProposalDecisionResult, AIProposalReview, AIProposalReviewList, ActionPackageCatalogIdentity, ActionPackageInstallation, ActionPackageInventory, ActionPackagePublisherEnrollment, ActionPackagePublisherTrust, AutonomyLevel, CatalogResponse, ComparisonResponse, DetectionCloneRequest, DetectionComparisonResponse, DetectionLabHealth, DetectionResource, DetectionResourceEnvelope, DetectionRunImportResponse, DetectionRunEvaluation, DetectionCaseRole, DetectionTuneRequest, JobApprovalResult, JobRetryResult, ManagedResource, ManagedResourceList, ManagedResourceRoute, ManagedSetting, PreflightReport, RunnerLifecycleStatus, RunnerProbe, RunConfiguration, RunEventPage, RunJob, RunJobSubmission, RunRecord, RuntimeResourceResult, Scenario, ScenarioVersion } from "../types";
-import { storedRunApprovalPreflight } from "./approvalReview";
+import { approvalDeadline, storedRunApprovalPreflight } from "./approvalReview";
 import { sameJson } from "./replay-review";
 import type { DetectionAIDecision, DetectionAIRequest } from "./detection-ai";
 import type { MethodContext, MethodDecision, MethodRequest } from "./method-comparison";
@@ -706,10 +706,13 @@ export const api = {
     if (DEMO_MODE) return { schema_version: "bluefire.active-job-list.v1", jobs: [] };
     return request("/jobs");
   },
-  async preflightStoredJobRequest(job: RunJob): Promise<PreflightReport> {
+  async preflightStoredJobRequest(job: RunJob, options: { forDisplayOnly?: boolean } = {}): Promise<PreflightReport> {
     if (DEMO_MODE) throw new ApiError("Demo jobs do not have restorable Execute approval envelopes.", "demo_execute_refused", undefined, 409);
     if (!["scenario.run", "scenario.replay"].includes(job.kind) || job.state !== "awaiting_approval" || !job.request || Array.isArray(job.request)) {
       throw new ApiError("The durable job does not have a restorable approval review.", "job_preflight_unavailable", undefined, 409);
+    }
+    if (!options.forDisplayOnly && !(approvalDeadline(job.approval_request?.expires_at) > Date.now())) {
+      throw new ApiError("The approval deadline is unavailable or expired. This review can only be displayed; obtain a fresh review before release.", "job_preflight_unavailable", undefined, 409);
     }
     if (job.kind === "scenario.replay") {
       const prepared = job.request.replay_preparation as ReplayPreparation | undefined;
@@ -720,7 +723,7 @@ export const api = {
       return structuredClone(prepared.preflight);
     }
     if (["_run_submission_preflight", "_run_submission_request", "_submission", "receiver_defense", "assistance_run"].some((key) => Object.hasOwn(job.request!, key))) {
-      const report = storedRunApprovalPreflight(job);
+      const report = storedRunApprovalPreflight(job, options);
       if (!report) throw new ApiError("The run's exact saved review is unavailable or does not match its pending approval. Keep this job open to inspect or cancel it.", "job_preflight_unavailable", undefined, 409);
       // Native receiver authority is deliberately unavailable to a posted public
       // preflight request. Restore its original review; approveJob revalidates the

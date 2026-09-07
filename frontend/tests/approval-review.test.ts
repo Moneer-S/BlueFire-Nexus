@@ -16,6 +16,13 @@ describe("continuation approval review", () => {
     const value = fixture();
     expect(continuationApprovalPreflight(value.job, value.review, value.request)).toBe(value.preflight);
   });
+  it("can retain an expired continuation for display without relaxing its receipt identity", () => {
+    const value = fixture(); value.request.expires_at = "2000-01-01T00:00:00Z";
+    expect(continuationApprovalPreflight(value.job, value.review, value.request)).toBeUndefined();
+    expect(continuationApprovalPreflight(value.job, value.review, value.request, { forDisplayOnly: true })).toBe(value.preflight);
+    value.job.progress.approval_request_id = "different";
+    expect(continuationApprovalPreflight(value.job, value.review, value.request, { forDisplayOnly: true })).toBeUndefined();
+  });
   const mutations: Array<[string, (value: ReturnType<typeof fixture>) => void]> = [
     ["another job", (v) => { v.review.job_id = "other"; }],
     ["another proposal", (v) => { v.review.proposal_record_id = "other"; }],

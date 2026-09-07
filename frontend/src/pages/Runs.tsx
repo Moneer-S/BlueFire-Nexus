@@ -17,7 +17,7 @@ import type { AIProposalDecisionResult, AIProposalReview, CatalogResponse, Prefl
 import { Badge, Button, Callout, DataList, ErrorState, Field, LoadingState, PageHeader, Panel, PanelHeader, formatDate, sentence } from "../components/Primitives";
 
 import { CanonicalPlanReview } from "../components/CanonicalPlanReview";
-import { continuationApprovalPreflight, hasUsableStoredApprovalReview } from "../lib/approvalReview";
+import { approvalDeadline, continuationApprovalPreflight, hasUsableStoredApprovalReview } from "../lib/approvalReview";
 import { settlePendingReplay } from "../lib/replay-submission";
 
 import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, runLimitationGroups, stepOutcomeLabel } from "../lib/run-presentation";
@@ -218,7 +218,7 @@ function NativeRunsPage() {
   }, [activeJob, activeJobId, catalog.data, hasJobLink, inventoryAuthoritative, jobQuery.data, jobQuery.isFetchedAfterMount, jobQuery.isSuccess, location.key, runConfig, runId, scenario, selectableInventoryJobs.length, setRunConfig, setupMode]);
   const refetchJob = jobQuery.refetch;
   const ordinaryApprovalNeedsPreflight = Boolean(controllerOwnsActiveJob && activeJob?.state === "awaiting_approval" && !["ai_proposal", "ai_proposal_execute"].includes(String(activeJob.progress.approval_kind ?? "")) && !hasUsableStoredApprovalReview(jobPreflight));
-  const storedJobPreflightQuery = useQuery({ queryKey: ["job-preflight", activeJob?.job_id, activeJob?.request?.approval_request_id], queryFn: async () => ({ jobId: activeJob!.job_id, report: await api.preflightStoredJobRequest(activeJob!) }), enabled: ordinaryApprovalNeedsPreflight, staleTime: 0 });
+  const storedJobPreflightQuery = useQuery({ queryKey: ["job-preflight", activeJob?.job_id, activeJob?.request?.approval_request_id], queryFn: async () => ({ jobId: activeJob!.job_id, report: await api.preflightStoredJobRequest(activeJob!, { forDisplayOnly: true }) }), enabled: ordinaryApprovalNeedsPreflight, staleTime: 0 });
   const unusableStoredJobPreflight = Boolean(storedJobPreflightQuery.isSuccess && storedJobPreflightQuery.data?.jobId === activeJob?.job_id && !hasUsableStoredApprovalReview(storedJobPreflightQuery.data.report));
   const liveRunId = typeof activeJob?.progress.run_id === "string" ? activeJob.progress.run_id : undefined;
   const eventCursor = liveEvents.reduce((maximum, event) => Math.max(maximum, Number(event.sequence) || 0), 0);
@@ -457,9 +457,45 @@ function LiveConsole({ run, job, events, pending, config, approvalPreflight, app
   </Panel>;
 }
 
+function useApprovalDeadline(expiresAt: unknown) {
+  const deadline = approvalDeadline(expiresAt);
+  const [observedAt, setObservedAt] = useState(() => Date.now());
+  const latestObservedAt = useRef(observedAt);
+  const recheck = useCallback(() => {
+    // A backward clock correction must not revive an approval already expired
+    // in this mounted review. The server remains the final clock authority.
+    latestObservedAt.current = Math.max(latestObservedAt.current, Date.now());
+    setObservedAt(latestObservedAt.current);
+    return Number.isFinite(deadline) && deadline > latestObservedAt.current;
+  }, [deadline]);
+  useEffect(() => {
+    let timer: number | undefined;
+    const refresh = () => {
+      window.clearTimeout(timer);
+      if (recheck()) {
+        // One deadline timer, clamped to the browser's signed timer limit.
+        // Long deadlines reschedule only at that bound; no periodic polling.
+        timer = window.setTimeout(refresh, Math.min(deadline - latestObservedAt.current, 2_147_483_647));
+      }
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    window.addEventListener("pageshow", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("pageshow", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [deadline, recheck]);
+  return { valid: Number.isFinite(deadline), current: Number.isFinite(deadline) && deadline > Math.max(observedAt, Date.now()), recheck };
+}
+
 function JobApprovalGate({ job, preflight: ordinaryPreflight, approvalRequest, proposalReview, confirmed, approvedBy, pending, onConfirmed, onApprovedBy, onApprove }: { job: RunJob; preflight?: PreflightReport; approvalRequest: Record<string, unknown> | null; proposalReview?: AIProposalReview; confirmed: boolean; approvedBy: string; pending: boolean; onConfirmed: (confirmed: boolean) => void; onApprovedBy: (identity: string) => void; onApprove: () => void }) {
+  const deadline = useApprovalDeadline(approvalRequest?.expires_at);
   const proposalExecute = job.progress.approval_kind === "ai_proposal_execute";
-  const preflight = proposalExecute ? continuationApprovalPreflight(job, proposalReview, approvalRequest) : ordinaryPreflight;
+  const preflight = proposalExecute ? continuationApprovalPreflight(job, proposalReview, approvalRequest, { forDisplayOnly: true }) : ordinaryPreflight;
   const binding = preflight?.approval_binding;
   const envelope = preflight?.approval_envelope;
   const resolutionRecord = proposalReview?.resolution && typeof proposalReview.resolution === "object" ? proposalReview.resolution : undefined;
@@ -472,7 +508,7 @@ function JobApprovalGate({ job, preflight: ordinaryPreflight, approvalRequest, p
   const proposalRequestReady = Boolean(approvalRequestId && progressApprovalRequestId === approvalRequestId && originalApprovalRequestId && originalApprovalRequestId !== approvalRequestId && resolutionRecord?.approval_request_id === approvalRequestId);
   const pendingRequestReady = approvalRequest?.status === "pending" && (proposalExecute ? proposalRequestReady : ordinaryRequestReady);
   const exactBindingMatches = Boolean(binding && approvalBindingFields.every((field) => typeof approvalRequest?.[field] === "string" && approvalRequest[field] === binding[field]));
-  const exactEnvelopeReady = Boolean(hasUsableStoredApprovalReview(preflight) && pendingRequestReady && exactBindingMatches);
+  const exactEnvelopeReady = Boolean(hasUsableStoredApprovalReview(preflight) && pendingRequestReady && exactBindingMatches && deadline.current);
   return <section className="job-approval-gate" id="durable-execute-approval" tabIndex={-1} aria-label="Durable Execute job approval">
     <header><div><AlertTriangle/><span><strong>{proposalExecute ? "Fresh Execute approval after proposal acceptance" : "Approve this run"}</strong><small>Review the actions, lab scope and cleanup below before releasing this run.</small></span></div><Badge tone="warning" dot>Awaiting approval</Badge></header>
     <p className="job-approval-expiry">Review and approve before {formatDate(typeof approvalRequest?.expires_at === "string" ? approvalRequest.expires_at : undefined)}. The pending actions have not started.</p>
@@ -480,9 +516,10 @@ function JobApprovalGate({ job, preflight: ordinaryPreflight, approvalRequest, p
       <DataList items={[{ label: "Durable job", value: <code>{job.job_id}</code> }, { label: "Approval request", value: <code>{String(approvalRequest?.approval_id ?? "Not reported")}</code> }, { label: "Expires", value: formatDate(typeof approvalRequest?.expires_at === "string" ? approvalRequest.expires_at : undefined) }, { label: "Profile / tier", value: proposalExecute ? `${String(approvalRequest?.profile_id ?? "Not reported")} / ${sentence(String(approvalRequest?.maximum_tier ?? "not reported"))}` : binding ? `${binding.profile_id} / ${sentence(binding.maximum_tier)}` : "Not reported" }, { label: "State digest", value: <code>{String(proposalExecute ? approvalRequest?.state_digest ?? "Not reported" : binding?.state_digest ?? "Not reported")}</code> }, { label: "Plan digest", value: <code>{String(proposalExecute ? approvalRequest?.plan_digest ?? "Not reported" : binding?.plan_digest ?? "Not reported")}</code> }, { label: "Scope digest", value: <code>{String(proposalExecute ? approvalRequest?.target_scope_digest ?? "Not reported" : binding?.target_scope_digest ?? "Not reported")}</code> }, { label: proposalExecute ? "Continuation binding digest" : "Envelope digest", value: <code>{String(proposalExecute ? continuationRecord?.execute_approval_binding_digest ?? "Not reported" : envelope?.envelope_digest ?? "Not reported")}</code> }]} />
     </details>
     {!pendingRequestReady ? <Callout tone="danger" title="Pending approval binding unavailable">Approval remains disabled until this job reports the same pending approval request ID returned with its immutable envelope.</Callout> : null}
+    {!deadline.current ? <Callout tone="warning" title={deadline.valid ? "Approval review expired" : "Approval deadline unavailable"}>{deadline.valid ? "This one-time approval has expired." : "This approval has no valid expiry time."} The saved review remains available, but this job cannot be released. Cancel it and return to its setup page for a fresh review and approval. No approval is renewed automatically.</Callout> : null}
     {proposalExecute && proposalReview && continuationRecord ? <DataList items={[{ label: "Proposal record", value: <code>{proposalReview.proposal_record_id}</code> }, { label: "Selected behavior", value: <code>{String(continuationRecord.selected_behavior_id ?? "Not reported")}</code> }, { label: "Resume step", value: <code>{String(continuationRecord.resume_from_step_id ?? "Full replay")}</code> }, { label: "Proposal digest", value: <code>{proposalReview.proposal_digest}</code> }]} /> : null}
     {preflight?.plan ? <><CanonicalPlanReview plan={preflight.plan} cleanup={preflight.cleanup} scope={preflight.scope} binding={binding} envelope={envelope} />{binding && !exactBindingMatches ? <Callout tone="danger" title="Approval envelope mismatch">Approval remains disabled because the pending request does not exactly match all five preflight binding fields.</Callout> : null}</> : <Callout tone="danger" title="Exact review unavailable">Approval remains disabled until the current pending request has its complete canonical plan and approval envelope.</Callout>}
-    <div className="job-approval-controls"><label className="check-row"><input type="checkbox" checked={confirmed} disabled={!exactEnvelopeReady || pending} onChange={(event) => onConfirmed(event.target.checked)}/><span><strong>I approve this exact immutable {proposalExecute ? "proposal continuation" : "job envelope"} once</strong><small>Unchecked by default and never stored in browser persistence</small></span></label><Field label="Operator identity for this job"><input value={approvedBy} disabled={!exactEnvelopeReady || pending} onChange={(event) => onApprovedBy(event.target.value)} autoComplete="off" placeholder="Operator label"/></Field><Button variant="primary" disabled={!exactEnvelopeReady || !confirmed || !approvedBy.trim() || pending} onClick={onApprove}>{pending ? <Activity className="spin"/> : <ShieldCheck/>}{pending ? "Applying one-time approval" : "Approve and release job"}</Button><p>The server recomputes the binding, validates the pending capability, consumes it atomically, then releases only this job. Changing configuration elsewhere cannot alter this immutable request.</p></div>
+    <div className="job-approval-controls"><label className="check-row"><input type="checkbox" checked={confirmed} disabled={!exactEnvelopeReady || pending} onChange={(event) => onConfirmed(event.target.checked)}/><span><strong>I approve this exact immutable {proposalExecute ? "proposal continuation" : "job envelope"} once</strong><small>Unchecked by default and never stored in browser persistence</small></span></label><Field label="Operator identity for this job"><input value={approvedBy} disabled={!exactEnvelopeReady || pending} onChange={(event) => onApprovedBy(event.target.value)} autoComplete="off" placeholder="Operator label"/></Field><Button variant="primary" disabled={!exactEnvelopeReady || !confirmed || !approvedBy.trim() || pending} onClick={() => { if (deadline.recheck()) onApprove(); }}>{pending ? <Activity className="spin"/> : <ShieldCheck/>}{pending ? "Applying one-time approval" : "Approve and release job"}</Button><p>The server recomputes the binding, validates the pending capability, consumes it atomically, then releases only this job. Changing configuration elsewhere cannot alter this immutable request.</p></div>
   </section>;
 }
 

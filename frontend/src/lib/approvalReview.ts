@@ -2,6 +2,10 @@ import type { AIProposalReview, PreflightReport, RunJob } from "../types";
 
 export const approvalBindingFields = ["state_digest", "plan_digest", "target_scope_digest", "profile_id", "maximum_tier"] as const;
 
+export function approvalDeadline(expiresAt: unknown): number {
+  return typeof expiresAt === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(expiresAt) ? Date.parse(expiresAt) : NaN;
+}
+
 export function hasUsableStoredApprovalReview(report?: PreflightReport): boolean {
   return Boolean(
     report?.status === "approval_required"
@@ -16,7 +20,7 @@ export function hasUsableStoredApprovalReview(report?: PreflightReport): boolean
 }
 
 /** Restore the review published with this ordinary job, never a new intent. */
-export function storedRunApprovalPreflight(job: RunJob): PreflightReport | undefined {
+export function storedRunApprovalPreflight(job: RunJob, options: { forDisplayOnly?: boolean } = {}): PreflightReport | undefined {
   const report = job.request?._run_submission_preflight as PreflightReport | undefined;
   const request = job.approval_request;
   const binding = report?.approval_binding;
@@ -25,6 +29,7 @@ export function storedRunApprovalPreflight(job: RunJob): PreflightReport | undef
     job.kind !== "scenario.run" || job.state !== "awaiting_approval"
     || ["ai_proposal", "ai_proposal_execute"].includes(String(job.progress.approval_kind ?? ""))
     || request?.status !== "pending" || typeof approvalId !== "string" || !approvalId
+    || (!options.forDisplayOnly && !(approvalDeadline(request.expires_at) > Date.now()))
     || job.request?.approval_request_id !== approvalId
     || (job.progress.approval_request_id !== undefined && job.progress.approval_request_id !== approvalId)
     || !hasUsableStoredApprovalReview(report) || !binding
@@ -35,7 +40,7 @@ export function storedRunApprovalPreflight(job: RunJob): PreflightReport | undef
   return report;
 }
 
-export function continuationApprovalPreflight(job: RunJob, review?: AIProposalReview, request?: Record<string, unknown> | null): PreflightReport | undefined {
+export function continuationApprovalPreflight(job: RunJob, review?: AIProposalReview, request?: Record<string, unknown> | null, options: { forDisplayOnly?: boolean } = {}): PreflightReport | undefined {
   const canonical = review?.execute_approval_review;
   const report = canonical?.preflight;
   const binding = report?.approval_binding;
@@ -48,7 +53,7 @@ export function continuationApprovalPreflight(job: RunJob, review?: AIProposalRe
     || review?.status !== "accepted" || review.job_id !== job.job_id
     || review.proposal_record_id !== job.progress.proposal_record_id
     || request?.status !== "pending" || typeof approvalId !== "string" || !approvalId
-    || typeof request.expires_at !== "string" || !(Date.parse(request.expires_at) > Date.now())
+    || (!options.forDisplayOnly && !(approvalDeadline(request.expires_at) > Date.now()))
     || typeof originalId !== "string" || !originalId || originalId === approvalId
     || job.progress.approval_request_id !== approvalId || review.resolution?.approval_request_id !== approvalId
     || canonical?.schema_version !== "bluefire.continuation-approval-review.v1"
