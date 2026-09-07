@@ -513,14 +513,15 @@ class APIRoutes:
         if path != f"{API_PREFIX}/assistance/graph-context":
             return None
         try:
+            query = urlsplit(self.path).query
+            if not query:
+                return True, None
             pairs = parse_qsl(
-                urlsplit(self.path).query,
+                query,
                 keep_blank_values=True,
                 strict_parsing=True,
                 max_num_fields=3,
             )
-            if not pairs:
-                return True, None
             values = dict(pairs)
             if (
                 len(pairs) != 3

@@ -7,7 +7,7 @@ Off makes no model request. Assist and the explicitly advertised bounded Auto ca
 ## In the workbench
 
 1. Open **Build > Plan with Assistant**, choose a configured provider, and select **Assist**. Describe a new experiment using up to eight registered steps.
-2. Choose **Start work**, then **Review experiment** when the proposal is ready. The proposal opens in a separate Builder workspace; the current experiment is kept in place.
+2. Choose **Start work**, then **Review graph proposal** when the proposal is ready. The proposal opens in a separate Builder workspace; the current experiment is kept in place.
 3. Edit steps, methods, inputs, routes, or the experiment name using the normal canvas and step list. Open **Plan, assumptions, and your changes** to inspect the rationale and changes before saving.
 4. Choose **Save experiment**. The service validates the reviewed graph and saves an immutable version. If the connection is lost, reopen Assistant or the review link and retry the retained decision; it does not create another model request or duplicate the saved version.
 5. Choose **Open saved experiment** to make that version active, then use **Review run** for environment setup and authorization. Saving a graph has not run it. Opening checks for current manual edits before replacing the active graph.

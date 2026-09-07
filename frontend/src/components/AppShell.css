@@ -41,7 +41,8 @@
   .workbench-shell.nav-collapsed .nav-disclosure span, .workbench-shell.nav-collapsed .nav-disclosure > svg:last-child { display: block; }
   .workbench-shell .mobile-header > button, .workbench-shell .mobile-close { min-width: 44px; min-height: 44px; }
   .workbench-shell .mobile-header .brand strong { font-size: 0.74rem; }
-  .workbench-shell .workspace-topbar { display: flex; padding-inline: 14px; height: 44px; }
+  .workbench-shell .workspace-topbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 14px; height: auto; min-height: 44px; }
+  .workbench-shell .topbar-actions { flex-wrap: wrap; gap: 8px; max-width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

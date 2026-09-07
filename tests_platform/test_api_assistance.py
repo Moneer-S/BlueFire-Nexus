@@ -20,6 +20,7 @@ CANDIDATE = "detection-" + "a" * 20
         ),
         ("POST", "/assistance/turns", ("submit_assistance_turn", {}), 202),
         ("GET", "/assistance/graph-context", ("assistance_graph_context", None), 200),
+        ("GET", "/assistance/graph-context?", ("assistance_graph_context", None), 200),
         ("GET", f"/ai/graph-jobs/{JOB_ID}", ("graph_ai_job", JOB_ID), 200),
         ("POST", f"/ai/graph-jobs/{JOB_ID}/review", ("review_graph_ai", JOB_ID, {}), 200),
         ("POST", f"/ai/graph-jobs/{JOB_ID}/validate", ("validate_graph_ai", JOB_ID, {}), 200),
@@ -71,3 +72,14 @@ def test_context_requires_exact_selected_objects(query):
     with running_server() as (server, service):
         actual, _, _ = request(server, "GET", "/api/v1/assistance/context?" + query)
         assert actual == 400 and not service.calls
+
+
+@pytest.mark.parametrize(
+    "query", ["&", "=", "scenario_id=", "scenario_id=a&version=1&digest=x&extra=1"]
+)
+def test_graph_context_refuses_nonempty_malformed_selection(query):
+    with running_server() as (server, service):
+        actual, _, body = request(server, "GET", "/api/v1/assistance/graph-context?" + query)
+        assert actual == 400
+        assert json.loads(body)["error"]["code"] == "graph_context_invalid"
+        assert not service.calls

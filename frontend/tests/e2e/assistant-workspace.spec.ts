@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test("Assistant stays reachable on laptop and narrow screens and returns keyboard focus", async ({ page }) => {
   await page.goto("./#/detection-lab");
-  for (const width of [1280, 390]) {
+  for (const width of [1280, 390, 320]) {
     await page.setViewportSize({ width, height: 844 });
     const trigger = page.getByRole("button", { name: /^Assistant$/ });
     await expect(trigger).toBeVisible();
