@@ -105,6 +105,60 @@ class AssistanceRunJobs:
         return self.read(job["job_id"])
 
     def _prepare(self, ctx: JobContext, request: Mapping[str, Any]) -> JobResult:
+        try:
+            return self._prepare_current(ctx, request)
+        except (APIError, ConfigError, ProductStoreError) as exc:
+            self._retain_preflight_refusal(ctx, request, exc)
+            raise
+
+    def _retain_preflight_refusal(
+        self,
+        ctx: JobContext,
+        request: Mapping[str, Any],
+        error: Exception,
+        *,
+        report: Mapping[str, Any] | None = None,
+        run_request: Mapping[str, Any] | None = None,
+    ) -> None:
+        # APIError is the explicit safe HTTP boundary. Never copy arbitrary
+        # exception text, nested details, provider payloads or a traceback.
+        code = "run_context_refused"
+        message = "The selected run context is unavailable or changed. Review its saved graph and native settings."
+        if isinstance(error, APIError):
+            code, message = error.code, error.message
+        elif isinstance(error, ConfigError):
+            code = "run_configuration_unavailable"
+            message = "The selected runtime configuration is unavailable. Review the provider and runner settings."
+        with (
+            self.service._runtime_configuration_lock,
+            self.store._connection(write=True) as connection,
+        ):
+            job = job_at(self.store, connection, ctx.job_id)
+            if ctx.cancellation_event.is_set():
+                raise JobCancelled("Native run preparation stopped.")
+            require_active(self.store, connection, job)
+            if job["progress"].get("stopped"):
+                raise JobCancelled("Native run preparation stopped.")
+            if "preflight_refusal" in job["progress"] or "preparation" in job["progress"]:
+                return
+            patch(
+                connection,
+                job,
+                {
+                    "preflight_refusal": {
+                        "code": code,
+                        "message": message,
+                        "native_path": "/runs",
+                        "context_digest": request["context_digest"],
+                        "run_request_digest": content_hash(run_request)
+                        if run_request is not None
+                        else None,
+                        "preflight": report,
+                    }
+                },
+            )
+
+    def _prepare_current(self, ctx: JobContext, request: Mapping[str, Any]) -> JobResult:
         ctx.checkpoint()
         self._fresh(self._job(ctx.job_id))
         selected = request["submitted_request"]["selection"]
@@ -123,9 +177,15 @@ class AssistanceRunJobs:
             )
         ]
         if problems:
-            raise fail(
-                "Native run preflight is not ready. Check the selected runner and run settings before recovery."
+            error = APIError(
+                HTTPStatus.CONFLICT,
+                "run_preflight_refused",
+                "Native run preflight is not ready. Check its findings and the selected runner and run settings.",
             )
+            self._retain_preflight_refusal(
+                ctx, request, error, report=report, run_request=run_request
+            )
+            raise error
         prepared = {
             "schema_version": "bluefire.assistance-run-preparation.v1",
             "context_digest": request["context_digest"],
