@@ -2,7 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   applyEdgeChanges, applyNodeChanges, Background, BackgroundVariant, Controls, Handle, MarkerType,
-  MiniMap, Position, ReactFlow, ReactFlowProvider, useReactFlow,
+  MiniMap, Position, ReactFlow, ReactFlowProvider, useReactFlow, useUpdateNodeInternals,
   type Connection, type Edge, type EdgeChange, type Node, type NodeChange, type NodeProps,
 } from "@xyflow/react";
 import {
@@ -44,8 +44,16 @@ function flowEdges(scenario: ScenarioGraph, behaviors: Map<string, Behavior>): F
   return [...routes, ...artifacts];
 }
 
-function BehaviorNode({ data, selected }: NodeProps<BehaviorFlowNode>) {
+function BehaviorNode({ id, data, selected }: NodeProps<BehaviorFlowNode>) {
   const behavior = data.behavior;
+  const updateNodeInternals = useUpdateNodeInternals();
+  const handleSignature = JSON.stringify([
+    behavior?.inputs.slice(0, 4).map((input) => input.name) ?? [],
+    behavior?.outputs.slice(0, 4).map((output) => output.name) ?? [],
+  ]);
+  // A new method can change handles without changing the node's dimensions.
+  // Refresh their bounds after rendering while preserving selection focus.
+  useEffect(() => { updateNodeInternals(id); }, [id, handleSignature, updateNodeInternals]);
   return <article className={`flow-node tier-${behavior?.safety_tier ?? "safe"} ${selected ? "selected" : ""} ${data.invalid ? "invalid" : ""}`}>
     <Handle type="target" position={Position.Top} id="route:in" className="route-handle route-in" title="Continue from another step" />
     {(behavior?.inputs ?? []).slice(0, 4).map((input, index) => <Handle key={input.name} type="target" position={Position.Left} id={`in:${input.name}`} className="typed-handle input-handle" style={{ top: 55 + index * 18 }} title={`Requires ${inputTypeLabel(input.type)}: ${inputLabel(input.name)}`} />)}
