@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 from .ai_assistance import COMPARE, REVISE
 from .ai_provider_access import AIProviderAccess
+from .assistance_runs import AssistanceRunJobs
 from .config import AIConfig
 from .contracts import ScenarioDefinition
 from .detection_ai_jobs import DetectionAIJobs
@@ -26,6 +27,7 @@ class AssistanceContext(Protocol):
     detection_lab: DetectionLabService
     detection_ai: DetectionAIJobs
     graph_ai: GraphAIJobs
+    assistance_runs: AssistanceRunJobs
     method_comparison: MethodComparisonJobs
     product_store: ProductStore
     registry: BehaviorRegistry

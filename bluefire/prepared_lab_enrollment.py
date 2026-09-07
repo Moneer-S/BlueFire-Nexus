@@ -15,6 +15,7 @@ from .ai_detection_revision import _OUTPUT_SCHEMA as DETECTION_REVISION_SCHEMA
 from .ai_drafts import AIGraphDraftRequest, graph_draft_json_schema
 from .ai_method_comparison import OUTPUT_SCHEMA as METHOD_COMPARISON_SCHEMA
 from .ai_probe import _SCHEMA as CONNECTION_SCHEMA
+from .ai_run_inspection import OUTPUT_SCHEMA as RUN_INSPECTION_SCHEMA
 from .config import AIProviderConfig, BlueFireConfig, load_config
 from .registry import load_builtin_registry
 from .util import canonical_json_bytes, content_hash
@@ -41,6 +42,7 @@ def enroll(
             ("bluefire_detection_source_revision", content_hash(DETECTION_REVISION_SCHEMA)),
             ("bluefire_method_comparison", content_hash(METHOD_COMPARISON_SCHEMA)),
             ("bluefire_experiment_assistance", content_hash(ASSISTANCE_SCHEMA)),
+            ("bluefire_run_evidence_inspection", content_hash(RUN_INSPECTION_SCHEMA)),
         ),
     )
 

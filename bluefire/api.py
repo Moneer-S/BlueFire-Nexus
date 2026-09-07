@@ -423,6 +423,20 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     lambda: self.platform_server.service.assistance_graph_context(graph_context[1])
                 )
             return
+        if path == f"{API_PREFIX}/assistance/run-context":
+            if self._routes._management_query_free():
+                self._method_not_allowed("POST")
+            return
+        run_preparation = self._routes._assistance_run_request(path)
+        if run_preparation is not None:
+            if run_preparation[0]:
+                if run_preparation[1]:
+                    self._method_not_allowed("POST")
+                else:
+                    self._dispatch(
+                        lambda: self.platform_server.service.assistance_run_job(run_preparation[0])
+                    )
+            return
         graph_job = self._routes._graph_job_request(path)
         if graph_job is not None:
             if graph_job[0]:
@@ -750,8 +764,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 self._method_not_allowed("GET")
             else:
                 detection_operations = {
-                    "ai-revision-jobs": lambda: self.platform_server.service.submit_detection_ai_revision(
-                        candidate_id, body
+                    "ai-revision-jobs": lambda: (
+                        self.platform_server.service.submit_detection_ai_revision(
+                            candidate_id, body
+                        )
                     ),
                     "evaluate-run": lambda: self.platform_server.service.evaluate_detection_run(
                         candidate_id, body
@@ -851,11 +867,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
             job_operations = {
-                "method-comparison-decisions": lambda: self.platform_server.service.decide_method_comparison(
-                    job_id, body
+                "method-comparison-decisions": lambda: (
+                    self.platform_server.service.decide_method_comparison(job_id, body)
                 ),
-                "detection-revision-decisions": lambda: self.platform_server.service.decide_detection_ai_revision(
-                    job_id, body
+                "detection-revision-decisions": lambda: (
+                    self.platform_server.service.decide_detection_ai_revision(job_id, body)
                 ),
                 "approval": lambda: self.platform_server.service.approve_job(job_id, body),
                 "pause": lambda: self.platform_server.service.pause_job(job_id),
@@ -870,6 +886,22 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             return
         if path == f"{API_PREFIX}/assistance/graph-context":
             self._method_not_allowed("GET")
+            return
+        if path == f"{API_PREFIX}/assistance/run-context":
+            if self._routes._management_query_free():
+                self._dispatch(lambda: self.platform_server.service.assistance_run_context(body))
+            return
+        run_preparation = self._routes._assistance_run_request(path)
+        if run_preparation is not None:
+            if run_preparation[0]:
+                if run_preparation[1]:
+                    self._dispatch(
+                        lambda: self.platform_server.service.review_assistance_run(
+                            run_preparation[0], body
+                        )
+                    )
+                else:
+                    self._method_not_allowed("GET")
             return
         graph_job = self._routes._graph_job_request(path)
         if graph_job is not None:

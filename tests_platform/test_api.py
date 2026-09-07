@@ -61,6 +61,18 @@ class StubService:
         self.calls.append(("assistance_graph_context", base_scenario))
         return {"selected": {"kind": "graph", "base_scenario": base_scenario}}
 
+    def assistance_run_context(self, request):
+        self.calls.append(("assistance_run_context", request))
+        return {"context_digest": "sha256:" + "a" * 64}
+
+    def assistance_run_job(self, job_id):
+        self.calls.append(("assistance_run_job", job_id))
+        return {"job": {"job_id": job_id}}
+
+    def review_assistance_run(self, job_id, request):
+        self.calls.append(("review_assistance_run", job_id, request))
+        return {"job": {"job_id": job_id}}
+
     def graph_ai_job(self, job_id: str):
         self.calls.append(("graph_ai_job", job_id))
         return {"job": {"job_id": job_id, "kind": "graph.ai.propose"}}
@@ -1272,7 +1284,7 @@ def test_provider_package_api_forwards_exact_v2_envelope_and_lifecycle_authority
         ),
         (
             "POST",
-            (f"/api/v1/action-package-publishers/{PUBLISHER_ID}" f"/keys/{PUBLISHER_KEY_ID}/trust"),
+            (f"/api/v1/action-package-publishers/{PUBLISHER_ID}/keys/{PUBLISHER_KEY_ID}/trust"),
             "invalid_action_package_publisher_action",
         ),
         (
@@ -1321,10 +1333,7 @@ def test_action_package_routes_reject_ambiguous_path_authority(
         ("PATCH", "/api/v1/action-package-publishers", "POST"),
         (
             "GET",
-            (
-                f"/api/v1/action-package-publishers/{PUBLISHER_ID}"
-                f"/keys/{PUBLISHER_KEY_ID}/suspend"
-            ),
+            (f"/api/v1/action-package-publishers/{PUBLISHER_ID}/keys/{PUBLISHER_KEY_ID}/suspend"),
             "POST",
         ),
     ],

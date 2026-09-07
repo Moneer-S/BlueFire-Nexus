@@ -51,6 +51,7 @@ from .approvals import (
     execution_intent_id,
     public_approval_record,
 )
+from .assistance_runs import AssistanceRunJobs
 from .assistance_turns import ExperimentAssistance
 from .bootstrap import seed_product_metadata
 from .collector_comparison import summarize_collector_session
@@ -121,6 +122,7 @@ from .research import ResearchSource, ResearchSourceError
 from .reviewed_source_intake import ReviewedSourceIntake
 from .run_bundle_export import export_run_bundle
 from .run_store import RunStore, RunStoreError
+from .run_submissions import _ACTION_CATALOG_AUTHORITY_KEY, _EXECUTE_READINESS_KEY
 from .runner_bootstrap import managed_product_root
 from .runner_client import (
     InventoryBoundRunner,
@@ -163,8 +165,7 @@ _RUNNER_PROBE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]*$")
 _STEP_IMPLEMENTATION_ID = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _RUNNER_TASK_ID = re.compile(r"^execute-[0-9a-f]{64}$")
 _COLLECTOR_PATH_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_EXECUTE_READINESS_KEY = "_execute_readiness"
-_ACTION_CATALOG_AUTHORITY_KEY = "_action_catalog_authority"
+
 _EXECUTE_READINESS_MAX_AGE_SECONDS = 15 * 60
 _REPLAY_ADMISSION_SECONDS = 5.0
 _AVAILABLE_PER_RUN_COLLECTORS = frozenset(
@@ -277,6 +278,7 @@ class BlueFireService(RunnerManagementServiceMixin):
             access=self._provider_access,
             configuration_lock=self._runtime_configuration_lock,
         )
+        self.assistance_runs = AssistanceRunJobs(self)
         self.assistance = ExperimentAssistance(self)
         self.detection_ai.on_application = self.assistance.application_committed
         self.graph_ai.on_application = self.assistance.application_committed
@@ -776,6 +778,42 @@ class BlueFireService(RunnerManagementServiceMixin):
         self, base_scenario: Mapping[str, Any] | None = None
     ) -> Mapping[str, Any]:
         return self.graph_ai.context({"kind": "graph", "base_scenario": base_scenario})
+
+    def assistance_run_context(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        if set(request) != {"selection"}:
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "assistance_run_context_invalid",
+                "Select an exact saved graph and native run settings.",
+            )
+        try:
+            return self.assistance_runs.context(request["selection"])
+        except (ProductStoreError, ConfigError) as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "assistance_run_context_invalid",
+                "Review the exact accepted graph, nonempty native scope and current run configuration.",
+            ) from exc
+
+    def assistance_run_job(self, job_id: str) -> Mapping[str, Any]:
+        try:
+            return self.assistance_runs.read(job_id)
+        except ProductStoreError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "assistance_run_integrity_refused",
+                "The native operation no longer matches its retained run or review. Stop the parent turn and inspect the saved receipts.",
+            ) from exc
+
+    def review_assistance_run(self, job_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        try:
+            return self.assistance_runs.review(job_id, request)
+        except (ProductStoreError, ConfigError) as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "assistance_run_review_refused",
+                "The exact native preparation is no longer reviewable. Review its retained decision, parent status and current configuration.",
+            ) from exc
 
     def graph_ai_job(self, job_id: str) -> Mapping[str, Any]:
         return self.graph_ai.read(job_id)
@@ -1614,9 +1652,15 @@ class BlueFireService(RunnerManagementServiceMixin):
                 [str(exc)],
             ) from exc
 
-    def submit_run(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+    def submit_run(
+        self, request: Mapping[str, Any], *, _assistance_run: Mapping[str, Any] | None = None
+    ) -> Mapping[str, Any]:
         """Create a durable background job; Execute waits on a bound review gate."""
 
+        if "submission_id" in request or _assistance_run is not None:
+            from .run_submissions import submit
+
+            return submit(self, request, assistance_run=_assistance_run)
         mode = self._mode(request)
         stored_request = dict(request)
         # Browser confirmation is deliberately not accepted as a capability.  The
@@ -1757,6 +1801,8 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "replay.ai.propose",
                     "replay.comparison.recover",
                     "graph.ai.propose",
+                    "run.assistance.prepare",
+                    "run.evidence.inspect",
                     "assistance.turn",
                     "assistance.continue",
                 }
@@ -1793,6 +1839,15 @@ class BlueFireService(RunnerManagementServiceMixin):
         except ProductStoreError as exc:
             raise APIError(HTTPStatus.NOT_FOUND, "job_not_found", "Job was not found.") from exc
 
+        if source.get("kind") == "run.assistance.prepare" or source.get("request", {}).get(
+            "assistance_run"
+        ):
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "assistance_run_retry_refused",
+                "This run belongs to a retained Assistant operation. Reopen that turn to recover inspection only; starting another experiment requires a new native request and fresh Execute approval.",
+            )
+
         if source.get("kind") in {"detection.ai.propose", "detection.ai.apply"}:
             return self.detection_ai.retry(job_id)
 
@@ -1822,6 +1877,11 @@ class BlueFireService(RunnerManagementServiceMixin):
                     raise ProductStoreError("interrupted job request is invalid")
                 mode = self._mode(stored_request)
                 replacement_request = dict(stored_request)
+                if "_run_submission_request" in stored_request:
+                    replacement_request = {
+                        **stored_request["_run_submission_request"],
+                        "submission_id": str(uuid.uuid4()),
+                    }
                 if mode is ExecutionMode.EXECUTE:
                     self._assert_execute_retry_settled(stored_request)
                     replacement_request.pop("approval", None)
@@ -2356,6 +2416,14 @@ class BlueFireService(RunnerManagementServiceMixin):
             return self.method_comparison.cancel(job_id)
         if job.get("kind") == "graph.ai.propose":
             return dict(self.graph_ai.cancel(job_id)["job"])
+        if job.get("kind") == "run.assistance.prepare" or job["request"].get("assistance_run"):
+            operation = (
+                job
+                if job["kind"] == "run.assistance.prepare"
+                else self.assistance_runs._job(job["request"]["assistance_run"]["operation_job_id"])
+            )
+            self.assistance.cancel(operation["request"]["assistance_turn"]["parent_job_id"])
+            return self.product_store.get_job(job_id)
         if job.get("kind") == "assistance.turn":
             return dict(self.assistance.cancel(job_id)["job"])
         if job.get("kind") == "assistance.continue":
@@ -2385,6 +2453,8 @@ class BlueFireService(RunnerManagementServiceMixin):
         progress = context.progress_snapshot()
         proposal_record_id = progress.get("proposal_record_id")
         context.checkpoint({"phase": "running", "completed_steps": 0})
+        if request.get("assistance_run"):
+            self.assistance_runs.before_run(request)
         try:
             if isinstance(proposal_record_id, str):
                 review = self.product_store.get_ai_proposal_review(proposal_record_id)
@@ -2432,6 +2502,11 @@ class BlueFireService(RunnerManagementServiceMixin):
                 except ProductStoreError:
                     if attempt == 2:
                         raise
+            if request.get("assistance_run"):
+                try:
+                    self.assistance_runs.after_run(context.job_id, request, result)
+                except (APIError, ProductStoreError, ConfigError, JobRuntimeError):
+                    pass
             raise JobCancelled("simulation cancellation and partial record are settled") from exc
         except AIProviderCancelled as exc:
             raise JobCancelled("job provider request cancellation was confirmed") from exc
@@ -2485,6 +2560,11 @@ class BlueFireService(RunnerManagementServiceMixin):
                 },
                 awaiting_approval=True,
             )
+        if request.get("assistance_run"):
+            try:
+                self.assistance_runs.after_run(context.job_id, request, result)
+            except (APIError, ProductStoreError, ConfigError, JobRuntimeError):
+                pass
         comparison_progress = {}
         if request.get("method_comparison"):
             comparison_progress["comparison"] = self.method_comparison.after_replay(

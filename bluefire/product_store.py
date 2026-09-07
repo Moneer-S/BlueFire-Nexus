@@ -1601,7 +1601,9 @@ class ProductStore:
                 else (
                     {"suspended", "revoked"}
                     if previous == "trusted"
-                    else {"revoked"} if previous == "suspended" else set()
+                    else {"revoked"}
+                    if previous == "suspended"
+                    else set()
                 )
             )
             if state not in allowed:
@@ -3761,6 +3763,30 @@ class ProductStore:
         maximum_tier: str,
         expires_at: str,
     ) -> Mapping[str, Any]:
+        with self._connection(write=True) as connection:
+            return self._create_approval_request_at(
+                connection,
+                run_id=run_id,
+                state_digest=state_digest,
+                plan_digest=plan_digest,
+                profile_id=profile_id,
+                target_scope_digest=target_scope_digest,
+                maximum_tier=maximum_tier,
+                expires_at=expires_at,
+            )
+
+    def _create_approval_request_at(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        run_id: str,
+        state_digest: str,
+        plan_digest: str,
+        profile_id: str,
+        target_scope_digest: str,
+        maximum_tier: str,
+        expires_at: str,
+    ) -> Mapping[str, Any]:
         if not all(
             isinstance(item, str) and item.strip()
             for item in (run_id, state_digest, plan_digest, target_scope_digest, expires_at)
@@ -3773,27 +3799,26 @@ class ProductStore:
         if _timestamp(expires_at) <= _timestamp(requested_at):
             raise ProductStoreError("approval expiry must be in the future")
         approval_id = "approval-" + uuid.uuid4().hex
-        with self._connection(write=True) as connection:
-            connection.execute(
-                """
-                INSERT INTO approval_requests(
-                    approval_id, run_id, state_digest, plan_digest, profile_id,
-                    target_scope_digest, maximum_tier, status, requested_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-                """,
-                (
-                    approval_id,
-                    run_id.strip(),
-                    state_digest.strip(),
-                    plan_digest.strip(),
-                    stable_profile,
-                    target_scope_digest.strip(),
-                    maximum_tier,
-                    requested_at,
-                    expires_at,
-                ),
-            )
-        return self.get_approval_request(approval_id)
+        connection.execute(
+            """
+            INSERT INTO approval_requests(
+                approval_id, run_id, state_digest, plan_digest, profile_id,
+                target_scope_digest, maximum_tier, status, requested_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+            """,
+            (
+                approval_id,
+                run_id.strip(),
+                state_digest.strip(),
+                plan_digest.strip(),
+                stable_profile,
+                target_scope_digest.strip(),
+                maximum_tier,
+                requested_at,
+                expires_at,
+            ),
+        )
+        return self._approval_from_row(self._approval_row(connection, approval_id)).to_dict()
 
     def withdraw_pending_approval(self, approval_id: str) -> Mapping[str, Any]:
         """Retire an unpublished pending request without deleting its exact binding.
@@ -4292,6 +4317,10 @@ class ProductStore:
                 from .product_store_assistance import publication_guard as assistance_guard
 
                 assistance_guard(self, connection, job_kind, document)
+            if "assistance_run" in document:
+                from .product_store_assistance_run import publication_guard as run_guard
+
+                run_guard(self, connection, job_kind, document)
             if "method_comparison" in document:
                 from .product_store_method_comparison import publication_guard
 
@@ -4302,6 +4331,13 @@ class ProductStore:
                 from .product_store_method_comparison import recovery_guard
 
                 recovery_guard(self, connection, document)
+            if "_pending_run_approval" in document:
+                if job_kind != "scenario.run" or document.get("mode") != "execute":
+                    raise ProductStoreError("Pending run approval requires an Execute run job.")
+                approval = self._create_approval_request_at(
+                    connection, **document.pop("_pending_run_approval")
+                )
+                document["approval_request_id"] = approval["approval_id"]
             now = utc_now()
             connection.execute(
                 """
@@ -4392,6 +4428,12 @@ class ProductStore:
             if row is None:
                 raise ProductStoreError("job was not found")
             current = str(row["state"])
+            if state == "running" and current != "running":
+                stored_request = json.loads(row["request_json"])
+                if stored_request.get("assistance_run"):
+                    from .product_store_assistance_run import publication_guard as run_guard
+
+                    run_guard(self, connection, row["kind"], stored_request)
             if state != current and state not in _JOB_TRANSITIONS[current]:
                 raise ProductStoreError(f"job cannot transition from {current} to {state}")
             if current == "cancelling" and state == "completed" and not completion_confirmed:

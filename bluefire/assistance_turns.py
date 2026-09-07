@@ -14,6 +14,8 @@ from .application_errors import APIError
 from .assistance_context import LIMITATIONS, AssistanceContext
 from .assistance_context import context as selected_context
 from .assistance_results import TERMINAL, active, child_job, child_path, result
+from .assistance_run_context import CAPABILITY as RUN
+from .assistance_run_context import selection as run_selection
 from .config import AIProviderConfig, AIProviderKind, ConfigError
 from .detection_ai_jobs import _text
 from .graph_ai_context import GRAPH
@@ -32,7 +34,7 @@ def fail(message: str) -> APIError:
 def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
     """Normalize additive selection syntax without changing the durable wire request."""
     chosen = request.get("selection")
-    if chosen is None or chosen.get("kind") == "graph":
+    if chosen is None or chosen.get("kind") in {"graph", "saved_graph"}:
         return request
     return {
         **{key: value for key, value in request.items() if key != "selection"},
@@ -41,7 +43,11 @@ def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def is_graph(request: Mapping[str, Any]) -> bool:
-    return bool(request.get("selection", {}).get("kind") == "graph")
+    return bool(request.get("selection", {}).get("kind") in {"graph", "saved_graph"})
+
+
+def is_saved_run(request: Mapping[str, Any]) -> bool:
+    return bool(request.get("selection", {}).get("kind") == "saved_graph")
 
 
 class ExperimentAssistance:
@@ -68,7 +74,11 @@ class ExperimentAssistance:
         request = job["request"]["submitted_request"]
         request = submitted(request)
         current = (
-            self.service.graph_ai.context(request["selection"])
+            (
+                self.service.assistance_runs.context(request["selection"])
+                if is_saved_run(request)
+                else self.service.graph_ai.context(request["selection"])
+            )
             if is_graph(request)
             else self.context(request["run_id"], request["candidate_id"])
         )
@@ -100,9 +110,9 @@ class ExperimentAssistance:
             chosen = request["selection"]
             if not isinstance(chosen, Mapping):
                 raise fail("Select a typed graph or detector context.")
-            if chosen.get("kind") == "graph":
+            if chosen.get("kind") in {"graph", "saved_graph"}:
                 try:
-                    graph_selection(chosen)
+                    (graph_selection if chosen["kind"] == "graph" else run_selection)(chosen)
                 except ProductStoreError as exc:
                     raise fail(str(exc)) from exc
             elif chosen.get("kind") == "detection":
@@ -185,7 +195,11 @@ class ExperimentAssistance:
             }
             try:
                 context = (
-                    self.service.graph_ai.context(request["selection"])
+                    (
+                        self.service.assistance_runs.context(request["selection"])
+                        if is_saved_run(request)
+                        else self.service.graph_ai.context(request["selection"])
+                    )
                     if is_graph(request)
                     else self.context(request["run_id"], request["candidate_id"])
                 )
@@ -271,7 +285,7 @@ class ExperimentAssistance:
             )
             raise
 
-    def _advance(self, parent_id: str) -> None:
+    def _advance(self, parent_id: str, *, recovery: bool = False) -> None:
         parent = self._job(parent_id)
         if parent["progress"].get("stopped") or parent["state"] in {"cancelled", "cancelling"}:
             raise fail("This assistance turn is cancelled.")
@@ -281,7 +295,7 @@ class ExperimentAssistance:
         self._provider(parent)
         selected_request = submitted(parent["request"]["submitted_request"])
         if is_graph(selected_request):
-            self._advance_graph(parent, selected_request)
+            self._advance_graph(parent, selected_request, recovery=recovery)
             return
         submitted_request = selected_request
         question = " ".join(submitted_request["message"].split())
@@ -357,11 +371,18 @@ class ExperimentAssistance:
             update(self.store, parent_id, {"handoff_error": None, "handoff_problem": None})
             return
 
-    def _advance_graph(self, parent: Mapping[str, Any], request: Mapping[str, Any]) -> None:
+    def _advance_graph(
+        self, parent: Mapping[str, Any], request: Mapping[str, Any], *, recovery: bool = False
+    ) -> None:
+        saved_run = is_saved_run(request)
+        kind = "run.assistance.prepare" if saved_run else "graph.ai.propose"
         for step in parent["progress"].get("plan", []):
-            if step["capability_id"] != GRAPH:
+            if step["capability_id"] != (RUN if saved_run else GRAPH):
                 raise fail("The graph context cannot dispatch detector operations.")
-            if child_job(self.service, parent, step) is not None:
+            child = child_job(self.service, parent, step)
+            if child is not None:
+                if saved_run:
+                    self.service.assistance_runs.advance(child["job_id"], retry_inspection=recovery)
                 return
             submission = str(
                 uuid.uuid5(uuid.UUID(request["submission_id"]), "capability:" + step["step_id"])
@@ -378,12 +399,12 @@ class ExperimentAssistance:
                 {
                     "job_id": "job-" + uuid.UUID(submission).hex,
                     "submission_id": submission,
-                    "kind": "graph.ai.propose",
+                    "kind": kind,
                     "object_id": request["context_digest"],
                     "request": child_request,
                 },
             )
-            self.service.graph_ai.submit(
+            (self.service.assistance_runs if saved_run else self.service.graph_ai).submit(
                 child_request,
                 _assistance_turn={"parent_job_id": parent["job_id"], "step_id": step["step_id"]},
             )
@@ -394,6 +415,16 @@ class ExperimentAssistance:
         """Expose fixed remediation, never exception text, paths or arbitrary details."""
         parent = self._job(parent_id)
         chosen = submitted(parent["request"]["submitted_request"])
+        if is_saved_run(chosen):
+            return {
+                "code": "native_review_required",
+                "message": "The saved experiment needs native run attention. Check the runner and retained run receipt; recovery only resumes missing preparation or inspection, never repeats a run.",
+                "profile_id": chosen["selection"]["run_intent"]["runner_profile_id"],
+                "action": {
+                    "label": "Review run setup",
+                    "native_path": "/runs?graph_job=" + chosen["selection"]["proposal_job_id"],
+                },
+            }
         if is_graph(chosen):
             return {
                 "code": "source_review_required",
@@ -554,7 +585,7 @@ class ExperimentAssistance:
         try:
             if "admission_error" in request:
                 raise fail(request["admission_error"])
-            self._advance(request["parent_job_id"])
+            self._advance(request["parent_job_id"], recovery=True)
         except (APIError, ProductStoreError, ConfigError, JobRuntimeError) as exc:
             if ctx.cancellation_event.is_set():
                 raise JobCancelled(
@@ -634,7 +665,9 @@ class ExperimentAssistance:
             child = child_job(self.service, parent, step)
             if child is None:
                 continue
-            if child["kind"] == "graph.ai.propose":
+            if child["kind"] == "run.assistance.prepare":
+                self.service.assistance_runs.cancel(child["job_id"])
+            elif child["kind"] == "graph.ai.propose":
                 self.service.graph_ai.cancel(child["job_id"])
             elif child["kind"] == "replay.ai.propose":
                 self.service.method_comparison.cancel(child["job_id"])
@@ -750,6 +783,13 @@ class ExperimentAssistance:
                         continue
                     current = active(self.service, child, step)
                     view["active_child"] = current
+                    if child["kind"] == "run.assistance.prepare":
+                        from .assistance_run_view import apply_view
+
+                        apply_view(
+                            self.service.assistance_runs.read(child["job_id"]), view, current
+                        )
+                        break
                     decision = child["progress"].get("decision", {}).get("decision")
                     if child["progress"].get("stopped"):
                         decision = "reject"
@@ -773,7 +813,9 @@ class ExperimentAssistance:
                                 "kind": (
                                     "review_graph"
                                     if child["kind"] == "graph.ai.propose"
-                                    else "review_detection" if revision else "review_method"
+                                    else "review_detection"
+                                    if revision
+                                    else "review_method"
                                 ),
                                 "label": (
                                     "Review graph proposal"
@@ -834,7 +876,9 @@ class ExperimentAssistance:
             )
         if view["status"] != "ready_to_continue":
             view["recovery"] = None
-        view["can_start_new_turn"] = view["status"] in {"off", "completed", "cancelled"} or (
-            view["status"] == "blocked" and not progress.get("plan") and self._settled(parent)
+        view["can_start_new_turn"] = (
+            (view.get("can_start_new_turn") is True and self._settled(parent))
+            or view["status"] in {"off", "completed", "cancelled"}
+            or (view["status"] == "blocked" and not progress.get("plan") and self._settled(parent))
         )
         return {"job": parent, "turn": view}

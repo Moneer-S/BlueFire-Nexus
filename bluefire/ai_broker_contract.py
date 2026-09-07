@@ -31,6 +31,7 @@ _PURPOSES = {
     "bluefire_detection_source_revision",
     "bluefire_method_comparison",
     "bluefire_experiment_assistance",
+    "bluefire_run_evidence_inspection",
 }
 ERROR_CODES = frozenset(
     {

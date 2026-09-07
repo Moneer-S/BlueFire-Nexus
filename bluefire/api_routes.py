@@ -568,6 +568,26 @@ class APIRoutes:
             return "", None
         return job_id, action
 
+    def _assistance_run_request(self, path: str) -> tuple[str, bool] | None:
+        prefix = f"{API_PREFIX}/assistance/run-jobs/"
+        if not path.startswith(prefix):
+            return None
+        if not self._management_query_free():
+            return ("", False)
+        parts = path[len(prefix) :].split("/")
+        if (
+            len(parts) not in {1, 2}
+            or not re.fullmatch(r"job-[0-9a-f]{32}", parts[0])
+            or (len(parts) == 2 and parts[1] != "review")
+        ):
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "assistance_run_invalid",
+                "Select a canonical native run preparation.",
+            )
+            return ("", False)
+        return parts[0], len(parts) == 2
+
     def _assistance_context_request(self, path: str) -> tuple[str, str] | None:
         if path != f"{API_PREFIX}/assistance/context":
             return None

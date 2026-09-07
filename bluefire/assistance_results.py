@@ -17,6 +17,8 @@ TERMINAL = {"completed", "cancelled", "failed", "interrupted"}
 
 
 def child_path(child: Mapping[str, Any]) -> str:
+    if child["kind"] == "run.assistance.prepare":
+        return "/runs?" + urlencode({"assistance_job": child["job_id"]})
     if child["kind"] == "graph.ai.propose":
         return "/builder?" + urlencode({"graph_job": child["job_id"]})
     if child["kind"] == "detection.ai.propose":
@@ -71,6 +73,9 @@ def child_job(
 def result(
     service: AssistanceContext, child: Mapping[str, Any], step: Mapping[str, Any]
 ) -> Mapping[str, Any] | None:
+    if child["kind"] == "run.assistance.prepare":
+        receipt = service.assistance_runs.read(child["job_id"])["result"]
+        return {**receipt, "step_id": step["step_id"]} if receipt is not None else None
     if step["capability_id"] == GRAPH:
         receipt = service.graph_ai.read(child["job_id"])["application"]
         if receipt is None:
@@ -171,6 +176,14 @@ def active(
     service: AssistanceContext, child: Mapping[str, Any], step: Mapping[str, Any]
 ) -> Mapping[str, Any]:
     actual = child
+    if child["kind"] == "run.assistance.prepare":
+        for key, kind in (
+            ("run_job_id", "scenario.run"),
+            ("inspection_job_id", "run.evidence.inspect"),
+        ):
+            nested = service.assistance_runs._nested(child, key, kind)
+            if nested is not None and actual["state"] in TERMINAL:
+                actual = nested
     if (
         child["kind"] == "detection.ai.propose"
         and child["progress"].get("decision", {}).get("decision") == "accept"
@@ -213,7 +226,7 @@ def active(
         "step_id": step["step_id"],
         "native_path": (
             f"/runs?job={actual['job_id']}"
-            if actual["kind"] == "scenario.replay"
+            if actual["kind"] in {"scenario.replay", "scenario.run"}
             else child_path(child)
         ),
     }

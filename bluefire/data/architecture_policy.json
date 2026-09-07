@@ -268,6 +268,13 @@
       "patterns": [
         "bluefire.application_errors",
         "bluefire.assistance_context",
+        "bluefire.assistance_runs",
+        "bluefire.assistance_run_context",
+        "bluefire.assistance_run_inspection",
+        "bluefire.assistance_run_protocol",
+        "bluefire.assistance_run_view",
+        "bluefire.run_submissions",
+
         "bluefire.assistance_results",
         "bluefire.assistance_turns",
         "bluefire.graph_ai_context",
@@ -364,6 +371,7 @@
         "bluefire.ai_detection_revision",
         "bluefire.ai_method_comparison",
         "bluefire.ai_assistance",
+        "bluefire.ai_run_inspection",
         "bluefire.ai_probe",
         "bluefire.ai_wire",
         "bluefire.ai_transport",

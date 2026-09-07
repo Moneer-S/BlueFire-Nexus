@@ -149,6 +149,15 @@ class PlatformService(Protocol):
     def assistance_graph_context(self, base_scenario: JsonObject | None = None) -> JsonResult:
         """Read an immutable optional graph reference and capability catalog."""
 
+    def assistance_run_context(self, request: JsonObject) -> JsonResult:
+        """Read immutable accepted-graph and native-intent context."""
+
+    def assistance_run_job(self, job_id: str) -> JsonResult:
+        """Read native run preparation and linked immutable results."""
+
+    def review_assistance_run(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Accept or reject the exact retained native preparation."""
+
     def graph_ai_job(self, job_id: str) -> JsonResult:
         """Read a retained graph proposal and exact native save receipt."""
 
