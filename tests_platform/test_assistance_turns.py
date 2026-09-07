@@ -600,3 +600,77 @@ def test_comparison_only_recovery_remains_active_until_cancel_settles(setup, mon
         assert len(access.calls) == 3
     finally:
         release.set()
+
+
+@pytest.mark.parametrize("cancel_target", ["parent", "older_continuation"])
+def test_cancel_held_continuation_stops_parent_and_all_recovery_publication(
+    setup, monkeypatch, cancel_target
+):
+    service, access, body = setup
+    parent, proposal = planned(setup)
+    original = service.method_comparison.context
+
+    def unavailable(run_id):
+        raise APIError(409, "runner_stopped", "Unit readiness unavailable")
+
+    monkeypatch.setattr(service.method_comparison, "context", unavailable)
+    apply(service, proposal)
+    entered, release = threading.Event(), threading.Event()
+    entered_lock = threading.Lock()
+    count = 0
+
+    def held(run_id):
+        nonlocal count
+        with entered_lock:
+            count += 1
+            if count == 2:
+                entered.set()
+        assert release.wait(10)
+        return original(run_id)
+
+    monkeypatch.setattr(service.method_comparison, "context", held)
+    requests = [
+        {"submission_id": str(uuid.uuid4()), "context_digest": body["context_digest"]}
+        for _ in range(2)
+    ]
+    identifiers = ["job-" + request["submission_id"].replace("-", "") for request in requests]
+    try:
+        for request in requests:
+            service.continue_assistance_turn(parent["job_id"], request)
+        assert entered.wait(10)
+        target = parent["job_id"] if cancel_target == "parent" else identifiers[0]
+        cancelled = service.cancel_job(target)
+        assert cancelled["job_id"] == target
+        waiting = service.assistance_turn(parent["job_id"])
+        assert waiting["job"]["progress"]["stopped"] is True
+        assert waiting["turn"]["status"] == "cancelling"
+        assert not waiting["turn"]["can_start_new_turn"]
+        assert all(
+            service.product_store.get_job(identifier)["state"] == "cancelling"
+            for identifier in identifiers
+        )
+        release.set()
+        for identifier in identifiers:
+            assert service.job_controller.wait(identifier, timeout=15)["state"] == "cancelled"
+        final = service.assistance_turn(parent["job_id"])
+        assert final["turn"]["status"] == "cancelled" and final["turn"]["can_start_new_turn"]
+        assert set(final["job"]["progress"]["children"]) == {"step-1"}
+        assert access.calls == [PURPOSE, "bluefire_detection_source_revision"]
+    finally:
+        release.set()
+
+
+def test_validated_empty_plan_retains_explanation_without_claiming_work_completed(setup):
+    service, access, body = setup
+    access.transform = lambda value: {
+        "message": "This request is outside the selected capabilities.",
+        "steps": [],
+    }
+    submitted = service.submit_assistance_turn(body)
+    service.job_controller.wait(submitted["job"]["job_id"], timeout=15)
+    view = service.assistance_turn(submitted["job"]["job_id"])["turn"]
+    assert view["status"] == "blocked" and view["can_start_new_turn"]
+    assert view["next_action"]["kind"] == "new_turn"
+    assert view["message"] == "This request is outside the selected capabilities."
+    assert view["plan"] == [] and view["results"] == [] and view["active_child"] is None
+    assert access.calls == [PURPOSE]

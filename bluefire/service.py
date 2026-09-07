@@ -2330,6 +2330,8 @@ class BlueFireService(RunnerManagementServiceMixin):
             return self.method_comparison.cancel(job_id)
         if job.get("kind") == "assistance.turn":
             return dict(self.assistance.cancel(job_id)["job"])
+        if job.get("kind") == "assistance.continue":
+            return self.assistance.cancel_continuation(job_id)
         return self._signal_job(job_id, "cancel")
 
     def _signal_job(self, job_id: str, signal: str) -> Mapping[str, Any]:

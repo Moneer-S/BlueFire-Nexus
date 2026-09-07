@@ -352,6 +352,10 @@ class ExperimentAssistance:
                 raise fail(request["admission_error"])
             self._advance(request["parent_job_id"])
         except (APIError, ProductStoreError, ConfigError, JobRuntimeError) as exc:
+            if ctx.cancellation_event.is_set():
+                raise JobCancelled(
+                    "Assistance continuation cancelled; parent turn is stopped."
+                ) from exc
             update(
                 self.store,
                 request["parent_job_id"],
@@ -364,15 +368,52 @@ class ExperimentAssistance:
                 },
             )
             raise
+        ctx.checkpoint()
         return JobResult(progress={"parent_job_id": request["parent_job_id"]})
+
+    def _continuations(self, parent: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+        """Existing bounded controller inventory plus the durable latest receipt."""
+        identifiers = set(self.controller.active_job_ids)
+        latest = parent["progress"].get("continuation_job_id")
+        if latest:
+            identifiers.add(latest)
+        return [
+            job
+            for job in (self.store.get_job(identifier) for identifier in identifiers)
+            if job["kind"] == "assistance.continue"
+            and job["request"].get("parent_job_id") == parent["job_id"]
+        ]
+
+    def cancel_continuation(self, job_id: str) -> Mapping[str, Any]:
+        job = self.store.get_job(job_id)
+        request = job["request"]
+        parent = self._job(request["parent_job_id"])
+        submission = request["_submission"]
+        if (
+            job["kind"] != "assistance.continue"
+            or job_id != "job-" + uuid.UUID(submission["submission_id"]).hex
+            or submission["intent_digest"]
+            != content_hash(
+                {
+                    "parent_job_id": parent["job_id"],
+                    "submission_id": submission["submission_id"],
+                    "context_digest": request["context_digest"],
+                }
+            )
+        ):
+            raise fail("Continuation cancellation has an invalid retained parent binding.")
+        if job["state"] not in TERMINAL:
+            # Stop authorizes no further publication before signalling the callback.
+            # cancel() uses controller.cancel directly, never this service route.
+            self.cancel(parent["job_id"])
+        return self.store.get_job(job_id)
 
     def _settled(self, parent: Mapping[str, Any]) -> bool:
         """Resolve every native lifecycle independently of candidate/result validity."""
         try:
             if parent["state"] not in TERMINAL:
                 return False
-            continuation_id = parent["progress"].get("continuation_job_id")
-            if continuation_id and self.store.get_job(continuation_id)["state"] not in TERMINAL:
+            if any(job["state"] not in TERMINAL for job in self._continuations(parent)):
                 return False
             for step in parent["progress"].get("plan", []):
                 child = child_job(self.service, parent, step)
@@ -384,6 +425,12 @@ class ExperimentAssistance:
 
     def cancel(self, parent_id: str) -> Mapping[str, Any]:
         parent = stop(self.store, parent_id)
+        for continuation in self._continuations(parent):
+            if continuation["state"] not in TERMINAL:
+                try:
+                    self.controller.cancel(continuation["job_id"])
+                except JobRuntimeError:
+                    pass
         for step in parent["progress"].get("plan", []):
             child = child_job(self.service, parent, step)
             if child is None:
@@ -456,6 +503,15 @@ class ExperimentAssistance:
                             "native_path": None,
                         },
                     )
+            elif not progress["plan"]:
+                view.update(
+                    status="blocked",
+                    next_action={
+                        "kind": "new_turn",
+                        "label": "Review supported next steps",
+                        "native_path": None,
+                    },
+                )
             else:
                 view["status"] = "completed"
                 for step in progress["plan"]:
