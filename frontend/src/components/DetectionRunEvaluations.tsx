@@ -51,25 +51,26 @@ export function DetectionRunEvaluations({ candidate, resourceId, sourceRunId, ru
   </>;
 }
 
-export function EvaluationReport({ report }: { report: DetectionRunEvaluation }) {
+export function EvaluationReport({ report, compact = false }: { report: DetectionRunEvaluation; compact?: boolean }) {
   const result = report.result;
-  return <article>
-    <strong>{report.question}</strong>
-    {report.development_case ? <Callout title="Development evidence">AI used this run while proposing the rule. Evaluate separate benign and withheld cases before judging improvement.</Callout> : null}
+  const measured = result.match_count === null ? "Insufficient evidence or backend unavailable" : `${result.match_count} matched ${result.match_count === 1 ? "record" : "records"}`;
+  const backend = `${report.backend.name}${report.backend.version ? ` · ${report.backend.version}` : ""} · ${report.backend.executed ? "Executed" : "Not executed"}`;
+  const detail = <><DataList items={[
+    { label: "Source run", value: <Link to={`/runs/${encodeURIComponent(report.source.run_id)}`}>{report.source.run_id}</Link> },
+    { label: "Detector revision", value: <span>{report.candidate.revision} · <code>{report.candidate.candidate_id}</code></span> },
+    ...(!compact ? [{ label: "Observed / all records", value: `${report.source.observed_count} / ${report.source.evidence_count}` }, { label: "Query result", value: measured }] : []),
+    { label: "Matched evidence", value: result.matched_evidence_ids.join(", ") || "None" },
+    { label: "Missing fields", value: result.missing_fields.join(", ") || "None reported" },
+    { label: "Evidence gaps", value: result.gap_count },
+    { label: "Diagnostics", value: result.diagnostic_codes.map(sentence).join(", ") || "None" },
+    { label: "Query backend", value: backend },
+    { label: "Query digest", value: <code>{report.candidate.query_sha256}</code> },
+  ]} /><details><summary>Inspect immutable evaluation record</summary><pre>{JSON.stringify(report, null, 2)}</pre></details></>;
+  return <article className={compact ? "creation-result" : undefined}>
+    {compact ? <><h3>{measured}</h3><p>{report.source.observed_count} independently observed · {report.source.evidence_count} total records</p></> : <strong>{report.question}</strong>}
+    {report.development_case ? compact ? <p className="creation-evidence-note"><strong>Development evidence</strong> · AI used this run to propose the rule. Test separate benign and withheld cases before judging coverage.</p> : <Callout title="Development evidence">AI used this run while proposing the rule. Evaluate separate benign and withheld cases before judging improvement.</Callout> : null}
     <div><Badge>{sentence(report.case_role)} · operator assigned</Badge><Badge tone={result.state === "insufficient_evidence" || result.state === "backend_error" ? "warning" : "info"}>{sentence(result.state)}</Badge></div>
     {report.case_role === "benign" && result.state === "matched" ? <Callout tone="warning" title="Match in a declared benign case">This query matched observed records in an operator-assigned benign case. Review this potential false positive; the label does not suppress the measured match.</Callout> : null}
-    <DataList items={[
-      { label: "Source run", value: <Link to={`/runs/${encodeURIComponent(report.source.run_id)}`}>{report.source.run_id}</Link> },
-      { label: "Detector revision", value: <span>{report.candidate.revision} · <code>{report.candidate.candidate_id}</code></span> },
-      { label: "Observed / all records", value: `${report.source.observed_count} / ${report.source.evidence_count}` },
-      { label: "Query result", value: result.match_count === null ? "Insufficient evidence or backend unavailable" : `${result.match_count} matched records` },
-      { label: "Matched evidence", value: result.matched_evidence_ids.join(", ") || "None" },
-      { label: "Missing fields", value: result.missing_fields.join(", ") || "None reported" },
-      { label: "Evidence gaps", value: result.gap_count },
-      { label: "Diagnostics", value: result.diagnostic_codes.map(sentence).join(", ") || "None" },
-      { label: "Query backend", value: `${report.backend.name}${report.backend.version ? ` · ${report.backend.version}` : ""} · ${report.backend.executed ? "Executed" : "Not executed"}` },
-      { label: "Query digest", value: <code>{report.candidate.query_sha256}</code> },
-    ]} />
-    <details><summary>Inspect immutable evaluation record</summary><pre>{JSON.stringify(report, null, 2)}</pre></details>
+    {compact ? <><p>{backend}</p>{result.gap_count > 0 || result.missing_fields.length > 0 || result.diagnostic_codes.length > 0 ? <Callout tone="warning" title="Evidence needs review">{result.gap_count} evidence gaps. {result.missing_fields.length ? `Missing fields: ${result.missing_fields.join(", ")}. ` : ""}{result.diagnostic_codes.map(sentence).join(", ")}</Callout> : null}<details><summary>Matched observations and evaluation details</summary><p>{report.question}</p>{detail}</details></> : detail}
   </article>;
 }

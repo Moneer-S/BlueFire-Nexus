@@ -54,22 +54,31 @@ function CreationReview({ jobId, selectedRunId }: { jobId: string; selectedRunId
   const client = useQueryClient();
   const panel = useAssistancePanel();
   const heading = useRef<HTMLHeadingElement>(null), focusPending = useRef(true);
+  const region = useRef<HTMLElement>(null), followSave = useRef(false);
   const query = useQuery({ queryKey: ["detection-creation", jobId], queryFn: async () => checkedCreationEnvelope(await api.detectionCreation(jobId), jobId), enabled: creationJobId(jobId), retry: false,
     refetchInterval: (state) => state.state.data && (creationWorkActive(state.state.data.job) || creationWorkActive(state.state.data.application_job)) && !state.state.error ? 1000 : false });
   useEffect(() => { const yieldFocus = () => { focusPending.current = false; }; document.addEventListener("focusin", yieldFocus); return () => document.removeEventListener("focusin", yieldFocus); }, []);
   useEffect(() => { if (!query.isPending && focusPending.current) { heading.current?.focus(); focusPending.current = false; } }, [query.isPending]);
+  useEffect(() => {
+    if (!query.data?.application || !followSave.current) return;
+    followSave.current = false;
+    // The Save button disappears when evaluation finishes. Keep the result in
+    // view, but never pull focus back from another workspace or Assistant.
+    if (document.activeElement === document.body || region.current?.contains(document.activeElement)) heading.current?.focus();
+  }, [query.data?.application]);
   const data = query.data;
   const binding = data?.job.request?.assistance_turn;
   const parentId = binding && typeof binding === "object" && "parent_job_id" in binding && typeof binding.parent_job_id === "string" && creationJobId(binding.parent_job_id) ? binding.parent_job_id : undefined;
   const stop = useMutation({ mutationFn: () => api.controlJob(parentId ?? jobId, "cancel"), onSettled: () => { void query.refetch(); } });
   const cache = (value: DetectionCreationEnvelope) => {
+    if (value.decision?.decision === "accept") followSave.current = true;
     client.setQueryData(["detection-creation", jobId], value);
     if (value.application) { void client.invalidateQueries({ queryKey: ["detections"] }); void client.invalidateQueries({ queryKey: ["detection-evaluations", value.application.candidate_id] }); }
     void client.invalidateQueries({ queryKey: ["assistance-turn"] });
   };
   if (!creationJobId(jobId)) return <ErrorState title="Incomplete rule review link" error={new Error("Open the saved detection work from Assistant.")} />;
-  return <section className="detection-creation" aria-label="Review new detection">
-    <header><h2 ref={heading} tabIndex={-1}>{data?.application ? "Rule saved and evaluated" : data?.proposal ? "Review the proposed rule" : "Drafting the rule"}</h2><p>The proposal and your edits stay separate from saved rules until you approve them.</p></header>
+  return <section ref={region} className="detection-creation" aria-label="Review new detection">
+    <header><h2 ref={heading} tabIndex={-1}>{data?.application ? "Rule saved and evaluated" : data?.proposal ? "Review the proposed rule" : "Drafting the rule"}</h2><p>{data?.application ? "Your approved source is saved as a new rule. Review the measured result below." : "The proposal and your edits stay separate from saved rules until you approve them."}</p></header>
     {query.isPending ? <LoadingState label="Finding the saved detection work" /> : query.error ? <ErrorState title="Saved detection work unavailable" error={query.error} retry={() => { void query.refetch(); }} /> : null}
     {data ? <>
       {data.proposal && data.proposal.selected.run_id !== selectedRunId ? <Callout title="This draft belongs to another run">Its source remains unchanged. <Link to={detectionCreationPath(data.proposal.selected.run_id, jobId)}>Open the draft with its source run</Link></Callout> : null}
@@ -140,23 +149,23 @@ function CreationEditor({ jobId, envelope, proposal, cache, refreshing, lookupEr
     } catch (error) { setDownloadError(error instanceof Error ? error : new Error("The artifact could not be downloaded.")); }
   };
   if (!draft) return <ErrorState title="Retained draft unavailable" error={initial.error} />;
+  const SourceContainer = application ? "details" : "div";
   return <>
-    <p>{sentence(proposal.selected.target_language)} · {sentence(proposal.selected.case_role)} development case · {edited ? "Includes your edits" : "Generated source"}</p>
-    <p>{proposal.reason}</p>
+    {!application ? <><p>{proposal.selected.target_language === "sqlite" ? "SQLite" : "Sigma"} · {sentence(proposal.selected.case_role)} development case · {edited ? "Includes your edits" : "Generated source"}</p><p>{proposal.reason}</p></> : null}
     {!decision && !envelope.review_ready ? <Callout title={stopped ? "Operation stopped" : "This draft is not ready to save"}>{stopped ? "Your draft is retained. Stopping prevents it from creating a rule." : "Open Assistant to check the saved operation and its recovery options before reviewing this source."}</Callout> : stopped && !application ? <Callout title="Operation stopped">The decision is retained, but this operation cannot start further work. Open Assistant to inspect the final status.</Callout> : null}
     {application ? <>
-      {envelope.evaluation ? <div className="creation-evaluation"><EvaluationReport report={envelope.evaluation} /></div> : <Callout title="Evaluation record unavailable">The save receipt is retained. Refresh this review to retrieve the actual evaluation before judging its result.</Callout>}
+      {envelope.evaluation ? <div className="creation-evaluation"><EvaluationReport report={envelope.evaluation} compact /></div> : <Callout title="Evaluation record unavailable">The save receipt is retained. Refresh this review to retrieve the actual evaluation before judging its result.</Callout>}
       <div className="candidate-actions"><Link className="button button-primary button-medium" to={`/detection-lab?${new URLSearchParams({ run: application.run_id, candidate: application.candidate_id, candidate_scope: "registry" })}`}>Open saved rule</Link><Button onClick={() => download("source")}>Download rule source</Button><Button disabled={!envelope.evaluation} onClick={() => download("evaluation")}>Download evaluation</Button></div>
       {downloadError ? <ErrorState title="Download unavailable" error={downloadError} /> : null}
     </> : null}
-    <div className="creation-source-editor">
+    <SourceContainer className="creation-approved-source">{application ? <summary>Approved source · {visibleDraft!.title}{edited ? " · includes your edits" : ""}</summary> : null}<div className="creation-source-editor">
       <Field label="Rule title"><input maxLength={200} value={visibleDraft!.title} readOnly={Boolean(decision)} disabled={busy} onChange={(event) => { setValidation(undefined); validate.reset(); review.reset(); persist({ ...draft, title: event.target.value }); }} /></Field>
       <Field label="Rule source" hint={decision ? "This is the source retained with the review decision." : "Review the exact query that will be saved and evaluated. Editing clears the previous source check."}><textarea spellCheck={false} rows={14} value={visibleDraft!.source} readOnly={Boolean(decision)} disabled={busy} onChange={(event) => { setValidation(undefined); validate.reset(); review.reset(); persist({ ...draft, source: event.target.value }); }} /></Field>
       {validation && !decision ? <p role="status">Source validated · {sentence(validation.validation.target_language)}. It has not been saved or evaluated.</p> : null}
-    </div>
+    </div></SourceContainer>
     {differentDecision ? <Callout title="A different decision is already saved">The server's retained decision is shown. Your earlier local text remains in browser storage; it will not be submitted over the saved decision.</Callout> : null}
     {differentLocalDraft ? <details><summary>Your earlier local draft</summary><p>This text remains separate from the accepted source shown above.</p><h3>{draft.title}</h3><pre>{draft.source}</pre></details> : null}
-    <details><summary>Generated source and evidence references</summary><h3>Original generated source</h3><pre>{proposal.source}</pre><p>Referenced observations from <Link to={`/runs/${encodeURIComponent(proposal.selected.run_id)}`}>the source run</Link>:</p><ul>{proposal.evidence_refs.map((ref) => <li key={ref}><code>{ref}</code></li>)}</ul><p>Provider information</p><pre>{JSON.stringify(proposal.provider, null, 2)}</pre>{proposal.limitations.map((item, index) => <p key={index}>{item}</p>)}</details>
+    <details><summary>Generated source and evidence references</summary>{application ? <p>{proposal.reason}</p> : null}<h3>Original generated source</h3><pre>{proposal.source}</pre><p>Referenced observations from <Link to={`/runs/${encodeURIComponent(proposal.selected.run_id)}`}>the source run</Link>:</p><ul>{proposal.evidence_refs.map((ref) => <li key={ref}><code>{ref}</code></li>)}</ul><p>Provider information</p><pre>{JSON.stringify(proposal.provider, null, 2)}</pre>{proposal.limitations.map((item, index) => <p key={index}>{item}</p>)}</details>
     {!decision ? <div className="creation-review-actions"><Field label="Reviewed by"><input autoComplete="off" maxLength={200} value={reviewer} onChange={(event) => setReviewer(event.target.value)} disabled={busy} /></Field><p>Saving creates one rule and evaluates this development run. It does not deploy a detection or establish independent coverage.</p><div className="candidate-actions"><Button variant="primary" disabled={!validCreationText(draft.title, draft.source) || !reviewer.trim() || busy || Boolean(localError) || lookupError || !envelope.review_ready} onClick={() => { void submitDecision("accept"); }}>{busy ? "Checking and saving source…" : "Save and evaluate this rule"}</Button><Button disabled={!validCreationText(draft.title, draft.source) || busy || !envelope.review_ready || lookupError} onClick={() => validate.mutate(draft)}>Check source</Button><Button disabled={!reviewer.trim() || busy || !envelope.review_ready || Boolean(localError) || lookupError} onClick={() => { void submitDecision("reject"); }}>Reject draft</Button></div></div> : decision.decision === "reject" ? <p role="status">{envelope.decision ? "Draft rejected. No rule was saved." : "Rejection awaits confirmation."}</p> : !application ? <p role="status">{envelope.application_job ? `Save and evaluation: ${sentence(envelope.application_job.state)}` : "Your acceptance is retained. Checking its save operation…"}</p> : null}
     {decision && !application && !stopped && (!envelope.decision || (decision.decision === "accept" && !creationWorkActive(envelope.application_job))) ? <Button disabled={busy || refreshing || lookupError} onClick={() => {
       if (lock.current) return;

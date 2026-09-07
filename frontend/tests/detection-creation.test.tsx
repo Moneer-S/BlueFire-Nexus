@@ -235,3 +235,39 @@ it("exports the exact accepted source and its evaluation instead of an earlier l
   expect(await text(blobs.mock.calls[0]![0])).toBe(generated);
   expect(await text(blobs.mock.calls[1]![0])).toBe(`${JSON.stringify(value.evaluation,null,2)}\n`);
 });
+
+it("focuses the measured result when an operator's asynchronous save finishes", async () => {
+  stubReview();
+  const value=completed();
+  const pending=accepted(value.decision!);
+  vi.spyOn(api,"reviewDetectionCreation").mockResolvedValue(pending);
+  const { user, client }=mount(true);
+  await user.type(await screen.findByLabelText("Reviewed by"),"Lab operator");
+  await user.click(screen.getByRole("button",{name:"Save and evaluate this rule"}));
+  await screen.findByText("Save and evaluation: Queued");
+  await act(async()=>{client.setQueryData(["detection-creation",jobId],value);});
+  expect(await screen.findByRole("heading",{name:"Rule saved and evaluated"})).toHaveFocus();
+  expect(screen.getByRole("heading",{name:"0 matched records"})).toBeVisible();
+  expect(screen.getByLabelText(/Rule source/)).not.toBeVisible();
+  expect(screen.getByText("Development evidence")).toBeVisible();
+  await user.click(screen.getByText(/^Approved source ·/));
+  expect(screen.getByLabelText(/Rule source/)).toBeVisible();
+  expect(screen.getByLabelText(/Rule source/)).toHaveValue(generated);
+  expect(screen.getByLabelText(/Rule source/)).toHaveAttribute("readonly");
+});
+
+it("does not steal focus from other work when an accepted save finishes", async () => {
+  stubReview();
+  const value=completed();
+  vi.spyOn(api,"reviewDetectionCreation").mockResolvedValue(accepted(value.decision!));
+  const { user, client }=mount(true);
+  await user.type(await screen.findByLabelText("Reviewed by"),"Lab operator");
+  await user.click(screen.getByRole("button",{name:"Save and evaluate this rule"}));
+  await screen.findByText("Save and evaluation: Queued");
+  const outside=document.createElement("button"); outside.textContent="Other workspace"; document.body.append(outside); outside.focus();
+  try {
+    await act(async()=>{client.setQueryData(["detection-creation",jobId],value);});
+    await screen.findByRole("heading",{name:"Rule saved and evaluated"});
+    expect(outside).toHaveFocus();
+  } finally { outside.remove(); }
+});

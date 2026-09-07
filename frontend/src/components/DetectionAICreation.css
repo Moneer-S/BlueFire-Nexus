@@ -9,7 +9,12 @@
 .creation-review-actions { display: grid; gap: 16px; padding-top: 20px; border-top: 1px solid var(--line); }
 .creation-review-actions > .field { max-width: 360px; }
 .creation-review-actions p, .creation-evidence-note { color: var(--muted-strong); line-height: 1.6; }
-.creation-evaluation { padding: 20px 0; border-block: 1px solid var(--line); }
+.creation-evaluation { min-width: 0; }
+.creation-result { display: grid; gap: 12px; }
+.creation-result h3 { margin: 0; font-size: 1.5rem; line-height: 1.3; }
+.creation-result > p { margin: 0; line-height: 1.5; }
+.creation-approved-source[open] > .creation-source-editor { margin-top: 20px; }
+.creation-approved-source[open] textarea:read-only { min-height: 120px; max-height: 280px; }
 .detection-creation details pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
 .detection-creation details summary { cursor: pointer; }
 @media (max-width: 900px) { .creation-choices { grid-template-columns: minmax(0, 1fr); gap: 16px; } }
