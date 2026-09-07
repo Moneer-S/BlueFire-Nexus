@@ -334,18 +334,23 @@ def stop(store, parent_id):
 
 def list_owners(store, cursor=None):
     """Bounded keyset pagination; unfinished owners precede settled history."""
-    priority = "CASE WHEN json_extract(progress_json, '$.receiver_settled') = 1 THEN 1 ELSE 0 END"
-    parameters: list[Any] = [OWNER_KIND]
-    after = ""
+    rank, created_at = 0, ""
     with store._connection() as connection:
         if cursor is not None:
             previous = owner_at(store, connection, cursor)
             rank = int(previous["progress"].get("receiver_settled") is True)
-            after = f" AND ({priority} > ? OR ({priority} = ? AND (created_at < ? OR (created_at = ? AND job_id < ?))))"
-            parameters.extend([rank, rank, previous["created_at"], previous["created_at"], cursor])
+            created_at = previous["created_at"]
         rows = connection.execute(
-            f"SELECT * FROM jobs WHERE kind = ?{after} ORDER BY {priority}, created_at DESC, job_id DESC LIMIT 129",
-            parameters,
+            """WITH receiver_owners AS (
+                SELECT *, CASE WHEN json_extract(progress_json, '$.receiver_settled') = 1
+                    THEN 1 ELSE 0 END AS receiver_priority
+                FROM jobs WHERE kind = ?
+            )
+            SELECT * FROM receiver_owners
+            WHERE ? IS NULL OR receiver_priority > ?
+                OR (receiver_priority = ? AND (created_at < ? OR (created_at = ? AND job_id < ?)))
+            ORDER BY receiver_priority, created_at DESC, job_id DESC LIMIT 129""",
+            (OWNER_KIND, cursor, rank, rank, created_at, created_at, cursor),
         ).fetchall()
         return [store._job_from_row(row) for row in rows[:128]], len(rows) > 128
 
