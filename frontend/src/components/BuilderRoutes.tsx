@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import { useLayoutEffect, useRef } from "react";
 import { branchLabels } from "../lib/graph-view";
 import type { BuilderFlowEdge } from "../lib/graph-routes";
 import { Button, IconButton } from "./Primitives";
@@ -7,10 +8,13 @@ export function BuilderRoutes({ routes, total, selected, readOnly, select, inspe
   routes: BuilderFlowEdge[]; total: number; selected?: BuilderFlowEdge; readOnly: boolean;
   select: (id: string) => void; inspect: (source: string) => void; remove: (id: string) => void; close: () => void;
 }) {
+  const selectedButton = useRef<HTMLButtonElement>(null);
+  // The selected-route footer changes list height after native focus scrolling.
+  useLayoutEffect(() => { selectedButton.current?.scrollIntoView({ block: "nearest" }); }, [selected?.id]);
   return <aside className="builder-routes" aria-label="Route inspection">
     <header><div><h2>Routes</h2><p>{routes.length} of {total} shown · numbers match the canvas</p></div><IconButton label="Close route list" onClick={close}><X/></IconButton></header>
     <p className="route-help">Select a route to follow its path. Use ↑ and ↓ to compare routes.</p>
-    <ol aria-label="Visible routes">{routes.map((edge) => <li key={edge.id}><button type="button" data-route={edge.id} aria-pressed={selected?.id === edge.id}
+    <ol aria-label="Visible routes">{routes.map((edge) => <li key={edge.id}><button ref={selected?.id === edge.id ? selectedButton : undefined} type="button" data-route={edge.id} aria-pressed={selected?.id === edge.id}
       onFocus={() => select(edge.id)} onClick={() => select(edge.id)} onKeyDown={(event) => {
         const buttons = Array.from(event.currentTarget.closest("ol")!.querySelectorAll<HTMLButtonElement>("button[data-route]"));
         const index = buttons.indexOf(event.currentTarget);

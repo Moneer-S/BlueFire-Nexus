@@ -80,7 +80,8 @@ function BehaviorNode({ id, data, selected }: NodeProps<BehaviorFlowNode>) {
 
 const nodeTypes = { behavior: BehaviorNode };
 const edgeTypes = { outcomeRoute: BuilderRouteEdge };
-const fitViewOptions = { padding: 0.18, minZoom: 0.6, maxZoom: 1.05 };
+const minimumGraphZoom = 0.1;
+const fitViewOptions = { padding: 0.18, minZoom: minimumGraphZoom, maxZoom: 1.05 };
 const deleteKeys = ["Backspace", "Delete"];
 const connectionLineStyle = { stroke: "#38a8ff", strokeWidth: 2 };
 const proOptions = { hideAttribution: true };
@@ -316,7 +317,7 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
   const platforms = [...new Set(behaviors.flatMap((item) => item.platforms))].sort();
 
   const drop = (event: DragEvent<HTMLDivElement>) => { event.preventDefault(); const id = event.dataTransfer.getData("application/x-bluefire-behavior"); const behavior = behaviorMap.get(id); if (!behavior) return; addBehavior(behavior, flow.screenToFlowPosition({ x: event.clientX, y: event.clientY })); };
-  const fitGraph = () => { void flow.fitView({ padding: 0.18, duration: 300, maxZoom: 1.05, minZoom: 0.6 }); };
+  const fitGraph = () => { void flow.fitView({ padding: 0.18, duration: 300, maxZoom: 1.05, minZoom: minimumGraphZoom }); };
   const showSection = (value: string) => {
     setFocusedSection(value === "all" ? null : Number(value));
     const first = value === "all" ? undefined : sections[Number(value)]?.steps[0];
@@ -374,7 +375,7 @@ function GraphWorkspace({ behaviors, actions, review }: { behaviors: Behavior[];
           const id = event.target instanceof Element ? event.target.closest(".react-flow__edge")?.getAttribute("data-id") : null;
           if (id && visibleRoutes.some((edge) => edge.id === id)) { event.preventDefault(); selectRoute(id); }
         }} onPointerDown={(event) => { const target = event.target as HTMLElement; if (!target.closest("button, input, select, textarea")) event.currentTarget.focus(); }} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-bluefire-behavior")) event.preventDefault(); }} onDrop={drop}>
-        <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodesDraggable={!review?.readOnly} nodesConnectable={!review?.readOnly} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onEdgeClick={onEdgeClick} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} fitView fitViewOptions={fitViewOptions} minZoom={0.4} maxZoom={1.6} deleteKeyCode={review?.readOnly ? null : deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
+        <ReactFlow<BehaviorFlowNode, FlowEdge> nodes={displayNodes} edges={displayEdges} nodesDraggable={!review?.readOnly} nodesConnectable={!review?.readOnly} nodeTypes={nodeTypes} edgeTypes={edgeTypes} onEdgeClick={onEdgeClick} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={onNodeClick} onSelectionChange={onSelectionChange} onMove={onMove} onNodeDragStop={onNodeDragStop} onDelete={onDelete} onBeforeDelete={confirmDelete} onConnect={onConnect} fitView fitViewOptions={fitViewOptions} minZoom={minimumGraphZoom} maxZoom={1.6} deleteKeyCode={review?.readOnly ? null : deleteKeys} connectionLineStyle={connectionLineStyle} proOptions={proOptions}>
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="rgba(117,198,255,.18)"/>{allBranches && scenario.steps.length > 12 ? <MiniMap pannable zoomable nodeColor={(node) => { const behavior = behaviorMap.get((node.data as BehaviorNodeData).step.behavior_id); return behavior?.safety_tier === "restricted" ? "#ff6e79" : behavior?.safety_tier === "controlled" ? "#f7b84b" : "#38a8ff"; }} maskColor="rgba(5,9,19,.74)"/> : null}<Controls showInteractive={false}/>
         </ReactFlow>{!nodes.length ? <div className="graph-empty-overlay"><GitBranch/><strong>Start with one useful step</strong><span>Use Add step, or ask AI to draft an experiment.</span></div> : null}</div>
         {routesOpen ? <BuilderRoutes routes={visibleRoutes} total={scenario.edges.length} selected={selectedRoute} readOnly={Boolean(review?.readOnly)} select={selectRoute} inspect={(source) => { selectStep(source); setRoutesOpen(false); window.requestAnimationFrame(() => document.getElementById(inspectorToggleId)?.focus()); }} remove={(id) => { void flow.deleteElements({ edges: [{ id }] }); }} close={() => { setRoutesOpen(false); document.getElementById(routesToggleId)?.focus(); }} /> : null}

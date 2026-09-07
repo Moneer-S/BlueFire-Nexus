@@ -109,12 +109,13 @@
   .workbench-shell #main-content:has(.workbench-builder) { height: auto; min-height: calc(100dvh - 44px); overflow: auto; }
   .workbench-builder { padding: 12px; height: auto; min-height: calc(100dvh - 68px); }
   .workbench-builder .builder-layout { min-height: 560px; }
+  .workbench-builder .graph-stage { flex: 0 0 auto; height: clamp(320px, 50dvh, 560px); }
   .workbench-builder .graph-view-actions kbd { display: none; }
   .workbench-builder .page-header { align-items: flex-start; }
   .workbench-builder .palette-panel, .workbench-builder .inspector-panel { top: 118px; }
 }
 @media (max-width: 760px) {
-  .workbench-builder .graph-stage.routes-open { flex-direction: column; }
+  .workbench-builder .graph-stage.routes-open { flex-direction: column; height: clamp(560px, 80dvh, 760px); }
   .workbench-builder .builder-routes { flex: 0 0 auto; width: 100%; max-height: 310px; border-left: 0; border-top: 1px solid var(--line); }
   .workbench-builder .builder-routes footer small, .workbench-builder .builder-routes .route-help { display: none; }
   .workbench-builder .page-header { flex-direction: column; }
