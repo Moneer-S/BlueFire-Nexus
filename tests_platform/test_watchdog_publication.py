@@ -191,3 +191,97 @@ def test_other_link_counts_and_unrelated_io_errors_fail_immediately(
         _poll(runner, root)
     assert attempts == [1]
     assert elapsed[0] == 0
+
+
+@pytest.mark.parametrize(
+    "name,payload", [("start", b"start\n"), ("config.json", b"{}\n"), ("start", b"not-start\n")]
+)
+def test_control_publication_distinguishes_consumed_start_from_lost_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, payload: bytes
+) -> None:
+    # Run the real private-file publication and strict reader, but force the
+    # trusted consumer to finish at the publication boundary. No processes run.
+    import bluefire.runner_private_files as private
+
+    root = tmp_path / "control"
+    root.mkdir()
+    consumed: list[bytes] = []
+    active = False
+
+    def consume() -> None:
+        nonlocal active
+        if active or consumed:
+            return
+        active = True
+        try:
+            with _PinnedPrivateDirectory(root) as reader:
+                actual, identity = reader.read_with_identity(name, maximum=32)
+                assert actual == payload
+                reader.unlink(name, maximum=32, expected=actual, expected_identity=identity)
+                consumed.append(actual)
+        finally:
+            active = False
+
+    if os.name == "nt":
+        original_rename = private._windows_rename_descriptor
+        original_close = os.close
+        published_descriptor: list[int] = []
+
+        def publish(descriptor, directory, destination):
+            original_rename(descriptor, directory, destination)
+            if destination == name:
+                published_descriptor.append(descriptor)
+
+        def close(descriptor):
+            original_close(descriptor)
+            if published_descriptor == [descriptor]:
+                published_descriptor.clear()
+                consume()
+
+        monkeypatch.setattr(private, "_windows_rename_descriptor", publish)
+        monkeypatch.setattr(os, "close", close)
+    else:
+        original_unlink = os.unlink
+
+        def unlink(path, **kwargs):
+            original_unlink(path, **kwargs)
+            if str(path).startswith(".t-") and (root / name).exists():
+                consume()
+
+        monkeypatch.setattr(os, "unlink", unlink)
+
+    if name == "start" and payload == b"start\n":
+        client.SubprocessRustRunner._write_private_control_file(root / name, payload, maximum=32)
+    else:
+        with pytest.raises(RunnerTransportError, match="state is unavailable"):
+            client.SubprocessRustRunner._write_private_control_file(
+                root / name, payload, maximum=32
+            )
+    assert consumed == [payload]
+    assert list(root.iterdir()) == []
+
+
+def test_start_publication_never_overwrites_or_accepts_a_staging_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "control"
+    root.mkdir()
+    with _PinnedPrivateDirectory(root) as pinned:
+        pinned.create("start", b"existing\n", maximum=32)
+    with pytest.raises(client.RunnerPendingResultExists, match="requires reconciliation"):
+        client.SubprocessRustRunner._write_private_control_file(
+            root / "start", b"start\n", maximum=32
+        )
+    with _PinnedPrivateDirectory(root) as pinned:
+        assert pinned.read("start", maximum=32) == b"existing\n"
+        pinned.unlink("start", maximum=32, expected=b"existing\n")
+
+    def fail_staging(*_args, **_kwargs):
+        raise OSError(errno.EIO, "injected staging failure")
+
+    monkeypatch.setattr(_PinnedPrivateDirectory, "_open_new", fail_staging)
+    with pytest.raises(RunnerTransportError, match="state is unavailable"):
+        client.SubprocessRustRunner._write_private_control_file(
+            root / "start", b"start\n", maximum=32
+        )
+    assert list(root.iterdir()) == []

@@ -2147,7 +2147,15 @@ class SubprocessRustRunner:
             raise RunnerTransportError("runner watchdog state exceeds its size limit")
         try:
             with _PinnedPrivateDirectory(path.parent) as pinned:
-                pinned.create(path.name, payload, maximum=maximum)
+                # The watchdog may finish and delete its start gate as soon
+                # as publication commits. Its exact fixed marker is consumable;
+                # configuration must still exist for post-publication validation.
+                pinned.create(
+                    path.name,
+                    payload,
+                    maximum=maximum,
+                    consumable=path.name == "start" and payload == b"start\n",
+                )
         except FileExistsError:
             raise RunnerPendingResultExists(
                 "Runner watchdog state requires reconciliation before the task can start."
