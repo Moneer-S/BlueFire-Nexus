@@ -209,6 +209,7 @@ describe("product application", () => {
     vi.stubGlobal("scrollTo", vi.fn());
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
+      if (path === "/api/v1/session" && init?.method === "GET") return new Response(null, { status: 204 });
       if (path.endsWith("/catalog")) return json(demoCatalog);
       if (path.endsWith("/scenarios")) return json({ scenarios: [demoScenario] });
       if (path.endsWith("/scenario-versions")) return json({ schema_version: "bluefire.scenario-version-list.v1", scenarios: [] });
@@ -301,7 +302,10 @@ describe("product application", () => {
     const user = userEvent.setup();
     renderApp();
     expect(await screen.findByRole("heading", { name: "Design the path. Observe the defense." })).toBeVisible();
-    expect(await screen.findByRole("img", { name: "Local service connected" })).toBeVisible();
+    const indicators = await screen.findAllByRole("img", { name: "Local service connected" });
+    expect(indicators).toHaveLength(2); // Mobile and sidebar use the same checked connection.
+    for (const indicator of indicators) { expect(indicator).toBeVisible(); expect(indicator).toHaveClass("ready"); }
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith("/api/v1/session", expect.objectContaining({ method: "GET", credentials: "same-origin", cache: "no-store" }));
     await user.click(screen.getByRole("button", { name: "Show more tools" }));
     await user.click(screen.getByRole("link", { name: /Research Sources/i }));
     expect(await screen.findByRole("heading", { name: "Research sources" })).toBeVisible();
