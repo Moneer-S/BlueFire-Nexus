@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Activity, AlertTriangle, CircleStop, Clock3, FileSearch, Gauge, ListTree, Pause, Play, RotateCcw, ShieldCheck, Sparkles, TerminalSquare } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError, DEMO_MODE } from "../lib/api";
 import { comparisonLink, detectionLink } from "../lib/run-handoffs";
 import { methodComparisonLink } from "../lib/method-comparison";
@@ -89,8 +89,15 @@ interface RunPreflightAttempt {
   config: RunConfiguration;
 }
 
+function configurationForMode(config: RunConfiguration, mode: RunConfiguration["mode"], catalog: CatalogResponse, scenario: Scenario): RunConfiguration {
+  if (config.mode === mode) return config;
+  const profile = catalog.runner_profiles.find((item) => item.mode === mode && (mode !== "execute" || item.id === "sandbox-execute.v1"));
+  return { ...config, mode, profileId: profile?.id ?? "", collectors: collectionObserverSelection(config, mode === "execute" && collectionObservationSteps(scenario).length > 0), approved: false, approvedBy: "" };
+}
+
 export function RunsPage() {
   const { runId } = useParams<{ runId?: string }>();
+  const location = useLocation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedJob = searchParams.get("job");
@@ -116,6 +123,9 @@ export function RunsPage() {
   activeJobRef.current = activeJob;
   const displayedJobIdRef = useRef(activeJob?.job_id ?? null);
   displayedJobIdRef.current = activeJob?.job_id ?? null;
+  const consumedSetupArrival = useRef<string | undefined>(undefined);
+  const setupMode = searchParams.has("setup") ? searchParams.get("setup") : location.hash === "#guided-execute" ? "execute" : null;
+  const hasJobLink = searchParams.has("job");
   useEffect(() => {
     // Internal selection already installed this exact job and its fresh review.
     if (!linkedJobId || displayedJobIdRef.current === linkedJobId) return;
@@ -137,6 +147,20 @@ export function RunsPage() {
   const retryInventoryReady = inventoryAuthoritative && inventoryJobs.length === 0;
   const jobActivityBlocksNewIntent = inventoryUnavailable || inventoryJobs.length > 0 || Boolean(activeJobId) || Boolean(activeJob && !terminalJobStates.has(activeJob.state));
   const alternateInventoryJobAvailable = selectableInventoryJobs.some((job) => job.job_id !== activeJobId);
+  useEffect(() => {
+    if (consumedSetupArrival.current === location.key || (setupMode !== "simulate" && setupMode !== "execute")) return;
+    // A setup link never changes a selected durable job or historical review.
+    // Consume blocked arrivals too, so later job settlement cannot apply them.
+    if (runId || hasJobLink || activeJobId || activeJob || selectableInventoryJobs.length) { consumedSetupArrival.current = location.key; return; }
+    if (!catalog.data || !inventoryAuthoritative) return;
+    consumedSetupArrival.current = location.key;
+    const next = configurationForMode(runConfig, setupMode, catalog.data, scenario);
+    if (next !== runConfig) {
+      setRunConfig(next);
+      preflightGeneration.current += 1;
+      setPreflight(undefined);
+    }
+  }, [activeJob, activeJobId, catalog.data, hasJobLink, inventoryAuthoritative, location.key, runConfig, runId, scenario, selectableInventoryJobs.length, setRunConfig, setupMode]);
   const rememberTerminalJob = useCallback((job: RunJob) => {
     if (terminalJobStates.has(job.state)) setKnownTerminalJobIds((current) => current.has(job.job_id) ? current : new Set(current).add(job.job_id));
   }, []);
@@ -306,7 +330,7 @@ export function RunsPage() {
     <>
       <details className="run-draft-details" open={!linkedJobId}><summary>Experiment setup</summary>{runConfig.mode === "execute" ? <ExecuteOnboarding profile={guidedProfile} seededScenario={guidedScenario} selectedScenario={scenario} config={runConfig} runner={runnerLifecycleQuery.data} runnerPending={runnerLifecycleQuery.isPending} runnerError={runnerLifecycleQuery.error} runnerActionPending={runnerLifecycleMutation.isPending} preflight={preflight} preflightPending={preflightMutation.isPending} preflightDisabled={jobActivityBlocksNewIntent} job={activeJob} approvalReleased={["consumed", "claimed"].includes(String(approvalRequest?.status ?? ""))} run={activeRun} jobSubmissionPending={runMutation.isPending} canCreateJob={canStart} demoMode={DEMO_MODE} onRunnerAction={(action) => runnerLifecycleMutation.mutate(action)} onSelectScenario={selectGuidedScenario} onPreflight={requestPreflight} onCreateJob={() => runMutation.mutate()} onReviewEnvelope={() => scrollToGuideTarget("execute-envelope-review")} onReviewApproval={() => scrollToGuideTarget("durable-execute-approval")} /> : null}
       <div className="run-action-bar"><div>{activeJob ? <Badge tone={statusTone(activeJob.state)} dot>{sentence(activeJob.state)}</Badge> : <Badge tone={preflight?.ready ? "success" : preflight?.status === "approval_required" ? "warning" : preflight ? "danger" : "neutral"} dot>{preflight?.ready ? "Ready" : preflight?.status === "approval_required" ? "Envelope reviewed locally" : preflight ? sentence(preflight.status) : "Preflight required"}</Badge>}<span>{runConfig.mode === "simulate" ? "No external behavior effects" : "Job creation and one-time durable approval remain separate"}</span></div><Button variant="secondary" onClick={requestPreflight} disabled={preflightMutation.isPending || !scenario.steps.length || jobActivityBlocksNewIntent}>{preflightMutation.isPending ? <Activity className="spin"/> : <ShieldCheck/>}Run preflight</Button><Button variant="primary" onClick={() => runMutation.mutate()} disabled={!canStart}>{runMutation.isPending ? <Activity className="spin"/> : <Play/>}{runMutation.isPending ? "Submitting job" : runConfig.mode === "execute" ? "Create approval-gated job" : "Submit Simulate job"}</Button></div>
-      <div className="run-layout"><RunConfigurationPanel scenario={scenario} config={runConfig} onChange={(next) => { const intentChanged = JSON.stringify({ ...runConfig, approved: false, approvedBy: "" }) !== JSON.stringify({ ...next, approved: false, approvedBy: "" }); setRunConfig(next); if (intentChanged) invalidatePreflight(); }} catalog={catalog.data} preflight={preflight} /><PlanPreview scenarioTitle={scenario.title} stepIds={scenario.steps.map((step) => step.id)} edgeCount={scenario.edges.length} dirty={dirty} config={runConfig} catalog={catalog.data} preflight={preflight} /></div>
+      <div className="run-layout"><RunConfigurationPanel scenario={scenario} config={runConfig} onChange={(next) => { consumedSetupArrival.current = location.key; const intentChanged = JSON.stringify({ ...runConfig, approved: false, approvedBy: "" }) !== JSON.stringify({ ...next, approved: false, approvedBy: "" }); setRunConfig(next); if (intentChanged) invalidatePreflight(); }} catalog={catalog.data} preflight={preflight} /><PlanPreview scenarioTitle={scenario.title} stepIds={scenario.steps.map((step) => step.id)} edgeCount={scenario.edges.length} dirty={dirty} config={runConfig} catalog={catalog.data} preflight={preflight} /></div>
       </details>{activeJob?.kind === "scenario.replay" && typeof activeJob.request?.source_run_id === "string" ? <p>Replay of <Link to={runReviewPath(activeJob.request.source_run_id)}>the original run</Link>. Approval and progress belong to this saved replay.</p> : null}{alternateInventoryJobAvailable ? <Panel><PanelHeader eyebrow="Active controller inventory" title="Choose an active durable job" detail="Every controller-owned job remains available after navigation or reload." actions={<Badge tone="warning">{selectableInventoryJobs.length} active</Badge>} /><div className="detail-body"><Field label="Active durable job"><select value={selectableInventoryJobs.some((job) => job.job_id === activeJobId) ? activeJobId ?? "" : ""} onChange={(event) => { const selected = selectableInventoryJobs.find((job) => job.job_id === event.target.value); if (selected) selectInventoryJob(selected); }}><option value="" disabled>Select an active job</option>{selectableInventoryJobs.map((job) => <option key={job.job_id} value={job.job_id}>{sentence(job.state)} · {job.job_id}</option>)}</select></Field></div></Panel> : null}
       {(storedJobPreflightQuery.isError || unusableStoredJobPreflight) && ordinaryApprovalNeedsPreflight ? <Callout tone="danger" title="Exact approval review unavailable"><p>The active job remains controllable, but approval stays disabled until its canonical stored request returns an exact approval-required plan, binding, and envelope.</p><Button size="small" variant="secondary" disabled={storedJobPreflightQuery.isFetching} onClick={() => { void storedJobPreflightQuery.refetch(); }}><RotateCcw/>{storedJobPreflightQuery.isFetching ? "Retrying approval review" : "Retry approval review"}</Button></Callout> : null}
       <LiveConsole run={activeRun} job={activeJob} events={liveEvents} pending={runMutation.isPending || Boolean(resultRunId && resultQuery.isPending) || Boolean(activeJob && !terminalJobStates.has(activeJob.state))} config={runConfig} approvalPreflight={jobPreflight} approvalRequest={approvalRequest} proposalReview={activeProposalReview} approvalConfirmed={jobApprovalConfirmed} approvedBy={jobApprovedBy} approvalPending={approvalMutation.isPending} controlPending={controlMutation.isPending || retryMutation.isPending} mutableControlsEnabled={controllerOwnsActiveJob} retryEnabled={retryInventoryReady} onApprovalConfirmed={setJobApprovalConfirmed} onApprovedBy={setJobApprovedBy} onApprove={() => activeJob && controllerOwnsActiveJob && approvalMutation.mutate({ jobId: activeJob.job_id, approvedBy: jobApprovedBy })} onControl={(action) => activeJob && controllerOwnsActiveJob && controlMutation.mutate({ jobId: activeJob.job_id, action })} onRetry={() => activeJob && retryInventoryReady && isRetryableInterruptedJob(activeJob) && retryMutation.mutate(activeJob.job_id)} onProposalDecision={handleProposalDecision} onProposalReviewLoaded={setActiveProposalReview} onReview={() => activeRun && navigate(runReviewPath(activeRun.run_id))} />
@@ -348,10 +372,7 @@ function cleanupSummary(cleanup: RunRecord["cleanup"]) {
 function RunConfigurationPanel({ scenario, config, onChange, catalog, preflight }: { scenario: Scenario; config: RunConfiguration; onChange: (config: RunConfiguration) => void; catalog: CatalogResponse; preflight?: PreflightReport }) {
   const set = <K extends keyof RunConfiguration>(key: K, value: RunConfiguration[K]) => onChange({ ...config, [key]: value });
   const collectionSteps = collectionObservationSteps(scenario);
-  const selectMode = (mode: RunConfiguration["mode"]) => {
-    const profile = catalog.runner_profiles.find((item) => item.mode === mode && (mode !== "execute" || item.id === "sandbox-execute.v1"));
-    onChange({ ...config, mode, profileId: profile?.id ?? "", collectors: collectionObserverSelection(config, mode === "execute" && collectionSteps.length > 0), approved: false, approvedBy: "" });
-  };
+  const selectMode = (mode: RunConfiguration["mode"]) => onChange(configurationForMode(config, mode, catalog, scenario));
   const profiles = catalog.runner_profiles.filter((profile) => profile.mode === config.mode);
   const selectedProfile = profiles.find((profile) => profile.id === config.profileId);
   const providers = catalog.ai.providers ?? [{ provider_id: catalog.ai.active_provider ?? "deterministic-offline.v1", kind: "deterministic", model: "deterministic-planner.v1", health: { state: catalog.ai.provider_health ?? "not_reported" } }];

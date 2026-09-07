@@ -55,7 +55,7 @@ export function GettingStartedPage() {
         title="Prove the safe path first"
         description="Confirm the local control plane, complete one deterministic Simulate run, or follow the guided local Execute path when you have an authorized disposable runner-owned sandbox."
         actions={
-          <><Link to="/runs"><Button variant="primary"><Play aria-hidden="true" /> Configure Simulate</Button></Link><Link to="/runs#guided-execute"><Button variant="secondary"><ShieldAlert aria-hidden="true" /> Prepare guided Execute</Button></Link></>
+          <><Link to="/runs?setup=simulate"><Button variant="primary"><Play aria-hidden="true" /> Configure Simulate</Button></Link><Link to="/runs?setup=execute#guided-execute"><Button variant="secondary"><ShieldAlert aria-hidden="true" /> Prepare guided Execute</Button></Link></>
         }
       />
       {DEMO_MODE ? (
