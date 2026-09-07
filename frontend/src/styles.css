@@ -447,7 +447,7 @@ td .badge { margin-left: 6px; }
 .check-row input { margin-top: 1px; }
 
 .builder-page.builder-focus { position: fixed; z-index: 100; inset: 0; display: block; padding: 12px; overflow: hidden; background: var(--ink-950); }
-.builder-page.builder-focus > :not(.builder-layout) { display: none; }
+.builder-page.builder-focus > :not(.graph-review-editor) { display: none; }
 .builder-focus .builder-layout { width: 100%; height: calc(100vh - 24px); min-height: 0; }
 .builder-focus .palette-panel, .builder-focus .graph-panel, .builder-focus .inspector-panel { min-height: 0; height: 100%; }
 .builder-focus .palette-panel, .builder-focus .inspector-panel { display: flex; flex-direction: column; }
