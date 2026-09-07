@@ -285,6 +285,8 @@ class PlatformService(Protocol):
     def list(self) -> JsonResult:
         """Return run summaries suitable for history and comparison."""
 
+    def run_bundle(self, run_id: str) -> bytes: ...
+
     def detail(self, run_id: str) -> JsonResult:
         """Return one run, including current node and evidence state."""
 

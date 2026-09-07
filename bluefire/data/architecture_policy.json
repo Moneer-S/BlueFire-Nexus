@@ -301,7 +301,8 @@
       "patterns": [
         "bluefire.local_lock",
         "bluefire.product_store*",
-        "bluefire.run_store"
+        "bluefire.run_store",
+        "bluefire.run_bundle_export"
       ]
     },
     {

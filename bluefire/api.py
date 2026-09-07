@@ -484,6 +484,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                 )
             )
             return
+        bundle_id = self._routes._run_bundle_id(path)
+        if bundle_id is not None:
+            if bundle_id:
+                self._send_run_bundle(bundle_id)
+            return
         detail_run_id = self._routes._run_detail_id(path)
         if detail_run_id is not None:
             if not detail_run_id:
@@ -500,6 +505,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             self._serve_asset(path, include_body=False)
             return
         if self._is_api_path(path) and not self._require_browser_session():
+            return
+        bundle_id = self._routes._run_bundle_id(path)
+        if bundle_id is not None:
+            if bundle_id:
+                self._method_not_allowed("GET")
             return
         if path == _REVIEWED_T1082_INTAKE_ROUTE:
             if self._routes._management_query_free():
@@ -924,6 +934,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         }:
             self._method_not_allowed("GET")
             return
+        bundle_id = self._routes._run_bundle_id(path)
+        if bundle_id is not None:
+            if bundle_id:
+                self._method_not_allowed("GET")
+            return
         detail_id = self._routes._run_detail_id(path)
         if detail_id is not None:
             if not detail_id:
@@ -959,6 +974,11 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path is None or not self._validate_host():
             return
         if self._is_api_path(path) and not self._require_browser_session(unread_body=True):
+            return
+        bundle_id = self._routes._run_bundle_id(path)
+        if bundle_id is not None:
+            if bundle_id:
+                self._method_not_allowed("GET")
             return
         if path == _REVIEWED_T1082_INTAKE_ROUTE:
             if self._routes._management_query_free():
@@ -1279,6 +1299,24 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
             )
             return
         self._send(success_status, payload, "application/json; charset=utf-8")
+
+    def _send_run_bundle(self, run_id: str) -> None:
+        try:
+            payload = self.platform_server.service.run_bundle(run_id)
+        except APIError as exc:
+            self._error(exc.status, exc.code, exc.message, exc.details)
+            return
+        except Exception:
+            self._error(
+                HTTPStatus.INTERNAL_SERVER_ERROR, "service_error", "Run bundle export failed."
+            )
+            return
+        self._send(
+            HTTPStatus.OK,
+            payload,
+            "application/zip",
+            extra_headers={"Content-Disposition": f'attachment; filename="{run_id}.zip"'},
+        )
 
     def _not_found(self) -> None:
         self._error(HTTPStatus.NOT_FOUND, "not_found", "Route not found.")

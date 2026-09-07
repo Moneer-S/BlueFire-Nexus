@@ -16,7 +16,9 @@ import { CanonicalPlanReview } from "../components/CanonicalPlanReview";
 import { continuationApprovalPreflight, hasUsableStoredApprovalReview } from "../lib/approvalReview";
 import { settlePendingReplay } from "../lib/replay-submission";
 
-import { objectiveLabel, runLabel, stepOutcomeLabel } from "../lib/run-presentation";
+import { cleanupSummary, recordedTargetScope, objectiveLabel, runLabel, stepOutcomeLabel } from "../lib/run-presentation";
+
+import { RunExports } from "../components/RunExports";
 
 import "./Runs.css";
 
@@ -374,18 +376,6 @@ function RunHistoryPanel({ runs, pending, error, retry }: { runs?: RunRecord[]; 
 
 function runReviewPath(runId: string) { return `/runs/${encodeURIComponent(runId)}`; }
 function shortId(value: string) { return value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
-function cleanupSummary(cleanup: RunRecord["cleanup"]) {
-  if (cleanup === true) return "Complete";
-  if (cleanup === false) return "Needs attention";
-  if (!cleanup) return "Not recorded";
-  const count = cleanup.outstanding_receipt_count ?? cleanup.outstanding_effects;
-  const outstanding = typeof count === "number" ? count : undefined;
-  if (outstanding !== undefined && outstanding > 0) return `Needs attention · ${outstanding} outstanding effect${outstanding === 1 ? "" : "s"}`;
-  if (cleanup.success === false) return "Failed · cleanup needs attention";
-  if (cleanup.success === true && outstanding === 0) return "Complete · no outstanding effects";
-  if (cleanup.attempted === false) return "Not attempted";
-  return typeof cleanup.status === "string" ? sentence(cleanup.status) : "Result not reported";
-}
 
 function RunConfigurationPanel({ scenario, config, onChange, catalog, preflight }: { scenario: Scenario; config: RunConfiguration; onChange: (config: RunConfiguration) => void; catalog: CatalogResponse; preflight?: PreflightReport }) {
   const set = <K extends keyof RunConfiguration>(key: K, value: RunConfiguration[K]) => onChange({ ...config, [key]: value });
@@ -559,13 +549,6 @@ export function DetectionDetail({ run }: { run: RunRecord | null }) {
   return <div className="record-grid">{candidates.map((item, index) => <article key={item.candidate_id ?? item.id ?? index}><header><Badge tone={item.state === "rejected" ? "danger" : item.state.includes("exercised") || item.state === "benign_evaluated" ? "success" : "info"}>{sentence(item.state)}</Badge><code>{item.target_language ?? item.language ?? "query"}</code></header><strong>{item.title ?? item.candidate_id ?? "Detection candidate"}</strong><p>{item.summary ?? "Lifecycle state reflects only completed validation stages."}</p></article>)}</div>;
 }
 
-function recordedTargetScope(run: RunRecord & { authorized_target_scope?: unknown }): string {
-  for (const scope of [run.authorized_target_scope, run.policy?.authorized_target_scope, run.target_scope]) {
-    if (!scope || typeof scope !== "object" || !("scope_refs" in scope) || !Array.isArray(scope.scope_refs)) continue;
-    return scope.scope_refs.filter((ref): ref is string => typeof ref === "string" && Boolean(ref.trim())).join(", ") || "None recorded";
-  }
-  return "Not recorded";
-}
 
 export function RunReview({ run, catalog }: { run: RunRecord; catalog: CatalogResponse }) {
   const steps = run.steps ?? [];
@@ -591,6 +574,7 @@ export function RunReview({ run, catalog }: { run: RunRecord; catalog: CatalogRe
     : run.objective_reached === false ? "The run did not achieve its objective. An unmet objective alone does not establish that a target control prevented it."
     : "This record does not establish whether the objective was achieved. Review the path and available evidence before drawing a conclusion.";
   return <div className="review-stack run-review">
+    <RunExports key={run.run_id} run={run}/>
     {run.is_demo ? <Callout title="Seeded review">This is a sanitized Simulate record. It does not prove runner execution, independent observation, or a real control block.</Callout> : null}
     {run.approval_pause ? <Callout tone="warning" title="Waiting for a reviewed continuation">The planner paused before the next action. Return to its saved job to review the proposed change and, for Execute, approve the next run.</Callout> : null}
     <section className="run-outcome" aria-label="Recorded run outcome">

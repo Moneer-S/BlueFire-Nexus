@@ -118,6 +118,7 @@ from .replay_preparation import (
 )
 from .research import ResearchSource, ResearchSourceError
 from .reviewed_source_intake import ReviewedSourceIntake
+from .run_bundle_export import export_run_bundle
 from .run_store import RunStore, RunStoreError
 from .runner_bootstrap import managed_product_root
 from .runner_client import (
@@ -3879,6 +3880,17 @@ class BlueFireService(RunnerManagementServiceMixin):
             return self.store.get_run(run_id)
         except RunStoreError as exc:
             raise APIError(HTTPStatus.NOT_FOUND, "run_not_found", "Run was not found.") from exc
+
+    def run_bundle(self, run_id: str) -> bytes:
+        try:
+            return export_run_bundle(self.store, run_id)
+        except RunStoreError as exc:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "run_bundle_unavailable",
+                "The complete finalized bundle is unavailable or failed export validation. "
+                "Export requires at most 32 files, 4 MiB per file and 16 MiB total; no files are truncated.",
+            ) from exc
 
     def events(
         self,

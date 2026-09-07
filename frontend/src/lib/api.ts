@@ -523,6 +523,33 @@ export const api = {
     if (DEMO_MODE) return { runs: structuredClone(demoRuns), unavailable_run_count: 0 };
     return canonicalRunList(await request<unknown>("/runs"));
   },
+  async runBundle(runId: string, signal: AbortSignal): Promise<Blob> {
+    if (DEMO_MODE) throw new ApiError("Demo runs do not have a saved bundle.", "demo_bundle_unavailable");
+    if (!/^run-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$/.test(runId)) throw new ApiError("Run identifier is invalid.", "invalid_run_id");
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    const timeout = window.setTimeout(abort, 30_000);
+    try {
+      const response = await fetch(`${API_ROOT}/runs/${runId}/bundle`, {
+        credentials: "same-origin", cache: "no-store", signal: controller.signal,
+        headers: { Accept: "application/zip" },
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new ApiError(payload?.error?.message ?? `Export failed (${response.status})`, payload?.error?.code, undefined, response.status);
+      }
+      if (response.headers.get("Content-Type") !== "application/zip") throw new ApiError("The service returned an invalid bundle response.", "invalid_run_bundle");
+      return await response.blob();
+    } catch (error) {
+      if (controller.signal.aborted) throw new ApiError("Bundle download was cancelled or exceeded 30 seconds. Try again.", "request_aborted");
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+      signal.removeEventListener("abort", abort);
+    }
+  },
   async runDetail(runId: string): Promise<RunRecord> {
     if (DEMO_MODE) {
       const run = demoRuns.find((item) => item.run_id === runId);
