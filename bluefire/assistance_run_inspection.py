@@ -23,9 +23,11 @@ def source(service: AssistanceRunService, operation: Mapping[str, Any]) -> Mappi
     cleanup_state = (
         "simulated"
         if run["mode"] == "simulate"
-        else "complete"
-        if cleanup.get("success") is True and cleanup.get("outstanding_receipt_count") == 0
-        else "incomplete"
+        else (
+            "complete"
+            if cleanup.get("success") is True and cleanup.get("outstanding_receipt_count") == 0
+            else "incomplete"
+        )
     )
     return {
         "run": run,

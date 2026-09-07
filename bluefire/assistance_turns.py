@@ -813,9 +813,7 @@ class ExperimentAssistance:
                                 "kind": (
                                     "review_graph"
                                     if child["kind"] == "graph.ai.propose"
-                                    else "review_detection"
-                                    if revision
-                                    else "review_method"
+                                    else "review_detection" if revision else "review_method"
                                 ),
                                 "label": (
                                     "Review graph proposal"

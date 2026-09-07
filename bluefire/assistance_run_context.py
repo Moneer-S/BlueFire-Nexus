@@ -132,9 +132,9 @@ def context(service: AssistanceRunService, value: Any) -> Mapping[str, Any]:
         },
         "scenario_digest": content_hash(saved["document"]),
         "runtime_profile_digest": content_hash(profile.to_dict()) if profile is not None else None,
-        "runtime_provider_digest": content_hash(provider_binding)
-        if provider_binding is not None
-        else None,
+        "runtime_provider_digest": (
+            content_hash(provider_binding) if provider_binding is not None else None
+        ),
         "bounds": {"inspection_attempts": 3, "observations": 128},
         "capabilities": [
             {

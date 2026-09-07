@@ -103,9 +103,7 @@ def test_execute_approval_is_ephemeral_and_operator_bound() -> None:
     assert "onSettled: clearApproval" in runs
     assert "I approve this exact immutable" in runs
     assert '"job envelope"' in runs
-    local_review = (SOURCE_ROOT / "components" / "RunConfiguration.tsx").read_text(
-        encoding="utf-8"
-    )
+    local_review = (SOURCE_ROOT / "components" / "RunConfiguration.tsx").read_text(encoding="utf-8")
     assert "<LocalExecuteReview" in runs
     assert "never sent as an execution capability" in local_review
     assert "Operator identity" in runs

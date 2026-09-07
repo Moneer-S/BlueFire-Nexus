@@ -150,9 +150,9 @@ class AssistanceRunJobs:
                         "message": message,
                         "native_path": "/runs",
                         "context_digest": request["context_digest"],
-                        "run_request_digest": content_hash(run_request)
-                        if run_request is not None
-                        else None,
+                        "run_request_digest": (
+                            content_hash(run_request) if run_request is not None else None
+                        ),
                         "preflight": report,
                     }
                 },

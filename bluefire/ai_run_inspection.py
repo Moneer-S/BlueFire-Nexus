@@ -183,11 +183,13 @@ def inspect(
     output = {
         **common,
         **value,
-        "status": "supported"
-        if run["mode"] == "execute"
-        and selected["cleanup_state"] == "complete"
-        and value["findings"]
-        else "insufficient",
+        "status": (
+            "supported"
+            if run["mode"] == "execute"
+            and selected["cleanup_state"] == "complete"
+            and value["findings"]
+            else "insufficient"
+        ),
         "model_interpretation": True,
         "provider": {
             "provider_id": config.id,
