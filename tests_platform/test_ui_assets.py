@@ -103,7 +103,11 @@ def test_execute_approval_is_ephemeral_and_operator_bound() -> None:
     assert "onSettled: clearApproval" in runs
     assert "I approve this exact immutable" in runs
     assert '"job envelope"' in runs
-    assert "never sent as an execution capability" in runs
+    local_review = (SOURCE_ROOT / "components" / "RunConfiguration.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "<LocalExecuteReview" in runs
+    assert "never sent as an execution capability" in local_review
     assert "Operator identity" in runs
 
 
@@ -200,10 +204,17 @@ def test_graph_editor_exposes_typed_contract_controls(source: str) -> None:
 
 def test_run_ui_separates_preview_preferences_from_canonical_preflight() -> None:
     runs = (SOURCE_ROOT / "pages" / "Runs.tsx").read_text(encoding="utf-8")
+    configuration = (SOURCE_ROOT / "components" / "RunConfiguration.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "<RunConfigurationPanel" in runs
     for copy in (
         "Profile-owned enforcement",
-        "Browser draft & configuration details",
         "Unsupported browser overrides are intentionally not shown",
+    ):
+        assert copy in configuration
+    for copy in (
+        "Browser draft & configuration details",
         "Canonical preflight",
         "Plan digest",
         "sent for exact binding",
@@ -296,8 +307,12 @@ def test_durable_proposal_review_and_retry_stay_separate_from_execute_approval()
         "every Execute mutation stops for fresh one-time approval",
     ):
         assert capability in planner
+    configuration = (SOURCE_ROOT / "components" / "RunConfiguration.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "<RunConfigurationPanel" in runs
+    assert "Policy-valid Simulate choices" in configuration
     for journey_copy in (
-        "Policy-valid Simulate choices",
         "Proposal, policy, and application trail",
         "Auto can apply only policy-valid Simulate choices from registered Behavior/Action contracts",
         "Explicit one-time Execute approval",
