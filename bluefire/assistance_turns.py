@@ -8,7 +8,7 @@ from http import HTTPStatus
 from typing import Any, Mapping
 from urllib.parse import urlencode
 
-from .ai_assistance import COMPARE, REVISE, suggest_plan
+from .ai_assistance import COMPARE, REVISE, message_text, suggest_plan
 from .ai_wire import AIProviderCancelled, AIProviderError
 from .application_errors import APIError
 from .assistance_context import LIMITATIONS, AssistanceContext
@@ -16,6 +16,8 @@ from .assistance_context import context as selected_context
 from .assistance_results import TERMINAL, active, child_job, child_path, result
 from .config import AIProviderConfig, AIProviderKind, ConfigError
 from .detection_ai_jobs import _text
+from .graph_ai_context import GRAPH
+from .graph_ai_context import selection as graph_selection
 from .job_runtime import JobCancelled, JobContext, JobResult, JobRuntimeError
 from .product_store_assistance import KIND, reserve, stop, update
 from .product_store_errors import ProductStoreError
@@ -25,6 +27,21 @@ from .util import content_hash
 
 def fail(message: str) -> APIError:
     return APIError(HTTPStatus.CONFLICT, "assistance_turn_refused", message)
+
+
+def submitted(request: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Normalize additive selection syntax without changing the durable wire request."""
+    chosen = request.get("selection")
+    if chosen is None or chosen.get("kind") == "graph":
+        return request
+    return {
+        **{key: value for key, value in request.items() if key != "selection"},
+        **{key: value for key, value in chosen.items() if key != "kind"},
+    }
+
+
+def is_graph(request: Mapping[str, Any]) -> bool:
+    return bool(request.get("selection", {}).get("kind") == "graph")
 
 
 class ExperimentAssistance:
@@ -49,7 +66,12 @@ class ExperimentAssistance:
 
     def _fresh(self, job: Mapping[str, Any]) -> Mapping[str, Any]:
         request = job["request"]["submitted_request"]
-        current = self.context(request["run_id"], request["candidate_id"])
+        request = submitted(request)
+        current = (
+            self.service.graph_ai.context(request["selection"])
+            if is_graph(request)
+            else self.context(request["run_id"], request["candidate_id"])
+        )
         if current != job["request"]["context"]:
             raise fail(
                 "The selected saved source or detector changed. Review the current objects in a new turn."
@@ -67,30 +89,70 @@ class ExperimentAssistance:
         return provider
 
     def submit(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
-        self.service.detection_lab._fields(
-            request,
-            required={
-                "submission_id",
-                "context_digest",
-                "run_id",
-                "candidate_id",
-                "candidate_resource_digest",
-                "message",
-                "case_role",
-                "autonomy",
-            },
-            optional={"provider_id"},
-            context="assistance turn",
-        )
-        _text(request["message"], 1000, "Message")
-        if request["autonomy"] not in ("off", "assist", "auto") or request["case_role"] not in (
-            "attack",
-            "benign",
-            "replay",
-            "heldout",
+        original = request
+        if "selection" in request:
+            self.service.detection_lab._fields(
+                request,
+                required={"submission_id", "context_digest", "selection", "message", "autonomy"},
+                optional={"provider_id"},
+                context="assistance turn",
+            )
+            chosen = request["selection"]
+            if not isinstance(chosen, Mapping):
+                raise fail("Select a typed graph or detector context.")
+            if chosen.get("kind") == "graph":
+                try:
+                    graph_selection(chosen)
+                except ProductStoreError as exc:
+                    raise fail(str(exc)) from exc
+            elif chosen.get("kind") == "detection":
+                self.service.detection_lab._fields(
+                    chosen,
+                    required={
+                        "kind",
+                        "run_id",
+                        "candidate_id",
+                        "candidate_resource_digest",
+                        "case_role",
+                    },
+                    optional=set(),
+                    context="detector selection",
+                )
+                request = submitted(request)
+            else:
+                raise fail("Select a typed graph or detector context.")
+        else:
+            self.service.detection_lab._fields(
+                request,
+                required={
+                    "submission_id",
+                    "context_digest",
+                    "run_id",
+                    "candidate_id",
+                    "candidate_resource_digest",
+                    "message",
+                    "case_role",
+                    "autonomy",
+                },
+                optional={"provider_id"},
+                context="assistance turn",
+            )
+        try:
+            message_text(request["message"])
+        except AIProviderError as exc:
+            raise fail(str(exc)) from exc
+        if request["autonomy"] not in ("off", "assist", "auto") or (
+            not is_graph(request)
+            and request["case_role"]
+            not in (
+                "attack",
+                "benign",
+                "replay",
+                "heldout",
+            )
         ):
             raise fail("Select an explicit autonomy level and source case role.")
-        if (
+        if not is_graph(request) and (
             not isinstance(request["run_id"], str)
             or not RUN_ID_RE.fullmatch(request["run_id"])
             or not isinstance(request["candidate_id"], str)
@@ -100,12 +162,16 @@ class ExperimentAssistance:
         if any(
             not isinstance(request[key], str)
             or not re.fullmatch(r"sha256:[0-9a-f]{64}", request[key])
-            for key in ("context_digest", "candidate_resource_digest")
+            for key in (
+                ("context_digest",)
+                if is_graph(request)
+                else ("context_digest", "candidate_resource_digest")
+            )
         ):
             raise fail("Selected context and resource digests are invalid.")
         if "provider_id" in request:
             _text(request["provider_id"], 200, "Provider")
-        intent = content_hash(dict(request))
+        intent = content_hash(dict(original))
         try:
             existing = self.store.get_job_submission(
                 KIND, submission_id=request["submission_id"], intent_digest=intent
@@ -114,19 +180,25 @@ class ExperimentAssistance:
                 return self.read(existing["job_id"])
             document: dict[str, Any] = {
                 "schema_version": "bluefire.assistance-turn-request.v1",
-                "submitted_request": dict(request),
+                "submitted_request": dict(original),
                 "context": None,
             }
             try:
-                context = self.context(request["run_id"], request["candidate_id"])
-                if (
-                    request["context_digest"] != context["context_digest"]
-                    or request["candidate_resource_digest"]
+                context = (
+                    self.service.graph_ai.context(request["selection"])
+                    if is_graph(request)
+                    else self.context(request["run_id"], request["candidate_id"])
+                )
+                if request["context_digest"] != context["context_digest"] or (
+                    not is_graph(request)
+                    and request["candidate_resource_digest"]
                     != context["selected"]["candidate_resource_digest"]
                 ):
                     raise fail("The selected objects changed after the message was prepared.")
                 document["context"] = context
-                if request["autonomy"] == "assist":
+                if request["autonomy"] == "assist" or (
+                    is_graph(request) and request["autonomy"] == "auto"
+                ):
                     provider_id = _text(request.get("provider_id"), 200, "Provider")
                     provider = self.service._runtime_ai().provider(provider_id)
                     if provider.kind is AIProviderKind.DETERMINISTIC:
@@ -161,7 +233,7 @@ class ExperimentAssistance:
         if submitted["autonomy"] == "off":
             return JobResult(
                 progress={
-                    "message": "AI is Off. No model request or child operation was made. Review the selected run and saved detector in their native views.",
+                    "message": "AI is Off. No model request or child operation was made. Review the selected objects in their native views.",
                     "plan": [],
                     "off": True,
                 }
@@ -203,12 +275,17 @@ class ExperimentAssistance:
         parent = self._job(parent_id)
         if parent["progress"].get("stopped") or parent["state"] in {"cancelled", "cancelling"}:
             raise fail("This assistance turn is cancelled.")
-        if parent["request"]["submitted_request"]["autonomy"] != "assist":
+        if parent["request"]["submitted_request"]["autonomy"] not in {"assist", "auto"}:
             return
         self._fresh(parent)
         self._provider(parent)
-        submitted = parent["request"]["submitted_request"]
-        candidate_id = submitted["candidate_id"]
+        selected_request = submitted(parent["request"]["submitted_request"])
+        if is_graph(selected_request):
+            self._advance_graph(parent, selected_request)
+            return
+        submitted_request = selected_request
+        question = " ".join(submitted_request["message"].split())
+        candidate_id = submitted_request["candidate_id"]
         for step in parent["progress"].get("plan", []):
             child = child_job(self.service, parent, step)
             if child is not None:
@@ -220,24 +297,26 @@ class ExperimentAssistance:
                 continue
             resource = self.service.detection_lab._resource(candidate_id)
             submission = str(
-                uuid.uuid5(uuid.UUID(submitted["submission_id"]), "capability:" + step["step_id"])
+                uuid.uuid5(
+                    uuid.UUID(submitted_request["submission_id"]), "capability:" + step["step_id"]
+                )
             )
             common = {
                 "submission_id": submission,
-                "provider_id": submitted["provider_id"],
+                "provider_id": submitted_request["provider_id"],
                 "autonomy": "assist",
             }
             if step["capability_id"] == REVISE:
                 child_request = {
                     **common,
-                    "run_id": submitted["run_id"],
+                    "run_id": submitted_request["run_id"],
                     "parent_resource_digest": resource["digest"],
-                    "question": submitted["message"],
-                    "case_role": submitted["case_role"],
+                    "question": question,
+                    "case_role": submitted_request["case_role"],
                 }
                 kind, object_id = "detection.ai.propose", candidate_id
             else:
-                prepared = self.service.method_comparison.context(submitted["run_id"])
+                prepared = self.service.method_comparison.context(submitted_request["run_id"])
                 options = prepared["options"]
                 if not options:
                     raise fail(
@@ -256,10 +335,10 @@ class ExperimentAssistance:
                     "selected_step_id": step_ids[0],
                     "candidate_id": candidate_id,
                     "candidate_resource_digest": resource["digest"],
-                    "question": submitted["message"],
-                    "source_case_role": submitted["case_role"],
+                    "question": question,
+                    "source_case_role": submitted_request["case_role"],
                 }
-                kind, object_id = "replay.ai.propose", submitted["run_id"]
+                kind, object_id = "replay.ai.propose", submitted_request["run_id"]
             reservation = {
                 "job_id": "job-" + uuid.UUID(submission).hex,
                 "submission_id": submission,
@@ -278,11 +357,52 @@ class ExperimentAssistance:
             update(self.store, parent_id, {"handoff_error": None, "handoff_problem": None})
             return
 
+    def _advance_graph(self, parent: Mapping[str, Any], request: Mapping[str, Any]) -> None:
+        for step in parent["progress"].get("plan", []):
+            if step["capability_id"] != GRAPH:
+                raise fail("The graph context cannot dispatch detector operations.")
+            if child_job(self.service, parent, step) is not None:
+                return
+            submission = str(
+                uuid.uuid5(uuid.UUID(request["submission_id"]), "capability:" + step["step_id"])
+            )
+            child_request = {
+                key: request[key]
+                for key in ("selection", "context_digest", "message", "autonomy", "provider_id")
+            }
+            child_request["submission_id"] = submission
+            reserve(
+                self.store,
+                parent["job_id"],
+                step["step_id"],
+                {
+                    "job_id": "job-" + uuid.UUID(submission).hex,
+                    "submission_id": submission,
+                    "kind": "graph.ai.propose",
+                    "object_id": request["context_digest"],
+                    "request": child_request,
+                },
+            )
+            self.service.graph_ai.submit(
+                child_request,
+                _assistance_turn={"parent_job_id": parent["job_id"], "step_id": step["step_id"]},
+            )
+            update(self.store, parent["job_id"], {"handoff_error": None, "handoff_problem": None})
+            return
+
     def _handoff_problem(self, parent_id: str, error: Exception) -> Mapping[str, Any]:
         """Expose fixed remediation, never exception text, paths or arbitrary details."""
         parent = self._job(parent_id)
-        run_id = parent["request"]["submitted_request"]["run_id"]
-        candidate_id = parent["request"]["submitted_request"]["candidate_id"]
+        chosen = submitted(parent["request"]["submitted_request"])
+        if is_graph(chosen):
+            return {
+                "code": "source_review_required",
+                "message": "The graph proposal needs attention. Review the saved reference and current catalog in Builder; changed context requires a new turn.",
+                "profile_id": None,
+                "action": {"label": "Review graph context", "native_path": "/builder"},
+            }
+        run_id = chosen["run_id"]
+        candidate_id = chosen["candidate_id"]
         source_path = "/detection-lab?" + urlencode(
             {"run": run_id, "candidate": candidate_id, "candidate_scope": "registry"}
         )
@@ -513,7 +633,9 @@ class ExperimentAssistance:
             child = child_job(self.service, parent, step)
             if child is None:
                 continue
-            if child["kind"] == "replay.ai.propose":
+            if child["kind"] == "graph.ai.propose":
+                self.service.graph_ai.cancel(child["job_id"])
+            elif child["kind"] == "replay.ai.propose":
                 self.service.method_comparison.cancel(child["job_id"])
             else:
                 current = active(self.service, child, step)
@@ -532,7 +654,7 @@ class ExperimentAssistance:
     def read(self, parent_id: str) -> Mapping[str, Any]:
         parent = self._job(parent_id)
         progress, request = parent["progress"], parent["request"]
-        selected = request["submitted_request"]
+        selected = submitted(request["submitted_request"])
         view: dict[str, Any] = {
             "schema_version": "bluefire.assistance-turn.v1",
             "status": "planning",
@@ -540,16 +662,20 @@ class ExperimentAssistance:
                 "message", "Selecting supported next steps for the saved objects."
             ),
             "context_digest": selected["context_digest"],
-            "selected": {
-                key: selected[key]
-                for key in ("run_id", "candidate_id", "candidate_resource_digest")
-            },
+            "selected": (
+                selected["selection"]
+                if is_graph(selected)
+                else {
+                    key: selected[key]
+                    for key in ("run_id", "candidate_id", "candidate_resource_digest")
+                }
+            ),
             "plan": progress.get("plan", []),
             "active_child": None,
             "next_action": None,
             "results": [],
             "recovery": None,
-            "limitations": list(LIMITATIONS),
+            "limitations": list((request.get("context") or {}).get("limitations", LIMITATIONS)),
         }
         try:
             view["continuation"] = None
@@ -624,6 +750,8 @@ class ExperimentAssistance:
                     current = active(self.service, child, step)
                     view["active_child"] = current
                     decision = child["progress"].get("decision", {}).get("decision")
+                    if child["progress"].get("stopped"):
+                        decision = "reject"
                     if current["state"] == "awaiting_approval":
                         view.update(
                             status="awaiting_execute_approval",
@@ -633,14 +761,27 @@ class ExperimentAssistance:
                                 "native_path": current["native_path"],
                             },
                         )
-                    elif child["state"] == "completed" and not decision:
+                    elif (child["state"] == "completed" and not decision) or (
+                        child["kind"] == "graph.ai.propose"
+                        and self.service.graph_ai.read(child["job_id"])["review_ready"]
+                    ):
                         revision = child["kind"] == "detection.ai.propose"
                         view.update(
                             status="awaiting_review",
                             next_action={
-                                "kind": "review_detection" if revision else "review_method",
+                                "kind": (
+                                    "review_graph"
+                                    if child["kind"] == "graph.ai.propose"
+                                    else "review_detection" if revision else "review_method"
+                                ),
                                 "label": (
-                                    "Review rule revision" if revision else "Review method proposal"
+                                    "Review graph proposal"
+                                    if child["kind"] == "graph.ai.propose"
+                                    else (
+                                        "Review rule revision"
+                                        if revision
+                                        else "Review method proposal"
+                                    )
                                 ),
                                 "native_path": child_path(child),
                             },
@@ -656,9 +797,13 @@ class ExperimentAssistance:
                             message="The native operation needs attention or was declined. Review its retained receipt; no operation will be repeated automatically.",
                             next_action={
                                 "kind": (
-                                    "review_detection"
-                                    if step["capability_id"] == REVISE
-                                    else "review_method"
+                                    "review_graph"
+                                    if step["capability_id"] == GRAPH
+                                    else (
+                                        "review_detection"
+                                        if step["capability_id"] == REVISE
+                                        else "review_method"
+                                    )
                                 ),
                                 "label": "Review native operation",
                                 "native_path": child_path(child),

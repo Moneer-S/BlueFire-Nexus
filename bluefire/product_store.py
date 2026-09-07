@@ -1147,65 +1147,72 @@ class ProductStore:
         is still activated on first import.
         """
 
+        with self._connection(write=True) as connection:
+            return self._save_scenario_at(connection, value, activate=activate)
+
+    def _save_scenario_at(
+        self, connection: sqlite3.Connection, value: Mapping[str, Any], *, activate: bool = True
+    ) -> Mapping[str, Any]:
+        """Shared scenario persistence inside an already owned transaction."""
+
         if not isinstance(activate, bool):
             raise ProductStoreError("scenario activation choice must be boolean")
         scenario = ScenarioDefinition.from_mapping(value)
         document = scenario.to_dict()
         digest = content_hash(document)
         now = utc_now()
-        with self._connection(write=True) as connection:
-            existing = connection.execute(
-                """
-                SELECT version, created_at FROM scenario_versions
-                WHERE scenario_id = ? AND digest = ?
-                """,
-                (scenario.id, digest),
+        existing = connection.execute(
+            """
+            SELECT version, created_at FROM scenario_versions
+            WHERE scenario_id = ? AND digest = ?
+            """,
+            (scenario.id, digest),
+        ).fetchone()
+        if existing:
+            version = int(existing["version"])
+            created_at = str(existing["created_at"])
+        else:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(version), 0) AS version FROM scenario_versions WHERE scenario_id = ?",
+                (scenario.id,),
             ).fetchone()
-            if existing:
-                version = int(existing["version"])
-                created_at = str(existing["created_at"])
-            else:
-                row = connection.execute(
-                    "SELECT COALESCE(MAX(version), 0) AS version FROM scenario_versions WHERE scenario_id = ?",
-                    (scenario.id,),
-                ).fetchone()
-                version = int(row["version"]) + 1
-                created_at = now
-                connection.execute(
-                    """
-                    INSERT INTO scenario_versions(
-                        scenario_id, version, title, document_json, digest, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        scenario.id,
-                        version,
-                        scenario.title,
-                        _canonical_json(document),
-                        digest,
-                        created_at,
-                    ),
-                )
-            if activate:
-                connection.execute(
-                    """
-                    INSERT INTO scenario_heads(scenario_id, active_version, updated_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(scenario_id) DO UPDATE SET
-                        active_version = excluded.active_version,
-                        updated_at = excluded.updated_at
-                    """,
-                    (scenario.id, version, now),
-                )
-            else:
-                connection.execute(
-                    """
-                    INSERT INTO scenario_heads(scenario_id, active_version, updated_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(scenario_id) DO NOTHING
-                    """,
-                    (scenario.id, version, now),
-                )
+            version = int(row["version"]) + 1
+            created_at = now
+            connection.execute(
+                """
+                INSERT INTO scenario_versions(
+                    scenario_id, version, title, document_json, digest, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scenario.id,
+                    version,
+                    scenario.title,
+                    _canonical_json(document),
+                    digest,
+                    created_at,
+                ),
+            )
+        if activate:
+            connection.execute(
+                """
+                INSERT INTO scenario_heads(scenario_id, active_version, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(scenario_id) DO UPDATE SET
+                    active_version = excluded.active_version,
+                    updated_at = excluded.updated_at
+                """,
+                (scenario.id, version, now),
+            )
+        else:
+            connection.execute(
+                """
+                INSERT INTO scenario_heads(scenario_id, active_version, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(scenario_id) DO NOTHING
+                """,
+                (scenario.id, version, now),
+            )
         return {
             "scenario_id": scenario.id,
             "title": scenario.title,

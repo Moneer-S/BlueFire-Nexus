@@ -761,6 +761,7 @@ class OpenAIResponsesDraftProvider:
         access: AIProviderAccess | None = None,
         cancel_event: CancellationSignal | None = None,
         sleeper: Callable[[float], None] = time.sleep,
+        allow_fallback: bool = True,
     ) -> None:
         if config.kind is not self._KIND:
             raise AIDraftError("Responses draft provider requires openai_responses configuration")
@@ -771,6 +772,7 @@ class OpenAIResponsesDraftProvider:
         self.access = access or DirectAIProviderAccess(transport=self.transport, environ=environ)
         self.cancel_event = cancel_event
         self.sleeper = sleeper
+        self.allow_fallback = allow_fallback
 
     def health(self) -> AIProviderHealth:
         readiness = self.access.readiness(self.config)
@@ -877,6 +879,10 @@ class OpenAIResponsesDraftProvider:
         self, request: AIGraphDraftRequest, *, attempts: int, reason: str
     ) -> AIDraftProviderResult:
         self._check_cancelled()
+        if not self.allow_fallback:
+            raise AIDraftError(
+                "Selected graph provider did not return a valid proposal; no fallback was used."
+            )
         fallback = self.fallback.draft(request)
         self._check_cancelled()
         return AIDraftProviderResult(
@@ -911,8 +917,13 @@ def build_ai_draft_provider(
     access: AIProviderAccess | None = None,
     cancel_event: CancellationSignal | None = None,
     sleeper: Callable[[float], None] = time.sleep,
+    allow_fallback: bool = True,
 ) -> AIDraftProvider:
+    if not allow_fallback and not provider_id:
+        raise AIDraftError("An explicit graph provider is required.")
     selected = config.provider(provider_id)
+    if not allow_fallback and selected.kind is AIProviderKind.DETERMINISTIC:
+        raise AIDraftError("An explicit model provider is required.")
     if selected.kind is AIProviderKind.DETERMINISTIC:
         return DeterministicOfflineDraftProvider(selected)
     fallback = DeterministicOfflineDraftProvider(config.fallback)
@@ -929,6 +940,7 @@ def build_ai_draft_provider(
         access=access,
         cancel_event=cancel_event,
         sleeper=sleeper,
+        allow_fallback=allow_fallback,
     )
 
 
@@ -1327,7 +1339,8 @@ def _draft_graph_order(
     incoming = {step_id: len(predecessors[step_id]) for step_id in step_ids}
     queue = deque(
         sorted(
-            (item for item, count in incoming.items() if count == 0), key=original_order.__getitem__
+            (item for item, count in incoming.items() if count == 0),
+            key=original_order.__getitem__,
         )
     )
     order: list[str] = []

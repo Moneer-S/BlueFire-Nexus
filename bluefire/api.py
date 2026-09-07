@@ -416,6 +416,21 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
             return
+        graph_context = self._routes._graph_context_request(path)
+        if graph_context is not None:
+            if graph_context[0]:
+                self._dispatch(
+                    lambda: self.platform_server.service.assistance_graph_context(graph_context[1])
+                )
+            return
+        graph_job = self._routes._graph_job_request(path)
+        if graph_job is not None:
+            if graph_job[0]:
+                if graph_job[1]:
+                    self._method_not_allowed("POST")
+                else:
+                    self._dispatch(lambda: self.platform_server.service.graph_ai_job(graph_job[0]))
+            return
         assistance_context = self._routes._assistance_context_request(path)
         if assistance_context is not None:
             if assistance_context[0]:
@@ -853,6 +868,23 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/comparisons":
             self._dispatch(lambda: self.platform_server.service.compare(body))
             return
+        if path == f"{API_PREFIX}/assistance/graph-context":
+            self._method_not_allowed("GET")
+            return
+        graph_job = self._routes._graph_job_request(path)
+        if graph_job is not None:
+            if graph_job[0]:
+                if graph_job[1]:
+                    self._dispatch(
+                        lambda: (
+                            self.platform_server.service.validate_graph_ai(graph_job[0], body)
+                            if graph_job[1] == "validate"
+                            else self.platform_server.service.review_graph_ai(graph_job[0], body)
+                        )
+                    )
+                else:
+                    self._method_not_allowed("GET")
+            return
         if path == f"{API_PREFIX}/assistance/turns":
             if self._routes._management_query_free():
                 self._dispatch(
@@ -1264,7 +1296,10 @@ class BlueFireRequestHandler(BaseHTTPRequestHandler):
         }:
             media_type = f"{media_type}; charset=utf-8"
         self._send(
-            HTTPStatus.OK, payload if include_body else b"", media_type, content_length=len(payload)
+            HTTPStatus.OK,
+            payload if include_body else b"",
+            media_type,
+            content_length=len(payload),
         )
 
     def _dispatch(

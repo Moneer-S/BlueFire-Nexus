@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from http import HTTPStatus
+from typing import Any, Mapping
 from urllib.parse import parse_qsl, urlsplit
 
 from .api_context import API_PREFIX, RouteRequest
@@ -507,6 +508,64 @@ class APIRoutes:
             self._error(HTTPStatus.BAD_REQUEST, "invalid_run_id", "Run identifier is invalid.")
             return ""
         return run_id
+
+    def _graph_context_request(self, path: str) -> tuple[bool, Mapping[str, Any] | None] | None:
+        if path != f"{API_PREFIX}/assistance/graph-context":
+            return None
+        try:
+            pairs = parse_qsl(
+                urlsplit(self.path).query,
+                keep_blank_values=True,
+                strict_parsing=True,
+                max_num_fields=3,
+            )
+            if not pairs:
+                return True, None
+            values = dict(pairs)
+            if (
+                len(pairs) != 3
+                or set(values) != {"scenario_id", "version", "digest"}
+                or not values["version"].isdigit()
+            ):
+                raise ValueError
+            from .graph_ai_context import selection
+            from .product_store_errors import ProductStoreError
+
+            try:
+                base = {
+                    "scenario_id": values["scenario_id"],
+                    "version": int(values["version"]),
+                    "digest": values["digest"],
+                }
+                selection({"kind": "graph", "base_scenario": base})
+            except ProductStoreError as exc:
+                raise ValueError from exc
+            return True, base
+        except ValueError:
+            self._error(
+                HTTPStatus.BAD_REQUEST,
+                "graph_context_invalid",
+                "Select an optional exact saved graph reference.",
+            )
+            return False, None
+
+    def _graph_job_request(self, path: str) -> tuple[str, str | None] | None:
+        prefix = f"{API_PREFIX}/ai/graph-jobs/"
+        if not path.startswith(prefix):
+            return None
+        if not self._management_query_free():
+            return "", None
+        remainder = path[len(prefix) :]
+        action = next(
+            (value for value in ("review", "validate") if remainder.endswith("/" + value)), None
+        )
+        job_id = remainder[: -(len(action) + 1)] if action else remainder
+        if not _JOB_ID.fullmatch(job_id):
+            self._error(
+                HTTPStatus.BAD_REQUEST, "invalid_job_id", "Graph job identifier is invalid."
+            )
+            return "", None
+        return job_id, action
 
     def _assistance_context_request(self, path: str) -> tuple[str, str] | None:
         if path != f"{API_PREFIX}/assistance/context":

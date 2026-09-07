@@ -165,12 +165,51 @@ def apply(service, proposal):
     return application
 
 
+def test_additive_detection_selection_preserves_exact_submission_and_native_children(setup):
+    service, access, original = setup
+    body = {
+        key: value
+        for key, value in original.items()
+        if key not in {"run_id", "candidate_id", "candidate_resource_digest", "case_role"}
+    }
+    body["message"] = "Improve the selected rule.\r\n\tEvaluate it, then compare the other method."
+    body["selection"] = {
+        "kind": "detection",
+        **{
+            key: original[key]
+            for key in ("run_id", "candidate_id", "candidate_resource_digest", "case_role")
+        },
+    }
+    parent, child = planned((service, access, body))
+    assert parent["request"]["submitted_request"] == body
+    assert child["request"]["submitted_request"]["question"] == " ".join(body["message"].split())
+    assert service.submit_assistance_turn(body)["job"]["job_id"] == parent["job_id"]
+    assert (
+        service.assistance_turn(parent["job_id"])["turn"]["next_action"]["kind"]
+        == "review_detection"
+    )
+    apply(service, child)
+    parent = service.product_store.get_job(parent["job_id"])
+    method = service.job_controller.wait(
+        parent["progress"]["children"]["step-2"]["job_id"], timeout=15
+    )
+    assert method["state"] == "completed", method
+    assert access.calls == [
+        PURPOSE,
+        "bluefire_detection_source_revision",
+        "bluefire_method_comparison",
+    ]
+
+
 def test_connected_turn_uses_native_reviews_and_same_revised_detector(setup):
     service, access, body = setup
     parent, revision = planned(setup)
     view = service.assistance_turn(parent["job_id"])["turn"]
     assert view["status"] == "awaiting_review" and view["next_action"]["kind"] == "review_detection"
-    assert view["results"] == [] and access.calls == [PURPOSE, "bluefire_detection_source_revision"]
+    assert view["results"] == [] and access.calls == [
+        PURPOSE,
+        "bluefire_detection_source_revision",
+    ]
     application = apply(service, revision)
     parent = service.product_store.get_job(parent["job_id"])
     method = service.job_controller.wait(
@@ -722,7 +761,10 @@ def test_arbitrary_error_details_cannot_create_runner_setup_guidance(setup):
     problem = service.assistance._handoff_problem(
         parent["job_id"],
         APIError(
-            409, "replay_preparation_refused", "private-message", ["runner stopped", "private-path"]
+            409,
+            "replay_preparation_refused",
+            "private-message",
+            ["runner stopped", "private-path"],
         ),
     )
     assert problem["code"] == "detection_review_required"

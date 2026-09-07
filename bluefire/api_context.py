@@ -146,6 +146,18 @@ class PlatformService(Protocol):
     def assistance_context(self, run_id: str, candidate_id: str) -> JsonResult:
         """Read authoritative saved-object capability context."""
 
+    def assistance_graph_context(self, base_scenario: JsonObject | None = None) -> JsonResult:
+        """Read an immutable optional graph reference and capability catalog."""
+
+    def graph_ai_job(self, job_id: str) -> JsonResult:
+        """Read a retained graph proposal and exact native save receipt."""
+
+    def validate_graph_ai(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Validate the frozen native edit and return its canonical server digest."""
+
+    def review_graph_ai(self, job_id: str, request: JsonObject) -> JsonResult:
+        """Explicitly accept or reject one durable graph proposal."""
+
     def submit_assistance_turn(self, request: JsonObject) -> JsonResult:
         """Submit one idempotent contextual assistance turn."""
 

@@ -270,6 +270,8 @@
         "bluefire.assistance_context",
         "bluefire.assistance_results",
         "bluefire.assistance_turns",
+        "bluefire.graph_ai_context",
+        "bluefire.graph_ai_jobs",
         "bluefire.package_management",
         "bluefire.package_management_context",
         "bluefire.reviewed_source_intake",

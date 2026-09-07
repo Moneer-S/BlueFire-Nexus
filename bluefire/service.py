@@ -85,6 +85,7 @@ from .contracts import (
 )
 from .detection_ai_jobs import DetectionAIJobs
 from .detection_lab import DetectionLabService
+from .graph_ai_jobs import GraphAIJobs
 from .job_runtime import (
     TERMINAL_JOB_STATES,
     JobCancelled,
@@ -268,8 +269,17 @@ class BlueFireService(RunnerManagementServiceMixin):
             access=self._provider_access,
         )
         self.method_comparison = MethodComparisonJobs(self)
+        self.graph_ai = GraphAIJobs(
+            store=self.product_store,
+            catalog=self._action_catalog_boundary,
+            controller=self.job_controller,
+            ai_config=self._runtime_ai,
+            access=self._provider_access,
+            configuration_lock=self._runtime_configuration_lock,
+        )
         self.assistance = ExperimentAssistance(self)
         self.detection_ai.on_application = self.assistance.application_committed
+        self.graph_ai.on_application = self.assistance.application_committed
         self.cleanup_recovery = self._recover_interrupted_cleanup()
         self.seed_counts = seed_product_metadata(
             self.product_store,
@@ -761,6 +771,20 @@ class BlueFireService(RunnerManagementServiceMixin):
 
     def assistance_context(self, run_id: str, candidate_id: str) -> Mapping[str, Any]:
         return self.assistance.context(run_id, candidate_id)
+
+    def assistance_graph_context(
+        self, base_scenario: Mapping[str, Any] | None = None
+    ) -> Mapping[str, Any]:
+        return self.graph_ai.context({"kind": "graph", "base_scenario": base_scenario})
+
+    def graph_ai_job(self, job_id: str) -> Mapping[str, Any]:
+        return self.graph_ai.read(job_id)
+
+    def validate_graph_ai(self, job_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self.graph_ai.validate(job_id, request)
+
+    def review_graph_ai(self, job_id: str, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self.graph_ai.review(job_id, request)
 
     def submit_assistance_turn(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
         return self.assistance.submit(request)
@@ -1732,6 +1756,7 @@ class BlueFireService(RunnerManagementServiceMixin):
                     "detection.ai.apply",
                     "replay.ai.propose",
                     "replay.comparison.recover",
+                    "graph.ai.propose",
                     "assistance.turn",
                     "assistance.continue",
                 }
@@ -2329,6 +2354,8 @@ class BlueFireService(RunnerManagementServiceMixin):
             return self._signal_job(job_id, "cancel")
         if job.get("kind") == "replay.ai.propose":
             return self.method_comparison.cancel(job_id)
+        if job.get("kind") == "graph.ai.propose":
+            return dict(self.graph_ai.cancel(job_id)["job"])
         if job.get("kind") == "assistance.turn":
             return dict(self.assistance.cancel(job_id)["job"])
         if job.get("kind") == "assistance.continue":
@@ -4213,7 +4240,13 @@ class BlueFireService(RunnerManagementServiceMixin):
                 catalog_authority=resolved["replay_catalog_authority"],
             )
         binding = self._bind_replay_review(
-            resolved, request, report["plan"], lineage, target_scope, readiness, collector_authority
+            resolved,
+            request,
+            report["plan"],
+            lineage,
+            target_scope,
+            readiness,
+            collector_authority,
         )
         return {
             "schema_version": "bluefire.replay-preparation.v1",

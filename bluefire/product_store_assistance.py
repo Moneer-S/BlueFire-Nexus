@@ -133,9 +133,13 @@ def publication_guard(
     ):
         raise ProductStoreError("Assistance child differs from its reserved intent.")
     identity = (
-        document.get("candidate_id")
-        if kind == "detection.ai.propose"
-        else document.get("source_run_id")
+        document.get("context_digest")
+        if kind == "graph.ai.propose"
+        else (
+            document.get("candidate_id")
+            if kind == "detection.ai.propose"
+            else document.get("source_run_id")
+        )
     )
     if identity != reserved["object_id"]:
         raise ProductStoreError("Assistance child uses a different selected object.")

@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 from .ai_assistance import REVISE
 from .assistance_context import AssistanceContext, detection_path
+from .graph_ai_context import GRAPH
 from .product_store_detection_ai import proposal_from_job
 from .product_store_errors import ProductStoreError
 from .product_store_method_comparison import proposal_at
@@ -16,6 +17,8 @@ TERMINAL = {"completed", "cancelled", "failed", "interrupted"}
 
 
 def child_path(child: Mapping[str, Any]) -> str:
+    if child["kind"] == "graph.ai.propose":
+        return "/builder?" + urlencode({"graph_job": child["job_id"]})
     if child["kind"] == "detection.ai.propose":
         return detection_path(
             child["request"]["submitted_request"]["run_id"],
@@ -68,6 +71,17 @@ def child_job(
 def result(
     service: AssistanceContext, child: Mapping[str, Any], step: Mapping[str, Any]
 ) -> Mapping[str, Any] | None:
+    if step["capability_id"] == GRAPH:
+        receipt = service.graph_ai.read(child["job_id"])["application"]
+        if receipt is None:
+            return None
+        return {
+            "kind": "graph_saved",
+            "step_id": step["step_id"],
+            **receipt,
+            "native_path": child_path(child),
+            "execution_state": "not_run",
+        }
     if step["capability_id"] == REVISE:
         receipt = child["progress"].get("application")
         if receipt is None:
