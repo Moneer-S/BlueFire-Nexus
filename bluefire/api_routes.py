@@ -192,6 +192,8 @@ class APIRoutes:
             parsed = urlsplit(self.path)
             if parsed.fragment:
                 raise ValueError
+            if not parsed.query:
+                return True, None
             pairs = parse_qsl(
                 parsed.query,
                 keep_blank_values=True,

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import bluefire.api_routes as api_routes
 from bluefire.runner_lifecycle import ManagedRunnerLifecycle, RunnerLifecycleError
 from bluefire.service import BlueFireService
 from tests_platform.test_api import request, running_server
@@ -14,6 +15,24 @@ from tests_platform.test_runner_lifecycle import lifecycle as lifecycle
 from tests_platform.test_runner_lifecycle import secret_provider as secret_provider
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize(
+    "suffix,status", [("", 200), ("?", 200), ("#fragment", 400), ("?#fragment", 400)]
+)
+def test_empty_query_bypasses_strict_parser_after_fragment_refusal(monkeypatch, suffix, status):
+    def strict_parser_must_not_run(*_args, **_kwargs):
+        pytest.fail("Empty queries must not reach version-dependent strict parsing")
+
+    monkeypatch.setattr(api_routes, "parse_qsl", strict_parser_must_not_run)
+    with running_server() as (server, service):
+        code, _, body = request(server, "GET", "/api/v1/runner" + suffix)
+        assert code == status
+        if status == 200:
+            assert service.calls == [("runner_status", None)]
+        else:
+            assert not service.calls
+            assert json.loads(body)["error"]["code"] == "invalid_runner_status_query"
 
 
 @pytest.mark.parametrize(
