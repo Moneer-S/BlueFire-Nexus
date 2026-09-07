@@ -314,6 +314,39 @@ def test_prepare_then_native_review_creates_one_fresh_approval_no_target_effects
     )
     assert len(sessions) == 1 and runner.execute_calls == 0 and not access.calls
     assert service.active_jobs()["jobs"][0]["job_id"] == execution["job_id"]
+    # Runs must review the retained submission report. Posting this public job's
+    # request to generic preflight does not adopt its private receiver authority.
+    public_job = service.job(execution["job_id"])
+    stored = public_job["request"]["_run_submission_preflight"]
+    assert stored == envelope["phases"][0]["preparation"]["preflight"]
+    binding_fields = (
+        "state_digest",
+        "plan_digest",
+        "profile_id",
+        "target_scope_digest",
+        "maximum_tier",
+    )
+    approval_binding = {key: public_job["approval_request"][key] for key in binding_fields}
+    assert {key: stored["approval_binding"][key] for key in binding_fields} == approval_binding
+    ordinary = service.preflight(public_job["request"])
+    assert ordinary["approval_binding"]["state_digest"] != approval_binding["state_digest"]
+    assert all(
+        ordinary["approval_binding"][key] == approval_binding[key]
+        for key in binding_fields
+        if key != "state_digest"
+    )
+    # The server-side approval path supplies the exact retained marker and
+    # revalidates the live session, reproducing the original reviewed binding.
+    canonical = service.preflight(
+        public_job["request"], _receiver_defense=public_job["request"]["receiver_defense"]
+    )
+    assert canonical["approval_binding"] == stored["approval_binding"]
+    assert service.job(execution["job_id"])["request"]["_run_submission_preflight"] == stored
+    assert not sessions[0].tasks and runner.execute_calls == 0 and not access.calls
+    (service.store.root.parent / "receiver-approval-projection.json").write_text(
+        json.dumps({"job": public_job, "ordinary": ordinary, "canonical": canonical}),
+        encoding="utf-8",
+    )
     (service.store.root.parent / "native-contract.json").write_text(
         json.dumps(
             {
