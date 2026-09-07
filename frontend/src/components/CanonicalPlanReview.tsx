@@ -1,8 +1,9 @@
 import { ShieldCheck } from "lucide-react";
+import { memo } from "react";
 import type { ApprovalBinding, ApprovalEnvelope } from "../types";
 import { Badge, Callout, DataList, sentence } from "./Primitives";
 
-export function CanonicalPlanReview({ plan, cleanup, scope, binding, envelope }: { plan: Record<string, unknown>; cleanup?: unknown; scope?: unknown; binding?: ApprovalBinding | null; envelope?: ApprovalEnvelope | null }) {
+export const CanonicalPlanReview = memo(function CanonicalPlanReview({ plan, cleanup, scope, binding, envelope }: { plan: Record<string, unknown>; cleanup?: unknown; scope?: unknown; binding?: ApprovalBinding | null; envelope?: ApprovalEnvelope | null }) {
   const steps = Array.isArray(plan.steps) ? plan.steps.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object") : [];
   const edges = Array.isArray(plan.edges) ? plan.edges : [];
   const digest = binding?.plan_digest ?? plan.plan_digest ?? plan.digest ?? plan.scenario_digest;
@@ -47,7 +48,7 @@ export function CanonicalPlanReview({ plan, cleanup, scope, binding, envelope }:
       <pre>{JSON.stringify(plan, null, 2)}</pre>
     </details>
   </section>;
-}
+});
 
 function stringList(value: unknown) {
   if (!Array.isArray(value)) return "Not reported";
